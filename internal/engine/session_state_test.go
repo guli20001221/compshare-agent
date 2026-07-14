@@ -442,7 +442,7 @@ func TestSetSessionState_HigherVersionOverwrites(t *testing.T) {
 	assert.Equal(t, 4, ver)
 }
 
-func TestRecordLastIntentFromPlan_UnknownClearsPendingDeployModel(t *testing.T) {
+func TestRecordLastIntentFromPlan_UnknownPreservesPendingTask(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
@@ -454,10 +454,11 @@ func TestRecordLastIntentFromPlan_UnknownClearsPendingDeployModel(t *testing.T) 
 
 	state, _, _ := e.SessionStateSnapshot()
 	assert.Equal(t, string(intent.IntentDeployModel), state.LastIntent, "unknown must not replace LastIntent")
-	assert.Empty(t, state.PendingDeployModel, "unknown turns should break stale deploy clarification carry")
+	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel,
+		"an unknown route is a router failure, not evidence that the user abandoned the task")
 }
 
-func TestRecordLastIntentFromPlan_NonCreateTurnClearsContextFrame(t *testing.T) {
+func TestRecordLastIntentFromPlan_NonCreateTurnDoesNotOwnContextLifetime(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
@@ -475,10 +476,11 @@ func TestRecordLastIntentFromPlan_NonCreateTurnClearsContextFrame(t *testing.T) 
 	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentKnowledgeQA})
 
 	state, _, _ := e.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind, "unrelated turns must clear stale create/deploy carry")
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind,
+		"recording a topic must not silently double as a task-lifetime decision")
 }
 
-func TestRecordLastIntentFromPlan_StockTurnClearsContextFrameWhenNotContinued(t *testing.T) {
+func TestRecordLastIntentFromPlan_StockTurnDoesNotClearWithoutDecision(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
@@ -496,7 +498,8 @@ func TestRecordLastIntentFromPlan_StockTurnClearsContextFrameWhenNotContinued(t 
 	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentStockAvailability})
 
 	state, _, _ := e.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind, "stock questions clear stale create frames unless the continuation resolver handled them first")
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind,
+		"only the shared resolver's New/Clear decision may retire the task")
 }
 
 // TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the

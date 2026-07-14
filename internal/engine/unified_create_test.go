@@ -68,7 +68,10 @@ func TestRecordCreateContextFrame_FlagOffDoesNotPersistFrame(t *testing.T) {
 	assert.Empty(t, state.ContextFrame.Kind)
 }
 
-func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
+func TestTryPlannerDispatch_UnknownDoesNotClearPendingDeployModelByItself(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
@@ -93,12 +96,16 @@ func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 			Confidence:    0.9,
 		},
 	}}}, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentResourceInfo}})
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionAnswerFollowup,
+		Target:   ContextDecisionTargetKnowledge,
+	}})
 
 	_, _ = eng.tryPlannerDispatch(context.Background(), "随便问个无关问题", "", noopStep, nil)
 
 	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.PendingDeployModel)
-	assert.Empty(t, state.ContextFrame.Kind)
+	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel)
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
 }
 
 func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWithoutImageMatch(t *testing.T) {
@@ -580,8 +587,15 @@ func TestTryPlannerDispatch_AllowsDeployFrameResumeBeforeNonCreateCleanup(t *tes
 	assert.Equal(t, "cn-wlcb-01", createArgs["Zone"])
 }
 
-func TestTryPlannerDispatch_HandledNonCreateTurnClearsDeployContextFrame(t *testing.T) {
+func TestTryPlannerDispatch_HandledNonCreateTurnDoesNotClearWithoutResolverDecision(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionAnswerFollowup,
+		Target:   ContextDecisionTargetKnowledge,
+	}})
 	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{
 		Plan: intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
@@ -609,8 +623,8 @@ func TestTryPlannerDispatch_HandledNonCreateTurnClearsDeployContextFrame(t *test
 	require.True(t, handled)
 	assert.Contains(t, reply, "当前不支持直接查询账号余额")
 	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.PendingDeployModel)
-	assert.Empty(t, state.ContextFrame.Kind)
+	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel)
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
 }
 
 func TestApplyContextContinuationDecision_ZoneFallbackUsesUserTextWhenModelInventsZoneCode(t *testing.T) {

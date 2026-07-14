@@ -243,8 +243,16 @@ type Engine struct {
 	createPreferenceExtractor   CreatePreferenceExtractor
 	contextDecisionLayer        ContextDecisionLayer
 	contextContinuationResolver ContextContinuationResolver
-	groundedRenderer            grounded.Renderer
-	groundedRendererModel       string
+	// contextDecision* is turn-local. A turn may pass through resource selection,
+	// workflow continuation, fact follow-up and create continuation, but all of
+	// them must consume one shared judgment over the same user message instead of
+	// independently asking the model and getting contradictory answers.
+	contextDecisionAttemptedThisTurn bool
+	contextDecisionUserTextThisTurn  string
+	contextDecisionThisTurn          *ContextDecision
+	contextDecisionErrThisTurn       error
+	groundedRenderer                 grounded.Renderer
+	groundedRendererModel            string
 	// fastTemplate, when true, makes fast-tier catalog envelopes
 	// (gpu_specs / stock / image_list) render via the handler's
 	// deterministic Reply instead of the LLM grounded renderer (B3). The
@@ -1331,6 +1339,7 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // skip the LLM and therefore never fire callbacks.
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
+	e.resetContextDecisionTurn()
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
 	// Substitute the deterministically rendered instance table into the finished reply,
@@ -1484,11 +1493,19 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
 		return reply, nil
 	}
-	if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
-		return reply, nil
-	}
-	if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
-		return reply, nil
+	// The deterministic lifecycle shortcut predates the context decision layer.
+	// It is safe only when there is no carried task/fact/selection to adjudicate;
+	// otherwise it would execute before the one component that can tell a new
+	// command from a continuation. Context-bearing turns go through the planner
+	// and the shared decision below. A failed planner/resolver then falls back to
+	// a read-only ReAct window, never to an unreviewed mutation.
+	if !e.hasContextDecisionContext() {
+		if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
+			return reply, nil
+		}
+		if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
+			return reply, nil
+		}
 	}
 	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
 		return reply, nil
@@ -1956,20 +1973,56 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		// frame it is about to need"). The failure path was left doing exactly the forbidden
 		// thing.
 		//
-		// We deliberately do NOT resume here either. A sub-0.60 classification is untrusted
-		// input, and letting it drive tryResumeCreateContextFrame — which ends in
-		// runDeployModel, a mutating saga — would be a worse bug than the one being fixed.
-		// The frame simply survives, unread, and the next turn the router understands can
-		// use it. It still expires on its own (ContextFrameTTLSeconds).
-		//
-		// Keeping the frame alive longer is only safe because the create path no longer
-		// inherits a dead deploy's payload — see dropStaleDeployPayload. That teardown was
-		// a blunt instrument aimed at over-inheritance; the aim is now precise, so the
-		// instrument is not needed. The two changes MUST ship together.
+		// The route signal is untrusted here, but the already-persisted workflow frame is
+		// still trusted state. Resolve it with router_intent=unknown: a Continue may resume
+		// only through the existing trusted-slot + confirmation path, a Clarify may answer,
+		// and New/Clear may retire the task. Resolver failure preserves the task and falls
+		// into a read-only ReAct window.
 		if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 			e.requireKnowledgeCitationThisTurn = true
 		}
-		e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
+		e.lastPlannerIntentThisTurn = intent.IntentUnknown
+		e.lastPlannerActionThisTurn = ""
+		decision, hasContext, err := e.resolveTurnContextDecision(ctx, userMsg, intent.IntentUnknown)
+		if err != nil {
+			e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
+			return "", false
+		}
+		if hasContext && decision != nil {
+			if e.tokenBudgetExceeded() {
+				e.emitTokenBudgetExceededHardBlock()
+				e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: tokenBudgetExceededMessage})
+				return tokenBudgetExceededMessage, true
+			}
+			if decision.Decision == ContextDecisionClarify && strings.TrimSpace(decision.Clarify) != "" {
+				reply := strings.TrimSpace(decision.Clarify)
+				e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
+				return reply, true
+			}
+			// Strip the guessed route before any continuation consumer sees it. The
+			// workflow/action comes from the server-created frame, never from this plan.
+			safeDispatch := dispatch
+			safeDispatch.result.Plan = intent.IntentRoute{
+				SchemaVersion: intent.SchemaVersion,
+				Intent:        intent.IntentUnknown,
+				Confidence:    0,
+			}
+			if decision.Decision == ContextDecisionContinueTask {
+				if reply, handled := e.tryResumeWorkflowContextFrame(ctx, safeDispatch, userMsg, onStep); handled {
+					return reply, true
+				}
+				if reply, handled := e.tryResumeCreateContextFrame(ctx, safeDispatch, userMsg, onStep); handled {
+					return reply, true
+				}
+			}
+			if decision.Decision == ContextDecisionAnswerFollowup {
+				if reply, handled := e.tryRecentFactFollowup(ctx, safeDispatch, userMsg, onStep); handled {
+					return reply, true
+				}
+			}
+		}
 		e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
 		return "", false
 	}
@@ -2010,7 +2063,6 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// PR1 hotfix Bug 4 (2026-05-28): capture slots.action so executeTool can
 	// deterministically pre-filter DescribeCompShareInstance rows by State.
 	e.lastPlannerActionThisTurn = dispatch.result.Plan.Slots.Action
-	e.clearPendingDeployModelForNonCreateFamily(dispatch.result.Plan.Intent)
 	if dispatch.result.Plan.Intent == intent.IntentDiagnosis {
 		// ...and remember WHICH MACHINE, which is the other half of the same hole. The
 		// scan below already derives the referent from the user's own words; until now
@@ -2019,6 +2071,17 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		snapshot := e.diagnosisResolutionSnapshot(ctx, dispatch.snapshot)
 		dispatch.result.Plan = augmentPlanTargetRefsFromUserText(dispatch.result.Plan, userMsg, snapshot)
 		e.rememberUserNamedInstance(userMsg, snapshot)
+	}
+
+	turnContextDecision, hasTurnContext, contextDecisionErr := e.resolveTurnContextDecision(ctx, userMsg, dispatch.result.Plan.Intent)
+	if contextDecisionErr != nil {
+		// A confident route does not become permission to mutate when the one
+		// component responsible for deciding context lifetime is unavailable.
+		// Preserve the task and let ReAct explain/re-query with read-only tools.
+		e.lastPlannerIntentThisTurn = intent.IntentUnknown
+		e.lastPlannerActionThisTurn = ""
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackInvalid, dispatch.latency)
+		return "", false
 	}
 
 	// Token budget gate. callPlannerOnce already added planner usage to
@@ -2033,7 +2096,6 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// here (planner-handled paths don't emit ReAct tool events), so
 	// the (c) protocol invariant is naturally satisfied.
 	if e.tokenBudgetExceeded() {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		e.emitTokenBudgetExceededHardBlock()
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -2042,32 +2104,32 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		})
 		return tokenBudgetExceededMessage, true
 	}
+	if hasTurnContext && turnContextDecision != nil && turnContextDecision.Decision == ContextDecisionClarify && strings.TrimSpace(turnContextDecision.Clarify) != "" {
+		reply := strings.TrimSpace(turnContextDecision.Clarify)
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
+		return reply, true
+	}
 
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryResumeWorkflowContextFrame(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
 	if reply, handled := e.tryRecentFactFollowup(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
@@ -2077,7 +2139,6 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
 	// (see deploy_model.go). This is byte-stable wiring: the handler body is unchanged.
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if FlashKnowledgeRouteGuardEnabled() {
@@ -2085,16 +2146,12 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 			dispatch.result.Plan.Intent = intent.IntentKnowledgeQA
 			e.lastPlannerIntentThisTurn = intent.IntentKnowledgeQA
 			if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
-				e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 				return reply, true
 			}
 		}
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
 		reply, handled := e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
-		if handled {
-			e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
-		}
 		return reply, handled
 	}
 	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP migration: route a knowledge_qa turn into
@@ -2116,22 +2173,16 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		e.requireKnowledgeCitationThisTurn = true
 		e.knowledgeQAAgentLoopThisTurn = true
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedKnowledgeAgentLoop, dispatch.latency)
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return "", false
 	}
 	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 		e.requireKnowledgeCitationThisTurn = true
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return "", false
 	}
 
-	if !createFamilyIntent(dispatch.result.Plan.Intent) {
-		e.clearDeployContextFrame()
-	}
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 	return "", false
 }
@@ -5170,72 +5221,22 @@ func (e *Engine) rememberLastIntentForRouter(plan intent.IntentRoute) {
 	e.sessionState.LastIntent = string(plan.Intent)
 }
 
-// recordLastIntentFromPlan sets SessionState.LastIntent from the plan's
-// classified Intent, AND tears down create-flow carry state that a resolved
-// non-create turn has invalidated. Called on route/resume success paths — i.e.
-// when the user's intent was confirmed by a fully-dispatched handler reply.
-// Refuses to write IntentUnknown / empty / non-RuntimeIntents values, so the
-// stored value is always a legal short-circuited enum string.
-//
-// For the LastIntent write alone — with none of the create-flow side effects, and
-// on every routed turn rather than only handler-dispatched ones — use
-// rememberLastIntentForRouter.
+// recordLastIntentFromPlan records the classified topic after a handled route.
+// Task lifetime is intentionally absent from this helper: handler success says
+// the current question was answered, not that the user abandoned a different
+// pending workflow. Only the turn's shared context decision (New/Clear) or an
+// explicitly completed workflow may clear that state.
 func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 	if !e.sessionStateHydrated {
 		return
 	}
 	if plan.Intent == "" || plan.Intent == intent.IntentUnknown {
-		e.clearDeployClarificationCarry()
 		return
 	}
 	if !runtimeIntentMember(plan.Intent) {
 		return
 	}
 	e.sessionState.LastIntent = string(plan.Intent)
-	if !createFamilyIntent(plan.Intent) {
-		e.clearPendingDeployModel()
-	}
-	if !createFamilyIntent(plan.Intent) {
-		if !(plan.Intent == intent.IntentOperationLifecycle && e.sessionState.ContextFrame.Kind == ContextFrameKindWorkflowTask) {
-			e.clearContextFrame()
-		}
-	}
-}
-
-func (e *Engine) clearPendingDeployModel() {
-	if !e.sessionStateHydrated {
-		return
-	}
-	e.sessionState.PendingDeployModel = ""
-}
-
-func (e *Engine) clearDeployContextFrame() {
-	if !e.sessionStateHydrated {
-		return
-	}
-	if e.sessionState.ContextFrame.Kind == ContextFrameKindDeploy {
-		e.clearContextFrame()
-	}
-}
-
-func (e *Engine) clearDeployClarificationCarry() {
-	if !e.sessionStateHydrated {
-		return
-	}
-	e.sessionState.PendingDeployModel = ""
-	e.clearDeployContextFrame()
-}
-
-func (e *Engine) clearDeployContextFrameForHandledNonCreate(i intent.Intent) {
-	if !createFamilyIntent(i) {
-		e.clearDeployContextFrame()
-	}
-}
-
-func (e *Engine) clearPendingDeployModelForNonCreateFamily(i intent.Intent) {
-	if !createFamilyIntent(i) {
-		e.clearPendingDeployModel()
-	}
 }
 
 func createFamilyIntent(i intent.Intent) bool {

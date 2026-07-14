@@ -21,6 +21,7 @@ type ContextDecisionInput struct {
 	UserText            string
 	RouterIntent        intent.Intent
 	ActiveTask          ContextFrame
+	TaskSnapshot        string
 	SelectedEntity      string
 	PendingChoices      string
 	RecentFacts         string
@@ -86,11 +87,15 @@ func (r legacyContextContinuationLayer) ResolveContextDecision(ctx context.Conte
 	if r.resolver == nil {
 		return nil, fmt.Errorf("context decision layer: no legacy resolver")
 	}
+	semanticTask := ""
+	if strings.TrimSpace(in.TaskSnapshot) != "" {
+		semanticTask = "task_snapshot (understanding_only):\n" + strings.TrimSpace(in.TaskSnapshot)
+	}
 	decision, err := r.resolver.ResolveContextContinuation(ctx, ContextContinuationInput{
 		UserText:        in.UserText,
 		RouterIntent:    in.RouterIntent,
 		ContextFrame:    in.ActiveTask,
-		InstanceContext: strings.Join(nonEmptyStrings(in.SelectedEntity, in.PendingChoices), "\n"),
+		InstanceContext: strings.Join(nonEmptyStrings(in.SelectedEntity, in.PendingChoices, semanticTask), "\n"),
 	})
 	if err != nil || decision == nil {
 		return nil, err
@@ -116,10 +121,29 @@ type ContextDecisionTrace struct {
 	HasSelection   bool
 	HasChoices     bool
 	HasFacts       bool
+	HasTaskMemory  bool
+	ReadSet        []string
+	StateDelta     []string
 	Error          string
 }
 
 func (e *Engine) resolveContextDecision(ctx context.Context, userMsg string, route intent.Intent, frame ContextFrame) (*ContextDecision, error) {
+	if e == nil {
+		return nil, fmt.Errorf("context decision layer: nil engine")
+	}
+	userKey := strings.TrimSpace(userMsg)
+	if e.contextDecisionAttemptedThisTurn && e.contextDecisionUserTextThisTurn == userKey {
+		return cloneContextDecision(e.contextDecisionThisTurn), e.contextDecisionErrThisTurn
+	}
+	// Direct unit callers can invoke the seam without ChatWithOptions (and thus
+	// without its per-turn reset). A different user message is a different
+	// synthetic turn; do not leak a cached judgment across it.
+	if e.contextDecisionAttemptedThisTurn && e.contextDecisionUserTextThisTurn != userKey {
+		e.resetContextDecisionTurn()
+	}
+	e.contextDecisionAttemptedThisTurn = true
+	e.contextDecisionUserTextThisTurn = userKey
+
 	layer := e.contextDecisionLayer
 	if layer == nil && e.contextContinuationResolver != nil {
 		layer = legacyContextContinuationLayer{resolver: e.contextContinuationResolver}
@@ -134,12 +158,44 @@ func (e *Engine) resolveContextDecision(ctx context.Context, userMsg string, rou
 	in := e.buildContextDecisionInput(userMsg, route, frame, time.Now())
 	decision, err := layer.ResolveContextDecision(ctx, in)
 	if err != nil {
+		e.contextDecisionErrThisTurn = err
+		e.emitContextDecisionTrace(in, nil, err)
+		return nil, err
+	}
+	if decision == nil {
+		err = fmt.Errorf("context decision layer: empty decision")
+		e.contextDecisionErrThisTurn = err
 		e.emitContextDecisionTrace(in, nil, err)
 		return nil, err
 	}
 	decision = sanitizeContextDecision(*decision)
+	e.contextDecisionThisTurn = cloneContextDecision(decision)
 	e.emitContextDecisionTrace(in, decision, nil)
-	return decision, nil
+	return cloneContextDecision(decision), nil
+}
+
+func (e *Engine) resetContextDecisionTurn() {
+	if e == nil {
+		return
+	}
+	e.contextDecisionAttemptedThisTurn = false
+	e.contextDecisionUserTextThisTurn = ""
+	e.contextDecisionThisTurn = nil
+	e.contextDecisionErrThisTurn = nil
+}
+
+func cloneContextDecision(in *ContextDecision) *ContextDecision {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.SlotUpdates != nil {
+		out.SlotUpdates = make(map[string]string, len(in.SlotUpdates))
+		for key, value := range in.SlotUpdates {
+			out.SlotUpdates[key] = value
+		}
+	}
+	return &out
 }
 
 func (e *Engine) buildContextDecisionInput(userMsg string, route intent.Intent, frame ContextFrame, now time.Time) ContextDecisionInput {
@@ -159,6 +215,7 @@ func buildContextDecisionInput(state SessionState, userMsg string, route intent.
 		UserText:       strings.TrimSpace(userMsg),
 		RouterIntent:   route,
 		ActiveTask:     state.ContextFrame,
+		TaskSnapshot:   summarizeTaskSnapshotForDecision(state.TaskSnapshot),
 		SelectedEntity: summarizeSelectedEntityContext(state),
 		PendingChoices: summarizePendingChoicesContext(state),
 		RecentFacts:    assembleFactContext(state.RecentFacts, now),
@@ -179,6 +236,8 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 	sys.WriteString("- 用户提出新的价格、建议、概念、教程、知识问题时，输出 new_task。\n")
 	sys.WriteString("- 用户说算了、不用了、取消、换个话题时，输出 clear_context。\n")
 	sys.WriteString("- 不确定时输出 clarify，并给一句简短追问。\n")
+	sys.WriteString("- router_intent 只是可能出错的参考信号，不能单独决定清除或继续任务。\n")
+	sys.WriteString("- task_snapshot 和 freshness=expired 的信息只能帮助理解，不得授权执行；需要执行时必须依赖仍有效的 active_task、用户本轮明确输入和后端确认。\n")
 	sys.WriteString("- 不要生成最终 API 参数；GPU、可用区、镜像、实例 ID 都只表达用户意图，后端会校验。\n")
 	sys.WriteString("- 写操作必须交给后端确认卡；不要自行判断已经确认。\n")
 	sys.WriteString("- 不要猜默认 GPU、默认可用区、默认镜像来源；没有明确说就留空。\n")
@@ -188,6 +247,9 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 	var usr strings.Builder
 	usr.WriteString("router_intent: " + string(in.RouterIntent) + "\n")
 	usr.WriteString("active_task:\n" + summarizeContextFrame(in.ActiveTask) + "\n")
+	if strings.TrimSpace(in.TaskSnapshot) != "" {
+		usr.WriteString("task_snapshot (understanding_only):\n" + strings.TrimSpace(in.TaskSnapshot) + "\n")
+	}
 	if strings.TrimSpace(in.SelectedEntity) != "" {
 		usr.WriteString("selected_entity:\n" + strings.TrimSpace(in.SelectedEntity) + "\n")
 	}
@@ -206,6 +268,35 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 		{Role: openai.ChatMessageRoleSystem, Content: sys.String()},
 		{Role: openai.ChatMessageRoleUser, Content: usr.String()},
 	}
+}
+
+func summarizeTaskSnapshotForDecision(task TaskSnapshot) string {
+	if taskSnapshotEmpty(task) || task.Status == TaskSnapshotStatusResolved {
+		return ""
+	}
+	var lines []string
+	add := func(key, value string) {
+		if value = strings.TrimSpace(value); value != "" {
+			lines = append(lines, key+": "+value)
+		}
+	}
+	add("goal", task.Goal)
+	add("intent", task.Intent)
+	add("workflow", task.Workflow)
+	add("stage", task.Stage)
+	add("status", task.Status)
+	add("freshness", task.Freshness)
+	if len(task.MissingSlots) > 0 {
+		add("missing_slots", strings.Join(task.MissingSlots, ","))
+	}
+	if len(task.Constraints) > 0 {
+		add("constraints", strings.Join(task.Constraints, ","))
+	}
+	if len(task.Decisions) > 0 {
+		add("decisions", strings.Join(task.Decisions, ","))
+	}
+	add("end_reason", task.EndReason)
+	return strings.Join(lines, "\n")
 }
 
 func parseContextDecision(raw string) (*ContextDecision, error) {
@@ -592,6 +683,123 @@ func nonEmptyStrings(values ...string) []string {
 	return out
 }
 
+// hasContextDecisionContext is deliberately narrower than "the session has
+// ever mentioned an instance". It becomes true only for state that has an
+// outstanding continuity question this turn: an active/expired task, an
+// unresolved semantic task snapshot, or fresh fact breadcrumbs. Pending
+// selection has its own pre-planner seam. That avoids adding a resolver LLM
+// call to every ordinary turn
+// merely because the user selected a machine days ago.
+func (e *Engine) hasContextDecisionContext() bool {
+	if e == nil || !ContextContinuationEnabled() || !e.sessionStateHydrated {
+		return false
+	}
+	state := e.sessionState
+	if !contextFrameEmpty(state.ContextFrame) {
+		return true
+	}
+	if !taskSnapshotEmpty(state.TaskSnapshot) && state.TaskSnapshot.Status != TaskSnapshotStatusResolved {
+		return true
+	}
+	if e.sessionFactContextEnabled && len(state.RecentFacts) > 0 {
+		return true
+	}
+	// Pending resource selection owns its own pre-planner decision seam while
+	// the in-memory prompt is active. Persisted selection items alone are not a
+	// reason to run a second decision after an exact choice has already consumed
+	// and cleared an unrelated workflow frame.
+	return false
+}
+
+// resolveTurnContextDecision is the single per-turn lifecycle gate. The
+// underlying resolve call is cached, so downstream consumers (workflow,
+// create, fact follow-up, resource selection) all observe the same answer.
+// Only explicit new/clear decisions mutate task lifetime here; a route label,
+// handler success or resolver failure never does.
+func (e *Engine) resolveTurnContextDecision(ctx context.Context, userMsg string, route intent.Intent) (*ContextDecision, bool, error) {
+	if !e.hasContextDecisionContext() {
+		return nil, false, nil
+	}
+	decision, err := e.resolveContextDecision(ctx, userMsg, route, e.sessionState.ContextFrame)
+	if err != nil || decision == nil {
+		return nil, true, err
+	}
+	if decision.Decision == ContextDecisionNewTask || decision.Decision == ContextDecisionClearContext {
+		e.clearTaskCarryFromContextDecision(decision.Decision)
+	}
+	return decision, true, nil
+}
+
+func (e *Engine) clearTaskCarryFromContextDecision(decision string) {
+	if e == nil || !e.sessionStateHydrated {
+		return
+	}
+	if !contextFrameEmpty(e.sessionState.ContextFrame) {
+		e.clearContextFrame()
+	} else if !taskSnapshotEmpty(e.sessionState.TaskSnapshot) && e.sessionState.TaskSnapshot.Status != TaskSnapshotStatusResolved {
+		task := e.sessionState.TaskSnapshot
+		task.Status = TaskSnapshotStatusResolved
+		task.Freshness = ContinuityFreshnessStale
+		if decision == ContextDecisionClearContext {
+			task.EndReason = "用户明确取消了任务"
+		} else {
+			task.EndReason = "用户开始了新任务"
+		}
+		task.UpdatedAtUnix = time.Now().Unix()
+		e.sessionState.TaskSnapshot = task
+	}
+	e.sessionState.PendingDeployModel = ""
+	e.sessionState.LastDeployWorkload = ""
+	e.sessionState.LastDeployZone = ""
+	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+}
+
+func contextDecisionReadSet(in ContextDecisionInput) []string {
+	readSet := []string{"user_text", "router_intent"}
+	if !contextFrameEmpty(in.ActiveTask) {
+		readSet = append(readSet, "active_task")
+	}
+	if strings.TrimSpace(in.TaskSnapshot) != "" {
+		readSet = append(readSet, "task_snapshot")
+	}
+	if strings.TrimSpace(in.SelectedEntity) != "" {
+		readSet = append(readSet, "selected_entity")
+	}
+	if strings.TrimSpace(in.PendingChoices) != "" {
+		readSet = append(readSet, "pending_choices")
+	}
+	if strings.TrimSpace(in.RecentFacts) != "" {
+		readSet = append(readSet, "recent_facts")
+	}
+	if strings.TrimSpace(in.LastAssistantPrompt) != "" {
+		readSet = append(readSet, "last_assistant_prompt")
+	}
+	return readSet
+}
+
+func contextDecisionStateDelta(decision *ContextDecision) []string {
+	if decision == nil {
+		return []string{"task:preserve"}
+	}
+	switch decision.Decision {
+	case ContextDecisionNewTask, ContextDecisionClearContext:
+		return []string{"task:clear"}
+	case ContextDecisionContinueTask:
+		if len(decision.SlotUpdates) > 0 {
+			return []string{"task:continue", "slots:merge_user_validated"}
+		}
+		return []string{"task:continue"}
+	case ContextDecisionClarify:
+		return []string{"task:preserve", "reply:clarify"}
+	case ContextDecisionAnswerFollowup:
+		return []string{"task:preserve", "facts:read_only"}
+	case ContextDecisionSelectEntity:
+		return []string{"task:preserve", "selection:resolve"}
+	default:
+		return []string{"task:preserve"}
+	}
+}
+
 func (e *Engine) emitContextDecisionTrace(in ContextDecisionInput, decision *ContextDecision, err error) {
 	if e == nil || e.contextDecisionObserver == nil {
 		return
@@ -603,6 +811,9 @@ func (e *Engine) emitContextDecisionTrace(in ContextDecisionInput, decision *Con
 		HasSelection:   strings.TrimSpace(in.SelectedEntity) != "",
 		HasChoices:     strings.TrimSpace(in.PendingChoices) != "",
 		HasFacts:       strings.TrimSpace(in.RecentFacts) != "",
+		HasTaskMemory:  strings.TrimSpace(in.TaskSnapshot) != "",
+		ReadSet:        contextDecisionReadSet(in),
+		StateDelta:     contextDecisionStateDelta(decision),
 	}
 	if decision != nil {
 		trace.Decision = decision.Decision
