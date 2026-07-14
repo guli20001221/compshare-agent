@@ -3,6 +3,7 @@ package agentpool
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
@@ -96,7 +97,8 @@ func validateCommittedTail(messages []store.Message) ([]engine.HistoryMessage, e
 	for i := 0; i < len(messages); i += 2 {
 		userMsg, assistantMsg := messages[i], messages[i+1]
 		if userMsg.Role != "user" || userMsg.Status != "ok" ||
-			assistantMsg.Role != "assistant" || assistantMsg.Status != "ok" {
+			assistantMsg.Role != "assistant" || assistantMsg.Status != "ok" ||
+			strings.TrimSpace(userMsg.Content) == "" || strings.TrimSpace(assistantMsg.Content) == "" {
 			return nil, fmt.Errorf("messages %d-%d are not a committed user/assistant pair", i, i+1)
 		}
 		history = append(history,

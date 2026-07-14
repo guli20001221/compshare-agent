@@ -115,14 +115,12 @@ LIMIT $5
 	return messages, nextCursor, nil
 }
 
-// ListCommittedTail returns the newest turnLimit complete, committed
-// user/assistant pairs for one owner-scoped session. The inner query selects
-// the tail in descending sequence order; the outer query restores normal
-// chronological user-then-assistant order for engine rehydration.
-//
-// A turn is eligible only when both protocol messages exist with status=ok.
-// That defensive completeness check prevents a corrupt or partially-written
-// row from becoming a half turn in the next model prompt.
+// ListCommittedTail returns the newest turnLimit complete, protocol-committed
+// user/assistant pairs for one owner-scoped session. Protocol-committed means
+// either a committed v2 chat_turn with exactly one ok message per role, or a
+// legacy pair with the same non-empty request_uuid and exactly those two ok
+// messages. Legacy rows are read in place; this bridge deliberately performs
+// no destructive backfill.
 func (s *MySQLMessageStore) ListCommittedTail(
 	ctx context.Context,
 	owner Owner,
@@ -133,41 +131,98 @@ func (s *MySQLMessageStore) ListCommittedTail(
 		return []Message{}, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-WITH committed_tail AS (
-  SELECT t.id, t.turn_seq
+WITH scoped_session AS (
+  SELECT sess.id
+  FROM sessions sess
+  WHERE sess.id = $1
+    AND sess.top_organization_id = $2
+    AND sess.organization_id = $3
+    AND sess.deleted_at IS NULL
+),
+v2_pairs AS (
+  SELECT
+    MAX(m.id) FILTER (
+      WHERE m.turn_role = 'user' AND m.role = 'user' AND m.status = 'ok'
+        AND m.content ~ '[^[:space:]]'
+    ) AS user_message_id,
+    MAX(m.id) FILTER (
+      WHERE m.turn_role = 'assistant' AND m.role = 'assistant' AND m.status = 'ok'
+        AND m.content ~ '[^[:space:]]'
+    ) AS assistant_message_id,
+    MIN(m.created_at) FILTER (
+      WHERE m.turn_role = 'user' AND m.role = 'user' AND m.status = 'ok'
+        AND m.content ~ '[^[:space:]]'
+    ) AS pair_at,
+    'v2:' || t.id AS pair_key
   FROM chat_turns t
-  JOIN sessions sess
-    ON sess.id = t.session_id
-   AND sess.top_organization_id = t.top_organization_id
-   AND sess.organization_id = t.organization_id
-   AND sess.deleted_at IS NULL
-  JOIN messages user_msg
-    ON user_msg.turn_id = t.id
-   AND user_msg.turn_role = 'user'
-   AND user_msg.role = 'user'
-   AND user_msg.status = 'ok'
-  JOIN messages assistant_msg
-    ON assistant_msg.turn_id = t.id
-   AND assistant_msg.turn_role = 'assistant'
-   AND assistant_msg.role = 'assistant'
-   AND assistant_msg.status = 'ok'
-  WHERE t.session_id = $1
-    AND t.top_organization_id = $2
+  JOIN scoped_session sess ON sess.id = t.session_id
+  JOIN messages m
+    ON m.turn_id = t.id
+   AND m.session_id = t.session_id
+   AND (m.id = t.user_message_id OR m.id = t.assistant_message_id)
+  WHERE t.top_organization_id = $2
     AND t.organization_id = $3
     AND t.status = 'committed'
-  ORDER BY t.turn_seq DESC
+  GROUP BY t.id
+  HAVING COUNT(*) = 2
+     AND COUNT(*) FILTER (
+       WHERE m.id = t.user_message_id
+         AND m.turn_role = 'user' AND m.role = 'user' AND m.status = 'ok'
+         AND m.content ~ '[^[:space:]]'
+     ) = 1
+     AND COUNT(*) FILTER (
+       WHERE m.id = t.assistant_message_id
+         AND m.turn_role = 'assistant' AND m.role = 'assistant' AND m.status = 'ok'
+         AND m.content ~ '[^[:space:]]'
+     ) = 1
+),
+legacy_pairs AS (
+  SELECT
+    MAX(m.id) FILTER (
+      WHERE m.role = 'user' AND m.status = 'ok' AND m.content ~ '[^[:space:]]'
+    ) AS user_message_id,
+    MAX(m.id) FILTER (
+      WHERE m.role = 'assistant' AND m.status = 'ok' AND m.content ~ '[^[:space:]]'
+    ) AS assistant_message_id,
+    MIN(m.created_at) FILTER (
+      WHERE m.role = 'user' AND m.status = 'ok' AND m.content ~ '[^[:space:]]'
+    ) AS pair_at,
+    'legacy:' || m.request_uuid AS pair_key
+  FROM messages m
+  JOIN scoped_session sess ON sess.id = m.session_id
+  WHERE m.turn_id IS NULL
+    AND m.request_uuid IS NOT NULL
+    AND m.request_uuid ~ '[^[:space:]]'
+  GROUP BY m.session_id, m.request_uuid
+  HAVING COUNT(*) = 2
+     AND COUNT(*) FILTER (
+       WHERE m.turn_role IS NULL AND m.role = 'user' AND m.status = 'ok'
+         AND m.content ~ '[^[:space:]]'
+     ) = 1
+     AND COUNT(*) FILTER (
+       WHERE m.turn_role IS NULL AND m.role = 'assistant' AND m.status = 'ok'
+         AND m.content ~ '[^[:space:]]'
+     ) = 1
+),
+eligible_pairs AS (
+  SELECT user_message_id, assistant_message_id, pair_at, pair_key FROM v2_pairs
+  UNION ALL
+  SELECT user_message_id, assistant_message_id, pair_at, pair_key FROM legacy_pairs
+),
+committed_tail AS (
+  SELECT user_message_id, assistant_message_id, pair_at, pair_key
+  FROM eligible_pairs
+  ORDER BY pair_at DESC, pair_key DESC
   LIMIT $4
 )
 SELECT m.id, m.session_id, m.request_uuid, m.role, m.content, m.status,
        m.error_code, m.model, m.input_tokens, m.output_tokens, m.ttft_ms,
        m.latency_ms, m.metadata, m.created_at
 FROM committed_tail tail
-JOIN messages m ON m.turn_id = tail.id
-WHERE m.status = 'ok'
-  AND ((m.turn_role = 'user' AND m.role = 'user')
-    OR (m.turn_role = 'assistant' AND m.role = 'assistant'))
-ORDER BY tail.turn_seq ASC,
-         CASE m.turn_role WHEN 'user' THEN 0 ELSE 1 END ASC
+JOIN messages m
+  ON m.id = tail.user_message_id OR m.id = tail.assistant_message_id
+ORDER BY tail.pair_at ASC, tail.pair_key ASC,
+         CASE WHEN m.id = tail.user_message_id THEN 0 ELSE 1 END ASC
 `, sessionID, owner.TopOrganizationID, owner.OrganizationID, turnLimit)
 	if err != nil {
 		return nil, fmt.Errorf("list committed message tail query: %w", err)

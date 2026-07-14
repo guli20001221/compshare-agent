@@ -113,8 +113,12 @@ type MessageStore interface {
 // CommittedTailMessageStore is the history contract used by the durable turn
 // protocol. It is intentionally separate from MessageStore so legacy/test
 // stores do not silently inherit unsafe head-page semantics. Implementations
-// must return only complete committed user/assistant pairs from the newest
-// turnLimit turns, ordered oldest-to-newest within that tail.
+// must return only protocol-committed complete user/assistant pairs from the
+// newest turnLimit turns, ordered oldest-to-newest within that tail. Protocol
+// commitment includes both committed v2 chat_turns and strict legacy pairs:
+// the same non-empty request_uuid, exactly one ok user, and exactly one ok
+// assistant in the owner-scoped session. Half/error/duplicate/null legacy
+// groups must never enter model history.
 type CommittedTailMessageStore interface {
 	ListCommittedTail(ctx context.Context, owner Owner, sessionID string, turnLimit int) ([]Message, error)
 }

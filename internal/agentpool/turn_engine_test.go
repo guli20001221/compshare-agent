@@ -94,3 +94,36 @@ func TestNewTurnEngine_RejectsHalfCommittedTail(t *testing.T) {
 	assert.Nil(t, eng)
 	assert.Contains(t, err.Error(), "invalid committed tail")
 }
+
+func TestNewTurnEngine_RejectsEmptyCommittedMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tail []store.Message
+	}{
+		{
+			name: "empty user",
+			tail: []store.Message{
+				{Role: "user", Content: "  \n", Status: "ok"},
+				{Role: "assistant", Content: "answer", Status: "ok"},
+			},
+		},
+		{
+			name: "empty assistant",
+			tail: []store.Message{
+				{Role: "user", Content: "question", Status: "ok"},
+				{Role: "assistant", Content: "\t", Status: "ok"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ms := &committedTailStore{mockMessageStore: &mockMessageStore{}, tail: tc.tail}
+			pool := agentpool.New(minimalConfig(), ms, agentpool.Options{})
+			defer pool.Close()
+
+			eng, err := pool.NewTurnEngine(context.Background(), owner1, "sess-empty")
+			require.Error(t, err)
+			assert.Nil(t, eng)
+			assert.Contains(t, err.Error(), "invalid committed tail")
+		})
+	}
+}
