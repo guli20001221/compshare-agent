@@ -126,6 +126,10 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	state.ContextDecisionReason = r.stateTrace.ContextDecisionReason
 	state.ContextDecisionError = r.stateTrace.ContextDecisionError
 	state.ContextDecisionActiveTask = r.stateTrace.ContextDecisionActiveTask
+	state.ContextDecisionReadSet = append([]string(nil), r.stateTrace.ContextDecisionReadSet...)
+	state.ContextDecisionStateDelta = append([]string(nil), r.stateTrace.ContextDecisionStateDelta...)
+	state.ContextDecisionToolScope = r.stateTrace.ContextDecisionToolScope
+	state.ContextDecisionToolNames = append([]string(nil), r.stateTrace.ContextDecisionToolNames...)
 	r.stateTrace = state
 }
 
@@ -202,6 +206,10 @@ func (r *chatTraceRecorder) SetContextDecisionTrace(trace engine.ContextDecision
 	r.stateTrace.ContextDecisionReason = trace.Reason
 	r.stateTrace.ContextDecisionError = trace.Error
 	r.stateTrace.ContextDecisionActiveTask = trace.ActiveTaskKind
+	r.stateTrace.ContextDecisionReadSet = append([]string(nil), trace.ReadSet...)
+	r.stateTrace.ContextDecisionStateDelta = append([]string(nil), trace.StateDelta...)
+	r.stateTrace.ContextDecisionToolScope = trace.ToolScope
+	r.stateTrace.ContextDecisionToolNames = append([]string(nil), trace.ToolNames...)
 }
 
 func (r *chatTraceRecorder) SetRateLimitDecision(decision governance.Decision) {

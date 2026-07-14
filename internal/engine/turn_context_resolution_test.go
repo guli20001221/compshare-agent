@@ -295,4 +295,6 @@ func TestContextDecisionTraceNamesReadSetAndPlannedStateDelta(t *testing.T) {
 	require.Len(t, traces, 1)
 	assert.Subset(t, traces[0].ReadSet, []string{"user_text", "router_intent", "active_task", "task_snapshot", "recent_facts"})
 	assert.Contains(t, traces[0].StateDelta, "task:clear")
+	assert.Equal(t, "read_only_full", traces[0].ToolScope)
+	assert.Empty(t, traces[0].ToolNames)
 }

@@ -60,6 +60,10 @@ func TestChatTraceRecorderPreservesContextDecisionInStateTrace(t *testing.T) {
 		Target:         engine.ContextDecisionTargetCreate,
 		Reason:         "followup",
 		ActiveTaskKind: "deploy",
+		ReadSet:        []string{"user_text", "router_intent", "active_task"},
+		StateDelta:     []string{"task:continue"},
+		ToolScope:      "named",
+		ToolNames:      []string{"CreateInstanceWorkflow"},
 	})
 	recorder.SetStateTrace(observability.StateTrace{
 		SessionStateHydrated: true,
@@ -74,6 +78,10 @@ func TestChatTraceRecorderPreservesContextDecisionInStateTrace(t *testing.T) {
 	assert.Equal(t, engine.ContextDecisionTargetCreate, state.ContextDecisionTarget)
 	assert.Equal(t, "followup", state.ContextDecisionReason)
 	assert.Equal(t, "deploy", state.ContextDecisionActiveTask)
+	assert.Equal(t, []string{"user_text", "router_intent", "active_task"}, state.ContextDecisionReadSet)
+	assert.Equal(t, []string{"task:continue"}, state.ContextDecisionStateDelta)
+	assert.Equal(t, "named", state.ContextDecisionToolScope)
+	assert.Equal(t, []string{"CreateInstanceWorkflow"}, state.ContextDecisionToolNames)
 	assert.True(t, state.SessionStateHydrated)
 	assert.Equal(t, observability.ResolutionSourceSessionState, state.ResolutionSource)
 }

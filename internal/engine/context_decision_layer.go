@@ -124,6 +124,8 @@ type ContextDecisionTrace struct {
 	HasTaskMemory  bool
 	ReadSet        []string
 	StateDelta     []string
+	ToolScope      string
+	ToolNames      []string
 	Error          string
 }
 
@@ -804,6 +806,7 @@ func (e *Engine) emitContextDecisionTrace(in ContextDecisionInput, decision *Con
 	if e == nil || e.contextDecisionObserver == nil {
 		return
 	}
+	scope := toolScopeForIntent(in.RouterIntent)
 	trace := ContextDecisionTrace{
 		UserText:       in.UserText,
 		RouterIntent:   string(in.RouterIntent),
@@ -814,6 +817,8 @@ func (e *Engine) emitContextDecisionTrace(in ContextDecisionInput, decision *Con
 		HasTaskMemory:  strings.TrimSpace(in.TaskSnapshot) != "",
 		ReadSet:        contextDecisionReadSet(in),
 		StateDelta:     contextDecisionStateDelta(decision),
+		ToolScope:      string(scope.Mode),
+		ToolNames:      append([]string(nil), scope.Names...),
 	}
 	if decision != nil {
 		trace.Decision = decision.Decision
