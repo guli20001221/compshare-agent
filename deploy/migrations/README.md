@@ -22,6 +22,8 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0001_init.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0002_create_agent_traces.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0003_add_session_context_version.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0004_add_agent_traces_outcome_columns.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0005_create_turn_execution.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0006_create_turn_protocol.sql
 ```
 
 For a throwaway local Docker PostgreSQL (no host `psql` needed), see README §3 —

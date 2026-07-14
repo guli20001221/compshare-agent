@@ -1,0 +1,567 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func openIsolatedTurnTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("COMPSHARE_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("COMPSHARE_TEST_MYSQL_DSN not set — skipping real PostgreSQL turn-store integration test")
+	}
+	if strings.Contains(dsn, "117.50.198.43") {
+		t.Fatal("refusing to run the integration test against the production PostgreSQL host")
+	}
+
+	admin, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	require.NoError(t, admin.Ping())
+	schema := "turn_it_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	_, err = admin.Exec(`CREATE SCHEMA ` + schema)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = admin.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+		_ = admin.Close()
+	})
+
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	db, err := sql.Open("postgres", u.String())
+	require.NoError(t, err)
+	require.NoError(t, db.Ping())
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, name := range []string{
+		"0001_init.sql",
+		"0003_add_session_context_version.sql",
+		"0005_create_turn_execution.sql",
+		"0006_create_turn_protocol.sql",
+	} {
+		data, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
+		require.NoError(t, readErr)
+		_, execErr := db.Exec(string(data))
+		require.NoError(t, execErr, "apply %s", name)
+	}
+	require.NoError(t, VerifySchema(context.Background(), db))
+	return db
+}
+
+func TestPostgresTurnStore_Integration(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 71001, OrganizationID: 71002}
+	otherOwner := Owner{TopOrganizationID: 71001, OrganizationID: 71999}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, json.RawMessage(`{"schema_version":"1.0"}`))
+	require.NoError(t, err)
+
+	turns := NewPostgresTurnStore(db)
+	requestHash := HashTurnRequest("hello")
+	turn, created, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID:    session.ID,
+		ClientTurnID: "client-turn-1",
+		RequestHash:  requestHash,
+		UserContent:  "hello",
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	assert.Equal(t, TurnStatusAccepted, turn.Status)
+	assert.Equal(t, 0, turn.BaseContextVersion)
+
+	same, created, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID:    session.ID,
+		ClientTurnID: "client-turn-1",
+		RequestHash:  requestHash,
+		UserContent:  "hello",
+	})
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, turn.ID, same.ID)
+	assert.Equal(t, turn.UserMessageID, same.UserMessageID)
+
+	_, _, err = turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID:    session.ID,
+		ClientTurnID: "client-turn-1",
+		RequestHash:  HashTurnRequest("different"),
+		UserContent:  "different",
+	})
+	require.ErrorIs(t, err, ErrIdempotencyConflict)
+	_, err = turns.GetTurn(ctx, otherOwner, turn.ID)
+	require.ErrorIs(t, err, ErrTurnNotFound)
+
+	var messageCount int
+	require.NoError(t, db.QueryRow(`SELECT message_count FROM sessions WHERE id = $1`, session.ID).Scan(&messageCount))
+	assert.Zero(t, messageCount, "acceptance must not advance the committed message count")
+	var pendingMessages int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE turn_id = $1 AND status = 'pending'`, turn.ID).Scan(&pendingMessages))
+	assert.Equal(t, 2, pendingMessages)
+
+	leaseA, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-a", time.Minute)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, leaseA.Epoch)
+	queued, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "queued-turn", RequestHash: HashTurnRequest("queued"), UserContent: "queued",
+	})
+	require.NoError(t, err)
+	_, err = turns.AcquireConversationLease(ctx, owner, session.ID, queued.ID, "replica-a", time.Minute)
+	require.ErrorIs(t, err, ErrLeaseHeld, "a holder token for one turn cannot authorize another turn")
+	_, err = turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-a", time.Minute)
+	require.ErrorIs(t, err, ErrLeaseHeld, "a second handler cannot reuse a live execution lease")
+	renewedLease, err := turns.RenewConversationLease(ctx, owner, leaseA, time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, leaseA.Epoch, renewedLease.Epoch, "explicit renewal keeps the same epoch")
+	_, err = turns.RenewConversationLease(ctx, owner, ConversationLease{
+		SessionID: session.ID, TurnID: turn.ID, HolderID: "replica-a", Epoch: leaseA.Epoch - 1,
+	}, time.Minute)
+	require.ErrorIs(t, err, ErrLeaseFenced)
+	require.NoError(t, turns.ReleaseConversationLease(ctx, owner, leaseA))
+	leaseB, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-b", time.Minute)
+	require.NoError(t, err)
+	assert.Greater(t, leaseB.Epoch, leaseA.Epoch)
+	running, err := turns.GetTurn(ctx, owner, turn.ID)
+	require.NoError(t, err)
+	assert.Equal(t, TurnStatusRunning, running.Status, "a retryable turn becomes running when a new epoch acquires it")
+	require.NotNil(t, running.LeaseEpoch)
+	assert.Equal(t, leaseB.Epoch, *running.LeaseEpoch)
+
+	_, err = turns.CommitTurn(ctx, owner, CommitTurnInput{
+		TurnID: turn.ID, Lease: leaseA, ExpectedContextVersion: turn.BaseContextVersion,
+		Context: json.RawMessage(`{"stale":true}`), Assistant: AssistantPatch{Content: "stale"},
+		TerminalEventType: "turn.committed",
+	})
+	require.ErrorIs(t, err, ErrLeaseFenced, "an old epoch cannot commit after takeover")
+
+	_, err = turns.AppendEvent(ctx, owner, leaseA, "stale", nil, true)
+	require.ErrorIs(t, err, ErrLeaseFenced)
+	_, err = turns.AppendEvent(ctx, owner, leaseB, "turn.must-not-look-terminal", nil, false)
+	require.ErrorIs(t, err, ErrInvalidArgument, "only CommitTurn may append a non-provisional event")
+	e1, err := turns.AppendEvent(ctx, owner, leaseB, "turn.started", json.RawMessage(`{"source":"integration"}`), true)
+	require.NoError(t, err)
+	e2, err := turns.AppendEvent(ctx, owner, leaseB, "turn.progress", nil, true)
+	require.NoError(t, err)
+	assert.Greater(t, e1.Seq, int64(0))
+	assert.Equal(t, e1.Seq+1, e2.Seq)
+	events, err := turns.ListEvents(ctx, owner, turn.ID, e1.Seq, 20)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, e2.Seq, events[0].Seq)
+	assert.True(t, events[0].Provisional)
+
+	interactionPayload := json.RawMessage(`{"question":"continue?","options":[1,2]}`)
+	interaction, created, err := turns.CreateInteraction(ctx, owner, leaseB, "confirm-1", "confirmation", interactionPayload, time.Minute)
+	require.NoError(t, err)
+	require.True(t, created)
+	sameInteraction, created, err := turns.CreateInteraction(ctx, owner, leaseB, "confirm-1", "confirmation", json.RawMessage(`{"options":[1,2],"question":"continue?"}`), time.Minute)
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, interaction.ID, sameInteraction.ID)
+	_, _, err = turns.CreateInteraction(ctx, owner, leaseB, "confirm-1", "confirmation", json.RawMessage(`{"question":"other"}`), time.Minute)
+	require.ErrorIs(t, err, ErrInteractionConflict)
+
+	secondProcess := NewPostgresTurnStore(db)
+	visible, err := secondProcess.GetInteraction(ctx, owner, turn.ID, "confirm-1")
+	require.NoError(t, err)
+	assert.Equal(t, interaction.ID, visible.ID, "interaction must be visible to another store instance")
+	response := json.RawMessage(`{"confirmed":true,"choice":1}`)
+	resolved, err := secondProcess.ResolveInteraction(ctx, owner, turn.ID, "confirm-1", response)
+	require.NoError(t, err)
+	assert.Equal(t, InteractionStatusResolved, resolved.Status)
+	_, err = turns.ResolveInteraction(ctx, owner, turn.ID, "confirm-1", json.RawMessage(`{"choice":1,"confirmed":true}`))
+	require.NoError(t, err, "same response is idempotent")
+	_, err = turns.ResolveInteraction(ctx, owner, turn.ID, "confirm-1", json.RawMessage(`{"confirmed":false}`))
+	require.ErrorIs(t, err, ErrInteractionConflict)
+	events, err = turns.ListEvents(ctx, owner, turn.ID, 0, 20)
+	require.NoError(t, err)
+	require.Len(t, events, 3)
+	assert.Equal(t, "interaction.requested", events[2].Type)
+	assert.True(t, events[2].Provisional)
+
+	actionHash := HashTurnRequest("StopInstance", "uhost-1")
+	action, created, err := turns.ReserveAction(ctx, owner, leaseB, ReserveActionInput{Index: 0, ActionName: "StopInstance", ArgsHash: actionHash})
+	require.NoError(t, err)
+	require.True(t, created)
+	sameAction, created, err := turns.ReserveAction(ctx, owner, leaseB, ReserveActionInput{Index: 0, ActionName: "StopInstance", ArgsHash: actionHash})
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, action.ExecutionToken, sameAction.ExecutionToken)
+	_, _, err = turns.ReserveAction(ctx, owner, leaseB, ReserveActionInput{Index: 0, ActionName: "StopInstance", ArgsHash: HashTurnRequest("other")})
+	require.ErrorIs(t, err, ErrActionConflict)
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+	action, err = turns.RecordAction(ctx, owner, action.ExecutionToken, ActionStatusSucceeded, json.RawMessage(`{"ok":true}`), nil)
+	require.NoError(t, err, "the real side-effect result must remain recordable after lease loss")
+	_, err = turns.RecordAction(ctx, owner, action.ExecutionToken, ActionStatusSucceeded, json.RawMessage(`{"ok":true}`), nil)
+	require.NoError(t, err, "same terminal action record is idempotent")
+	leaseB2, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-b2", time.Minute)
+	require.NoError(t, err)
+	assert.Greater(t, leaseB2.Epoch, leaseB.Epoch)
+
+	commitInput := CommitTurnInput{
+		TurnID:                 turn.ID,
+		Lease:                  leaseB2,
+		ExpectedContextVersion: turn.BaseContextVersion,
+		Context:                json.RawMessage(`{"schema_version":"1.0","last_intent":"chat"}`),
+		Assistant:              AssistantPatch{Content: "world"},
+		TerminalEventType:      "turn.committed",
+		TerminalEventPayload:   json.RawMessage(`{"saved":true}`),
+	}
+	committed, err := turns.CommitTurn(ctx, owner, commitInput)
+	require.NoError(t, err)
+	assert.Equal(t, TurnStatusCommitted, committed.Status)
+	require.NotNil(t, committed.CommittedContextVersion)
+	assert.Equal(t, 1, *committed.CommittedContextVersion)
+	_, err = turns.CommitTurn(ctx, owner, commitInput)
+	require.ErrorIs(t, err, ErrLeaseFenced, "a committed lease is released and cannot be reused; callers reconcile with GetTurn")
+	reconciledCommit, err := turns.GetTurn(ctx, owner, turn.ID)
+	require.NoError(t, err)
+	assert.Equal(t, TurnStatusCommitted, reconciledCommit.Status)
+	reconciledCommit, err = turns.ReconcileCommit(ctx, owner, commitInput)
+	require.NoError(t, err)
+	assert.Equal(t, TurnStatusCommitted, reconciledCommit.Status)
+	differentCommit := commitInput
+	differentCommit.Assistant.Content = "different executor answer"
+	_, err = turns.ReconcileCommit(ctx, owner, differentCommit)
+	require.ErrorIs(t, err, ErrCommitConflict)
+
+	var contextVersion int
+	var contextJSON []byte
+	require.NoError(t, db.QueryRow(`SELECT context_version, context, message_count FROM sessions WHERE id = $1`, session.ID).Scan(&contextVersion, &contextJSON, &messageCount))
+	assert.Equal(t, 1, contextVersion)
+	assert.Equal(t, 2, messageCount)
+	assert.JSONEq(t, string(commitInput.Context), string(contextJSON))
+	var okMessages int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE turn_id = $1 AND status = 'ok'`, turn.ID).Scan(&okMessages))
+	assert.Equal(t, 2, okMessages)
+	var answer string
+	require.NoError(t, db.QueryRow(`SELECT content FROM messages WHERE id = $1`, turn.AssistantMessageID).Scan(&answer))
+	assert.Equal(t, "world", answer)
+	events, err = turns.ListEvents(ctx, owner, turn.ID, 0, 20)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "takeover hides all provisional output from the expired executor")
+	assert.Equal(t, "turn.committed", events[0].Type)
+	assert.False(t, events[0].Provisional, "the durable commit event is terminal, not provisional")
+
+	later, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "later-queued-turn", RequestHash: HashTurnRequest("later"), UserContent: "later",
+	})
+	require.NoError(t, err)
+	_, err = turns.AcquireConversationLease(ctx, owner, session.ID, later.ID, "replica-out-of-order", time.Minute)
+	require.ErrorIs(t, err, ErrTurnOutOfOrder, "a later accepted turn cannot overtake the queue head")
+	queuedLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, queued.ID, "replica-queued", time.Minute)
+	require.NoError(t, err)
+	_, err = turns.FailTurn(ctx, owner, queuedLease, TurnStatusAborted, "test_queue_cleanup")
+	require.NoError(t, err)
+	laterLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, later.ID, "replica-later", time.Minute)
+	require.NoError(t, err)
+	_, err = turns.FailTurn(ctx, owner, laterLease, TurnStatusAborted, "test_queue_cleanup")
+	require.NoError(t, err)
+
+	t.Run("pending and expired confirmation both remain hard gates", func(t *testing.T) {
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "expired-confirmation", RequestHash: HashTurnRequest("expired-confirmation"), UserContent: "expired-confirmation",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-confirmation", time.Minute)
+		require.NoError(t, acquireErr)
+		interaction, _, createErr := turns.CreateInteraction(ctx, owner, lease, "expires", "confirmation", json.RawMessage(`{"question":"continue?"}`), time.Minute)
+		require.NoError(t, createErr)
+		_, _, reserveErr := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "MustWait", ArgsHash: HashTurnRequest("wait")})
+		require.ErrorIs(t, reserveErr, ErrInteractionPending)
+		_, updateErr := db.Exec(`UPDATE turn_interactions SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1`, interaction.ID)
+		require.NoError(t, updateErr)
+		_, resolveErr := secondProcess.ResolveInteraction(ctx, owner, candidate.ID, "expires", json.RawMessage(`{"confirmed":true}`))
+		require.ErrorIs(t, resolveErr, ErrInteractionExpired)
+		_, _, reserveErr = turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "MustWait", ArgsHash: HashTurnRequest("wait")})
+		require.ErrorIs(t, reserveErr, ErrInteractionExpired)
+		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
+			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: candidate.BaseContextVersion,
+			Context: json.RawMessage(`{"must":"not-commit"}`), Assistant: AssistantPatch{Content: "must not commit"},
+			TerminalEventType: "turn.committed",
+		})
+		require.ErrorIs(t, commitErr, ErrInteractionExpired)
+		_, abortErr := turns.FailTurn(ctx, owner, lease, TurnStatusAborted, "confirmation_expired")
+		require.NoError(t, abortErr)
+	})
+
+	t.Run("context conflict leaves the accepted turn pending", func(t *testing.T) {
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "context-conflict", RequestHash: HashTurnRequest("conflict"), UserContent: "conflict",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-c", time.Minute)
+		require.NoError(t, acquireErr)
+		_, updateErr := NewSessionStore(db).UpdateContext(ctx, owner, session.ID, json.RawMessage(`{"external":true}`), candidate.BaseContextVersion)
+		require.NoError(t, updateErr)
+		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
+			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: candidate.BaseContextVersion,
+			Context: json.RawMessage(`{"loser":true}`), Assistant: AssistantPatch{Content: "must not persist"}, TerminalEventType: "turn.committed",
+		})
+		require.ErrorIs(t, commitErr, ErrContextConflict)
+		got, getErr := turns.GetTurn(ctx, owner, candidate.ID)
+		require.NoError(t, getErr)
+		assert.Equal(t, TurnStatusRunning, got.Status)
+		require.NoError(t, turns.ReleaseConversationLease(ctx, owner, lease))
+		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-c-cleanup", time.Minute)
+		require.NoError(t, cleanupErr)
+		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
+		require.NoError(t, cleanupErr)
+	})
+
+	t.Run("late SQL error rolls back the whole commit", func(t *testing.T) {
+		latest, getErr := NewSessionStore(db).GetByID(ctx, owner, session.ID)
+		require.NoError(t, getErr)
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "atomic-rollback", RequestHash: HashTurnRequest("rollback"), UserContent: "rollback",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-d", time.Minute)
+		require.NoError(t, acquireErr)
+		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
+			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: latest.ContextVersion,
+			Context: json.RawMessage(`{"must":"rollback"}`), Assistant: AssistantPatch{Content: "must rollback"},
+			TerminalEventType: strings.Repeat("x", 65),
+		})
+		require.Error(t, commitErr)
+		after, getErr := NewSessionStore(db).GetByID(ctx, owner, session.ID)
+		require.NoError(t, getErr)
+		assert.Equal(t, latest.ContextVersion, after.ContextVersion)
+		assert.Equal(t, latest.MessageCount, after.MessageCount)
+		got, getErr := turns.GetTurn(ctx, owner, candidate.ID)
+		require.NoError(t, getErr)
+		assert.Equal(t, TurnStatusRunning, got.Status)
+		var statuses string
+		require.NoError(t, db.QueryRow(`SELECT string_agg(status, ',' ORDER BY turn_role) FROM messages WHERE turn_id = $1`, candidate.ID).Scan(&statuses))
+		assert.Equal(t, "pending,pending", statuses)
+		require.NoError(t, turns.ReleaseConversationLease(ctx, owner, lease))
+		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-d-cleanup", time.Minute)
+		require.NoError(t, cleanupErr)
+		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
+		require.NoError(t, cleanupErr)
+	})
+
+	t.Run("a non-pending message rejects commit without partial writes", func(t *testing.T) {
+		latest, getErr := NewSessionStore(db).GetByID(ctx, owner, session.ID)
+		require.NoError(t, getErr)
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "message-state-conflict", RequestHash: HashTurnRequest("message-state"), UserContent: "message-state",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-message", time.Minute)
+		require.NoError(t, acquireErr)
+		_, updateErr := db.Exec(`UPDATE messages SET status = 'error' WHERE id = $1`, candidate.UserMessageID)
+		require.NoError(t, updateErr)
+		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
+			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: latest.ContextVersion,
+			Context: json.RawMessage(`{"must":"not-write"}`), Assistant: AssistantPatch{Content: "must not persist"},
+			TerminalEventType: "turn.committed",
+		})
+		require.ErrorIs(t, commitErr, ErrInvalidTurnState)
+		after, getErr := NewSessionStore(db).GetByID(ctx, owner, session.ID)
+		require.NoError(t, getErr)
+		assert.Equal(t, latest.ContextVersion, after.ContextVersion)
+		assert.Equal(t, latest.MessageCount, after.MessageCount)
+		require.NoError(t, turns.ReleaseConversationLease(ctx, owner, lease))
+		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-message-cleanup", time.Minute)
+		require.NoError(t, cleanupErr)
+		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
+		require.NoError(t, cleanupErr)
+	})
+
+	t.Run("reconcile marks a turn ambiguous when an action may have executed", func(t *testing.T) {
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "ambiguous-action", RequestHash: HashTurnRequest("action"), UserContent: "action",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-e", time.Minute)
+		require.NoError(t, acquireErr)
+		_, _, reserveErr := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "ExternalWrite", ArgsHash: HashTurnRequest("external-write")})
+		require.NoError(t, reserveErr)
+		reconciled, reconcileErr := turns.ReconcileTurn(ctx, owner, lease, "worker_lost")
+		require.NoError(t, reconcileErr)
+		assert.Equal(t, TurnStatusAmbiguousAfterAction, reconciled.Status)
+		again, getErr := turns.GetTurn(ctx, owner, candidate.ID)
+		require.NoError(t, getErr)
+		assert.Equal(t, TurnStatusAmbiguousAfterAction, again.Status)
+	})
+
+	t.Run("ordinary release cannot make an uncertain action retryable", func(t *testing.T) {
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "release-ambiguous-action", RequestHash: HashTurnRequest("release-action"), UserContent: "release-action",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-release", time.Minute)
+		require.NoError(t, acquireErr)
+		action, _, reserveErr := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "ExternalWrite", ArgsHash: HashTurnRequest("release-write")})
+		require.NoError(t, reserveErr)
+		require.NoError(t, turns.ReleaseConversationLease(ctx, owner, lease))
+		released, getErr := turns.GetTurn(ctx, owner, candidate.ID)
+		require.NoError(t, getErr)
+		assert.Equal(t, TurnStatusAmbiguousAfterAction, released.Status)
+		_, recordErr := turns.RecordAction(ctx, owner, action.ExecutionToken, ActionStatusSucceeded, json.RawMessage(`{"ok":true}`), nil)
+		require.NoError(t, recordErr, "the true result remains recordable after ambiguous release")
+	})
+
+	t.Run("fail without an action stays retryable", func(t *testing.T) {
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "safe-failure", RequestHash: HashTurnRequest("safe"), UserContent: "safe",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-f", time.Minute)
+		require.NoError(t, acquireErr)
+		failed, failErr := turns.FailTurn(ctx, owner, lease, TurnStatusFailedRetryable, "model_unavailable")
+		require.NoError(t, failErr)
+		assert.Equal(t, TurnStatusFailedRetryable, failed.Status)
+		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-f-cleanup", time.Minute)
+		require.NoError(t, cleanupErr)
+		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
+		require.NoError(t, cleanupErr)
+	})
+
+	t.Run("a definitely failed action remains retryable", func(t *testing.T) {
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "failed-action", RequestHash: HashTurnRequest("failed-action"), UserContent: "failed-action",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-g", time.Minute)
+		require.NoError(t, acquireErr)
+		action, _, reserveErr := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "ExternalWrite", ArgsHash: HashTurnRequest("failed-write")})
+		require.NoError(t, reserveErr)
+		code := "upstream_rejected"
+		_, recordErr := turns.RecordAction(ctx, owner, action.ExecutionToken, ActionStatusFailed, json.RawMessage(`{"accepted":false}`), &code)
+		require.NoError(t, recordErr)
+		reconciled, reconcileErr := turns.ReconcileTurn(ctx, owner, lease, "worker_lost")
+		require.NoError(t, reconcileErr)
+		assert.Equal(t, TurnStatusFailedRetryable, reconciled.Status)
+		cleanupLease, cleanupErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-g-cleanup", time.Minute)
+		require.NoError(t, cleanupErr)
+		_, cleanupErr = turns.FailTurn(ctx, owner, cleanupLease, TurnStatusAborted, "test_cleanup")
+		require.NoError(t, cleanupErr)
+	})
+
+	t.Run("the lease row cannot authorize a differently bound turn executor", func(t *testing.T) {
+		candidate, _, acceptErr := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+			SessionID: session.ID, ClientTurnID: "binding-fence", RequestHash: HashTurnRequest("binding-fence"), UserContent: "binding-fence",
+		})
+		require.NoError(t, acceptErr)
+		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-binding", time.Minute)
+		require.NoError(t, acquireErr)
+		_, updateErr := db.Exec(`UPDATE chat_turns SET executor_id = 'different-executor' WHERE id = $1`, candidate.ID)
+		require.NoError(t, updateErr)
+		_, renewErr := turns.RenewConversationLease(ctx, owner, lease, time.Minute)
+		require.ErrorIs(t, renewErr, ErrLeaseFenced)
+		_, appendErr := turns.AppendEvent(ctx, owner, lease, "must.not.append", nil, true)
+		require.ErrorIs(t, appendErr, ErrLeaseFenced)
+		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
+			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: candidate.BaseContextVersion,
+			Context: json.RawMessage(`{"must":"not-commit"}`), Assistant: AssistantPatch{Content: "must not commit"},
+			TerminalEventType: "turn.committed",
+		})
+		require.ErrorIs(t, commitErr, ErrLeaseFenced)
+	})
+
+	_, err = turns.AppendEvent(ctx, owner, leaseA, "old-epoch", nil, true)
+	assert.True(t, errors.Is(err, ErrLeaseFenced), fmt.Sprintf("old epoch must remain fenced, got %v", err))
+}
+
+func TestPostgresTurnStore_ConcurrentFencing(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 72001, OrganizationID: 72002}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+
+	stores := []*PostgresTurnStore{NewPostgresTurnStore(db), NewPostgresTurnStore(db)}
+	type acceptResult struct {
+		turn    Turn
+		created bool
+		err     error
+	}
+	acceptResults := make(chan acceptResult, len(stores))
+	start := make(chan struct{})
+	for _, turnStore := range stores {
+		go func(s *PostgresTurnStore) {
+			<-start
+			turn, created, acceptErr := s.AcceptTurn(ctx, owner, AcceptTurnInput{
+				SessionID: session.ID, ClientTurnID: "same-client-turn",
+				RequestHash: HashTurnRequest("same-request"), UserContent: "same request",
+			})
+			acceptResults <- acceptResult{turn: turn, created: created, err: acceptErr}
+		}(turnStore)
+	}
+	close(start)
+	first := <-acceptResults
+	second := <-acceptResults
+	require.NoError(t, first.err)
+	require.NoError(t, second.err)
+	assert.Equal(t, first.turn.ID, second.turn.ID)
+	assert.NotEqual(t, first.created, second.created, "exactly one concurrent accept creates the durable turn")
+	var messageCount, pendingCount int
+	require.NoError(t, db.QueryRow(`SELECT message_count FROM sessions WHERE id = $1`, session.ID).Scan(&messageCount))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE turn_id = $1 AND status = 'pending'`, first.turn.ID).Scan(&pendingCount))
+	assert.Zero(t, messageCount)
+	assert.Equal(t, 2, pendingCount)
+
+	type leaseResult struct {
+		lease ConversationLease
+		err   error
+	}
+	leaseResults := make(chan leaseResult, len(stores))
+	start = make(chan struct{})
+	for i, turnStore := range stores {
+		holder := fmt.Sprintf("replica-%d", i+1)
+		go func(s *PostgresTurnStore, holderID string) {
+			<-start
+			lease, acquireErr := s.AcquireConversationLease(ctx, owner, session.ID, first.turn.ID, holderID, time.Minute)
+			leaseResults <- leaseResult{lease: lease, err: acquireErr}
+		}(turnStore, holder)
+	}
+	close(start)
+	one := <-leaseResults
+	two := <-leaseResults
+	var winner ConversationLease
+	if one.err == nil {
+		winner = one.lease
+		require.ErrorIs(t, two.err, ErrLeaseHeld)
+	} else {
+		require.ErrorIs(t, one.err, ErrLeaseHeld)
+		require.NoError(t, two.err)
+		winner = two.lease
+	}
+	assert.EqualValues(t, 1, winner.Epoch)
+	_, err = stores[0].AppendEvent(ctx, owner, winner, "old-attempt.partial", json.RawMessage(`{"text":"ghost"}`), true)
+	require.NoError(t, err)
+
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+	takeover, err := stores[1].AcquireConversationLease(ctx, owner, session.ID, first.turn.ID, "replica-takeover", time.Minute)
+	require.NoError(t, err)
+	assert.Greater(t, takeover.Epoch, winner.Epoch)
+	_, err = stores[0].AppendEvent(ctx, owner, winner, "stale-after-takeover", nil, true)
+	require.ErrorIs(t, err, ErrLeaseFenced)
+	currentEvent, err := stores[1].AppendEvent(ctx, owner, takeover, "new-attempt.partial", json.RawMessage(`{"text":"current"}`), true)
+	require.NoError(t, err)
+	replayed, err := stores[1].ListEvents(ctx, owner, first.turn.ID, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, replayed, 1, "a takeover must not replay the old executor's provisional output")
+	assert.Equal(t, currentEvent.Seq, replayed[0].Seq)
+	assert.Equal(t, takeover.Epoch, replayed[0].LeaseEpoch)
+	require.NoError(t, stores[1].ReleaseConversationLease(ctx, owner, takeover))
+	require.NoError(t, VerifySchema(ctx, db), "schema probes must also work after protocol tables contain rows")
+}

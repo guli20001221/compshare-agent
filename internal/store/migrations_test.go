@@ -69,3 +69,51 @@ func TestHTTPMigrationsAddAgentTracesOutcomeColumns(t *testing.T) {
 	// GROUP BY / COUNT semantics) — never NOT NULL with a default.
 	assert.NotContains(t, strings.ToUpper(ddl), "NOT NULL")
 }
+
+func TestHTTPMigrationsCreateTurnExecutionKernel(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0005_create_turn_execution.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, fragment := range []string{
+		"CREATE TABLE chat_turns",
+		"CREATE TABLE conversation_leases",
+		"CREATE TABLE turn_actions",
+		"ADD COLUMN turn_id",
+		"ADD COLUMN turn_role",
+		"UNIQUE (top_organization_id, organization_id, session_id, client_turn_id)",
+		"PRIMARY KEY (turn_id, action_index)",
+		"active_turn_id",
+		"next_event_seq",
+		"turn_seq",
+		"UNIQUE (session_id, turn_seq)",
+		"action_name",
+		"args_hash",
+		"in_flight",
+		"upstream_request_id",
+	} {
+		assert.Contains(t, ddl, fragment)
+	}
+}
+
+func TestHTTPMigrationsCreateTurnProtocol(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0006_create_turn_protocol.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, fragment := range []string{
+		"CREATE TABLE chat_turn_events",
+		"CREATE TABLE turn_interactions",
+		"PRIMARY KEY (turn_id, seq)",
+		"UNIQUE (turn_id, interaction_key)",
+		"provisional",
+		"lease_epoch",
+		"expires_at",
+		"resolution_hash",
+	} {
+		assert.Contains(t, ddl, fragment)
+	}
+	assert.NotContains(t, ddl, "response_hash", "one canonical resolution hash avoids contradictory duplicate fields")
+}
