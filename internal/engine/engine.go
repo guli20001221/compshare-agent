@@ -314,7 +314,12 @@ type Engine struct {
 	// synthesis cites only ChunkIDs present here. Reset per turn; populated only
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
-	searchKnowledgeLedgerThisTurn       knowledge.EvidenceLedger
+	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
+	// resolvedKnowledgeQuestionThisTurn is the first standalone question the
+	// agent formulated from the complete visible conversation. Later searches
+	// may use narrower subqueries, but answer verification must keep one stable
+	// question instead of joining unrelated retrieval strings with " | ".
+	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
 	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn that the
@@ -1465,6 +1470,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.turnFacts.AddUserReferents(userMsg)
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
+	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.knowledgeQAAgentLoopThisTurn = false
@@ -4001,6 +4007,17 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if query == "" {
 		query = hint
 	}
+	// The same agent that sees the full conversation owns query formulation.
+	// The first accepted query is therefore the turn's standalone resolved
+	// question; subsequent calls remain observable as actual subqueries but do
+	// not change what the final answer is supposed to answer.
+	if e.resolvedKnowledgeQuestionThisTurn == "" && query != "" {
+		e.resolvedKnowledgeQuestionThisTurn = query
+	}
+	resolvedQuestion := e.resolvedKnowledgeQuestionThisTurn
+	if resolvedQuestion == "" {
+		resolvedQuestion = query
+	}
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Args: map[string]any{"query": query}})
 	// Count every invocation (incl. the degenerate no-retriever/empty-query path)
 	// so the ReAct loop can withdraw the tool once the per-turn cap is hit.
@@ -4008,7 +4025,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
 	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
-		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true, false)
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true, false)
 	}
 	retrieved := e.knowledgeRetriever.Retrieve(query, "")
 	rawHits := retrieved.HitItems
@@ -4030,7 +4047,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		// (rawHits==0) is corpus_gap, not all_below_floor.
 		floorDroppedAll = len(rawHits) > 0
 	}
-	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
+	ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 	e.searchKnowledgeRanThisTurn = true
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
 	e.recordSearchKnowledgeActivity(observability.RetrievalActivity{

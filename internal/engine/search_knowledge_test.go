@@ -94,6 +94,11 @@ func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(
 
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "GPU 能否调整"}, noopStep)
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "更换 GPU 数据会变吗"}, noopStep)
+	assert.Equal(t, "GPU 能否调整", eng.resolvedKnowledgeQuestionThisTurn,
+		"the first history-aware query is the stable question the answer must resolve")
+	assert.Equal(t, "GPU 能否调整", eng.searchKnowledgeLedgerThisTurn.Query,
+		"later subqueries must not turn the verifier input into a synthetic q1 | q2 question")
+	assert.NotContains(t, eng.searchKnowledgeLedgerThisTurn.Query, " | ")
 	report := knowledge.ValidateGroundedCitations("GPU 调整和数据保留分别见资料 [[chunk-a]] [[chunk-b]]。", eng.searchKnowledgeLedgerThisTurn)
 	require.True(t, report.Grounded())
 	eng.emitSearchKnowledgeCitationTrace(report)

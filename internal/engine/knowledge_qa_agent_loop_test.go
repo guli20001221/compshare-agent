@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
@@ -116,6 +117,95 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	require.Len(t, finalRetrieval.References, 1)
 	assert.Equal(t, "1", finalRetrieval.References[0].RefID)
 	assert.Equal(t, "faq-billing-001", finalRetrieval.References[0].ChunkID)
+}
+
+// A context-dependent follow-up is not a special server rewrite route. The same
+// agent receives the complete conversation and owns the standalone SearchKnowledge
+// query on every call. This test pins the real "粘贴呢" failure shape: retrieval,
+// evidence and final verification all use the agent's resolved query, while the
+// previous assistant answer remains context rather than evidence.
+func TestKnowledgeQAAgentLoop_AgentFormulatesQueryFromCompleteConversation(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
+	SetKnowledgeQAAgentLoopEnabled(true)
+	defer SetKnowledgeQAAgentLoopEnabled(false)
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+
+	chunk := knowledge.KBChunk{
+		ChunkID:    "terminal-paste-001",
+		KBVersion:  "kb.v1",
+		SourceType: "runbook",
+		Title:      "Windows 终端粘贴",
+		Content:    "在 Windows Terminal 中可以使用 Ctrl+Shift+V 粘贴。",
+	}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	resolved := "Windows Terminal 中如何粘贴文本"
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{{
+			ID:       "call-sk",
+			Type:     openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"` + resolved + `"}`},
+		}}},
+		{Content: "在 Windows Terminal 中可使用 Ctrl+Shift+V 粘贴 [[terminal-paste-001]]。"},
+		{Content: `{"supported":true,"claims":[{"answer_quote":"在 Windows Terminal 中可使用 Ctrl+Shift+V 粘贴","chunk_id":"terminal-paste-001","evidence_quote":"在 Windows Terminal 中可以使用 Ctrl+Shift+V 粘贴"}],"unsupported":[]}`},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Windows 终端里复制命令后怎么操作？"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "你可以先复制命令，再回到终端执行。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "粘贴呢", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "Ctrl+Shift+V")
+	require.Len(t, retriever.calls, 1)
+	assert.Equal(t, resolved, retriever.calls[0].question)
+	assert.Equal(t, resolved, eng.resolvedKnowledgeQuestionThisTurn)
+	assert.Equal(t, resolved, eng.searchKnowledgeLedgerThisTurn.Query)
+
+	require.NotEmpty(t, mock.calls)
+	first := mock.calls[0]
+	joined := make([]string, 0, len(first.Messages))
+	for _, message := range first.Messages {
+		joined = append(joined, message.Content)
+	}
+	visible := strings.Join(joined, "\n")
+	assert.Contains(t, visible, "Windows 终端里复制命令后怎么操作？")
+	assert.Contains(t, visible, "你可以先复制命令，再回到终端执行。")
+	assert.Contains(t, visible, "粘贴呢")
+	assert.Contains(t, visible, "完整对话")
+	assert.Contains(t, visible, "独立、完整、可检索")
+
+	var searchTool *openai.FunctionDefinition
+	for _, tool := range first.Tools {
+		if tool.Function != nil && tool.Function.Name == "SearchKnowledge" {
+			searchTool = tool.Function
+			break
+		}
+	}
+	require.NotNil(t, searchTool)
+	assert.Contains(t, searchTool.Description, "当前可见的完整对话")
+	parameters, ok := searchTool.Parameters.(map[string]any)
+	require.True(t, ok)
+	properties, ok := parameters["properties"].(map[string]any)
+	require.True(t, ok)
+	querySchema, ok := properties["query"].(map[string]any)
+	require.True(t, ok)
+	assert.Contains(t, querySchema["description"], "独立、完整检索问题")
+	require.GreaterOrEqual(t, len(mock.calls), 3)
+	verifierPayload := mock.calls[2].Messages[1].Content
+	assert.NotContains(t, verifierPayload, "你可以先复制命令，再回到终端执行",
+		"the previous assistant answer may resolve the query but must never become retrieval evidence")
+	assert.Contains(t, verifierPayload, `"resolved_question":"`+resolved+`"`)
 }
 
 // TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged proves the default-off

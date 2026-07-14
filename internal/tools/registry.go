@@ -26,13 +26,13 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SearchKnowledge",
-			Description: "检索平台与第三方工具（vLLM/SGLang/Ollama/ComfyUI 等）运维知识库，返回带证据片段的条目（chunk_id/标题/摘要/片段）。排查报错、定位原因或回答“怎么做/为什么”类工具问题时，先用它取证再作答；引用返回的 chunk 内容，不要凭空编造命令或参数。",
+			Description: "检索平台与第三方工具（vLLM/SGLang/Ollama/ComfyUI 等）运维知识库，返回带证据片段的条目（chunk_id/标题/摘要/片段）。每次调用都必须先阅读当前可见的完整对话，把用户此刻真正要解决的问题改写成可独立理解的检索问题：消解“它/这个/刚才那个”等指代，保留产品、环境、目标和约束；即使当前句子本身完整，也要结合上下文判断检索重点。不得添加对话中没有的事实，也不要在 query 中直接回答。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"query": map[string]any{
 						"type":        "string",
-						"description": "要检索的症状、报错或问题（简短自然语言）。",
+						"description": "根据完整对话组织出的独立、完整检索问题。不得原样提交仍依赖上文才能理解的追问，也不得补造对话中不存在的条件。",
 					},
 					"context_hint": map[string]any{
 						"type":        "string",

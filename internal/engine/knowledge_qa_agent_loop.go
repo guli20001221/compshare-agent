@@ -35,7 +35,7 @@ func KnowledgeQAAgentLoopEnabled() bool { return knowledgeQAAgentLoopOn }
 // NOT support object tool_choice (so the precise object force is unavailable). It
 // mirrors monitorRecallRequiredToolNote: a strong instruction to call SearchKnowledge
 // first, paired with tool_choice="required" when that is supported, else advisory.
-const knowledgeQAAgentLoopSearchNote = "本轮为知识问答：请先调用 SearchKnowledge 工具检索知识库，再基于检索到的条目作答；不要在未检索的情况下直接回答。"
+const knowledgeQAAgentLoopSearchNote = "本轮为知识问答：请先阅读当前可见的完整对话，把用户此刻真正要解决的问题组织成独立、完整、可检索且不依赖上文的 query，再调用 SearchKnowledge。必须消解指代并保留已有的产品、环境、目标和约束；不得添加对话中没有的事实，也不要在 query 中直接回答。随后只基于检索到的条目作答；不要在未检索的情况下直接回答。"
 
 // knowledgeQASearchCapNote is injected once the per-turn SearchKnowledge cap is hit
 // and the tool is withdrawn (see maxSearchKnowledgeCallsPerTurn). It steers the model

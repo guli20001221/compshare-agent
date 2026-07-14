@@ -66,11 +66,15 @@ type knowledgeRepairEnvelope struct {
 // synthesis. A missing Query is repaired once at the boundary so every later
 // stage reads the same value.
 func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
-	resolved := strings.TrimSpace(e.searchKnowledgeLedgerThisTurn.Query)
+	resolved := strings.TrimSpace(e.resolvedKnowledgeQuestionThisTurn)
+	if resolved == "" {
+		resolved = strings.TrimSpace(e.searchKnowledgeLedgerThisTurn.Query)
+	}
 	if resolved == "" {
 		resolved = strings.TrimSpace(fallback)
-		e.searchKnowledgeLedgerThisTurn.Query = resolved
 	}
+	e.resolvedKnowledgeQuestionThisTurn = resolved
+	e.searchKnowledgeLedgerThisTurn.Query = resolved
 	return resolved
 }
 
@@ -264,6 +268,9 @@ func validateKnowledgeGroundingProof(answer string, verdict knowledgeGroundingVe
 			return "", knowledge.GroundedAnswerReport{}, false
 		}
 		if obviousKnowledgeGroundingContradiction(claim.AnswerQuote, claim.EvidenceQuote) {
+			return "", knowledge.GroundedAnswerReport{}, false
+		}
+		if !groundingQuantitiesConsistent(claim.AnswerQuote, claim.EvidenceQuote) {
 			return "", knowledge.GroundedAnswerReport{}, false
 		}
 		validQuotes = append(validQuotes, answerQuote)

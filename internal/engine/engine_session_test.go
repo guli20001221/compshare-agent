@@ -343,6 +343,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-session by design — same cross-tenant-leak reasoning as the hits
 		// above. Reset every turn.
 		"searchKnowledgeLedgerThisTurn": true,
+		// Stable standalone question formulated from the full conversation. It is
+		// turn-local and must never cross tenants or turns.
+		"resolvedKnowledgeQuestionThisTurn": true,
 		// Per-turn reference-ledger observability state: tracks SearchKnowledge
 		// activity ids and which chunks came from each activity. Sharing would
 		// cross-link one tenant's citations to another tenant's retrieval trace.
@@ -448,12 +451,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 86, len(perSessionFields); want != got {
+	if want, got := 87, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 102, typ.NumField(); want != got {
+	if want, got := 103, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

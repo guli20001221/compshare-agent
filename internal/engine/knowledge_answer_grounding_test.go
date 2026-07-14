@@ -359,6 +359,24 @@ func TestKnowledgeAnswerGrounding_RejectsVerifierApprovedNegationContradiction(t
 	require.Len(t, mock.calls, 1)
 }
 
+func TestKnowledgeAnswerGrounding_RejectsVerifierApprovedQuantityReversal(t *testing.T) {
+	// Sanitized from the real Coding Plan retrieval record in
+	// eval/trace_gate/billing_jitter_ext1on.jsonl. The verifier is deliberately
+	// wrong: it claims a 30-hour answer is supported by 5-hour evidence.
+	record := sanitizedContextRAGRecord{
+		Name: "coding_plan_window_reversal", UserMessage: "额度多久刷新",
+		ResolvedQuestion: "Coding Plan 额度刷新窗口是多久", ChunkID: "sanitized-coding-plan-window-001",
+		Evidence: "Coding Plan 采用固定 5 小时窗口刷新额度。", Answer: "额度采用固定 30 小时窗口刷新。",
+		AnswerQuote: "额度采用固定 30 小时窗口刷新", EvidenceQuote: "采用固定 5 小时窗口刷新额度",
+	}
+	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, true, 100))
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
+
+	assert.Equal(t, ragUngroundableReply, got)
+	require.Len(t, mock.calls, 1)
+}
+
 func TestParseKnowledgeGroundingJSONFailsClosed(t *testing.T) {
 	var verdict knowledgeGroundingVerdict
 	assert.True(t, parseKnowledgeGroundingJSON("```json\n{\"supported\":false}\n```", &verdict))
