@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 type BuildOptions struct {
@@ -134,56 +135,163 @@ func translateState(state string) string {
 	return state
 }
 
-// FormatToolResult returns a compact JSON string (<= maxRunes runes) for
-// feeding back to the LLM. If the result exceeds the cap it first truncates
-// individual array/list fields to stay valid JSON; only when that cannot bring
-// it under the cap (a giant scalar field, or an array nested too deep to reach)
-// does it fall back to a hard rune-cut — invalid JSON, but a bounded result.
+const maxToolResultRunes = 4000
+
+// toolResultOversizeKey names the field an all-but-empty result carries. It
+// exists so that "we dropped everything" is a fact the model reads, not a
+// silence it has to infer.
+const toolResultOversizeKey = "_ResultTooLarge"
+
+// toolResultShrinkLevels is the ladder FormatToolResult walks when a result is
+// over the cap, from gentlest to harshest. arrayItems is how many entries of
+// each list survive; scalarRunes caps individual string values (0 = leave
+// strings alone). Every rung re-marshals a real Go value, so every rung is
+// valid JSON — the ladder can only lose content, never well-formedness.
+var toolResultShrinkLevels = []struct {
+	arrayItems  int
+	scalarRunes int
+}{
+	{arrayItems: 5},
+	{arrayItems: 3},
+	{arrayItems: 2},
+	{arrayItems: 1},
+	{arrayItems: 0},
+	{arrayItems: 0, scalarRunes: 2000},
+	{arrayItems: 0, scalarRunes: 500},
+	{arrayItems: 0, scalarRunes: 120},
+}
+
+// FormatToolResult returns a compact JSON string (<= maxToolResultRunes runes)
+// for feeding back to the LLM.
+//
+// The contract is absolute: what comes out is ALWAYS parseable JSON, and if
+// anything was dropped to fit, the JSON itself says so. It is never a fragment.
+//
+// The previous implementation shrank lists to 5 items and, if that still did
+// not fit, hard-cut the marshalled bytes at the cap — "invalid JSON, but a
+// bounded result", as its comment conceded. On the shape that matters most,
+// DescribeCompShareInstance with the real ~1.2-1.5 KB rows the upstream API
+// returns, the shrink never fit, so the byte-cut was not a last resort at all:
+// it was the normal path from three instances up. What reached the model was
+// two complete rows, a third cut mid-key, and — because Go marshals map keys in
+// sorted order and the cut takes the tail — "TotalCount":30 sitting intact at
+// the front. The model was told there were thirty instances, shown one or two,
+// and given no marker at all, because the "已截取前 5 条" notice is the LAST
+// element of the list and was the first thing the cut ate. That is not a
+// degraded context, it is a context that lies, and inviting a model to account
+// for twenty-eight rows it cannot see is how instances get fabricated.
+//
+// So: drop whole elements, never bytes.
 func FormatToolResult(result map[string]any) string {
 	b, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Sprintf(`{"error": %q}`, err.Error())
 	}
-	const maxRunes = 4000
-	runes := []rune(string(b))
-	if len(runes) <= maxRunes {
+	if utf8.RuneCount(b) <= maxToolResultRunes {
 		return string(b)
 	}
 
-	// Over budget: shrink array fields and re-marshal so the result stays
-	// valid JSON. truncateMapArrays only reaches top-level []any fields, so
-	// this does not help a giant scalar field or an array nested deeper.
-	best := runes
-	if b2, err := json.Marshal(truncateMapArrays(result, 5)); err == nil {
-		best = []rune(string(b2))
-		if len(best) <= maxRunes {
-			return string(best)
+	for _, level := range toolResultShrinkLevels {
+		shrunk := truncateArrays(result, level.arrayItems)
+		if level.scalarRunes > 0 {
+			shrunk = truncateStrings(shrunk, level.scalarRunes)
+		}
+		if b2, err := json.Marshal(shrunk); err == nil && utf8.RuneCount(b2) <= maxToolResultRunes {
+			return string(b2)
 		}
 	}
-	// Array-shrink could not bring it under the cap. Hard-cut as a last
-	// resort: this yields invalid JSON, but a bounded result beats an
-	// unbounded one that would masquerade as a token-budget refusal.
-	return string(best[:maxRunes])
+
+	// Every rung failed: the payload is over the cap even with all lists
+	// emptied and all strings clipped to 120 runes. No shape we have seen does
+	// this, but the contract holds anyway — an explicit notice, not a fragment.
+	return oversizeNotice(result)
 }
 
-// truncateMapArrays limits []any fields in the map to maxItems entries,
-// appending a truncation notice. Works one level deep.
-func truncateMapArrays(m map[string]any, maxItems int) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		switch arr := v.(type) {
-		case []any:
-			if len(arr) > maxItems {
-				trimmed := make([]any, maxItems+1)
-				copy(trimmed, arr[:maxItems])
-				trimmed[maxItems] = fmt.Sprintf("...(共 %d 条，已截取前 %d 条)", len(arr), maxItems)
-				out[k] = trimmed
-			} else {
-				out[k] = v
-			}
-		default:
-			out[k] = v
+// truncateArrays limits every []any it can reach — top level, nested in maps,
+// nested in other arrays — to maxItems entries, appending a notice element that
+// names how many were dropped. The notice is a sibling of the surviving
+// elements rather than a trailing string, so it cannot be separated from the
+// data it describes.
+func truncateArrays(v any, maxItems int) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, val := range typed {
+			out[k] = truncateArrays(val, maxItems)
+		}
+		return out
+	case []any:
+		total := len(typed)
+		keep := maxItems
+		if keep > total {
+			keep = total
+		}
+		out := make([]any, 0, keep+1)
+		for i := 0; i < keep; i++ {
+			out = append(out, truncateArrays(typed[i], maxItems))
+		}
+		if total > keep {
+			out = append(out, arrayTruncationNotice(total, keep))
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func arrayTruncationNotice(total, kept int) string {
+	if kept == 0 {
+		return fmt.Sprintf("…(共 %d 条，因结果过大已全部省略；请用更具体的条件重新查询，例如指定实例 ID)", total)
+	}
+	return fmt.Sprintf("…(共 %d 条，此处只保留前 %d 条；其余未展示，如需完整列表请用更具体的条件重新查询)", total, kept)
+}
+
+// truncateStrings clips oversized string values, marking each clip inline. The
+// value stays a JSON string, so the document stays parseable.
+func truncateStrings(v any, maxRunes int) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, val := range typed {
+			out[k] = truncateStrings(val, maxRunes)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, val := range typed {
+			out[i] = truncateStrings(val, maxRunes)
+		}
+		return out
+	case string:
+		if utf8.RuneCountInString(typed) <= maxRunes {
+			return typed
+		}
+		runes := []rune(typed)
+		return string(runes[:maxRunes]) + fmt.Sprintf("…(原文共 %d 字，此处已截断)", len(runes))
+	default:
+		return v
+	}
+}
+
+// oversizeNotice is the floor of the ladder: keep the small identifying scalars
+// that let the model know which call this was and that it failed to fit, and
+// drop the rest.
+func oversizeNotice(result map[string]any) string {
+	notice := map[string]any{
+		toolResultOversizeKey: "工具结果过大，内容已全部省略。请用更具体的条件重新查询（例如指定实例 ID 或缩小时间范围）。",
+	}
+	for _, key := range []string{"RetCode", "Action", "Message", "TotalCount"} {
+		value, ok := result[key]
+		if !ok {
+			continue
+		}
+		if encoded, err := json.Marshal(value); err == nil && len(encoded) <= 64 {
+			notice[key] = value
 		}
 	}
-	return out
+	b, err := json.Marshal(notice)
+	if err != nil || utf8.RuneCount(b) > maxToolResultRunes {
+		return `{"` + toolResultOversizeKey + `":"工具结果过大，内容已全部省略。请用更具体的条件重新查询。"}`
+	}
+	return string(b)
 }

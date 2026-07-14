@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -255,6 +256,11 @@ func TestFormatToolResult_SmallResult(t *testing.T) {
 	}
 }
 
+// TestFormatToolResult_ValidJSON was an empty gate: it is named for parseability
+// and its comment says "should produce parseable output", but it only asserted
+// the ABSENCE of the string "...(truncated)" — it never called json.Unmarshal.
+// A byte-cut fragment satisfied it, which is why the hard-cut branch could ship.
+// It now asserts the property it is named for.
 func TestFormatToolResult_ValidJSON(t *testing.T) {
 	// Even large results should produce parseable output
 	items := make([]any, 50)
@@ -264,6 +270,11 @@ func TestFormatToolResult_ValidJSON(t *testing.T) {
 	large := map[string]any{"list": items, "count": 50}
 	result := FormatToolResult(large)
 
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("FormatToolResult must return parseable JSON, got %v\n%s", err, result)
+	}
+
 	// Verify it doesn't cut mid-string
 	if strings.Contains(result, "...(truncated)") {
 		t.Error("should not use old-style truncation")
@@ -271,11 +282,14 @@ func TestFormatToolResult_ValidJSON(t *testing.T) {
 }
 
 // TestFormatToolResult_GiantScalarStaysBounded guards the rune cap for inputs
-// that array-shrink cannot help: a single huge scalar field. truncateMapArrays
-// only trims top-level []any, so without the post-shrink length re-check the
-// result would be returned unbounded — and an oversized tool result silently
-// masquerades as the per-turn token-budget refusal, which is why the cap must
-// hold here, not just for array-heavy results.
+// that array-shrink cannot help: a single huge scalar field. An oversized tool
+// result silently masquerades as the per-turn token-budget refusal, which is why
+// the cap must hold here, not just for array-heavy results.
+//
+// Bounded is necessary but was never sufficient — the old code met this bound by
+// cutting bytes, which is what produced the invalid JSON in the first place.
+// TestFormatToolResult_GiantScalarStaysParseable (tool_result_truncation_test.go)
+// is the gate that says what the model actually needs.
 func TestFormatToolResult_GiantScalarStaysBounded(t *testing.T) {
 	large := map[string]any{"log": strings.Repeat("x", 10000)}
 	result := FormatToolResult(large)
@@ -285,9 +299,10 @@ func TestFormatToolResult_GiantScalarStaysBounded(t *testing.T) {
 }
 
 // TestFormatToolResult_DeepNestedArrayStaysBounded guards the same cap for an
-// array buried one level below the top, which truncateMapArrays (one level
-// deep) does not reach. Without the length re-check the re-marshaled result
-// exceeds the cap unbounded.
+// array buried one level below the top. The shrink used to be one level deep and
+// could not reach this at all, so the result fell straight through to the
+// byte-cut; truncateArrays now recurses, so the elements are dropped and the
+// document stays whole.
 func TestFormatToolResult_DeepNestedArrayStaysBounded(t *testing.T) {
 	items := make([]any, 100)
 	for i := range items {
