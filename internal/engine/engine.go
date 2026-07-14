@@ -407,8 +407,13 @@ type Engine struct {
 	// pre-filter DescribeCompShareInstance results by State so the LLM sees
 	// only actionable rows. Reset per turn.
 	lastPlannerActionThisTurn intent.LifecycleAction
-	imageContextThisTurn      string
-	baseUserContext           string
+	// routeReadFailureThisTurn marks that a deterministic route already attempted
+	// a read but got no usable facts before falling through to ReAct. The ReAct
+	// request receives a temporary warning (never persisted in conversation
+	// history) so it cannot mistake an unavailable read for an empty resource set.
+	routeReadFailureThisTurn bool
+	imageContextThisTurn     string
+	baseUserContext          string
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
 	currentCtx context.Context
@@ -1439,6 +1444,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
 	e.lastPlannerIntentThisTurn = ""
 	e.lastPlannerActionThisTurn = ""
+	e.routeReadFailureThisTurn = false
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.instanceTableThisTurn = ""
@@ -2626,17 +2632,26 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
 		if isResourceSelectionFallbackReason(handled.FallbackReason) {
 			if selection, ok, err := e.buildResourceSelectionForPlan(ctx, result, dispatch.snapshot, onStep); err != nil {
-				reply := intent.FriendlyToolFailureReply
 				if msg, friendly := friendlyToolErrorMessage(err); friendly {
-					reply = msg
+					e.pendingResourceSelection = nil
+					e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
+					e.messages = append(e.messages, openai.ChatCompletionMessage{
+						Role:    openai.ChatMessageRoleAssistant,
+						Content: msg,
+					})
+					return msg, true
 				}
+				// The route had enough information to try a read, but the read did
+				// not produce any facts. A generic canned failure would terminate
+				// the turn without letting the existing conversation participate at
+				// all. Keep the failed-read trace, clear the incomplete selection,
+				// and continue into the intent-scoped read-only ReAct lane. That lane
+				// sees the full history and may explain, clarify, or retry the read;
+				// it cannot acquire lifecycle/write tools for a monitor intent.
 				e.pendingResourceSelection = nil
 				e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: reply,
-				})
-				return reply, true
+				e.routeReadFailureThisTurn = true
+				return "", false
 			} else if ok {
 				if len(selection.candidates) == 1 {
 					resumed := result
@@ -2695,6 +2710,15 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	}
 
 	e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
+	if handled.Status == intent.HandlerStatusFailureAfterTool && strings.Contains(handled.Reply, intent.FriendlyToolFailureReply) {
+		// A handler's generic failure sentence contains no answer and no useful
+		// clarification. Returning it here used to skip the model even though the
+		// model already has the conversation and an intent-scoped read-only tool
+		// set. Preserve specific upstream recovery hints as deterministic answers;
+		// only the generic no-information fallback continues into ReAct.
+		e.routeReadFailureThisTurn = true
+		return "", false
+	}
 	e.annotateHandlerResultForUserQuestion(&handled, result.Plan, e.lastUserMsg)
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
@@ -6392,6 +6416,8 @@ const staleStateNote = "注意：本轮之前的对话中获取的实例状态�
 
 const monitorRecallRequiredToolNote = "The previous user turn queried instance monitoring. For this follow-up, call GetCompShareInstanceMonitor again before answering and do not reuse prior monitor values."
 
+const routeReadFailureNote = "本轮已经尝试过一次只读查询，但没有取得可用结果。不要把查询失败解释成资源不存在、没有库存或状态没有变化。你可以使用本轮允许的只读工具重新查询；如果仍无法取得当前事实，就结合已有对话明确说明哪些信息仍然有效、哪些当前状态无法确认。不得执行任何写操作。"
+
 // buildMessagesForLLM returns the message slice to send to the LLM.
 // If instance state from a prior turn may be stale, a temporary system note
 // is appended. The note is NOT persisted in e.messages.
@@ -6408,6 +6434,9 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 		if card := prompt.RenderIntentScopedReActCard(e.lastPlannerIntentThisTurn, e.mutatingToolsEnabled); card != "" {
 			messages = withEphemeralSystemBeforeLastUser(messages, card)
 		}
+	}
+	if e.routeReadFailureThisTurn {
+		messages = withEphemeralSystemBeforeLastUser(messages, routeReadFailureNote)
 	}
 	return messages
 }

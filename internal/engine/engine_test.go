@@ -286,6 +286,15 @@ func toolNames(registry []openai.Tool) []string {
 	return names
 }
 
+func renderTestMessages(messages []openai.ChatCompletionMessage) string {
+	var b strings.Builder
+	for _, message := range messages {
+		b.WriteString(message.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // --- Tests ---
 
 func TestChat_DirectReply(t *testing.T) {
@@ -4858,9 +4867,9 @@ func TestRouteDispatchMonitorEmptyFreshSnapshotRefreshesBeforeSelection(t *testi
 	assert.Len(t, eng.pendingResourceSelection.candidates, 2)
 }
 
-func TestRouteDispatchMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *testing.T) {
+func TestRouteDispatchMonitorCandidateRefreshFailureFallsBackToContextAwareReadOnlyReAct(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorPlanWithoutTarget()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "这是无卡模式的正常表现；恢复正常启动后，CPU 会恢复原规格。"}}}
 	executor := &mockExecutorFn{
 		fn: func(action string, args map[string]any) (map[string]any, error) {
 			require.Equal(t, "DescribeCompShareInstance", action)
@@ -4869,6 +4878,10 @@ func TestRouteDispatchMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *te
 	}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "无卡模式后还能恢复吗"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "可以恢复。正常启动后会恢复原来的 CPU、内存和 GPU 规格。"},
+	)
 	var traces []observability.RouterTrace
 	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		traces = append(traces, trace)
@@ -4878,12 +4891,20 @@ func TestRouteDispatchMonitorCandidateRefreshFailureDoesNotFallBackToReAct(t *te
 		Model:          "deepseek-v4-flash",
 	})
 
-	reply, err := eng.Chat(context.Background(), "show cpu monitor", noopStep)
+	reply, err := eng.Chat(context.Background(), "cpu怎么变了", noopStep)
 
 	require.NoError(t, err)
-	assert.Contains(t, reply, intent.FriendlyToolFailureReply)
+	assert.Equal(t, "这是无卡模式的正常表现；恢复正常启动后，CPU 会恢复原规格。", reply)
+	assert.NotContains(t, reply, intent.FriendlyToolFailureReply)
 	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
-	assert.Empty(t, mock.calls, "candidate refresh failure must not fall back to ReAct")
+	require.Len(t, mock.calls, 1, "candidate refresh failure must fall through to the context-aware agent")
+	requestText := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, requestText, "无卡模式后还能恢复吗")
+	assert.Contains(t, requestText, "恢复原来的 CPU、内存和 GPU 规格")
+	assert.Contains(t, requestText, "cpu怎么变了")
+	assert.Contains(t, requestText, routeReadFailureNote)
+	assert.Subset(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, toolNames(mock.calls[0].Tools))
+	assert.NotContains(t, toolNames(mock.calls[0].Tools), "StopInstanceWorkflow")
 	assert.Nil(t, eng.pendingResourceSelection)
 	require.Len(t, traces, 1)
 	assert.Equal(t, string(intent.RouteStatusFailureAfterTool), traces[0].RouteStatus)
@@ -5396,9 +5417,9 @@ func TestRouteDispatchInvalidAndIneligiblePlansFallBackToReAct(t *testing.T) {
 	}
 }
 
-func TestRouteDispatchFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
+func TestRouteDispatchResourceFailureAfterToolFallsBackToContextAwareReadOnlyReAct(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "沿用上一轮：这台 phase1-demo 是你刚才选中的实例；列表接口暂时失败，但不会把选择丢掉。"}}}
 	executor := &mockExecutorFn{
 		fn: func(action string, args map[string]any) (map[string]any, error) {
 			return nil, fmt.Errorf("upstream unavailable")
@@ -5407,6 +5428,10 @@ func TestRouteDispatchFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
 	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "先看 phase1-demo"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "已选中 phase1-demo（uhost-phase1-001）。"},
+	)
 	var traces []observability.RouterTrace
 	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) {
 		traces = append(traces, trace)
@@ -5416,13 +5441,91 @@ func TestRouteDispatchFailureAfterToolDoesNotFallBackToReAct(t *testing.T) {
 		Model:          "deepseek-v4-flash",
 	})
 
-	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
+	reply, err := eng.Chat(context.Background(), "那台现在怎么样", noopStep)
 
 	require.NoError(t, err)
-	assert.Contains(t, reply, intent.FriendlyToolFailureReply)
-	assert.Empty(t, mock.calls, "tool failure after handler dispatch must not fall back to ReAct")
+	assert.Equal(t, "沿用上一轮：这台 phase1-demo 是你刚才选中的实例；列表接口暂时失败，但不会把选择丢掉。", reply)
+	assert.NotContains(t, reply, intent.FriendlyToolFailureReply)
+	require.Len(t, mock.calls, 1, "tool failure after handler dispatch must fall through to ReAct")
+	requestText := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, requestText, "已选中 phase1-demo（uhost-phase1-001）")
+	assert.Contains(t, requestText, "那台现在怎么样")
+	assert.Contains(t, requestText, routeReadFailureNote)
+	assert.Subset(t, intent.IntentToolSubset(intent.IntentResourceInfo), toolNames(mock.calls[0].Tools))
+	assert.NotContains(t, toolNames(mock.calls[0].Tools), "StopInstanceWorkflow")
+	assert.NotContains(t, renderTestMessages(eng.MessagesSnapshot()), routeReadFailureNote, "read-failure warning is turn-local and must not pollute future history")
 	require.Len(t, traces, 1)
 	assert.Equal(t, string(intent.RouteStatusFailureAfterTool), traces[0].RouteStatus)
+}
+
+func TestRouteDispatchStockFailureAfterToolFallsBackToContextAwareReadOnlyReAct(t *testing.T) {
+	plan := intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentStockAvailability,
+		Slots:         intent.Slots{SearchQuery: "4090"},
+		Confidence:    0.9,
+	}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: plan}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "你上一轮问的是 4090；库存接口刚才失败了，我不能把它误说成无货。"}}}
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		require.Equal(t, "DescribeAvailableCompShareInstanceTypes", action)
+		return nil, fmt.Errorf("upstream unavailable")
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "4090 现在有库存吗"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "你问的是 4090 的库存。"},
+	)
+	var traces []observability.RouterTrace
+	eng.SetPlannerTraceObserver(func(trace observability.RouterTrace) { traces = append(traces, trace) })
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentStockAvailability},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "现在呢", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "你上一轮问的是 4090；库存接口刚才失败了，我不能把它误说成无货。", reply)
+	assert.NotContains(t, reply, intent.FriendlyToolFailureReply)
+	require.Len(t, mock.calls, 1)
+	requestText := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, requestText, "4090 现在有库存吗")
+	assert.Contains(t, requestText, "你问的是 4090 的库存")
+	assert.Contains(t, requestText, "现在呢")
+	assert.Contains(t, requestText, routeReadFailureNote)
+	assert.Subset(t, intent.IntentToolSubset(intent.IntentStockAvailability), toolNames(mock.calls[0].Tools))
+	assert.NotContains(t, toolNames(mock.calls[0].Tools), "StopInstanceWorkflow")
+	require.Len(t, traces, 1)
+	assert.Equal(t, string(intent.RouteStatusFailureAfterTool), traces[0].RouteStatus)
+}
+
+func TestRouteDispatchSpecificRecoveryHintRemainsDeterministic(t *testing.T) {
+	plan := intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentStockAvailability,
+		Slots:         intent.Slots{SearchQuery: "4090"},
+		Confidence:    0.9,
+	}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: plan}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "must not replace the deterministic recovery hint"}}}
+	apiErr := tools.NewUpstreamAPIError(230, "Params [Zone] not available")
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return nil, apiErr
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentStockAvailability},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "4090 现在有库存吗", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, apiErr.Hint, reply)
+	assert.Empty(t, mock.calls, "a specific safe recovery instruction is already a complete deterministic answer")
 }
 
 func TestRouteDispatchReadExpensiveQuotaDenialUsesFriendlyMessage(t *testing.T) {

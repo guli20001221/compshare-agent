@@ -433,7 +433,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// candidate instance list by State. Per-session by definition —
 		// sharing across sessions would let one user's "stop" verb mask
 		// another's "start" subset.
-		"lastPlannerActionThisTurn":          true,
+		"lastPlannerActionThisTurn": true,
+		// Per-turn marker for a failed deterministic read. It only controls an
+		// ephemeral ReAct warning; sharing it would make one user's upstream
+		// failure alter another user's prompt.
+		"routeReadFailureThisTurn":           true,
 		"imageContextThisTurn":               true,
 		"baseUserContext":                    true,
 		"displayedResourceSelectionThisTurn": true,
@@ -444,12 +448,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 85, len(perSessionFields); want != got {
+	if want, got := 86, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 101, typ.NumField(); want != got {
+	if want, got := 102, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
