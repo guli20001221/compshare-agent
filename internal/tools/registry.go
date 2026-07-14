@@ -1195,10 +1195,73 @@ var Registry = []openai.Tool{
 // tool names. If subset is nil or empty, falls back to VisibleRegistry (full
 // read-only or mutating set). Used by the ReAct loop when the planner
 // classified an intent that has a defined tool subset (e.g. diagnosis).
+// ToolScopeMode is an EXPLICIT tool authorization. It exists because the previous
+// design encoded authorization as a nil slice, and nil had to mean two opposite
+// things at once: "this intent named no tools" and "this intent may use every tool".
+// VisibleRegistryForSubset resolved that ambiguity in the most dangerous direction —
+// see its doc comment. A mode is never inferred from emptiness.
+type ToolScopeMode string
+
+const (
+	// ToolScopeNamed authorizes exactly the tools in Names and nothing else.
+	// An EMPTY Names under this mode authorizes NOTHING; it is not "everything".
+	ToolScopeNamed ToolScopeMode = "named"
+
+	// ToolScopeReadOnlyFull authorizes every read tool and no mutating tool,
+	// regardless of whether mutating tools are enabled for the process. This is
+	// the fail-closed default for an intent with no allowlist.
+	ToolScopeReadOnlyFull ToolScopeMode = "read_only_full"
+
+	// ToolScopeMutableFull authorizes the entire registry, mutating tools included
+	// (subject to the process-wide mutating flag). Nothing selects this today; it
+	// exists so that "the agent may write anything" must be TYPED by a caller who
+	// means it, and can be grepped for. It must never become a fallback.
+	ToolScopeMutableFull ToolScopeMode = "mutable_full"
+)
+
+// ToolScope is the authorization handed to a dispatch window.
+type ToolScope struct {
+	Mode  ToolScopeMode
+	Names []string
+}
+
+// VisibleRegistryForScope resolves an explicit ToolScope to the tool list the model
+// may see. An unrecognized mode is treated as least-privilege (read-only), so a
+// zero-valued ToolScope cannot hand out write access by accident.
+func VisibleRegistryForScope(scope ToolScope, mutatingEnabled bool) []openai.Tool {
+	switch scope.Mode {
+	case ToolScopeNamed:
+		if len(scope.Names) == 0 {
+			// An empty allowlist authorizes nothing. This is the branch the old
+			// nil-sentinel took to mean "everything".
+			return nil
+		}
+		return visibleRegistryForNames(scope.Names, mutatingEnabled)
+	case ToolScopeMutableFull:
+		return VisibleRegistry(mutatingEnabled)
+	case ToolScopeReadOnlyFull:
+		return VisibleRegistry(false)
+	default:
+		return VisibleRegistry(false)
+	}
+}
+
+// VisibleRegistryForSubset filters the registry to a named subset.
+//
+// DEPRECATED for dispatch authorization: prefer VisibleRegistryForScope, which cannot
+// confuse "no tools named" with "all tools allowed". This function is retained for the
+// read-only skill executor, which always passes a non-empty skill.RequiredTools with
+// mutatingEnabled=false. Its len(subset)==0 branch returns the FULL registry and is the
+// exact defect that gave ~65% of production turns (knowledge_qa, unknown, empty intent)
+// a mutating-capable tool window; no dispatch path may rely on it.
 func VisibleRegistryForSubset(subset []string, mutatingEnabled bool) []openai.Tool {
 	if len(subset) == 0 {
 		return VisibleRegistry(mutatingEnabled)
 	}
+	return visibleRegistryForNames(subset, mutatingEnabled)
+}
+
+func visibleRegistryForNames(subset []string, mutatingEnabled bool) []openai.Tool {
 	allowed := make(map[string]struct{}, len(subset))
 	for _, name := range subset {
 		allowed[name] = struct{}{}
