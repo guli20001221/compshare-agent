@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"time"
 )
 
 // MySQLMessageStore implements MessageStore using MySQL.
@@ -120,7 +122,10 @@ LIMIT $5
 // either a committed v2 chat_turn with exactly one ok message per role, or a
 // legacy pair with the same non-empty request_uuid and exactly those two ok
 // messages. Legacy rows are read in place; this bridge deliberately performs
-// no destructive backfill.
+// no destructive backfill. Each source contributes at most turnLimit
+// candidates: v2 is selected and ordered by authoritative turn_seq, legacy by
+// timestamp/key. A stable two-stream merge preserves both source orders while
+// placing rollback-era legacy rows around v2 rows by their commit timestamps.
 func (s *MySQLMessageStore) ListCommittedTail(
 	ctx context.Context,
 	owner Owner,
@@ -139,42 +144,37 @@ WITH scoped_session AS (
     AND sess.organization_id = $3
     AND sess.deleted_at IS NULL
 ),
-v2_pairs AS (
+v2_candidates AS (
   SELECT
-    MAX(m.id) FILTER (
-      WHERE m.turn_role = 'user' AND m.role = 'user' AND m.status = 'ok'
-        AND m.content ~ '[^[:space:]]'
-    ) AS user_message_id,
-    MAX(m.id) FILTER (
-      WHERE m.turn_role = 'assistant' AND m.role = 'assistant' AND m.status = 'ok'
-        AND m.content ~ '[^[:space:]]'
-    ) AS assistant_message_id,
-    MIN(m.created_at) FILTER (
-      WHERE m.turn_role = 'user' AND m.role = 'user' AND m.status = 'ok'
-        AND m.content ~ '[^[:space:]]'
-    ) AS pair_at,
-    'v2:' || t.id AS pair_key
+    'v2'::text AS source,
+    t.turn_seq AS source_seq,
+    COALESCE(t.committed_at, user_msg.created_at) AS pair_at,
+    'v2:' || t.id AS pair_key,
+    user_msg.id AS user_message_id,
+    assistant_msg.id AS assistant_message_id
   FROM chat_turns t
   JOIN scoped_session sess ON sess.id = t.session_id
-  JOIN messages m
-    ON m.turn_id = t.id
-   AND m.session_id = t.session_id
-   AND (m.id = t.user_message_id OR m.id = t.assistant_message_id)
+  JOIN messages user_msg
+    ON user_msg.id = t.user_message_id
+   AND user_msg.session_id = t.session_id
+   AND user_msg.turn_id = t.id
+   AND user_msg.turn_role = 'user'
+   AND user_msg.role = 'user'
+   AND user_msg.status = 'ok'
+   AND user_msg.content ~ '[^[:space:]]'
+  JOIN messages assistant_msg
+    ON assistant_msg.id = t.assistant_message_id
+   AND assistant_msg.session_id = t.session_id
+   AND assistant_msg.turn_id = t.id
+   AND assistant_msg.turn_role = 'assistant'
+   AND assistant_msg.role = 'assistant'
+   AND assistant_msg.status = 'ok'
+   AND assistant_msg.content ~ '[^[:space:]]'
   WHERE t.top_organization_id = $2
     AND t.organization_id = $3
     AND t.status = 'committed'
-  GROUP BY t.id
-  HAVING COUNT(*) = 2
-     AND COUNT(*) FILTER (
-       WHERE m.id = t.user_message_id
-         AND m.turn_role = 'user' AND m.role = 'user' AND m.status = 'ok'
-         AND m.content ~ '[^[:space:]]'
-     ) = 1
-     AND COUNT(*) FILTER (
-       WHERE m.id = t.assistant_message_id
-         AND m.turn_role = 'assistant' AND m.role = 'assistant' AND m.status = 'ok'
-         AND m.content ~ '[^[:space:]]'
-     ) = 1
+  ORDER BY t.turn_seq DESC
+  LIMIT $4
 ),
 legacy_pairs AS (
   SELECT
@@ -204,36 +204,195 @@ legacy_pairs AS (
          AND m.content ~ '[^[:space:]]'
      ) = 1
 ),
-eligible_pairs AS (
-  SELECT user_message_id, assistant_message_id, pair_at, pair_key FROM v2_pairs
-  UNION ALL
-  SELECT user_message_id, assistant_message_id, pair_at, pair_key FROM legacy_pairs
-),
-committed_tail AS (
-  SELECT user_message_id, assistant_message_id, pair_at, pair_key
-  FROM eligible_pairs
+legacy_candidates AS (
+  SELECT
+    'legacy'::text AS source,
+    0::bigint AS source_seq,
+    pair_at,
+    pair_key,
+    user_message_id,
+    assistant_message_id
+  FROM legacy_pairs
   ORDER BY pair_at DESC, pair_key DESC
   LIMIT $4
+),
+candidate_pairs AS (
+  SELECT source, source_seq, pair_at, pair_key,
+         user_message_id, assistant_message_id
+  FROM v2_candidates
+  UNION ALL
+  SELECT source, source_seq, pair_at, pair_key,
+         user_message_id, assistant_message_id
+  FROM legacy_candidates
+),
+candidate_messages AS (
+  SELECT p.source, p.source_seq, p.pair_at, p.pair_key, 0 AS role_order,
+         m.id, m.session_id, m.request_uuid, m.role, m.content, m.status,
+         m.error_code, m.model, m.input_tokens, m.output_tokens, m.ttft_ms,
+         m.latency_ms, m.metadata, m.created_at
+  FROM candidate_pairs p
+  JOIN messages m ON m.id = p.user_message_id
+  UNION ALL
+  SELECT p.source, p.source_seq, p.pair_at, p.pair_key, 1 AS role_order,
+         m.id, m.session_id, m.request_uuid, m.role, m.content, m.status,
+         m.error_code, m.model, m.input_tokens, m.output_tokens, m.ttft_ms,
+         m.latency_ms, m.metadata, m.created_at
+  FROM candidate_pairs p
+  JOIN messages m ON m.id = p.assistant_message_id
 )
-SELECT m.id, m.session_id, m.request_uuid, m.role, m.content, m.status,
-       m.error_code, m.model, m.input_tokens, m.output_tokens, m.ttft_ms,
-       m.latency_ms, m.metadata, m.created_at
-FROM committed_tail tail
-JOIN messages m
-  ON m.id = tail.user_message_id OR m.id = tail.assistant_message_id
-ORDER BY tail.pair_at ASC, tail.pair_key ASC,
-         CASE WHEN m.id = tail.user_message_id THEN 0 ELSE 1 END ASC
+SELECT source, source_seq, pair_at, pair_key, role_order,
+       id, session_id, request_uuid, role, content, status,
+       error_code, model, input_tokens, output_tokens, ttft_ms,
+       latency_ms, metadata, created_at
+FROM candidate_messages
+ORDER BY source, pair_key, role_order
 `, sessionID, owner.TopOrganizationID, owner.OrganizationID, turnLimit)
 	if err != nil {
 		return nil, fmt.Errorf("list committed message tail query: %w", err)
 	}
 	defer rows.Close()
 
-	messages, err := scanMessages(rows)
+	v2Pairs, legacyPairs, err := scanCommittedHistoryPairs(rows)
 	if err != nil {
 		return nil, fmt.Errorf("scan committed message tail: %w", err)
 	}
+	pairs := mergeCommittedHistoryPairs(v2Pairs, legacyPairs, turnLimit)
+	messages := make([]Message, 0, len(pairs)*2)
+	for _, pair := range pairs {
+		messages = append(messages, pair.user, pair.assistant)
+	}
 	return messages, nil
+}
+
+// committedHistoryPair is one validated conversational turn. v2 sequence is
+// authoritative inside the v2 stream; legacy rows have no sequence and retain
+// their historical timestamp/key order. pairAt is used only to stably merge the
+// heads of those two already-ordered streams during a rollout or rollback.
+type committedHistoryPair struct {
+	source    string
+	sequence  int64
+	pairAt    time.Time
+	pairKey   string
+	user      Message
+	assistant Message
+	hasUser   bool
+	hasAssist bool
+}
+
+func scanCommittedHistoryPairs(rows *sql.Rows) (v2, legacy []committedHistoryPair, err error) {
+	var pairs []committedHistoryPair
+	byKey := make(map[string]int)
+	for rows.Next() {
+		var source, pairKey string
+		var sequence int64
+		var pairAt time.Time
+		var roleOrder int
+		var m Message
+		var requestUUID, errorCode, model, metadata sql.NullString
+		var inputTokens, outputTokens, ttftMs, latencyMs sql.NullInt64
+		if err := rows.Scan(
+			&source, &sequence, &pairAt, &pairKey, &roleOrder,
+			&m.ID, &m.SessionID, &requestUUID, &m.Role, &m.Content, &m.Status,
+			&errorCode, &model, &inputTokens, &outputTokens, &ttftMs, &latencyMs,
+			&metadata, &m.CreatedAt,
+		); err != nil {
+			return nil, nil, err
+		}
+		populateNullableMessageFields(&m, requestUUID, errorCode, model, metadata,
+			inputTokens, outputTokens, ttftMs, latencyMs)
+
+		key := source + "\x00" + pairKey
+		idx, ok := byKey[key]
+		if !ok {
+			idx = len(pairs)
+			byKey[key] = idx
+			pairs = append(pairs, committedHistoryPair{
+				source: source, sequence: sequence, pairAt: pairAt, pairKey: pairKey,
+			})
+		}
+		pair := &pairs[idx]
+		if pair.sequence != sequence || !pair.pairAt.Equal(pairAt) {
+			return nil, nil, fmt.Errorf("inconsistent metadata for history pair %q", pairKey)
+		}
+		switch roleOrder {
+		case 0:
+			if pair.hasUser {
+				return nil, nil, fmt.Errorf("duplicate user in history pair %q", pairKey)
+			}
+			pair.user, pair.hasUser = m, true
+		case 1:
+			if pair.hasAssist {
+				return nil, nil, fmt.Errorf("duplicate assistant in history pair %q", pairKey)
+			}
+			pair.assistant, pair.hasAssist = m, true
+		default:
+			return nil, nil, fmt.Errorf("invalid role order %d in history pair %q", roleOrder, pairKey)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	for _, pair := range pairs {
+		if !pair.hasUser || !pair.hasAssist || pair.user.Role != "user" || pair.assistant.Role != "assistant" {
+			return nil, nil, fmt.Errorf("incomplete history pair %q", pair.pairKey)
+		}
+		switch pair.source {
+		case "v2":
+			v2 = append(v2, pair)
+		case "legacy":
+			legacy = append(legacy, pair)
+		default:
+			return nil, nil, fmt.Errorf("unknown history source %q", pair.source)
+		}
+	}
+	sort.Slice(v2, func(i, j int) bool {
+		if v2[i].sequence != v2[j].sequence {
+			return v2[i].sequence < v2[j].sequence
+		}
+		return v2[i].pairKey < v2[j].pairKey
+	})
+	sort.Slice(legacy, func(i, j int) bool {
+		if !legacy[i].pairAt.Equal(legacy[j].pairAt) {
+			return legacy[i].pairAt.Before(legacy[j].pairAt)
+		}
+		return legacy[i].pairKey < legacy[j].pairKey
+	})
+	return v2, legacy, nil
+}
+
+// mergeCommittedHistoryPairs is a stable merge: it never changes the
+// authoritative order inside either source. Timestamps only decide which
+// source's current head comes first. Exact ties use pairKey, where the explicit
+// source prefix makes legacy-before-v2 deterministic.
+func mergeCommittedHistoryPairs(v2, legacy []committedHistoryPair, limit int) []committedHistoryPair {
+	merged := make([]committedHistoryPair, 0, len(v2)+len(legacy))
+	for i, j := 0, 0; i < len(v2) || j < len(legacy); {
+		switch {
+		case i >= len(v2):
+			merged = append(merged, legacy[j])
+			j++
+		case j >= len(legacy):
+			merged = append(merged, v2[i])
+			i++
+		case historyPairComesFirst(v2[i], legacy[j]):
+			merged = append(merged, v2[i])
+			i++
+		default:
+			merged = append(merged, legacy[j])
+			j++
+		}
+	}
+	if len(merged) > limit {
+		merged = merged[len(merged)-limit:]
+	}
+	return merged
+}
+
+func historyPairComesFirst(a, b committedHistoryPair) bool {
+	if !a.pairAt.Equal(b.pairAt) {
+		return a.pairAt.Before(b.pairAt)
+	}
+	return a.pairKey < b.pairKey
 }
 
 // GetWithOwnerCheck fetches a message by ID and verifies the owner via a JOIN
@@ -274,37 +433,46 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		); err != nil {
 			return nil, err
 		}
-		if requestUUID.Valid {
-			m.RequestUUID = &requestUUID.String
-		}
-		if errorCode.Valid {
-			m.ErrorCode = &errorCode.String
-		}
-		if model.Valid {
-			m.Model = &model.String
-		}
-		if inputTokens.Valid {
-			v := int(inputTokens.Int64)
-			m.InputTokens = &v
-		}
-		if outputTokens.Valid {
-			v := int(outputTokens.Int64)
-			m.OutputTokens = &v
-		}
-		if ttftMs.Valid {
-			v := int(ttftMs.Int64)
-			m.TTFTMs = &v
-		}
-		if latencyMs.Valid {
-			v := int(latencyMs.Int64)
-			m.LatencyMs = &v
-		}
-		if metadata.Valid {
-			m.Metadata = json.RawMessage(metadata.String)
-		}
+		populateNullableMessageFields(&m, requestUUID, errorCode, model, metadata,
+			inputTokens, outputTokens, ttftMs, latencyMs)
 		messages = append(messages, m)
 	}
 	return messages, rows.Err()
+}
+
+func populateNullableMessageFields(
+	m *Message,
+	requestUUID, errorCode, model, metadata sql.NullString,
+	inputTokens, outputTokens, ttftMs, latencyMs sql.NullInt64,
+) {
+	if requestUUID.Valid {
+		m.RequestUUID = &requestUUID.String
+	}
+	if errorCode.Valid {
+		m.ErrorCode = &errorCode.String
+	}
+	if model.Valid {
+		m.Model = &model.String
+	}
+	if inputTokens.Valid {
+		v := int(inputTokens.Int64)
+		m.InputTokens = &v
+	}
+	if outputTokens.Valid {
+		v := int(outputTokens.Int64)
+		m.OutputTokens = &v
+	}
+	if ttftMs.Valid {
+		v := int(ttftMs.Int64)
+		m.TTFTMs = &v
+	}
+	if latencyMs.Valid {
+		v := int(latencyMs.Int64)
+		m.LatencyMs = &v
+	}
+	if metadata.Valid {
+		m.Metadata = json.RawMessage(metadata.String)
+	}
 }
 
 // nullableRequestUUID returns nil for nil pointer or empty string, otherwise the string value.

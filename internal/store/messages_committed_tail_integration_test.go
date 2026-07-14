@@ -96,6 +96,97 @@ WHERE id = (
 	assert.Empty(t, foreign, "legacy history must remain owner-scoped")
 }
 
+func TestMessageStore_ListCommittedTail_V2SequenceBeatsReversedTimestamps(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 83001, OrganizationID: 83002}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+
+	base := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	// turn_seq is allocated under the conversation lock and is authoritative.
+	// Timestamps can still run backwards when a transaction begins and is then
+	// descheduled before it reaches that lock.
+	insertTailFixtureTurnAt(t, db, owner, session.ID, 1, TurnStatusCommitted,
+		"ok", "ok", true, base.Add(2*time.Minute))
+	insertTailFixtureTurnAt(t, db, owner, session.ID, 2, TurnStatusCommitted,
+		"ok", "ok", true, base.Add(1*time.Minute))
+	insertTailFixtureTurnAt(t, db, owner, session.ID, 3, TurnStatusCommitted,
+		"ok", "ok", true, base.Add(3*time.Minute))
+
+	got, err := NewMessageStore(db).ListCommittedTail(ctx, owner, session.ID, 3)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"u-001", "a-001",
+		"u-002", "a-002",
+		"u-003", "a-003",
+	}, messageContents(got))
+}
+
+func TestMessageStore_ListCommittedTail_V2LimitUsesSequenceNotTimestamp(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 84001, OrganizationID: 84002}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+
+	base := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	for seq := 1; seq <= 60; seq++ {
+		insertTailFixtureTurnAt(t, db, owner, session.ID, seq, TurnStatusCommitted,
+			"ok", "ok", true, base.Add(time.Duration(seq)*time.Minute))
+	}
+	// The newest protocol turn has the oldest timestamp. A timestamp tail would
+	// discard turn 61 and keep turn 1, which is exactly the context-loss bug.
+	insertTailFixtureTurnAt(t, db, owner, session.ID, 61, TurnStatusCommitted,
+		"ok", "ok", true, base.Add(-time.Hour))
+
+	got, err := NewMessageStore(db).ListCommittedTail(ctx, owner, session.ID, 60)
+	require.NoError(t, err)
+	require.Len(t, got, 120)
+	assert.Equal(t, "u-002", got[0].Content)
+	assert.Equal(t, "a-002", got[1].Content)
+	assert.Equal(t, "u-061", got[118].Content)
+	assert.Equal(t, "a-061", got[119].Content)
+}
+
+func TestMessageStore_ListCommittedTail_StableMergeSupportsRolloutAndRollback(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 85001, OrganizationID: 85002}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+
+	base := time.Date(2026, 7, 14, 11, 0, 0, 0, time.UTC)
+	// Legacy before rollout.
+	insertLegacyTailPair(t, db, session.ID, "legacy-before", 1,
+		"ok", "ok", base.Add(1*time.Minute))
+	// First v2 deployment.
+	insertTailFixtureTurnAt(t, db, owner, session.ID, 1, TurnStatusCommitted,
+		"ok", "ok", true, base.Add(2*time.Minute))
+	insertTailFixtureTurnAt(t, db, owner, session.ID, 2, TurnStatusCommitted,
+		"ok", "ok", true, base.Add(4*time.Minute))
+	// A rollback writes legacy history between two v2 commit times.
+	insertLegacyTailPair(t, db, session.ID, "legacy-rollback", 2,
+		"ok", "ok", base.Add(3*time.Minute))
+	// Re-rollout continues the v2 sequence, even if its timestamp is behind the
+	// preceding v2 turn. Source order wins; timestamps only merge the two sources.
+	insertTailFixtureTurnAt(t, db, owner, session.ID, 3, TurnStatusCommitted,
+		"ok", "ok", true, base.Add(3*time.Minute+30*time.Second))
+	insertLegacyTailPair(t, db, session.ID, "legacy-after", 3,
+		"ok", "ok", base.Add(6*time.Minute))
+
+	got, err := NewMessageStore(db).ListCommittedTail(ctx, owner, session.ID, 6)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"legacy-u-1", "legacy-a-1",
+		"u-001", "a-001",
+		"legacy-u-2", "legacy-a-2",
+		"u-002", "a-002",
+		"u-003", "a-003",
+		"legacy-u-3", "legacy-a-3",
+	}, messageContents(got))
+}
+
 func insertMisattachedV2Turn(
 	t *testing.T,
 	db *sql.DB,
