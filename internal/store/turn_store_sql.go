@@ -140,9 +140,10 @@ RETURNING `+turnColumns,
 func nextTurnSequence(ctx context.Context, tx *sql.Tx, sessionID string) (int64, error) {
 	var sequence int64
 	if err := tx.QueryRowContext(ctx, `
-SELECT COALESCE(MAX(turn_seq), 0) + 1
-FROM chat_turns
-WHERE session_id = $1
+SELECT GREATEST(
+  COALESCE((SELECT MAX(turn_seq) FROM chat_turns WHERE session_id = $1), 0),
+  COALESCE((SELECT message_count / 2 FROM sessions WHERE id = $1), 0)
+) + 1
 `, sessionID).Scan(&sequence); err != nil {
 		return 0, fmt.Errorf("allocate conversation turn sequence: %w", err)
 	}

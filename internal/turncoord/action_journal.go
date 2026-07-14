@@ -15,6 +15,7 @@ import (
 )
 
 type actionStore interface {
+	ListTurnActions(context.Context, store.Owner, string) ([]store.TurnAction, error)
 	ReserveAction(context.Context, store.Owner, store.ConversationLease, store.ReserveActionInput) (store.TurnAction, bool, error)
 	StartAction(context.Context, store.Owner, store.ConversationLease, string) (store.TurnAction, error)
 	RecordAction(context.Context, store.Owner, string, store.ActionStatus, json.RawMessage, *string, ...*string) (store.TurnAction, error)
@@ -28,9 +29,14 @@ type ActionJournal struct {
 	owner store.Owner
 	lease store.ConversationLease
 
-	mu        sync.Mutex
-	nextIndex int
-	poisoned  error
+	mu           sync.Mutex
+	nextIndex    int
+	poisoned     error
+	loaded       bool
+	baseline     []store.TurnAction
+	replayOnly   bool
+	replayCursor int
+	consumed     map[int]bool
 }
 
 func NewActionJournal(actions actionStore, owner store.Owner, lease store.ConversationLease) *ActionJournal {
@@ -45,19 +51,33 @@ func (j *ActionJournal) Execute(ctx context.Context, action string, args map[str
 	if j == nil || j.store == nil || call == nil || action == "" {
 		return nil, fmt.Errorf("%w: invalid action journal", tools.ErrActionJournalRequired)
 	}
-	index, err := j.claimIndex()
-	if err != nil {
+	if err := j.loadBaseline(ctx); err != nil {
 		return nil, err
 	}
 	argsHash := canonicalActionArgsHash(args)
 	if argsHash == "" {
 		return nil, j.poison(fmt.Errorf("action arguments cannot be canonicalized"))
 	}
+	index, expected, replayOnly, err := j.claimAction(action, argsHash)
+	if err != nil {
+		return nil, err
+	}
+	if replayOnly {
+		if expected == nil || expected.Index != index || expected.ActionName != action || expected.ArgsHash != argsHash {
+			return nil, j.poison(fmt.Errorf("replay action %d differs from durable plan", index))
+		}
+	}
 	reserved, _, err := j.store.ReserveAction(ctx, j.owner, j.lease, store.ReserveActionInput{
 		Index: index, ActionName: action, ArgsHash: argsHash,
 	})
 	if err != nil {
 		return nil, j.poison(fmt.Errorf("reserve %s: %w", action, err))
+	}
+	if replayOnly {
+		if reserved.Index != index || reserved.ActionName != action || reserved.ArgsHash != argsHash {
+			return nil, j.poison(fmt.Errorf("replay action %d resolved to a different durable action", index))
+		}
+		j.markConsumed(index)
 	}
 
 	switch reserved.Status {
@@ -120,15 +140,96 @@ func (j *ActionJournal) Err() error {
 	return fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
 }
 
-func (j *ActionJournal) claimIndex() (int, error) {
+// VerifyComplete is the coordinator's pre-commit replay barrier. Once a prior
+// lease crossed an action's before-call boundary, a takeover may only replay
+// the exact durable action list; it cannot omit an old action or add a new one
+// with different parameters.
+func (j *ActionJournal) VerifyComplete(ctx context.Context) error {
+	if err := j.loadBaseline(ctx); err != nil {
+		return err
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.poisoned != nil {
-		return 0, fmt.Errorf("%w: turn journal stopped after: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+		return fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+	}
+	if !j.replayOnly {
+		return nil
+	}
+	for _, action := range j.baseline {
+		if !j.consumed[action.Index] {
+			j.poisoned = fmt.Errorf("durable action %d was not replayed", action.Index)
+			return fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+		}
+	}
+	return nil
+}
+
+func (j *ActionJournal) loadBaseline(ctx context.Context) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.loaded {
+		if j.poisoned != nil {
+			return fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+		}
+		return nil
+	}
+	actions, err := j.store.ListTurnActions(ctx, j.owner, j.lease.TurnID)
+	if err != nil {
+		j.poisoned = fmt.Errorf("load durable action plan: %w", err)
+		j.loaded = true
+		return fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+	}
+	j.loaded = true
+	j.baseline = actions
+	j.consumed = make(map[int]bool, len(actions))
+	for _, action := range actions {
+		if action.LeaseEpoch != j.lease.Epoch && (action.Status != store.ActionStatusReserved || action.InFlight) {
+			j.replayOnly = true
+		}
+	}
+	return nil
+}
+
+func (j *ActionJournal) claimAction(actionName, argsHash string) (int, *store.TurnAction, bool, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.poisoned != nil {
+		return 0, nil, false, fmt.Errorf("%w: turn journal stopped after: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+	}
+	if j.replayOnly {
+		// Semantic duplicates never create a second durable row. A replay may
+		// call X,X,Y while the stored rows are X(index 0),Y(index 2): the second
+		// X reuses the consumed result without advancing the durable cursor.
+		for _, existing := range j.baseline {
+			if j.consumed[existing.Index] && existing.ActionName == actionName && existing.ArgsHash == argsHash {
+				expected := existing
+				return existing.Index, &expected, true, nil
+			}
+		}
+		if j.replayCursor >= len(j.baseline) {
+			j.poisoned = fmt.Errorf("replay attempted an extra action after %d durable actions", len(j.baseline))
+			return 0, nil, true, fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+		}
+		expected := j.baseline[j.replayCursor]
+		if expected.ActionName != actionName || expected.ArgsHash != argsHash {
+			j.poisoned = fmt.Errorf("replay action differs from durable action index %d", expected.Index)
+			return 0, nil, true, fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
+		}
+		j.replayCursor++
+		return expected.Index, &expected, true, nil
 	}
 	index := j.nextIndex
 	j.nextIndex++
-	return index, nil
+	return index, nil, false, nil
+}
+
+func (j *ActionJournal) markConsumed(index int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.consumed != nil {
+		j.consumed[index] = true
+	}
 }
 
 func (j *ActionJournal) recordAmbiguous(ctx context.Context, started store.TurnAction, action string, cause error) (map[string]any, error) {

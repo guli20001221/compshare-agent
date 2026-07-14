@@ -174,3 +174,70 @@ func TestActionJournal_UpstreamBusinessErrorIsAmbiguousAndNeverReissued(t *testi
 	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
 	assert.Equal(t, 1, calls)
 }
+
+func TestActionJournal_TakeoverReplayOnlyRejectsDifferentOrOmittedActions(t *testing.T) {
+	t.Run("different action", func(t *testing.T) {
+		db := openActionJournalTestDB(t)
+		ctx, owner, turns, leaseA := newJournalTurn(t, db)
+		_, err := NewActionJournal(turns, owner, leaseA).Execute(ctx, "ExternalWrite", map[string]any{"target": "one"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+			return map[string]any{"RetCode": 0}, nil
+		})
+		require.NoError(t, err)
+		leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
+		calls := 0
+		journalB := NewActionJournal(turns, owner, leaseB)
+		_, err = journalB.Execute(ctx, "ExternalWrite", map[string]any{"target": "two"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+			calls++
+			return map[string]any{"RetCode": 0}, nil
+		})
+		require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
+		assert.Zero(t, calls)
+		require.Error(t, journalB.VerifyComplete(ctx))
+	})
+
+	t.Run("omitted action", func(t *testing.T) {
+		db := openActionJournalTestDB(t)
+		ctx, owner, turns, leaseA := newJournalTurn(t, db)
+		_, err := NewActionJournal(turns, owner, leaseA).Execute(ctx, "ExternalWrite", map[string]any{"target": "one"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+			return map[string]any{"RetCode": 0}, nil
+		})
+		require.NoError(t, err)
+		leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
+		require.ErrorIs(t, NewActionJournal(turns, owner, leaseB).VerifyComplete(ctx), tools.ErrActionOutcomeUncertain)
+	})
+}
+
+func TestActionJournal_ReplayOnlyHandlesSemanticDuplicateIndexGaps(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx, owner, turns, leaseA := newJournalTurn(t, db)
+	journalA := NewActionJournal(turns, owner, leaseA)
+	upstreamCalls := 0
+	call := func(_ context.Context, action string, _ map[string]any) (map[string]any, error) {
+		upstreamCalls++
+		return map[string]any{"RetCode": 0, "action": action}, nil
+	}
+	argsX := map[string]any{"target": "x"}
+	argsY := map[string]any{"target": "y"}
+	_, err := journalA.Execute(ctx, "WriteX", argsX, call)
+	require.NoError(t, err)
+	_, err = journalA.Execute(ctx, "WriteX", argsX, call)
+	require.NoError(t, err)
+	_, err = journalA.Execute(ctx, "WriteY", argsY, call)
+	require.NoError(t, err)
+	assert.Equal(t, 2, upstreamCalls, "semantic duplicate X must already replay in the first attempt")
+
+	leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
+	journalB := NewActionJournal(turns, owner, leaseB)
+	noCall := func(context.Context, string, map[string]any) (map[string]any, error) {
+		upstreamCalls++
+		return nil, errors.New("takeover must only replay")
+	}
+	_, err = journalB.Execute(ctx, "WriteX", argsX, noCall)
+	require.NoError(t, err)
+	_, err = journalB.Execute(ctx, "WriteX", argsX, noCall)
+	require.NoError(t, err)
+	_, err = journalB.Execute(ctx, "WriteY", argsY, noCall)
+	require.NoError(t, err)
+	require.NoError(t, journalB.VerifyComplete(ctx))
+	assert.Equal(t, 2, upstreamCalls)
+}

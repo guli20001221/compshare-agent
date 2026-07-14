@@ -1,0 +1,920 @@
+package turncoord
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/guardrails"
+	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/tools"
+)
+
+const (
+	UnknownSchemaWarning  = "系统检测到这段会话由较新版本创建；本轮已按只读模式回答，并保留原有会话状态。"
+	CorruptContextWarning = "系统检测到这段会话的部分状态已损坏；本轮已从可用对话记录继续，并重建会话状态。"
+)
+
+var shortCredentialMarker = regexp.MustCompile(`(?i)\b(?:ak|sk|access[_-]?key|secret[_-]?key|access[_-]?token)\s*[:=]\s*[^\s,;]+`)
+
+// TurnEngine is the private, mutable workspace for exactly one durable turn.
+// Production uses *engine.Engine; this narrow seam keeps coordinator tests
+// independent of model and upstream services.
+type TurnEngine interface {
+	SetSessionState(engine.SessionState, int)
+	SessionStateSnapshot() (engine.SessionState, int, bool)
+	ChatWithOptions(context.Context, string, func(engine.StepEvent), engine.ChatOptions) (string, error)
+}
+
+type EngineFactory interface {
+	New(context.Context, store.Owner, string, engine.SessionOptions) (TurnEngine, error)
+}
+
+type EngineFactoryFunc func(context.Context, store.Owner, string, engine.SessionOptions) (TurnEngine, error)
+
+func (f EngineFactoryFunc) New(ctx context.Context, owner store.Owner, sessionID string, opts engine.SessionOptions) (TurnEngine, error) {
+	return f(ctx, owner, sessionID, opts)
+}
+
+// PoolEngineFactory is implemented by agentpool.Pool without coupling this
+// package back to agentpool (which would create an import cycle).
+type PoolEngineFactory interface {
+	NewTurnEngineWithOptions(context.Context, store.Owner, string, engine.SessionOptions) (*engine.Engine, error)
+}
+
+func EngineFactoryFromPool(pool PoolEngineFactory) EngineFactory {
+	return EngineFactoryFunc(func(ctx context.Context, owner store.Owner, sessionID string, opts engine.SessionOptions) (TurnEngine, error) {
+		return pool.NewTurnEngineWithOptions(ctx, owner, sessionID, opts)
+	})
+}
+
+type turnStore interface {
+	actionStore
+	AcceptTurn(context.Context, store.Owner, store.AcceptTurnInput) (store.Turn, bool, error)
+	GetTurn(context.Context, store.Owner, string) (store.Turn, error)
+	FindTurnByClientID(context.Context, store.Owner, string, string) (store.Turn, error)
+	AcquireConversationLease(context.Context, store.Owner, string, string, string, time.Duration) (store.ConversationLease, error)
+	RenewConversationLease(context.Context, store.Owner, store.ConversationLease, time.Duration) (store.ConversationLease, error)
+	ReleaseConversationLease(context.Context, store.Owner, store.ConversationLease) error
+	AppendEvent(context.Context, store.Owner, store.ConversationLease, string, json.RawMessage, bool) (store.TurnEvent, error)
+	ListEvents(context.Context, store.Owner, string, int64, int) ([]store.TurnEvent, error)
+	CreateInteraction(context.Context, store.Owner, store.ConversationLease, string, string, json.RawMessage, time.Duration) (store.TurnInteraction, bool, error)
+	ResolveInteraction(context.Context, store.Owner, string, string, json.RawMessage) (store.TurnInteraction, error)
+	GetInteraction(context.Context, store.Owner, string, string) (store.TurnInteraction, error)
+	CommitTurn(context.Context, store.Owner, store.CommitTurnInput) (store.Turn, error)
+	ReconcileCommit(context.Context, store.Owner, store.CommitTurnInput) (store.Turn, error)
+	FailTurn(context.Context, store.Owner, store.ConversationLease, store.TurnStatus, string) (store.Turn, error)
+}
+
+type Options struct {
+	ReplicaID            string
+	LeaseTTL             time.Duration
+	LeaseRenewInterval   time.Duration
+	InteractionPoll      time.Duration
+	InteractionTTL       time.Duration
+	ExecutionTimeout     time.Duration
+	MutatingToolsEnabled bool
+}
+
+func (o Options) withDefaults() Options {
+	if strings.TrimSpace(o.ReplicaID) == "" {
+		o.ReplicaID = "turn-coordinator"
+	}
+	if o.LeaseTTL <= 0 {
+		o.LeaseTTL = 15 * time.Second
+	}
+	if o.LeaseRenewInterval <= 0 || o.LeaseRenewInterval >= o.LeaseTTL {
+		o.LeaseRenewInterval = o.LeaseTTL / 3
+	}
+	if o.InteractionPoll <= 0 {
+		o.InteractionPoll = 100 * time.Millisecond
+	}
+	if o.InteractionTTL <= 0 {
+		o.InteractionTTL = 5 * time.Minute
+	}
+	if o.ExecutionTimeout <= 0 {
+		o.ExecutionTimeout = 10 * time.Minute
+	}
+	return o
+}
+
+type SubmitInput struct {
+	Owner          store.Owner
+	SessionID      string
+	ClientTurnID   string
+	Message        string
+	RequestUUID    *string
+	AssistantModel *string
+	UserMetadata   json.RawMessage
+	ImageContext   string
+	UserContext    tools.UserContext
+	ConfirmForm    bool
+	GuidedCreate   bool
+}
+
+type Disposition string
+
+const (
+	DispositionStarted    Disposition = "started"
+	DispositionSubscribed Disposition = "subscribed"
+	DispositionReplayed   Disposition = "replayed"
+)
+
+type Submission struct {
+	Turn        store.Turn
+	Disposition Disposition
+}
+
+type Event struct {
+	TurnID      string
+	Seq         int64
+	LeaseEpoch  int64
+	Type        string
+	Payload     json.RawMessage
+	Provisional bool
+	CreatedAt   time.Time
+}
+
+type EventSink func(Event) error
+
+type ConfirmationResponse struct {
+	Confirmed bool           `json:"confirmed"`
+	Edits     map[string]any `json:"edits,omitempty"`
+}
+
+type subscription struct {
+	mu      sync.Mutex
+	lastSeq int64
+	sink    EventSink
+	done    bool
+	ctx     context.Context
+}
+
+type Coordinator struct {
+	turns    turnStore
+	sessions store.SessionStore
+	factory  EngineFactory
+	opts     Options
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
+	mu       sync.Mutex
+	workers  map[string]struct{}
+	restarts map[string]SubmitInput
+	subs     map[string]map[*subscription]struct{}
+}
+
+func NewCoordinator(turns turnStore, sessions store.SessionStore, factory EngineFactory, opts Options) *Coordinator {
+	if turns == nil || sessions == nil || factory == nil {
+		panic("turncoord: coordinator requires durable turns, sessions, and an engine factory")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Coordinator{
+		turns: turns, sessions: sessions, factory: factory, opts: opts.withDefaults(),
+		ctx: ctx, cancel: cancel, workers: make(map[string]struct{}), restarts: make(map[string]SubmitInput), subs: make(map[string]map[*subscription]struct{}),
+	}
+}
+
+func (c *Coordinator) Close() {
+	if c == nil {
+		return
+	}
+	c.cancel()
+	c.wg.Wait()
+}
+
+func (c *Coordinator) Submit(ctx context.Context, in SubmitInput, sink EventSink) (Submission, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(in.SessionID) == "" || strings.TrimSpace(in.ClientTurnID) == "" || strings.TrimSpace(in.Message) == "" {
+		return Submission{}, fmt.Errorf("%w: incomplete turn request", store.ErrInvalidArgument)
+	}
+	if (in.UserContext.TopOrganizationID != 0 && in.UserContext.TopOrganizationID != in.Owner.TopOrganizationID) ||
+		(in.UserContext.OrganizationID != 0 && in.UserContext.OrganizationID != in.Owner.OrganizationID) {
+		return Submission{}, fmt.Errorf("%w: request identity does not match owner", store.ErrInvalidArgument)
+	}
+	if in.ConfirmForm || in.GuidedCreate {
+		return Submission{}, fmt.Errorf("%w: durable editable confirmations are not enabled", store.ErrInvalidArgument)
+	}
+	requestHash := hashSubmitInput(in)
+	persistedUserContent := in.Message
+	if strings.TrimSpace(in.ImageContext) != "" {
+		persistedUserContent = engine.WrapScreenshotContext(in.ImageContext, in.Message)
+	}
+	turn, created, err := c.turns.AcceptTurn(ctx, in.Owner, store.AcceptTurnInput{
+		SessionID: in.SessionID, ClientTurnID: in.ClientTurnID, RequestHash: requestHash,
+		RequestUUID: in.RequestUUID, UserContent: guardrails.RedactPII(persistedUserContent),
+		UserMetadata: in.UserMetadata, AssistantModel: in.AssistantModel,
+	})
+	if err != nil {
+		return Submission{}, err
+	}
+	if sink != nil {
+		// Admission cancellation must not cancel durable execution or its local
+		// result observer. Transports that need a detachable stream use Subscribe.
+		c.subscribe(c.ctx, in.Owner, turn.ID, 0, sink)
+	}
+
+	disposition := DispositionSubscribed
+	switch turn.Status {
+	case store.TurnStatusCommitted, store.TurnStatusAmbiguousAfterAction, store.TurnStatusAborted:
+		disposition = DispositionReplayed
+		if sink != nil {
+			if err := c.replayNow(in.Owner, turn.ID); err != nil {
+				return Submission{}, err
+			}
+		}
+		return Submission{Turn: turn, Disposition: disposition}, nil
+	case store.TurnStatusAccepted, store.TurnStatusFailedRetryable:
+		disposition = DispositionStarted
+	default:
+		if created {
+			disposition = DispositionStarted
+		}
+	}
+	c.ensureWorker(in, turn.ID, turn.Status == store.TurnStatusFailedRetryable)
+	return Submission{Turn: turn, Disposition: disposition}, nil
+}
+
+func (c *Coordinator) ResolveInteraction(ctx context.Context, owner store.Owner, turnID, key string, response ConfirmationResponse) error {
+	if len(response.Edits) != 0 {
+		return fmt.Errorf("%w: durable confirmation edits are not enabled", store.ErrInvalidArgument)
+	}
+	raw, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	_, err = c.turns.ResolveInteraction(ctx, owner, turnID, key, raw)
+	return err
+}
+
+// GetTurn is the owner-scoped status endpoint used by reconnect/reconcile.
+func (c *Coordinator) GetTurn(ctx context.Context, owner store.Owner, turnID string) (store.Turn, error) {
+	return c.turns.GetTurn(ctx, owner, turnID)
+}
+
+func (c *Coordinator) FindTurnByClientID(ctx context.Context, owner store.Owner, sessionID, clientTurnID string) (store.Turn, error) {
+	return c.turns.FindTurnByClientID(ctx, owner, sessionID, clientTurnID)
+}
+
+// AbortTurn releases an accepted/failed-retryable queue head that the client
+// has explicitly abandoned. An actively executing turn remains lease-owned
+// and cannot be stolen by this endpoint.
+func (c *Coordinator) AbortTurn(ctx context.Context, owner store.Owner, turnID string) (store.Turn, error) {
+	turn, err := c.turns.GetTurn(ctx, owner, turnID)
+	if err != nil {
+		return store.Turn{}, err
+	}
+	if turn.Status.Terminal() {
+		return turn, nil
+	}
+	if turn.Status != store.TurnStatusAccepted && turn.Status != store.TurnStatusFailedRetryable {
+		return store.Turn{}, store.ErrLeaseHeld
+	}
+	lease, err := c.turns.AcquireConversationLease(ctx, owner, turn.SessionID, turn.ID, c.opts.ReplicaID+"/abort", c.opts.LeaseTTL)
+	if err != nil {
+		return store.Turn{}, err
+	}
+	aborted, err := c.turns.FailTurn(ctx, owner, lease, store.TurnStatusAborted, "client_aborted")
+	if err == nil {
+		c.publishAvailable(owner, turn.ID)
+	}
+	return aborted, err
+}
+
+// Subscribe replays persisted events strictly after lastSeq and then follows
+// the turn until a terminal event or ctx cancellation. It never starts or
+// cancels turn execution.
+func (c *Coordinator) Subscribe(ctx context.Context, owner store.Owner, turnID string, lastSeq int64, sink EventSink) error {
+	if ctx == nil || turnID == "" || lastSeq < 0 || sink == nil {
+		return fmt.Errorf("%w: invalid turn subscription", store.ErrInvalidArgument)
+	}
+	if _, err := c.turns.GetTurn(ctx, owner, turnID); err != nil {
+		return err
+	}
+	c.subscribe(ctx, owner, turnID, lastSeq, sink)
+	return nil
+}
+
+func (c *Coordinator) ensureWorker(in SubmitInput, turnID string, restart bool) {
+	c.mu.Lock()
+	if _, exists := c.workers[turnID]; exists {
+		if restart {
+			c.restarts[turnID] = in
+		}
+		c.mu.Unlock()
+		return
+	}
+	c.workers[turnID] = struct{}{}
+	c.wg.Add(1)
+	c.mu.Unlock()
+	go func() {
+		defer c.wg.Done()
+		defer func() {
+			c.mu.Lock()
+			delete(c.workers, turnID)
+			next, shouldRestart := c.restarts[turnID]
+			delete(c.restarts, turnID)
+			c.mu.Unlock()
+			if shouldRestart && c.ctx.Err() == nil {
+				c.ensureWorker(next, turnID, false)
+			}
+		}()
+		c.run(in, turnID)
+	}()
+}
+
+func (c *Coordinator) run(in SubmitInput, turnID string) {
+	lease, ok := c.waitForLease(in.Owner, in.SessionID, turnID)
+	if !ok {
+		return
+	}
+	settled := false
+	defer func() {
+		if !settled {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_, _ = c.turns.FailTurn(cleanupCtx, in.Owner, lease, store.TurnStatusFailedRetryable, "executor_stopped")
+		}
+	}()
+
+	execCtx, execCancel := context.WithTimeout(c.ctx, c.opts.ExecutionTimeout)
+	execCtx, cancelCause := context.WithCancelCause(execCtx)
+	defer execCancel()
+	defer cancelCause(nil)
+	renewDone := make(chan struct{})
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.renewLoop(execCtx, in.Owner, lease, cancelCause, renewDone)
+	}()
+	defer func() { close(renewDone) }()
+
+	runningEvent, err := c.appendEvent(execCtx, in.Owner, lease, "turn.running", map[string]any{"turn_id": turnID})
+	if err != nil {
+		c.fail(in.Owner, lease, "event_persist_failed")
+		settled = true
+		return
+	}
+	c.deliver(runningEvent)
+
+	// The session is deliberately read after the global lease is acquired.
+	// AcceptTurn's version is only an admission snapshot; it is not execution
+	// authority.
+	sess, err := c.sessions.GetByID(execCtx, in.Owner, in.SessionID)
+	if err != nil {
+		c.fail(in.Owner, lease, "context_read_failed")
+		settled = true
+		return
+	}
+
+	state, clientContext, warning, mode, mutations := parseExecutionContext(sess.Context, c.opts.MutatingToolsEnabled)
+	journal := NewActionJournal(c.turns, in.Owner, lease)
+	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause)
+	turn, err := c.turns.GetTurn(execCtx, in.Owner, turnID)
+	if err != nil {
+		c.fail(in.Owner, lease, "turn_reload_failed")
+		settled = true
+		return
+	}
+	eng, err := c.factory.New(execCtx, in.Owner, in.SessionID, engine.SessionOptions{
+		ConfirmFn: confirm, MutatingToolsEnabled: mutations,
+		InitialCommittedTurns: int(max(turn.Sequence-1, 0)),
+		ActionJournal:         journal, RequireActionJournal: true,
+	})
+	if err != nil {
+		c.fail(in.Owner, lease, "engine_build_failed")
+		settled = true
+		return
+	}
+	eng.SetSessionState(state, sess.ContextVersion)
+
+	var eventErr error
+	var eventMu sync.Mutex
+	start := time.Now()
+	var usage llm.TokenUsage
+	reply, chatErr := eng.ChatWithOptions(tools.WithUser(execCtx, normalizedUserContext(in)), in.Message, func(step engine.StepEvent) {
+		eventMu.Lock()
+		defer eventMu.Unlock()
+		if eventErr != nil {
+			return
+		}
+		payload := map[string]any{
+			"type": step.Type, "action": step.Action, "source": step.Source,
+			"message": guardrails.RedactOutputLeak(guardrails.RedactPII(step.Message)),
+		}
+		event, appendErr := c.appendEvent(execCtx, in.Owner, lease, "turn.step", payload)
+		if appendErr != nil {
+			eventErr = appendErr
+			cancelCause(appendErr)
+			return
+		}
+		c.deliver(event)
+	}, engine.ChatOptions{
+		ImageContext: in.ImageContext,
+		ConfirmFunc:  confirm,
+		OnUsage:      func(value llm.TokenUsage) { usage = value },
+	})
+	eventMu.Lock()
+	persistEventErr := eventErr
+	eventMu.Unlock()
+	if chatErr != nil || persistEventErr != nil || context.Cause(execCtx) != nil {
+		reason := "execution_failed"
+		failureStatus := store.TurnStatusFailedRetryable
+		cause := context.Cause(execCtx)
+		if errors.Is(cause, store.ErrLeaseFenced) {
+			reason = "lease_lost"
+		} else if errors.Is(cause, store.ErrInteractionExpired) {
+			reason = "interaction_expired"
+			failureStatus = store.TurnStatusAborted
+		}
+		c.failAs(in.Owner, lease, failureStatus, reason)
+		settled = true
+		return
+	}
+	if health, ok := eng.(interface{ ActionJournalError() error }); ok {
+		if err := health.ActionJournalError(); err != nil {
+			c.fail(in.Owner, lease, "action_outcome_uncertain")
+			settled = true
+			return
+		}
+	}
+	if err := journal.VerifyComplete(execCtx); err != nil {
+		c.fail(in.Owner, lease, "action_replay_incomplete")
+		settled = true
+		return
+	}
+	if err := journal.Err(); err != nil {
+		c.fail(in.Owner, lease, "action_outcome_uncertain")
+		settled = true
+		return
+	}
+
+	state, version, hydrated := eng.SessionStateSnapshot()
+	if !hydrated || version != sess.ContextVersion {
+		c.fail(in.Owner, lease, "context_snapshot_invalid")
+		settled = true
+		return
+	}
+	contextRaw := sess.Context
+	if mode == store.ContextWriteUpdate {
+		contextRaw, err = json.Marshal(engine.PersistedContext{AgentSessionState: state, ClientContext: clientContext})
+		if err != nil {
+			c.fail(in.Owner, lease, "context_encode_failed")
+			settled = true
+			return
+		}
+	}
+	finalReply := strings.TrimSpace(reply)
+	if warning != "" {
+		if finalReply == "" {
+			finalReply = warning
+		} else {
+			finalReply = warning + "\n\n" + finalReply
+		}
+	}
+	finalReply = redactTurnOutput(finalReply)
+	if finalReply == "" {
+		c.fail(in.Owner, lease, "empty_answer")
+		settled = true
+		return
+	}
+	latency := int(time.Since(start).Milliseconds())
+	payload, _ := json.Marshal(map[string]any{
+		"turn_id": turnID, "message_id": turn.AssistantMessageID,
+		"content": finalReply, "committed": true,
+	})
+	commitInput := store.CommitTurnInput{
+		TurnID: turnID, Lease: lease, ExpectedContextVersion: sess.ContextVersion,
+		ContextWriteMode: mode, Context: contextRaw,
+		Assistant:         store.AssistantPatch{Content: finalReply, InputTokens: intPtr(usage.PromptTokens), OutputTokens: intPtr(usage.CompletionTokens), LatencyMs: &latency},
+		TerminalEventType: "turn.committed", TerminalEventPayload: payload,
+	}
+	committed, err := c.turns.CommitTurn(execCtx, in.Owner, commitInput)
+	if err != nil {
+		// A transaction error is not evidence of rollback. First prove whether
+		// our exact fingerprint committed; only then may we classify the attempt
+		// as a safe retry.
+		reconcileCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		committed, err = c.turns.ReconcileCommit(reconcileCtx, in.Owner, commitInput)
+		cancel()
+	}
+	if err != nil {
+		c.fail(in.Owner, lease, "turn_not_saved")
+		settled = true
+		return
+	}
+	settled = true
+	// Re-read the exact database event. The stored sequence, payload and time
+	// are the replay contract; a locally reconstructed approximation can drift.
+	publishCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	events, listErr := c.turns.ListEvents(publishCtx, in.Owner, turnID, max(committed.NextEventSeq-2, 0), 10)
+	cancel()
+	if listErr == nil {
+		for _, event := range events {
+			if event.Seq == committed.NextEventSeq-1 && event.Type == "turn.committed" {
+				c.deliver(eventFromStore(event))
+				break
+			}
+		}
+	}
+}
+
+func (c *Coordinator) waitForLease(owner store.Owner, sessionID, turnID string) (store.ConversationLease, bool) {
+	ticker := time.NewTicker(max(c.opts.InteractionPoll, 20*time.Millisecond))
+	defer ticker.Stop()
+	for {
+		turn, err := c.turns.GetTurn(c.ctx, owner, turnID)
+		if err == nil && turn.Status.Terminal() {
+			return store.ConversationLease{}, false
+		}
+		if err == nil {
+			lease, acquireErr := c.turns.AcquireConversationLease(c.ctx, owner, sessionID, turnID, c.opts.ReplicaID, c.opts.LeaseTTL)
+			if acquireErr == nil {
+				return lease, true
+			}
+			if errors.Is(acquireErr, store.ErrConversationNotFound) || errors.Is(acquireErr, store.ErrTurnNotFound) {
+				return store.ConversationLease{}, false
+			}
+		} else if errors.Is(err, store.ErrTurnNotFound) || errors.Is(err, store.ErrConversationNotFound) {
+			return store.ConversationLease{}, false
+		}
+		select {
+		case <-c.ctx.Done():
+			return store.ConversationLease{}, false
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *Coordinator) renewLoop(ctx context.Context, owner store.Owner, lease store.ConversationLease, cancel context.CancelCauseFunc, done <-chan struct{}) {
+	ticker := time.NewTicker(c.opts.LeaseRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			if _, err := c.turns.RenewConversationLease(ctx, owner, lease, c.opts.LeaseTTL); err != nil {
+				cancel(fmt.Errorf("%w: %v", store.ErrLeaseFenced, err))
+				return
+			}
+		}
+	}
+}
+
+func (c *Coordinator) confirmFunc(ctx context.Context, owner store.Owner, lease store.ConversationLease, cancel context.CancelCauseFunc) engine.ConfirmFunc {
+	var index atomic.Int64
+	return func(action string, args map[string]any) bool {
+		key := fmt.Sprintf("confirmation/%d", index.Add(1)-1)
+		payload, err := json.Marshal(map[string]any{"action": action, "summary": sanitizeInteractionArgs(args)})
+		if err != nil {
+			cancel(fmt.Errorf("encode confirmation %s: %w", key, err))
+			return false
+		}
+		interaction, _, err := c.turns.CreateInteraction(ctx, owner, lease, key, "confirmation", payload, c.opts.InteractionTTL)
+		if err != nil {
+			cancel(fmt.Errorf("persist confirmation %s: %w", key, err))
+			return false
+		}
+		ticker := time.NewTicker(c.opts.InteractionPoll)
+		defer ticker.Stop()
+		for {
+			// Expiry is checked before consuming a stored resolution. An approval
+			// is authorization for a bounded time, not a permanent capability that
+			// a later retry may reuse.
+			if !interaction.ExpiresAt.After(time.Now()) {
+				cancel(fmt.Errorf("confirmation %s: %w", key, store.ErrInteractionExpired))
+				return false
+			}
+			if interaction.Status == store.InteractionStatusResolved {
+				var response ConfirmationResponse
+				if err := json.Unmarshal(interaction.ResponsePayload, &response); err != nil {
+					cancel(fmt.Errorf("decode confirmation %s: %w", key, err))
+					return false
+				}
+				return response.Confirmed
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case <-ticker.C:
+				interaction, err = c.turns.GetInteraction(ctx, owner, lease.TurnID, key)
+				if err != nil {
+					cancel(fmt.Errorf("read confirmation %s: %w", key, err))
+					return false
+				}
+			}
+		}
+	}
+}
+
+func parseExecutionContext(raw json.RawMessage, globalMutations bool) (engine.SessionState, json.RawMessage, string, store.ContextWriteMode, bool) {
+	pc, err := engine.ParsePersistedContext(raw)
+	if err == nil {
+		return pc.AgentSessionState, pc.ClientContext, "", store.ContextWriteUpdate, globalMutations
+	}
+	if errors.Is(err, engine.ErrUnknownSessionStateSchema) {
+		return engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent}, nil,
+			UnknownSchemaWarning, store.ContextWritePreserve, false
+	}
+	return engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent}, nil,
+		CorruptContextWarning, store.ContextWriteUpdate, globalMutations
+}
+
+func normalizedUserContext(in SubmitInput) tools.UserContext {
+	u := in.UserContext
+	if u.TopOrganizationID == 0 {
+		u.TopOrganizationID = in.Owner.TopOrganizationID
+	}
+	if u.OrganizationID == 0 {
+		u.OrganizationID = in.Owner.OrganizationID
+	}
+	return u
+}
+
+func hashSubmitInput(in SubmitInput) string {
+	// Transport-attempt fields (RequestUUID, ClientIP, STS SessionName) are
+	// intentionally excluded: reconnecting the same semantic turn may change
+	// them. Freeze only inputs that can change meaning, authority, or model
+	// behavior.
+	stableUserContext, _ := json.Marshal(struct {
+		CompanyID uint32 `json:"company_id"`
+		AccountID uint32 `json:"account_id"`
+		Channel   uint32 `json:"channel"`
+		RoleUrn   string `json:"role_urn"`
+		ProjectID string `json:"project_id"`
+		Region    string `json:"region"`
+		UserEmail string `json:"user_email"`
+	}{
+		CompanyID: in.UserContext.CompanyID, AccountID: in.UserContext.AccountID,
+		Channel: in.UserContext.Channel, RoleUrn: in.UserContext.RoleUrn,
+		ProjectID: in.UserContext.ProjectId, Region: in.UserContext.Region,
+		UserEmail: in.UserContext.UserEmail,
+	})
+	model := "<nil>"
+	if in.AssistantModel != nil {
+		model = "<value>" + *in.AssistantModel
+	}
+	return store.HashTurnRequest(
+		fmt.Sprint(in.Owner.TopOrganizationID), fmt.Sprint(in.Owner.OrganizationID),
+		in.SessionID, in.ClientTurnID, in.Message, in.ImageContext,
+		string(stableUserContext), model,
+		fmt.Sprintf("confirm_form=%t", in.ConfirmForm), fmt.Sprintf("guided_create=%t", in.GuidedCreate),
+	)
+}
+
+func sanitizeInteractionArgs(args map[string]any) map[string]any {
+	out := make(map[string]any)
+	for key, value := range args {
+		lower := strings.ToLower(strings.ReplaceAll(key, "_", ""))
+		if strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "accesskey") || strings.Contains(lower, "privatekey") {
+			continue
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			out[key] = sanitizeInteractionArgs(typed)
+		case string:
+			out[key] = redactTurnOutput(typed)
+		default:
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func redactTurnOutput(text string) string {
+	text = guardrails.RedactOutputLeak(guardrails.RedactPII(text))
+	return shortCredentialMarker.ReplaceAllString(text, guardrails.CredentialRedactedOutput)
+}
+
+func (c *Coordinator) appendEvent(ctx context.Context, owner store.Owner, lease store.ConversationLease, eventType string, payload any) (Event, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return Event{}, err
+	}
+	event, err := c.turns.AppendEvent(ctx, owner, lease, eventType, raw, true)
+	if err != nil {
+		return Event{}, err
+	}
+	return eventFromStore(event), nil
+}
+
+func eventFromStore(event store.TurnEvent) Event {
+	return Event{TurnID: event.TurnID, Seq: event.Seq, LeaseEpoch: event.LeaseEpoch, Type: event.Type, Payload: event.Payload, Provisional: event.Provisional, CreatedAt: event.CreatedAt}
+}
+
+func (c *Coordinator) fail(owner store.Owner, lease store.ConversationLease, reason string) {
+	c.failAs(owner, lease, store.TurnStatusFailedRetryable, reason)
+}
+
+// failAs keeps reconciling while the coordinator is alive. A transient DB
+// failure must not leave a running/awaiting turn permanently at the queue
+// head. If the old lease expires, this worker reacquires the same turn under a
+// new fence before writing the failure; it never skips to a later turn.
+func (c *Coordinator) failAs(owner store.Owner, lease store.ConversationLease, desired store.TurnStatus, reason string) {
+	current := lease
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+		attemptCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		turn, getErr := c.turns.GetTurn(attemptCtx, owner, current.TurnID)
+		if getErr == nil && (turn.Status.Terminal() || turn.Status == desired) {
+			cancel()
+			c.publishAvailable(owner, turn.ID)
+			return
+		}
+		failed, failErr := c.turns.FailTurn(attemptCtx, owner, current, desired, reason)
+		cancel()
+		if failErr == nil {
+			c.publishAvailable(owner, failed.ID)
+			return
+		}
+		if errors.Is(failErr, store.ErrLeaseFenced) || errors.Is(failErr, store.ErrInvalidTurnState) || time.Now().After(current.LeaseUntil) {
+			acquireCtx, acquireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			replacement, acquireErr := c.turns.AcquireConversationLease(acquireCtx, owner, current.SessionID, current.TurnID, current.HolderID, c.opts.LeaseTTL)
+			acquireCancel()
+			if acquireErr == nil {
+				current = replacement
+				continue
+			}
+		}
+		timer := time.NewTimer(max(c.opts.InteractionPoll, 50*time.Millisecond))
+		select {
+		case <-c.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (c *Coordinator) publishAvailable(owner store.Owner, turnID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	events, err := c.turns.ListEvents(ctx, owner, turnID, 0, 1000)
+	if err != nil {
+		return
+	}
+	for _, event := range events {
+		c.deliver(eventFromStore(event))
+	}
+}
+
+func (c *Coordinator) subscribe(ctx context.Context, owner store.Owner, turnID string, lastSeq int64, sink EventSink) {
+	sub := &subscription{sink: sink, lastSeq: lastSeq, ctx: ctx}
+	c.mu.Lock()
+	if c.subs[turnID] == nil {
+		c.subs[turnID] = make(map[*subscription]struct{})
+	}
+	c.subs[turnID][sub] = struct{}{}
+	c.wg.Add(1)
+	c.mu.Unlock()
+	go func() {
+		defer c.wg.Done()
+		c.pollSubscription(owner, turnID, sub)
+	}()
+}
+
+func (c *Coordinator) pollSubscription(owner store.Owner, turnID string, sub *subscription) {
+	ticker := time.NewTicker(c.opts.InteractionPoll)
+	defer ticker.Stop()
+	defer c.removeSubscription(turnID, sub)
+	for {
+		if c.pollOnce(owner, turnID, sub) {
+			return
+		}
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-sub.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *Coordinator) pollOnce(owner store.Owner, turnID string, sub *subscription) bool {
+	sub.mu.Lock()
+	after := sub.lastSeq
+	done := sub.done
+	sub.mu.Unlock()
+	if done {
+		return true
+	}
+	events, err := c.turns.ListEvents(sub.ctx, owner, turnID, after, 100)
+	if err != nil {
+		return false
+	}
+	for _, event := range events {
+		if c.deliverTo(sub, eventFromStore(event)) {
+			return true
+		}
+	}
+	if len(events) == 0 {
+		turn, err := c.turns.GetTurn(sub.ctx, owner, turnID)
+		if err == nil && turn.Status.Terminal() {
+			terminalSeq := turn.NextEventSeq - 1
+			if after < terminalSeq {
+				// The first ListEvents may have raced immediately before the commit
+				// transaction became visible while GetTurn raced immediately after it.
+				// Re-read rather than closing and losing the terminal event.
+				committedEvents, listErr := c.turns.ListEvents(sub.ctx, owner, turnID, after, 100)
+				if listErr != nil {
+					return false
+				}
+				for _, event := range committedEvents {
+					if c.deliverTo(sub, eventFromStore(event)) {
+						return true
+					}
+				}
+				return false
+			}
+			sub.mu.Lock()
+			sub.done = true
+			sub.mu.Unlock()
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Coordinator) replayNow(owner store.Owner, turnID string) error {
+	c.mu.Lock()
+	subs := make([]*subscription, 0, len(c.subs[turnID]))
+	for sub := range c.subs[turnID] {
+		subs = append(subs, sub)
+	}
+	c.mu.Unlock()
+	events, err := c.turns.ListEvents(context.Background(), owner, turnID, 0, 1000)
+	if err != nil {
+		return err
+	}
+	for _, raw := range events {
+		for _, sub := range subs {
+			c.deliverTo(sub, eventFromStore(raw))
+		}
+	}
+	return nil
+}
+
+func (c *Coordinator) deliver(event Event) {
+	c.mu.Lock()
+	subs := make([]*subscription, 0, len(c.subs[event.TurnID]))
+	for sub := range c.subs[event.TurnID] {
+		subs = append(subs, sub)
+	}
+	c.mu.Unlock()
+	for _, sub := range subs {
+		c.deliverTo(sub, event)
+	}
+}
+
+func (c *Coordinator) deliverTo(sub *subscription, event Event) bool {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if sub.done || event.Seq <= sub.lastSeq {
+		return sub.done
+	}
+	if err := sub.sink(event); err != nil {
+		sub.done = true
+		return true
+	}
+	sub.lastSeq = event.Seq
+	if !event.Provisional || event.Type == "turn.failed" || event.Type == "turn.reconciled" {
+		sub.done = true
+	}
+	return sub.done
+}
+
+func (c *Coordinator) removeSubscription(turnID string, sub *subscription) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.subs[turnID], sub)
+	if len(c.subs[turnID]) == 0 {
+		delete(c.subs, turnID)
+	}
+}
+
+func intPtr(value int) *int {
+	if value == 0 {
+		return nil
+	}
+	return &value
+}

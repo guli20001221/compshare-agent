@@ -24,6 +24,10 @@ type journalStoreStub struct {
 	lastStatus   store.ActionStatus
 }
 
+func (s *journalStoreStub) ListTurnActions(context.Context, store.Owner, string) ([]store.TurnAction, error) {
+	return nil, nil
+}
+
 func (s *journalStoreStub) ReserveAction(_ context.Context, _ store.Owner, _ store.ConversationLease, in store.ReserveActionInput) (store.TurnAction, bool, error) {
 	s.reserveCalls++
 	s.reserveInput = append(s.reserveInput, in)

@@ -96,6 +96,52 @@ WHERE id = $1 AND top_organization_id = $2 AND organization_id = $3
 	return turn, nil
 }
 
+func (s *PostgresTurnStore) FindTurnByClientID(ctx context.Context, owner Owner, sessionID, clientTurnID string) (Turn, error) {
+	turn, err := scanTurn(s.db.QueryRowContext(ctx, turnSelect+`
+WHERE session_id = $1 AND client_turn_id = $2
+  AND top_organization_id = $3 AND organization_id = $4
+`, sessionID, clientTurnID, owner.TopOrganizationID, owner.OrganizationID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Turn{}, ErrTurnNotFound
+	}
+	if err != nil {
+		return Turn{}, fmt.Errorf("find turn by client id: %w", err)
+	}
+	return turn, nil
+}
+
+// ListTurnActions returns the durable action plan/result for one owner-scoped
+// turn in stable action-index order. A takeover executor uses this to enter
+// replay-only mode after any prior action crossed the before-call boundary.
+func (s *PostgresTurnStore) ListTurnActions(ctx context.Context, owner Owner, turnID string) ([]TurnAction, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT a.turn_id, a.action_index, a.lease_epoch, a.action_name, a.args_hash,
+       a.execution_token, a.in_flight, a.upstream_request_id, a.status,
+       a.result, a.error_code, a.created_at, a.updated_at
+FROM turn_actions a
+JOIN chat_turns t ON t.id = a.turn_id
+WHERE a.turn_id = $1
+  AND t.top_organization_id = $2 AND t.organization_id = $3
+ORDER BY a.action_index ASC
+`, turnID, owner.TopOrganizationID, owner.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("list turn actions: %w", err)
+	}
+	defer rows.Close()
+	var actions []TurnAction
+	for rows.Next() {
+		action, scanErr := scanAction(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan turn action: %w", scanErr)
+		}
+		actions = append(actions, action)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate turn actions: %w", err)
+	}
+	return actions, nil
+}
+
 func (s *PostgresTurnStore) AcquireConversationLease(ctx context.Context, owner Owner, sessionID, turnID, holderID string, ttl time.Duration) (ConversationLease, error) {
 	if sessionID == "" || turnID == "" || holderID == "" || len(holderID) > 128 || ttl <= 0 {
 		return ConversationLease{}, fmt.Errorf("%w: invalid lease request", ErrInvalidArgument)
@@ -490,8 +536,12 @@ func (s *PostgresTurnStore) ResolveInteraction(
 	if _, err := lockSession(ctx, tx, owner, sessionID); err != nil {
 		return TurnInteraction{}, err
 	}
-	if _, err := lockTurn(ctx, tx, owner, sessionID, turnID); err != nil {
+	turn, err := lockTurn(ctx, tx, owner, sessionID, turnID)
+	if err != nil {
 		return TurnInteraction{}, err
+	}
+	if turn.Status.Terminal() {
+		return TurnInteraction{}, ErrInvalidTurnState
 	}
 	interaction, err := getInteractionForUpdate(ctx, tx, turnID, key)
 	if err != nil {
@@ -527,6 +577,14 @@ RETURNING id, turn_id, interaction_key, kind, request_hash, request_payload,
 `, resolutionHash, nullableJSON(canonicalResponse), turnID, key))
 	if err != nil {
 		return TurnInteraction{}, fmt.Errorf("resolve interaction: %w", err)
+	}
+	resolvedEvent, _ := json.Marshal(map[string]any{
+		"interaction_key": interaction.Key,
+		"kind":            interaction.Kind,
+		"resolved":        true,
+	})
+	if _, err := appendEventTx(ctx, tx, turnID, interaction.LeaseEpoch, "interaction.resolved", resolvedEvent, true); err != nil {
+		return TurnInteraction{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return TurnInteraction{}, fmt.Errorf("resolve interaction commit: %w", err)

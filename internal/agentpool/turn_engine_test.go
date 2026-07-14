@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/agentpool"
+	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,6 +17,21 @@ type committedTailStore struct {
 	*mockMessageStore
 	tailCalls int
 	tail      []store.Message
+}
+
+func TestNewTurnEngineWithOptions_UsesCallerTurnOptionsWithoutEnteringCache(t *testing.T) {
+	ms := &committedTailStore{mockMessageStore: &mockMessageStore{}}
+	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{MutatingToolsEnabled: true})
+	defer pool.Close()
+
+	eng, err := pool.NewTurnEngineWithOptions(context.Background(), owner1, "sess-options", engine.SessionOptions{
+		InitialCommittedTurns: 7,
+		MutatingToolsEnabled:  false,
+		RequireActionJournal:  true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, eng)
+	assert.Zero(t, pool.SizeForTest())
 }
 
 func (s *committedTailStore) ListCommittedTail(

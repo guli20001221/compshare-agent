@@ -495,6 +495,10 @@ type SessionOptions struct {
 	Subject              string
 	ConfirmFn            ConfirmFunc
 	MutatingToolsEnabled bool
+	// InitialCommittedTurns is the authoritative number of turns preceding
+	// this private engine. ChatWithOptions increments userTurn at entry, so a
+	// durable turn with sequence N must construct with N-1.
+	InitialCommittedTurns int
 	// ActionJournal belongs to exactly one durable v2 turn. It must never be
 	// stored in SharedDeps because its action index and lease are turn-local.
 	ActionJournal        tools.ActionJournal
@@ -589,6 +593,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		registry:                       entity.NewRegistry(),
 		rateLimitSubject:               opts.Subject,
 		mutatingToolsEnabled:           opts.MutatingToolsEnabled,
+		userTurn:                       max(opts.InitialCommittedTurns, 0),
 		sessionFactContextEnabled:      deps.SessionFactContextEnabled,
 		reactResultProjectionEnabled:   deps.ReactResultProjectionEnabled,
 		reactHistoryCompactionEnabled:  deps.ReactHistoryCompactionEnabled,

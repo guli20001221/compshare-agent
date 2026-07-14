@@ -190,9 +190,11 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 	require.ErrorIs(t, err, ErrInteractionConflict)
 	events, err = turns.ListEvents(ctx, owner, turn.ID, 0, 20)
 	require.NoError(t, err)
-	require.Len(t, events, 3)
+	require.Len(t, events, 4)
 	assert.Equal(t, "interaction.requested", events[2].Type)
 	assert.True(t, events[2].Provisional)
+	assert.Equal(t, "interaction.resolved", events[3].Type)
+	assert.True(t, events[3].Provisional)
 
 	actionHash := HashTurnRequest("StopInstance", "uhost-1")
 	action, created, err := turns.ReserveAction(ctx, owner, leaseB, ReserveActionInput{Index: 0, ActionName: "StopInstance", ArgsHash: actionHash})
@@ -724,6 +726,22 @@ func TestPostgresTurnStore_ConcurrentFencing(t *testing.T) {
 	assert.Equal(t, takeover.Epoch, replayed[0].LeaseEpoch)
 	require.NoError(t, stores[1].ReleaseConversationLease(ctx, owner, takeover))
 	require.NoError(t, VerifySchema(ctx, db), "schema probes must also work after protocol tables contain rows")
+}
+
+func TestPostgresTurnStore_FirstDurableSequenceContinuesLegacyCommittedCount(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 72201, OrganizationID: 72202}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE sessions SET message_count = 20 WHERE id = $1`, session.ID)
+	require.NoError(t, err)
+	turn, _, err := NewPostgresTurnStore(db).AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "first-v2-after-legacy",
+		RequestHash: HashTurnRequest("first-v2-after-legacy"), UserContent: "continue",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(11), turn.Sequence)
 }
 
 func TestPostgresTurnStore_PreserveContextCommitLeavesUnknownStateUntouched(t *testing.T) {

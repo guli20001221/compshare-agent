@@ -66,6 +66,24 @@ func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID str
 // shares process-wide dependencies but is never inserted into the LRU, so a
 // failed/uncommitted attempt cannot contaminate a later turn's memory.
 func (p *Pool) NewTurnEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
+	subject, _ := governance.SubjectKeyFromOrganization(owner.TopOrganizationID, owner.OrganizationID)
+	return p.NewTurnEngineWithOptions(ctx, owner, sessionID, engine.SessionOptions{
+		Subject:              subject,
+		ConfirmFn:            denyConfirm,
+		MutatingToolsEnabled: p.mutatingToolsEnabled,
+	})
+}
+
+// NewTurnEngineWithOptions creates a private durable-turn engine while
+// retaining the pool's process-wide dependency sharing. The boot-level
+// mutation gate is an upper bound: a caller may force read-only, never enable
+// writes that the process disabled.
+func (p *Pool) NewTurnEngineWithOptions(
+	ctx context.Context,
+	owner store.Owner,
+	sessionID string,
+	opts engine.SessionOptions,
+) (*engine.Engine, error) {
 	tailStore, ok := p.messageStore.(store.CommittedTailMessageStore)
 	if !ok {
 		return nil, fmt.Errorf("agentpool: message store lacks committed tail capability")
@@ -79,12 +97,11 @@ func (p *Pool) NewTurnEngine(ctx context.Context, owner store.Owner, sessionID s
 		return nil, fmt.Errorf("agentpool: invalid committed tail for session %q: %w", sessionID, err)
 	}
 
-	subject, _ := governance.SubjectKeyFromOrganization(owner.TopOrganizationID, owner.OrganizationID)
-	eng := engine.NewSession(p.deps, engine.SessionOptions{
-		Subject:              subject,
-		ConfirmFn:            denyConfirm,
-		MutatingToolsEnabled: p.mutatingToolsEnabled,
-	})
+	if opts.Subject == "" {
+		opts.Subject, _ = governance.SubjectKeyFromOrganization(owner.TopOrganizationID, owner.OrganizationID)
+	}
+	opts.MutatingToolsEnabled = opts.MutatingToolsEnabled && p.mutatingToolsEnabled
+	eng := engine.NewSession(p.deps, opts)
 	eng.RehydrateHistory(history)
 	return eng, nil
 }
