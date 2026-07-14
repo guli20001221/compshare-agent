@@ -54,8 +54,6 @@ func engineWithLiveDeployFrame(t *testing.T, results []intent.IntentRouterResult
 // So the confidence gate tripped hardest on precisely the turns where continuation mattered
 // most, and the turn that most needed the frame was the turn that destroyed it.
 func TestTryPlannerDispatch_LowConfidenceMustNotDeleteTheUsersDeployment(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := engineWithLiveDeployFrame(t, []intent.IntentRouterResult{{
 		Plan: intent.IntentRoute{
@@ -88,8 +86,6 @@ func TestTryPlannerDispatch_LowConfidenceMustNotDeleteTheUsersDeployment(t *test
 // Fallback:true and only overwrites it on success, so one transient network blip used to
 // silently delete an in-progress deployment.
 func TestTryPlannerDispatch_ARouterErrorMustNotDeleteTheUsersDeployment(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := engineWithLiveDeployFrame(t, []intent.IntentRouterResult{{
 		Fallback: true, // the router call itself failed
@@ -114,8 +110,6 @@ func TestTryPlannerDispatch_ARouterErrorMustNotDeleteTheUsersDeployment(t *testi
 // it": a sub-0.60 classification is untrusted input, and tryResumeCreateContextFrame ends in
 // runDeployModel — a MUTATING saga. Surviving the wobble must not mean acting on it.
 func TestTryPlannerDispatch_AnUnsureRouterMustNotDriveTheDeploySaga(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{}, exec, nil)
@@ -210,8 +204,6 @@ func TestDropStaleDeployPayload_ADeployContinuationIsUntouched(t *testing.T) {
 // This one drives the real tryResumeCreateContextFrame end to end and asserts the turn comes
 // out as a plain hardware create, so the fix has to actually be plugged in.
 func TestResumeCreateContextFrame_ADeadDeployDoesNotHijackTheNextHardwareCreate(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var createArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -237,7 +229,7 @@ func TestResumeCreateContextFrame_ADeadDeployDoesNotHijackTheNextHardwareCreate(
 
 	// The user said 「再开一台 4090」. They named NO workload and NO image — the resolver
 	// reports a continuation with nothing deploy-shaped in it.
-	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{
+	eng.SetContextDecisionLayer(&fakeCreateContextDecisionLayer{
 		decision: &ContextContinuationDecision{Decision: ContextContinuationContinue, GPUPref: "4090"},
 	})
 	eng.SetSessionState(SessionState{

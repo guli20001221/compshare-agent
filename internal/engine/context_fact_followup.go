@@ -9,7 +9,7 @@ import (
 )
 
 func (e *Engine) tryRecentFactFollowup(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if e == nil || !ContextContinuationEnabled() || !e.sessionFactContextEnabled || !e.sessionStateHydrated || len(e.sessionState.RecentFacts) == 0 {
+	if e == nil || !e.sessionFactContextEnabled || !e.sessionStateHydrated || len(e.sessionState.RecentFacts) == 0 {
 		return "", false
 	}
 	decision, err := e.resolveContextDecision(ctx, userMsg, dispatch.result.Plan.Intent, e.sessionState.ContextFrame)

@@ -10,7 +10,6 @@ import (
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	grounded "github.com/compshare-agent/internal/renderer"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,9 +60,6 @@ func TestDirectClarificationFromRealPricingFollowupContinuesWithContextAwareAgen
 	// Sanitized from the production session whose sequence ended with:
 	// "假如不开机，是不是不收费" -> a billing explanation -> "是多少钱？".
 	// The old direct handler ignored that pair and asked for a GPU model again.
-	previousAgentic := tools.AgenticSearchKnowledgeEnabled()
-	tools.SetAgenticSearchKnowledgeEnabled(false)
-	t.Cleanup(func() { tools.SetAgenticSearchKnowledgeEnabled(previousAgentic) })
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{map[string]any{

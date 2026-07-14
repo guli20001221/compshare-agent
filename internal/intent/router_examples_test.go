@@ -142,9 +142,8 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // R3-A1 (2026-05-24) — third bump: 6 modelverse model-API anchors added to
 // the knowledge_qa group (Suno/Vidu/flux/gpt-image/minimax-speech/error-code).
 // Justification: R2 CLI smoke (PR #165 verification) showed 5/12 modelverse
-// model-API questions being classified as IntentUnknown — engine.go:1450
-// `tryStage2BRetrieval` short-circuits unless Plan.Intent == IntentKnowledgeQA,
-// so RAG never ran against the 46 modelverse chunks shipped in PR #165 and
+// model-API questions being classified as IntentUnknown, so the knowledge
+// route never ran against the 46 modelverse chunks shipped in PR #165 and
 // users got "我不知道"-class fallbacks instead. Group `Source` updated to
 // flag the addition; SHA bumped by-construction. Boundary: anchors phrase
 // "X 怎么调 / 用 SDK 怎么传参 / 返回 N 是什么错误" so they don't conflict
@@ -377,7 +376,7 @@ func TestPlannerExamples_RenderedPromptUnchanged(t *testing.T) {
 // knowledge_qa / billing_instance per the router directives). SHA re-pinned.
 // 2026-07-14: knowledge follow-ups may use durable verified context instead of
 // always forcing retrieval; the router also receives bounded recent turns.
-const systemPromptSHA256Baseline = "3c7b2f1e12a7f98c30cdc3574cd532835de17e6e86e7f6933e47174a492262b0"
+const systemPromptSHA256Baseline = "6753f7b1472b13ef43908e9576580af20da84b73ba0d9d821008dd913af6fbcd"
 
 func TestPlannerExamples_FullSystemPromptStable(t *testing.T) {
 	prompt := buildSystemPrompt()

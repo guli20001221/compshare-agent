@@ -336,7 +336,7 @@ func (r TraceRecord) DeriveActualExecutionTier() string {
 	switch r.IntentRouter.RouteStatus {
 	case "dispatched_retrieval", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop is a knowledge_qa turn forced through the
-		// agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP): the realized work is still
+		// knowledge agent loop: the realized work is still
 		// knowledge retrieval, so the realized-tier attribution stays comparable
 		// across the terminal→agent-loop migration even though the runtime FORM
 		// becomes agent (see DeriveActualExecutionPath).
@@ -365,7 +365,7 @@ func (r TraceRecord) DeriveActualExecutionPath() string {
 	switch r.IntentRouter.RouteStatus {
 	case "dispatched_agent", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop: a knowledge_qa turn forced through the
-		// shared ReAct loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). It runs the agent
+		// shared ReAct loop. It runs the agent
 		// loop (a SearchKnowledge tool call fires), so the runtime FORM is agent —
 		// the migration's whole point (terminal_rag → agent). The engine projects
 		// PlannedExecutionPath=agent for the same turn so planned==actual.
@@ -654,7 +654,7 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 }
 
 // MergeRetrievalTrace folds a new per-turn retrieval into the recorded one. A turn
-// can retrieve more than once (e.g. the COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced
+// can retrieve more than once (e.g. the knowledge agent loop's forced
 // SearchKnowledge first hop, then a voluntary re-query later in the same ReAct loop).
 // The recorders historically kept only the LAST retrieval, so a trailing no-hit
 // re-query would clobber the forced hop's substantive retrieval and make it look like
@@ -926,6 +926,13 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 }
 
 type OutcomeTrace struct {
+	// Continuity contract metadata is bounded and content-free. It proves which
+	// inputs and answer path were used without persisting prompts or user text.
+	ContextSources     []string `json:"context_sources,omitempty"`
+	ResponseContract   string   `json:"response_contract,omitempty"`
+	PromptSectionIDs   []string `json:"prompt_section_ids,omitempty"`
+	MemoryUpdateSource string   `json:"memory_update_source,omitempty"`
+	GroundingOutcome   string   `json:"grounding_outcome,omitempty"`
 	// TerminatedBy / AbortCause / ErrorClass / Resolution are the four
 	// outcome-attribution axes derived at Finish (see outcome.go). They close the
 	// "no attribution on ~25% of turns" dark hole. TerminatedBy is always set for a
@@ -1210,7 +1217,12 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		trace.ErrorClass != "" ||
 		trace.Resolution != "" ||
 		trace.ReactRounds != 0 ||
-		trace.BudgetHit
+		trace.BudgetHit ||
+		len(trace.ContextSources) > 0 ||
+		trace.ResponseContract != "" ||
+		len(trace.PromptSectionIDs) > 0 ||
+		trace.MemoryUpdateSource != "" ||
+		trace.GroundingOutcome != ""
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {

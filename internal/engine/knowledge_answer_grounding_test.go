@@ -12,7 +12,6 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,45 +45,8 @@ func TestSanitizedContextRAGRecordsContainNoCustomerIdentifiers(t *testing.T) {
 	assert.Empty(t, sensitive.Find(b), "sanitized real-record fixtures must not carry customer or operational identifiers")
 }
 
-func enableDisciplinedKnowledgeRepair(t *testing.T) {
-	t.Helper()
-	previous := DisciplinedKnowledgeQASynthesisEnabled()
-	SetDisciplinedKnowledgeQASynthesisEnabled(true)
-	t.Cleanup(func() { SetDisciplinedKnowledgeQASynthesisEnabled(previous) })
-}
-
-func enableKnowledgeAnswerVerifier(t *testing.T) {
-	t.Helper()
-	previous := KnowledgeAnswerVerifierEnabled()
-	SetKnowledgeAnswerVerifierEnabled(true)
-	t.Cleanup(func() { SetKnowledgeAnswerVerifierEnabled(previous) })
-}
-
-func TestKnowledgeAnswerVerifierDisabledFailsClosed(t *testing.T) {
-	previous := KnowledgeAnswerVerifierEnabled()
-	SetKnowledgeAnswerVerifierEnabled(false)
-	t.Cleanup(func() { SetKnowledgeAnswerVerifierEnabled(previous) })
-
-	record := loadSanitizedContextRAGRecords(t)[0]
-	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
-		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Content: record.Evidence,
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "must not be called"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
-	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
-	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
-
-	assert.Equal(t, ragUngroundableReply, got)
-	assert.Empty(t, mock.calls, "disabled verifier must refuse rather than release an unchecked answer")
-}
-
 func groundedEngineForRecord(t *testing.T, record sanitizedContextRAGRecord, responses ...llm.ChatResponse) (*Engine, *mockLLM) {
 	t.Helper()
-	enableKnowledgeAnswerVerifier(t)
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
 		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
 	}}
@@ -156,7 +118,6 @@ func TestKnowledgeAnswerGrounding_SanitizedContextRecordsUseOneResolvedQuestion(
 // A valid citation is attribution, not proof. This is the hole the earlier
 // grounding-not-punctuation branch explicitly left open.
 func TestKnowledgeAnswerGrounding_CitedFabricationAlsoReachesSemanticGate(t *testing.T) {
-	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[3]
 	fabrication := "所有订单都能在 24 小时内全额退款 [[" + record.ChunkID + "]]。"
 	eng, mock := groundedEngineForRecord(t, record,
@@ -196,7 +157,6 @@ func TestKnowledgeAnswerGrounding_NoEvidenceCannotPass(t *testing.T) {
 }
 
 func TestKnowledgeAnswerGrounding_EmptyCurrentSearchDoesNotErasePriorAnswer(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"使用 Ctrl+Shift+V 粘贴","chunk_id":"terminal-paste-001","evidence_quote":"使用 Ctrl+Shift+V 粘贴"}],"unsupported":[]}`}}}, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
@@ -220,7 +180,6 @@ func TestKnowledgeAnswerGrounding_EmptyCurrentSearchDoesNotErasePriorAnswer(t *t
 }
 
 func TestKnowledgeAnswerGrounding_MergesPriorVerifiedAndCurrentEvidence(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"粘贴使用 Ctrl+Shift+V","chunk_id":"terminal-paste-001","evidence_quote":"使用 Ctrl+Shift+V 粘贴"},{"answer_quote":"复制使用 Ctrl+Shift+C","chunk_id":"terminal-copy-002","evidence_quote":"使用 Ctrl+Shift+C 复制"}],"unsupported":[]}`}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
@@ -248,7 +207,6 @@ func TestKnowledgeAnswerGrounding_MergesPriorVerifiedAndCurrentEvidence(t *testi
 }
 
 func TestKnowledgeAnswerGrounding_RawLeakCannotUseVerifierAsBypass(t *testing.T) {
-	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[2]
 	leak := "资料原文：" + record.Evidence
 	eng, mock := groundedEngineForRecord(t, record, repairResponse(record, 100))
@@ -265,7 +223,6 @@ func TestKnowledgeAnswerGrounding_CitationMarkersCannotSplitRawLeakNeedle(t *tes
 	record := loadSanitizedContextRAGRecords(t)[0]
 	for _, marker := range []string{"[1]", "[[" + record.ChunkID + "]]"} {
 		t.Run(marker, func(t *testing.T) {
-			enableDisciplinedKnowledgeRepair(t)
 			runes := []rune(record.Evidence)
 			leak := string(runes[:len(runes)/2]) + marker + string(runes[len(runes)/2:])
 			eng, mock := groundedEngineForRecord(t, record, repairResponse(record, 100))
@@ -284,7 +241,6 @@ func TestKnowledgeAnswerGrounding_CitationMarkersCannotSplitRawLeakNeedle(t *tes
 }
 
 func TestKnowledgeAnswerGrounding_PaidRepairSurvivesPostCallBudget(t *testing.T) {
-	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[4]
 	eng, mock := groundedEngineForRecord(t, record,
 		groundingVerdictResponse(record, false, 100),
@@ -300,7 +256,6 @@ func TestKnowledgeAnswerGrounding_PaidRepairSurvivesPostCallBudget(t *testing.T)
 }
 
 func TestKnowledgeAnswerGrounding_RepairSuccessRetractsFailureAttribution(t *testing.T) {
-	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[1]
 	eng, _ := groundedEngineForRecord(t, record,
 		groundingVerdictResponse(record, false, 100),
@@ -322,14 +277,6 @@ func TestKnowledgeAnswerGrounding_RepairSuccessRetractsFailureAttribution(t *tes
 // finalizeAgentLoopKnowledgeAnswer call from engine.go makes the cited fabrication
 // escape unchanged and this test red.
 func TestKnowledgeAnswerGrounding_ProductionAgentLoopWiresUnifiedFinalGate(t *testing.T) {
-	enableDisciplinedKnowledgeRepair(t)
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
-
 	record := loadSanitizedContextRAGRecords(t)[3]
 	chunk := knowledge.KBChunk{ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence}
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
@@ -380,7 +327,7 @@ func TestKnowledgeAnswerGrounding_SemanticVerifierRejectsNegationReversal(t *tes
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
 
 	assert.Equal(t, ragUngroundableReply, got)
-	require.Len(t, mock.calls, 1)
+	require.Len(t, mock.calls, 2, "a rejected draft gets exactly one proof-carrying repair")
 }
 
 func TestKnowledgeAnswerGrounding_SemanticVerifierRejectsQuantityReversal(t *testing.T) {
@@ -397,7 +344,7 @@ func TestKnowledgeAnswerGrounding_SemanticVerifierRejectsQuantityReversal(t *tes
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
 
 	assert.Equal(t, ragUngroundableReply, got)
-	require.Len(t, mock.calls, 1)
+	require.Len(t, mock.calls, 2, "a rejected draft gets exactly one proof-carrying repair")
 }
 
 func TestKnowledgeAnswerGrounding_ProofRequiresRealQuotesAndChunk(t *testing.T) {

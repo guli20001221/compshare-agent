@@ -68,11 +68,8 @@ agent:
     # confirm_form_v1 + guided_create_v1; selection cards remain unsupported.
     confirm_form: true
     guided_create: true
-    # Agentic-RAG answer stack (RAG as a tool the agent calls in-loop).
-    # Model-assisted semantic check, bounded by deterministic evidence guards.
-    # Explicit false is fail-closed: unchecked KB answers are not released.
-    knowledge_answer_verifier: true
-    knowledge_qa_disciplined_synthesis: true
+    # Agentic knowledge answering is a fixed runtime capability: retrieval is
+    # chosen in-loop and every released knowledge answer uses the shared proof.
     external_knowledge: true            # merge external tool/ops corpus (vLLM/CUDA/Linux/PyTorch)
     # Context-engineering optimizations.
     session_fact_context: true          # near-term fact cache injected into context
@@ -81,7 +78,6 @@ agent:
     # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
     # guards only when their flag-on path is the validated production path.
     domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
-    flash_knowledge_route_guard: true   # explicit PR373 guard for flash product-fact route jitter
     intent_scoped_react_prompt: false   # intent-specific ReAct system prompts
     skill_executor: false               # body-driven skill executor gate (P2a gray-rollout)
     skill_executor_diagnosis_pilots: [] # e.g. [diagnose-ssh, diagnose-billing] — requires skill_executor: true

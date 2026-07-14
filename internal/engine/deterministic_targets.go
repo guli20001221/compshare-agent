@@ -316,23 +316,17 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	case intent.LifecycleActionRename:
 		newName := renameWorkflowNameFromUserText(userMsg)
 		if newName == "" {
-			if ContextContinuationEnabled() {
-				e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
-				reply := e.executeWorkflow(ctx, workflowName, args, onStep)
-				if final, ok := isFinalReply(reply); ok {
-					reply = final
-				} else if msg, ok := workflowFailureMessage(reply); ok {
-					reply = msg
-				}
-				e.recordSelectedInstanceID(inst.UHostId, inst.Name)
-				e.recordLastIntentFromPlan(result.Plan)
-				e.messages = append(e.messages, assistantMessage(reply))
-				return reply, true
-			}
-			reply := "请告诉我要把实例改成什么名称。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
 			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
 			e.recordLastIntentFromPlan(result.Plan)
+			e.messages = append(e.messages, assistantMessage(reply))
+			return reply, true
 			e.messages = append(e.messages, assistantMessage(reply))
 			return reply, true
 		}
@@ -421,12 +415,9 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	// Deterministic, parsed from the user's literal text and matched against the
 	// persisted candidate list via the same matcher the trust guard uses, so a
 	// resolved target always passes workflowTargetIsTrusted (no poisoning).
-	// Gated on the continuation flag for rollback parity.
-	if ContextContinuationEnabled() {
-		if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
-			plan := lifecyclePlanForSelectedInstance(action, inst)
-			return e.tryLifecycleActionForSelectedInstance(ctx, inst, action, userMsg, plan, onStep)
-		}
+	if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
+		plan := lifecyclePlanForSelectedInstance(action, inst)
+		return e.tryLifecycleActionForSelectedInstance(ctx, inst, action, userMsg, plan, onStep)
 	}
 	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" &&
 		selectedInstanceSourceTrustedForWorkflow(e.sessionState.SelectedInstanceSource) &&
@@ -450,8 +441,7 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			Confidence:    1,
 		}
 		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
-			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk ||
-				(action == intent.LifecycleActionRename && ContextContinuationEnabled()) {
+			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk || action == intent.LifecycleActionRename {
 				reply = e.executeWorkflow(ctx, workflowName, args, onStep)
 				if final, ok := isFinalReply(reply); ok {
 					reply = final
@@ -589,8 +579,7 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 	args := map[string]any{"UHostId": inst.UHostId}
 	e.clearContextFrameForNewDirectWorkflow()
 	if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
-		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk ||
-			(action == intent.LifecycleActionRename && ContextContinuationEnabled()) {
+		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk || action == intent.LifecycleActionRename {
 			reply = e.executeWorkflow(ctx, workflowName, args, onStep)
 			if final, ok := isFinalReply(reply); ok {
 				reply = final
@@ -670,12 +659,9 @@ func (e *Engine) tryDirectStopSchedulerFromUserText(ctx context.Context, userMsg
 		return "", false
 	}
 	// Ordinal/name reference to a displayed candidate list, e.g. "第2台定时关机".
-	// Deterministic and guard-consistent (see ordinalTargetFromPending); gated on
-	// the continuation flag for rollback parity.
-	if ContextContinuationEnabled() {
-		if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
-			return e.dispatchStopSchedulerForInstance(ctx, inst, userMsg, compact, onStep)
-		}
+	// Deterministic and guard-consistent (see ordinalTargetFromPending).
+	if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
+		return e.dispatchStopSchedulerForInstance(ctx, inst, userMsg, compact, onStep)
 	}
 	if _, ok := findUniqueInstanceNameInText(userMsg, snapshot); !ok {
 		return "", false
@@ -743,7 +729,7 @@ func hasLikelyExplicitInstanceTargetText(userText string, snapshot entity.Regist
 func lifecycleActionAllowsExplicitIDPreDispatch(action intent.LifecycleAction) bool {
 	return action == intent.LifecycleActionCreateDisk ||
 		action == intent.LifecycleActionResize ||
-		(action == intent.LifecycleActionRename && ContextContinuationEnabled())
+		action == intent.LifecycleActionRename
 }
 
 var legacyUHostIDInTextRE = regexp.MustCompile(`uhost-[0-9a-zA-Z]+`)

@@ -2,14 +2,6 @@ package tools
 
 import openai "github.com/sashabaranov/go-openai"
 
-// SetAgenticSearchKnowledgeEnabled is retained as a source-compatible no-op for
-// older embedders. SearchKnowledge has no runtime rollout switch anymore;
-// availability is decided only by the active ToolScope.
-func SetAgenticSearchKnowledgeEnabled(bool) {}
-
-// AgenticSearchKnowledgeEnabled is retained for source compatibility.
-func AgenticSearchKnowledgeEnabled() bool { return true }
-
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
 	// --- Knowledge Tools (local, no API call) ---

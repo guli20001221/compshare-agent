@@ -40,6 +40,11 @@ type TraceSnapshot struct {
 	ResolutionSource          string
 	SelectedInstanceIDAtStart string
 	FactCacheOldestAgeSeconds int
+	ContextSources            []string
+	ResponseContract          string
+	PromptSectionIDs          []string
+	MemoryUpdateSource        string
+	GroundingOutcome          string
 }
 
 // AttachTraceHooks replaces every per-turn observer as one atomic wiring step.
@@ -79,5 +84,10 @@ func (e *Engine) TraceSnapshot(now time.Time) TraceSnapshot {
 		ResolutionSource:          e.InstanceResolutionSource(),
 		SelectedInstanceIDAtStart: e.SelectedInstanceIDAtTurnStart(),
 		FactCacheOldestAgeSeconds: e.FactCacheOldestAgeSeconds(),
+		ContextSources:            contextSourceIDs(e.turnContextViewThisTurn),
+		ResponseContract:          string(e.effectiveResponseContract()),
+		PromptSectionIDs:          append([]string(nil), e.promptSectionIDsThisTurn...),
+		MemoryUpdateSource:        normalizedMemoryUpdateSource(e.memoryUpdateSourceThisTurn),
+		GroundingOutcome:          normalizedGroundingOutcome(e.groundingOutcomeThisTurn),
 	}
 }

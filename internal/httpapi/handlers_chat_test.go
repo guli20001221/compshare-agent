@@ -450,7 +450,10 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	persisted := messages.patch.Content
 	assert.Contains(t, persisted, guardrails.IPRedacted)
 	assert.Contains(t, persisted, guardrails.ProjectIDRedacted)
-	assert.Contains(t, persisted, guardrails.CredentialRedactedOutput)
+	assert.True(t,
+		strings.Contains(persisted, guardrails.CredentialRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
+		"persisted assistant output must redact credential bodies, got: %s", persisted,
+	)
 	assert.True(t,
 		strings.Contains(persisted, guardrails.TokenRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
 		"persisted assistant output must redact token bodies, got: %s", persisted,

@@ -18,7 +18,13 @@ type PromptSection struct {
 }
 
 func renderPromptSections(sections []PromptSection) string {
+	text, _ := renderPromptSectionsWithIDs(sections)
+	return text
+}
+
+func renderPromptSectionsWithIDs(sections []PromptSection) (string, []string) {
 	seen := make(map[string]struct{}, len(sections))
+	ids := make([]string, 0, len(sections))
 	var b strings.Builder
 	for _, section := range sections {
 		id := strings.TrimSpace(section.ID)
@@ -30,12 +36,13 @@ func renderPromptSections(sections []PromptSection) string {
 			panic("duplicate prompt section id: " + id)
 		}
 		seen[id] = struct{}{}
+		ids = append(ids, id)
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
 		b.WriteString(text)
 	}
-	return b.String()
+	return b.String(), ids
 }
 
 // BuildSystemWithOptions creates the system prompt for the active runtime mode.
@@ -43,6 +50,14 @@ func renderPromptSections(sections []PromptSection) string {
 // are defined once in segments.go; mode-specific sections live in
 // segment_operation.go (mutating) and segment_readonly.go (read-only).
 func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
+	text, _ := BuildSystemWithOptionsAndTrace(userContext, opts)
+	return text
+}
+
+// BuildSystemWithOptionsAndTrace returns the rendered prompt and the exact,
+// ordered section IDs that produced it. Prompt text and user context never
+// enter traces.
+func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (string, []string) {
 	if userContext == "" {
 		userContext = "暂无用户信息（首次对话，正在获取...）"
 	}
@@ -84,7 +99,8 @@ func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 	// Volatile tail is a named section and stays last so the static prefix remains
 	// cacheable. Section IDs make duplicate policy injection a construction error.
 	sections = append(sections, PromptSection{ID: "user_state", Text: "## 用户当前状态\n" + userContext})
-	return renderPromptSections(sections) + "\n"
+	text, ids := renderPromptSectionsWithIDs(sections)
+	return text + "\n", ids
 }
 
 // FormatInstanceContext formats instance list into a context string.

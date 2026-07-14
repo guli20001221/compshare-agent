@@ -25,17 +25,16 @@ const (
 // of the intent label alone — the nominal runtime lane, the ReAct tool subset,
 // and the agent-skill name (if any).
 //
-// It is deliberately NOT the EFFECTIVE dispatch. Runtime guards (flag gates,
-// snapshot counts, screenshot suppression, per-engine enables, the knowledge_qa
-// agent-loop AND-gate) stay in the engine's dispatch chain, resolved separately;
+// It is deliberately NOT the EFFECTIVE dispatch. Runtime guards (snapshot
+// counts, screenshot suppression and per-engine capabilities) stay in the
+// engine's dispatch chain, resolved separately;
 // none of them belongs here. Red line: no DispatchSpec field may close over
 // runtime state — that would re-create a second router inside the table. See
 // docs/plans/2026-06-09-intent-router-dispatch-restructure.md (§4.2, §7) and
 // docs/adr/009-intent-router-dispatch-contract.md (D2).
 //
-// PR1 is a read-only projection with parity tests only: nothing dispatches off
-// DispatchSpec yet. It exists so later PRs can read routing truth from one
-// contract instead of the scattered planner-prompt directives + engine if-chain.
+// Engine consumers dispatch from this contract so routing truth is not repeated
+// in planner prompts, tool scopes and engine-local intent lists.
 type DispatchSpec struct {
 	Intent           intent.Intent
 	ExecutionMode    intent.ExecutionPath
@@ -59,6 +58,10 @@ func specForIntent(i intent.Intent) DispatchSpec {
 	if i == intent.IntentBillingAccountUnsupported {
 		spec.ResponseContract = ResponsePolicyTerminal
 		spec.SafetyClass = SafetyClassPolicy
+	} else if i == intent.IntentKnowledgeQA {
+		// Knowledge executes in the Agent loop, but released answers still require
+		// the evidence-backed response contract.
+		spec.ResponseContract = ResponseGrounded
 	} else if i == intent.IntentResourceInfo || i == intent.IntentMonitorQuery || i == intent.IntentMonitorHistory || intent.IsRoutingIntent(i) {
 		spec.ResponseContract = ResponseGrounded
 	}

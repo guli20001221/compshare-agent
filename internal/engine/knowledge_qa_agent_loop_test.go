@@ -9,7 +9,6 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,26 +32,15 @@ func knowledgeQAAgentLoopBillingVerdict() llm.ChatResponse {
 	return llm.ChatResponse{Content: `{"supported":true,"claims":[{"answer_quote":"停止的按量实例的磁盘仍会计费","chunk_id":"faq-billing-001","evidence_quote":"Stopped on-demand instances still charge for disks"}],"unsupported":[]}`}
 }
 
-// TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop is the Phase-1
-// hinge test: with COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP on (and agentic SearchKnowledge
-// on + a retriever wired), a knowledge_qa turn is routed into the shared ReAct loop
-// with a FORCED SearchKnowledge first hop instead of the terminal-RAG route. It
+// TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop proves that a
+// knowledge_qa turn with no sufficient prior answer enters the shared ReAct loop
+// with a forced SearchKnowledge first hop. It
 // proves (a) the forced object tool_choice on the first LLM call, (b) the agent loop
 // actually retrieves (SearchKnowledge ran on the engine retriever), (c) the distinct
 // dispatched_knowledge_agent_loop route status with PlannedExecutionPath=agent (so the
-// runtime-form mismatch gate does not false-flag), and (d) turn-scoped cite-or-refuse
-// parity (a properly [[chunk_id]]-cited synthesis is kept with markers stripped, NOT
-// refused) — all WITHOUT the global grounded-validator flag.
+// runtime-form mismatch gate does not false-flag), and (d) the shared semantic
+// verifier keeps a supported synthesis.
 func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	// Deliberately leave the global grounded-validator OFF to prove the agent-loop
-	// route enforces cite-or-refuse turn-scoped on its own.
-	SetGroundedAnswerValidatorEnabled(false)
-
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
@@ -124,12 +112,6 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 // "粘贴呢" shape: the agent sees the previous answer, gives the correct direct
 // continuation, and does not pay for or risk a lossy query rewrite.
 func TestKnowledgeQAAgentLoop_ShortFollowupReusesSufficientConversationWithoutRAG(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{}
 	mock := &mockLLM{responses: []llm.ChatResponse{
@@ -181,12 +163,6 @@ func TestKnowledgeQAAgentLoop_ShortFollowupReusesSufficientConversationWithoutRA
 // elects to search and owns the standalone query. The previous answer can
 // resolve the query, but it never becomes retrieval evidence.
 func TestKnowledgeQAAgentLoop_AgentFormulatesQueryWhenConversationIsInsufficient(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-
 	chunk := knowledge.KBChunk{
 		ChunkID:    "terminal-paste-001",
 		KBVersion:  "kb.v1",
@@ -256,12 +232,6 @@ func TestKnowledgeQAAgentLoop_AgentFormulatesQueryWhenConversationIsInsufficient
 // An uncited answer is accepted when the semantic verifier proves every claim.
 // Citation punctuation is no longer the recovery target.
 func TestKnowledgeQAAgentLoop_SemanticGateAcceptsUncitedGroundedSynthesis(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
@@ -292,13 +262,6 @@ func TestKnowledgeQAAgentLoop_SemanticGateAcceptsUncitedGroundedSynthesis(t *tes
 // A failed semantic verdict gets at most one proof-carrying repair. If repair
 // also fails, the reply states the real failure instead of claiming no evidence.
 func TestKnowledgeQAAgentLoop_FailedSemanticRepairKeepsHonestRefusal(t *testing.T) {
-	enableDisciplinedKnowledgeRepair(t)
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
@@ -330,12 +293,6 @@ func TestKnowledgeQAAgentLoop_FailedSemanticRepairKeepsHonestRefusal(t *testing.
 // fires SearchKnowledge and the turn proceeds to a grounded answer instead of the
 // round-0 cited-gate refusal.
 func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
@@ -369,12 +326,6 @@ func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
 // that the KB has no answer without checking. That negative claim triggers one
 // forced search; a substantive context answer would have been returned directly.
 func TestKnowledgeQAAgentLoop_ContextAwareUnsearchedRefusalTriggersOneSearch(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
@@ -416,53 +367,6 @@ func TestKnowledgeQAAgentLoop_ContextAwareUnsearchedRefusalTriggersOneSearch(t *
 	assert.Equal(t, "SearchKnowledge", forced.Function.Name)
 }
 
-// Production enables the flash route correction, agent loop and semantic
-// verifier together. A flash-corrected product-fact turn must enter the common
-// SearchKnowledge loop instead of escaping through the legacy terminal RAG exit.
-func TestKnowledgeQAAgentLoop_FlashGuardUsesUnifiedVerifiedExit(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	previousLoop := KnowledgeQAAgentLoopEnabled()
-	SetKnowledgeQAAgentLoopEnabled(true)
-	t.Cleanup(func() { SetKnowledgeQAAgentLoopEnabled(previousLoop) })
-	previousAgentic := tools.AgenticSearchKnowledgeEnabled()
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	t.Cleanup(func() { tools.SetAgenticSearchKnowledgeEnabled(previousAgentic) })
-	previousFlash := FlashKnowledgeRouteGuardEnabled()
-	SetFlashKnowledgeRouteGuardEnabled(true)
-	t.Cleanup(func() { SetFlashKnowledgeRouteGuardEnabled(previousFlash) })
-
-	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
-		SchemaVersion: intent.SchemaVersion,
-		Intent:        intent.IntentStockAvailability,
-		Confidence:    0.9,
-	}}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-		Enabled: true, KBVersion: "kb.v1",
-		Hits:     []knowledge.KBChunk{chunk},
-		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{{ID: "search", Type: openai.ToolTypeFunction,
-			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"stopped instance disk billing"}`}}}},
-		{Content: "停止的按量实例的磁盘仍会计费。"},
-		knowledgeQAAgentLoopBillingVerdict(),
-	}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-	eng.SetKnowledgeRetriever(retriever)
-
-	reply, err := eng.Chat(context.Background(), "关机后磁盘还收费吗", noopStep)
-	require.NoError(t, err)
-	assert.Contains(t, reply, "磁盘仍会计费")
-	require.Len(t, retriever.calls, 1)
-	require.Len(t, mock.calls, 3, "tool call, draft and semantic verifier must all run")
-	assert.True(t, toolListContainsFunction(mock.calls[0].Tools, "SearchKnowledge"))
-	assert.Contains(t, mock.calls[2].Messages[0].Content, "知识答案事实核查员")
-	assert.True(t, eng.knowledgeQAAgentLoopThisTurn)
-}
-
 // TestToolListContainsFunction unit-tests the 400-trap helper: present, absent, and
 // the nil-Function guard.
 func TestToolListContainsFunction(t *testing.T) {
@@ -501,11 +405,6 @@ func TestToolListWithoutFunction(t *testing.T) {
 // "请简化问题"). WHY it matters: an uncovered question must yield a fast honest
 // "no specific docs", never an opaque token-exhaustion message.
 func TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers(t *testing.T) {
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
 
 	// Weak hit (score 0.1 < weakEvidenceSemanticThreshold 0.5 on qwen3_rrf) → dropped
 	// to an empty ledger, exactly like a corpus-gap query. One scripted result; the

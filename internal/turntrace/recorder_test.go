@@ -90,3 +90,23 @@ func TestRecorderDoesNotPersistFreeTextErrorsOrContinuityReasons(t *testing.T) {
 	assert.NotContains(t, got.ToolCalls[0].ErrorClass, "hunter2")
 	assert.NotContains(t, got.Continuity.CommitReason, "hunter2")
 }
+
+func TestRecorderPersistsContinuityContractMetadataAndMarksFailures(t *testing.T) {
+	writer := &captureWriter{}
+	recorder := New(Config{Writer: writer, TraceID: "turn:e1", TurnID: "turn", TurnIndex: 1, Start: time.Now()})
+	snapshot := engine.TraceSnapshot{
+		ContextSources:     []string{"recent_pairs", "active_task"},
+		ResponseContract:   "grounded",
+		PromptSectionIDs:   []string{"identity", "knowledge_turn_policy"},
+		MemoryUpdateSource: "structured_event",
+		GroundingOutcome:   "supported",
+	}
+	require.NoError(t, recorder.Finish(nil, assert.AnError, "", snapshot, time.Now()))
+	require.Len(t, writer.records, 1)
+	got := writer.records[0].Outcome
+	assert.Equal(t, "failure", got.ResponseContract)
+	assert.Equal(t, snapshot.ContextSources, got.ContextSources)
+	assert.Equal(t, snapshot.PromptSectionIDs, got.PromptSectionIDs)
+	assert.Equal(t, snapshot.MemoryUpdateSource, got.MemoryUpdateSource)
+	assert.Equal(t, snapshot.GroundingOutcome, got.GroundingOutcome)
+}

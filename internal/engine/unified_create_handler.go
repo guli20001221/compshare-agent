@@ -79,9 +79,6 @@ func (e *Engine) tryResumeCreateContextFrame(ctx context.Context, dispatch route
 	if e.deferTaskCarryThisTurn {
 		return "", false
 	}
-	if !ContextContinuationEnabled() {
-		return "", false
-	}
 	frame, ok := e.activeContextFrame(time.Now())
 	if !ok || !contextFrameCreateFamily(frame.Kind) {
 		return "", false
@@ -285,9 +282,6 @@ func contextFramesEquivalent(a, b ContextFrame) bool {
 }
 
 func (e *Engine) recordCreateContextFrameFromCreateAttempt(userMsg string, plan intent.IntentRoute, args map[string]any, reply string) {
-	if !ContextContinuationEnabled() {
-		return
-	}
 	frame := newContextFrame(ContextFrameKindCreate, plan, userMsg, e.userTurn, time.Now())
 	frame.Status = ContextFrameStatusFailedRecoverable
 	frame.GPU, _ = args["GpuType"].(string)

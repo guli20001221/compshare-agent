@@ -34,12 +34,10 @@ const knowledgeAnswerRepairPrompt = `你是知识答案修复器。只依据输�
 2. claims 必须覆盖 answer 的每一条实质主张。answer_quote 逐字摘自 answer，evidence_quote 逐字摘自对应证据。
 3. 证据不足以回答时 supported=false，answer 留空。
 4. 不要大段复制证据原文。引用标记可写可不写，服务端不靠标点判断真实性。
+5. 证据明确支持的结论要直接说清，不要在结尾改口为资料未覆盖或添加无依据的免责话。
 
 只输出 JSON：
 {"answer":"给用户的回答","supported":true|false,"claims":[{"answer_quote":"答案原句","chunk_id":"证据ID","evidence_quote":"证据原句"}],"unsupported":["无据主张"]}`
-
-const knowledgeAnswerDirectnessNote = `
-证据已经明确支持的结论要直接说清，不要在结尾又改口为"资料未覆盖"或添加无依据的免责话；但仍不得超出证据。`
 
 type knowledgeGroundingClaim struct {
 	AnswerQuote   string `json:"answer_quote"`
@@ -88,7 +86,7 @@ func (e *Engine) verifyKnowledgeAnswer(ctx context.Context, fallbackQuestion, an
 func (e *Engine) verifyKnowledgeAnswerAgainstLedger(ctx context.Context, resolved, answer string, ledger knowledge.EvidenceLedger) (string, knowledge.GroundedAnswerReport, bool) {
 	answer = strings.TrimSpace(answer)
 	resolved = strings.TrimSpace(resolved)
-	if !knowledgeAnswerVerifierOn || e.llmClient == nil || resolved == "" || answer == "" || isKnowledgeRefusal(answer) || len(ledger.Items) == 0 {
+	if e.llmClient == nil || resolved == "" || answer == "" || isKnowledgeRefusal(answer) || len(ledger.Items) == 0 {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	ledger.Query = resolved
@@ -121,7 +119,7 @@ func (e *Engine) verifyKnowledgeAnswerAgainstLedger(ctx context.Context, resolve
 // and its evidence proof are returned together, which avoids paying for a repair
 // and then discarding it because a second validation call would cross the budget.
 func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQuestion string, allowOverBudget bool) (string, knowledge.GroundedAnswerReport, bool) {
-	if !knowledgeAnswerVerifierOn || e.llmClient == nil || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
+	if e.llmClient == nil || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	if !allowOverBudget && e.tokenBudgetExceeded() {
@@ -135,15 +133,8 @@ func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQue
 	if err != nil {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
-	repairPrompt := knowledgeAnswerRepairPrompt
-	if kqaSelfRevisionOn {
-		// Preserve the deployed anti-over-conservatism policy inside the single
-		// proof-carrying repair call. A separate prose-only revision would need yet
-		// another semantic validation call and could reintroduce unsupported claims.
-		repairPrompt += knowledgeAnswerDirectnessNote
-	}
 	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{Messages: []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: repairPrompt},
+		{Role: openai.ChatMessageRoleSystem, Content: knowledgeAnswerRepairPrompt},
 		{Role: openai.ChatMessageRoleUser, Content: string(payload)},
 	}})
 	if err != nil || resp == nil {
@@ -169,11 +160,13 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 	if !e.knowledgeQAAgentLoopThisTurn {
 		return candidate
 	}
+	e.groundingOutcomeThisTurn = groundingUnsupported
 	if !e.searchKnowledgeRanThisTurn {
 		resolved := strings.TrimSpace(fallbackQuestion)
 		ledger := e.verifiedKnowledgeLedgerForQuestion(resolved)
 		if answer, report, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
 			e.emitSearchKnowledgeCitationTrace(report)
+			e.groundingOutcomeThisTurn = groundingSupported
 			return answer
 		}
 		// No retrieval and no durable verified source supported this answer. Do
@@ -188,16 +181,12 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 		resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
 		ledger := e.verifiedKnowledgeLedgerForQuestion(resolved)
 		if answer, _, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
+			e.groundingOutcomeThisTurn = groundingSupported
 			return answer
 		}
 		return ragNoEvidenceReply
 	}
 	_ = e.resolvedKnowledgeQuestion(fallbackQuestion)
-	if !knowledgeAnswerVerifierOn {
-		e.emitSearchKnowledgeHardBlock("search_knowledge_verifier_disabled")
-		return ragUngroundableReply
-	}
-
 	leaked := knowledgeAnswerHasRawLeak(candidate, e.searchKnowledgeHitsThisTurn)
 	if leaked {
 		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
@@ -217,16 +206,16 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 			e.retractKnowledgeHardBlock()
 			resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
 			e.rememberVerifiedKnowledge(resolved, answer, e.knowledgeLedgerForVerification(resolved))
+			e.groundingOutcomeThisTurn = groundingSupported
 			return answer
 		}
 		e.emitSearchKnowledgeHardBlock("search_knowledge_ungrounded")
 	}
 
-	if disciplinedKnowledgeQASynthesisOn {
-		if repaired, ok := e.synthesizeKnowledgeQAFromLedger(ctx, fallbackQuestion); ok {
-			e.rememberVerifiedKnowledge(e.resolvedKnowledgeQuestion(fallbackQuestion), repaired, e.searchKnowledgeLedgerThisTurn)
-			return repaired
-		}
+	if repaired, ok := e.synthesizeKnowledgeQAFromLedger(ctx, fallbackQuestion); ok {
+		e.rememberVerifiedKnowledge(e.resolvedKnowledgeQuestion(fallbackQuestion), repaired, e.searchKnowledgeLedgerThisTurn)
+		e.groundingOutcomeThisTurn = groundingRepaired
+		return repaired
 	}
 	// Evidence existed, so claiming that the KB did not cover the topic is
 	// false. This remains a refusal, but reports the actual failure.
@@ -254,6 +243,7 @@ func (e *Engine) synthesizeKnowledgeAnswerAfterBudget(ctx context.Context, fallb
 	e.emitSearchKnowledgeCitationTrace(report)
 	e.retractKnowledgeHardBlock()
 	e.rememberVerifiedKnowledge(resolved, answer, e.searchKnowledgeLedgerThisTurn)
+	e.groundingOutcomeThisTurn = groundingRepaired
 	return answer, true
 }
 

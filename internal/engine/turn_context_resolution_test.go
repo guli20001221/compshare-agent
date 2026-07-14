@@ -55,8 +55,6 @@ func diskContinuationExecutor() *mockExecutorFn {
 }
 
 func TestPlannerFallbackStillResolvesAndContinuesMissingSlotTaskOnce(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var confirmedAction string
 	eng := NewWithDeps(&mockLLM{}, diskContinuationExecutor(), func(action string, _ map[string]any) bool {
@@ -84,8 +82,6 @@ func TestPlannerFallbackStillResolvesAndContinuesMissingSlotTaskOnce(t *testing.
 }
 
 func TestPlannerErrorStillReturnsResolverClarificationAndPreservesTask(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, ContextFrame: pendingCreateDiskFrame()}, 1)
@@ -108,8 +104,6 @@ func TestPlannerErrorStillReturnsResolverClarificationAndPreservesTask(t *testin
 }
 
 func TestConfidentTerminalRouteDoesNotClearTaskWithoutResolverNewDecision(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
@@ -137,8 +131,6 @@ func TestConfidentTerminalRouteDoesNotClearTaskWithoutResolverNewDecision(t *tes
 }
 
 func TestFallbackClearsTaskOnlyWhenResolverExplicitlySaysNewOrClear(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	for _, decision := range []string{ContextDecisionNewTask, ContextDecisionClearContext} {
 		t.Run(decision, func(t *testing.T) {
@@ -166,8 +158,6 @@ func TestFallbackClearsTaskOnlyWhenResolverExplicitlySaysNewOrClear(t *testing.T
 }
 
 func TestResolverFailurePreservesTaskAndFallsBackWithReadOnlyTools(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	client := &mockLLM{responses: []llm.ChatResponse{{Content: "我先确认你要继续哪一步。"}}}
 	eng := NewWithDeps(client, &mockExecutor{}, nil)
@@ -196,8 +186,6 @@ func TestResolverFailurePreservesTaskAndFallsBackWithReadOnlyTools(t *testing.T)
 }
 
 func TestExpiredTaskMemoryCanInformButCannotResumeAWrite(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
@@ -237,8 +225,6 @@ func TestExpiredTaskMemoryCanInformButCannotResumeAWrite(t *testing.T) {
 }
 
 func TestContextDecisionCacheResetsAtEveryChatTurn(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, ContextFrame: pendingCreateDiskFrame()}, 1)
@@ -263,8 +249,6 @@ func TestContextDecisionCacheResetsAtEveryChatTurn(t *testing.T) {
 }
 
 func TestContextDecisionTraceNamesReadSetAndPlannedStateDelta(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.sessionFactContextEnabled = true

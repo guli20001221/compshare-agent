@@ -16,7 +16,7 @@ import (
 )
 
 func (e *Engine) tryResumeWorkflowContextFrame(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if !ContextContinuationEnabled() || e.deferTaskCarryThisTurn {
+	if e.deferTaskCarryThisTurn {
 		return "", false
 	}
 	frame, ok := e.activeContextFrame(time.Now())
@@ -190,7 +190,7 @@ func (e *Engine) bindSelectedInstanceToWaitingWorkflowFrame(inst entity.Instance
 }
 
 func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[string]any, missing []string, message string) bool {
-	if e == nil || !ContextContinuationEnabled() || !e.sessionStateHydrated || workflowName == "" || len(missing) == 0 {
+	if e == nil || !e.sessionStateHydrated || workflowName == "" || len(missing) == 0 {
 		return false
 	}
 	slots := safeWorkflowContextSlots(args)

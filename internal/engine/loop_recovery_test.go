@@ -8,7 +8,6 @@ import (
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,13 +100,6 @@ func vllmRetriever() *scriptedKnowledgeRetriever {
 
 func prepareKnowledgeRecoveryLane(t *testing.T, eng *Engine) {
 	t.Helper()
-	enableKnowledgeAnswerVerifier(t)
-	previousLoop := KnowledgeQAAgentLoopEnabled()
-	SetKnowledgeQAAgentLoopEnabled(true)
-	t.Cleanup(func() { SetKnowledgeQAAgentLoopEnabled(previousLoop) })
-	previousAgentic := tools.AgenticSearchKnowledgeEnabled()
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	t.Cleanup(func() { tools.SetAgenticSearchKnowledgeEnabled(previousAgentic) })
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 }

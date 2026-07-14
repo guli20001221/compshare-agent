@@ -327,14 +327,10 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// instance IDs and prices ground another tenant's answer, which is precisely
 		// the fabrication this is built to catch, laundered into looking legitimate.
 		// Unlike its neighbours it is NOT reset per turn (see grounding.Facts).
-		"turnFacts": true,
 		// The rendered instance table awaiting {{INSTANCE_TABLE}} substitution. Per-session
 		// for the obvious reason: a shared one would splice tenant A's machine list into
 		// tenant B's answer. Reset every turn.
 		"instanceTableThisTurn": true,
-		// Whether the model referenced the table via placeholder this turn. Per-session so
-		// one tenant's compliance is never read as another's. Reset every turn.
-		"placeholderObeyedThisTurn": true,
 		// Per-turn SearchKnowledge call counter feeding the agent-loop search cap.
 		// Per-session/per-turn by design — a shared counter would let one tenant's
 		// searches withdraw the tool from another's turn. Reset every turn.
@@ -353,7 +349,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Reset every turn.
 		"searchKnowledgeActivitiesThisTurn":   true,
 		"searchKnowledgeActivityIDsByChunkID": true,
-		// Per-turn knowledge_qa agent-loop route marker (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP).
+		// Per-turn knowledge_qa route marker.
 		// Per-session by design — it carries the turn-scoped cite-or-refuse coupling and
 		// the runtime-form projection; sharing it would cross one tenant's route decision
 		// into another's. Reset every turn.
@@ -361,9 +357,8 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Optional deploy preference extractor injection + its per-turn result.
 		// Kept per-session so test doubles / future stateful wrappers cannot
 		// leak calls or extracted preferences across users.
-		"createPreferenceExtractor":   true,
-		"contextContinuationResolver": true,
-		"contextDecisionLayer":        true,
+		"createPreferenceExtractor": true,
+		"contextDecisionLayer":      true,
 		// One cached context judgment per turn. These are reset at the start
 		// of ChatWithOptions and must remain session-local: sharing them would
 		// apply one user's continue/clear decision to another user's task.
@@ -429,6 +424,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"continuityAdvisories":           true,
 		"turnContextViewThisTurn":        true,
 		"turnContextViewReady":           true,
+		"promptSectionIDsThisTurn":       true,
+		"memoryUpdateSourceThisTurn":     true,
+		"groundingOutcomeThisTurn":       true,
 		"sessionFactContextEnabled":      true,
 		"reactResultProjectionEnabled":   true,
 		"reactHistoryCompactionEnabled":  true,

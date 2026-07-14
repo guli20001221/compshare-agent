@@ -3,9 +3,12 @@
 // top of cosine top-K.
 //
 // Lane B.0 API probe (2026-05-19) confirmed the endpoint accepts:
-//   POST /v1/rerank {"model","query","documents":[...],"top_n":N}
+//
+//	POST /v1/rerank {"model","query","documents":[...],"top_n":N}
+//
 // and returns results sorted by descending relevance_score:
-//   {"results":[{"index":<orig-pos>,"relevance_score":<float>}, ...]}
+//
+//	{"results":[{"index":<orig-pos>,"relevance_score":<float>}, ...]}
 //
 // The retriever depends only on the Client interface so unit tests can
 // inject deterministic results without an HTTP server (mirrors the

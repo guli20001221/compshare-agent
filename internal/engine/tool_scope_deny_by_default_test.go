@@ -73,9 +73,6 @@ func TestAnUnroutedTurnIsNeverAuthorizedToWrite(t *testing.T) {
 }
 
 func TestSearchKnowledgeIsVisibleOnlyToKnowledgeQA(t *testing.T) {
-	previous := tools.AgenticSearchKnowledgeEnabled()
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	t.Cleanup(func() { tools.SetAgenticSearchKnowledgeEnabled(previous) })
 
 	require.Contains(t, toolNameSet(visibleRegistryForIntentRoute(
 		intent.IntentRoute{Intent: intent.IntentKnowledgeQA}, true)), "SearchKnowledge")

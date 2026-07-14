@@ -8,7 +8,6 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -179,16 +178,12 @@ func TestExecuteTool_SearchKnowledgeRejectsNonKnowledgeRoute(t *testing.T) {
 	assert.Equal(t, StepError, steps[0].Type)
 }
 
-// TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn pins the compatibility
-// relax: with COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE on, an empty-target diagnosis
-// turn (>1 instance) does not short-circuit with the canned which-instance
+// TestPlannerDiagnosisUsesContextAwareAgent pins that an empty-target
+// diagnosis turn (>1 instance) does not short-circuit with a canned which-instance
 // reply — it falls through to the scoped diagnosis agent lane, which can use
-// conversation history or clarify in-loop. SearchKnowledge itself is now
-// restricted to knowledge_qa. Flag off is byte-identical (covered by
-// TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent).
-func TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn(t *testing.T) {
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+// conversation history or clarify in-loop. SearchKnowledge itself remains
+// restricted to knowledge_qa.
+func TestPlannerDiagnosisUsesContextAwareAgent(t *testing.T) {
 
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}

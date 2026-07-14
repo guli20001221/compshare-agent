@@ -5,8 +5,8 @@ ordinal resolution and `SelectedInstance` TTL changes described below.
 
 ## Current State
 
-The context continuation layer is enabled by default through `COMPSHARE_CONTEXT_CONTINUATION`.
-It is a shared decision layer: the model decides whether a short follow-up continues a prior task,
+Context continuation is a fixed runtime capability and cannot be disabled by configuration.
+It is a shared decision layer: the model decides whether the current turn continues a prior task,
 starts a new task, selects an entity, answers a follow-up, clears context, or needs clarification.
 The backend still validates every resource, parameter, price, zone, image, and confirmation.
 
@@ -82,10 +82,10 @@ These paths now use the shared context decision and frame model:
 Some legacy session fields remain intentionally:
 
 - `LastStockGpuModel` is the fallback stock referent when session facts are disabled.
-- `LastDeployWorkload`, `LastDeployZone`, and `PendingDeployModel` remain for rollback and legacy compatibility when context continuation is disabled.
+- `LastDeployWorkload`, `LastDeployZone`, and `PendingDeployModel` remain read-only fallbacks for sessions written by older binaries; new turns write the unified context frame.
 - `PendingSelection*` is not legacy behavior by itself; it is the persisted candidate list used by both old and new selection paths.
 
-Do not remove these fields until the corresponding rollback path is deliberately retired.
+These compatibility fields may be removed only after old persisted sessions have aged out.
 
 ### SelectedInstance binding TTL
 

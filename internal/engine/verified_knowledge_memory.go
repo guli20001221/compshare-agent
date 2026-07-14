@@ -51,6 +51,7 @@ func (e *Engine) rememberVerifiedKnowledge(question, answer string, ledger knowl
 	}
 	e.sessionState.VerifiedKnowledge = out
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+	e.markMemoryUpdateSource(memoryUpdateStructured)
 }
 
 func boundedVerifiedKnowledgeLedger(in knowledge.EvidenceLedger) knowledge.EvidenceLedger {

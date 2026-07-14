@@ -11,7 +11,6 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
-	openai "github.com/sashabaranov/go-openai"
 )
 
 const maxResourceSelectionCandidates = 20
@@ -154,34 +153,13 @@ func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) b
 	if match.ok || match.ambiguous {
 		return true
 	}
-	if _, ok := parseResourceSelectionOrdinal(query); ok {
+	if _, ok := extractResourceSelectionOrdinal(query); ok {
 		return true
 	}
 	if tokens := p.snapshot.InstanceIDTokensInText(query); len(tokens) == 1 && tokens[0] == query {
 		return true
 	}
-	return resourceSelectionReferenceOnly(query, p)
-}
-
-func resourceSelectionReferenceOnly(input string, p pendingResourceSelection) bool {
-	compact := compactResourceSelectionText(input)
-	if compact == "" {
-		return true
-	}
-	for _, token := range p.snapshot.InstanceIDTokensInText(compact) {
-		compact = strings.ReplaceAll(compact, token, "")
-	}
-	if ordinal, ok := extractResourceSelectionOrdinal(compact); ok {
-		compact = removeResourceSelectionOrdinalTokens(compact, ordinal)
-	}
-	for _, token := range []string{
-		"这台", "那台", "它", "这个", "那个", "实例", "机器", "主机",
-		"帮我选择", "帮我选", "我要", "选择", "选", "就", "要",
-		"吧", "了", "呢", "哈", "的",
-	} {
-		compact = strings.ReplaceAll(compact, token, "")
-	}
-	return strings.Trim(compact, "，。,.、；;：:！!？?（）()[]【】\"'“”‘’") == ""
+	return false
 }
 
 func removeResourceSelectionOrdinalTokens(input string, ordinal int) string {
@@ -235,9 +213,6 @@ func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMs
 	if e == nil || pending == nil {
 		return "", false, false
 	}
-	if !ContextContinuationEnabled() {
-		return "", false, false
-	}
 	decision, err := e.resolveContextDecision(ctx, userMsg, intent.IntentUnknown, e.sessionState.ContextFrame)
 	if err != nil || decision == nil {
 		return "", false, false
@@ -260,15 +235,11 @@ func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMs
 	}
 	e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
 	e.pendingResourceSelection = nil
+	// Selection updates understanding state, but does not itself answer any
+	// additional question in the same utterance. Keep an unrelated old workflow
+	// from consuming the turn and let the context-aware Agent decide the reply.
+	e.deferTaskCarryThisTurn = true
 	e.refreshSystemPrompt()
-	if resourceSelectionLooksLikeReply(userMsg, *pending) {
-		reply := renderResourceSelectionSelectedReply(match.instance)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: reply,
-		})
-		return reply, true, true
-	}
 	return "", true, false
 }
 

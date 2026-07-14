@@ -62,7 +62,7 @@ const (
 	// — the deploy handler runs a TierAgent LLM match + the orchestrator saga.
 	RouteStatusDispatchedAgent RouteStatus = "dispatched_agent"
 	// RouteStatusDispatchedKnowledgeAgentLoop marks a knowledge_qa turn that the
-	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP route sent into the shared context-aware
+	// knowledge_qa route sent into the shared context-aware
 	// ReAct knowledge loop, instead of the terminal-RAG route
 	// (dispatched_retrieval). Distinct so mainline reports tell the agent-loop
 	// knowledge turn apart from BOTH the terminal-RAG route AND the deploy_model

@@ -166,6 +166,7 @@ func (e *Engine) syncTaskSnapshotFromFrame(frame ContextFrame, status, endReason
 	}
 	e.sessionState.TaskSnapshot = snapshot
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+	e.markMemoryUpdateSource(memoryUpdateStructured)
 }
 
 func (e *Engine) markTaskSnapshotResolved(frame ContextFrame, reason string, now time.Time) {

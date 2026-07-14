@@ -115,6 +115,7 @@ func (e *Engine) absorbConversationDigest(messages []openai.ChatCompletionMessag
 	digest.UpdatedAtUnix = now.Unix()
 	e.sessionState.ConversationDigest = digest
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+	e.markMemoryUpdateSource(memoryUpdateExcerpt)
 }
 
 func (e *Engine) compactEvictedConversation(ctx context.Context, messages []openai.ChatCompletionMessage, now time.Time) {
@@ -131,8 +132,10 @@ func (e *Engine) compactEvictedConversation(ctx context.Context, messages []open
 	if ok {
 		digest = applyMemoryDelta(digest, delta)
 		digest.Excerpts = nil
+		e.markMemoryUpdateSource(memoryUpdateCompactor)
 	} else {
 		digest.Excerpts = boundedConversationExcerpts(pairs)
+		e.markMemoryUpdateSource(memoryUpdateExcerpt)
 	}
 	digest.SummaryFrontier += int64(len(newPairs))
 	digest.Narrative = buildConversationNarrative(digest)

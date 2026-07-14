@@ -312,8 +312,11 @@ func (e *Engine) recordLastDeployTarget(model, zone string) {
 		return
 	}
 	zone = strings.TrimSpace(zone)
-	if ContextContinuationEnabled() && e.mutatingToolsEnabled {
-		frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, model, e.userTurn, time.Now())
+	if e.mutatingToolsEnabled {
+		frame, ok := e.activeContextFrame(time.Now())
+		if !ok || frame.Kind != ContextFrameKindDeploy {
+			frame = newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, model, e.userTurn, time.Now())
+		}
 		frame.Workload = model
 		frame.Zone = zone
 		frame.ZoneLabel = zone
@@ -332,7 +335,7 @@ func (e *Engine) recordLastDeployTarget(model, zone string) {
 }
 
 func (e *Engine) recordDeployContextFrameFromError(userMsg, matchUserMsg, zone, reason string) {
-	if !ContextContinuationEnabled() || !e.sessionStateHydrated {
+	if !e.sessionStateHydrated {
 		return
 	}
 	frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, userMsg, e.userTurn, time.Now())
@@ -359,7 +362,7 @@ func (e *Engine) recordDeployContextFrameFromError(userMsg, matchUserMsg, zone, 
 }
 
 func (e *Engine) recordDeployContextFrameFromPlan(userMsg string, plan deployPlan, reason string) {
-	if !ContextContinuationEnabled() || !e.sessionStateHydrated {
+	if !e.sessionStateHydrated {
 		return
 	}
 	frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, userMsg, e.userTurn, time.Now())
@@ -382,20 +385,16 @@ func (e *Engine) recordPendingDeployModelFromReply(reply string) {
 	if model == "" {
 		return
 	}
-	if ContextContinuationEnabled() {
-		if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy && strings.TrimSpace(frame.Workload) != "" {
-			e.sessionState.PendingDeployModel = ""
-			return
-		}
-		frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, strings.TrimSpace(e.lastUserMsg), e.userTurn, time.Now())
-		frame.Status = ContextFrameStatusFailedRecoverable
-		frame.Workload = model
-		frame.FailureReason = strings.TrimSpace(reply)
-		e.setContextFrame(frame)
+	if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy && strings.TrimSpace(frame.Workload) != "" {
 		e.sessionState.PendingDeployModel = ""
 		return
 	}
-	e.sessionState.PendingDeployModel = model
+	frame := newContextFrame(ContextFrameKindDeploy, intent.IntentRoute{Intent: intent.IntentDeployModel}, strings.TrimSpace(e.lastUserMsg), e.userTurn, time.Now())
+	frame.Status = ContextFrameStatusFailedRecoverable
+	frame.Workload = model
+	frame.FailureReason = strings.TrimSpace(reply)
+	e.setContextFrame(frame)
+	e.sessionState.PendingDeployModel = ""
 }
 
 // effectiveDeployUserMsg keeps a short deploy follow-up grounded in the previous
@@ -476,11 +475,9 @@ func (e *Engine) previousDeployTargetFromSession() (model, zone string) {
 	if !e.sessionStateHydrated || !createFamilyIntentString(e.sessionState.LastIntent) {
 		return "", ""
 	}
-	if ContextContinuationEnabled() {
-		if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy {
-			if workload := strings.TrimSpace(frame.Workload); workload != "" {
-				return workload, strings.TrimSpace(frame.Zone)
-			}
+	if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy {
+		if workload := strings.TrimSpace(frame.Workload); workload != "" {
+			return workload, strings.TrimSpace(frame.Zone)
 		}
 	}
 	return strings.TrimSpace(e.sessionState.LastDeployWorkload), strings.TrimSpace(e.sessionState.LastDeployZone)
@@ -526,11 +523,9 @@ func (e *Engine) pendingDeployModelFromSession() string {
 	if !e.sessionStateHydrated || !createFamilyIntentString(e.sessionState.LastIntent) {
 		return ""
 	}
-	if ContextContinuationEnabled() {
-		if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy {
-			if model := deployModelFamilyForBareSize(frame.Workload); model != "" {
-				return model
-			}
+	if frame, ok := e.activeContextFrame(time.Now()); ok && frame.Kind == ContextFrameKindDeploy {
+		if model := deployModelFamilyForBareSize(frame.Workload); model != "" {
+			return model
 		}
 	}
 	return strings.TrimSpace(e.sessionState.PendingDeployModel)

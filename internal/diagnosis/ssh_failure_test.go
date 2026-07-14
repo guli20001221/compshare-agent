@@ -253,8 +253,8 @@ func TestSSHChain_Running_HighCPU_PodMonitor(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Contains(t, result.Conclusion, "资源")     // exhaustion detected from the PodList leg
-	assert.Contains(t, result.Conclusion, "97")        // the max-Timestamp CPU value, not the older 12
+	assert.Contains(t, result.Conclusion, "资源") // exhaustion detected from the PodList leg
+	assert.Contains(t, result.Conclusion, "97") // the max-Timestamp CPU value, not the older 12
 }
 
 // TestSSHChain_Running_Normal_PodMonitor: a healthy pod must read its PodList data

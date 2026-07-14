@@ -59,8 +59,6 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 }
 
 func TestChatCompletionCarriesContextReadSetAndStateDelta(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, ContextFrame: pendingCreateDiskFrame()}, 1)

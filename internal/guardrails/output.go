@@ -14,9 +14,8 @@ import (
 // here target what the LLM might render INTO a reply (e.g. an IP it
 // learned from a tool result that internal/sanitizer didn't blank, or
 // a credential string the model rendered with a marker keyword like
-// "AccessKey=..."). Note: standalone credentials WITHOUT a marker
-// keyword (e.g. the LLM pasting "AKIA..." mid-sentence) pass through
-// — see Known FN below.
+// "AccessKey=..."). Known provider prefixes are also removed when they
+// appear without a field name.
 //
 // Scope:
 //   - IPv4 — both private (10.*, 192.168.*) and public; ops/dev review
@@ -46,21 +45,12 @@ import (
 //   - Public IP ranges legitimately quoted in documentation snippets
 //     (e.g. example IPs in a how-to) will redact. Acceptable in the
 //     persistence boundary even though it looks odd in transcripts.
-//   - Marker-prefixed prose: `AccessKey: somelongdescription16chars+`
-//     redacts because the credential regex requires marker + sep + a
-//     16-char value but cannot distinguish prose from base64 cred.
-//     Probability LOW (the LLM is unlikely to write "AccessKey:" prose).
+//   - Marker-prefixed prose: `AccessKey: <opaque-value>`
+//     redacts because an assigned credential field is treated as sensitive
+//     regardless of value shape.
 //   - Bearer prefix + 20-char alpha-ish prose ("token expired_after_X")
 //     redacts. Same root cause — bearer/token regex requires the
 //     marker prefix + 20-char value but cannot validate cred entropy.
-//
-// Known false-negative surface (acceptable trade-off):
-//   - Standalone credential strings without a marker keyword
-//     (e.g. the LLM writes "AKIAIOSFODNN7EXAMPLE" mid-sentence) pass
-//     through. Lowering the marker requirement would FP heavily on
-//     prose; we accept that the agent rarely produces marker-less
-//     credentials because tool responses always come with field
-//     names that the LLM tends to echo verbatim.
 
 // Output-side placeholders. Distinct from PhoneRedacted etc. so an
 // operator scanning persisted messages can attribute redactions to the
@@ -81,17 +71,6 @@ var (
 	// 8-4-4-4-12 hex UUID. Used for CompShare project_id values and
 	// (incidentally) any standard UUID the LLM might quote.
 	uuidRegex = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
-
-	// Marker-based credential capture. We require the value to follow a
-	// keyword + separator (= / : / 空格), so prose like "请问 access" or
-	// "key 的作用" doesn't FP. Value continues until whitespace / quote
-	// / comma / Chinese punctuation. Marker keywords cover the common
-	// CompShare + AWS shapes the LLM might render verbatim.
-	//
-	// `(?i)` for case-insensitive — LLMs render with varied case.
-	credentialMarkerRegex = regexp.MustCompile(
-		`(?i)\b(access[_-]?key|secret[_-]?key|access[_-]?token|api[_-]?key|access[_-]?key[_-]?id|ak|sk)\b\s*[:=]\s*["']?([A-Za-z0-9+/=_\-]{16,})["']?`,
-	)
 
 	// JWT shape: 3 base64url segments joined by dots, starts with eyJ
 	// (the base64url encoding of '{"'). Captures the most common bearer
@@ -116,22 +95,83 @@ var (
 	authorizationRegex         = regexp.MustCompile(`(?i)(\bauthorization\s*[:=]\s*)(?:(bearer|basic)[\s:=]+)?([^\s,;}\]]+)`)
 	privateKeyBlockRegex       = regexp.MustCompile(`(?is)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----`)
 	knownCredentialPrefixRegex = regexp.MustCompile(`(?i)\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bsk-[A-Za-z0-9_\-]{12,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{16,}\b`)
+	compShareAccessTokenRegex  = regexp.MustCompile(`\bUCloud-CompShare-[A-Za-z0-9]+\b`)
 )
 
 // RedactCredentials removes credential values while preserving semantic and
 // routing inputs such as email, IPv4, project IDs, instance IDs, regions, and
 // ordinary prose. It is safe to use before a recoverable request is persisted.
 func RedactCredentials(s string) string {
+	return redactCredentialsWith(s, CredentialRedactedOutput, TokenRedactedOutput, false)
+}
+
+// RedactCredentialsWithReplacement applies the same shared credential rules
+// at boundaries that require a neutral placeholder instead of user-facing
+// output labels.
+func RedactCredentialsWithReplacement(s, replacement string) string {
+	if replacement == "" {
+		replacement = CredentialRedactedOutput
+	}
+	return redactCredentialsWith(s, replacement, replacement, true)
+}
+
+func redactCredentialsWith(s, credentialReplacement, tokenReplacement string, preserveSeparators bool) string {
 	if s == "" {
 		return s
 	}
-	out := privateKeyBlockRegex.ReplaceAllString(s, CredentialRedactedOutput)
-	out = jwtRegex.ReplaceAllString(out, TokenRedactedOutput)
-	out = authorizationRegex.ReplaceAllStringFunc(out, redactAuthorizationKeepMarker)
-	out = bearerRegex.ReplaceAllStringFunc(out, redactBearerKeepMarker)
-	out = credentialAssignmentRegex.ReplaceAllStringFunc(out, redactAssignmentKeepMarker)
-	out = knownCredentialPrefixRegex.ReplaceAllString(out, CredentialRedactedOutput)
+	out := privateKeyBlockRegex.ReplaceAllString(s, credentialReplacement)
+	out = jwtRegex.ReplaceAllString(out, tokenReplacement)
+	out = authorizationRegex.ReplaceAllStringFunc(out, func(match string) string {
+		if !preserveSeparators {
+			return redactAuthorizationKeepMarkerNormalized(match, tokenReplacement)
+		}
+		return redactAuthorizationKeepMarkerWith(match, tokenReplacement)
+	})
+	out = bearerRegex.ReplaceAllStringFunc(out, func(match string) string {
+		if !preserveSeparators {
+			return redactBearerKeepMarkerNormalized(match, tokenReplacement)
+		}
+		return redactBearerKeepMarkerWith(match, tokenReplacement)
+	})
+	out = credentialAssignmentRegex.ReplaceAllStringFunc(out, func(match string) string {
+		return redactAssignmentKeepMarkerWith(match, credentialReplacement)
+	})
+	out = knownCredentialPrefixRegex.ReplaceAllString(out, credentialReplacement)
+	out = compShareAccessTokenRegex.ReplaceAllString(out, "UCloud-CompShare-"+credentialReplacement)
 	return out
+}
+
+// IsCredentialKey is the single field-name policy used by model, trace and
+// tool-result boundaries. Pagination keys such as next_token intentionally do
+// not match.
+func IsCredentialKey(key string) bool {
+	normalized := strings.ToLower(key)
+	normalized = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, normalized)
+	return strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "passwd") ||
+		strings.Contains(normalized, "privatekey") ||
+		strings.Contains(normalized, "publickey") ||
+		strings.Contains(normalized, "secretkey") ||
+		strings.Contains(normalized, "accesskey") ||
+		strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "apitoken") ||
+		strings.Contains(normalized, "accesstoken") ||
+		strings.Contains(normalized, "authtoken") ||
+		strings.Contains(normalized, "sessiontoken") ||
+		strings.Contains(normalized, "refreshtoken") ||
+		strings.Contains(normalized, "idtoken") ||
+		strings.Contains(normalized, "jupytertoken") ||
+		strings.Contains(normalized, "jupyterlabtoken") ||
+		strings.Contains(normalized, "bearertoken") ||
+		strings.Contains(normalized, "clientsecret") ||
+		strings.Contains(normalized, "webhooksecret") ||
+		strings.Contains(normalized, "credential") ||
+		(strings.Contains(normalized, "ssh") && strings.Contains(normalized, "command"))
 }
 
 // ContainsCredential reports whether the shared credential rules would redact
@@ -145,9 +185,8 @@ func ContainsCredential(s string) bool {
 // replaced. Designed for assistant-reply persistence (HTTP messages
 // role=assistant messages.content). Routing-relevant tokens are preserved.
 //
-// Order matters: JWT before marker-credential before generic-bearer,
-// because JWT values would also match the credential / bearer windows;
-// IP and UUID are independent. Idempotent — placeholders contain no
+// Credential cleanup runs through RedactCredentials first; IP and UUID
+// cleanup is independent. Idempotent — placeholders contain no
 // digits in IP-octet positions, no dashes in UUID grouping, no eyJ
 // prefix, etc., so re-running is a no-op.
 func RedactOutputLeak(s string) string {
@@ -155,7 +194,6 @@ func RedactOutputLeak(s string) string {
 		return s
 	}
 	out := RedactCredentials(s)
-	out = credentialMarkerRegex.ReplaceAllStringFunc(out, redactCredentialKeepMarker)
 	out = uuidRegex.ReplaceAllString(out, ProjectIDRedacted)
 	out = ipv4Regex.ReplaceAllStringFunc(out, redactIPv4IfValid)
 	return out
@@ -185,35 +223,33 @@ func redactIPv4IfValid(match string) string {
 	return IPRedacted
 }
 
-// redactCredentialKeepMarker preserves the marker keyword and separator
-// so operators reviewing the column know WHICH credential was redacted
-// without seeing the value. Input shape: "AccessKey=AKIA...".
-func redactCredentialKeepMarker(match string) string {
-	groups := credentialMarkerRegex.FindStringSubmatch(match)
-	if len(groups) < 3 {
-		return match
-	}
-	marker := groups[1]
-	// Find the separator (':' or '=') that follows the marker in the match.
-	sepIdx := strings.IndexAny(match, ":=")
-	if sepIdx < 0 {
-		return marker + "=" + CredentialRedactedOutput
-	}
-	return match[:sepIdx+1] + " " + CredentialRedactedOutput
-}
-
 // redactBearerKeepMarker preserves the "Bearer"/"token" prefix and
 // replaces only the credential body.
 func redactBearerKeepMarker(match string) string {
+	return redactBearerKeepMarkerNormalized(match, TokenRedactedOutput)
+}
+
+func redactBearerKeepMarkerNormalized(match, replacement string) string {
 	groups := bearerRegex.FindStringSubmatch(match)
 	if len(groups) < 3 {
 		return match
 	}
-	marker := groups[1]
-	return marker + " " + TokenRedactedOutput
+	return groups[1] + " " + replacement
+}
+
+func redactBearerKeepMarkerWith(match, replacement string) string {
+	indices := bearerRegex.FindStringSubmatchIndex(match)
+	if len(indices) < 6 || indices[4] < 0 || indices[5] < 0 {
+		return match
+	}
+	return match[:indices[4]] + replacement + match[indices[5]:]
 }
 
 func redactAuthorizationKeepMarker(match string) string {
+	return redactAuthorizationKeepMarkerNormalized(match, TokenRedactedOutput)
+}
+
+func redactAuthorizationKeepMarkerNormalized(match, replacement string) string {
 	groups := authorizationRegex.FindStringSubmatch(match)
 	if len(groups) < 4 || strings.HasPrefix(groups[3], "[") {
 		return match
@@ -222,13 +258,29 @@ func redactAuthorizationKeepMarker(match string) string {
 	if groups[2] != "" {
 		prefix += groups[2] + " "
 	}
-	return prefix + TokenRedactedOutput
+	return prefix + replacement
+}
+
+func redactAuthorizationKeepMarkerWith(match, replacement string) string {
+	indices := authorizationRegex.FindStringSubmatchIndex(match)
+	if len(indices) < 8 || indices[6] < 0 || indices[7] < 0 {
+		return match
+	}
+	value := match[indices[6]:indices[7]]
+	if strings.HasPrefix(value, "[") {
+		return match
+	}
+	return match[:indices[6]] + replacement + match[indices[7]:]
 }
 
 func redactAssignmentKeepMarker(match string) string {
+	return redactAssignmentKeepMarkerWith(match, CredentialRedactedOutput)
+}
+
+func redactAssignmentKeepMarkerWith(match, replacement string) string {
 	groups := credentialAssignmentRegex.FindStringSubmatch(match)
 	if len(groups) < 3 || strings.HasPrefix(groups[2], "[") {
 		return match
 	}
-	return groups[1] + CredentialRedactedOutput
+	return groups[1] + replacement
 }

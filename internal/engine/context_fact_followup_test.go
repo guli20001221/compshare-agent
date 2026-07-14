@@ -13,8 +13,6 @@ import (
 )
 
 func TestRecentFactFollowupPriceRequeriesWithContextDecisionSlot(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var priceArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -79,8 +77,6 @@ func TestRecentFactFollowupPriceRequeriesWithContextDecisionSlot(t *testing.T) {
 }
 
 func TestRecentFactFollowupStockRequeriesWithContextDecisionSlot(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var capacityArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -147,8 +143,6 @@ func TestRecentFactFollowupStockRequeriesWithContextDecisionSlot(t *testing.T) {
 }
 
 func TestRecentFactFollowupRefundRevalidatesSelectedInstance(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var refundCalled bool
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -214,8 +208,6 @@ func TestRecentFactFollowupRefundRevalidatesSelectedInstance(t *testing.T) {
 }
 
 func TestRecentFactFollowupBillingRerunsDiagnosis(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var describeCalls int
 	var billingArgs map[string]any
@@ -296,8 +288,6 @@ func TestRecentFactFollowupBillingRerunsDiagnosis(t *testing.T) {
 }
 
 func TestRecentFactBillingReadFailureFallsBackToContextAwareReadOnlyAgent(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		if action != "DescribeCompShareInstance" {
@@ -346,8 +336,6 @@ func TestRecentFactBillingReadFailureFallsBackToContextAwareReadOnlyAgent(t *tes
 }
 
 func TestRecentFactFollowupRequiresSessionFactContextFlag(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var priceCalled bool
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {

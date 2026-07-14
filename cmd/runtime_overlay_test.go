@@ -37,18 +37,6 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		assert.False(t, enabled)
 		assert.Empty(t, unknown)
 	})
-	t.Run("flash knowledge route guard explicit true", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{FlashKnowledgeRouteGuard: boolPtr(true)}}}
-		enabled, unknown := flashKnowledgeRouteGuardEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.True(t, enabled)
-		assert.Empty(t, unknown)
-	})
-	t.Run("flash knowledge route guard omitted stays off", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{}}
-		enabled, unknown := flashKnowledgeRouteGuardEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.False(t, enabled, "omitted + no env → built-in default OFF preserved")
-		assert.Empty(t, unknown)
-	})
 	// The flag it replaces was opt-in, so "omitted → ON" is the whole change: a
 	// deploy that says nothing must now get the deterministic table. Without this
 	// assertion the flip is invisible — config.yaml carries no such key today.
@@ -74,24 +62,6 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		assert.False(t, enabled)
 		assert.Equal(t, "maybe", unknown, "an unknown value must surface as a warning, never silently pass as on")
 	})
-	t.Run("context continuation explicit true", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{ContextContinuation: boolPtr(true)}}}
-		enabled, unknown := contextContinuationEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.True(t, enabled)
-		assert.Empty(t, unknown)
-	})
-	t.Run("context continuation explicit false overrides default on", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{ContextContinuation: boolPtr(false)}}}
-		enabled, unknown := contextContinuationEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.False(t, enabled)
-		assert.Empty(t, unknown)
-	})
-	t.Run("context continuation omitted uses default on", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{}}
-		enabled, unknown := contextContinuationEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
-		assert.Empty(t, unknown)
-	})
 	t.Run("create preference extractor explicit true", func(t *testing.T) {
 		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{CreatePreferenceExtractor: boolPtr(true)}}}
 		enabled, unknown := createPreferenceExtractorEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
@@ -114,18 +84,6 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		cfg := &config.Config{Agent: config.AgentConfig{}}
 		enabled, unknown := createPreferenceExtractorEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
 		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
-		assert.Empty(t, unknown)
-	})
-	t.Run("knowledge answer verifier omitted stays on", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{}}
-		enabled, unknown := knowledgeAnswerVerifierEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
-		assert.Empty(t, unknown)
-	})
-	t.Run("knowledge answer verifier explicit false fails closed cleanly", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{KnowledgeAnswerVerifier: boolPtr(false)}}}
-		enabled, unknown := knowledgeAnswerVerifierEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.False(t, enabled)
 		assert.Empty(t, unknown)
 	})
 	t.Run("omitted bool falls through to env", func(t *testing.T) {

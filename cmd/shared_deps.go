@@ -41,15 +41,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if unifiedCreate {
 		log.Printf("runtime: HTTP unified create-family route enabled (default-on; set COMPSHARE_UNIFIED_CREATE=0 to disable; create_instance prompt/schema active)")
 	}
-	contextContinuation, unknownContextContinuation := contextContinuationEnabledFromEnv(getenv)
-	if unknownContextContinuation != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_CONTEXT_CONTINUATION value %q", unknownContextContinuation)
-	}
-	engine.SetContextContinuationEnabled(contextContinuation)
-	if contextContinuation {
-		log.Printf("runtime: HTTP context continuation enabled (COMPSHARE_CONTEXT_CONTINUATION default-on; disable with =0)")
-	}
-
 	deps, err := engine.NewSharedDeps(cfg)
 	if err != nil {
 		return nil, false, fmt.Errorf("shared deps: %w", err)
@@ -83,14 +74,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if domainMatchGuard {
 		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
 	}
-	flashKnowledgeRouteGuard, unknownFlashKnowledgeRouteGuard := flashKnowledgeRouteGuardEnabledFromEnv(getenv)
-	if unknownFlashKnowledgeRouteGuard != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD value %q", unknownFlashKnowledgeRouteGuard)
-	}
-	engine.SetFlashKnowledgeRouteGuardEnabled(flashKnowledgeRouteGuard)
-	if flashKnowledgeRouteGuard {
-		log.Printf("runtime: HTTP flash knowledge route guard enabled (COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD=1; default-off fallback)")
-	}
 	createPrefExtractor, unknownCreatePrefExtractor := createPreferenceExtractorEnabledFromEnv(getenv)
 	if unknownCreatePrefExtractor != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q", unknownCreatePrefExtractor)
@@ -106,36 +89,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	engine.SetAgentDeterministicRenderEnabled(deterministicRender)
 	if deterministicRender {
 		log.Printf("runtime: agent-loop deterministic instance rendering enabled (COMPSHARE_AGENT_DETERMINISTIC_RENDER default-on; disable with =0; instance tables are rendered from the payload, not retyped by the model)")
-	}
-	knowledgeAnswerVerifier, unknownKnowledgeAnswerVerifier := knowledgeAnswerVerifierEnabledFromEnv(getenv)
-	if unknownKnowledgeAnswerVerifier != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER value %q", unknownKnowledgeAnswerVerifier)
-	}
-	engine.SetKnowledgeAnswerVerifierEnabled(knowledgeAnswerVerifier)
-	if knowledgeAnswerVerifier {
-		log.Printf("runtime: HTTP knowledge answer verifier enabled (COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER default-on; model verdict constrained by deterministic evidence checks)")
-	} else {
-		log.Printf("runtime: HTTP knowledge answer verifier disabled (COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER=0; evidence-backed agent-loop answers fail closed)")
-	}
-	disciplinedKnowledgeQASynthesis, unknownDisciplinedKnowledgeQASynthesis := disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv)
-	if unknownDisciplinedKnowledgeQASynthesis != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS value %q", unknownDisciplinedKnowledgeQASynthesis)
-	}
-	engine.SetDisciplinedKnowledgeQASynthesisEnabled(disciplinedKnowledgeQASynthesis)
-	if disciplinedKnowledgeQASynthesis {
-		log.Printf("runtime: HTTP knowledge_qa evidence repair enabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS default-on; rejected drafts get one proof-carrying repair from the same evidence ledger; disable with =0)")
-	} else {
-		log.Printf("runtime: HTTP knowledge_qa evidence repair disabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=0; semantic verification still applies, but rejected drafts are not regenerated)")
-	}
-	kqaSelfRevision, unknownKQASelfRevision := kqaSelfRevisionEnabledFromEnv(getenv)
-	if unknownKQASelfRevision != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_KQA_SELF_REVISION value %q", unknownKQASelfRevision)
-	}
-	engine.SetKQASelfRevisionEnabled(kqaSelfRevision)
-	if kqaSelfRevision {
-		log.Printf("runtime: HTTP knowledge_qa directness guidance enabled (COMPSHARE_KQA_SELF_REVISION default-on; applied inside the single proof-carrying repair; disable with =0)")
-	} else {
-		log.Printf("runtime: HTTP knowledge_qa directness guidance disabled (COMPSHARE_KQA_SELF_REVISION=0; evidence repair remains conservative)")
 	}
 	return deps, mutating, nil
 }

@@ -4,9 +4,8 @@ import "testing"
 
 // TestMergeRetrievalTrace pins the per-turn retrieval merge: a forced SearchKnowledge
 // first hop that retrieved evidence must remain observable even when the agent
-// re-queries with a miss later in the same turn (the COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP
-// case the eval gate must be able to prove). Otherwise the latest retrieval wins, so
-// terminal RAG (a single retrieval) is unchanged.
+// re-queries with a miss later in the same turn. Otherwise the latest retrieval
+// would erase the evidence-producing activity from the turn trace.
 func TestMergeRetrievalTrace(t *testing.T) {
 	hits := RetrievalTrace{Enabled: true, KBVersion: "kb.v1", Hits: 3}
 	empty := RetrievalTrace{Enabled: true, Hits: 0, RefusedReason: "no_evidence"}

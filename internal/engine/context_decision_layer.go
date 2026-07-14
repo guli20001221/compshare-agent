@@ -79,30 +79,6 @@ func (r *llmContextDecisionLayer) ResolveContextDecision(ctx context.Context, in
 	return parseContextDecision(resp.Content)
 }
 
-type legacyContextContinuationLayer struct {
-	resolver ContextContinuationResolver
-}
-
-func (r legacyContextContinuationLayer) ResolveContextDecision(ctx context.Context, in ContextDecisionInput) (*ContextDecision, error) {
-	if r.resolver == nil {
-		return nil, fmt.Errorf("context decision layer: no legacy resolver")
-	}
-	semanticTask := ""
-	if strings.TrimSpace(in.TaskSnapshot) != "" {
-		semanticTask = "task_snapshot (understanding_only):\n" + strings.TrimSpace(in.TaskSnapshot)
-	}
-	decision, err := r.resolver.ResolveContextContinuation(ctx, ContextContinuationInput{
-		UserText:        in.UserText,
-		RouterIntent:    in.RouterIntent,
-		ContextFrame:    in.ActiveTask,
-		InstanceContext: strings.Join(nonEmptyStrings(in.SelectedEntity, in.PendingChoices, semanticTask), "\n"),
-	})
-	if err != nil || decision == nil {
-		return nil, err
-	}
-	return contextContinuationToDecision(*decision), nil
-}
-
 func (e *Engine) SetContextDecisionLayer(layer ContextDecisionLayer) {
 	e.contextDecisionLayer = layer
 }
@@ -147,9 +123,6 @@ func (e *Engine) resolveContextDecision(ctx context.Context, userMsg string, rou
 	e.contextDecisionUserTextThisTurn = userKey
 
 	layer := e.contextDecisionLayer
-	if layer == nil && e.contextContinuationResolver != nil {
-		layer = legacyContextContinuationLayer{resolver: e.contextContinuationResolver}
-	}
 	if layer == nil {
 		client := e.agentLLMClient
 		if client == nil {
@@ -233,12 +206,12 @@ func buildContextDecisionPrompt(in ContextDecisionInput) []openai.ChatCompletion
 	sys.WriteString(`{"decision":"new_task","target":"","slot_updates":{},"gpu_pref":"","zone_pref":"","image_pref":"","image_source":"","workload_pref":"","instance_ref":"","metric":"","billing_topic":"","clarify":"","reason":""}` + "\n")
 	sys.WriteString("decision 只能是 continue_task、new_task、select_entity、answer_followup、clear_context、clarify。\n")
 	sys.WriteString("规则：\n")
-	sys.WriteString("- 用户短句沿用当前待办任务并补充或修改参数时，输出 continue_task。\n")
+	sys.WriteString("- 当前话语在语义上继续待办任务并补充或修改参数时，输出 continue_task；不要按句长或特定词语判断。\n")
 	sys.WriteString("- 把补充或修改的参数写入 slot_updates，例如 size_gb、target_size_gb、cpu、memory_gb、gpu_count、gpu_type、zone、image_pref、image_id、image_source、workload、stop_time、name、cfs_id。\n")
-	sys.WriteString("- 用户引用最近实例列表、已选实例或“它/这台/第 N 台”时，输出 select_entity，并填写 instance_ref。\n")
-	sys.WriteString("- 用户追问最近库存、价格、监控、费用等只读结果时，输出 answer_followup，并填写 target；普通费用续问 target=billing，billing_topic=cost；明确询问退费/退款/退订估算时才填写 billing_topic=refund。\n")
-	sys.WriteString("- 用户提出新的价格、建议、概念、教程、知识问题时，输出 new_task。\n")
-	sys.WriteString("- 用户说算了、不用了、取消、换个话题时，输出 clear_context。\n")
+	sys.WriteString("- 当前话语在语义上指向最近候选实体或已选实体时，输出 select_entity，并填写可由上下文解析的 instance_ref。\n")
+	sys.WriteString("- 当前话语在语义上追问最近的只读结果时，输出 answer_followup 并填写 target；普通费用追问使用 billing_topic=cost，只有明确要求退费估算才使用 billing_topic=refund。\n")
+	sys.WriteString("- 当前话语提出了独立于待办任务的新目标时，输出 new_task。\n")
+	sys.WriteString("- 用户明确放弃当前待办或要求清除当前任务时，输出 clear_context。\n")
 	sys.WriteString("- 不确定时输出 clarify，并给一句简短追问。\n")
 	sys.WriteString("- router_intent 只是可能出错的参考信号，不能单独决定清除或继续任务。\n")
 	sys.WriteString("- task_snapshot 和 freshness=expired 的信息只能帮助理解，不得授权执行；需要执行时必须依赖仍有效的 active_task、用户本轮明确输入和后端确认。\n")
@@ -598,6 +571,7 @@ func contextDecisionToContinuation(decision ContextDecision) *ContextContinuatio
 			ImagePref:    decision.ImagePref,
 			ImageSource:  decision.ImageSource,
 			WorkloadPref: decision.WorkloadPref,
+			InstanceRef:  decision.InstanceRef,
 			Clarify:      decision.Clarify,
 			Reason:       decision.Reason,
 		}
@@ -609,29 +583,6 @@ func contextDecisionToContinuation(decision ContextDecision) *ContextContinuatio
 		return &ContextContinuationDecision{Decision: ContextContinuationClarify, Clarify: decision.Clarify, Reason: decision.Reason}
 	default:
 		return nil
-	}
-}
-
-func contextContinuationToDecision(decision ContextContinuationDecision) *ContextDecision {
-	switch decision.Decision {
-	case ContextContinuationContinue:
-		return sanitizeContextDecision(ContextDecision{
-			Decision:     ContextDecisionContinueTask,
-			Target:       ContextDecisionTargetCreate,
-			GPUPref:      decision.GPUPref,
-			ZonePref:     decision.ZonePref,
-			ImagePref:    decision.ImagePref,
-			ImageSource:  decision.ImageSource,
-			WorkloadPref: decision.WorkloadPref,
-			Clarify:      decision.Clarify,
-			Reason:       decision.Reason,
-		})
-	case ContextContinuationClear:
-		return sanitizeContextDecision(ContextDecision{Decision: ContextDecisionClearContext, Reason: decision.Reason})
-	case ContextContinuationClarify:
-		return sanitizeContextDecision(ContextDecision{Decision: ContextDecisionClarify, Clarify: decision.Clarify, Reason: decision.Reason})
-	default:
-		return sanitizeContextDecision(ContextDecision{Decision: ContextDecisionNewTask, Reason: decision.Reason})
 	}
 }
 
@@ -698,7 +649,7 @@ func nonEmptyStrings(values ...string) []string {
 // call to every ordinary turn
 // merely because the user selected a machine days ago.
 func (e *Engine) hasContextDecisionContext() bool {
-	if e == nil || !ContextContinuationEnabled() || !e.sessionStateHydrated {
+	if e == nil || !e.sessionStateHydrated {
 		return false
 	}
 	state := e.sessionState
@@ -754,6 +705,7 @@ func (e *Engine) clearTaskCarryFromContextDecision(decision string) {
 		}
 		task.UpdatedAtUnix = time.Now().Unix()
 		e.sessionState.TaskSnapshot = task
+		e.markMemoryUpdateSource(memoryUpdateStructured)
 	}
 	e.sessionState.PendingDeployModel = ""
 	e.sessionState.LastDeployWorkload = ""

@@ -259,8 +259,6 @@ func TestPendingSelectionRoundTripsThroughSessionState(t *testing.T) {
 }
 
 func TestContextDecisionSelectionRecordsPendingInstance(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
@@ -294,8 +292,6 @@ func TestContextDecisionSelectionRecordsPendingInstance(t *testing.T) {
 }
 
 func TestContextDecisionSelectionUsesDefaultResolverWhenNoLayerInjected(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{"decision":"select_entity","target":"instance","instance_ref":"第1台"}`}}}
 	e := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -325,8 +321,6 @@ func TestContextDecisionSelectionUsesDefaultResolverWhenNoLayerInjected(t *testi
 }
 
 func TestContextDecisionPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
@@ -356,11 +350,11 @@ func TestContextDecisionPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) 
 
 	reply, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "选第2台", pending)
 
-	if !selected || !handled {
-		t.Fatalf("plain selection should be handled in this turn, selected=%v handled=%v reply=%q", selected, handled, reply)
+	if !selected || handled || reply != "" {
+		t.Fatalf("plain selection should update context then continue through Agent, selected=%v handled=%v reply=%q", selected, handled, reply)
 	}
-	if !strings.Contains(reply, "uhost-second") {
-		t.Fatalf("selection reply should name the selected instance, got %q", reply)
+	if !e.deferTaskCarryThisTurn {
+		t.Fatal("plain selection must not let an unrelated old workflow consume the turn")
 	}
 	state, _, _ := e.SessionStateSnapshot()
 	if state.SelectedInstanceID != "uhost-second" {
@@ -369,8 +363,6 @@ func TestContextDecisionPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) 
 }
 
 func TestContextDecisionNaturalPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
@@ -400,11 +392,11 @@ func TestContextDecisionNaturalPlainSelectionStopsBeforeOldWorkflowFrame(t *test
 
 	reply, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "帮我选择那台", pending)
 
-	if !selected || !handled {
-		t.Fatalf("natural plain selection should be handled in this turn, selected=%v handled=%v reply=%q", selected, handled, reply)
+	if !selected || handled || reply != "" {
+		t.Fatalf("natural selection should update context then continue through Agent, selected=%v handled=%v reply=%q", selected, handled, reply)
 	}
-	if !strings.Contains(reply, "uhost-second") {
-		t.Fatalf("selection reply should name the selected instance, got %q", reply)
+	if !e.deferTaskCarryThisTurn {
+		t.Fatal("natural selection must not let an unrelated old workflow consume the turn")
 	}
 	state, _, _ := e.SessionStateSnapshot()
 	if state.SelectedInstanceID != "uhost-second" {
@@ -582,8 +574,8 @@ func TestTryResumeResourceSelectionAllowsSelectingAnotherDisplayedInstance(t *te
 	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "我有哪些实例", len(candidates), false)
 
 	reply, handled := e.tryResumeResourceSelection(context.Background(), "第1台 GPU 型号是什么", noopStep)
-	if !handled || !strings.Contains(reply, "RTX4090") {
-		t.Fatalf("first ordinal should be answered from the displayed list, handled=%v reply=%q", handled, reply)
+	if handled || reply != "" {
+		t.Fatalf("embedded question should bind the entity then continue through Agent, handled=%v reply=%q", handled, reply)
 	}
 	if e.sessionState.SelectedInstanceID != "uhost-01" {
 		t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)
@@ -658,8 +650,6 @@ func TestTryResumeResourceSelectionMonitorDoesNotPreTrustBeforeHandler(t *testin
 }
 
 func TestTryResumeResourceSelectionNaturalPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	for _, text := range []string{"就第2台吧", "选择第2台", "帮我选择第2台", "我要第2台"} {
 		t.Run(text, func(t *testing.T) {
@@ -683,17 +673,14 @@ func TestTryResumeResourceSelectionNaturalPlainSelectionStopsBeforeOldWorkflowFr
 
 			reply, handled := e.tryResumeResourceSelection(context.Background(), text, noopStep)
 
-			if !handled {
-				t.Fatal("natural plain selection should be handled in this turn")
+			if handled || reply != "" {
+				t.Fatalf("natural selection should continue through Agent, handled=%v reply=%q", handled, reply)
 			}
 			if e.sessionState.SelectedInstanceID != "uhost-02" {
 				t.Fatalf("selected = %q, want uhost-02; reply=%q", e.sessionState.SelectedInstanceID, reply)
 			}
-			if !strings.Contains(reply, "uhost-02") {
-				t.Fatalf("selection reply should name the selected instance, got %q", reply)
-			}
-			if strings.Contains(reply, "数据盘") || strings.Contains(reply, "确认") {
-				t.Fatalf("plain selection must not continue stale workflow task, got %q", reply)
+			if !e.deferTaskCarryThisTurn {
+				t.Fatal("plain selection must not continue stale workflow task")
 			}
 			if e.sessionState.ContextFrame.Kind != ContextFrameKindWorkflowTask {
 				t.Fatal("plain selection must not silently delete an unrelated active task")
@@ -780,11 +767,8 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalBindsAndContinues(t *testing.T
 	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", len(candidates), false)
 
 	reply, handled := e.tryResumeResourceSelection(context.Background(), "\u7b2c10\u53f0 GPU \u5fd9\u4e0d\u5fd9", noopStep)
-	if !handled {
-		t.Fatalf("embedded ordinal monitor question should be answered immediately")
-	}
-	if strings.Contains(reply, "\u8bf7\u9009\u62e9") {
-		t.Fatalf("embedded ordinal monitor question must not ask the user to choose again: %q", reply)
+	if handled || reply != "" {
+		t.Fatalf("embedded monitor question should bind then continue through Agent, handled=%v reply=%q", handled, reply)
 	}
 	if e.sessionState.SelectedInstanceID != "uhost-10" {
 		t.Fatalf("selected = %q, want uhost-10", e.sessionState.SelectedInstanceID)
@@ -805,17 +789,8 @@ func TestTryResumeResourceSelectionEmbeddedOrdinalGPUInfoAnswersSelectedInstance
 	e.recordPendingInstanceSelection(candidates, intent.IntentResourceInfo, "\u6211\u6709\u54ea\u4e9b\u5b9e\u4f8b", len(candidates), false)
 
 	reply, handled := e.tryResumeResourceSelection(context.Background(), "\u7b2c1\u53f0 GPU \u578b\u53f7\u662f\u4ec0\u4e48", noopStep)
-	if !handled {
-		t.Fatal("embedded ordinal GPU info question should be answered from the selected instance")
-	}
-	if !strings.Contains(reply, "RTX4090") {
-		t.Fatalf("reply should include selected instance GPU type, got %q", reply)
-	}
-	if !strings.Contains(reply, "数量 1 张") {
-		t.Fatalf("reply should include selected instance GPU count, got %q", reply)
-	}
-	if strings.Contains(reply, "\u8bf7\u9009\u62e9") || strings.Contains(reply, "\u76d1\u63a7") {
-		t.Fatalf("GPU info question should not ask selection again or become monitor query: %q", reply)
+	if handled || reply != "" {
+		t.Fatalf("embedded GPU question should bind then continue through Agent, handled=%v reply=%q", handled, reply)
 	}
 	if e.sessionState.SelectedInstanceID != "uhost-01" {
 		t.Fatalf("selected = %q, want uhost-01", e.sessionState.SelectedInstanceID)

@@ -8,7 +8,6 @@ import (
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,13 +23,6 @@ type streamingSeqMockLLM struct {
 }
 
 func TestKnowledgeFollowupIsVerifiedBeforeAnyTokenReachesTheClient(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	previousAgentic := tools.AgenticSearchKnowledgeEnabled()
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(previousAgentic)
-
 	const chunkID = "prior-refund-policy"
 	mock := &streamingSeqMockLLM{responses: []llm.ChatResponse{
 		{Content: "所有订单都可以全额退款。"},

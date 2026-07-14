@@ -355,6 +355,14 @@ func (r *Recorder) Finish(chatErr, attemptErr error, reply string, snapshot engi
 	r.record.Outcome.TotalTokens = r.totalTokens
 	r.record.Outcome.PromptTokens = r.promptTokens
 	r.record.Outcome.CompletionTokens = r.completionTokens
+	r.record.Outcome.ContextSources = append([]string(nil), snapshot.ContextSources...)
+	r.record.Outcome.ResponseContract = snapshot.ResponseContract
+	r.record.Outcome.PromptSectionIDs = append([]string(nil), snapshot.PromptSectionIDs...)
+	r.record.Outcome.MemoryUpdateSource = snapshot.MemoryUpdateSource
+	r.record.Outcome.GroundingOutcome = snapshot.GroundingOutcome
+	if chatErr != nil || attemptErr != nil {
+		r.record.Outcome.ResponseContract = "failure"
+	}
 	for _, call := range r.record.ToolCalls {
 		if call.TurnIndex == r.record.TurnIndex && call.Action == "GetCompShareInstanceMonitor" {
 			r.record.Freshness.MonitorCallInCurrentTurn = true

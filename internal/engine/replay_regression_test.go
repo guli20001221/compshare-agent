@@ -318,8 +318,6 @@ func TestReplayRegression_LifecycleBareIDSelectionResumesPlannerWithoutAutoMutat
 }
 
 func TestReplayRegression_ExactSelectionDoesNotResumeStaleWorkflowFrame(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
@@ -376,8 +374,6 @@ func TestReplayRegression_ExactSelectionDoesNotResumeStaleWorkflowFrame(t *testi
 }
 
 func TestReplayRegression_ExactSelectionPreservesWaitingCreateDiskSize(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
@@ -1202,7 +1198,6 @@ func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t
 // instance tools. Real answerability is covered by retrieval_recall_realdata_test.go
 // and the key-protected live smoke report.
 func TestReplayRegressionWiring_CodingPlanDeleteUsesKnowledgePath(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	result := codingPlanManagementKnowledgeResult()
@@ -1278,7 +1273,6 @@ func TestReplayRegression_DiagnosisTargetFollowupDefersToPlanner(t *testing.T) {
 }
 
 func TestReplayRegression_SSHDisconnectTimeoutDefersToPlannerKnowledgeQA(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Running"))
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(true)}}}
 	result := stockShortageKnowledgeResult()
@@ -1299,7 +1293,6 @@ func TestReplayRegression_SSHDisconnectTimeoutDefersToPlannerKnowledgeQA(t *test
 }
 
 func TestReplayRegressionWiring_GenericNoResourceUsesKnowledgePath(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	result := stockShortageKnowledgeResult()
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}
@@ -1321,35 +1314,7 @@ func TestReplayRegressionWiring_GenericNoResourceUsesKnowledgePath(t *testing.T)
 	require.Len(t, mock.calls, 3, "Agent 检索、回答并校验证据")
 }
 
-func TestReplayRegressionWiring_FlashGuardRedirectsStockMisrouteWhenEnabled(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
-	SetFlashKnowledgeRouteGuardEnabled(true)
-	t.Cleanup(func() { SetFlashKnowledgeRouteGuardEnabled(false) })
-
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
-		SchemaVersion: intent.SchemaVersion,
-		Intent:        intent.IntentStockAvailability,
-		Confidence:    0.9,
-	}}}}
-	result := stockShortageKnowledgeResult()
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}
-	exec := &mockExecutor{}
-	mock := agenticKnowledgeMock("一直暂无资源是什么情况", "“暂无资源”表示具体创建配置没有通过容量预检，不等于机型下架。", result)
-	eng := NewWithDeps(mock, exec, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-	eng.SetKnowledgeRetriever(retriever)
-
-	reply, err := eng.Chat(context.Background(), "一直暂无资源 是什么情况", noopStep)
-
-	require.NoError(t, err)
-	require.Contains(t, reply, "容量预检")
-	require.Len(t, exec.calls, 0, "guarded product-fact question must not call live stock tools")
-	require.Len(t, retriever.calls, 1)
-}
-
 func TestReplayRegressionWiring_DiskBillingQuestionUsesKnowledgePath(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	result := diskBillingKnowledgeResult()
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}
@@ -1372,7 +1337,6 @@ func TestReplayRegressionWiring_DiskBillingQuestionUsesKnowledgePath(t *testing.
 }
 
 func TestReplayRegressionWiring_DiskBillingFollowupGPUModelStaysOnDisk(t *testing.T) {
-	enableKnowledgeAnswerVerifier(t)
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	result := diskBillingKnowledgeResult()
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}

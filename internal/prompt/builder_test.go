@@ -210,6 +210,26 @@ func TestKnowledgeTurnPolicyAppearsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestBuildSystemWithOptionsAndTraceReportsExactUniqueSectionIDs(t *testing.T) {
+	text, ids := BuildSystemWithOptionsAndTrace("sensitive user context", BuildOptions{MutatingToolsEnabled: false})
+	if !strings.Contains(text, "sensitive user context") {
+		t.Fatal("rendered prompt lost user context")
+	}
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		if strings.Contains(id, "sensitive") {
+			t.Fatalf("section metadata leaked prompt content: %q", id)
+		}
+		if _, ok := seen[id]; ok {
+			t.Fatalf("duplicate section id in trace metadata: %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if _, ok := seen["knowledge_turn_policy"]; !ok {
+		t.Fatalf("knowledge policy section absent from metadata: %v", ids)
+	}
+}
+
 func TestBuildSystemWithOptions_MutatingModeKeepsWorkflowGuidance(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
 	if strings.Contains(prompt, "CreateInstanceWorkflow") {

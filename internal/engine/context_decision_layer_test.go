@@ -249,8 +249,8 @@ func TestBuildContextDecisionPromptHasImperativeSafetyRules(t *testing.T) {
 		"不要生成最终 API 参数",
 		"写操作必须交给后端确认卡",
 		"不确定时输出 clarify",
-		"普通费用续问 target=billing，billing_topic=cost",
-		"明确询问退费/退款/退订估算时才填写 billing_topic=refund",
+		"普通费用追问使用 billing_topic=cost",
+		"只有明确要求退费估算才使用 billing_topic=refund",
 	} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Fatalf("system prompt missing %q:\n%s", want, systemPrompt)

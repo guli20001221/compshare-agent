@@ -294,21 +294,6 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// flashKnowledgeRouteGuardEnabledFromEnv gates the default-off flash route
-// fallback for a small set of product-fact questions that can otherwise be sent
-// to live tools. This is not part of the primary routing strategy.
-func flashKnowledgeRouteGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"))
-	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
-		return true, ""
-	default:
-		return false, raw
-	}
-}
-
 // createPreferenceExtractorEnabledFromEnv gates the optional create/deploy
 // preference extractor. DEFAULT ON: it adds one LLM pass before create/deploy
 // image matching, and the extracted fields only affect preference matching,
@@ -352,78 +337,6 @@ func unifiedCreateEnabledFromEnv(getenv getenvFunc) (bool, string) {
 // user on 2026-07-13, and a phantom `uhost-…` appeared in the 97-turn replay.
 func agentDeterministicRenderEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_AGENT_DETERMINISTIC_RENDER"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-func contextContinuationEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_CONTEXT_CONTINUATION"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-// knowledgeAnswerVerifierEnabledFromEnv gates the model-assisted semantic
-// verifier on the knowledge_qa agent-loop exit. DEFAULT ON. The verifier is not
-// a mathematical proof and this flag does not claim an offline eval guarantee;
-// its structured verdict is constrained by deterministic quote, chunk-id,
-// clause-coverage, raw-leak and obvious-contradiction checks in the engine.
-//
-// Explicitly disabling the verifier is fail-closed: a turn that already has KB
-// evidence is refused rather than released without semantic validation. The Go
-// package default remains off so tests and embedders opt in deliberately, while
-// cmd resolves an omitted deploy setting to on at process boot.
-func knowledgeAnswerVerifierEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-// disciplinedKnowledgeQASynthesisEnabledFromEnv gates one bounded, proof-carrying
-// repair after the common knowledge-answer verifier rejects an agent-loop draft.
-// DEFAULT ON for the unified knowledge Agent path. The backward-compatible flag
-// name is retained for rollout; the implementation performs one proof-carrying repair.
-// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn
-// (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
-// (engine.disciplinedKnowledgeQASynthesisOn) stays false so unit tests are unaffected.
-func disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-// kqaSelfRevisionEnabledFromEnv keeps the historical flag as directness guidance
-// inside the same proof-carrying repair call. It no longer starts a separate prose
-// rewrite after grounding validation, so it cannot create an unverified final answer.
-// DEFAULT ON and inert when evidence repair is disabled.
-// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
-// non-empty warn (CLAUDE.md: never silently coerce). Boot-only; the Go-package
-// default (engine.kqaSelfRevisionOn) stays false so unit tests are unaffected.
-func kqaSelfRevisionEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_KQA_SELF_REVISION"))
 	switch strings.ToLower(raw) {
 	case "", "1", "true", "yes", "on":
 		return true, ""

@@ -217,29 +217,11 @@ func TestTryDeployModel_ConfirmCancelKeepsCreateFamilyFrameForFollowup(t *testin
 	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
 	assert.Equal(t, ContextFrameStatusFailedRecoverable, state.ContextFrame.Status)
 	assert.Equal(t, "4090", state.ContextFrame.GPU)
-	assert.Equal(t, "Qwen2.5-7B", state.LastDeployWorkload)
-	assert.NotEmpty(t, state.LastDeployZone)
+	assert.Equal(t, "Qwen2.5-7B", state.ContextFrame.Workload)
+	assert.NotEmpty(t, state.ContextFrame.Zone)
+	assert.Empty(t, state.LastDeployWorkload)
+	assert.Empty(t, state.LastDeployZone)
 	assert.Empty(t, state.PendingDeployModel)
-}
-
-func TestRecordDeployContextFrame_FlagOffDoesNotPersistFrame(t *testing.T) {
-	SetContextContinuationEnabled(false)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
-
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-
-	eng.recordDeployContextFrameFromError("部署 Qwen", "部署 Qwen", "cn-wlcb-01", "暂无容量")
-	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind)
-
-	eng.recordDeployContextFrameFromPlan("部署 Qwen", deployPlan{
-		GpuType:    "4090",
-		ModelName:  "Qwen",
-		ChosenZone: "cn-wlcb-01",
-	}, "暂无容量")
-	state, _, _ = eng.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind)
 }
 
 // TestTryDeployModel_SurfacesUsageGuidance proves the handler fetches the deployed
@@ -1833,8 +1815,6 @@ func TestEffectiveDeployUserMsg_UsesExplicitPendingDeployState(t *testing.T) {
 }
 
 func TestRecordLastDeployTargetUsesContextFrameWhenEnabled(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
 	eng.SetSessionState(SessionState{
@@ -1859,8 +1839,6 @@ func TestRecordLastDeployTargetUsesContextFrameWhenEnabled(t *testing.T) {
 }
 
 func TestRecordLastDeployTargetReadOnlyKeepsLegacyStateWhenContextContinuationOn(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
 	eng.mutatingToolsEnabled = false
@@ -1878,28 +1856,7 @@ func TestRecordLastDeployTargetReadOnlyKeepsLegacyStateWhenContextContinuationOn
 	assert.Equal(t, "继续部署 Qwen2.5-32B；沿用可用区 cn-wlcb-01；用户追问：A800可以吗", eng.effectiveDeployUserMsg("A800可以吗"))
 }
 
-func TestRecordLastDeployTargetKeepsLegacyStateWhenContextContinuationOff(t *testing.T) {
-	SetContextContinuationEnabled(false)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
-
-	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
-	eng.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		LastIntent:    string(intent.IntentDeployModel),
-	}, 1)
-
-	eng.recordLastDeployTarget("Qwen2.5-32B", "cn-wlcb-01")
-
-	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind)
-	assert.Equal(t, "Qwen2.5-32B", state.LastDeployWorkload)
-	assert.Equal(t, "cn-wlcb-01", state.LastDeployZone)
-	assert.Equal(t, "继续部署 Qwen2.5-32B；沿用可用区 cn-wlcb-01；用户追问：A800可以吗", eng.effectiveDeployUserMsg("A800可以吗"))
-}
-
 func TestEffectiveDeployUserMsg_UsesContextFrameWorkloadBeforeLegacyPendingState(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
 	eng.SetSessionState(SessionState{
@@ -1920,8 +1877,6 @@ func TestEffectiveDeployUserMsg_UsesContextFrameWorkloadBeforeLegacyPendingState
 }
 
 func TestEffectiveDeployUserMsg_ContextFrameSizedWorkloadReplacesBareSize(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
 	eng.SetSessionState(SessionState{
@@ -1941,8 +1896,6 @@ func TestEffectiveDeployUserMsg_ContextFrameSizedWorkloadReplacesBareSize(t *tes
 }
 
 func TestRecordPendingDeployModelUsesContextFrameWhenEnabled(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
@@ -1958,8 +1911,6 @@ func TestRecordPendingDeployModelUsesContextFrameWhenEnabled(t *testing.T) {
 }
 
 func TestRecordPendingDeployModelCreatesContextFrameWhenEnabled(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
@@ -1973,20 +1924,6 @@ func TestRecordPendingDeployModelCreatesContextFrameWhenEnabled(t *testing.T) {
 	assert.Equal(t, "DeepSeek R1", state.ContextFrame.Workload)
 	assert.Empty(t, state.PendingDeployModel, "flag-on path must not write legacy pending deploy model")
 	assert.Equal(t, "继续部署 DeepSeek R1 32B", eng.effectiveDeployUserMsg("32B"))
-}
-
-func TestRecordPendingDeployModelKeepsLegacyWhenContinuationDisabled(t *testing.T) {
-	SetContextContinuationEnabled(false)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
-
-	eng := NewWithDeps(&mockLLM{}, newDeployMock(deployMockConfig{}), okConfirm)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-
-	eng.recordPendingDeployModelFromReply(deployClarifyModelSizeMsg("DeepSeek R1"))
-
-	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind)
-	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel)
 }
 
 func TestEffectiveDeployUserMsg_DoesNotUsePendingDeployStateAfterUnrelatedIntent(t *testing.T) {

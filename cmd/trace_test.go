@@ -115,24 +115,6 @@ func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
 
-func TestFlashKnowledgeRouteGuardEnabledFromEnv_DefaultOff(t *testing.T) {
-	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := flashKnowledgeRouteGuardEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off (default-off)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := flashKnowledgeRouteGuardEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := flashKnowledgeRouteGuardEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
 func TestCreatePreferenceExtractorEnabledFromEnv_DefaultOn(t *testing.T) {
 	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes", " On "}
 	for _, v := range on {
@@ -165,66 +147,6 @@ func TestUnifiedCreateEnabledFromEnv_DefaultOn(t *testing.T) {
 		require.Emptyf(t, unknown, "value %q should not warn", v)
 	}
 	got, unknown := unifiedCreateEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestContextContinuationEnabledFromEnv_DefaultOn(t *testing.T) {
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := contextContinuationEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := contextContinuationEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := contextContinuationEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestKnowledgeAnswerVerifierEnabledFromEnv_DefaultOn(t *testing.T) {
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
-	for _, v := range on {
-		got, unknown := knowledgeAnswerVerifierEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should be on (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := knowledgeAnswerVerifierEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := knowledgeAnswerVerifierEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value is fail-closed")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestDisciplinedKnowledgeQASynthesisEnabledFromEnv_DefaultOn(t *testing.T) {
-	// 2026-06-09: COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS is DEFAULT-ON — when the agent-loop
-	// route is on (also default), the final knowledge_qa answer is written by terminal
-	// RAG's tight cited-synthesis prompt on the gathered evidence (not the free ReAct
-	// write). This is what made the agent loop match terminal on the #150 A/B (DDP N=20:
-	// refusal 0.00, 0 fab). unset/empty/affirmative => on; explicit negative => off;
-	// unknown => off + non-empty warn string per CLAUDE.md (never silently coerce).
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
-	for _, v := range on {
-		got, unknown := disciplinedKnowledgeQASynthesisEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should be on (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := disciplinedKnowledgeQASynthesisEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := disciplinedKnowledgeQASynthesisEnabledFromEnv(func(string) string { return "maybe" })
 	require.False(t, got, "unknown value treated as off")
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }

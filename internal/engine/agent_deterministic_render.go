@@ -25,7 +25,7 @@ import (
 var agentDeterministicRenderEnabled bool
 
 // SetAgentDeterministicRenderEnabled freezes the flag at boot, mirroring the shape of
-// the other engine gates (SetKnowledgeQAAgentLoopEnabled et al).
+// the other engine gates.
 func SetAgentDeterministicRenderEnabled(v bool) { agentDeterministicRenderEnabled = v }
 
 // renderedInstanceTableKey and displayInstructionKey are the two fields added to the
