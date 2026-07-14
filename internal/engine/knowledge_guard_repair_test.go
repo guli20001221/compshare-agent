@@ -220,8 +220,17 @@ func TestKnowledgeGuard_RepairCannotLaunderARawLeak(t *testing.T) {
 	got := eng.repairOrRefuseKnowledgeSynthesis(context.Background(),
 		"我关机之后，实例里的数据会保存吗", "关于关机计费："+shutdownChunk)
 
-	assert.Equal(t, ragNoEvidenceReply, got,
+	// CONTRACT CHANGE (stated): this used to assert ragNoEvidenceReply. The property it
+	// exists to pin — a re-laundered dump must NOT ship — is unchanged and still asserted
+	// below. What changed is what the user is TOLD when the leak arm refuses over evidence
+	// we hold: 「当前知识库未覆盖该问题」 was the one claim we know to be false here (the KB
+	// covered it; we retrieved the chunk; we just would not ship it back raw).
+	assert.Equal(t, ragUngroundableReply, got,
 		"a repair that still dumps the raw chunk must NOT ship — a citation does not make a dump acceptable, and the leak arm must not be escapable by re-rolling")
+	assert.True(t, isKnowledgeRefusal(got),
+		"it must still be a REFUSAL: every downstream gate keyed on isKnowledgeRefusal has to keep seeing one, or an honest message would silently reclassify this turn as an answer")
+	assert.NotContains(t, got, "知识库未覆盖",
+		"and it must not tell the user the knowledge base is empty — we retrieved the chunk, that is why we are here")
 }
 
 // A repaired turn must not be RECORDED as a hard block.

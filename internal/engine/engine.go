@@ -4094,11 +4094,16 @@ func (e *Engine) repairOrRefuseKnowledgeSynthesis(ctx context.Context, userMsg, 
 		e.retractHardBlock()
 		return repaired
 	}
-	// Every repair failed. The refusal stands. NOTE it is still the FALSE message — we held
-	// evidence and could not turn it into a grounded answer, which is not "the knowledge base
-	// does not cover this". Making that wording honest is a separate change: the string is
-	// load-bearing for isKnowledgeRefusal and is pinned across the suite.
-	return guarded
+	// Every repair failed, and the refusal stands — but it must be an HONEST one. We are here
+	// only because SearchKnowledge surfaced evidence (the no-evidence arm returned above), so
+	// 「当前知识库未覆盖该问题」 is the one thing we know to be false: the knowledge base DID
+	// cover it, we retrieved the material, and we could not write a grounded answer from it.
+	//
+	// Telling the user the KB is empty sends them away from a question it can actually answer,
+	// and it is the same lie the repair above exists to stop — just at the one exit the repair
+	// cannot rescue. Say what happened instead. Still a refusal (isKnowledgeRefusal matches
+	// ragUngroundableReply), so nothing downstream reclassifies this turn as an answer.
+	return ragUngroundableReply
 }
 
 // repairKnowledgeAnswerFromLedger re-derives the turn's answer from the evidence the agent was

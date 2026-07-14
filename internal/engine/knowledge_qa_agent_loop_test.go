@@ -301,7 +301,14 @@ func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, ragNoEvidenceReply, reply, "a retry that still won't cite keeps the refusal")
+	// CONTRACT CHANGE (stated): this used to assert ragNoEvidenceReply. The property it pins
+	// — a model that will not cite does not get its answer shipped — is unchanged and still
+	// asserted. What changed is the wording the user sees. This turn RETRIEVED the billing
+	// chunk (the retriever above returns it, and the forced first hop called SearchKnowledge),
+	// so "当前知识库未覆盖该问题" was false every time it was shown here.
+	assert.Equal(t, ragUngroundableReply, reply, "a retry that still won't cite keeps the refusal")
+	assert.True(t, isKnowledgeRefusal(reply), "it is still a refusal, and every gate keyed on that must keep seeing one")
+	assert.NotContains(t, reply, "知识库未覆盖", "the KB covered this — the chunk was retrieved and shown to the model")
 }
 
 // TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire proves the forced-hop retry:

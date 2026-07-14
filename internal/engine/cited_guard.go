@@ -10,6 +10,22 @@ import (
 const (
 	ragNoEvidenceReply = "当前知识库未覆盖该问题,我无法回答。"
 
+	// ragUngroundableReply is what a turn says when it DID retrieve relevant evidence
+	// and simply could not turn it into a grounded answer — every repair rung failed.
+	//
+	// That turn used to ship ragNoEvidenceReply, which tells the user the exact opposite
+	// of what happened: we had the material, we just could not write from it. The
+	// production replay behind this guard's repair (1454 turns) found the honest arm of
+	// that sentence — retrieval genuinely returned nothing — fired ZERO times; every
+	// 「知识库未覆盖」 a user saw was over evidence we held. The repair fixed most of
+	// those by re-deriving an answer. This fixes what the repair could not: when we still
+	// cannot answer, we say WHY, and the why is not "the knowledge base does not cover it".
+	//
+	// It is deliberately still a refusal — isKnowledgeRefusal matches it (see
+	// refusalPhrases below), so every downstream check that treats a refusal as a refusal
+	// keeps doing so. The change is what the USER is told, not what the engine believes.
+	ragUngroundableReply = "我查到了相关资料,但没能据此整理出有依据的回答。请把问题描述得更具体一些,我再试一次。"
+
 	// Weak-evidence and ranking-ambiguous thresholds are score-scale-aware.
 	// internal/knowledge/retriever.go produces RetrievalHit.Score values whose
 	// scale depends on the retrieval path actually used (RetrievalResult.HybridMode):
@@ -60,6 +76,10 @@ func isKnowledgeRefusal(answer string) bool {
 		"没有找到可靠资料",
 		"知识库暂未收录",
 		"无法根据知识库回答",
+		// The evidence-held-but-ungroundable refusal. It must be recognised here, or
+		// swapping it in at the repair's floor would silently reclassify a refusal as a
+		// real answer everywhere isKnowledgeRefusal gates behaviour.
+		"没能据此整理出有依据的回答",
 	}
 	for _, phrase := range refusalPhrases {
 		if strings.Contains(trimmed, phrase) {
