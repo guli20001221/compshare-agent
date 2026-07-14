@@ -915,7 +915,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     create_preference_extractor: true
     unified_create: true
     context_continuation: true
-    grounded_validator: false
     skill_executor_diagnosis_pilots:
       - diagnose-ssh
       - diagnose-billing
@@ -938,8 +937,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	f := cfg.Agent.Features
 	require.NotNil(t, f.MutatingTools)
 	assert.True(t, *f.MutatingTools)
-	require.NotNil(t, f.GroundedValidator)
-	assert.False(t, *f.GroundedValidator)
 	require.NotNil(t, f.KnowledgeAnswerVerifier)
 	assert.True(t, *f.KnowledgeAnswerVerifier)
 	require.NotNil(t, f.CreatePreferenceExtractor)

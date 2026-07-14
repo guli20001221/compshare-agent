@@ -75,14 +75,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 		log.Printf("runtime: HTTP skill executor enabled (USE_SKILL_EXECUTOR=1, diagnosis_pilots=%v)", diagnosisPilots)
 	}
 	log.Printf("runtime: HTTP agentic SearchKnowledge enabled (single production knowledge path)")
-	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(getenv)
-	if unknownGroundedValidator != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q", unknownGroundedValidator)
-	}
-	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
-	if groundedValidator {
-		log.Printf("runtime: HTTP grounded-answer validator enabled (COMPSHARE_RAG_GROUNDED_VALIDATOR=1; cite-or-refuse on agentic SearchKnowledge)")
-	}
 	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
 	if unknownDomainMatchGuard != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q", unknownDomainMatchGuard)

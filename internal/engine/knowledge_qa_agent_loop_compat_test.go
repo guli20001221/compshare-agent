@@ -5,3 +5,7 @@ package engine
 func SetKnowledgeQAAgentLoopEnabled(bool) {}
 
 func KnowledgeQAAgentLoopEnabled() bool { return true }
+
+func SetGroundedAnswerValidatorEnabled(bool) {}
+
+func GroundedAnswerValidatorEnabled() bool { return true }

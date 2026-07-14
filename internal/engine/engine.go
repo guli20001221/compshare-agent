@@ -3727,7 +3727,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
 	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
-		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true, false)
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true)
 	}
 	retrieved := e.knowledgeRetriever.Retrieve(query, "")
 	rawHits := retrieved.HitItems
@@ -3758,16 +3758,9 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		Hits:            len(retrieved.Hits),
 		FloorDroppedAll: floorDroppedAll,
 	}, hits)
-	// Accumulate the per-turn ChunkID-keyed, deduped ledger so the grounded-answer
-	// validator can check the final synthesis cites only retrieved ChunkIDs (#126).
-	// Gated so flag-off does no extra work and keeps no extra state (byte-identical
-	// to before #126): the global grounded-validator flag, OR a knowledge_qa turn
-	// routed into the agent loop, which cite-or-refuses turn-scoped regardless of the
-	// global flag to preserve the terminal route's guarantee (see
-	// guardSearchKnowledgeSynthesis).
-	if groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn {
-		e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
-	}
+	// Keep exactly the evidence shown during this turn for the semantic answer
+	// verifier. This ledger is the single grounding source.
+	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
 	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
 	// (enabled, hit count, chunk_ids, weak_evidence) is OBSERVABLE in traces and eval
 	// — including when the relevance floor dropped it. Without this the rec.retrieval
@@ -3776,7 +3769,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll, activityID)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
-	out := searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
+	out := searchKnowledgeResultJSON(ledger, empty)
 
 	// Retrieved evidence is grounding evidence, and SearchKnowledge never runs through
 	// executeSafeTool, so without this a knowledge answer would have an empty fact set
@@ -3860,7 +3853,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 	// evidence the agent actually received — skip when the floor dropped it all,
 	// since the agent grounded on nothing. The COMPSHARE_RAG_DOMAIN_MATCH_GUARD
 	// refuse arm (default-off) additionally stamps refusal_type=wrong_domain here;
-	// guardSearchKnowledgeSynthesis enforces the matching refusal.
+	// the unified semantic exit enforces the matching refusal.
 	allOff, inferEmpty := allCitedOffDomain("", hitProductAreas(hitItems))
 	trace.DomainInferenceEmpty = inferEmpty
 	if !floorDroppedAll {
@@ -3870,73 +3863,6 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		}
 	}
 	e.emitRetrievalTrace(trace)
-}
-
-// guardSearchKnowledgeSynthesis enforces the no-raw-leak discipline on the final
-// ReAct answer when SearchKnowledge fed the agent evidence this turn (P3). The
-// answer must not dump >=32-rune raw chunk content — the route-independent
-// discipline BuildRAGMessages+cited-strip give terminal RAG but a ReAct tool does
-// not. On leak it records a hardblock trace and replaces the answer with the
-// canned no-evidence reply. cite-grounding is verified empirically by the P3
-// substance gate; P5 generalizes a route-independent cite validator. No-op (and
-// thus byte-identical) when SearchKnowledge did not run this turn — which is
-// always the case while the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate is off.
-func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
-	// SCOPE (both guards below): this validates the synthesis only when SearchKnowledge
-	// actually surfaced evidence the agent was shown this turn. When the tool ran but
-	// the relevance floor dropped every hit (len==0 — a corpus-gap / weak-evidence
-	// turn), the agent was handed an EMPTY ledger: there is nothing to cite, so the
-	// cite-grounding validator does NOT gate the answer (forcing a refusal here would
-	// suppress legitimate general guidance). This matches the no-raw-leak guard's
-	// identical gating. The cite-or-refuse contract is therefore scoped to
-	// "the agent was shown retrieved evidence", NOT "SearchKnowledge was merely
-	// invoked". A weak/empty-evidence turn falls back to the un-gated agent answer
-	// exactly as before #126 — see TestGuardSearchKnowledgeSynthesis_EmptyEvidenceUngated.
-	if !e.searchKnowledgeRanThisTurn || len(e.searchKnowledgeHitsThisTurn) == 0 {
-		return content
-	}
-	if lerr := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn); lerr != nil {
-		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
-		return ragNoEvidenceReply
-	}
-	// #5 wrong-domain refuse arm (COMPSHARE_RAG_DOMAIN_MATCH_GUARD, default-off).
-	// Recompute the verdict over the ledger the agent was actually shown; refuse
-	// when every cited/retrieved chunk is off the question's product area. The
-	// retrieval trace already recorded AllCitedOffDomain at emit; this enforces the
-	// reply. Fail-safe: allCitedOffDomain never flags an unknown / un-judgeable
-	// question area, so an answer is suppressed only on a clear domain mismatch.
-	if domainMatchGuardOn {
-		if allOff, _ := allCitedOffDomain("", ledgerProductAreas(e.searchKnowledgeLedgerThisTurn)); allOff {
-			e.emitSearchKnowledgeHardBlock("search_knowledge_wrong_domain")
-			return ragNoEvidenceReply
-		}
-	}
-	// Route-independent cite-grounding (#126), default-off via
-	// COMPSHARE_RAG_GROUNDED_VALIDATOR — OR turn-scoped on for a knowledge_qa turn
-	// routed into the agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP), which must
-	// cite-or-refuse exactly as the terminal route did regardless of the global
-	// validator flag. Off (neither): the leak check above is the only guard
-	// (byte-identical to pre-#126). On: the agent was told (cite_protocol in the tool
-	// result) to attribute each conclusion with [[chunk_id]]; require >=1 citation
-	// resolving to a retrieved ChunkID and no citation to an unknown chunk_id, then
-	// strip the markers for display.
-	if !groundedAnswerValidatorOn && !e.knowledgeQAAgentLoopThisTurn {
-		return content
-	}
-	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)
-	if report.Grounded() {
-		e.emitSearchKnowledgeCitationTrace(report)
-		return knowledge.StripCiteMarkers(content)
-	}
-	// Not properly cited. The ONLY cite-exempt answer is the explicit canned
-	// no-evidence refusal — deliberately NOT a substring/hedge match: a substantive
-	// answer that merely contains a phrase like "知识库未覆盖" is NOT a refusal and
-	// must cite the evidence it used, else it is replaced with the canned refusal.
-	if strings.TrimSpace(content) == ragNoEvidenceReply {
-		return content
-	}
-	e.emitSearchKnowledgeHardBlock("search_knowledge_uncited")
-	return ragNoEvidenceReply
 }
 
 func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswerReport) {
@@ -3988,15 +3914,10 @@ func searchKnowledgeArg(args map[string]any, key string) string {
 	return ""
 }
 
-func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool, citeProtocol bool) string {
+func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool) string {
 	result := map[string]any{"EvidenceLedger": ledger}
 	if empty || len(ledger.Items) == 0 {
 		result["empty"] = true
-	} else if citeProtocol {
-		// Only when the grounded-answer validator is on: tell the agent to attribute
-		// each conclusion with [[chunk_id]] so the synthesis can be cite-validated.
-		// Flag-off this key is absent => byte-identical result JSON.
-		result["cite_protocol"] = searchKnowledgeCiteProtocol
 	}
 	b, err := json.Marshal(result)
 	if err != nil {

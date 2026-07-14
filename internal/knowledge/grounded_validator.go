@@ -8,11 +8,9 @@ import (
 	"github.com/compshare-agent/internal/textutil"
 )
 
-// citeMarkerRE matches a grounded-citation marker [[chunk_id]] that an agent
-// emits to attribute a claim to a specific retrieved evidence item. It requires
-// at least two brackets on each side so it (a) stays unambiguous against the
-// terminal-RAG positional [n] scheme (single bracket, numeric — see
-// engine/cited_guard.go) and incidental single-bracket prose, and (b) consumes the
+// citeMarkerRE parses an optional [[chunk_id]] attribution marker. It requires
+// at least two brackets on each side so it stays unambiguous against incidental
+// single-bracket prose and consumes the
 // WHOLE of an over-bracketed marker like [[[id]]] so StripCiteMarkers leaves no
 // orphan "[]" residue.
 //
@@ -27,10 +25,8 @@ import (
 // against the per-turn evidence ledger.
 var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\r\n]+?)\s*\]+[ \t]*\]`)
 
-// positionalCiteRE matches a positional citation [n] (single bracket, 1-2 digits)
-// that cites the n-th retrieved evidence item, 1-based in ledger order — the simple
-// scheme flash emits FAR more reliably than echoing a long opaque [[chunk_id]] (and
-// the scheme the terminal RAG route already uses, see engine/cited_guard.go). It is
+// positionalCiteRE parses an optional positional citation [n] (single bracket,
+// 1-2 digits) that cites the n-th evidence item, 1-based in ledger order. It is
 // scanned only AFTER the [[chunk_id]] markers are removed, so the inner digits of a
 // [[id]] are never reread as a positional ref. An in-range [n] resolves to its ledger
 // item; an out-of-range or prose [n] is ignored (not a fabricated citation) so a stray
@@ -134,19 +130,14 @@ var citeStripPunct = [][2]string{
 }
 
 // StripCiteMarkers removes [[chunk_id]] markers from the answer before it is shown
-// to the user, mirroring the engine's stripCitationMarkers for the positional [n]
-// scheme. The cited-chunk mapping survives in the GroundedAnswerReport (extracted
+// to the user. The cited-chunk mapping survives in the GroundedAnswerReport (extracted
 // before stripping). Cosmetic cleanup collapses the spaces/punctuation a removed
 // marker leaves so the user reply is not ragged; newlines are preserved so
 // markdown structure (lists, tables) survives.
 // The rewrite runs on PROSE ONLY (textutil.MapOutsideCode). It used to run on
 // the whole answer, so `gpus[0]` in a fenced block lost its subscript and the
 // space-collapsing pass flattened Python indentation into unrunnable code. The
-// two routes also disagreed about what they destroyed — positionalCiteRE here
-// matches [0] while the engine's numberedCitationRE does not — so the same
-// answer came back different depending on whether it went through the agent
-// loop or the terminal route. Confining both to prose removes the damage and
-// the divergence at once: a citation is never inside code.
+// Confining the cleanup to prose preserves code: a citation is never inside code.
 func StripCiteMarkers(answer string) string {
 	if answer == "" {
 		return answer

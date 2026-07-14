@@ -272,28 +272,6 @@ func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// groundedAnswerValidatorEnabledFromEnv gates the route-independent grounded-answer
-// (cite + leak) validator on the agentic SearchKnowledge synthesis (#126). DEFAULT
-// OFF by default because the cite contract must stay off until a flag-on eval proves the agent
-// attributes its answer at the hard-gate bar (100% cite-or-refuse / 0 raw-leak).
-// When on, the SearchKnowledge tool result carries a [[chunk_id]] cite_protocol and
-// a synthesis that does not cite a retrieved chunk (or cites an unknown one) is
-// replaced with the canned no-evidence reply. ""/0/off/false/no => off;
-// 1/true/yes/on => on; unknown => off + non-empty warn string (CLAUDE.md: never
-// silently coerce). Boot-only; the Go-package default (engine.groundedAnswerValidatorOn)
-// stays false so engine/tools unit tests are unaffected.
-func groundedAnswerValidatorEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_RAG_GROUNDED_VALIDATOR"))
-	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
-		return true, ""
-	default:
-		return false, raw
-	}
-}
-
 // domainMatchGuardEnabledFromEnv gates the #5 wrong-domain REFUSE arm
 // (COMPSHARE_RAG_DOMAIN_MATCH_GUARD). DEFAULT OFF — the domain verdict is always
 // recorded in the trace (all_cited_off_domain / domain_inference_empty), but the

@@ -161,11 +161,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
 	}
 	engine.SetSkillExecutorEnabled(useSkillExecutor)
-	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(getenv)
-	if unknownGroundedValidator != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q\n", unknownGroundedValidator)
-	}
-	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
 	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
 	if unknownDomainMatchGuard != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)

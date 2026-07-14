@@ -18,7 +18,7 @@ import (
 var domainMatchGuardOn bool
 
 // SetDomainMatchGuardEnabled toggles the #5 wrong-domain refuse arm. Boot-only
-// (reversible by restart), mirroring SetGroundedAnswerValidatorEnabled.
+// (reversible by restart).
 func SetDomainMatchGuardEnabled(v bool) { domainMatchGuardOn = v }
 
 // DomainMatchGuardEnabled reports whether the refuse arm is on.

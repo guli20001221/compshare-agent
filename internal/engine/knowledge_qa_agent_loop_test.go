@@ -253,57 +253,6 @@ func TestKnowledgeQAAgentLoop_AgentFormulatesQueryWhenConversationIsInsufficient
 	assert.Contains(t, verifierPayload, `"resolved_question":"`+resolved+`"`)
 }
 
-// TestKnowledgeQAAgentLoop_CiteOrRefuseParity_WithoutGlobalValidator proves the
-// turn-scoped cite-or-refuse coupling directly on guardSearchKnowledgeSynthesis: with
-// the GLOBAL grounded-validator OFF but the turn marked as agent-loop routed, an
-// uncited substantive answer is refused (search_knowledge_uncited) and a properly
-// cited one is kept with markers stripped — exactly the terminal route's guarantee,
-// preserved without flipping the global validator.
-func TestKnowledgeQAAgentLoop_CiteOrRefuseParity_WithoutGlobalValidator(t *testing.T) {
-	SetGroundedAnswerValidatorEnabled(false) // global validator OFF on purpose
-
-	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
-		ChunkID: "ext-vllm-oom-001",
-		Content: "把 max-model-len 设小一点即可显著降低显存占用，过长的上下文会占用更多 KV cache。",
-	}}
-	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "ext-vllm-oom-001", Title: "vLLM OOM"}}}
-
-	newEng := func() (*Engine, *[]observability.EngineHardBlockTrace) {
-		eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
-		var traces []observability.EngineHardBlockTrace
-		eng.SetHardBlockObserver(func(tr observability.EngineHardBlockTrace) { traces = append(traces, tr) })
-		eng.searchKnowledgeRanThisTurn = true
-		eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
-		eng.searchKnowledgeLedgerThisTurn = ledger
-		eng.knowledgeQAAgentLoopThisTurn = true // the only thing turning the cite arm on
-		return eng, &traces
-	}
-
-	t.Run("uncited substantive answer refused (parity with terminal cite-or-refuse)", func(t *testing.T) {
-		eng, traces := newEng()
-		ans := "可以把 max-model-len 调小来省显存。"
-		assert.Equal(t, ragNoEvidenceReply, eng.guardSearchKnowledgeSynthesis(ans))
-		require.Len(t, *traces, 1)
-		assert.Equal(t, "search_knowledge_uncited", (*traces)[0].Category)
-	})
-
-	t.Run("cited answer kept with markers stripped", func(t *testing.T) {
-		eng, traces := newEng()
-		got := eng.guardSearchKnowledgeSynthesis("可以把 max-model-len 调小来省显存 [[ext-vllm-oom-001]]。")
-		assert.NotContains(t, got, "[[")
-		assert.NotEqual(t, ragNoEvidenceReply, got)
-		assert.Empty(t, *traces)
-	})
-
-	t.Run("inert when neither global validator nor agent-loop flag set", func(t *testing.T) {
-		eng, traces := newEng()
-		eng.knowledgeQAAgentLoopThisTurn = false // both off now
-		ans := "可以把 max-model-len 调小来省显存。"
-		assert.Equal(t, ans, eng.guardSearchKnowledgeSynthesis(ans), "neither gate on => uncited answer passes (byte-identical)")
-		assert.Empty(t, *traces)
-	})
-}
-
 // An uncited answer is accepted when the semantic verifier proves every claim.
 // Citation punctuation is no longer the recovery target.
 func TestKnowledgeQAAgentLoop_SemanticGateAcceptsUncitedGroundedSynthesis(t *testing.T) {

@@ -80,7 +80,6 @@ agent:
     react_history_compaction: true      # summarize old turns once history exceeds the window
     # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
     # guards only when their flag-on path is the validated production path.
-    grounded_validator: false           # cite-or-refuse validator on SearchKnowledge synthesis (#126)
     domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
     flash_knowledge_route_guard: true   # explicit PR373 guard for flash product-fact route jitter
     intent_scoped_react_prompt: false   # intent-specific ReAct system prompts

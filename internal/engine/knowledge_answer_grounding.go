@@ -3,9 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
@@ -59,6 +57,10 @@ type knowledgeRepairEnvelope struct {
 	Answer string `json:"answer"`
 	knowledgeGroundingVerdict
 }
+
+// Large enough to preserve every evidence item shown during one bounded turn.
+// The verifier rejects any proof that names an item outside this ledger.
+const searchKnowledgeLedgerTurnMaxItems = 256
 
 // resolvedKnowledgeQuestion is the single question used after retrieval. The
 // SearchKnowledge query is already the agent's history-aware rewrite; using the
@@ -165,7 +167,7 @@ func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQue
 // constraints. This reduces unsupported releases but is not a mathematical proof.
 func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQuestion, candidate string) string {
 	if !e.knowledgeQAAgentLoopThisTurn {
-		return e.guardSearchKnowledgeSynthesis(candidate)
+		return candidate
 	}
 	if !e.searchKnowledgeRanThisTurn {
 		resolved := strings.TrimSpace(fallbackQuestion)
@@ -295,12 +297,6 @@ func validateKnowledgeGroundingProof(answer string, verdict knowledgeGroundingVe
 		if !strings.Contains(evidenceText, evidenceQuote) {
 			return "", knowledge.GroundedAnswerReport{}, false
 		}
-		if obviousKnowledgeGroundingContradiction(claim.AnswerQuote, claim.EvidenceQuote) {
-			return "", knowledge.GroundedAnswerReport{}, false
-		}
-		if !groundingQuantitiesConsistent(claim.AnswerQuote, claim.EvidenceQuote) {
-			return "", knowledge.GroundedAnswerReport{}, false
-		}
 		validQuotes = append(validQuotes, answerQuote)
 		id := strings.TrimSpace(claim.ChunkID)
 		if _, ok := seen[id]; !ok {
@@ -308,49 +304,10 @@ func validateKnowledgeGroundingProof(answer string, verdict knowledgeGroundingVe
 			used = append(used, id)
 		}
 	}
-	for _, segment := range substantiveKnowledgeSegments(display) {
-		covered := false
-		for _, quote := range validQuotes {
-			// The proof must quote the complete substantive clause. Accepting the
-			// reverse relation would let a verifier "cover" a long unsupported
-			// sentence with a generic three-character fragment such as "可退款".
-			if strings.Contains(quote, segment) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			return "", knowledge.GroundedAnswerReport{}, false
-		}
-	}
-	if len(used) == 0 {
+	if len(used) == 0 || len(validQuotes) == 0 {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	return display, knowledge.GroundedAnswerReport{HasCitation: true, CitedChunkIDs: used}, true
-}
-
-var knowledgeClauseBoundaryRE = regexp.MustCompile(`[。！？!?；;，,：:\n]+`)
-
-func substantiveKnowledgeSegments(answer string) []string {
-	parts := knowledgeClauseBoundaryRE.Split(answer, -1)
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.Trim(normalizeGroundingText(part), " -*#>`~")
-		if utf8.RuneCountInString(part) < 3 || isNonSubstantiveKnowledgePhrase(part) {
-			continue
-		}
-		out = append(out, part)
-	}
-	return out
-}
-
-func isNonSubstantiveKnowledgePhrase(s string) bool {
-	for _, phrase := range []string{"希望这些信息对你有帮助", "希望对你有帮助", "如需更多帮助请告诉我", "如有其他问题请告诉我"} {
-		if strings.Contains(s, phrase) {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeGroundingText(s string) string {

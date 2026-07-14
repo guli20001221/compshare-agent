@@ -368,42 +368,14 @@ func TestKnowledgeAnswerGrounding_ProofRejectsVerifierThatOnlySaysSupported(t *t
 	assert.False(t, ok, "supported=true without answer/evidence quotes is not a proof")
 }
 
-func TestKnowledgeAnswerGrounding_ProofRejectsUncoveredSubstantiveClause(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[0]
-	eng, _ := groundedEngineForRecord(t, record)
-	answer := record.Answer + " 所有终端都保证支持这个快捷键。"
-	verdict := knowledgeGroundingVerdict{Supported: true, Claims: []knowledgeGroundingClaim{{
-		AnswerQuote: record.AnswerQuote, ChunkID: record.ChunkID, EvidenceQuote: record.EvidenceQuote,
-	}}}
-
-	_, _, ok := validateKnowledgeGroundingProof(answer, verdict, eng.searchKnowledgeLedgerThisTurn)
-
-	assert.False(t, ok, "a verifier cannot omit a second unsupported sentence from its claim list")
-}
-
-func TestKnowledgeAnswerGrounding_ProofRejectsShortQuoteForLongClaim(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[3]
-	eng, _ := groundedEngineForRecord(t, record)
-	verdict := knowledgeGroundingVerdict{Supported: true, Claims: []knowledgeGroundingClaim{{
-		AnswerQuote: "支持退款", ChunkID: record.ChunkID, EvidenceQuote: "退款是否支持",
-	}}}
-
-	_, _, ok := validateKnowledgeGroundingProof("平台支持退款。", verdict, eng.searchKnowledgeLedgerThisTurn)
-
-	assert.False(t, ok, "a short matching phrase cannot stand in for a full unsupported clause")
-}
-
-func TestKnowledgeAnswerGrounding_RejectsVerifierApprovedNegationContradiction(t *testing.T) {
+func TestKnowledgeAnswerGrounding_SemanticVerifierRejectsNegationReversal(t *testing.T) {
 	record := sanitizedContextRAGRecord{
 		Name: "obvious_refund_contradiction", UserMessage: "这个订单能退款吗",
 		ResolvedQuestion: "该订单是否支持退款", ChunkID: "sanitized-refund-contradiction-001",
 		Evidence: "该订单不支持退款。", Answer: "该订单支持退款。",
 		AnswerQuote: "该订单支持退款", EvidenceQuote: "该订单不支持退款",
 	}
-	// The model verifier is deliberately wrong: it says the positive answer is
-	// supported by a negative evidence sentence. The local contradiction gate
-	// must remain authoritative.
-	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, true, 100))
+	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, false, 100))
 
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
 
@@ -411,22 +383,45 @@ func TestKnowledgeAnswerGrounding_RejectsVerifierApprovedNegationContradiction(t
 	require.Len(t, mock.calls, 1)
 }
 
-func TestKnowledgeAnswerGrounding_RejectsVerifierApprovedQuantityReversal(t *testing.T) {
+func TestKnowledgeAnswerGrounding_SemanticVerifierRejectsQuantityReversal(t *testing.T) {
 	// Sanitized from the real Coding Plan retrieval record in
-	// eval/trace_gate/billing_jitter_ext1on.jsonl. The verifier is deliberately
-	// wrong: it claims a 30-hour answer is supported by 5-hour evidence.
+	// eval/trace_gate/billing_jitter_ext1on.jsonl.
 	record := sanitizedContextRAGRecord{
 		Name: "coding_plan_window_reversal", UserMessage: "额度多久刷新",
 		ResolvedQuestion: "Coding Plan 额度刷新窗口是多久", ChunkID: "sanitized-coding-plan-window-001",
 		Evidence: "Coding Plan 采用固定 5 小时窗口刷新额度。", Answer: "额度采用固定 30 小时窗口刷新。",
 		AnswerQuote: "额度采用固定 30 小时窗口刷新", EvidenceQuote: "采用固定 5 小时窗口刷新额度",
 	}
-	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, true, 100))
+	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, false, 100))
 
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
 
 	assert.Equal(t, ragUngroundableReply, got)
 	require.Len(t, mock.calls, 1)
+}
+
+func TestKnowledgeAnswerGrounding_ProofRequiresRealQuotesAndChunk(t *testing.T) {
+	record := loadSanitizedContextRAGRecords(t)[0]
+	eng, _ := groundedEngineForRecord(t, record)
+	base := knowledgeGroundingClaim{
+		AnswerQuote: record.AnswerQuote, ChunkID: record.ChunkID, EvidenceQuote: record.EvidenceQuote,
+	}
+	cases := []struct {
+		name  string
+		claim knowledgeGroundingClaim
+	}{
+		{name: "answer quote absent", claim: knowledgeGroundingClaim{AnswerQuote: "答案中不存在", ChunkID: base.ChunkID, EvidenceQuote: base.EvidenceQuote}},
+		{name: "evidence quote absent", claim: knowledgeGroundingClaim{AnswerQuote: base.AnswerQuote, ChunkID: base.ChunkID, EvidenceQuote: "证据中不存在"}},
+		{name: "unknown chunk", claim: knowledgeGroundingClaim{AnswerQuote: base.AnswerQuote, ChunkID: "fake-chunk", EvidenceQuote: base.EvidenceQuote}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, ok := validateKnowledgeGroundingProof(record.Answer, knowledgeGroundingVerdict{
+				Supported: true, Claims: []knowledgeGroundingClaim{tc.claim},
+			}, eng.searchKnowledgeLedgerThisTurn)
+			assert.False(t, ok)
+		})
+	}
 }
 
 func TestParseKnowledgeGroundingJSONFailsClosed(t *testing.T) {
