@@ -108,7 +108,9 @@ func retCodeHintForMessage(code int, msg string) string {
 		return "安全组配置异常：请检查网络和安全组设置后再试。"
 	case 8090:
 		return "价格查询失败：请稍后重试或到控制台确认费用后再操作。"
-	case 8095, 8367:
+	case 8095:
+		return "资源配额不足：请释放部分资源或申请提升配额。"
+	case 8367:
 		return "资源配额查询或校验失败：请稍后重试，仍失败请联系平台支持。"
 	case 8097, 8108, 8117:
 		return "账单或订单信息暂时不可用：请稍后重试或到控制台确认费用。"
