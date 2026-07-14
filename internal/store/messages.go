@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -262,6 +263,95 @@ ORDER BY source, pair_key, role_order
 		messages = append(messages, pair.user, pair.assistant)
 	}
 	return messages, nil
+}
+
+const committedPageCursorVersion = 1
+
+type committedPageCursor struct {
+	Version    int `json:"v"`
+	PairOffset int `json:"pair_offset"`
+}
+
+// ListCommittedBySession returns only complete committed pairs for the
+// owner-scoped session. The cursor advances by pairs rather than individual
+// rows, so a page can never expose a user question without its saved answer
+// (or vice versa). During the legacy/v2 transition it deliberately reuses the
+// exact strict reader and stable merge used to rebuild an engine.
+func (s *MySQLMessageStore) ListCommittedBySession(
+	ctx context.Context,
+	owner Owner,
+	sessionID string,
+	limit int,
+	cursor string,
+) ([]Message, string, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	pairLimit := (limit + 1) / 2
+	if pairLimit < 1 {
+		pairLimit = 1
+	}
+	offset, err := decodeCommittedPageCursor(cursor)
+	if err != nil {
+		return nil, "", fmt.Errorf("list committed messages: %w", err)
+	}
+
+	// ListCommittedTail limits each source before applying its stable merge.
+	// Passing the largest practical limit selects the complete history without
+	// changing that established rollout/rollback ordering contract. This keeps
+	// the first durable UI cutover correctness-first; the opaque pair cursor
+	// allows a future SQL keyset implementation without a wire change.
+	const allTurnsLimit = int(^uint(0)>>1) / 4
+	all, err := s.ListCommittedTail(ctx, owner, sessionID, allTurnsLimit)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(all)%2 != 0 {
+		return nil, "", fmt.Errorf("committed history returned an incomplete pair")
+	}
+	pairCount := len(all) / 2
+	if offset > pairCount {
+		return nil, "", &ErrInvalidCursor{Reason: fmt.Errorf("pair offset is past the end of history")}
+	}
+	end := offset + pairLimit
+	if end > pairCount {
+		end = pairCount
+	}
+	page := append([]Message(nil), all[offset*2:end*2]...)
+	if end == pairCount {
+		return page, "", nil
+	}
+	next, err := encodeCommittedPageCursor(end)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode committed message cursor: %w", err)
+	}
+	return page, next, nil
+}
+
+func encodeCommittedPageCursor(pairOffset int) (string, error) {
+	raw, err := json.Marshal(committedPageCursor{Version: committedPageCursorVersion, PairOffset: pairOffset})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func decodeCommittedPageCursor(cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return 0, &ErrInvalidCursor{Reason: fmt.Errorf("invalid base64: %w", err)}
+	}
+	var decoded committedPageCursor
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return 0, &ErrInvalidCursor{Reason: fmt.Errorf("invalid json: %w", err)}
+	}
+	if decoded.Version != committedPageCursorVersion || decoded.PairOffset < 0 {
+		return 0, &ErrInvalidCursor{Reason: fmt.Errorf("unsupported cursor")}
+	}
+	return decoded.PairOffset, nil
 }
 
 // committedHistoryPair is one validated conversational turn. v2 sequence is

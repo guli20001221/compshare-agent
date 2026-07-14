@@ -123,6 +123,14 @@ type CommittedTailMessageStore interface {
 	ListCommittedTail(ctx context.Context, owner Owner, sessionID string, turnLimit int) ([]Message, error)
 }
 
+// CommittedPageMessageStore is the user-visible history contract. Like the
+// engine tail reader above, it exposes only complete protocol-committed pairs,
+// but adds an opaque pair cursor for GetSession pagination. A page boundary
+// must never split a user/assistant pair.
+type CommittedPageMessageStore interface {
+	ListCommittedBySession(ctx context.Context, owner Owner, sessionID string, limit int, cursor string) ([]Message, string, error)
+}
+
 // FeedbackStore manages user feedback on messages.
 type FeedbackStore interface {
 	Insert(ctx context.Context, msgID, rating, comment string) (string, error)
