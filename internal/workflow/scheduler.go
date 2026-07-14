@@ -145,8 +145,7 @@ func stepQueryForScheduler() Step {
 			case "":
 				return false, "未找到该实例。"
 			case "Running":
-				chargeType := extractField(result, "ChargeType")
-				if chargeType == "Spot" {
+				if extractFirstBool(result, "IsSpot") {
 					return false, "抢占式实例不支持定时关机。"
 				}
 				return true, ""

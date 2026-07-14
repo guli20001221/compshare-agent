@@ -231,7 +231,8 @@ func TestSetStopScheduler_SpotRejected(t *testing.T) {
 			map[string]any{
 				"UHostId":    "uhost-xxx",
 				"State":      "Running",
-				"ChargeType": "Spot",
+				"ChargeType": "Preemptive",
+				"IsSpot":     true,
 			},
 		}},
 	}}

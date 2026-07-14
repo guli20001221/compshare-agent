@@ -92,6 +92,8 @@ func TestRetCodeHint_KeyCodeMeanings(t *testing.T) {
 		{8315, []string{"系统盘容量不足"}},
 		{8333, []string{"CPU", "内存"}},
 		{8357, []string{"资源不足"}},
+		{8095, []string{"配额不足", "释放", "提升配额"}},
+		{8367, []string{"稍后重试"}},
 		{8442, []string{"不支持无卡启动"}},
 		{8903, []string{"正在执行任务"}},
 		{226603, []string{"镜像", "不支持该卡型"}},
