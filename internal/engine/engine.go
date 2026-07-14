@@ -399,6 +399,11 @@ type Engine struct {
 	sessionState         SessionState
 	sessionStateVersion  int
 	sessionStateHydrated bool
+	// continuityAdvisories is a turn-local, read-only view supplied by the
+	// coordinator. It is intentionally not part of SessionState: transport and
+	// execution truth remain in chat_turns / turn_actions, not in a second JSON
+	// snapshot.
+	continuityAdvisories ContinuityAdvisories
 	// sessionFactContextEnabled injects fresh RecentFacts into the system
 	// prompt as advisory same-session context. Default off.
 	sessionFactContextEnabled bool
@@ -1260,10 +1265,18 @@ func (e *Engine) refreshSystemPrompt() {
 	}
 	hasSessionBinding := e.sessionStateHydrated && e.sessionState.SelectedInstanceID != ""
 	if hasSessionBinding {
+		historicalOnly := e.sessionState.SelectedInstanceFreshness == ContinuityFreshnessExpired ||
+			(e.sessionState.SelectedInstanceAtUnix <= 0 && e.sessionState.SelectedInstanceSource == "")
+		prefix := "当前会话已选实例："
+		suffix := ""
+		if historicalOnly {
+			prefix = "此前会话提到实例："
+			suffix = "。该绑定只帮助理解，不得授权写操作；执行前需重新确认"
+		}
 		if e.sessionState.SelectedInstanceName != "" {
-			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）"
+			ctx += "\n\n" + prefix + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）" + suffix
 		} else {
-			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceID
+			ctx += "\n\n" + prefix + e.sessionState.SelectedInstanceID + suffix
 		}
 	}
 	singleID, singleName := e.singleRegistryInstance()
@@ -1282,6 +1295,9 @@ func (e *Engine) refreshSystemPrompt() {
 			hasFactContext = true
 			e.factCacheOldestAgeSecondsThisTurn = oldestFreshFactAgeSeconds(e.sessionState.RecentFacts, now)
 		}
+	}
+	if semanticCtx := e.semanticMemoryPrompt(time.Now()); semanticCtx != "" {
+		ctx += "\n\n" + semanticCtx
 	}
 	// #3 StateTrace: record how the turn-start instance binding was determined.
 	// Priority mirrors the injection order above — an explicit prior selection is
@@ -1395,8 +1411,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.createPreferenceThisTurn = nil
-	e.expireContextFrame(time.Now())
-	e.expireStaleSelectedInstance(time.Now())
+	continuityNow := time.Now()
+	e.expireContextFrame(continuityNow)
+	e.expireStaleSelectedInstance(continuityNow)
+	e.expireStaleToolFacts(continuityNow)
+	e.refreshConversationDigest(continuityNow)
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
@@ -5015,6 +5034,7 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	e.sessionState.SelectedInstanceName = name
 	e.sessionState.SelectedInstanceSource = source
 	e.sessionState.SelectedInstanceAtUnix = time.Now().Unix()
+	e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessFresh
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
@@ -5039,16 +5059,17 @@ func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	at := e.sessionState.SelectedInstanceAtUnix
 	if at <= 0 {
 		e.sessionState.SelectedInstanceSource = ""
+		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessStale
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	if now.Unix()-at > selectedInstanceTTLSeconds {
-		e.sessionState.SelectedInstanceID = ""
-		e.sessionState.SelectedInstanceName = ""
 		e.sessionState.SelectedInstanceSource = ""
-		e.sessionState.SelectedInstanceAtUnix = 0
+		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessExpired
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+		return
 	}
+	e.sessionState.SelectedInstanceFreshness = continuityFreshness(at, selectedInstanceTTLSeconds, now)
 }
 
 // recordLastStockGpuModel tracks the legacy stock referent for paths that do
@@ -5193,7 +5214,7 @@ func (e *Engine) clearDeployContextFrame() {
 		return
 	}
 	if e.sessionState.ContextFrame.Kind == ContextFrameKindDeploy {
-		e.sessionState.ContextFrame = ContextFrame{}
+		e.clearContextFrame()
 	}
 }
 
@@ -6337,6 +6358,7 @@ type StepEvent struct {
 // Cut point is aligned to a safe message boundary to avoid orphaned tool_calls
 // or tool responses (which would make the history malformed for the LLM).
 func (e *Engine) trimHistory() {
+	e.messages = stripHistoricalToolTranscript(e.messages)
 	if e.reactHistoryCompactionEnabled {
 		e.trimHistoryByCompaction(time.Now())
 		return
@@ -6372,6 +6394,7 @@ func (e *Engine) trimHistory() {
 		return // no safe cut point found, don't trim
 	}
 
+	e.absorbConversationDigest(e.messages[1:safeStart], time.Now())
 	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
 	e.historyTrimmedThisSession = true

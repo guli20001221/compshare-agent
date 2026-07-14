@@ -46,7 +46,9 @@ func TestBuildReActHistorySummary_KeepsStructuredSignalsNotFactPayload(t *testin
 	assert.Contains(t, got, "近期事实引用：uhost-123 monitor_sample")
 	assert.NotContains(t, got, "88")
 	assert.NotContains(t, got, "gpu_usage")
-	assert.NotContains(t, got, "uhost-expired")
+	assert.Contains(t, got, "历史事实主题：uhost-expired instance_state")
+	assert.NotContains(t, got, "Running",
+		"expired observations may retain topic and time, never their old value")
 }
 
 func TestTrimHistoryCompaction_OffKeepsCountTrimBehavior(t *testing.T) {

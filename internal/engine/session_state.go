@@ -26,7 +26,12 @@ const SessionStateSchemaV3 = "3.0"
 // dropping the source and later treating an observed instance as user-selected.
 const SessionStateSchemaV4 = "4.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV4
+// SessionStateSchemaV5 adds durable semantic memory and explicit freshness.
+// TaskSnapshot and ConversationDigest are safe, compact projections; raw tool
+// transcripts are deliberately not part of this schema.
+const SessionStateSchemaV5 = "5.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV5
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -51,6 +56,7 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV2: {},
 	SessionStateSchemaV3: {},
 	SessionStateSchemaV4: {},
+	SessionStateSchemaV5: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -89,6 +95,7 @@ type SessionState struct {
 	SelectedInstanceName            string                 `json:"selected_instance_name,omitempty"`
 	SelectedInstanceSource          string                 `json:"selected_instance_source,omitempty"`
 	SelectedInstanceAtUnix          int64                  `json:"selected_instance_at_unix,omitempty"`
+	SelectedInstanceFreshness       string                 `json:"selected_instance_freshness,omitempty"`
 	LastIntent                      string                 `json:"last_intent,omitempty"`
 	LastStockGpuModel               string                 `json:"last_stock_gpu_model,omitempty"`
 	LastDeployWorkload              string                 `json:"last_deploy_workload,omitempty"`
@@ -105,6 +112,8 @@ type SessionState struct {
 	PendingSelectionItems           []PendingSelectionItem `json:"pending_selection_items,omitempty"`
 	ContextFrame                    ContextFrame           `json:"context_frame,omitempty"`
 	RecentFacts                     []ToolFact             `json:"recent_facts,omitempty"`
+	TaskSnapshot                    TaskSnapshot           `json:"task_snapshot,omitempty"`
+	ConversationDigest              ConversationDigest     `json:"conversation_digest,omitempty"`
 }
 
 const (
@@ -149,6 +158,7 @@ type ContextFrame struct {
 	CreatedTurn      int                `json:"created_turn,omitempty"`
 	ProducedAtUnix   int64              `json:"produced_at_unix,omitempty"`
 	TTLSeconds       int                `json:"ttl_seconds,omitempty"`
+	Freshness        string             `json:"freshness,omitempty"`
 }
 
 type ContextFrameZone struct {
@@ -201,12 +211,16 @@ type PendingSelectionItem struct {
 // writer always populates TTLSeconds with ttlSecondsForKind(Kind) for
 // known kinds, so zero on read indicates an unknown/future kind.
 type ToolFact struct {
-	Kind           string         `json:"kind"`
-	SubjectID      string         `json:"subject_id"`
-	Payload        map[string]any `json:"payload,omitempty"`
-	ProducedAtTurn int            `json:"produced_at_turn"`
-	ProducedAtUnix int64          `json:"produced_at_unix"`
-	TTLSeconds     int            `json:"ttl_seconds,omitempty"`
+	Kind            string         `json:"kind"`
+	SubjectID       string         `json:"subject_id"`
+	Payload         map[string]any `json:"payload,omitempty"`
+	Source          string         `json:"source,omitempty"`
+	Completeness    string         `json:"completeness,omitempty"`
+	Freshness       string         `json:"freshness,omitempty"`
+	RefreshRequired bool           `json:"refresh_required,omitempty"`
+	ProducedAtTurn  int            `json:"produced_at_turn"`
+	ProducedAtUnix  int64          `json:"produced_at_unix"`
+	TTLSeconds      int            `json:"ttl_seconds,omitempty"`
 }
 
 // ToolFact kind constants. New kinds must be added here, in
@@ -419,9 +433,28 @@ func (s SessionState) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 		delete(m, "context_frame")
+		if taskSnapshotEmpty(s.TaskSnapshot) {
+			delete(m, "task_snapshot")
+		}
+		if conversationDigestEmpty(s.ConversationDigest) {
+			delete(m, "conversation_digest")
+		}
 		return json.Marshal(m)
 	}
-	return raw, nil
+	if !taskSnapshotEmpty(s.TaskSnapshot) && !conversationDigestEmpty(s.ConversationDigest) {
+		return raw, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	if taskSnapshotEmpty(s.TaskSnapshot) {
+		delete(m, "task_snapshot")
+	}
+	if conversationDigestEmpty(s.ConversationDigest) {
+		delete(m, "conversation_digest")
+	}
+	return json.Marshal(m)
 }
 
 func contextFrameEmpty(f ContextFrame) bool {
@@ -445,7 +478,8 @@ func contextFrameEmpty(f ContextFrame) bool {
 		len(f.AlternativeZones) == 0 &&
 		f.CreatedTurn == 0 &&
 		f.ProducedAtUnix == 0 &&
-		f.TTLSeconds == 0
+		f.TTLSeconds == 0 &&
+		f.Freshness == ""
 }
 
 // PersistedContext is the on-wire shape stored in sessions.context. It
@@ -593,6 +627,7 @@ func copyFactPayload(payload map[string]any) map[string]any {
 // every store/insert boundary in append/merge helpers so callers cannot
 // accidentally mutate stored Payloads via aliased map references.
 func cloneFact(f ToolFact) ToolFact {
+	f = normalizeToolFactForStore(f)
 	f.Payload = copyFactPayload(f.Payload)
 	return f
 }

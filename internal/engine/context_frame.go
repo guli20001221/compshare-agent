@@ -24,6 +24,9 @@ func (f ContextFrame) active(now time.Time) bool {
 	if strings.TrimSpace(f.Kind) == "" || strings.TrimSpace(f.Status) == "" {
 		return false
 	}
+	if f.Freshness == ContinuityFreshnessExpired {
+		return false
+	}
 	ttl := f.TTLSeconds
 	if ttl <= 0 {
 		ttl = ContextFrameTTLSeconds
@@ -42,15 +45,32 @@ func (e *Engine) expireContextFrame(now time.Time) {
 		return
 	}
 	if !e.sessionState.ContextFrame.active(now) {
-		e.sessionState.ContextFrame = ContextFrame{}
+		frame := e.sessionState.ContextFrame
+		frame.Freshness = ContinuityFreshnessExpired
+		// An expired frame remains useful for understanding, but every
+		// previously trusted slot loses execution authority.
+		frame.SlotSources = nil
+		e.sessionState.ContextFrame = frame
+		e.syncTaskSnapshotFromFrame(frame, TaskSnapshotStatusExpired, frame.FailureReason, now)
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+		return
 	}
+	e.sessionState.ContextFrame.Freshness = continuityFreshness(
+		e.sessionState.ContextFrame.ProducedAtUnix,
+		effectiveContextFrameTTL(e.sessionState.ContextFrame),
+		now,
+	)
+	e.syncTaskSnapshotFromFrame(e.sessionState.ContextFrame, TaskSnapshotStatusActive, "", now)
 }
 
 func (e *Engine) clearContextFrame() {
 	if !e.sessionStateHydrated {
 		return
 	}
+	frame := e.sessionState.ContextFrame
+	e.markTaskSnapshotResolved(frame, "任务已结束或由新任务替代", time.Now())
 	e.sessionState.ContextFrame = ContextFrame{}
+	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
 func (e *Engine) clearContextFrameForNewDirectWorkflow() {
@@ -64,7 +84,7 @@ func (e *Engine) clearCreateFamilyCarry() {
 	if !e.sessionStateHydrated {
 		return
 	}
-	e.sessionState.ContextFrame = ContextFrame{}
+	e.clearContextFrame()
 	e.sessionState.PendingDeployModel = ""
 	e.sessionState.LastDeployWorkload = ""
 	e.sessionState.LastDeployZone = ""
@@ -83,7 +103,9 @@ func (e *Engine) setContextFrame(frame ContextFrame) {
 	if frame.ProducedAtUnix == 0 {
 		frame.ProducedAtUnix = time.Now().Unix()
 	}
+	frame.Freshness = ContinuityFreshnessFresh
 	e.sessionState.ContextFrame = frame
+	e.syncTaskSnapshotFromFrame(frame, TaskSnapshotStatusActive, "", time.Unix(frame.ProducedAtUnix, 0))
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
@@ -93,9 +115,7 @@ func (e *Engine) activeContextFrame(now time.Time) (ContextFrame, bool) {
 	}
 	frame := e.sessionState.ContextFrame
 	if !frame.active(now) {
-		if frame.Kind != "" {
-			e.sessionState.ContextFrame = ContextFrame{}
-		}
+		e.expireContextFrame(now)
 		return ContextFrame{}, false
 	}
 	return frame, true

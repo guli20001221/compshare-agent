@@ -216,9 +216,17 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","selected_instance_id":"uhost-1","selected_instance_source":"user","context_frame":{"version":1,"kind":"workflow_task","workflow":"CreateDiskWorkflow","slots":{"instance_id":"uhost-1"},"slot_sources":{"instance_id":"user"},"missing_slots":["size_gb"]}}}`)
 	pc, err = ParsePersistedContext(raw)
 	require.NoError(t, err)
-	assert.Equal(t, SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, SessionStateSchemaV4, pc.AgentSessionState.SchemaVersion)
 	assert.Equal(t, SelectedInstanceSourceUser, pc.AgentSessionState.SelectedInstanceSource)
 	assert.Equal(t, SelectedInstanceSourceUser, pc.AgentSessionState.ContextFrame.SlotSources["instance_id"])
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"5.0","task_snapshot":{"goal":"给训练机扩容","status":"active","missing_slots":["target_size_gb"]},"conversation_digest":{"narrative":"目标：给训练机扩容"}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV5, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, "给训练机扩容", pc.AgentSessionState.TaskSnapshot.Goal)
+	assert.Equal(t, []string{"target_size_gb"}, pc.AgentSessionState.TaskSnapshot.MissingSlots)
+	assert.Equal(t, "目标：给训练机扩容", pc.AgentSessionState.ConversationDigest.Narrative)
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,27 @@ var retrievableToolResultActions = map[string]struct{}{
 	"DescribeCommunityImages":                 {},
 }
 
+// stripHistoricalToolTranscript makes hot-engine history match cold rebuilds:
+// only user/final-assistant text crosses a turn boundary. Structured ToolFacts
+// and the durable semantic summaries carry forward what is safe; raw tool JSON
+// must be queried again when current values matter.
+func stripHistoricalToolTranscript(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]openai.ChatCompletionMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == openai.ChatMessageRoleTool {
+			continue
+		}
+		if msg.Role == openai.ChatMessageRoleAssistant && len(msg.ToolCalls) > 0 {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
 func (e *Engine) trimHistoryByCompaction(now time.Time) {
 	if len(e.messages) <= 1+maxHistoryMessages {
 		if hasReactHistorySummary(e.messages) {
@@ -47,6 +68,7 @@ func (e *Engine) trimHistoryByCompaction(now time.Time) {
 		return
 	}
 
+	e.absorbConversationDigest(msgs[1:safeStart], now)
 	keep := append([]openai.ChatCompletionMessage(nil), msgs[safeStart:]...)
 	compactOldRetrievableToolResults(keep, recentRetrievableToolResultsKeep)
 
@@ -59,6 +81,36 @@ func (e *Engine) trimHistoryByCompaction(now time.Time) {
 	out = append(out, keep...)
 	e.messages = out
 	e.historyTrimmedThisSession = true
+}
+
+func (e *Engine) absorbConversationDigest(messages []openai.ChatCompletionMessage, now time.Time) {
+	if e == nil || !e.sessionStateHydrated || len(messages) == 0 {
+		return
+	}
+	var goals, decisions []string
+	for _, msg := range messages {
+		if msg.Role != openai.ChatMessageRoleUser {
+			continue
+		}
+		text := compactSemanticText(msg.Content)
+		if text == "" {
+			continue
+		}
+		goals = append(goals, text)
+		if containsAnyKeyword(text, []string{"就用", "选择", "决定", "改成", "换成", "确认"}) {
+			decisions = append(decisions, text)
+		}
+	}
+	if len(goals) == 0 && len(decisions) == 0 {
+		return
+	}
+	digest := e.sessionState.ConversationDigest
+	digest.Goals = mergeSemanticItems(digest.Goals, goals)
+	digest.Decisions = mergeSemanticItems(digest.Decisions, decisions)
+	digest.Narrative = buildConversationNarrative(digest)
+	digest.UpdatedAtUnix = now.Unix()
+	e.sessionState.ConversationDigest = digest
+	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
 func hasReactHistorySummary(messages []openai.ChatCompletionMessage) bool {
@@ -111,16 +163,41 @@ func (e *Engine) buildReActHistorySummary(now time.Time) string {
 	var lines []string
 	if e.sessionStateHydrated {
 		if e.sessionState.SelectedInstanceID != "" {
+			prefix := "已选实例："
+			if e.sessionState.SelectedInstanceFreshness == ContinuityFreshnessExpired ||
+				(e.sessionState.SelectedInstanceAtUnix <= 0 && e.sessionState.SelectedInstanceSource == "") {
+				prefix = "历史实例提示（不可授权写操作）："
+			}
 			if e.sessionState.SelectedInstanceName != "" {
-				lines = append(lines, fmt.Sprintf("已选实例：%s（%s）", e.sessionState.SelectedInstanceName, e.sessionState.SelectedInstanceID))
+				lines = append(lines, fmt.Sprintf("%s%s（%s）", prefix, e.sessionState.SelectedInstanceName, e.sessionState.SelectedInstanceID))
 			} else {
-				lines = append(lines, "已选实例："+e.sessionState.SelectedInstanceID)
+				lines = append(lines, prefix+e.sessionState.SelectedInstanceID)
 			}
 		}
 		if e.sessionState.LastIntent != "" {
 			lines = append(lines, "上次意图："+e.sessionState.LastIntent)
 		}
+		task := e.sessionState.TaskSnapshot
+		if task.Goal != "" {
+			lines = append(lines, "任务目标："+task.Goal)
+		}
+		if len(task.Constraints) > 0 {
+			lines = append(lines, "任务限制："+strings.Join(task.Constraints, "；"))
+		}
+		if len(task.Decisions) > 0 {
+			lines = append(lines, "已作决定："+strings.Join(task.Decisions, "；"))
+		}
+		if len(task.MissingSlots) > 0 && task.Status != TaskSnapshotStatusResolved {
+			lines = append(lines, "未完成任务待补充："+strings.Join(task.MissingSlots, "、"))
+		}
+		if task.Status == TaskSnapshotStatusExpired {
+			lines = append(lines, "该任务已过期；仅供理解，不得直接继续执行")
+		}
+		if digest := compactSemanticNarrative(e.sessionState.ConversationDigest.Narrative); digest != "" {
+			lines = append(lines, "早期对话摘要（只作参考）："+digest)
+		}
 		lines = append(lines, recentFactBreadcrumbs(e.sessionState.RecentFacts, now)...)
+		lines = append(lines, expiredFactBreadcrumbs(e.sessionState.RecentFacts, now)...)
 	}
 	if e.lastPlannerActionThisTurn != "" {
 		lines = append(lines, "最近生命周期动作："+string(e.lastPlannerActionThisTurn))
@@ -129,6 +206,27 @@ func (e *Engine) buildReActHistorySummary(now time.Time) string {
 		lines = append(lines, "暂无稳定结构化信号。")
 	}
 	return reactHistorySummaryPrefix + "\n" + strings.Join(lines, "\n")
+}
+
+func expiredFactBreadcrumbs(facts []ToolFact, now time.Time) []string {
+	var out []string
+	for _, fact := range facts {
+		freshness := fact.Freshness
+		if freshness == "" {
+			freshness = continuityFreshness(fact.ProducedAtUnix, fact.TTLSeconds, now)
+		}
+		if freshness != ContinuityFreshnessExpired || fact.SubjectID == "" || fact.Kind == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"历史事实主题：%s %s @%d（当前值必须重新查询）",
+			fact.SubjectID, fact.Kind, fact.ProducedAtUnix,
+		))
+		if len(out) >= 8 {
+			break
+		}
+	}
+	return out
 }
 
 func recentFactBreadcrumbs(facts []ToolFact, now time.Time) []string {

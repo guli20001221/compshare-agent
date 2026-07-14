@@ -27,8 +27,9 @@ func TestRefreshSystemPrompt_InjectsSelectedInstance(t *testing.T) {
 	require.NoError(t, err)
 
 	sysPrompt := eng.messages[0].Content
-	assert.Contains(t, sysPrompt, "当前会话已选实例：my-gpu-box（uhost-abc123）",
-		"system prompt must contain selected instance after refreshSystemPrompt")
+	assert.Contains(t, sysPrompt, "此前会话提到实例：my-gpu-box（uhost-abc123）",
+		"unknown-age legacy identity must remain available for understanding")
+	assert.Contains(t, sysPrompt, "不得授权写操作")
 }
 
 func TestRefreshSystemPrompt_SkipsWhenNotHydrated(t *testing.T) {
@@ -58,7 +59,7 @@ func TestRefreshSystemPrompt_IDOnlyWhenNameEmpty(t *testing.T) {
 	require.NoError(t, err)
 
 	sysPrompt := eng.messages[0].Content
-	assert.Contains(t, sysPrompt, "当前会话已选实例：uhost-xyz789")
+	assert.Contains(t, sysPrompt, "此前会话提到实例：uhost-xyz789")
 	assert.NotContains(t, sysPrompt, "（uhost-xyz789）",
 		"no parenthetical ID when name is empty — ID is the primary label")
 }
@@ -80,8 +81,8 @@ func TestRefreshSystemPrompt_PreservesBaseUserContext(t *testing.T) {
 	sysPrompt := eng.messages[0].Content
 	assert.True(t, strings.Contains(sysPrompt, "您有 3 个实例"),
 		"base user context must be preserved")
-	assert.True(t, strings.Contains(sysPrompt, "当前会话已选实例：train-node-1（uhost-111）"),
-		"session state must be appended")
+	assert.True(t, strings.Contains(sysPrompt, "此前会话提到实例：train-node-1（uhost-111）"),
+		"legacy session identity must be appended without restoring write trust")
 }
 
 func TestPlannerInput_ReceivesLastIntent(t *testing.T) {
