@@ -15,8 +15,9 @@ import (
 
 type committedTailStore struct {
 	*mockMessageStore
-	tailCalls int
-	tail      []store.Message
+	tailCalls     int
+	lastTurnLimit int
+	tail          []store.Message
 }
 
 func TestNewTurnEngineWithOptions_UsesCallerTurnOptionsWithoutEnteringCache(t *testing.T) {
@@ -41,10 +42,22 @@ func (s *committedTailStore) ListCommittedTail(
 	turnLimit int,
 ) ([]store.Message, error) {
 	s.tailCalls++
+	s.lastTurnLimit = turnLimit
 	if turnLimit <= 0 {
 		panic("NewTurnEngine requested an unbounded committed history")
 	}
 	return append([]store.Message(nil), s.tail...), nil
+}
+
+func TestNewTurnEngine_ReadsOneOverlapTurnForDurableCompaction(t *testing.T) {
+	ms := &committedTailStore{mockMessageStore: &mockMessageStore{}}
+	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{})
+	defer pool.Close()
+
+	_, err := pool.NewTurnEngine(context.Background(), owner1, "sess-summary-frontier")
+	require.NoError(t, err)
+	assert.Equal(t, 61, ms.lastTurnLimit,
+		"the cold rebuild must read one turn beyond the raw history window so it can persist the disappearing turn into ConversationDigest")
 }
 
 func TestNewTurnEngine_IsPrivateAndUsesOnlyCommittedTail(t *testing.T) {

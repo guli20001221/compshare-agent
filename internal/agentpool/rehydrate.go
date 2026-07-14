@@ -10,11 +10,13 @@ import (
 	"github.com/compshare-agent/internal/store"
 )
 
-// committedTailTurnLimit fills the engine's 120 non-system message budget
-// with 60 complete conversational turns. Tool transcripts are deliberately
-// not persisted into this history; durable context facts are loaded separately
-// by the turn coordinator.
-const committedTailTurnLimit = 60
+// committedTailTurnLimit deliberately reads one complete turn beyond the
+// engine's 120 non-system-message window. ChatWithOptions compacts that overlap
+// into the persisted ConversationDigest before appending the new user message.
+// Reading exactly 60 turns would never overflow at turn entry, so the oldest
+// turn would disappear from the next cold rebuild without ever reaching the
+// durable summary.
+const committedTailTurnLimit = 61
 
 // denyConfirm is used as the ConfirmFunc for HTTP-path engines. All L1
 // mutating actions are denied — confirmation requires human interaction
