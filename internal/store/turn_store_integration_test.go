@@ -66,6 +66,40 @@ func openIsolatedTurnTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// insertLegacyAcceptedTurnForTest recreates a turn that an older release could
+// have admitted behind another non-terminal turn. New requests must never use
+// this path; it exists only to keep takeover and upgrade compatibility covered.
+func insertLegacyAcceptedTurnForTest(t *testing.T, db *sql.DB, owner Owner, in AcceptTurnInput) Turn {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	contextVersion, err := lockSession(ctx, tx, owner, in.SessionID)
+	require.NoError(t, err)
+	turnSequence, err := nextTurnSequence(ctx, tx, in.SessionID)
+	require.NoError(t, err)
+	envelope, err := canonicalOptionalObject(in.ExecutionEnvelope)
+	require.NoError(t, err)
+	turnID := uuid.NewString()
+	userMessageID := uuid.NewString()
+	assistantMessageID := uuid.NewString()
+	turn, err := insertTurn(ctx, tx, owner, in, turnID, userMessageID, assistantMessageID, contextVersion, turnSequence, envelope)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO messages
+  (id, session_id, request_uuid, role, content, status, model, metadata, turn_id, turn_role)
+VALUES
+  ($1, $2, $3, 'user', $4, 'pending', NULL, $5, $6, 'user'),
+  ($7, $2, $3, 'assistant', '', 'pending', $8, NULL, $6, 'assistant')
+`, userMessageID, in.SessionID, nullableRequestUUID(in.RequestUUID), in.UserContent,
+		nullableJSON(in.UserMetadata), turnID, assistantMessageID, nullableStringPtr(in.AssistantModel))
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+	return turn
+}
+
 func TestPostgresTurnStore_Integration(t *testing.T) {
 	db := openIsolatedTurnTestDB(t)
 	ctx := context.Background()
@@ -118,10 +152,19 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 	leaseA, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-a", time.Minute)
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, leaseA.Epoch)
-	queued, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+	_, _, err = turns.AcceptTurn(ctx, owner, AcceptTurnInput{
 		SessionID: session.ID, ClientTurnID: "queued-turn", RequestHash: HashTurnRequest("queued"), UserContent: "queued",
 	})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrTurnOutOfOrder)
+	var turnRows, allMessages int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM chat_turns WHERE session_id = $1`, session.ID).Scan(&turnRows))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE session_id = $1`, session.ID).Scan(&allMessages))
+	assert.Equal(t, 1, turnRows, "busy admission must not create a hidden queued turn")
+	assert.Equal(t, 2, allMessages, "busy admission must not persist either half of the rejected turn")
+
+	queued := insertLegacyAcceptedTurnForTest(t, db, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "legacy-queued-turn", RequestHash: HashTurnRequest("legacy-queued"), UserContent: "legacy queued",
+	})
 	_, err = turns.AcquireConversationLease(ctx, owner, session.ID, queued.ID, "replica-a", time.Minute)
 	require.ErrorIs(t, err, ErrLeaseHeld, "a holder token for one turn cannot authorize another turn")
 	_, err = turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-a", time.Minute)
@@ -277,12 +320,15 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 	assert.Equal(t, "turn.committed", events[0].Type)
 	assert.False(t, events[0].Provisional, "the durable commit event is terminal, not provisional")
 
-	later, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+	_, _, err = turns.AcceptTurn(ctx, owner, AcceptTurnInput{
 		SessionID: session.ID, ClientTurnID: "later-queued-turn", RequestHash: HashTurnRequest("later"), UserContent: "later",
 	})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrTurnOutOfOrder, "new admission remains closed while an upgraded legacy turn is pending")
+	later := insertLegacyAcceptedTurnForTest(t, db, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "legacy-later-turn", RequestHash: HashTurnRequest("legacy-later"), UserContent: "legacy later",
+	})
 	_, err = turns.AcquireConversationLease(ctx, owner, session.ID, later.ID, "replica-out-of-order", time.Minute)
-	require.ErrorIs(t, err, ErrTurnOutOfOrder, "a later accepted turn cannot overtake the queue head")
+	require.ErrorIs(t, err, ErrTurnOutOfOrder, "an upgraded legacy turn cannot overtake the queue head")
 	queuedLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, queued.ID, "replica-queued", time.Minute)
 	require.NoError(t, err)
 	_, err = turns.FailTurn(ctx, owner, queuedLease, TurnStatusAborted, "test_queue_cleanup")
@@ -682,11 +728,15 @@ func TestPostgresTurnStore_ConcurrentFencing(t *testing.T) {
 	require.NoError(t, second.err)
 	assert.Equal(t, first.turn.ID, second.turn.ID)
 	assert.NotEqual(t, first.created, second.created, "exactly one concurrent accept creates the durable turn")
-	var messageCount, pendingCount int
+	var messageCount, pendingCount, turnCount, allMessageCount int
 	require.NoError(t, db.QueryRow(`SELECT message_count FROM sessions WHERE id = $1`, session.ID).Scan(&messageCount))
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE turn_id = $1 AND status = 'pending'`, first.turn.ID).Scan(&pendingCount))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM chat_turns WHERE session_id = $1`, session.ID).Scan(&turnCount))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE session_id = $1`, session.ID).Scan(&allMessageCount))
 	assert.Zero(t, messageCount)
 	assert.Equal(t, 2, pendingCount)
+	assert.Equal(t, 1, turnCount)
+	assert.Equal(t, 2, allMessageCount)
 
 	type leaseResult struct {
 		lease ConversationLease
@@ -734,6 +784,63 @@ func TestPostgresTurnStore_ConcurrentFencing(t *testing.T) {
 	assert.Equal(t, takeover.Epoch, replayed[0].LeaseEpoch)
 	require.NoError(t, stores[1].ReleaseConversationLease(ctx, owner, takeover))
 	require.NoError(t, VerifySchema(ctx, db), "schema probes must also work after protocol tables contain rows")
+}
+
+func TestPostgresTurnStore_ConcurrentDifferentClientIDsAdmitExactlyOne(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 72101, OrganizationID: 72102}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+
+	type acceptResult struct {
+		turn    Turn
+		created bool
+		err     error
+	}
+	results := make(chan acceptResult, 2)
+	start := make(chan struct{})
+	stores := []*PostgresTurnStore{NewPostgresTurnStore(db), NewPostgresTurnStore(db)}
+	for i, turnStore := range stores {
+		clientTurnID := fmt.Sprintf("different-client-%d", i+1)
+		go func(s *PostgresTurnStore, id string) {
+			<-start
+			turn, created, acceptErr := s.AcceptTurn(ctx, owner, AcceptTurnInput{
+				SessionID: session.ID, ClientTurnID: id,
+				RequestHash: HashTurnRequest(id), UserContent: id,
+			})
+			results <- acceptResult{turn: turn, created: created, err: acceptErr}
+		}(turnStore, clientTurnID)
+	}
+	close(start)
+
+	successes, busy := 0, 0
+	var admitted Turn
+	for i := 0; i < 2; i++ {
+		result := <-results
+		switch {
+		case result.err == nil:
+			successes++
+			require.True(t, result.created)
+			assert.Equal(t, TurnStatusAccepted, result.turn.Status)
+			admitted = result.turn
+		case errors.Is(result.err, ErrTurnOutOfOrder):
+			busy++
+			assert.False(t, result.created)
+			assert.Empty(t, result.turn.ID)
+		default:
+			t.Fatalf("unexpected admission result: %v", result.err)
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, 1, busy)
+	require.NotEmpty(t, admitted.ID)
+
+	var turnCount, messageCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM chat_turns WHERE session_id = $1`, session.ID).Scan(&turnCount))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE session_id = $1`, session.ID).Scan(&messageCount))
+	assert.Equal(t, 1, turnCount)
+	assert.Equal(t, 2, messageCount)
 }
 
 func TestPostgresTurnStore_FirstDurableSequenceContinuesLegacyCommittedCount(t *testing.T) {
@@ -893,7 +1000,7 @@ func forceTurnRetryDue(t *testing.T, db *sql.DB, turnID string) {
 	require.NoError(t, err)
 }
 
-func TestPostgresTurnStore_AcquireQueuedTurnRefreshesItsContextSnapshot(t *testing.T) {
+func TestPostgresTurnStore_AcquireLegacyQueuedTurnRefreshesItsContextSnapshot(t *testing.T) {
 	db := openIsolatedTurnTestDB(t)
 	ctx := context.Background()
 	owner := Owner{TopOrganizationID: 75001, OrganizationID: 75002}
@@ -904,11 +1011,10 @@ func TestPostgresTurnStore_AcquireQueuedTurnRefreshesItsContextSnapshot(t *testi
 		SessionID: session.ID, ClientTurnID: "first", RequestHash: HashTurnRequest("first"), UserContent: "first",
 	})
 	require.NoError(t, err)
-	queued, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
-		SessionID: session.ID, ClientTurnID: "queued", RequestHash: HashTurnRequest("queued"), UserContent: "queued",
+	queued := insertLegacyAcceptedTurnForTest(t, db, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "legacy-queued", RequestHash: HashTurnRequest("legacy-queued"), UserContent: "legacy queued",
 	})
-	require.NoError(t, err)
-	assert.Equal(t, first.BaseContextVersion, queued.BaseContextVersion, "both were accepted before the first commit")
+	assert.Equal(t, first.BaseContextVersion, queued.BaseContextVersion, "an upgraded queued row retains its old acceptance snapshot")
 
 	firstLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, first.ID, "replica-first", time.Minute)
 	require.NoError(t, err)
@@ -925,7 +1031,7 @@ func TestPostgresTurnStore_AcquireQueuedTurnRefreshesItsContextSnapshot(t *testi
 	require.NoError(t, err)
 	queued, err = turns.GetTurn(ctx, owner, queued.ID)
 	require.NoError(t, err)
-	assert.Equal(t, 1, queued.BaseContextVersion, "execution must bind the latest committed snapshot, not the acceptance-time snapshot")
+	assert.Equal(t, 1, queued.BaseContextVersion, "upgrade recovery must bind the latest committed snapshot, not the legacy acceptance snapshot")
 
 	_, err = turns.CommitTurn(ctx, owner, CommitTurnInput{
 		TurnID: queued.ID, Lease: queuedLease, ExpectedContextVersion: queued.BaseContextVersion,

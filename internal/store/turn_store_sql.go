@@ -124,6 +124,24 @@ FOR UPDATE
 	return out, nil
 }
 
+func ensureNoOtherOpenTurn(ctx context.Context, tx *sql.Tx, owner Owner, sessionID string) error {
+	var exists int
+	err := tx.QueryRowContext(ctx, `
+SELECT 1
+FROM chat_turns
+WHERE session_id = $1 AND top_organization_id = $2 AND organization_id = $3
+  AND status NOT IN ('committed', 'failed_final', 'ambiguous_after_action', 'aborted')
+LIMIT 1
+`, sessionID, owner.TopOrganizationID, owner.OrganizationID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check conversation admission: %w", err)
+	}
+	return ErrTurnOutOfOrder
+}
+
 func insertTurn(
 	ctx context.Context,
 	tx *sql.Tx,

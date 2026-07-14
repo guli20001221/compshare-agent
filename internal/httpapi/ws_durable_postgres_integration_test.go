@@ -302,6 +302,44 @@ func TestWSDurable_PostgresLegacyAndV2ConcurrentSendExecuteOnce(t *testing.T) {
 	assert.Equal(t, "durable answer", history[1].Content)
 }
 
+func TestWSDurable_PostgresDifferentClientTurnWhileBusyReturnsTurnBusyWithoutPersisting(t *testing.T) {
+	db := openDurableWSPostgres(t)
+	factory := &durableWSEngineFactory{started: make(chan struct{}, 1), release: make(chan struct{})}
+	srv, _, session := newDurableWSPGServer(t, db, factory, nil)
+	ctx := context.Background()
+
+	first := dialWS(t, srv, gatewayHeaders())
+	firstFrame := `{"Action":"SendCSAgentChat","ProtocolVersion":2,"SessionId":"` + session.ID + `","ClientTurnId":"active-turn","Message":"first question","Features":["turn_replay_v2"]}`
+	require.NoError(t, first.Write(ctx, websocket.MessageText, []byte(firstFrame)))
+	meta := readDurableFrame(t, first)
+	assert.Equal(t, "meta", meta["event"])
+	select {
+	case <-factory.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first durable turn did not start")
+	}
+
+	second := dialWS(t, srv, gatewayHeaders())
+	secondFrame := `{"Action":"SendCSAgentChat","ProtocolVersion":2,"SessionId":"` + session.ID + `","ClientTurnId":"different-turn","Message":"second question","Features":["turn_replay_v2"]}`
+	require.NoError(t, second.Write(ctx, websocket.MessageText, []byte(secondFrame)))
+	busy := readDurableFrame(t, second)
+	assert.Equal(t, "error", busy["event"])
+	assert.Equal(t, "TurnBusy", busy["Code"])
+	assert.Equal(t, int32(1), factory.calls.Load())
+
+	var turnCount, messageCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM chat_turns WHERE session_id = $1`, session.ID).Scan(&turnCount))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE session_id = $1`, session.ID).Scan(&messageCount))
+	assert.Equal(t, 1, turnCount)
+	assert.Equal(t, 2, messageCount)
+	_, err := store.NewPostgresTurnStore(db).FindTurnByClientID(ctx, gatewayOwner, session.ID, "different-turn")
+	require.ErrorIs(t, err, store.ErrTurnNotFound)
+
+	close(factory.release)
+	frames := readUntilDurableTerminal(t, first)
+	assert.Equal(t, "done", frames[len(frames)-1]["event"])
+}
+
 func TestWSDurable_PostgresProductionPathWritesDurableAttemptTrace(t *testing.T) {
 	db := openDurableWSPostgres(t)
 	ctx := context.Background()

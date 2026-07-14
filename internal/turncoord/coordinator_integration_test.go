@@ -256,7 +256,7 @@ func TestFreezeSubmitInputUsesSharedCredentialRedactionWithoutDroppingRoutingCon
 	assert.Contains(t, string(raw), "uhost-1")
 }
 
-func TestCoordinator_UnrecoverableEnvelopeTerminatesOnceAndReleasesQueue(t *testing.T) {
+func TestCoordinator_UnrecoverableEnvelopeTerminatesOnceAndReopensAdmission(t *testing.T) {
 	tests := []struct {
 		name     string
 		envelope json.RawMessage
@@ -280,16 +280,8 @@ func TestCoordinator_UnrecoverableEnvelopeTerminatesOnceAndReleasesQueue(t *test
 				UserContent: "broken", ExecutionEnvelope: tc.envelope,
 			})
 			require.NoError(t, err)
-			_, goodEnvelope, err := freezeSubmitInput(SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "next", Message: "continue"})
-			require.NoError(t, err)
-			next, _, err := turns.AcceptTurn(ctx, owner, store.AcceptTurnInput{
-				SessionID: session.ID, ClientTurnID: "next", RequestHash: store.HashTurnRequest("next"),
-				UserContent: "continue", ExecutionEnvelope: goodEnvelope,
-			})
-			require.NoError(t, err)
-
 			factory := &coordinatorFactory{}
-			_ = coordinatorForTest(t, turns, sessions, factory, "broken-a")
+			c := coordinatorForTest(t, turns, sessions, factory, "broken-a")
 			_ = coordinatorForTest(t, turns, sessions, factory, "broken-b")
 			failed := waitTurnStatus(t, turns, owner, broken.ID, store.TurnStatusFailedFinal)
 			require.NotNil(t, failed.ErrorCode)
@@ -303,7 +295,9 @@ func TestCoordinator_UnrecoverableEnvelopeTerminatesOnceAndReleasesQueue(t *test
 			require.NoError(t, err)
 			assert.Equal(t, 0, savedSession.ContextVersion)
 
-			waitTurnStatus(t, turns, owner, next.ID, store.TurnStatusCommitted)
+			next, err := c.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "next", Message: "continue"}, nil)
+			require.NoError(t, err, "a final failure must reopen admission for a new user turn")
+			waitTurnStatus(t, turns, owner, next.Turn.ID, store.TurnStatusCommitted)
 			factory.mu.Lock()
 			calls := factory.calls
 			factory.mu.Unlock()
@@ -507,6 +501,91 @@ func TestCoordinator_ConcurrentIdempotentSubmitExecutesOnceAndOutlivesSubscriber
 	assert.Equal(t, "turn.committed", events[len(events)-1].Type)
 	assert.False(t, events[len(events)-1].Provisional)
 	assert.Equal(t, int64(len(events)), events[len(events)-1].Seq)
+}
+
+func TestCoordinator_ConcurrentDifferentClientIDsAdmitOneTurn(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 91101, OrganizationID: 91102}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var chatCalls atomic.Int32
+	factory := &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(ctx context.Context, _ func(engine.StepEvent), _ engine.ChatOptions) (string, error) {
+			chatCalls.Add(1)
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			select {
+			case <-release:
+				return "admitted", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+	}}
+	c1 := coordinatorForTest(t, turns, sessions, factory, "admission-a")
+	c2 := coordinatorForTest(t, turns, sessions, factory, "admission-b")
+
+	type submitResult struct {
+		sub Submission
+		err error
+	}
+	results := make(chan submitResult, 2)
+	start := make(chan struct{})
+	inputs := []SubmitInput{
+		{Owner: owner, SessionID: session.ID, ClientTurnID: "client-a", Message: "first concurrent question"},
+		{Owner: owner, SessionID: session.ID, ClientTurnID: "client-b", Message: "second concurrent question"},
+	}
+	for i, coordinator := range []*Coordinator{c1, c2} {
+		input := inputs[i]
+		go func(c *Coordinator, in SubmitInput) {
+			<-start
+			sub, submitErr := c.Submit(ctx, in, nil)
+			results <- submitResult{sub: sub, err: submitErr}
+		}(coordinator, input)
+	}
+	close(start)
+
+	successes, busy := 0, 0
+	var admitted Submission
+	for i := 0; i < 2; i++ {
+		result := <-results
+		switch {
+		case result.err == nil:
+			successes++
+			admitted = result.sub
+			assert.Equal(t, DispositionStarted, result.sub.Disposition)
+			assert.Equal(t, store.TurnStatusAccepted, result.sub.Turn.Status)
+		case errors.Is(result.err, store.ErrTurnOutOfOrder):
+			busy++
+			assert.Empty(t, result.sub.Turn.ID)
+		default:
+			t.Fatalf("unexpected submit result: %v", result.err)
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, 1, busy)
+	require.NotEmpty(t, admitted.Turn.ID)
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("admitted turn did not start")
+	}
+
+	var turnCount, messageCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM chat_turns WHERE session_id = $1`, session.ID).Scan(&turnCount))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE session_id = $1`, session.ID).Scan(&messageCount))
+	assert.Equal(t, 1, turnCount)
+	assert.Equal(t, 2, messageCount)
+	assert.Equal(t, int32(1), chatCalls.Load())
+	close(release)
+	waitTurnStatus(t, turns, owner, admitted.Turn.ID, store.TurnStatusCommitted)
 }
 
 func TestCoordinator_UnknownSchemaPreservesBytesAndCorruptKnownSchemaSelfHeals(t *testing.T) {
@@ -1309,7 +1388,7 @@ func TestCoordinator_RetriesTransientLeaseReadAndFailurePersistence(t *testing.T
 	})
 }
 
-func TestCoordinator_QueueWaitDoesNotConsumeExecutionTimeout(t *testing.T) {
+func TestCoordinator_BusyConversationRejectsWithoutPersistingOrExecuting(t *testing.T) {
 	db := openActionJournalTestDB(t)
 	ctx := context.Background()
 	owner := store.Owner{TopOrganizationID: 99151, OrganizationID: 99152}
@@ -1323,20 +1402,25 @@ func TestCoordinator_QueueWaitDoesNotConsumeExecutionTimeout(t *testing.T) {
 	require.NoError(t, err)
 	blockerLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, blocker.ID, "manual-blocker", time.Second)
 	require.NoError(t, err)
-	c := NewCoordinator(turns, sessions, EngineFactoryFunc((&coordinatorFactory{}).New), Options{
-		ReplicaID: "queued-replica", LeaseTTL: 500 * time.Millisecond, LeaseRenewInterval: 100 * time.Millisecond,
+	factory := &coordinatorFactory{}
+	c := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), Options{
+		ReplicaID: "busy-replica", LeaseTTL: 500 * time.Millisecond, LeaseRenewInterval: 100 * time.Millisecond,
 		InteractionPoll: 10 * time.Millisecond, ExecutionTimeout: 150 * time.Millisecond,
 	})
 	t.Cleanup(c.Close)
-	queued, err := c.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "queued-after-blocker", Message: "answer later"}, nil)
-	require.NoError(t, err)
-	time.Sleep(350 * time.Millisecond) // more than twice ExecutionTimeout while still queued
-	stillQueued, err := turns.GetTurn(ctx, owner, queued.Turn.ID)
-	require.NoError(t, err)
-	assert.Equal(t, store.TurnStatusAccepted, stillQueued.Status)
+	_, err = c.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "rejected-behind-blocker", Message: "answer later"}, nil)
+	require.ErrorIs(t, err, store.ErrTurnOutOfOrder)
+	var turnCount, messageCount int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM chat_turns WHERE session_id = $1`, session.ID).Scan(&turnCount))
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM messages WHERE session_id = $1`, session.ID).Scan(&messageCount))
+	assert.Equal(t, 1, turnCount)
+	assert.Equal(t, 2, messageCount)
+	factory.mu.Lock()
+	modelCalls := factory.calls
+	factory.mu.Unlock()
+	assert.Zero(t, modelCalls, "a rejected turn must never reach model execution")
 	_, err = turns.FailTurn(ctx, owner, blockerLease, store.TurnStatusAborted, "release_test_blocker")
 	require.NoError(t, err)
-	waitTurnStatus(t, turns, owner, queued.Turn.ID, store.TurnStatusCommitted)
 }
 
 func TestCoordinator_SubscribeResumesStrictlyAfterLastSequence(t *testing.T) {

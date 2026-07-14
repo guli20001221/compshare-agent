@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPostgresTurnStore_DurableRetryBudgetSurvivesRestartAndReleasesQueue(t *testing.T) {
+func TestPostgresTurnStore_DurableRetryBudgetSurvivesRestartAndReleasesLegacyQueue(t *testing.T) {
 	db := openIsolatedTurnTestDB(t)
 	ctx := context.Background()
 	owner := Owner{TopOrganizationID: 81001, OrganizationID: 81002}
@@ -26,11 +26,10 @@ func TestPostgresTurnStore_DurableRetryBudgetSurvivesRestartAndReleasesQueue(t *
 		UserContent: "retry me", ExecutionEnvelope: json.RawMessage(`{"version":1,"message":"retry me"}`),
 	})
 	require.NoError(t, err)
-	queued, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
-		SessionID: session.ID, ClientTurnID: "after-final", RequestHash: HashTurnRequest("after-final"),
+	queued := insertLegacyAcceptedTurnForTest(t, db, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "legacy-after-final", RequestHash: HashTurnRequest("legacy-after-final"),
 		UserContent: "next", ExecutionEnvelope: json.RawMessage(`{"version":1,"message":"next"}`),
 	})
-	require.NoError(t, err)
 
 	lease, err := turns.AcquireConversationLease(ctx, owner, session.ID, first.ID, "initial", time.Minute)
 	require.NoError(t, err)
@@ -144,7 +143,7 @@ func TestPostgresTurnStore_DurableRetryBudgetSurvivesRestartAndReleasesQueue(t *
 	assert.Equal(t, 0, unchanged.ContextVersion, "retry failure must never overwrite session context")
 
 	nextLease, err := restarted.AcquireConversationLease(ctx, owner, session.ID, queued.ID, "next-turn", time.Minute)
-	require.NoError(t, err, "a terminally exhausted head must release the session queue")
+	require.NoError(t, err, "a terminally exhausted head must release an upgraded legacy queue")
 	_, err = restarted.FailTurn(ctx, owner, nextLease, TurnStatusAborted, "test_cleanup")
 	require.NoError(t, err)
 }

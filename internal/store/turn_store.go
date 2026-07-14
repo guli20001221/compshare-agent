@@ -59,6 +59,13 @@ func (s *PostgresTurnStore) AcceptTurn(ctx context.Context, owner Owner, in Acce
 	if !errors.Is(err, ErrTurnNotFound) {
 		return Turn{}, false, err
 	}
+	// Admission is serialized by the session row lock acquired above. Preserve
+	// idempotent retries first, then refuse a different logical turn while any
+	// prior turn is still non-terminal. This prevents a second user message from
+	// being persisted behind work the client may cancel, retry or replace.
+	if err := ensureNoOtherOpenTurn(ctx, tx, owner, in.SessionID); err != nil {
+		return Turn{}, false, err
+	}
 	turnSequence, err := nextTurnSequence(ctx, tx, in.SessionID)
 	if err != nil {
 		return Turn{}, false, err
