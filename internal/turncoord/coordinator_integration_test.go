@@ -536,7 +536,7 @@ func TestCoordinator_UnknownSchemaPreservesBytesAndCorruptKnownSchemaSelfHeals(t
 	require.Len(t, unknownMessages, 2)
 	assert.Contains(t, unknownMessages[1].Content, UnknownSchemaWarning)
 
-	corruptRaw := json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","recent_facts":"not-an-array"}}`)
+	corruptRaw := json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","recent_facts":"not-an-array"},"client_context":{"page":"/gpu","filters":["running"]}}`)
 	corrupt, err := sessions.Create(ctx, owner, nil, corruptRaw)
 	require.NoError(t, err)
 	corruptFactory := &coordinatorFactory{}
@@ -550,6 +550,8 @@ func TestCoordinator_UnknownSchemaPreservesBytesAndCorruptKnownSchemaSelfHeals(t
 	pc, err := engine.ParsePersistedContext(afterCorrupt.Context)
 	require.NoError(t, err)
 	assert.Equal(t, engine.SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.JSONEq(t, `{"page":"/gpu","filters":["running"]}`, string(pc.ClientContext),
+		"self-healing agent state must preserve the independently owned client context")
 	require.Len(t, corruptFactory.opts, 1)
 	assert.True(t, corruptFactory.opts[0].MutatingToolsEnabled,
 		"corrupt known state may still act from current input under normal guards")

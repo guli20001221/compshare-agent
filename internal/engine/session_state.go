@@ -538,9 +538,19 @@ func ParsePersistedContext(raw json.RawMessage) (PersistedContext, error) {
 	}
 	switch classifyEnvelope(probe) {
 	case envelopeKindKnown:
-		var pc PersistedContext
-		if err := json.Unmarshal(raw, &pc); err != nil {
+		// Decode the two ownership domains independently. A type error inside
+		// agent_session_state must not hide a valid client_context from the
+		// caller that will self-heal only the agent-owned half.
+		var wire struct {
+			AgentSessionState json.RawMessage `json:"agent_session_state"`
+			ClientContext     json.RawMessage `json:"client_context"`
+		}
+		if err := json.Unmarshal(raw, &wire); err != nil {
 			return PersistedContext{}, err
+		}
+		pc := PersistedContext{ClientContext: append(json.RawMessage(nil), wire.ClientContext...)}
+		if err := json.Unmarshal(wire.AgentSessionState, &pc.AgentSessionState); err != nil {
+			return pc, err
 		}
 		if pc.AgentSessionState.SchemaVersion == "" {
 			pc.AgentSessionState.SchemaVersion = SessionStateSchemaCurrent

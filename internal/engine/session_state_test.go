@@ -129,6 +129,14 @@ func TestParsePersistedContext_MalformedJSON_ReturnsError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestParsePersistedContext_KnownEnvelopeWithCorruptAgentStateStillReturnsClientContext(t *testing.T) {
+	raw := json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","recent_facts":"not-an-array"},"client_context":{"page":"/gpu","filters":["running"]}}`)
+	pc, err := ParsePersistedContext(raw)
+	require.Error(t, err)
+	assert.JSONEq(t, `{"page":"/gpu","filters":["running"]}`, string(pc.ClientContext),
+		"a corrupt agent-owned field must not erase the independently owned client context")
+}
+
 // TestParsePersistedContext_LegacyShapesShareAgentKey guards against an
 // over-loose probe: a legacy client_context that happens to contain an
 // agent_session_state key — but without a recognized envelope shape —

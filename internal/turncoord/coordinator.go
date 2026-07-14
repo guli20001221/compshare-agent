@@ -973,7 +973,7 @@ func parseExecutionContext(raw json.RawMessage, globalMutations bool) (engine.Se
 		return engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent}, nil,
 			UnknownSchemaWarning, store.ContextWritePreserve, false, "unknown_schema"
 	}
-	return engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent}, nil,
+	return engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent}, pc.ClientContext,
 		CorruptContextWarning, store.ContextWriteUpdate, globalMutations, "malformed"
 }
 
