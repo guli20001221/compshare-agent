@@ -962,7 +962,8 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	cfg := &Config{Agent: AgentConfig{
 		LLM: LLMConfig{APIKey: "resolved-llm-key"},
 		Features: FeaturesConfig{
-			MutatingTools:             boolPtr(true),  // YAML true → "1"
+			MutatingTools:             boolPtr(true), // YAML true → "1"
+			DurableTurns:              boolPtr(true),
 			AgenticSearchKnowledge:    boolPtr(false), // YAML false → "0" (off; this flag defaults ON)
 			FlashKnowledgeRouteGuard:  boolPtr(true),
 			CreatePreferenceExtractor: boolPtr(false),
@@ -997,6 +998,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	getenv := cfg.RuntimeGetenv(base)
 
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
+	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "0", getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"), "YAML false → explicit off, wins over default-on")
 	assert.Equal(t, "1", getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"), "YAML true wins over env off")
 	assert.Equal(t, "0", getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"), "YAML false wins over env on")

@@ -50,6 +50,17 @@ type Handlers struct {
 	// flow. It only takes effect together with confirmFormEnabled and the
 	// client's guided_create_v1 feature opt-in.
 	guidedCreateEnabled bool
+	// turnCoordinator is the durable, globally fenced execution path. When set,
+	// every WebSocket chat request (including legacy frames) uses it; the pool
+	// remains only an engine factory/cache and is not a competing writer.
+	turnCoordinator durableTurnCoordinator
+}
+
+// SetTurnCoordinator enables the durable turn protocol for all chat traffic.
+// Passing nil is supported only by legacy unit tests and local compatibility
+// harnesses; production server startup always installs a coordinator.
+func (h *Handlers) SetTurnCoordinator(coordinator durableTurnCoordinator) {
+	h.turnCoordinator = coordinator
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.

@@ -16,6 +16,7 @@ import (
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/ocr"
 	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/turncoord"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 )
@@ -87,6 +88,30 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	defer pool.Close()
 
 	handlers := httpapi.NewHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter)
+	durableTurnsEnabled := false
+	switch value := overlayGetenv("COMPSHARE_DURABLE_TURNS"); value {
+	case "1":
+		durableTurnsEnabled = true
+		// OpenMySQL has already run the full column-level VerifySchema probe,
+		// including every durable turn/lease/event/interaction table. Construct
+		// the coordinator only after that fail-fast check succeeds.
+		coordinator := turncoord.NewCoordinator(
+			store.NewPostgresTurnStore(db),
+			sessionStore,
+			turncoord.EngineFactoryFromPool(pool),
+			turncoord.Options{
+				ReplicaID:            serverReplicaID(),
+				MutatingToolsEnabled: overlayGetenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1",
+			},
+		)
+		handlers.SetTurnCoordinator(coordinator)
+		defer coordinator.Close()
+		log.Printf("durable turns enabled: every WebSocket chat uses the globally fenced commit path")
+	case "", "0":
+		// Compatibility-only mode for local rollback and old tests.
+	default:
+		return fmt.Errorf("unknown COMPSHARE_DURABLE_TURNS value %q", value)
+	}
 	if cfg.Agent.OCR.Model != "" {
 		handlers.SetOCRClient(ocr.NewClient(cfg.Agent.OCR))
 		log.Printf("OCR enabled: model=%s", cfg.Agent.OCR.Model)
@@ -97,8 +122,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	case "", "0":
 		// off (default)
 	case "1":
-		handlers.SetConfirmFormEnabled(true)
-		log.Printf("confirm form enabled (COMPSHARE_CONFIRM_FORM=1): confirmation frames carry Form for opted-in clients")
+		if durableTurnsEnabled {
+			log.Printf("confirm form capability withheld in durable mode: boolean confirmation remains available")
+		} else {
+			handlers.SetConfirmFormEnabled(true)
+			log.Printf("confirm form enabled (COMPSHARE_CONFIRM_FORM=1): confirmation frames carry Form for opted-in clients")
+		}
 	default:
 		log.Printf("warning: unknown COMPSHARE_CONFIRM_FORM value %q, treating as off", v)
 	}
@@ -108,8 +137,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	case "", "0":
 		// off (default)
 	case "1":
-		handlers.SetGuidedCreateEnabled(true)
-		log.Printf("guided create enabled (COMPSHARE_GUIDED_CREATE=1): opted-in clients use guided GPU create cards")
+		if durableTurnsEnabled {
+			log.Printf("guided create capability withheld in durable mode until selections are persistent")
+		} else {
+			handlers.SetGuidedCreateEnabled(true)
+			log.Printf("guided create enabled (COMPSHARE_GUIDED_CREATE=1): opted-in clients use guided GPU create cards")
+		}
 	default:
 		log.Printf("warning: unknown COMPSHARE_GUIDED_CREATE value %q, treating as off", v)
 	}
@@ -147,6 +180,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WriteTimeout: cfg.Agent.HTTP.WriteTimeout,
 	}
 	return serveUntilSignal(srv)
+}
+
+func serverReplicaID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown-host"
+	}
+	return fmt.Sprintf("%s/%d", host, os.Getpid())
 }
 
 func closeServerTraceWriter(writer observability.Writer) {

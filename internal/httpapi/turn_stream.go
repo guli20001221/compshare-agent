@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,6 +9,18 @@ import (
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/turncoord"
 )
+
+// durableTurnCoordinator is the single execution authority used by the HTTP
+// transport. Both legacy and v2 wire shapes enter this same interface once it
+// is configured; the old in-memory chat writer is never a second writer.
+type durableTurnCoordinator interface {
+	Submit(context.Context, turncoord.SubmitInput, turncoord.EventSink) (turncoord.Submission, error)
+	Subscribe(context.Context, store.Owner, string, int64, turncoord.EventSink) error
+	GetTurn(context.Context, store.Owner, string) (store.Turn, error)
+	FindTurnByClientID(context.Context, store.Owner, string, string) (store.Turn, error)
+	ResolveInteraction(context.Context, store.Owner, string, string, turncoord.ConfirmationResponse) error
+	AbortTurn(context.Context, store.Owner, string) (store.Turn, error)
+}
 
 // coordinatorStreamEvent projects one durable coordinator event onto the
 // WebSocket envelope. The canonical v2 fields are always present, while the
@@ -98,13 +111,24 @@ func coordinatorStreamEvent(turn store.Turn, event turncoord.Event) (string, map
 			legacyEvent = "error"
 		}
 		frame["Committed"] = false
-		if status != "" {
+		if status == string(store.TurnStatusFailedRetryable) {
+			// failed_retryable is deliberately non-terminal in the store and the
+			// coordinator starts it again from the frozen envelope. Project it as
+			// reconciliation, otherwise the client would permanently block the
+			// session and never subscribe to the eventual committed event.
+			frame["ServerStatus"] = status
+			frame["Status"] = "reconciling"
+			frame["Code"] = "TurnNotSaved"
+			frame["Message"] = "本轮尚未确认保存，正在恢复"
+		} else if status != "" {
 			frame["Status"] = status
 		}
-		copyPayloadField(frame, payload, "Code", "reason")
-		copyPayloadField(frame, payload, "Message", "message")
-		if _, ok := frame["Message"]; !ok {
-			copyPayloadField(frame, payload, "Message", "reason")
+		if status != string(store.TurnStatusFailedRetryable) {
+			copyPayloadField(frame, payload, "Code", "reason")
+			copyPayloadField(frame, payload, "Message", "message")
+			if _, ok := frame["Message"]; !ok {
+				copyPayloadField(frame, payload, "Message", "reason")
+			}
 		}
 	}
 

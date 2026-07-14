@@ -61,9 +61,10 @@ func TestCoordinatorStreamEvent_FailureIsNeverPresentedAsDone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "error", eventName)
 	assert.Equal(t, false, frame["Committed"])
-	assert.Equal(t, "failed_retryable", frame["Status"])
-	assert.Equal(t, "turn_not_saved", frame["Code"])
-	assert.Equal(t, "turn_not_saved", frame["Message"])
+	assert.Equal(t, "reconciling", frame["Status"])
+	assert.Equal(t, "failed_retryable", frame["ServerStatus"])
+	assert.Equal(t, "TurnNotSaved", frame["Code"])
+	assert.Equal(t, "本轮尚未确认保存，正在恢复", frame["Message"])
 }
 
 func TestCoordinatorStreamEvent_RejectsCrossTurnProjection(t *testing.T) {

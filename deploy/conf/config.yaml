@@ -56,11 +56,16 @@ agent:
   # NOTE 截图理解 (screenshot/VL) is enabled separately by agent.ocr.model
   # below (qwen3-vl-flash) — it is already on.
   features:
+    # Every chat turn is accepted, executed and committed through the durable
+    # global coordinator. Requires migrations 0005 + 0006 + 0007 before boot.
+    durable_turns: true
     # Write operations: create/start/stop/reboot/reset-password/resize-disk.
     # Destructive actions (delete / L2 terminate) stay refused REGARDLESS.
     mutating_tools: true
-    # Editable + guided GPU create flow (server-only; also needs the client's
-    # per-turn Features opt-in — safe if the client does not opt in).
+    # Editable + guided GPU create flow (legacy transport only). Durable v2
+    # deliberately rejects these client capabilities until their edits and
+    # selections have a persistent representation; boolean confirmation still
+    # works. The current v2 frontend advertises only turn_replay_v2.
     confirm_form: true
     guided_create: true
     # Agentic-RAG answer stack (RAG as a tool the agent calls in-loop).
