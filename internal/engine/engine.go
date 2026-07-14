@@ -5005,15 +5005,17 @@ const selectedInstanceTTLSeconds = 1800
 // expireStaleSelectedInstance clears the carried instance binding when it has
 // gone untouched longer than selectedInstanceTTLSeconds. Runs at turn entry,
 // before the turn-start snapshot is frozen, so a stale binding is never carried
-// into workflowTargetIsTrusted. A zero SelectedInstanceAtUnix (legacy rows
-// persisted before this field existed) is treated as "unstamped" and never
-// auto-expired, so the rollout does not drop existing selections.
+// into workflowTargetIsTrusted. A zero SelectedInstanceAtUnix is a legacy row
+// whose age cannot be proven. Keep its id/name for conversational continuity,
+// but remove the user-trusted provenance so it cannot authorize a write.
 func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
 		return
 	}
 	at := e.sessionState.SelectedInstanceAtUnix
 	if at <= 0 {
+		e.sessionState.SelectedInstanceSource = ""
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	if now.Unix()-at > selectedInstanceTTLSeconds {

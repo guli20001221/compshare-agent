@@ -53,10 +53,11 @@ func TestExpireStaleSelectedInstanceKeepsFreshBinding(t *testing.T) {
 	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 }
 
-// TestExpireStaleSelectedInstanceIgnoresUnstampedLegacyRow verifies rows
-// persisted before the timestamp field existed (SelectedInstanceAtUnix == 0) are
-// never auto-expired, so the rollout does not silently drop existing selections.
-func TestExpireStaleSelectedInstanceIgnoresUnstampedLegacyRow(t *testing.T) {
+// TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow verifies rows
+// persisted before the timestamp field existed keep their referent for
+// conversation, but lose write-authorizing provenance because their age is
+// unknowable.
+func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:          SessionStateSchemaCurrent,
@@ -69,7 +70,8 @@ func TestExpireStaleSelectedInstanceIgnoresUnstampedLegacyRow(t *testing.T) {
 	eng.expireStaleSelectedInstance(time.Unix(1_900_000_000, 0)) // far in the future
 
 	state, _, _ := eng.SessionStateSnapshot()
-	assert.Equal(t, "uhost-legacy", state.SelectedInstanceID, "unstamped legacy selection must not be auto-expired")
+	assert.Equal(t, "uhost-legacy", state.SelectedInstanceID, "legacy referent remains available for understanding")
+	assert.Empty(t, state.SelectedInstanceSource, "unknown-age provenance must not authorize a write")
 }
 
 // TestRecordSelectedInstanceIDStampsTimestamp verifies recording a user

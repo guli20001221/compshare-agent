@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
@@ -205,6 +206,55 @@ func TestExecuteWorkflowAllowsSelectedInstanceTarget(t *testing.T) {
 
 	assert.Contains(t, reply, "执行关机")
 	assert.Contains(t, exec.calls, "StopCompShareInstance")
+}
+
+// A legacy persisted selection has no timestamp, so there is no evidence that
+// the user's authorization is still fresh. Keep the id for conversational
+// understanding, but do not let a bare pronoun turn that unknown-age memory
+// into an infrastructure write.
+func TestExecuteWorkflowBlocksUnstampedLegacySelectionTarget(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{
+				map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01"},
+			}}, nil
+		case "StopCompShareInstance":
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-a",
+		SelectedInstanceName:   "alpha",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
+		// SelectedInstanceAtUnix intentionally zero: this is a pre-TTL row.
+	}, 1)
+
+	// Chat() performs this downgrade before freezing the turn-start snapshot.
+	eng.expireStaleSelectedInstance(time.Unix(1_900_000_000, 0))
+	state, _, _ := eng.SessionStateSnapshot()
+	eng.selectedInstanceIDAtTurnStart = state.SelectedInstanceID
+	eng.selectedInstanceSourceAtTurnStart = state.SelectedInstanceSource
+	eng.lastUserMsg = "帮我关掉它"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+
+	assert.Equal(t, "uhost-a", state.SelectedInstanceID,
+		"the legacy binding remains available for understanding and clarification")
+	assert.Contains(t, reply, "请先确认要操作的实例")
+	assert.NotContains(t, exec.calls, "StopCompShareInstance",
+		"an unknown-age binding must not authorize a write")
 }
 
 func TestExecuteWorkflowBlocksObservedSelectedInstanceTarget(t *testing.T) {
