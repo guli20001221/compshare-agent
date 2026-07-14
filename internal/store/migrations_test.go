@@ -120,3 +120,23 @@ func TestHTTPMigrationsCreateTurnProtocol(t *testing.T) {
 	}
 	assert.NotContains(t, ddl, "response_hash", "one canonical resolution hash avoids contradictory duplicate fields")
 }
+
+func TestHTTPMigrationsAddTurnRecoveryContext(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0007_add_turn_recovery_context.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, fragment := range []string{
+		"ADD COLUMN execution_envelope JSONB",
+		"ADD COLUMN context_hint JSONB",
+		"context_hint - 'resource_ids' - 'region' - 'zone'",
+		"idx_chat_turns_recovery",
+		"'awaiting_confirmation'",
+		"'committing'",
+	} {
+		assert.Contains(t, ddl, fragment)
+	}
+	assert.NotContains(t, ddl, "execution_envelope JSONB NOT NULL", "existing turns must remain valid")
+	assert.NotContains(t, ddl, "context_hint JSONB NOT NULL", "existing actions must remain valid")
+}

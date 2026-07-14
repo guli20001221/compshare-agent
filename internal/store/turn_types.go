@@ -11,22 +11,23 @@ import (
 )
 
 var (
-	ErrTurnNotFound         = errors.New("store: turn not found")
-	ErrConversationNotFound = errors.New("store: conversation not found")
-	ErrLeaseFenced          = errors.New("store: conversation lease fenced")
-	ErrLeaseHeld            = errors.New("store: conversation lease held by another executor")
-	ErrIdempotencyConflict  = errors.New("store: idempotency key reused with different request")
-	ErrContextConflict      = errors.New("store: context version conflict")
-	ErrCommitConflict       = errors.New("store: committed result differs from this attempt")
-	ErrTurnOutOfOrder       = errors.New("store: an earlier turn must finish first")
-	ErrInteractionConflict  = errors.New("store: interaction payload conflict")
-	ErrInteractionExpired   = errors.New("store: interaction expired")
-	ErrActionConflict       = errors.New("store: action reservation conflict")
-	ErrActionNotFound       = errors.New("store: action not found")
-	ErrActionUncertain      = errors.New("store: action execution outcome is uncertain")
-	ErrInteractionPending   = errors.New("store: turn interaction is still pending")
-	ErrInvalidTurnState     = errors.New("store: invalid turn state transition")
-	ErrInvalidArgument      = errors.New("store: invalid argument")
+	ErrTurnNotFound             = errors.New("store: turn not found")
+	ErrConversationNotFound     = errors.New("store: conversation not found")
+	ErrLeaseFenced              = errors.New("store: conversation lease fenced")
+	ErrLeaseHeld                = errors.New("store: conversation lease held by another executor")
+	ErrIdempotencyConflict      = errors.New("store: idempotency key reused with different request")
+	ErrContextConflict          = errors.New("store: context version conflict")
+	ErrCommitConflict           = errors.New("store: committed result differs from this attempt")
+	ErrTurnOutOfOrder           = errors.New("store: an earlier turn must finish first")
+	ErrInteractionConflict      = errors.New("store: interaction payload conflict")
+	ErrInteractionExpired       = errors.New("store: interaction expired")
+	ErrActionConflict           = errors.New("store: action reservation conflict")
+	ErrActionNotFound           = errors.New("store: action not found")
+	ErrActionUncertain          = errors.New("store: action execution outcome is uncertain")
+	ErrInteractionPending       = errors.New("store: turn interaction is still pending")
+	ErrExecutionEnvelopeMissing = errors.New("store: durable execution envelope missing")
+	ErrInvalidTurnState         = errors.New("store: invalid turn state transition")
+	ErrInvalidArgument          = errors.New("store: invalid argument")
 )
 
 type TurnStatus string
@@ -120,6 +121,7 @@ type Turn struct {
 	ExecutorID              *string
 	LeaseEpoch              *int64
 	HasExternalAction       bool
+	ExecutionEnvelope       json.RawMessage
 	NextEventSeq            int64
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
@@ -158,8 +160,19 @@ type TurnAction struct {
 	Status            ActionStatus
 	Result            json.RawMessage
 	ErrorCode         *string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// ContextHint is a strictly whitelisted continuity aid. It is never proof
+	// of identity, ownership, confirmation, or permission to execute an action.
+	ContextHint json.RawMessage
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// ActionContextHint is the complete allowlist for action-derived conversational
+// context. It carries resource breadcrumbs only, never permissions or approval.
+type ActionContextHint struct {
+	ResourceIDs []string `json:"resource_ids,omitempty"`
+	Region      string   `json:"region,omitempty"`
+	Zone        string   `json:"zone,omitempty"`
 }
 
 type TurnInteraction struct {
@@ -186,6 +199,9 @@ type AcceptTurnInput struct {
 	UserContent    string
 	UserMetadata   json.RawMessage
 	AssistantModel *string
+	// ExecutionEnvelope is the frozen, secret-free request needed by a later
+	// replica to resume this turn. It is nullable only for migration compatibility.
+	ExecutionEnvelope json.RawMessage
 }
 
 type CommitTurnInput struct {
@@ -204,6 +220,33 @@ type ReserveActionInput struct {
 	ActionName        string
 	ArgsHash          string
 	UpstreamRequestID *string
+	ContextHint       json.RawMessage
+}
+
+type RecoverableTurn struct {
+	Turn              Turn
+	ExecutionEnvelope json.RawMessage
+}
+
+type ContinuityAdvisoryKind string
+
+const (
+	ContinuityAdvisoryAmbiguous    ContinuityAdvisoryKind = "ambiguous"
+	ContinuityAdvisoryAborted      ContinuityAdvisoryKind = "aborted"
+	ContinuityAdvisoryKnownSuccess ContinuityAdvisoryKind = "known_success"
+)
+
+// ContinuityAdvisory is explanatory history only. Deliberately absent are
+// arguments, confirmation state, identity assertions, and authorization flags.
+type ContinuityAdvisory struct {
+	Kind              ContinuityAdvisoryKind
+	TurnID            string
+	TurnSequence      int64
+	ActionIndex       *int
+	ActionName        string
+	ContextHint       json.RawMessage
+	UpstreamRequestID *string
+	OccurredAt        time.Time
 }
 
 // MayHaveExecuted is true only once StartAction has crossed the durable

@@ -2,9 +2,12 @@ package turncoord
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,6 +27,8 @@ const (
 )
 
 var shortCredentialMarker = regexp.MustCompile(`(?i)\b(?:ak|sk|access[_-]?key|secret[_-]?key|access[_-]?token)\s*[:=]\s*[^\s,;]+`)
+var credentialAssignmentMarker = regexp.MustCompile(`(?i)(["']?\b(?:ak|sk|access[_-]?key|secret[_-]?key|access[_-]?token|password|passwd|private[_-]?key)\b["']?\s*[:=]\s*["']?)[^"'\s,;}\]]+`)
+var privateKeyBlock = regexp.MustCompile(`(?is)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----`)
 
 // TurnEngine is the private, mutable workspace for exactly one durable turn.
 // Production uses *engine.Engine; this narrow seam keeps coordinator tests
@@ -61,6 +66,7 @@ type turnStore interface {
 	AcceptTurn(context.Context, store.Owner, store.AcceptTurnInput) (store.Turn, bool, error)
 	GetTurn(context.Context, store.Owner, string) (store.Turn, error)
 	FindTurnByClientID(context.Context, store.Owner, string, string) (store.Turn, error)
+	ListRecoverableTurns(context.Context, int) ([]store.RecoverableTurn, error)
 	AcquireConversationLease(context.Context, store.Owner, string, string, string, time.Duration) (store.ConversationLease, error)
 	RenewConversationLease(context.Context, store.Owner, store.ConversationLease, time.Duration) (store.ConversationLease, error)
 	ReleaseConversationLease(context.Context, store.Owner, store.ConversationLease) error
@@ -81,6 +87,8 @@ type Options struct {
 	InteractionPoll      time.Duration
 	InteractionTTL       time.Duration
 	ExecutionTimeout     time.Duration
+	RecoveryScanInterval time.Duration
+	RecoveryBatchSize    int
 	MutatingToolsEnabled bool
 }
 
@@ -103,6 +111,12 @@ func (o Options) withDefaults() Options {
 	if o.ExecutionTimeout <= 0 {
 		o.ExecutionTimeout = 10 * time.Minute
 	}
+	if o.RecoveryScanInterval <= 0 {
+		o.RecoveryScanInterval = 2 * time.Second
+	}
+	if o.RecoveryBatchSize <= 0 || o.RecoveryBatchSize > 1000 {
+		o.RecoveryBatchSize = 100
+	}
 	return o
 }
 
@@ -115,9 +129,46 @@ type SubmitInput struct {
 	AssistantModel *string
 	UserMetadata   json.RawMessage
 	ImageContext   string
-	UserContext    tools.UserContext
-	ConfirmForm    bool
-	GuidedCreate   bool
+	// ImageDigest is SHA-256 of the uploaded image bytes. OCR text is excluded
+	// from request identity because another OCR pass may produce different text.
+	ImageDigest  string
+	UserContext  tools.UserContext
+	ConfirmForm  bool
+	GuidedCreate bool
+}
+
+const executionEnvelopeVersion = 1
+
+type executionEnvelope struct {
+	Version        int                    `json:"version"`
+	Message        string                 `json:"message"`
+	OCR            string                 `json:"ocr,omitempty"`
+	ImageDigest    string                 `json:"image_digest,omitempty"`
+	AssistantModel *string                `json:"assistant_model,omitempty"`
+	UserContext    stableExecutionContext `json:"user_context"`
+	Features       executionFeatures      `json:"features"`
+}
+
+type stableExecutionContext struct {
+	TopOrganizationID uint32 `json:"top_organization_id"`
+	OrganizationID    uint32 `json:"organization_id"`
+	CompanyID         uint32 `json:"company_id,omitempty"`
+	AccountID         uint32 `json:"account_id,omitempty"`
+	Channel           uint32 `json:"channel,omitempty"`
+	RoleUrn           string `json:"role_urn,omitempty"`
+	ProjectID         string `json:"project_id,omitempty"`
+	Region            string `json:"region,omitempty"`
+	UserEmail         string `json:"user_email,omitempty"`
+	// ClientIP is retained only while a turn is recoverable because the
+	// current upstream gateway injects it into every API request. It is excluded
+	// from request identity, so a reconnect from another network reuses the
+	// first attempt's frozen request instead of forking the turn.
+	ClientIP string `json:"client_ip,omitempty"`
+}
+
+type executionFeatures struct {
+	ConfirmForm  bool `json:"confirm_form"`
+	GuidedCreate bool `json:"guided_create"`
 }
 
 type Disposition string
@@ -179,10 +230,16 @@ func NewCoordinator(turns turnStore, sessions store.SessionStore, factory Engine
 		panic("turncoord: coordinator requires durable turns, sessions, and an engine factory")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Coordinator{
+	c := &Coordinator{
 		turns: turns, sessions: sessions, factory: factory, opts: opts.withDefaults(),
 		ctx: ctx, cancel: cancel, workers: make(map[string]struct{}), restarts: make(map[string]SubmitInput), subs: make(map[string]map[*subscription]struct{}),
 	}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.recoveryLoop()
+	}()
+	return c
 }
 
 func (c *Coordinator) Close() {
@@ -207,15 +264,20 @@ func (c *Coordinator) Submit(ctx context.Context, in SubmitInput, sink EventSink
 	if in.ConfirmForm || in.GuidedCreate {
 		return Submission{}, fmt.Errorf("%w: durable editable confirmations are not enabled", store.ErrInvalidArgument)
 	}
-	requestHash := hashSubmitInput(in)
-	persistedUserContent := in.Message
-	if strings.TrimSpace(in.ImageContext) != "" {
-		persistedUserContent = engine.WrapScreenshotContext(in.ImageContext, in.Message)
+	envelope, envelopeRaw, err := freezeSubmitInput(in)
+	if err != nil {
+		return Submission{}, err
+	}
+	requestHash := hashExecutionEnvelope(in.Owner, in.SessionID, in.ClientTurnID, envelope)
+	persistedUserContent := envelope.Message
+	if envelope.OCR != "" {
+		persistedUserContent = engine.WrapScreenshotContext(envelope.OCR, envelope.Message)
 	}
 	turn, created, err := c.turns.AcceptTurn(ctx, in.Owner, store.AcceptTurnInput{
 		SessionID: in.SessionID, ClientTurnID: in.ClientTurnID, RequestHash: requestHash,
 		RequestUUID: in.RequestUUID, UserContent: guardrails.RedactPII(persistedUserContent),
-		UserMetadata: in.UserMetadata, AssistantModel: in.AssistantModel,
+		UserMetadata: in.UserMetadata, AssistantModel: envelope.AssistantModel,
+		ExecutionEnvelope: envelopeRaw,
 	})
 	if err != nil {
 		return Submission{}, err
@@ -243,7 +305,9 @@ func (c *Coordinator) Submit(ctx context.Context, in SubmitInput, sink EventSink
 			disposition = DispositionStarted
 		}
 	}
-	c.ensureWorker(in, turn.ID, turn.Status == store.TurnStatusFailedRetryable)
+	if err := c.ensureWorkerFromTurn(turn, turn.Status == store.TurnStatusFailedRetryable); err != nil {
+		return Submission{}, err
+	}
 	return Submission{Turn: turn, Disposition: disposition}, nil
 }
 
@@ -294,16 +358,75 @@ func (c *Coordinator) AbortTurn(ctx context.Context, owner store.Owner, turnID s
 }
 
 // Subscribe replays persisted events strictly after lastSeq and then follows
-// the turn until a terminal event or ctx cancellation. It never starts or
-// cancels turn execution.
+// the turn until a terminal event or ctx cancellation. For a non-terminal
+// orphan it also starts recovery from the frozen database envelope; transport
+// cancellation still never cancels execution.
 func (c *Coordinator) Subscribe(ctx context.Context, owner store.Owner, turnID string, lastSeq int64, sink EventSink) error {
 	if ctx == nil || turnID == "" || lastSeq < 0 || sink == nil {
 		return fmt.Errorf("%w: invalid turn subscription", store.ErrInvalidArgument)
 	}
-	if _, err := c.turns.GetTurn(ctx, owner, turnID); err != nil {
+	turn, err := c.turns.GetTurn(ctx, owner, turnID)
+	if err != nil {
 		return err
 	}
 	c.subscribe(ctx, owner, turnID, lastSeq, sink)
+	if !turn.Status.Terminal() {
+		if err := c.ensureWorkerFromTurn(turn, turn.Status == store.TurnStatusFailedRetryable); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RecoverTurn is the explicit resume hook for non-streaming transports.
+func (c *Coordinator) RecoverTurn(ctx context.Context, owner store.Owner, turnID string) error {
+	turn, err := c.turns.GetTurn(ctx, owner, turnID)
+	if err != nil {
+		return err
+	}
+	if turn.Status.Terminal() {
+		return nil
+	}
+	return c.ensureWorkerFromTurn(turn, turn.Status == store.TurnStatusFailedRetryable)
+}
+
+func (c *Coordinator) recoveryLoop() {
+	run := func() {
+		ctx, cancel := context.WithTimeout(c.ctx, max(c.opts.RecoveryScanInterval, 2*time.Second))
+		defer cancel()
+		turns, err := c.turns.ListRecoverableTurns(ctx, c.opts.RecoveryBatchSize)
+		if err != nil {
+			return
+		}
+		for _, recoverable := range turns {
+			if c.ctx.Err() != nil {
+				return
+			}
+			_ = c.ensureWorkerFromTurn(recoverable.Turn, recoverable.Turn.Status == store.TurnStatusFailedRetryable)
+		}
+	}
+	run()
+	ticker := time.NewTicker(c.opts.RecoveryScanInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
+func (c *Coordinator) ensureWorkerFromTurn(turn store.Turn, restart bool) error {
+	if len(turn.ExecutionEnvelope) == 0 {
+		return store.ErrExecutionEnvelopeMissing
+	}
+	in, err := thawSubmitInput(turn)
+	if err != nil {
+		return err
+	}
+	c.ensureWorker(in, turn.ID, restart)
 	return nil
 }
 
@@ -646,35 +769,147 @@ func normalizedUserContext(in SubmitInput) tools.UserContext {
 	return u
 }
 
-func hashSubmitInput(in SubmitInput) string {
-	// Transport-attempt fields (RequestUUID, ClientIP, STS SessionName) are
-	// intentionally excluded: reconnecting the same semantic turn may change
-	// them. Freeze only inputs that can change meaning, authority, or model
-	// behavior.
-	stableUserContext, _ := json.Marshal(struct {
-		CompanyID uint32 `json:"company_id"`
-		AccountID uint32 `json:"account_id"`
-		Channel   uint32 `json:"channel"`
-		RoleUrn   string `json:"role_urn"`
-		ProjectID string `json:"project_id"`
-		Region    string `json:"region"`
-		UserEmail string `json:"user_email"`
-	}{
-		CompanyID: in.UserContext.CompanyID, AccountID: in.UserContext.AccountID,
-		Channel: in.UserContext.Channel, RoleUrn: in.UserContext.RoleUrn,
-		ProjectID: in.UserContext.ProjectId, Region: in.UserContext.Region,
-		UserEmail: in.UserContext.UserEmail,
-	})
-	model := "<nil>"
-	if in.AssistantModel != nil {
-		model = "<value>" + *in.AssistantModel
+func freezeSubmitInput(in SubmitInput) (executionEnvelope, json.RawMessage, error) {
+	digest, err := normalizeImageDigest(in.ImageDigest)
+	if err != nil {
+		return executionEnvelope{}, nil, err
 	}
+	message := strings.TrimSpace(redactCredentialsOnly(in.Message))
+	ocrText := strings.TrimSpace(redactCredentialsOnly(in.ImageContext))
+	if message == "" {
+		return executionEnvelope{}, nil, fmt.Errorf("%w: empty redacted message", store.ErrInvalidArgument)
+	}
+	if ocrText != "" && digest == "" {
+		return executionEnvelope{}, nil, fmt.Errorf("%w: OCR requires a stable image digest", store.ErrInvalidArgument)
+	}
+	user := in.UserContext
+	if user.TopOrganizationID == 0 {
+		user.TopOrganizationID = in.Owner.TopOrganizationID
+	}
+	if user.OrganizationID == 0 {
+		user.OrganizationID = in.Owner.OrganizationID
+	}
+	if user.TopOrganizationID != in.Owner.TopOrganizationID || user.OrganizationID != in.Owner.OrganizationID {
+		return executionEnvelope{}, nil, fmt.Errorf("%w: envelope owner mismatch", store.ErrInvalidArgument)
+	}
+	role := strings.TrimSpace(user.RoleUrn)
+	if shortCredentialMarker.MatchString(role) {
+		return executionEnvelope{}, nil, fmt.Errorf("%w: credential-like role value", store.ErrInvalidArgument)
+	}
+	var model *string
+	if in.AssistantModel != nil {
+		value := strings.TrimSpace(*in.AssistantModel)
+		if len(value) > 128 {
+			return executionEnvelope{}, nil, fmt.Errorf("%w: model name too long", store.ErrInvalidArgument)
+		}
+		model = &value
+	}
+	envelope := executionEnvelope{
+		Version: executionEnvelopeVersion, Message: message, OCR: ocrText,
+		ImageDigest: digest, AssistantModel: model,
+		UserContext: stableExecutionContext{
+			TopOrganizationID: user.TopOrganizationID, OrganizationID: user.OrganizationID,
+			CompanyID: user.CompanyID, AccountID: user.AccountID, Channel: user.Channel,
+			RoleUrn: role, ProjectID: strings.TrimSpace(user.ProjectId), Region: strings.TrimSpace(user.Region),
+			UserEmail: strings.TrimSpace(user.UserEmail), ClientIP: strings.TrimSpace(user.ClientIP),
+		},
+		Features: executionFeatures{ConfirmForm: in.ConfirmForm, GuidedCreate: in.GuidedCreate},
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return executionEnvelope{}, nil, fmt.Errorf("encode execution envelope: %w", err)
+	}
+	return envelope, raw, nil
+}
+
+func thawSubmitInput(turn store.Turn) (SubmitInput, error) {
+	var envelope executionEnvelope
+	if len(turn.ExecutionEnvelope) == 0 {
+		return SubmitInput{}, store.ErrExecutionEnvelopeMissing
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(turn.ExecutionEnvelope)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return SubmitInput{}, fmt.Errorf("decode execution envelope: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return SubmitInput{}, fmt.Errorf("decode execution envelope: trailing data")
+	}
+	if envelope.Version != executionEnvelopeVersion {
+		return SubmitInput{}, fmt.Errorf("unsupported execution envelope version %d", envelope.Version)
+	}
+	if strings.TrimSpace(envelope.Message) == "" ||
+		envelope.UserContext.TopOrganizationID != turn.Owner.TopOrganizationID ||
+		envelope.UserContext.OrganizationID != turn.Owner.OrganizationID {
+		return SubmitInput{}, fmt.Errorf("%w: execution envelope identity mismatch", store.ErrInvalidArgument)
+	}
+	digest, err := normalizeImageDigest(envelope.ImageDigest)
+	if err != nil || (envelope.OCR != "" && digest == "") {
+		return SubmitInput{}, fmt.Errorf("%w: invalid execution image identity", store.ErrInvalidArgument)
+	}
+	envelope.ImageDigest = digest
+	return SubmitInput{
+		Owner: turn.Owner, SessionID: turn.SessionID, ClientTurnID: turn.ClientTurnID,
+		Message: envelope.Message, AssistantModel: envelope.AssistantModel,
+		ImageContext: envelope.OCR, ImageDigest: envelope.ImageDigest,
+		UserContext: tools.UserContext{
+			TopOrganizationID: envelope.UserContext.TopOrganizationID,
+			OrganizationID:    envelope.UserContext.OrganizationID,
+			CompanyID:         envelope.UserContext.CompanyID, AccountID: envelope.UserContext.AccountID,
+			Channel: envelope.UserContext.Channel, RoleUrn: envelope.UserContext.RoleUrn,
+			SessionName: fmt.Sprintf("%d-%d", turn.Owner.TopOrganizationID, turn.Owner.OrganizationID),
+			ProjectId:   envelope.UserContext.ProjectID, Region: envelope.UserContext.Region,
+			UserEmail: envelope.UserContext.UserEmail, ClientIP: envelope.UserContext.ClientIP,
+		},
+		ConfirmForm: envelope.Features.ConfirmForm, GuidedCreate: envelope.Features.GuidedCreate,
+	}, nil
+}
+
+func hashExecutionEnvelope(owner store.Owner, sessionID, clientTurnID string, envelope executionEnvelope) string {
+	hashUserContext := envelope.UserContext
+	hashUserContext.ClientIP = ""
+	stableUserContext, _ := json.Marshal(hashUserContext)
+	features, _ := json.Marshal(envelope.Features)
+	model := "<nil>"
+	if envelope.AssistantModel != nil {
+		model = "<value>" + *envelope.AssistantModel
+	}
+	// OCR is deliberately absent: image bytes, not a potentially drifting OCR
+	// pass, identify the screenshot attached to this semantic request.
 	return store.HashTurnRequest(
-		fmt.Sprint(in.Owner.TopOrganizationID), fmt.Sprint(in.Owner.OrganizationID),
-		in.SessionID, in.ClientTurnID, in.Message, in.ImageContext,
-		string(stableUserContext), model,
-		fmt.Sprintf("confirm_form=%t", in.ConfirmForm), fmt.Sprintf("guided_create=%t", in.GuidedCreate),
+		fmt.Sprint(owner.TopOrganizationID), fmt.Sprint(owner.OrganizationID),
+		sessionID, clientTurnID, envelope.Message, envelope.ImageDigest,
+		string(stableUserContext), model, string(features),
 	)
+}
+
+func redactCredentialsOnly(value string) string {
+	value = privateKeyBlock.ReplaceAllString(value, guardrails.CredentialRedactedOutput)
+	return credentialAssignmentMarker.ReplaceAllString(value, `${1}`+guardrails.CredentialRedactedOutput)
+}
+
+func normalizeImageDigest(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "sha256:")
+	if value == "" {
+		return "", nil
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != sha256.Size {
+		return "", fmt.Errorf("%w: image digest must be SHA-256", store.ErrInvalidArgument)
+	}
+	return value, nil
+}
+
+// StableImageDigest is the transport helper for raw uploaded image bytes. Raw
+// bytes are never retained in the durable envelope.
+func StableImageDigest(image []byte) string {
+	if len(image) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(image)
+	return hex.EncodeToString(sum[:])
 }
 
 func sanitizeInteractionArgs(args map[string]any) map[string]any {

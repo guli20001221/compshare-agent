@@ -54,6 +54,7 @@ func openIsolatedTurnTestDB(t *testing.T) *sql.DB {
 		"0003_add_session_context_version.sql",
 		"0005_create_turn_execution.sql",
 		"0006_create_turn_protocol.sql",
+		"0007_add_turn_recovery_context.sql",
 	} {
 		data, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
 		require.NoError(t, readErr)

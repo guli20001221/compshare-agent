@@ -31,6 +31,10 @@ func (s *PostgresTurnStore) AcceptTurn(ctx context.Context, owner Owner, in Acce
 	if in.SessionID == "" || in.ClientTurnID == "" || len(in.ClientTurnID) > 128 || len(in.RequestHash) != 64 || strings.TrimSpace(in.UserContent) == "" {
 		return Turn{}, false, fmt.Errorf("%w: invalid turn identity", ErrInvalidArgument)
 	}
+	canonicalEnvelope, err := canonicalOptionalObject(in.ExecutionEnvelope)
+	if err != nil {
+		return Turn{}, false, fmt.Errorf("%w: invalid execution envelope", ErrInvalidArgument)
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return Turn{}, false, fmt.Errorf("accept turn begin: %w", err)
@@ -63,7 +67,7 @@ func (s *PostgresTurnStore) AcceptTurn(ctx context.Context, owner Owner, in Acce
 	turnID := uuid.NewString()
 	userMessageID := uuid.NewString()
 	assistantMessageID := uuid.NewString()
-	turn, err := insertTurn(ctx, tx, owner, in, turnID, userMessageID, assistantMessageID, contextVersion, turnSequence)
+	turn, err := insertTurn(ctx, tx, owner, in, turnID, userMessageID, assistantMessageID, contextVersion, turnSequence, canonicalEnvelope)
 	if err != nil {
 		return Turn{}, false, err
 	}
@@ -110,6 +114,155 @@ WHERE session_id = $1 AND client_turn_id = $2
 	return turn, nil
 }
 
+func (s *PostgresTurnStore) GetExecutionEnvelope(ctx context.Context, owner Owner, turnID string) (json.RawMessage, error) {
+	turn, err := s.GetTurn(ctx, owner, turnID)
+	if err != nil {
+		return nil, err
+	}
+	if len(turn.ExecutionEnvelope) == 0 {
+		return nil, ErrExecutionEnvelopeMissing
+	}
+	return append(json.RawMessage(nil), turn.ExecutionEnvelope...), nil
+}
+
+// ListRecoverableTurns is a process-level recovery scan. It returns owner data
+// from the turn row so the coordinator can re-enter the normal owner-scoped
+// APIs. Active, unexpired leases are excluded; database fencing remains the
+// final authority if multiple replicas scan the same orphan concurrently.
+func (s *PostgresTurnStore) ListRecoverableTurns(ctx context.Context, limit int) ([]RecoverableTurn, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, turnSelect+`
+WHERE execution_envelope IS NOT NULL
+  AND (
+    status IN ('accepted', 'failed_retryable')
+    OR (
+      status IN ('running', 'awaiting_confirmation', 'committing')
+      AND NOT EXISTS (
+        SELECT 1 FROM conversation_leases l
+        WHERE l.session_id = chat_turns.session_id
+          AND l.active_turn_id = chat_turns.id
+          AND l.lease_until > NOW()
+      )
+    )
+  )
+ORDER BY updated_at ASC, turn_seq ASC
+LIMIT $1
+`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recoverable turns: %w", err)
+	}
+	defer rows.Close()
+	out := make([]RecoverableTurn, 0)
+	for rows.Next() {
+		turn, scanErr := scanTurn(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan recoverable turn: %w", scanErr)
+		}
+		out = append(out, RecoverableTurn{Turn: turn, ExecutionEnvelope: append(json.RawMessage(nil), turn.ExecutionEnvelope...)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recoverable turns: %w", err)
+	}
+	return out, nil
+}
+
+// ListContinuityAdvisories projects only explanatory outcomes. The result has
+// no request arguments, confirmation state, account identity, or authorization
+// semantics and therefore must never be used to authorize another action.
+func (s *PostgresTurnStore) ListContinuityAdvisories(ctx context.Context, owner Owner, sessionID string, limit int) ([]ContinuityAdvisory, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("%w: missing session", ErrInvalidArgument)
+	}
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+SELECT 1 FROM sessions
+WHERE id = $1 AND top_organization_id = $2 AND organization_id = $3
+  AND deleted_at IS NULL
+`, sessionID, owner.TopOrganizationID, owner.OrganizationID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrConversationNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("verify advisory conversation: %w", err)
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT kind, turn_id, turn_seq, action_index, action_name, context_hint,
+       upstream_request_id, occurred_at
+FROM (
+  SELECT 'known_success'::text AS kind, t.id AS turn_id, t.turn_seq,
+         a.action_index, a.action_name, a.context_hint, a.upstream_request_id,
+         a.updated_at AS occurred_at
+  FROM chat_turns t
+  JOIN turn_actions a ON a.turn_id = t.id AND a.status = 'succeeded'
+  WHERE t.session_id = $1
+    AND t.top_organization_id = $2 AND t.organization_id = $3
+    AND t.status IN ('ambiguous_after_action', 'aborted')
+
+  UNION ALL
+
+  SELECT 'ambiguous'::text, t.id, t.turn_seq, NULL::int, ''::varchar,
+         NULL::jsonb, NULL::varchar, COALESCE(t.finished_at, t.updated_at)
+  FROM chat_turns t
+  WHERE t.session_id = $1
+    AND t.top_organization_id = $2 AND t.organization_id = $3
+    AND t.status = 'ambiguous_after_action'
+
+  UNION ALL
+
+  SELECT 'aborted'::text, t.id, t.turn_seq, NULL::int, ''::varchar,
+         NULL::jsonb, NULL::varchar, COALESCE(t.finished_at, t.updated_at)
+  FROM chat_turns t
+  WHERE t.session_id = $1
+    AND t.top_organization_id = $2 AND t.organization_id = $3
+    AND t.status = 'aborted'
+) advisories
+ORDER BY occurred_at DESC, turn_seq DESC, action_index NULLS LAST
+LIMIT $4
+`, sessionID, owner.TopOrganizationID, owner.OrganizationID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list continuity advisories: %w", err)
+	}
+	defer rows.Close()
+	var out []ContinuityAdvisory
+	for rows.Next() {
+		var item ContinuityAdvisory
+		var kind string
+		var actionIndex sql.NullInt64
+		var actionName sql.NullString
+		var hint []byte
+		var upstreamID sql.NullString
+		if err := rows.Scan(&kind, &item.TurnID, &item.TurnSequence, &actionIndex,
+			&actionName, &hint, &upstreamID, &item.OccurredAt); err != nil {
+			return nil, fmt.Errorf("scan continuity advisory: %w", err)
+		}
+		item.Kind = ContinuityAdvisoryKind(kind)
+		if actionIndex.Valid {
+			index := int(actionIndex.Int64)
+			item.ActionIndex = &index
+		}
+		if actionName.Valid {
+			item.ActionName = actionName.String
+		}
+		if hint != nil {
+			item.ContextHint = append(json.RawMessage(nil), hint...)
+		}
+		if upstreamID.Valid {
+			value := upstreamID.String
+			item.UpstreamRequestID = &value
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate continuity advisories: %w", err)
+	}
+	return out, nil
+}
+
 // ListTurnActions returns the durable action plan/result for one owner-scoped
 // turn in stable action-index order. A takeover executor uses this to enter
 // replay-only mode after any prior action crossed the before-call boundary.
@@ -117,7 +270,7 @@ func (s *PostgresTurnStore) ListTurnActions(ctx context.Context, owner Owner, tu
 	rows, err := s.db.QueryContext(ctx, `
 SELECT a.turn_id, a.action_index, a.lease_epoch, a.action_name, a.args_hash,
        a.execution_token, a.in_flight, a.upstream_request_id, a.status,
-       a.result, a.error_code, a.created_at, a.updated_at
+       a.result, a.error_code, a.context_hint, a.created_at, a.updated_at
 FROM turn_actions a
 JOIN chat_turns t ON t.id = a.turn_id
 WHERE a.turn_id = $1
@@ -309,10 +462,11 @@ WHERE turn_id = $2 AND status = 'pending'
 	}
 	res, err := tx.ExecContext(ctx, `
 UPDATE chat_turns
-SET status = $1, executor_id = NULL, error_code = $2, finished_at = `+finishedExpr+`
+SET status = $1, executor_id = NULL, error_code = $2, finished_at = `+finishedExpr+`,
+    execution_envelope = CASE WHEN $5 THEN NULL ELSE execution_envelope END
 WHERE id = $3 AND lease_epoch = $4
   AND status IN ('running', 'awaiting_confirmation', 'committing')
-`, nextStatus, reason, turn.ID, lease.Epoch)
+`, nextStatus, reason, turn.ID, lease.Epoch, nextStatus.Terminal())
 	if err != nil {
 		return fmt.Errorf("release lease update turn: %w", err)
 	}
@@ -621,6 +775,10 @@ func (s *PostgresTurnStore) ReserveAction(
 	if in.Index < 0 || in.ActionName == "" || len(in.ActionName) > 128 || len(in.ArgsHash) != 64 {
 		return TurnAction{}, false, fmt.Errorf("%w: invalid action reservation", ErrInvalidArgument)
 	}
+	canonicalHint, err := canonicalActionContextHint(in.ContextHint)
+	if err != nil {
+		return TurnAction{}, false, fmt.Errorf("%w: invalid action context hint", ErrInvalidArgument)
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return TurnAction{}, false, fmt.Errorf("reserve action begin: %w", err)
@@ -673,13 +831,13 @@ func (s *PostgresTurnStore) ReserveAction(
 	action, err := scanAction(tx.QueryRowContext(ctx, `
 INSERT INTO turn_actions
   (turn_id, action_index, lease_epoch, action_name, args_hash,
-   execution_token, in_flight, upstream_request_id, status)
-VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, 'reserved')
+   execution_token, in_flight, upstream_request_id, status, context_hint)
+VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, 'reserved', $8)
 RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
           execution_token, in_flight, upstream_request_id, status,
-          result, error_code, created_at, updated_at
+          result, error_code, context_hint, created_at, updated_at
 `, lease.TurnID, in.Index, lease.Epoch, in.ActionName, in.ArgsHash,
-		uuid.NewString(), nullableStringPtr(in.UpstreamRequestID)))
+		uuid.NewString(), nullableStringPtr(in.UpstreamRequestID), nullableJSON(canonicalHint)))
 	if err != nil {
 		return TurnAction{}, false, fmt.Errorf("reserve action: %w", err)
 	}
@@ -748,7 +906,7 @@ WHERE execution_token = $2 AND turn_id = $3
   AND status = 'reserved' AND in_flight = FALSE
 RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
           execution_token, in_flight, upstream_request_id, status,
-          result, error_code, created_at, updated_at
+          result, error_code, context_hint, created_at, updated_at
 `, lease.Epoch, executionToken, turn.ID))
 	if err != nil {
 		return TurnAction{}, fmt.Errorf("start action: %w", err)
@@ -774,9 +932,37 @@ func (s *PostgresTurnStore) RecordAction(
 	errorCode *string,
 	upstreamRequestID ...*string,
 ) (TurnAction, error) {
+	if len(upstreamRequestID) > 1 {
+		return TurnAction{}, fmt.Errorf("%w: multiple upstream request ids", ErrInvalidArgument)
+	}
+	var requestID *string
+	if len(upstreamRequestID) == 1 {
+		requestID = upstreamRequestID[0]
+	}
+	return s.RecordActionWithContext(ctx, owner, executionToken, status, result, errorCode, requestID, nil)
+}
+
+// RecordActionWithContext atomically records the known upstream outcome and a
+// strictly whitelisted conversational breadcrumb. If the turn was already
+// terminal, it also emits a non-provisional late-outcome event for reconnecting
+// clients; raw upstream results are never copied into that event.
+func (s *PostgresTurnStore) RecordActionWithContext(
+	ctx context.Context,
+	owner Owner,
+	executionToken string,
+	status ActionStatus,
+	result json.RawMessage,
+	errorCode *string,
+	requestID *string,
+	contextHint json.RawMessage,
+) (TurnAction, error) {
 	canonicalResult, err := canonicalJSON(result)
 	if err != nil || executionToken == "" || status == ActionStatusReserved || !status.Valid() {
 		return TurnAction{}, fmt.Errorf("%w: invalid action result", ErrInvalidArgument)
+	}
+	canonicalHint, err := canonicalActionContextHint(contextHint)
+	if err != nil {
+		return TurnAction{}, fmt.Errorf("%w: invalid action context hint", ErrInvalidArgument)
 	}
 	var sessionID, turnID string
 	err = s.db.QueryRowContext(ctx, `
@@ -801,39 +987,37 @@ WHERE a.execution_token = $1
 	if _, err := lockSession(ctx, tx, owner, sessionID); err != nil {
 		return TurnAction{}, err
 	}
-	if _, err := lockTurn(ctx, tx, owner, sessionID, turnID); err != nil {
+	turn, err := lockTurn(ctx, tx, owner, sessionID, turnID)
+	if err != nil {
 		return TurnAction{}, err
 	}
 	action, err := getActionByTokenForUpdate(ctx, tx, executionToken)
 	if err != nil {
 		return TurnAction{}, err
 	}
-	var requestID *string
-	if len(upstreamRequestID) > 0 {
-		requestID = upstreamRequestID[0]
-	}
-	if len(upstreamRequestID) > 1 {
-		return TurnAction{}, fmt.Errorf("%w: multiple upstream request ids", ErrInvalidArgument)
-	}
 	if action.Status != ActionStatusReserved {
 		if action.Status != status || !sameNullableString(action.ErrorCode, errorCode) || !jsonEqual(action.Result, canonicalResult) {
 			return TurnAction{}, ErrActionConflict
 		}
-		if requestID != nil {
-			if action.UpstreamRequestID != nil && !sameNullableString(action.UpstreamRequestID, requestID) {
-				return TurnAction{}, ErrActionConflict
-			}
-			if action.UpstreamRequestID == nil {
-				action, err = scanAction(tx.QueryRowContext(ctx, `
-UPDATE turn_actions SET upstream_request_id = $1
-WHERE execution_token = $2 AND upstream_request_id IS NULL AND status = $3
+		if requestID != nil && action.UpstreamRequestID != nil && !sameNullableString(action.UpstreamRequestID, requestID) {
+			return TurnAction{}, ErrActionConflict
+		}
+		if len(canonicalHint) != 0 && len(action.ContextHint) != 0 && !jsonEqual(action.ContextHint, canonicalHint) {
+			return TurnAction{}, ErrActionConflict
+		}
+		if (requestID != nil && action.UpstreamRequestID == nil) || (len(canonicalHint) != 0 && len(action.ContextHint) == 0) {
+			action, err = scanAction(tx.QueryRowContext(ctx, `
+UPDATE turn_actions
+SET upstream_request_id = COALESCE($1, upstream_request_id),
+    context_hint = COALESCE($2, context_hint)
+WHERE execution_token = $3 AND status = $4
 RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
           execution_token, in_flight, upstream_request_id, status,
-          result, error_code, created_at, updated_at
-`, *requestID, executionToken, status))
-				if err != nil {
-					return TurnAction{}, fmt.Errorf("backfill upstream request id: %w", err)
-				}
+          result, error_code, context_hint, created_at, updated_at
+
+`, nullableStringPtr(requestID), nullableJSON(canonicalHint), executionToken, status))
+			if err != nil {
+				return TurnAction{}, fmt.Errorf("backfill action context: %w", err)
 			}
 		}
 		if err := tx.Commit(); err != nil {
@@ -847,14 +1031,29 @@ RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
 	action, err = scanAction(tx.QueryRowContext(ctx, `
 UPDATE turn_actions
 SET status = $1, in_flight = FALSE, result = $2, error_code = $3,
-    upstream_request_id = COALESCE($4, upstream_request_id)
-WHERE execution_token = $5 AND status = 'reserved' AND in_flight = TRUE
+    upstream_request_id = COALESCE($4, upstream_request_id),
+    context_hint = COALESCE($5, context_hint)
+WHERE execution_token = $6 AND status = 'reserved' AND in_flight = TRUE
 RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
           execution_token, in_flight, upstream_request_id, status,
-          result, error_code, created_at, updated_at
-`, status, nullableJSON(canonicalResult), nullableStringPtr(errorCode), nullableStringPtr(requestID), executionToken))
+          result, error_code, context_hint, created_at, updated_at
+`, status, nullableJSON(canonicalResult), nullableStringPtr(errorCode), nullableStringPtr(requestID), nullableJSON(canonicalHint), executionToken))
 	if err != nil {
 		return TurnAction{}, fmt.Errorf("record action: %w", err)
+	}
+	if turn.Status.Terminal() {
+		latePayload, marshalErr := json.Marshal(map[string]any{
+			"action_index": action.Index,
+			"action_name":  action.ActionName,
+			"status":       action.Status,
+			"context_hint": action.ContextHint,
+		})
+		if marshalErr != nil {
+			return TurnAction{}, fmt.Errorf("encode late action outcome: %w", marshalErr)
+		}
+		if _, err := appendEventTx(ctx, tx, turn.ID, action.LeaseEpoch, "action.late_outcome", latePayload, false); err != nil {
+			return TurnAction{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return TurnAction{}, fmt.Errorf("record action commit: %w", err)
@@ -968,7 +1167,7 @@ WHERE id = $6 AND turn_id = $7 AND turn_role = 'assistant' AND status = 'pending
 UPDATE chat_turns
 SET status = 'committed', committed_context_version = $1,
     committed_lease_epoch = $2, commit_hash = $3, error_code = NULL,
-    finished_at = NOW(), committed_at = NOW()
+    finished_at = NOW(), committed_at = NOW(), execution_envelope = NULL
 WHERE id = $4 AND status IN ('running', 'awaiting_confirmation', 'committing')
 RETURNING `+turnColumns,
 		newContextVersion, in.Lease.Epoch, commitHash, turn.ID))
@@ -1096,10 +1295,11 @@ WHERE turn_id = $2 AND status = 'pending'
 	}
 	failed, err := scanTurn(tx.QueryRowContext(ctx, `
 UPDATE chat_turns
-SET status = $1, error_code = $2, executor_id = NULL, finished_at = `+finishedExpr+`
+SET status = $1, error_code = $2, executor_id = NULL, finished_at = `+finishedExpr+`,
+    execution_envelope = CASE WHEN $4 THEN NULL ELSE execution_envelope END
 WHERE id = $3 AND status IN ('accepted', 'running', 'awaiting_confirmation', 'committing', 'failed_retryable')
 RETURNING `+turnColumns,
-		actual, reason, turn.ID))
+		actual, reason, turn.ID, actual.Terminal()))
 	if err != nil {
 		return Turn{}, fmt.Errorf("fail turn row: %w", err)
 	}

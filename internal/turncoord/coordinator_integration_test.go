@@ -589,8 +589,11 @@ func TestCoordinator_RequestHashIncludesExecutionAffectingOptions(t *testing.T) 
 	require.NoError(t, err)
 	turns := store.NewPostgresTurnStore(db)
 	release := make(chan struct{})
+	seenUser := make(chan tools.UserContext, 1)
 	factory := &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
-		return func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(callCtx context.Context, _ func(engine.StepEvent), _ engine.ChatOptions) (string, error) {
+			user, _ := tools.UserFrom(callCtx)
+			seenUser <- user
 			<-release
 			return "answer", nil
 		}
@@ -598,15 +601,26 @@ func TestCoordinator_RequestHashIncludesExecutionAffectingOptions(t *testing.T) 
 	c := coordinatorForTest(t, turns, sessions, factory, "hash-replica")
 	modelA, modelB := "model-a", "model-b"
 	reqA, reqB := "transport-a", "transport-b"
-	in := SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "hash-1", Message: "same words", RequestUUID: &reqA, AssistantModel: &modelA, UserContext: tools.UserContext{ProjectId: "project-a", ClientIP: "10.0.0.1", SessionName: "sts-a"}}
+	in := SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "hash-1", Message: "same words", RequestUUID: &reqA, AssistantModel: &modelA, UserContext: tools.UserContext{ProjectId: "project-a", ClientIP: "10.0.0.1", SessionName: "sts-a", UserEmail: "operator@example.com"}}
 	first, err := c.Submit(ctx, in, nil)
 	require.NoError(t, err)
+	select {
+	case user := <-seenUser:
+		assert.Equal(t, "10.0.0.1", user.ClientIP)
+		assert.Equal(t, "operator@example.com", user.UserEmail)
+	case <-time.After(2 * time.Second):
+		t.Fatal("engine did not receive frozen request identity")
+	}
 	in.RequestUUID = &reqB
 	in.UserContext.ClientIP = "10.0.0.2"
 	in.UserContext.SessionName = "sts-b"
 	same, err := c.Submit(ctx, in, nil)
 	require.NoError(t, err)
 	assert.Equal(t, first.Turn.ID, same.Turn.ID, "transport retry fields must not change semantic idempotency")
+	restored, err := thawSubmitInput(same.Turn)
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.1", restored.UserContext.ClientIP, "retry must keep the first attempt's upstream audit identity")
+	assert.Equal(t, "operator@example.com", restored.UserContext.UserEmail)
 	in.AssistantModel = &modelB
 	_, err = c.Submit(ctx, in, nil)
 	require.ErrorIs(t, err, store.ErrIdempotencyConflict)
@@ -629,6 +643,7 @@ func TestCoordinator_PersistsFencedScreenshotContextForTheNextTurn(t *testing.T)
 	sub, err := c.Submit(ctx, SubmitInput{
 		Owner: owner, SessionID: session.ID, ClientTurnID: "ocr-1",
 		Message: "这是什么问题？", ImageContext: "CUDA out of memory / 显存不足",
+		ImageDigest: StableImageDigest([]byte("test screenshot bytes")),
 	}, nil)
 	require.NoError(t, err)
 	waitTurnStatus(t, turns, owner, sub.Turn.ID, store.TurnStatusCommitted)

@@ -48,7 +48,7 @@ func openActionJournalTestDB(t *testing.T) *sql.DB {
 	require.NoError(t, err)
 	require.NoError(t, db.Ping())
 	t.Cleanup(func() { _ = db.Close() })
-	for _, name := range []string{"0001_init.sql", "0003_add_session_context_version.sql", "0005_create_turn_execution.sql", "0006_create_turn_protocol.sql"} {
+	for _, name := range []string{"0001_init.sql", "0003_add_session_context_version.sql", "0005_create_turn_execution.sql", "0006_create_turn_protocol.sql", "0007_add_turn_recovery_context.sql"} {
 		data, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
 		require.NoError(t, readErr)
 		_, execErr := db.Exec(string(data))
@@ -153,6 +153,39 @@ func TestActionJournal_KnownSuccessReplaysAfterAnswerCommitFailure(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls)
 	assert.Equal(t, "req-1", replayed["request_uuid"])
+}
+
+func TestActionJournal_KnownSuccessCanBeConsumedAsAdvisoryWithoutReissuingWrite(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx, owner, turns, leaseA := newJournalTurn(t, db)
+	upstreamCalls := 0
+	journalA := NewActionJournal(turns, owner, leaseA)
+	_, err := journalA.Execute(ctx, "StopCompShareInstance", map[string]any{
+		"UHostId": "uhost-advisory", "Region": "cn-bj2", "Password": "must-not-persist-in-hint",
+	}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		upstreamCalls++
+		return map[string]any{"RetCode": 0, "request_uuid": "raw-result-must-not-enter-advisory"}, nil
+	})
+	require.NoError(t, err)
+	leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
+	journalB := NewActionJournal(turns, owner, leaseB)
+	advisories, err := journalB.RestoredActionAdvisory(ctx)
+	require.NoError(t, err)
+	require.Len(t, advisories, 1)
+	assert.Equal(t, "StopCompShareInstance", advisories[0].ActionName)
+	assert.Equal(t, "succeeded", advisories[0].Outcome)
+	assert.Contains(t, string(advisories[0].ContextHint), "uhost-advisory")
+	assert.Contains(t, string(advisories[0].ContextHint), "cn-bj2")
+	assert.NotContains(t, string(advisories[0].ContextHint), "Password")
+	assert.NotContains(t, string(advisories[0].ContextHint), "raw-result-must-not-enter-advisory")
+	require.NoError(t, journalB.VerifyComplete(ctx), "the known success is consumed by the advisory")
+
+	_, err = journalB.Execute(ctx, "DeleteCompShareInstance", map[string]any{"UHostId": "uhost-advisory"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		upstreamCalls++
+		return map[string]any{"RetCode": 0}, nil
+	})
+	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
+	assert.Equal(t, 1, upstreamCalls, "advisory consumption must not open an extra write slot")
 }
 
 func TestActionJournal_UpstreamBusinessErrorIsAmbiguousAndNeverReissued(t *testing.T) {

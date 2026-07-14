@@ -18,7 +18,17 @@ type actionStore interface {
 	ListTurnActions(context.Context, store.Owner, string) ([]store.TurnAction, error)
 	ReserveAction(context.Context, store.Owner, store.ConversationLease, store.ReserveActionInput) (store.TurnAction, bool, error)
 	StartAction(context.Context, store.Owner, store.ConversationLease, string) (store.TurnAction, error)
-	RecordAction(context.Context, store.Owner, string, store.ActionStatus, json.RawMessage, *string, ...*string) (store.TurnAction, error)
+	RecordActionWithContext(context.Context, store.Owner, string, store.ActionStatus, json.RawMessage, *string, *string, json.RawMessage) (store.TurnAction, error)
+}
+
+// RestoredActionAdvisory is the only information a later engine may consume
+// from a known-success action. It intentionally excludes raw results, args,
+// identity, confirmation, and any authorization signal.
+type RestoredActionAdvisory struct {
+	Index       int
+	ActionName  string
+	Outcome     string
+	ContextHint json.RawMessage
 }
 
 // ActionJournal is one turn's stable sequence of external mutations. It is
@@ -68,7 +78,7 @@ func (j *ActionJournal) Execute(ctx context.Context, action string, args map[str
 		}
 	}
 	reserved, _, err := j.store.ReserveAction(ctx, j.owner, j.lease, store.ReserveActionInput{
-		Index: index, ActionName: action, ArgsHash: argsHash,
+		Index: index, ActionName: action, ArgsHash: argsHash, ContextHint: actionContextHint(args, nil),
 	})
 	if err != nil {
 		return nil, j.poison(fmt.Errorf("reserve %s: %w", action, err))
@@ -111,7 +121,7 @@ func (j *ActionJournal) Execute(ctx context.Context, action string, args map[str
 			return j.recordAmbiguous(ctx, started, action, fmt.Errorf("encode action result: %w", marshalErr))
 		}
 		requestID := upstreamRequestID(result)
-		if _, recordErr := j.store.RecordAction(ctx, j.owner, started.ExecutionToken, store.ActionStatusSucceeded, raw, nil, requestID); recordErr != nil {
+		if _, recordErr := j.store.RecordActionWithContext(ctx, j.owner, started.ExecutionToken, store.ActionStatusSucceeded, raw, nil, requestID, actionContextHint(args, result)); recordErr != nil {
 			return nil, j.poison(fmt.Errorf("%s result was not durably recorded: %w", action, recordErr))
 		}
 		return result, nil
@@ -123,6 +133,33 @@ func (j *ActionJournal) Execute(ctx context.Context, action string, args map[str
 	// unknown external outcome unless a future API supplies a verified upstream
 	// idempotency contract.
 	return j.recordAmbiguous(ctx, started, action, callErr)
+}
+
+// RestoredActionAdvisory consumes only known-success actions from an older
+// lease. This lets the next engine answer from a safe outcome summary without
+// having to coincidentally call the same write tool again. Replay-only still
+// rejects every additional or changed action.
+func (j *ActionJournal) RestoredActionAdvisory(ctx context.Context) ([]RestoredActionAdvisory, error) {
+	if err := j.loadBaseline(ctx); err != nil {
+		return nil, err
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !j.replayOnly {
+		return nil, nil
+	}
+	out := make([]RestoredActionAdvisory, 0)
+	for _, action := range j.baseline {
+		if action.LeaseEpoch == j.lease.Epoch || action.Status != store.ActionStatusSucceeded {
+			continue
+		}
+		out = append(out, RestoredActionAdvisory{
+			Index: action.Index, ActionName: action.ActionName, Outcome: "succeeded",
+			ContextHint: append(json.RawMessage(nil), action.ContextHint...),
+		})
+		j.consumed[action.Index] = true
+	}
+	return out, nil
 }
 
 // Err exposes the in-memory commit barrier. Store state alone is insufficient:
@@ -207,6 +244,9 @@ func (j *ActionJournal) claimAction(actionName, argsHash string) (int, *store.Tu
 				return existing.Index, &expected, true, nil
 			}
 		}
+		for j.replayCursor < len(j.baseline) && j.consumed[j.baseline[j.replayCursor].Index] {
+			j.replayCursor++
+		}
 		if j.replayCursor >= len(j.baseline) {
 			j.poisoned = fmt.Errorf("replay attempted an extra action after %d durable actions", len(j.baseline))
 			return 0, nil, true, fmt.Errorf("%w: %v", tools.ErrActionOutcomeUncertain, j.poisoned)
@@ -235,10 +275,90 @@ func (j *ActionJournal) markConsumed(index int) {
 func (j *ActionJournal) recordAmbiguous(ctx context.Context, started store.TurnAction, action string, cause error) (map[string]any, error) {
 	detail, _ := json.Marshal(map[string]any{"error": safeErrorClass(cause)})
 	code := safeErrorClass(cause)
-	if _, err := j.store.RecordAction(ctx, j.owner, started.ExecutionToken, store.ActionStatusAmbiguous, detail, &code); err != nil {
+	if _, err := j.store.RecordActionWithContext(ctx, j.owner, started.ExecutionToken, store.ActionStatusAmbiguous, detail, &code, nil, started.ContextHint); err != nil {
 		return nil, j.poison(fmt.Errorf("%s failed and ambiguity could not be recorded: %w", action, err))
 	}
 	return nil, j.poison(fmt.Errorf("%s: %w", action, cause))
+}
+
+func actionContextHint(args, result map[string]any) json.RawMessage {
+	hint := store.ActionContextHint{}
+	seen := make(map[string]struct{})
+	collect := func(values map[string]any) {}
+	collect = func(values map[string]any) {
+		for key, value := range values {
+			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
+			switch normalized {
+			case "uhostid", "uhostids", "instanceid", "instanceids", "compshareinstanceid", "compshareinstanceids", "resourceid", "resourceids", "imageid", "imageids", "schedulerid":
+				for _, id := range hintStrings(value) {
+					if len(hint.ResourceIDs) >= 16 || !safeHintAtom(id, 128) {
+						continue
+					}
+					if _, ok := seen[id]; !ok {
+						seen[id] = struct{}{}
+						hint.ResourceIDs = append(hint.ResourceIDs, id)
+					}
+				}
+			case "region":
+				if hint.Region == "" {
+					hint.Region = safeHintString(value, 64)
+				}
+			case "zone", "availabilityzone":
+				if hint.Zone == "" {
+					hint.Zone = safeHintString(value, 64)
+				}
+			}
+		}
+	}
+	collect(args)
+	collect(result)
+	raw, _ := json.Marshal(hint)
+	return raw
+}
+
+func hintStrings(value any) []string {
+	switch typed := value.(type) {
+	case string:
+		return []string{strings.TrimSpace(typed)}
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				out = append(out, strings.TrimSpace(text))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func safeHintString(value any, limit int) string {
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	if !safeHintAtom(text, limit) {
+		return ""
+	}
+	return text
+}
+
+func safeHintAtom(value string, limit int) bool {
+	if value == "" || len(value) > limit {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || strings.ContainsRune("._:/-", r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (j *ActionJournal) poison(cause error) error {

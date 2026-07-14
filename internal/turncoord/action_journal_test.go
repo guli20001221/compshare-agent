@@ -45,7 +45,7 @@ func (s *journalStoreStub) StartAction(context.Context, store.Owner, store.Conve
 	return store.TurnAction{TurnID: "turn", Index: 0, ExecutionToken: "token", Status: store.ActionStatusReserved, InFlight: true}, nil
 }
 
-func (s *journalStoreStub) RecordAction(_ context.Context, _ store.Owner, _ string, status store.ActionStatus, _ json.RawMessage, _ *string, _ ...*string) (store.TurnAction, error) {
+func (s *journalStoreStub) RecordActionWithContext(_ context.Context, _ store.Owner, _ string, status store.ActionStatus, _ json.RawMessage, _ *string, _ *string, _ json.RawMessage) (store.TurnAction, error) {
 	s.recordCalls++
 	s.lastStatus = status
 	return store.TurnAction{}, nil

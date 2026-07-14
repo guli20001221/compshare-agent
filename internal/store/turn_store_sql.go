@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,7 +18,7 @@ id, session_id, top_organization_id, organization_id, client_turn_id, turn_seq,
 request_hash, status, user_message_id, assistant_message_id,
 base_context_version, committed_context_version, committed_lease_epoch,
 commit_hash, error_code, executor_id, lease_epoch, has_external_action,
-next_event_seq, created_at, updated_at, started_at, finished_at, committed_at`
+execution_envelope, next_event_seq, created_at, updated_at, started_at, finished_at, committed_at`
 
 const turnSelect = `SELECT ` + turnColumns + ` FROM chat_turns `
 
@@ -30,13 +31,14 @@ func scanTurn(row rowScanner) (Turn, error) {
 	var status string
 	var committedContextVersion, committedLeaseEpoch, leaseEpoch sql.NullInt64
 	var commitHash, errorCode, executorID sql.NullString
+	var executionEnvelope []byte
 	var startedAt, finishedAt, committedAt sql.NullTime
 	if err := row.Scan(
 		&out.ID, &out.SessionID, &out.Owner.TopOrganizationID, &out.Owner.OrganizationID,
 		&out.ClientTurnID, &out.Sequence, &out.RequestHash, &status, &out.UserMessageID,
 		&out.AssistantMessageID, &out.BaseContextVersion, &committedContextVersion,
 		&committedLeaseEpoch, &commitHash, &errorCode, &executorID, &leaseEpoch,
-		&out.HasExternalAction, &out.NextEventSeq, &out.CreatedAt, &out.UpdatedAt,
+		&out.HasExternalAction, &executionEnvelope, &out.NextEventSeq, &out.CreatedAt, &out.UpdatedAt,
 		&startedAt, &finishedAt, &committedAt,
 	); err != nil {
 		return Turn{}, err
@@ -71,6 +73,9 @@ func scanTurn(row rowScanner) (Turn, error) {
 	}
 	if committedAt.Valid {
 		out.CommittedAt = &committedAt.Time
+	}
+	if executionEnvelope != nil {
+		out.ExecutionEnvelope = append(json.RawMessage(nil), executionEnvelope...)
 	}
 	return out, nil
 }
@@ -121,16 +126,18 @@ func insertTurn(
 	turnID, userMessageID, assistantMessageID string,
 	contextVersion int,
 	turnSequence int64,
+	executionEnvelope json.RawMessage,
 ) (Turn, error) {
 	out, err := scanTurn(tx.QueryRowContext(ctx, `
 INSERT INTO chat_turns
   (id, session_id, top_organization_id, organization_id, client_turn_id,
    turn_seq, request_hash, status, user_message_id, assistant_message_id,
-   base_context_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'accepted', $8, $9, $10)
+   base_context_version, execution_envelope)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'accepted', $8, $9, $10, $11)
 RETURNING `+turnColumns,
 		turnID, in.SessionID, owner.TopOrganizationID, owner.OrganizationID,
-		in.ClientTurnID, turnSequence, in.RequestHash, userMessageID, assistantMessageID, contextVersion))
+		in.ClientTurnID, turnSequence, in.RequestHash, userMessageID, assistantMessageID,
+		contextVersion, nullableJSON(executionEnvelope)))
 	if err != nil {
 		return Turn{}, fmt.Errorf("insert turn: %w", err)
 	}
@@ -438,7 +445,7 @@ func getActionForUpdate(ctx context.Context, tx *sql.Tx, turnID string, index in
 	out, err := scanAction(tx.QueryRowContext(ctx, `
 SELECT turn_id, action_index, lease_epoch, action_name, args_hash,
        execution_token, in_flight, upstream_request_id, status, result,
-       error_code, created_at, updated_at
+       error_code, context_hint, created_at, updated_at
 FROM turn_actions
 WHERE turn_id = $1 AND action_index = $2
 FOR UPDATE
@@ -456,7 +463,7 @@ func getActionByTokenForUpdate(ctx context.Context, tx *sql.Tx, token string) (T
 	out, err := scanAction(tx.QueryRowContext(ctx, `
 SELECT turn_id, action_index, lease_epoch, action_name, args_hash,
        execution_token, in_flight, upstream_request_id, status, result,
-       error_code, created_at, updated_at
+       error_code, context_hint, created_at, updated_at
 FROM turn_actions
 WHERE execution_token = $1
 FOR UPDATE
@@ -474,7 +481,7 @@ func getActionByIdentityForUpdate(ctx context.Context, tx *sql.Tx, turnID, actio
 	out, err := scanAction(tx.QueryRowContext(ctx, `
 SELECT turn_id, action_index, lease_epoch, action_name, args_hash,
        execution_token, in_flight, upstream_request_id, status, result,
-       error_code, created_at, updated_at
+       error_code, context_hint, created_at, updated_at
 FROM turn_actions
 WHERE turn_id = $1 AND action_name = $2 AND args_hash = $3
 FOR UPDATE
@@ -492,11 +499,11 @@ func scanAction(row rowScanner) (TurnAction, error) {
 	var out TurnAction
 	var status string
 	var upstreamID, errorCode sql.NullString
-	var result []byte
+	var result, contextHint []byte
 	if err := row.Scan(
 		&out.TurnID, &out.Index, &out.LeaseEpoch, &out.ActionName, &out.ArgsHash,
 		&out.ExecutionToken, &out.InFlight, &upstreamID, &status, &result,
-		&errorCode, &out.CreatedAt, &out.UpdatedAt,
+		&errorCode, &contextHint, &out.CreatedAt, &out.UpdatedAt,
 	); err != nil {
 		return TurnAction{}, err
 	}
@@ -510,7 +517,87 @@ func scanAction(row rowScanner) (TurnAction, error) {
 	if result != nil {
 		out.Result = append(json.RawMessage(nil), result...)
 	}
+	if contextHint != nil {
+		out.ContextHint = append(json.RawMessage(nil), contextHint...)
+	}
 	return out, nil
+}
+
+func canonicalOptionalObject(raw json.RawMessage) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	canonical, err := canonicalJSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(canonical, &object); err != nil || object == nil {
+		return nil, errors.New("JSON object required")
+	}
+	return canonical, nil
+}
+
+func canonicalActionContextHint(raw json.RawMessage) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var hint ActionContextHint
+	if err := decoder.Decode(&hint); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("multiple JSON values")
+		}
+		return nil, err
+	}
+	if len(hint.ResourceIDs) > 16 {
+		return nil, errors.New("too many resource ids")
+	}
+	seen := make(map[string]struct{}, len(hint.ResourceIDs))
+	cleanIDs := make([]string, 0, len(hint.ResourceIDs))
+	for _, value := range hint.ResourceIDs {
+		value = strings.TrimSpace(value)
+		if !validContextHintAtom(value, 128) {
+			return nil, errors.New("invalid resource id")
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		cleanIDs = append(cleanIDs, value)
+	}
+	hint.ResourceIDs = cleanIDs
+	hint.Region = strings.TrimSpace(hint.Region)
+	hint.Zone = strings.TrimSpace(hint.Zone)
+	if hint.Region != "" && !validContextHintAtom(hint.Region, 64) {
+		return nil, errors.New("invalid region")
+	}
+	if hint.Zone != "" && !validContextHintAtom(hint.Zone, 64) {
+		return nil, errors.New("invalid zone")
+	}
+	if len(hint.ResourceIDs) == 0 && hint.Region == "" && hint.Zone == "" {
+		return nil, nil
+	}
+	return json.Marshal(hint)
+}
+
+func validContextHintAtom(value string, limit int) bool {
+	if value == "" || len(value) > limit {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || strings.ContainsRune("._:/-", r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func lockPendingTurnMessages(ctx context.Context, tx *sql.Tx, turn Turn) error {

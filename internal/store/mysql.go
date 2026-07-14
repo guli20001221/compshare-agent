@@ -59,13 +59,13 @@ func VerifySchema(ctx context.Context, db *sql.DB) error {
 		"chat_turns.contract": `SELECT id, session_id, top_organization_id, organization_id,
 client_turn_id, turn_seq, request_hash, status, user_message_id, assistant_message_id,
 base_context_version, committed_context_version, committed_lease_epoch, commit_hash,
-error_code, executor_id, lease_epoch, has_external_action, next_event_seq, created_at,
+error_code, executor_id, lease_epoch, has_external_action, execution_envelope, next_event_seq, created_at,
 updated_at, started_at, finished_at, committed_at FROM chat_turns LIMIT 0`,
 		"conversation_leases.contract": `SELECT session_id, top_organization_id, organization_id,
 active_turn_id, holder_id, lease_epoch, lease_until, created_at, updated_at
 FROM conversation_leases LIMIT 0`,
 		"turn_actions.contract": `SELECT turn_id, action_index, lease_epoch, action_name, args_hash,
-execution_token, in_flight, upstream_request_id, status, result, error_code, created_at, updated_at
+execution_token, in_flight, upstream_request_id, status, result, error_code, context_hint, created_at, updated_at
 FROM turn_actions LIMIT 0`,
 		"chat_turn_events.contract": `SELECT turn_id, seq, lease_epoch, event_type, payload,
 provisional, created_at FROM chat_turn_events LIMIT 0`,
