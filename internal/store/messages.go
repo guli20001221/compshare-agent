@@ -115,6 +115,72 @@ LIMIT $5
 	return messages, nextCursor, nil
 }
 
+// ListCommittedTail returns the newest turnLimit complete, committed
+// user/assistant pairs for one owner-scoped session. The inner query selects
+// the tail in descending sequence order; the outer query restores normal
+// chronological user-then-assistant order for engine rehydration.
+//
+// A turn is eligible only when both protocol messages exist with status=ok.
+// That defensive completeness check prevents a corrupt or partially-written
+// row from becoming a half turn in the next model prompt.
+func (s *MySQLMessageStore) ListCommittedTail(
+	ctx context.Context,
+	owner Owner,
+	sessionID string,
+	turnLimit int,
+) ([]Message, error) {
+	if turnLimit <= 0 {
+		return []Message{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+WITH committed_tail AS (
+  SELECT t.id, t.turn_seq
+  FROM chat_turns t
+  JOIN sessions sess
+    ON sess.id = t.session_id
+   AND sess.top_organization_id = t.top_organization_id
+   AND sess.organization_id = t.organization_id
+   AND sess.deleted_at IS NULL
+  JOIN messages user_msg
+    ON user_msg.turn_id = t.id
+   AND user_msg.turn_role = 'user'
+   AND user_msg.role = 'user'
+   AND user_msg.status = 'ok'
+  JOIN messages assistant_msg
+    ON assistant_msg.turn_id = t.id
+   AND assistant_msg.turn_role = 'assistant'
+   AND assistant_msg.role = 'assistant'
+   AND assistant_msg.status = 'ok'
+  WHERE t.session_id = $1
+    AND t.top_organization_id = $2
+    AND t.organization_id = $3
+    AND t.status = 'committed'
+  ORDER BY t.turn_seq DESC
+  LIMIT $4
+)
+SELECT m.id, m.session_id, m.request_uuid, m.role, m.content, m.status,
+       m.error_code, m.model, m.input_tokens, m.output_tokens, m.ttft_ms,
+       m.latency_ms, m.metadata, m.created_at
+FROM committed_tail tail
+JOIN messages m ON m.turn_id = tail.id
+WHERE m.status = 'ok'
+  AND ((m.turn_role = 'user' AND m.role = 'user')
+    OR (m.turn_role = 'assistant' AND m.role = 'assistant'))
+ORDER BY tail.turn_seq ASC,
+         CASE m.turn_role WHEN 'user' THEN 0 ELSE 1 END ASC
+`, sessionID, owner.TopOrganizationID, owner.OrganizationID, turnLimit)
+	if err != nil {
+		return nil, fmt.Errorf("list committed message tail query: %w", err)
+	}
+	defer rows.Close()
+
+	messages, err := scanMessages(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan committed message tail: %w", err)
+	}
+	return messages, nil
+}
+
 // GetWithOwnerCheck fetches a message by ID and verifies the owner via a JOIN
 // through sessions. Returns sql.ErrNoRows when not found or unauthorized.
 func (s *MySQLMessageStore) GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error) {

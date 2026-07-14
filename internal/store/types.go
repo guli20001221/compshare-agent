@@ -110,6 +110,15 @@ type MessageStore interface {
 	GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error)
 }
 
+// CommittedTailMessageStore is the history contract used by the durable turn
+// protocol. It is intentionally separate from MessageStore so legacy/test
+// stores do not silently inherit unsafe head-page semantics. Implementations
+// must return only complete committed user/assistant pairs from the newest
+// turnLimit turns, ordered oldest-to-newest within that tail.
+type CommittedTailMessageStore interface {
+	ListCommittedTail(ctx context.Context, owner Owner, sessionID string, turnLimit int) ([]Message, error)
+}
+
 // FeedbackStore manages user feedback on messages.
 type FeedbackStore interface {
 	Insert(ctx context.Context, msgID, rating, comment string) (string, error)

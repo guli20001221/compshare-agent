@@ -9,6 +9,12 @@ import (
 	"github.com/compshare-agent/internal/store"
 )
 
+// committedTailTurnLimit fills the engine's 120 non-system message budget
+// with 60 complete conversational turns. Tool transcripts are deliberately
+// not persisted into this history; durable context facts are loaded separately
+// by the turn coordinator.
+const committedTailTurnLimit = 60
+
 // denyConfirm is used as the ConfirmFunc for HTTP-path engines. All L1
 // mutating actions are denied — confirmation requires human interaction
 // which is not available over the HTTP API.
@@ -53,4 +59,50 @@ func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID str
 
 	eng.RehydrateHistory(filterHistory(msgs))
 	return eng, nil
+}
+
+// NewTurnEngine creates a private mutable engine for one durable turn. It
+// shares process-wide dependencies but is never inserted into the LRU, so a
+// failed/uncommitted attempt cannot contaminate a later turn's memory.
+func (p *Pool) NewTurnEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
+	tailStore, ok := p.messageStore.(store.CommittedTailMessageStore)
+	if !ok {
+		return nil, fmt.Errorf("agentpool: message store lacks committed tail capability")
+	}
+	msgs, err := tailStore.ListCommittedTail(ctx, owner, sessionID, committedTailTurnLimit)
+	if err != nil {
+		return nil, fmt.Errorf("agentpool: list committed tail for session %q: %w", sessionID, err)
+	}
+	history, err := validateCommittedTail(msgs)
+	if err != nil {
+		return nil, fmt.Errorf("agentpool: invalid committed tail for session %q: %w", sessionID, err)
+	}
+
+	subject, _ := governance.SubjectKeyFromOrganization(owner.TopOrganizationID, owner.OrganizationID)
+	eng := engine.NewSession(p.deps, engine.SessionOptions{
+		Subject:              subject,
+		ConfirmFn:            denyConfirm,
+		MutatingToolsEnabled: p.mutatingToolsEnabled,
+	})
+	eng.RehydrateHistory(history)
+	return eng, nil
+}
+
+func validateCommittedTail(messages []store.Message) ([]engine.HistoryMessage, error) {
+	if len(messages)%2 != 0 {
+		return nil, fmt.Errorf("odd message count %d", len(messages))
+	}
+	history := make([]engine.HistoryMessage, 0, len(messages))
+	for i := 0; i < len(messages); i += 2 {
+		userMsg, assistantMsg := messages[i], messages[i+1]
+		if userMsg.Role != "user" || userMsg.Status != "ok" ||
+			assistantMsg.Role != "assistant" || assistantMsg.Status != "ok" {
+			return nil, fmt.Errorf("messages %d-%d are not a committed user/assistant pair", i, i+1)
+		}
+		history = append(history,
+			engine.HistoryMessage{Role: userMsg.Role, Content: userMsg.Content},
+			engine.HistoryMessage{Role: assistantMsg.Role, Content: assistantMsg.Content},
+		)
+	}
+	return history, nil
 }
