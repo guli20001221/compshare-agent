@@ -2646,7 +2646,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 					e.annotateHandlerResultForUserQuestion(&handled, resumed.Plan, e.lastUserMsg)
 					reply := handled.Reply
 					if handled.Status == intent.HandlerStatusHandled {
-						reply = e.renderGroundedHandlerResult(ctx, handled)
+						reply = e.renderGroundedHandlerResult(ctx, handled, resumed.Plan, userMsg)
 						e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 						e.recordLastIntentFromPlan(resumed.Plan)
 						e.recordPendingSelectionFromHandlerResult(handled, resumed.Plan, userMsg)
@@ -2685,7 +2685,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	e.annotateHandlerResultForUserQuestion(&handled, result.Plan, e.lastUserMsg)
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
-		reply = e.renderGroundedHandlerResult(ctx, handled)
+		reply = e.renderGroundedHandlerResult(ctx, handled, result.Plan, userMsg)
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(result.Plan)
 		e.recordLastStockGpuModel(handled.ResolvedStockGpuModel)
@@ -2799,7 +2799,7 @@ func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent
 
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
-		reply = e.renderGroundedHandlerResult(ctx, handled)
+		reply = e.renderGroundedHandlerResult(ctx, handled, resumedPlan, userMsg)
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(resumedPlan)
 	}
@@ -2912,7 +2912,7 @@ func isFastTierEnvelope(kind envelope.Kind) bool {
 	}
 }
 
-func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent.HandlerResult) string {
+func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent.HandlerResult, plan intent.IntentRoute, userMsg string) string {
 	if e.groundedRenderer == nil || handled.Envelope == nil {
 		return handled.Reply
 	}
@@ -2963,6 +2963,7 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 	}
 	result := e.groundedRenderer.Render(ctx, grounded.RenderRequest{
 		Envelope: *handled.Envelope,
+		TaskSpec: e.directRenderTaskSpec(plan, userMsg),
 		Fallback: handled.Reply,
 		Model:    e.groundedRendererModel,
 	})
