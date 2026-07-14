@@ -495,6 +495,10 @@ type SessionOptions struct {
 	Subject              string
 	ConfirmFn            ConfirmFunc
 	MutatingToolsEnabled bool
+	// ActionJournal belongs to exactly one durable v2 turn. It must never be
+	// stored in SharedDeps because its action index and lease are turn-local.
+	ActionJournal        tools.ActionJournal
+	RequireActionJournal bool
 }
 
 // NewSharedDeps assembles the always-shared engine dependencies from config.
@@ -595,7 +599,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		// readExpensiveCallsThisTurn, requireKnowledgeCitationThisTurn,
 		// *Observer fields all start at zero values which is correct.
 	}
-	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn)
+	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn, opts.ActionJournal, opts.RequireActionJournal)
 	eng.safeExecutor.SetMutatingToolsEnabled(opts.MutatingToolsEnabled)
 	eng.externalExecutor = deps.ExternalExecutor
 	return eng
@@ -639,7 +643,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		supportsRequiredToolChoice: true,
 		mutatingToolsEnabled:       true,
 	}
-	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn, nil, false)
 	eng.externalExecutor = executor
 	return eng
 }
@@ -964,12 +968,17 @@ func (e *Engine) RateLimiterPointer() governance.RateLimiter { return e.rateLimi
 // can assert that two sessions hold DIFFERENT registries. Test-only.
 func (e *Engine) RegistryPointer() *entity.EntityRegistry { return e.registry }
 
-func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
+func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc, journal tools.ActionJournal, requireJournal bool) *tools.SafeToolExecutor {
 	var safeConfirm tools.ConfirmFunc
 	if confirmFn != nil {
 		safeConfirm = tools.ConfirmFunc(confirmFn)
 	}
-	return tools.NewSafeToolExecutor(executor, tools.WithConfirmFunc(safeConfirm))
+	return tools.NewSafeToolExecutor(
+		executor,
+		tools.WithConfirmFunc(safeConfirm),
+		tools.WithActionJournal(journal),
+		tools.WithRequireActionJournal(requireJournal),
+	)
 }
 
 // Init performs first-turn context injection:

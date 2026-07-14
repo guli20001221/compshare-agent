@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,7 +28,7 @@ func NewPostgresTurnStore(db *sql.DB) *PostgresTurnStore {
 }
 
 func (s *PostgresTurnStore) AcceptTurn(ctx context.Context, owner Owner, in AcceptTurnInput) (Turn, bool, error) {
-	if in.SessionID == "" || in.ClientTurnID == "" || len(in.ClientTurnID) > 128 || len(in.RequestHash) != 64 {
+	if in.SessionID == "" || in.ClientTurnID == "" || len(in.ClientTurnID) > 128 || len(in.RequestHash) != 64 || strings.TrimSpace(in.UserContent) == "" {
 		return Turn{}, false, fmt.Errorf("%w: invalid turn identity", ErrInvalidArgument)
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -390,23 +391,43 @@ func (s *PostgresTurnStore) CreateInteraction(
 		if existing.RequestHash != requestHash {
 			return TurnInteraction{}, false, ErrInteractionConflict
 		}
-		if existing.Status == InteractionStatusPending && existing.LeaseEpoch != lease.Epoch {
-			existing, err = scanInteraction(tx.QueryRowContext(ctx, `
+		if existing.Status == InteractionStatusPending {
+			if existing.LeaseEpoch != lease.Epoch {
+				existing, err = scanInteraction(tx.QueryRowContext(ctx, `
 UPDATE turn_interactions
 SET lease_epoch = $1
 WHERE id = $2 AND status = 'pending' AND expires_at > NOW()
 RETURNING id, turn_id, interaction_key, kind, request_hash, request_payload,
 	      lease_epoch, expires_at, status, resolution_hash,
 	      response_payload, created_at, resolved_at
-`, lease.Epoch, existing.ID))
-			if errors.Is(err, sql.ErrNoRows) {
-				return TurnInteraction{}, false, ErrInteractionExpired
+	`, lease.Epoch, existing.ID))
+				if errors.Is(err, sql.ErrNoRows) {
+					return TurnInteraction{}, false, ErrInteractionExpired
+				}
+				if err != nil {
+					return TurnInteraction{}, false, fmt.Errorf("rebind pending interaction: %w", err)
+				}
+				if _, err := appendEventTx(ctx, tx, lease.TurnID, lease.Epoch, "interaction.requested", interactionEvent, true); err != nil {
+					return TurnInteraction{}, false, err
+				}
+			} else {
+				var unexpired bool
+				if err := tx.QueryRowContext(ctx, `SELECT expires_at > NOW() FROM turn_interactions WHERE id = $1`, existing.ID).Scan(&unexpired); err != nil {
+					return TurnInteraction{}, false, fmt.Errorf("check existing interaction expiry: %w", err)
+				}
+				if !unexpired {
+					return TurnInteraction{}, false, ErrInteractionExpired
+				}
 			}
+			res, err := tx.ExecContext(ctx, `
+UPDATE chat_turns SET status = 'awaiting_confirmation'
+WHERE id = $1 AND status IN ('running', 'awaiting_confirmation')
+`, lease.TurnID)
 			if err != nil {
-				return TurnInteraction{}, false, fmt.Errorf("rebind pending interaction: %w", err)
+				return TurnInteraction{}, false, fmt.Errorf("restore awaiting interaction state: %w", err)
 			}
-			if _, err := appendEventTx(ctx, tx, lease.TurnID, lease.Epoch, "interaction.requested", interactionEvent, true); err != nil {
-				return TurnInteraction{}, false, err
+			if !exactlyOneRow(res) {
+				return TurnInteraction{}, false, ErrInvalidTurnState
 			}
 		}
 		if err := tx.Commit(); err != nil {
@@ -569,7 +590,7 @@ func (s *PostgresTurnStore) ReserveAction(
 
 	existing, err := getActionForUpdate(ctx, tx, lease.TurnID, in.Index)
 	if err == nil {
-		if existing.ActionName != in.ActionName || existing.ArgsHash != in.ArgsHash || !sameNullableString(existing.UpstreamRequestID, in.UpstreamRequestID) {
+		if existing.ActionName != in.ActionName || existing.ArgsHash != in.ArgsHash {
 			return TurnAction{}, false, ErrActionConflict
 		}
 		if err := tx.Commit(); err != nil {
@@ -585,7 +606,7 @@ func (s *PostgresTurnStore) ReserveAction(
 INSERT INTO turn_actions
   (turn_id, action_index, lease_epoch, action_name, args_hash,
    execution_token, in_flight, upstream_request_id, status)
-VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, 'reserved')
+VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, 'reserved')
 RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
           execution_token, in_flight, upstream_request_id, status,
           result, error_code, created_at, updated_at
@@ -605,6 +626,73 @@ UPDATE chat_turns SET has_external_action = TRUE WHERE id = $1
 	return action, true, nil
 }
 
+// StartAction is the durable before-call boundary. ReserveAction alone never
+// means that upstream may have run. A later lease can claim an unstarted
+// reservation, while a reservation already marked in-flight must never be
+// issued again automatically.
+func (s *PostgresTurnStore) StartAction(
+	ctx context.Context,
+	owner Owner,
+	lease ConversationLease,
+	executionToken string,
+) (TurnAction, error) {
+	if executionToken == "" {
+		return TurnAction{}, fmt.Errorf("%w: invalid action start", ErrInvalidArgument)
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return TurnAction{}, fmt.Errorf("start action begin: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := lockSession(ctx, tx, owner, lease.SessionID); err != nil {
+		return TurnAction{}, err
+	}
+	if err := lockLease(ctx, tx, lease); err != nil {
+		return TurnAction{}, err
+	}
+	turn, err := lockTurn(ctx, tx, owner, lease.SessionID, lease.TurnID)
+	if err != nil {
+		return TurnAction{}, err
+	}
+	if err := validateTurnLeaseBinding(turn, lease); err != nil {
+		return TurnAction{}, err
+	}
+	if err := ensureNoPendingInteractions(ctx, tx, turn.ID); err != nil {
+		return TurnAction{}, err
+	}
+	action, err := getActionByTokenForUpdate(ctx, tx, executionToken)
+	if err != nil {
+		return TurnAction{}, err
+	}
+	if action.TurnID != turn.ID {
+		return TurnAction{}, ErrActionNotFound
+	}
+	if action.Status != ActionStatusReserved {
+		return TurnAction{}, ErrActionConflict
+	}
+	if action.InFlight {
+		return TurnAction{}, ErrActionUncertain
+	}
+	action, err = scanAction(tx.QueryRowContext(ctx, `
+UPDATE turn_actions
+SET in_flight = TRUE, lease_epoch = $1
+WHERE execution_token = $2 AND turn_id = $3
+  AND status = 'reserved' AND in_flight = FALSE
+RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
+          execution_token, in_flight, upstream_request_id, status,
+          result, error_code, created_at, updated_at
+`, lease.Epoch, executionToken, turn.ID))
+	if err != nil {
+		return TurnAction{}, fmt.Errorf("start action: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		// The caller cannot know whether the durable before-call marker committed.
+		// It must not call upstream after an acknowledgement failure.
+		return TurnAction{}, fmt.Errorf("%w: start action commit: %v", ErrActionUncertain, err)
+	}
+	return action, nil
+}
+
 // RecordAction is intentionally execution-token based and does not require the
 // old conversation lease. A process can lose its lease after the upstream side
 // effect succeeds; suppressing that result would turn known reality into an
@@ -616,6 +704,7 @@ func (s *PostgresTurnStore) RecordAction(
 	status ActionStatus,
 	result json.RawMessage,
 	errorCode *string,
+	upstreamRequestID ...*string,
 ) (TurnAction, error) {
 	canonicalResult, err := canonicalJSON(result)
 	if err != nil || executionToken == "" || status == ActionStatusReserved || !status.Valid() {
@@ -651,23 +740,51 @@ WHERE a.execution_token = $1
 	if err != nil {
 		return TurnAction{}, err
 	}
+	var requestID *string
+	if len(upstreamRequestID) > 0 {
+		requestID = upstreamRequestID[0]
+	}
+	if len(upstreamRequestID) > 1 {
+		return TurnAction{}, fmt.Errorf("%w: multiple upstream request ids", ErrInvalidArgument)
+	}
 	if action.Status != ActionStatusReserved {
 		if action.Status != status || !sameNullableString(action.ErrorCode, errorCode) || !jsonEqual(action.Result, canonicalResult) {
 			return TurnAction{}, ErrActionConflict
+		}
+		if requestID != nil {
+			if action.UpstreamRequestID != nil && !sameNullableString(action.UpstreamRequestID, requestID) {
+				return TurnAction{}, ErrActionConflict
+			}
+			if action.UpstreamRequestID == nil {
+				action, err = scanAction(tx.QueryRowContext(ctx, `
+UPDATE turn_actions SET upstream_request_id = $1
+WHERE execution_token = $2 AND upstream_request_id IS NULL AND status = $3
+RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
+          execution_token, in_flight, upstream_request_id, status,
+          result, error_code, created_at, updated_at
+`, *requestID, executionToken, status))
+				if err != nil {
+					return TurnAction{}, fmt.Errorf("backfill upstream request id: %w", err)
+				}
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			return TurnAction{}, fmt.Errorf("record existing action commit: %w", err)
 		}
 		return action, nil
 	}
+	if !action.InFlight {
+		return TurnAction{}, ErrInvalidTurnState
+	}
 	action, err = scanAction(tx.QueryRowContext(ctx, `
 UPDATE turn_actions
-SET status = $1, in_flight = FALSE, result = $2, error_code = $3
-WHERE execution_token = $4 AND status = 'reserved'
+SET status = $1, in_flight = FALSE, result = $2, error_code = $3,
+    upstream_request_id = COALESCE($4, upstream_request_id)
+WHERE execution_token = $5 AND status = 'reserved' AND in_flight = TRUE
 RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
           execution_token, in_flight, upstream_request_id, status,
           result, error_code, created_at, updated_at
-`, status, nullableJSON(canonicalResult), nullableStringPtr(errorCode), executionToken))
+`, status, nullableJSON(canonicalResult), nullableStringPtr(errorCode), nullableStringPtr(requestID), executionToken))
 	if err != nil {
 		return TurnAction{}, fmt.Errorf("record action: %w", err)
 	}
@@ -679,7 +796,7 @@ RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
 
 func (s *PostgresTurnStore) CommitTurn(ctx context.Context, owner Owner, in CommitTurnInput) (Turn, error) {
 	canonicalContext, err := canonicalJSON(in.Context)
-	if err != nil || !in.ContextWriteMode.Valid() || in.TurnID == "" || in.Lease.TurnID != in.TurnID || in.TerminalEventType == "" {
+	if err != nil || !in.ContextWriteMode.Valid() || in.TurnID == "" || in.Lease.TurnID != in.TurnID || in.TerminalEventType == "" || strings.TrimSpace(in.Assistant.Content) == "" {
 		return Turn{}, fmt.Errorf("%w: invalid turn commit", ErrInvalidArgument)
 	}
 	canonicalEvent, err := canonicalJSON(in.TerminalEventPayload)

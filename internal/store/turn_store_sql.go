@@ -587,7 +587,8 @@ func turnHasPossibleAction(ctx context.Context, tx *sql.Tx, turnID string) (bool
 	var count int
 	if err := tx.QueryRowContext(ctx, `
 SELECT count(*) FROM turn_actions
-WHERE turn_id = $1 AND status IN ('reserved', 'succeeded', 'ambiguous')
+WHERE turn_id = $1
+  AND (status = 'ambiguous' OR (status = 'reserved' AND in_flight = TRUE))
 `, turnID).Scan(&count); err != nil {
 		return false, fmt.Errorf("check possible turn actions: %w", err)
 	}

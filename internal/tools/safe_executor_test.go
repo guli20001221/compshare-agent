@@ -25,6 +25,17 @@ type spyExecutor struct {
 	errs   []error
 }
 
+type spyActionJournal struct {
+	calls int
+	args  map[string]any
+}
+
+func (j *spyActionJournal) Execute(ctx context.Context, action string, args map[string]any, call ActionCall) (map[string]any, error) {
+	j.calls++
+	j.args = copyMap(args)
+	return call(ctx, action, args)
+}
+
 func (s *spyExecutor) Execute(_ context.Context, _ string, args map[string]any) (map[string]any, error) {
 	s.calls++
 	s.args = append(s.args, args)
@@ -39,6 +50,44 @@ func (s *spyExecutor) Execute(_ context.Context, _ string, args map[string]any) 
 		return s.result, nil
 	}
 	return map[string]any{"RetCode": float64(0)}, nil
+}
+
+func TestSafeToolExecutor_V2MutatingCallRequiresJournal(t *testing.T) {
+	inner := &spyExecutor{}
+	safe := NewSafeToolExecutor(inner,
+		WithMutatingToolsEnabled(true),
+		WithConfirmFunc(func(string, map[string]any) bool { return true }),
+		WithRequireActionJournal(true),
+	)
+
+	_, err := safe.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-1"})
+	require.ErrorIs(t, err, ErrActionJournalRequired)
+	assert.Zero(t, inner.calls, "missing journal must fail before the external side effect")
+}
+
+func TestSafeToolExecutor_MutatingCallJournalsFilteredArgsAfterConfirmation(t *testing.T) {
+	inner := &spyExecutor{}
+	journal := &spyActionJournal{}
+	confirmed := false
+	policy := policyForAction("StopCompShareInstance")
+	policy.AllowedParams = []string{"UHostId"}
+	safe := NewSafeToolExecutor(inner,
+		WithMutatingToolsEnabled(true),
+		WithConfirmFunc(func(string, map[string]any) bool { confirmed = true; return true }),
+		WithPolicies(map[string]ToolExecutionPolicy{"StopCompShareInstance": policy}),
+		WithActionJournal(journal),
+		WithRequireActionJournal(true),
+	)
+
+	_, err := safe.Execute(context.Background(), "StopCompShareInstance", map[string]any{
+		"UHostId": "uhost-1", "IgnoredModelField": "must-not-be-journaled",
+	})
+	require.NoError(t, err)
+	assert.True(t, confirmed)
+	assert.Equal(t, 1, journal.calls)
+	assert.Equal(t, 1, inner.calls)
+	assert.Equal(t, "uhost-1", journal.args["UHostId"])
+	assert.NotContains(t, journal.args, "IgnoredModelField")
 }
 
 func TestDefaultPoliciesCoverRegistryAndSecurityActions(t *testing.T) {

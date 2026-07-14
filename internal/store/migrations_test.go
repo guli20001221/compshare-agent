@@ -92,6 +92,8 @@ func TestHTTPMigrationsCreateTurnExecutionKernel(t *testing.T) {
 		"args_hash",
 		"in_flight",
 		"upstream_request_id",
+		"in_flight        BOOLEAN       NOT NULL DEFAULT FALSE",
+		"status = 'reserved' OR NOT in_flight",
 	} {
 		assert.Contains(t, ddl, fragment)
 	}

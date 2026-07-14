@@ -80,12 +80,6 @@ func (s ActionStatus) Valid() bool {
 	}
 }
 
-// MayHaveExecuted is deliberately conservative. A reservation can cross a
-// process crash after the external side effect but before RecordAction.
-func (s ActionStatus) MayHaveExecuted() bool {
-	return s == ActionStatusReserved || s == ActionStatusSucceeded || s == ActionStatusAmbiguous
-}
-
 type InteractionStatus string
 
 const (
@@ -210,6 +204,14 @@ type ReserveActionInput struct {
 	ActionName        string
 	ArgsHash          string
 	UpstreamRequestID *string
+}
+
+// MayHaveExecuted is true only once StartAction has crossed the durable
+// before-call boundary, or when reconciliation already marked the outcome
+// ambiguous. A plain reservation has not called upstream and is safe to claim
+// under a later lease.
+func (a TurnAction) MayHaveExecuted() bool {
+	return (a.Status == ActionStatusReserved && a.InFlight) || a.Status == ActionStatusAmbiguous
 }
 
 // HashTurnRequest hashes framed fields rather than their concatenation, so

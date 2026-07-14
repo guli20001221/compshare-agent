@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -9,6 +11,13 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+type sessionActionJournal struct{ calls int }
+
+func (j *sessionActionJournal) Execute(ctx context.Context, action string, args map[string]any, call tools.ActionCall) (map[string]any, error) {
+	j.calls++
+	return call(ctx, action, args)
+}
 
 // newTwoSessions constructs two Engines from the same SharedDeps. Used by the
 // P0 isolation tests below. mockLLM / mockExecutor live in engine_test.go (same
@@ -142,6 +151,38 @@ func TestSessionIsolation_ConfirmFn(t *testing.T) {
 	// function from a process-wide var, both engines would share it.
 	if reflect.ValueOf(engA.confirmFn).Pointer() == reflect.ValueOf(engB.confirmFn).Pointer() {
 		t.Fatalf("session A and B share confirmFn pointer; per-session wiring broken")
+	}
+}
+
+func TestSessionIsolation_ActionJournalIsInjectedPerTurn(t *testing.T) {
+	inner := &mockExecutor{results: map[string]map[string]any{"StopCompShareInstance": {"RetCode": 0}}}
+	deps := &SharedDeps{
+		LLMClient: &mockLLM{}, RateLimiter: governance.NewInMemoryRateLimiter(governance.DefaultLimits()), ExternalExecutor: inner,
+	}
+	journalA := &sessionActionJournal{}
+	confirm := func(string, map[string]any) bool { return true }
+	engA := NewSession(deps, SessionOptions{
+		Subject: "subj-A", ConfirmFn: confirm, MutatingToolsEnabled: true,
+		ActionJournal: journalA, RequireActionJournal: true,
+	})
+	engB := NewSession(deps, SessionOptions{
+		Subject: "subj-B", ConfirmFn: confirm, MutatingToolsEnabled: true,
+		RequireActionJournal: true,
+	})
+
+	_, err := engA.safeExecutor.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-a"})
+	if err != nil {
+		t.Fatalf("session A journaled mutation: %v", err)
+	}
+	if journalA.calls != 1 {
+		t.Fatalf("session A journal calls=%d, want 1", journalA.calls)
+	}
+	_, err = engB.safeExecutor.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-b"})
+	if !errors.Is(err, tools.ErrActionJournalRequired) {
+		t.Fatalf("session B mutation error=%v, want missing journal", err)
+	}
+	if journalA.calls != 1 {
+		t.Fatalf("session B leaked into session A journal; calls=%d", journalA.calls)
 	}
 }
 
@@ -316,15 +357,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"contextTraceObserver":              true,
 		// Per-session: whether this session's history was ever trimmed/compacted.
 		// Leaking it across sessions would report a fresh session as already-trimmed.
-		"historyTrimmedThisSession":         true,
-		"retrievalTraceObserver":            true,
-		"freshnessTraceObserver":            true,
-		"diagnosisTraceObserver":            true,
-		"outcomeTraceObserver":              true,
-		"tokenUsageObserver":                true,
-		"rateLimitObserver":                 true,
-		"hardBlockObserver":                 true,
-		"contextDecisionObserver":           true,
+		"historyTrimmedThisSession": true,
+		"retrievalTraceObserver":    true,
+		"freshnessTraceObserver":    true,
+		"diagnosisTraceObserver":    true,
+		"outcomeTraceObserver":      true,
+		"tokenUsageObserver":        true,
+		"rateLimitObserver":         true,
+		"hardBlockObserver":         true,
+		"contextDecisionObserver":   true,
 		// stepSink is the agent-tier saga StepTrace sink (B8), set per-turn via
 		// SetStepSink to THIS session's trace recorder. Per-session by design:
 		// sharing it would route one tenant's step traces into another tenant's

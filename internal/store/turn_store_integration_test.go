@@ -204,12 +204,19 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 	assert.Equal(t, action.ExecutionToken, sameAction.ExecutionToken)
 	_, _, err = turns.ReserveAction(ctx, owner, leaseB, ReserveActionInput{Index: 0, ActionName: "StopInstance", ArgsHash: HashTurnRequest("other")})
 	require.ErrorIs(t, err, ErrActionConflict)
+	action, err = turns.StartAction(ctx, owner, leaseB, action.ExecutionToken)
+	require.NoError(t, err)
 	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
 	require.NoError(t, err)
 	action, err = turns.RecordAction(ctx, owner, action.ExecutionToken, ActionStatusSucceeded, json.RawMessage(`{"ok":true}`), nil)
 	require.NoError(t, err, "the real side-effect result must remain recordable after lease loss")
 	_, err = turns.RecordAction(ctx, owner, action.ExecutionToken, ActionStatusSucceeded, json.RawMessage(`{"ok":true}`), nil)
 	require.NoError(t, err, "same terminal action record is idempotent")
+	lateRequestID := "req-late-observed"
+	action, err = turns.RecordAction(ctx, owner, action.ExecutionToken, ActionStatusSucceeded, json.RawMessage(`{"ok":true}`), nil, &lateRequestID)
+	require.NoError(t, err, "a known upstream request id may be backfilled after the terminal result")
+	require.NotNil(t, action.UpstreamRequestID)
+	assert.Equal(t, lateRequestID, *action.UpstreamRequestID)
 	leaseB2, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-b2", time.Minute)
 	require.NoError(t, err)
 	assert.Greater(t, leaseB2.Epoch, leaseB.Epoch)
@@ -397,7 +404,9 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		require.NoError(t, acceptErr)
 		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-e", time.Minute)
 		require.NoError(t, acquireErr)
-		_, _, reserveErr := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "ExternalWrite", ArgsHash: HashTurnRequest("external-write")})
+		action, _, reserveErr := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "ExternalWrite", ArgsHash: HashTurnRequest("external-write")})
+		require.NoError(t, reserveErr)
+		_, reserveErr = turns.StartAction(ctx, owner, lease, action.ExecutionToken)
 		require.NoError(t, reserveErr)
 		reconciled, reconcileErr := turns.ReconcileTurn(ctx, owner, lease, "worker_lost")
 		require.NoError(t, reconcileErr)
@@ -415,6 +424,8 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-release", time.Minute)
 		require.NoError(t, acquireErr)
 		action, _, reserveErr := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "ExternalWrite", ArgsHash: HashTurnRequest("release-write")})
+		require.NoError(t, reserveErr)
+		action, reserveErr = turns.StartAction(ctx, owner, lease, action.ExecutionToken)
 		require.NoError(t, reserveErr)
 		require.NoError(t, turns.ReleaseConversationLease(ctx, owner, lease))
 		released, getErr := turns.GetTurn(ctx, owner, candidate.ID)
@@ -448,6 +459,8 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		lease, acquireErr := turns.AcquireConversationLease(ctx, owner, session.ID, candidate.ID, "replica-g", time.Minute)
 		require.NoError(t, acquireErr)
 		action, _, reserveErr := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{Index: 0, ActionName: "ExternalWrite", ArgsHash: HashTurnRequest("failed-write")})
+		require.NoError(t, reserveErr)
+		action, reserveErr = turns.StartAction(ctx, owner, lease, action.ExecutionToken)
 		require.NoError(t, reserveErr)
 		code := "upstream_rejected"
 		_, recordErr := turns.RecordAction(ctx, owner, action.ExecutionToken, ActionStatusFailed, json.RawMessage(`{"accepted":false}`), &code)
@@ -485,6 +498,141 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 
 	_, err = turns.AppendEvent(ctx, owner, leaseA, "old-epoch", nil, true)
 	assert.True(t, errors.Is(err, ErrLeaseFenced), fmt.Sprintf("old epoch must remain fenced, got %v", err))
+}
+
+func TestPostgresTurnStore_ActionReservationStartsOnlyUnderCurrentLease(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 72001, OrganizationID: 72002}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, json.RawMessage(`{"schema_version":"1.0"}`))
+	require.NoError(t, err)
+	turns := NewPostgresTurnStore(db)
+	turn, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "action-two-phase", RequestHash: HashTurnRequest("action-two-phase"), UserContent: "stop it",
+	})
+	require.NoError(t, err)
+	leaseA, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-a", time.Minute)
+	require.NoError(t, err)
+
+	reserved, created, err := turns.ReserveAction(ctx, owner, leaseA, ReserveActionInput{
+		Index: 0, ActionName: "StopCompShareInstance", ArgsHash: HashTurnRequest("canonical-args"),
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	assert.False(t, reserved.InFlight, "reservation must be durable before upstream execution starts")
+	_, err = turns.CommitTurn(ctx, owner, CommitTurnInput{
+		TurnID: turn.ID, Lease: leaseA, ExpectedContextVersion: turn.BaseContextVersion,
+		ContextWriteMode: ContextWriteUpdate, Context: json.RawMessage(`{"schema_version":"1.0"}`),
+		Assistant: AssistantPatch{Content: "must wait for action"}, TerminalEventType: "turn.committed",
+	})
+	require.ErrorIs(t, err, ErrActionUncertain, "even an unstarted reservation must be terminal before answer commit")
+
+	// Simulate a crash after reservation but before StartAction. The next lease
+	// may safely claim the same durable slot exactly once.
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+	leaseB, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-b", time.Minute)
+	require.NoError(t, err)
+	same, created, err := turns.ReserveAction(ctx, owner, leaseB, ReserveActionInput{
+		Index: 0, ActionName: "StopCompShareInstance", ArgsHash: HashTurnRequest("canonical-args"),
+	})
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, reserved.ExecutionToken, same.ExecutionToken)
+
+	started, err := turns.StartAction(ctx, owner, leaseB, same.ExecutionToken)
+	require.NoError(t, err)
+	assert.True(t, started.InFlight)
+	assert.Equal(t, leaseB.Epoch, started.LeaseEpoch)
+	_, err = turns.StartAction(ctx, owner, leaseB, same.ExecutionToken)
+	require.ErrorIs(t, err, ErrActionUncertain, "a started call must never be issued twice")
+}
+
+func TestPostgresTurnStore_RejectsEmptySemanticMessages(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 72201, OrganizationID: 72202}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := NewPostgresTurnStore(db)
+
+	_, _, err = turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "blank-user", RequestHash: HashTurnRequest("blank-user"), UserContent: " \n\t ",
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM chat_turns WHERE session_id = $1`, session.ID).Scan(&count))
+	assert.Zero(t, count)
+
+	turn, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "blank-assistant", RequestHash: HashTurnRequest("blank-assistant"), UserContent: "valid",
+	})
+	require.NoError(t, err)
+	lease, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica", time.Minute)
+	require.NoError(t, err)
+	_, err = turns.CommitTurn(ctx, owner, CommitTurnInput{
+		TurnID: turn.ID, Lease: lease, ExpectedContextVersion: turn.BaseContextVersion,
+		ContextWriteMode: ContextWriteUpdate, Context: json.RawMessage(`{"schema_version":"1.0"}`),
+		Assistant: AssistantPatch{Content: " \n\t "}, TerminalEventType: "turn.committed",
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	uncommitted, err := turns.GetTurn(ctx, owner, turn.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, TurnStatusCommitted, uncommitted.Status)
+}
+
+func TestPostgresTurnStore_ReconcileDistinguishesSafeReservationFromUnknownOutcome(t *testing.T) {
+	tests := []struct {
+		name       string
+		start      bool
+		finish     ActionStatus
+		wantStatus TurnStatus
+	}{
+		{name: "reserved but never started is retryable", wantStatus: TurnStatusFailedRetryable},
+		{name: "started result unknown is ambiguous", start: true, wantStatus: TurnStatusAmbiguousAfterAction},
+		{name: "succeeded result is known and replayable", start: true, finish: ActionStatusSucceeded, wantStatus: TurnStatusFailedRetryable},
+		{name: "definite upstream failure is known", start: true, finish: ActionStatusFailed, wantStatus: TurnStatusFailedRetryable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openIsolatedTurnTestDB(t)
+			ctx := context.Background()
+			owner := Owner{TopOrganizationID: 72101, OrganizationID: 72102}
+			session, err := NewSessionStore(db).Create(ctx, owner, nil, json.RawMessage(`{"schema_version":"1.0"}`))
+			require.NoError(t, err)
+			turns := NewPostgresTurnStore(db)
+			turn, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+				SessionID: session.ID, ClientTurnID: "reconcile-action", RequestHash: HashTurnRequest("reconcile-action"), UserContent: "change it",
+			})
+			require.NoError(t, err)
+			lease, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-a", time.Minute)
+			require.NoError(t, err)
+			action, _, err := turns.ReserveAction(ctx, owner, lease, ReserveActionInput{
+				Index: 0, ActionName: "StopCompShareInstance", ArgsHash: HashTurnRequest("args"),
+			})
+			require.NoError(t, err)
+			if tc.start {
+				action, err = turns.StartAction(ctx, owner, lease, action.ExecutionToken)
+				require.NoError(t, err)
+			}
+			if tc.finish != "" {
+				var code *string
+				result := json.RawMessage(`{"RetCode":0,"RequestId":"req-known"}`)
+				if tc.finish == ActionStatusFailed {
+					v := "upstream_api:230"
+					code = &v
+					result = json.RawMessage(`{"code":230,"message":"capacity"}`)
+				}
+				requestID := "req-known"
+				action, err = turns.RecordAction(ctx, owner, action.ExecutionToken, tc.finish, result, code, &requestID)
+				require.NoError(t, err)
+				assert.Equal(t, requestID, *action.UpstreamRequestID)
+			}
+			reconciled, err := turns.ReconcileTurn(ctx, owner, lease, "worker_lost")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantStatus, reconciled.Status)
+		})
+	}
 }
 
 func TestPostgresTurnStore_ConcurrentFencing(t *testing.T) {
@@ -674,6 +822,37 @@ func TestPostgresTurnStore_TakeoverRebindsPendingInteractionAndReplaysItsCard(t 
 	}
 	require.Len(t, currentRequested, 1, "resume must expose exactly one current-epoch confirmation card")
 	assert.Equal(t, takeover.Epoch, currentRequested[0].LeaseEpoch)
+}
+
+func TestPostgresTurnStore_ReboundPendingInteractionRestoresAwaitingState(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 74101, OrganizationID: 74102}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := NewPostgresTurnStore(db)
+	turn, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "rebind-state", RequestHash: HashTurnRequest("rebind-state"), UserContent: "confirm it",
+	})
+	require.NoError(t, err)
+	first, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-first", time.Minute)
+	require.NoError(t, err)
+	payload := json.RawMessage(`{"question":"continue?"}`)
+	_, _, err = turns.CreateInteraction(ctx, owner, first, "confirm", "confirmation", payload, 10*time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, turns.ReleaseConversationLease(ctx, owner, first))
+
+	takeover, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-next", time.Minute)
+	require.NoError(t, err)
+	running, err := turns.GetTurn(ctx, owner, turn.ID)
+	require.NoError(t, err)
+	require.Equal(t, TurnStatusRunning, running.Status, "lease acquisition starts a retryable turn")
+	_, created, err := turns.CreateInteraction(ctx, owner, takeover, "confirm", "confirmation", payload, 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, created)
+	rebound, err := turns.GetTurn(ctx, owner, turn.ID)
+	require.NoError(t, err)
+	assert.Equal(t, TurnStatusAwaitingConfirmation, rebound.Status, "a pending interaction and running turn may never disagree")
 }
 
 func TestPostgresTurnStore_AcquireQueuedTurnRefreshesItsContextSnapshot(t *testing.T) {

@@ -28,6 +28,8 @@ var (
 	ErrHistoryWindowExceeded        = errors.New("history window exceeded")
 	ErrHistoricalMonitorUnsupported = errors.New("historical monitor unsupported")
 	ErrMutatingActionDisabled       = errors.New("mutating action disabled")
+	ErrActionJournalRequired        = errors.New("mutating action journal required")
+	ErrActionOutcomeUncertain       = errors.New("mutating action outcome is uncertain; automatic retry refused")
 	// ErrCFSZoneUnresolved is returned when GetCompShareCFSUpgradePrice cannot
 	// resolve the CFS's internal zone_id before dispatch. Without zone_id,
 	// upstream silently returns RetCode 0 with Price 0 (a fake free price)
@@ -47,6 +49,19 @@ const (
 )
 
 type ConfirmFunc func(action string, args map[string]any) bool
+
+// ActionCall is the single external side-effect attempt guarded by an
+// ActionJournal. The journal must durably mark the call started before invoking
+// it and must never invoke it for a replayed or uncertain action.
+type ActionCall func(ctx context.Context, action string, args map[string]any) (map[string]any, error)
+
+// ActionJournal is injected per durable v2 turn. It deliberately lives in the
+// tools package so SafeToolExecutor remains the one boundary shared by ReAct,
+// routed handlers, workflows, and deploy sagas, without coupling those paths
+// to the SQL store.
+type ActionJournal interface {
+	Execute(ctx context.Context, action string, args map[string]any, call ActionCall) (map[string]any, error)
+}
 
 type SafeToolRequest struct {
 	Action string
@@ -75,6 +90,8 @@ type SafeToolExecutor struct {
 	policies             map[string]ToolExecutionPolicy
 	confirm              ConfirmFunc
 	mutatingToolsEnabled bool
+	actionJournal        ActionJournal
+	requireActionJournal bool
 	// zoneCatalog resolves a Zone string to its numeric ZoneID for
 	// resolveJupyterTokenZoneID. Defaults to the shared, process-wide,
 	// TTL-cached zones.Default() (same instance engine.Engine uses for the
@@ -121,6 +138,18 @@ func WithConfirmFunc(confirm ConfirmFunc) SafeOption {
 func WithMutatingToolsEnabled(enabled bool) SafeOption {
 	return func(s *SafeToolExecutor) {
 		s.mutatingToolsEnabled = enabled
+	}
+}
+
+func WithActionJournal(journal ActionJournal) SafeOption {
+	return func(s *SafeToolExecutor) {
+		s.actionJournal = journal
+	}
+}
+
+func WithRequireActionJournal(required bool) SafeOption {
+	return func(s *SafeToolExecutor) {
+		s.requireActionJournal = required
 	}
 }
 
@@ -229,11 +258,33 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		}
 	}
 
-	if req.Hooks.OnBeforeCall != nil {
-		req.Hooks.OnBeforeCall(req.Action, args)
+	var raw map[string]any
+	var attempts int
+	if policy.Class == ActionClassMutating && s.requireActionJournal && s.actionJournal == nil {
+		return nil, fmt.Errorf("%w: %s", ErrActionJournalRequired, req.Action)
 	}
-
-	raw, attempts, err := s.executeWithRetry(ctx, policy, req.Action, args)
+	if policy.Class == ActionClassMutating && s.actionJournal != nil {
+		// Mutations get exactly one external attempt. Retrying a write below the
+		// durable journal would bypass its action slot and can duplicate effects.
+		raw, err = s.actionJournal.Execute(ctx, req.Action, args, func(callCtx context.Context, action string, callArgs map[string]any) (map[string]any, error) {
+			if req.Hooks.OnBeforeCall != nil {
+				req.Hooks.OnBeforeCall(action, callArgs)
+			}
+			attemptCtx := callCtx
+			var cancel context.CancelFunc
+			if policy.TimeoutMS > 0 {
+				attemptCtx, cancel = context.WithTimeout(callCtx, time.Duration(policy.TimeoutMS)*time.Millisecond)
+				defer cancel()
+			}
+			return s.inner.Execute(attemptCtx, action, callArgs)
+		})
+		attempts = 1
+	} else {
+		if req.Hooks.OnBeforeCall != nil {
+			req.Hooks.OnBeforeCall(req.Action, args)
+		}
+		raw, attempts, err = s.executeWithRetry(ctx, policy, req.Action, args)
+	}
 	if err != nil {
 		return nil, err
 	}

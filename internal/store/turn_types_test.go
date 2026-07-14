@@ -37,11 +37,12 @@ func TestTurnStatusTerminalContract(t *testing.T) {
 	assert.False(t, TurnStatus("future_status").Valid())
 }
 
-func TestActionStatusMayHaveExecuted(t *testing.T) {
-	assert.True(t, ActionStatusReserved.MayHaveExecuted())
-	assert.True(t, ActionStatusSucceeded.MayHaveExecuted())
-	assert.True(t, ActionStatusAmbiguous.MayHaveExecuted())
-	assert.False(t, ActionStatusFailed.MayHaveExecuted())
+func TestTurnActionMayHaveExecuted(t *testing.T) {
+	assert.False(t, (TurnAction{Status: ActionStatusReserved}).MayHaveExecuted())
+	assert.True(t, (TurnAction{Status: ActionStatusReserved, InFlight: true}).MayHaveExecuted())
+	assert.True(t, (TurnAction{Status: ActionStatusAmbiguous}).MayHaveExecuted())
+	assert.False(t, (TurnAction{Status: ActionStatusSucceeded}).MayHaveExecuted(), "known success is replayable, not ambiguous")
+	assert.False(t, (TurnAction{Status: ActionStatusFailed}).MayHaveExecuted())
 }
 
 func TestHashTurnCommitRequiresAndIncludesContextWriteMode(t *testing.T) {

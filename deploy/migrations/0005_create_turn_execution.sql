@@ -71,7 +71,7 @@ CREATE TABLE turn_actions (
   action_name      VARCHAR(128)  NOT NULL,
   args_hash        CHAR(64)      NOT NULL,
   execution_token  CHAR(36)      NOT NULL,
-  in_flight        BOOLEAN       NOT NULL DEFAULT TRUE,
+  in_flight        BOOLEAN       NOT NULL DEFAULT FALSE,
   upstream_request_id VARCHAR(128),
   status            VARCHAR(16)  NOT NULL,
   result             JSONB,
@@ -84,8 +84,7 @@ CREATE TABLE turn_actions (
     'reserved', 'succeeded', 'failed', 'ambiguous'
   )),
   CONSTRAINT ck_turn_action_in_flight CHECK (
-    (status = 'reserved' AND in_flight) OR
-    (status <> 'reserved' AND NOT in_flight)
+    status = 'reserved' OR NOT in_flight
   )
 );
 
