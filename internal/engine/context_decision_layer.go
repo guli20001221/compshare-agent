@@ -184,6 +184,8 @@ func (e *Engine) resetContextDecisionTurn() {
 	e.contextDecisionUserTextThisTurn = ""
 	e.contextDecisionThisTurn = nil
 	e.contextDecisionErrThisTurn = nil
+	e.contextDecisionTraceThisTurn = ContextDecisionTrace{}
+	e.contextDecisionTraceSeenThisTurn = false
 }
 
 func cloneContextDecision(in *ContextDecision) *ContextDecision {
@@ -803,7 +805,7 @@ func contextDecisionStateDelta(decision *ContextDecision) []string {
 }
 
 func (e *Engine) emitContextDecisionTrace(in ContextDecisionInput, decision *ContextDecision, err error) {
-	if e == nil || e.contextDecisionObserver == nil {
+	if e == nil {
 		return
 	}
 	scope := toolScopeForIntent(in.RouterIntent)
@@ -828,5 +830,9 @@ func (e *Engine) emitContextDecisionTrace(in ContextDecisionInput, decision *Con
 	if err != nil {
 		trace.Error = err.Error()
 	}
-	e.contextDecisionObserver(trace)
+	e.contextDecisionTraceThisTurn = trace
+	e.contextDecisionTraceSeenThisTurn = true
+	if e.contextDecisionObserver != nil {
+		e.contextDecisionObserver(trace)
+	}
 }

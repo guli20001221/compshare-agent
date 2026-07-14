@@ -335,6 +335,11 @@ func knowledgeAnswerHasRawLeak(answer string, hits []knowledge.RetrievalHit) boo
 
 func (e *Engine) emitKnowledgeHardBlock(trace observability.EngineHardBlockTrace) {
 	e.hardBlockStandingThisTurn = trace.Hit
+	if trace.Hit {
+		e.hardBlockTraceThisTurn = trace
+	} else {
+		e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
+	}
 	if e.hardBlockObserver != nil {
 		e.hardBlockObserver(trace)
 	}
@@ -345,6 +350,7 @@ func (e *Engine) retractKnowledgeHardBlock() {
 		return
 	}
 	e.hardBlockStandingThisTurn = false
+	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
 	if e.hardBlockObserver != nil {
 		e.hardBlockObserver(observability.EngineHardBlockTrace{Hit: false})
 	}

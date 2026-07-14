@@ -83,13 +83,11 @@ var enginePreBlock = inputguard.New(
 // semantic split between unsupported account ledgers and supported instance
 // pricing/billing/refund routes.
 func (e *Engine) emitAccountBillingHardBlock() string {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    refusal.CategoryAccountBilling,
-			TriggeredBy: observability.HardBlockTriggerPlannerIntent,
-		})
-	}
+	e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
+		Hit:         true,
+		Category:    refusal.CategoryAccountBilling,
+		TriggeredBy: observability.HardBlockTriggerPlannerIntent,
+	})
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
 		Content: refusal.AccountBillingUnsupported,

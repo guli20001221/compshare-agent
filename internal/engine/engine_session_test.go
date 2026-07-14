@@ -367,14 +367,23 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"contextDecisionUserTextThisTurn":  true,
 		"contextDecisionThisTurn":          true,
 		"contextDecisionErrThisTurn":       true,
+		"contextDecisionTraceThisTurn":     true,
+		"contextDecisionTraceSeenThisTurn": true,
 		"createPreferenceThisTurn":         true,
 		"turnTokensConsumed":               true,
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
-		"reactRoundsThisTurn":       true,
-		"reactCeilingHitThisTurn":   true,
-		"hardBlockStandingThisTurn": true,
+		"reactRoundsThisTurn":                    true,
+		"reactCeilingHitThisTurn":                true,
+		"turnModelCallsThisTurn":                 true,
+		"turnCompletionClassHint":                true,
+		"turnCompletionReasonHint":               true,
+		"turnCompletionEmittedThisTurn":          true,
+		"lastPlannerRouteStatusThisTurn":         true,
+		"lastPlannerIntentForCompletionThisTurn": true,
+		"hardBlockStandingThisTurn":              true,
+		"hardBlockTraceThisTurn":                 true,
 		// Per-turn instance-binding observables (#3 StateTrace). Per-session/
 		// per-turn by design — sharing would attribute one tenant's bound
 		// instance / fact-cache age to another's turn. Reset every turn.
@@ -396,6 +405,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"rateLimitObserver":         true,
 		"hardBlockObserver":         true,
 		"contextDecisionObserver":   true,
+		"turnCompletionObserver":    true,
 		// stepSink is the agent-tier saga StepTrace sink (B8), set per-turn via
 		// SetStepSink to THIS session's trace recorder. Per-session by design:
 		// sharing it would route one tenant's step traces into another tenant's
@@ -434,12 +444,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 75, len(perSessionFields); want != got {
+	if want, got := 85, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 91, typ.NumField(); want != got {
+	if want, got := 101, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

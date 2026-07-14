@@ -207,6 +207,38 @@ func TestFinalizeOutcome_RoundCeilingBudget(t *testing.T) {
 	}
 }
 
+func TestFinalizeOutcome_IntermediateRateLimitDoesNotOverrideSuccessfulCompletion(t *testing.T) {
+	rec := TraceRecord{
+		RateLimit: RateLimitTrace{Checked: true, Allowed: false, Action: "grounded_renderer"},
+		Completion: TurnCompletionTrace{
+			Class:           CompletionClassDeterministicAnswer,
+			Reason:          CompletionReasonDirectDispatch,
+			ContextDecision: CompletionDecisionNotInvoked,
+			ToolScope:       "named",
+		},
+	}
+	rec.FinalizeOutcome(FinishSignals{})
+	if rec.Outcome.TerminatedBy != TerminatedByDone {
+		t.Fatalf("terminated_by = %q, want done after successful fallback", rec.Outcome.TerminatedBy)
+	}
+}
+
+func TestFinalizeOutcome_TerminalRateLimitUsesCompletion(t *testing.T) {
+	rec := TraceRecord{
+		RateLimit: RateLimitTrace{Checked: true, Allowed: false, Action: "main_react_chat"},
+		Completion: TurnCompletionTrace{
+			Class:           CompletionClassSafetyBlock,
+			Reason:          CompletionReasonRateLimit,
+			ContextDecision: CompletionDecisionNotInvoked,
+			ToolScope:       "read_only_full",
+		},
+	}
+	rec.FinalizeOutcome(FinishSignals{})
+	if rec.Outcome.TerminatedBy != TerminatedByBlocked {
+		t.Fatalf("terminated_by = %q, want blocked for terminal denial", rec.Outcome.TerminatedBy)
+	}
+}
+
 // TestFinalizeOutcome_EmptyOnCleanFixtureStaysSHAStable verifies a clean,
 // non-finalized record marshals without any outcome block (omitempty), so adding
 // these fields does not change byte output for records that carry none of them.

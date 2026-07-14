@@ -251,6 +251,8 @@ type Engine struct {
 	contextDecisionUserTextThisTurn  string
 	contextDecisionThisTurn          *ContextDecision
 	contextDecisionErrThisTurn       error
+	contextDecisionTraceThisTurn     ContextDecisionTrace
+	contextDecisionTraceSeenThisTurn bool
 	groundedRenderer                 grounded.Renderer
 	groundedRendererModel            string
 	// fastTemplate, when true, makes fast-tier catalog envelopes
@@ -267,6 +269,7 @@ type Engine struct {
 	freshnessTraceObserver           func(observability.FreshnessTrace)
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
 	contextDecisionObserver          func(ContextDecisionTrace)
+	turnCompletionObserver           func(observability.TurnCompletionTrace)
 	outcomeTraceObserver             func(observability.OutcomeTrace)
 	tokenUsageObserver               func(llm.TokenUsage)
 	rateLimiter                      governance.RateLimiter
@@ -339,12 +342,19 @@ type Engine struct {
 	// answer (that path emits no hard-block, so the trace's budget terminus is
 	// otherwise underivable). Both reset at the top of Chat; read post-turn by the
 	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
-	reactRoundsThisTurn     int
-	reactCeilingHitThisTurn bool
+	reactRoundsThisTurn                    int
+	reactCeilingHitThisTurn                bool
+	turnModelCallsThisTurn                 int
+	turnCompletionClassHint                string
+	turnCompletionReasonHint               string
+	turnCompletionEmittedThisTurn          bool
+	lastPlannerRouteStatusThisTurn         intent.RouteStatus
+	lastPlannerIntentForCompletionThisTurn intent.Intent
 	// A post-LLM or token-budget block can be recovered later in the same turn.
 	// Keep the standing bit so a successfully validated answer can overwrite the
 	// earlier failure attribution instead of being stored as "blocked".
 	hardBlockStandingThisTurn bool
+	hardBlockTraceThisTurn    observability.EngineHardBlockTrace
 	hardBlockObserver         func(observability.EngineHardBlockTrace)
 	// stepSink receives agent-tier saga StepTraces (B8). Set per-turn via
 	// SetStepSink to the trace recorder, which folds them into the turn's
@@ -1343,9 +1353,14 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // skip the LLM and therefore never fire callbacks.
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
+	e.resetTurnCompletion()
 	e.resetContextDecisionTurn()
+	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
+		e.turnModelCallsThisTurn++
+	})
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
+	defer e.emitTurnCompletion()
 	// Substitute the deterministically rendered instance table into the finished reply,
 	// then capture. Ordering matters both ways: the substitution must happen before the
 	// grounding observer runs (otherwise the placeholder, not the real table, is what
@@ -1369,20 +1384,42 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.rateLimitSubject = subject
 		}
 	}
-	// Per-turn ConfirmFunc override (HTTP path injects SSE-backed confirm).
-	if opts.ConfirmFunc != nil {
+	// Per-turn confirmation wrapper records an explicit user denial as the
+	// terminal path. It wraps both the HTTP override and the stored CLI gate.
+	if opts.ConfirmFunc != nil || e.confirmFn != nil {
 		origConfirm := e.confirmFn
-		e.confirmFn = ConfirmFunc(opts.ConfirmFunc)
-		e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(opts.ConfirmFunc))
+		confirm := e.confirmFn
+		if opts.ConfirmFunc != nil {
+			confirm = ConfirmFunc(opts.ConfirmFunc)
+		}
+		wrappedConfirm := ConfirmFunc(func(action string, args map[string]any) bool {
+			confirmed := confirm(action, args)
+			if !confirmed {
+				e.markTurnCompletion(observability.CompletionClassConfirmation, observability.CompletionReasonConfirmationDeclined)
+			}
+			return confirmed
+		})
+		e.confirmFn = wrappedConfirm
+		e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(wrappedConfirm))
 		defer func() {
 			e.confirmFn = origConfirm
 			e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(origConfirm))
 		}()
 	}
 	// Per-turn editable-form gate (HTTP path, flag+opt-in only).
-	if opts.ConfirmEditsFunc != nil {
+	if opts.ConfirmEditsFunc != nil || e.confirmEditsFn != nil {
 		origEdits := e.confirmEditsFn
-		e.confirmEditsFn = opts.ConfirmEditsFunc
+		confirmEdits := e.confirmEditsFn
+		if opts.ConfirmEditsFunc != nil {
+			confirmEdits = opts.ConfirmEditsFunc
+		}
+		e.confirmEditsFn = func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+			resolution := confirmEdits(action, args, form)
+			if !resolution.Confirmed {
+				e.markTurnCompletion(observability.CompletionClassConfirmation, observability.CompletionReasonConfirmationDeclined)
+			}
+			return resolution
+		}
 		defer func() { e.confirmEditsFn = origEdits }()
 	}
 	if opts.GuidedCreate {
@@ -1399,6 +1436,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.reactRoundsThisTurn = 0
 	e.reactCeilingHitThisTurn = false
 	e.hardBlockStandingThisTurn = false
+	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
 	e.lastPlannerIntentThisTurn = ""
 	e.lastPlannerActionThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
@@ -1450,13 +1488,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// (e.g. "运维监控", "最近访问") from triggering false-positive blocks.
 	if decision := enginePreBlock.Decide(userMsg); decision.Matched {
 		e.pendingResourceSelection = nil
-		if e.hardBlockObserver != nil {
-			e.hardBlockObserver(observability.EngineHardBlockTrace{
-				Hit:         true,
-				Category:    decision.Category,
-				TriggeredBy: observability.HardBlockTriggerKeyword,
-			})
-		}
+		e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
+			Hit:         true,
+			Category:    decision.Category,
+			TriggeredBy: observability.HardBlockTriggerKeyword,
+		})
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleUser,
 			Content: userMsg,
@@ -1496,6 +1532,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		return reply, nil
 	}
 	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
+		if e.displayedResourceSelectionThisTurn != nil {
+			e.markTurnCompletion(observability.CompletionClassStructuredClarify, observability.CompletionReasonSelectionRequired)
+		} else {
+			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+		}
 		return reply, nil
 	}
 	// The deterministic lifecycle shortcut predates the context decision layer.
@@ -1506,9 +1547,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// a read-only ReAct window, never to an unreviewed mutation.
 	if !e.hasContextDecisionContext() {
 		if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
+			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
 			return reply, nil
 		}
 		if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
+			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
 			return reply, nil
 		}
 	}
@@ -1598,6 +1641,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			}
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
+			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
 			content := rateLimitMessage(decision.Reason)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
@@ -1889,6 +1933,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		Role:    openai.ChatMessageRoleAssistant,
 		Content: reactCeilingRefusal,
 	})
+	e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonReactRoundCeiling)
 	return reactCeilingRefusal, nil
 }
 
@@ -3536,6 +3581,10 @@ func countPlannerSnapshotInstances(snapshot entity.RegistrySnapshot) int {
 }
 
 func (e *Engine) emitPlannerTrace(result intent.IntentRouterResult, status intent.RouteStatus, latency time.Duration) {
+	e.lastPlannerRouteStatusThisTurn = status
+	if result.Plan.Intent != "" {
+		e.lastPlannerIntentForCompletionThisTurn = result.Plan.Intent
+	}
 	if e.plannerTraceObserver == nil {
 		return
 	}

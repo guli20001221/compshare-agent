@@ -163,6 +163,10 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 		ccReq.ToolChoice = req.ToolChoice
 	}
 
+	// Count at the last boundary before the SDK attempts the upstream request.
+	// Putting this in Chat or chat would miss internal retries or count logical
+	// calls that never became requests.
+	observeOutboundCall(ctx, OutboundCall{Model: c.model})
 	stream, err := c.client.CreateChatCompletionStream(ctx, ccReq)
 	if err != nil {
 		return nil, fmt.Errorf("llm stream: %w", err)

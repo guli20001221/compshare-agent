@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.5"
+const SchemaVersion = "trace.v0.6"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -140,6 +140,7 @@ type TraceRecord struct {
 	Retrieval           RetrievalTrace       `json:"retrieval"`
 	Diagnosis           DiagnosisTrace       `json:"diagnosis"`
 	State               StateTrace           `json:"state"`
+	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
 	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
 	// omitempty for all non-agent turns, so trace output stays byte-identical
@@ -169,6 +170,7 @@ type traceRecordJSON struct {
 	Retrieval           *RetrievalTrace       `json:"retrieval,omitempty"`
 	Diagnosis           *DiagnosisTrace       `json:"diagnosis,omitempty"`
 	State               *StateTrace           `json:"state,omitempty"`
+	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Steps               []StepTrace           `json:"steps,omitempty"`
 }
@@ -220,6 +222,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if traceStateObserved(r.State) {
 		out.State = &r.State
+	}
+	if traceCompletionObserved(r.Completion) {
+		out.Completion = &r.Completion
 	}
 	if traceOutcomeObserved(r.Outcome) {
 		out.Outcome = &r.Outcome

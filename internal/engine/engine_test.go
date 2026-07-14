@@ -4656,8 +4656,12 @@ func TestRouteDispatchGroundedGeneratorRateLimitDenialUsesDeterministicReply(t *
 	})
 	eng.SetGroundedGenerator(groundedRenderer, "deepseek-v4-flash")
 	var rendererTraces []observability.RendererTrace
+	var completions []observability.TurnCompletionTrace
 	eng.SetRendererTraceObserver(func(trace observability.RendererTrace) {
 		rendererTraces = append(rendererTraces, trace)
+	})
+	eng.SetTurnCompletionObserver(func(trace observability.TurnCompletionTrace) {
+		completions = append(completions, trace)
 	})
 
 	reply, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
@@ -4670,6 +4674,10 @@ func TestRouteDispatchGroundedGeneratorRateLimitDenialUsesDeterministicReply(t *
 	require.Len(t, rendererTraces, 1)
 	assert.True(t, rendererTraces[0].FallbackUsed)
 	assert.Equal(t, grounded.FallbackRateLimited, rendererTraces[0].FallbackReason)
+	require.Len(t, completions, 1)
+	assert.Equal(t, observability.CompletionClassDeterministicAnswer, completions[0].Class,
+		"an intermediate renderer denial must not turn a delivered fallback into a blocked turn")
+	assert.Equal(t, observability.CompletionReasonDirectDispatch, completions[0].Reason)
 }
 
 func TestRouteDispatchMonitorPlanBypassesReAct(t *testing.T) {

@@ -64,6 +64,53 @@ func TestClientChatRetriesTransientStreamOpenError(t *testing.T) {
 	}
 }
 
+func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&attempts, 1)
+		if attempt == 1 {
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("response writer does not support hijacking")
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Fatalf("hijack: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "test-model"})
+	var observed []OutboundCall
+	ctx := WithOutboundCallObserver(context.Background(), func(call OutboundCall) {
+		observed = append(observed, call)
+	})
+
+	resp, err := client.Chat(ctx, ChatRequest{Messages: []openai.ChatCompletionMessage{{
+		Role: openai.ChatMessageRoleUser, Content: "hello",
+	}}})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("Content = %q, want ok", resp.Content)
+	}
+	if got := len(observed); got != 2 {
+		t.Fatalf("observer calls = %d, want 2 actual attempts", got)
+	}
+	for i, call := range observed {
+		if call.Model != "test-model" {
+			t.Fatalf("observer call %d model = %q, want test-model", i, call.Model)
+		}
+	}
+}
+
 func TestClientChatRetriesTransientStreamRecvError(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

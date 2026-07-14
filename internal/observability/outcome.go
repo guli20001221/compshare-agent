@@ -148,6 +148,22 @@ func (r TraceRecord) DeriveResolution(s FinishSignals, terminatedBy string) stri
 //
 // so the precedence chain reaches the error / budget branches for those turns.
 func (r TraceRecord) isGenuineBlock() bool {
+	// A finalized completion is authoritative. RateLimit records every check and
+	// intentionally retains a denial even when a deterministic fallback later
+	// succeeds; treating that intermediate event as the turn's terminus made a
+	// delivered answer look blocked. Legacy records without Completion preserve
+	// the previous derivation below.
+	if traceCompletionObserved(r.Completion) {
+		if r.Completion.Class != CompletionClassSafetyBlock {
+			return false
+		}
+		switch r.Completion.Reason {
+		case CompletionReasonTokenBudget, CompletionReasonReactRoundCeiling:
+			return false
+		default:
+			return true
+		}
+	}
 	if r.RateLimit.Checked && !r.RateLimit.Allowed {
 		return true
 	}
@@ -165,6 +181,12 @@ func (r TraceRecord) isGenuineBlock() bool {
 // (observable in the record as the token-budget hard-block category) or the ReAct
 // round ceiling (a FinishSignal, since that path emits no hard-block).
 func (r TraceRecord) budgetExhausted(s FinishSignals) bool {
+	if traceCompletionObserved(r.Completion) && r.Completion.Class == CompletionClassSafetyBlock {
+		switch r.Completion.Reason {
+		case CompletionReasonTokenBudget, CompletionReasonReactRoundCeiling:
+			return true
+		}
+	}
 	if r.EngineHardBlock.Hit && r.EngineHardBlock.Category == HardBlockCategoryTokenBudget {
 		return true
 	}
