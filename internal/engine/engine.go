@@ -1969,7 +1969,13 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	e.lastPlannerActionThisTurn = dispatch.result.Plan.Slots.Action
 	e.clearPendingDeployModelForNonCreateFamily(dispatch.result.Plan.Intent)
 	if dispatch.result.Plan.Intent == intent.IntentDiagnosis {
-		dispatch.result.Plan = augmentPlanTargetRefsFromUserText(dispatch.result.Plan, userMsg, dispatch.snapshot)
+		// ...and remember WHICH MACHINE, which is the other half of the same hole. The
+		// scan below already derives the referent from the user's own words; until now
+		// the turn used it and then threw it away, because diagnosis has no
+		// direct-dispatch handler to record it (see rememberUserNamedInstance).
+		snapshot := e.diagnosisResolutionSnapshot(ctx, dispatch.snapshot)
+		dispatch.result.Plan = augmentPlanTargetRefsFromUserText(dispatch.result.Plan, userMsg, snapshot)
+		e.rememberUserNamedInstance(userMsg, snapshot)
 	}
 
 	// Token budget gate. callPlannerOnce already added planner usage to
