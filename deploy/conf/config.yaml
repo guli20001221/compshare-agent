@@ -71,6 +71,9 @@ agent:
     # Agentic-RAG answer stack (RAG as a tool the agent calls in-loop).
     agentic_search_knowledge: true
     knowledge_qa_agent_loop: true
+    # Model-assisted semantic check, bounded by deterministic evidence guards.
+    # Explicit false is fail-closed: unchecked KB answers are not released.
+    knowledge_answer_verifier: true
     knowledge_qa_disciplined_synthesis: true
     external_knowledge: true            # merge external tool/ops corpus (vLLM/CUDA/Linux/PyTorch)
     # Context-engineering optimizations.

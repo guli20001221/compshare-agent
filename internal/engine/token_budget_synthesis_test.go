@@ -104,6 +104,7 @@ func TestAnswerWithRetrievedEvidence_UnderBudgetUncitedStillRetries(t *testing.T
 // ReAct-loop budget gates use. Evidence in hand + over budget => a grounded,
 // citation-stripped answer (ok=true), not a refusal.
 func TestSynthesizeOnBudgetExceeded_DeliversFromEvidenceOverBudget(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
 		{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用。","supported":true,"claims":[{"answer_quote":"可以把 max-model-len 调小来降低显存占用","chunk_id":"ext-vllm-oom-001","evidence_quote":"把 max-model-len 设置得小一些就能显著降低显存占用"}],"unsupported":[]}`, Usage: llm.TokenUsage{TotalTokens: 60000}},
 	}}, &mockExecutor{}, nil)

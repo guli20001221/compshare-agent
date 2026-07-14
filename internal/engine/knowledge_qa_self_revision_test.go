@@ -19,6 +19,7 @@ func TestKQASelfRevisionFlagDefaultOffAndToggle(t *testing.T) {
 }
 
 func TestKQASelfRevisionFlagAddsDirectnessInsideProofCarryingRepair(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	previous := KQASelfRevisionEnabled()
 	SetKQASelfRevisionEnabled(true)
 	t.Cleanup(func() { SetKQASelfRevisionEnabled(previous) })

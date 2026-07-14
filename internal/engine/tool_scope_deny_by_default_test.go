@@ -53,7 +53,6 @@ func TestAnUnroutedTurnIsNeverAuthorizedToWrite(t *testing.T) {
 	unrouted := []intent.Intent{
 		intent.Intent(""),        // the router returned nothing at all
 		intent.Intent("unknown"), // the router explicitly gave up
-		intent.Intent("knowledge_qa"),
 		intent.Intent("some_route_someone_adds_in_2027_and_forgets_to_scope"),
 	}
 
@@ -70,6 +69,27 @@ func TestAnUnroutedTurnIsNeverAuthorizedToWrite(t *testing.T) {
 				"intent %q was handed the mutating tool %q. The router did not know what the user "+
 					"wanted, and we gave the model the power to stop their instance.", i, name)
 		}
+	}
+}
+
+func TestSearchKnowledgeIsVisibleOnlyToKnowledgeQA(t *testing.T) {
+	previous := tools.AgenticSearchKnowledgeEnabled()
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	t.Cleanup(func() { tools.SetAgenticSearchKnowledgeEnabled(previous) })
+
+	require.Contains(t, toolNameSet(visibleRegistryForIntentRoute(
+		intent.IntentRoute{Intent: intent.IntentKnowledgeQA}, true)), "SearchKnowledge")
+
+	for _, i := range []intent.Intent{
+		intent.IntentDiagnosis,
+		intent.IntentVagueFailure,
+		intent.IntentUnknown,
+		intent.Intent(""),
+		intent.Intent("some_route_someone_adds_in_2027_and_forgets_to_scope"),
+	} {
+		require.NotContains(t, toolNameSet(visibleRegistryForIntentRoute(
+			intent.IntentRoute{Intent: i}, true)), "SearchKnowledge",
+			"intent %q must not bypass the knowledge_qa evidence-verification exit", i)
 	}
 }
 

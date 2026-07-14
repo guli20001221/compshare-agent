@@ -908,6 +908,7 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     guided_create: true
     agentic_search_knowledge: true
     knowledge_qa_agent_loop: true
+    knowledge_answer_verifier: true
     knowledge_qa_disciplined_synthesis: true
     external_knowledge: true
     session_fact_context: true
@@ -941,6 +942,8 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	assert.True(t, *f.MutatingTools)
 	require.NotNil(t, f.GroundedValidator)
 	assert.False(t, *f.GroundedValidator)
+	require.NotNil(t, f.KnowledgeAnswerVerifier)
+	assert.True(t, *f.KnowledgeAnswerVerifier)
 	require.NotNil(t, f.CreatePreferenceExtractor)
 	assert.True(t, *f.CreatePreferenceExtractor)
 	require.NotNil(t, f.UnifiedCreate)
@@ -965,6 +968,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			MutatingTools:             boolPtr(true), // YAML true → "1"
 			DurableTurns:              boolPtr(true),
 			AgenticSearchKnowledge:    boolPtr(false), // YAML false → "0" (off; this flag defaults ON)
+			KnowledgeAnswerVerifier:   boolPtr(false),
 			FlashKnowledgeRouteGuard:  boolPtr(true),
 			CreatePreferenceExtractor: boolPtr(false),
 			UnifiedCreate:             boolPtr(false),
@@ -1000,6 +1004,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
 	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "0", getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"), "YAML false → explicit off, wins over default-on")
+	assert.Equal(t, "0", getenv("COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER"), "YAML false → explicit fail-closed verifier off")
 	assert.Equal(t, "1", getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"), "YAML true wins over env off")
 	assert.Equal(t, "0", getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"), "YAML false wins over env on")
 	assert.Equal(t, "0", getenv("COMPSHARE_UNIFIED_CREATE"), "YAML false wins over env on")

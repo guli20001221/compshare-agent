@@ -201,6 +201,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)
 	}
 	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
+	knowledgeAnswerVerifier, unknownKnowledgeAnswerVerifier := knowledgeAnswerVerifierEnabledFromEnv(getenv)
+	if unknownKnowledgeAnswerVerifier != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER value %q\n", unknownKnowledgeAnswerVerifier)
+	}
+	engine.SetKnowledgeAnswerVerifierEnabled(knowledgeAnswerVerifier)
 	disciplinedKnowledgeQASynthesis, unknownDisciplinedKnowledgeQASynthesis := disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv)
 	if unknownDisciplinedKnowledgeQASynthesis != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS value %q\n", unknownDisciplinedKnowledgeQASynthesis)

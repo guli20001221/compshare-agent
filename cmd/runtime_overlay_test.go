@@ -134,6 +134,18 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		assert.True(t, enabled)
 		assert.Empty(t, unknown)
 	})
+	t.Run("knowledge answer verifier omitted stays on", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{}}
+		enabled, unknown := knowledgeAnswerVerifierEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
+		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
+		assert.Empty(t, unknown)
+	})
+	t.Run("knowledge answer verifier explicit false fails closed cleanly", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{KnowledgeAnswerVerifier: boolPtr(false)}}}
+		enabled, unknown := knowledgeAnswerVerifierEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
+		assert.False(t, enabled)
+		assert.Empty(t, unknown)
+	})
 	t.Run("omitted bool falls through to env", func(t *testing.T) {
 		cfg := &config.Config{Agent: config.AgentConfig{}}
 		base := func(key string) string {

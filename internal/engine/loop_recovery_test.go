@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,6 +99,19 @@ func vllmRetriever() *scriptedKnowledgeRetriever {
 	}}}
 }
 
+func prepareKnowledgeRecoveryLane(t *testing.T, eng *Engine) {
+	t.Helper()
+	enableKnowledgeAnswerVerifier(t)
+	previousLoop := KnowledgeQAAgentLoopEnabled()
+	SetKnowledgeQAAgentLoopEnabled(true)
+	t.Cleanup(func() { SetKnowledgeQAAgentLoopEnabled(previousLoop) })
+	previousAgentic := tools.AgenticSearchKnowledgeEnabled()
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	t.Cleanup(func() { tools.SetAgenticSearchKnowledgeEnabled(previousAgentic) })
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+}
+
 // TestChat_RoundCeiling_RecoversFromGatheredEvidence: round 0 calls
 // SearchKnowledge (records a kept hit), rounds 1..9 thrash with GetGPUSpecs and
 // never produce a final text reply, so the loop hits the round ceiling with a
@@ -117,6 +132,7 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 
 	mock := &mockLLM{responses: responses}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
@@ -363,6 +379,7 @@ func TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive(t *testing.T) {
 		{resp: func() *llm.ChatResponse { r := vllmGroundedRepairResponse(); return &r }()},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
@@ -390,6 +407,7 @@ func TestChat_LLMError_CtxCancelledSkipsRecovery(t *testing.T) {
 		{resp: &llm.ChatResponse{Content: "这条不应被消费 [1]。"}},   // synthesis step — must NOT run
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},

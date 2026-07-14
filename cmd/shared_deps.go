@@ -135,6 +135,16 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	} else {
 		log.Printf("runtime: HTTP knowledge_qa agent-loop route disabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0; deterministic terminal RAG route)")
 	}
+	knowledgeAnswerVerifier, unknownKnowledgeAnswerVerifier := knowledgeAnswerVerifierEnabledFromEnv(getenv)
+	if unknownKnowledgeAnswerVerifier != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER value %q", unknownKnowledgeAnswerVerifier)
+	}
+	engine.SetKnowledgeAnswerVerifierEnabled(knowledgeAnswerVerifier)
+	if knowledgeAnswerVerifier {
+		log.Printf("runtime: HTTP knowledge answer verifier enabled (COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER default-on; model verdict constrained by deterministic evidence checks)")
+	} else {
+		log.Printf("runtime: HTTP knowledge answer verifier disabled (COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER=0; evidence-backed agent-loop answers fail closed)")
+	}
 	disciplinedKnowledgeQASynthesis, unknownDisciplinedKnowledgeQASynthesis := disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv)
 	if unknownDisciplinedKnowledgeQASynthesis != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS value %q", unknownDisciplinedKnowledgeQASynthesis)

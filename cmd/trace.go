@@ -273,10 +273,11 @@ func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 }
 
 // agenticSearchKnowledgeEnabledFromEnv gates the agentic-RAG SearchKnowledge
-// registry tool (P3/P4a). DEFAULT ON. When on, a symptom/tool-ops diagnosis turn
-// can call SearchKnowledge for prior tool/ops evidence before any Diagnose* tool,
-// and the empty-target which-instance dead-end is relaxed so the loop reaches that
-// retrieval. ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
+// registry tool. DEFAULT ON. The production dispatch boundary exposes it only to
+// knowledge_qa, whose final answer uses the common evidence-verification exit;
+// generic diagnosis and unknown-intent ReAct windows cannot execute it. Diagnosis
+// skills that need KB evidence use their separate structured-claim path.
+// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
 // non-empty warn string (CLAUDE.md: never silently coerce). Boot-only: resolved
 // once in cmd (CLI + HTTP) and frozen via tools.SetAgenticSearchKnowledgeEnabled;
 // the Go-package default (tools.agenticSearchKnowledgeOn) stays false so the
@@ -447,6 +448,28 @@ func contextContinuationEnabledFromEnv(getenv getenvFunc) (bool, string) {
 // unaffected. Rollback = COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0.
 func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP"))
+	switch strings.ToLower(raw) {
+	case "", "1", "true", "yes", "on":
+		return true, ""
+	case "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	default:
+		return false, raw
+	}
+}
+
+// knowledgeAnswerVerifierEnabledFromEnv gates the model-assisted semantic
+// verifier on the knowledge_qa agent-loop exit. DEFAULT ON. The verifier is not
+// a mathematical proof and this flag does not claim an offline eval guarantee;
+// its structured verdict is constrained by deterministic quote, chunk-id,
+// clause-coverage, raw-leak and obvious-contradiction checks in the engine.
+//
+// Explicitly disabling the verifier is fail-closed: a turn that already has KB
+// evidence is refused rather than released without semantic validation. The Go
+// package default remains off so tests and embedders opt in deliberately, while
+// cmd resolves an omitted deploy setting to on at process boot.
+func knowledgeAnswerVerifierEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER"))
 	switch strings.ToLower(raw) {
 	case "", "1", "true", "yes", "on":
 		return true, ""

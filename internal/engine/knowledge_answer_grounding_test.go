@@ -53,7 +53,38 @@ func enableDisciplinedKnowledgeRepair(t *testing.T) {
 	t.Cleanup(func() { SetDisciplinedKnowledgeQASynthesisEnabled(previous) })
 }
 
-func groundedEngineForRecord(record sanitizedContextRAGRecord, responses ...llm.ChatResponse) (*Engine, *mockLLM) {
+func enableKnowledgeAnswerVerifier(t *testing.T) {
+	t.Helper()
+	previous := KnowledgeAnswerVerifierEnabled()
+	SetKnowledgeAnswerVerifierEnabled(true)
+	t.Cleanup(func() { SetKnowledgeAnswerVerifierEnabled(previous) })
+}
+
+func TestKnowledgeAnswerVerifierDisabledFailsClosed(t *testing.T) {
+	previous := KnowledgeAnswerVerifierEnabled()
+	SetKnowledgeAnswerVerifierEnabled(false)
+	t.Cleanup(func() { SetKnowledgeAnswerVerifierEnabled(previous) })
+
+	record := loadSanitizedContextRAGRecords(t)[0]
+	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Content: record.Evidence,
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "must not be called"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
+	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
+
+	assert.Equal(t, ragUngroundableReply, got)
+	assert.Empty(t, mock.calls, "disabled verifier must refuse rather than release an unchecked answer")
+}
+
+func groundedEngineForRecord(t *testing.T, record sanitizedContextRAGRecord, responses ...llm.ChatResponse) (*Engine, *mockLLM) {
+	t.Helper()
+	enableKnowledgeAnswerVerifier(t)
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
 		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
 	}}
@@ -109,7 +140,7 @@ func assertResolvedQuestionContract(t *testing.T, calls []llm.ChatRequest, resol
 func TestKnowledgeAnswerGrounding_SanitizedContextRecordsUseOneResolvedQuestion(t *testing.T) {
 	for _, record := range loadSanitizedContextRAGRecords(t) {
 		t.Run(record.Name, func(t *testing.T) {
-			eng, mock := groundedEngineForRecord(record, groundingVerdictResponse(record, true, 100))
+			eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, true, 100))
 
 			got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
 
@@ -128,7 +159,7 @@ func TestKnowledgeAnswerGrounding_CitedFabricationAlsoReachesSemanticGate(t *tes
 	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[3]
 	fabrication := "所有订单都能在 24 小时内全额退款 [[" + record.ChunkID + "]]。"
-	eng, mock := groundedEngineForRecord(record,
+	eng, mock := groundedEngineForRecord(t, record,
 		groundingVerdictResponse(record, false, 100),
 		repairResponse(record, 100),
 	)
@@ -144,7 +175,7 @@ func TestKnowledgeAnswerGrounding_CitedFabricationAlsoReachesSemanticGate(t *tes
 
 func TestKnowledgeAnswerGrounding_UncitedGroundedAnswerIsNotFalseRefused(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[0]
-	eng, mock := groundedEngineForRecord(record, groundingVerdictResponse(record, true, 100))
+	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, true, 100))
 
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
 
@@ -168,7 +199,7 @@ func TestKnowledgeAnswerGrounding_RawLeakCannotUseVerifierAsBypass(t *testing.T)
 	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[2]
 	leak := "资料原文：" + record.Evidence
-	eng, mock := groundedEngineForRecord(record, repairResponse(record, 100))
+	eng, mock := groundedEngineForRecord(t, record, repairResponse(record, 100))
 
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, leak)
 
@@ -178,10 +209,32 @@ func TestKnowledgeAnswerGrounding_RawLeakCannotUseVerifierAsBypass(t *testing.T)
 	assert.NotContains(t, got, record.Evidence)
 }
 
+func TestKnowledgeAnswerGrounding_CitationMarkersCannotSplitRawLeakNeedle(t *testing.T) {
+	record := loadSanitizedContextRAGRecords(t)[0]
+	for _, marker := range []string{"[1]", "[[" + record.ChunkID + "]]"} {
+		t.Run(marker, func(t *testing.T) {
+			enableDisciplinedKnowledgeRepair(t)
+			runes := []rune(record.Evidence)
+			leak := string(runes[:len(runes)/2]) + marker + string(runes[len(runes)/2:])
+			eng, mock := groundedEngineForRecord(t, record, repairResponse(record, 100))
+			require.NoError(t, knowledge.ValidateNoRawEvidenceLeak(leak, eng.searchKnowledgeHitsThisTurn),
+				"precondition: the marker splits the old contiguous leak needle")
+			require.Error(t, knowledge.ValidateNoRawEvidenceLeak(knowledge.StripCiteMarkers(leak), eng.searchKnowledgeHitsThisTurn),
+				"the displayed answer reconstructs the raw evidence")
+
+			got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, leak)
+
+			assert.Equal(t, record.Answer, got)
+			require.Len(t, mock.calls, 1, "split leak must skip verifier and go directly to bounded repair")
+			assert.Contains(t, mock.calls[0].Messages[0].Content, "知识答案修复器")
+		})
+	}
+}
+
 func TestKnowledgeAnswerGrounding_PaidRepairSurvivesPostCallBudget(t *testing.T) {
 	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[4]
-	eng, mock := groundedEngineForRecord(record,
+	eng, mock := groundedEngineForRecord(t, record,
 		groundingVerdictResponse(record, false, 100),
 		repairResponse(record, 60000),
 	)
@@ -197,7 +250,7 @@ func TestKnowledgeAnswerGrounding_PaidRepairSurvivesPostCallBudget(t *testing.T)
 func TestKnowledgeAnswerGrounding_RepairSuccessRetractsFailureAttribution(t *testing.T) {
 	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[1]
-	eng, _ := groundedEngineForRecord(record,
+	eng, _ := groundedEngineForRecord(t, record,
 		groundingVerdictResponse(record, false, 100),
 		repairResponse(record, 100),
 	)
@@ -218,6 +271,7 @@ func TestKnowledgeAnswerGrounding_RepairSuccessRetractsFailureAttribution(t *tes
 // escape unchanged and this test red.
 func TestKnowledgeAnswerGrounding_ProductionAgentLoopWiresUnifiedFinalGate(t *testing.T) {
 	enableDisciplinedKnowledgeRepair(t)
+	enableKnowledgeAnswerVerifier(t)
 	SetKnowledgeQAAgentLoopEnabled(true)
 	defer SetKnowledgeQAAgentLoopEnabled(false)
 	tools.SetAgenticSearchKnowledgeEnabled(true)
@@ -255,7 +309,7 @@ func TestKnowledgeAnswerGrounding_ProductionAgentLoopWiresUnifiedFinalGate(t *te
 
 func TestKnowledgeAnswerGrounding_ProofRejectsVerifierThatOnlySaysSupported(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[0]
-	ledgerEngine, _ := groundedEngineForRecord(record)
+	ledgerEngine, _ := groundedEngineForRecord(t, record)
 
 	_, _, ok := validateKnowledgeGroundingProof(record.Answer, knowledgeGroundingVerdict{Supported: true}, ledgerEngine.searchKnowledgeLedgerThisTurn)
 
@@ -264,7 +318,7 @@ func TestKnowledgeAnswerGrounding_ProofRejectsVerifierThatOnlySaysSupported(t *t
 
 func TestKnowledgeAnswerGrounding_ProofRejectsUncoveredSubstantiveClause(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[0]
-	eng, _ := groundedEngineForRecord(record)
+	eng, _ := groundedEngineForRecord(t, record)
 	answer := record.Answer + " 所有终端都保证支持这个快捷键。"
 	verdict := knowledgeGroundingVerdict{Supported: true, Claims: []knowledgeGroundingClaim{{
 		AnswerQuote: record.AnswerQuote, ChunkID: record.ChunkID, EvidenceQuote: record.EvidenceQuote,
@@ -277,7 +331,7 @@ func TestKnowledgeAnswerGrounding_ProofRejectsUncoveredSubstantiveClause(t *test
 
 func TestKnowledgeAnswerGrounding_ProofRejectsShortQuoteForLongClaim(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[3]
-	eng, _ := groundedEngineForRecord(record)
+	eng, _ := groundedEngineForRecord(t, record)
 	verdict := knowledgeGroundingVerdict{Supported: true, Claims: []knowledgeGroundingClaim{{
 		AnswerQuote: "支持退款", ChunkID: record.ChunkID, EvidenceQuote: "退款是否支持",
 	}}}
@@ -285,6 +339,24 @@ func TestKnowledgeAnswerGrounding_ProofRejectsShortQuoteForLongClaim(t *testing.
 	_, _, ok := validateKnowledgeGroundingProof("平台支持退款。", verdict, eng.searchKnowledgeLedgerThisTurn)
 
 	assert.False(t, ok, "a short matching phrase cannot stand in for a full unsupported clause")
+}
+
+func TestKnowledgeAnswerGrounding_RejectsVerifierApprovedNegationContradiction(t *testing.T) {
+	record := sanitizedContextRAGRecord{
+		Name: "obvious_refund_contradiction", UserMessage: "这个订单能退款吗",
+		ResolvedQuestion: "该订单是否支持退款", ChunkID: "sanitized-refund-contradiction-001",
+		Evidence: "该订单不支持退款。", Answer: "该订单支持退款。",
+		AnswerQuote: "该订单支持退款", EvidenceQuote: "该订单不支持退款",
+	}
+	// The model verifier is deliberately wrong: it says the positive answer is
+	// supported by a negative evidence sentence. The local contradiction gate
+	// must remain authoritative.
+	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, true, 100))
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
+
+	assert.Equal(t, ragUngroundableReply, got)
+	require.Len(t, mock.calls, 1)
 }
 
 func TestParseKnowledgeGroundingJSONFailsClosed(t *testing.T) {

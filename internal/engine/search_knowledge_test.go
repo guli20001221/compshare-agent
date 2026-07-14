@@ -40,6 +40,7 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
 
 	tc := openai.ToolCall{
 		ID:   "call-sk",
@@ -138,6 +139,7 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
 
 	tc := openai.ToolCall{
 		ID:       "call-sk",
@@ -155,11 +157,29 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	assert.True(t, eng.searchKnowledgeRanThisTurn)
 }
 
-// TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn proves the P4a flag-gated
+func TestExecuteTool_SearchKnowledgeRejectsNonKnowledgeRoute(t *testing.T) {
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{Enabled: true}}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	var steps []StepEvent
+
+	out := eng.executeTool(context.Background(), openai.ToolCall{
+		ID: "hallucinated", Type: openai.ToolTypeFunction,
+		Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"should not run"}`},
+	}, func(ev StepEvent) { steps = append(steps, ev) })
+
+	assert.Contains(t, out, "unavailable")
+	assert.Empty(t, retriever.calls, "a hidden hallucinated tool name must not execute retrieval")
+	require.Len(t, steps, 1)
+	assert.Equal(t, StepError, steps[0].Type)
+}
+
+// TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn pins the compatibility
 // relax: with COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE on, an empty-target diagnosis
-// turn (>1 instance) NO LONGER short-circuits with the canned which-instance
-// reply — it falls through to the agent lane (ReAct) so the loop can call
-// SearchKnowledge first. Flag off is byte-identical (covered by
+// turn (>1 instance) does not short-circuit with the canned which-instance
+// reply — it falls through to the scoped diagnosis agent lane, which can use
+// conversation history or clarify in-loop. SearchKnowledge itself is now
+// restricted to knowledge_qa. Flag off is byte-identical (covered by
 // TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent).
 func TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn(t *testing.T) {
 	tools.SetAgenticSearchKnowledgeEnabled(true)

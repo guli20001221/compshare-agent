@@ -1579,8 +1579,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// SearchKnowledge on the FIRST ReAct call. The in-registry assert is the
 		// belt-and-suspenders half of the 400 trap: the route gate
 		// already requires the agentic tool be enabled, so SearchKnowledge is in the
-		// full knowledge_qa (nil-subset) tool list — but never force a tool absent from
-		// req.Tools. Non-object models fall back to "required" + an ephemeral note.
+		// explicitly named knowledge_qa tool list — but never force a tool absent
+		// from req.Tools. Non-object models fall back to "required" + an ephemeral note.
 		if round == 0 && e.knowledgeQAAgentLoopThisTurn &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") {
 			// Inject the advisory note UNCONDITIONALLY: forced object/"required"
@@ -2116,11 +2116,13 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	}
 	if FlashKnowledgeRouteGuardEnabled() {
 		if match, _ := matchFlashKnowledgeRouteGuard(userMsg); match {
+			// This guard corrects flash route jitter; it must not become a second
+			// answer path. With the agent-loop migration enabled, the rewritten
+			// knowledge intent proceeds into the forced SearchKnowledge loop below
+			// and reaches the common final verifier. With the migration explicitly
+			// disabled, the terminal route remains the rollback.
 			dispatch.result.Plan.Intent = intent.IntentKnowledgeQA
 			e.lastPlannerIntentThisTurn = intent.IntentKnowledgeQA
-			if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
-				return reply, true
-			}
 		}
 	}
 	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
@@ -2430,21 +2432,14 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch routerDispatchResult)
 		if len(dispatch.result.Plan.Slots.TargetRefs) > 0 || countPlannerSnapshotInstances(dispatch.snapshot) <= 1 {
 			return "", false
 		}
-		// P4a (flag-gated, env-reversible): when agentic SearchKnowledge is on, do
-		// NOT short-circuit empty-target diagnosis with the canned which-instance
-		// reply. Fall through to the agent lane so the ReAct loop calls
-		// SearchKnowledge for prior tool/ops evidence FIRST, and asks "which
-		// instance?" only if a Diagnose* tool genuinely needs instance-specific
-		// data (the LLM clarifies in-loop, e.g. before DiagnoseSSH). Flag off =>
-		// byte-identical: the canned dead-end still fires. The TargetRefs>0 and
-		// <=1-instance escape hatches above are unchanged. ACTIVE FOR THE SYMPTOM
-		// SET (verified live, zero jitter): naturally-phrased tool-ops/error
-		// symptoms already classify as IntentDiagnosis with empty target (the
-		// 2026-06-03 diagnosis recall fix closed #123), so this relax removes
-		// their pre-ReAct dead-end directly — no planner-prompt change (P4b) is
-		// needed. It does NOT force SearchKnowledge: the ReAct loop may still
-		// clarify in-loop for overly-generic platform symptoms (e.g. "实例突然
-		// 连不上了") instead of retrieving — that in-loop tool choice is the LLM's.
+		// Compatibility behavior from the original agentic-search rollout: when
+		// that flag is on, do not short-circuit an empty-target diagnosis with the
+		// canned which-instance reply. The diagnosis ReAct lane may use its scoped
+		// diagnosis/API tools or clarify in-loop from conversation history. Generic
+		// diagnosis no longer receives SearchKnowledge itself because its mixed KB
+		// and API prose does not use the knowledge_qa evidence-verification exit;
+		// diagnosis skills that need KB evidence use the separate structured-claim
+		// path. Flag off keeps the historical deterministic clarification behavior.
 		if tools.AgenticSearchKnowledgeEnabled() {
 			return "", false
 		}
@@ -4225,6 +4220,17 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return errClass + "。工具参数必须是合法的 JSON 对象，请按该工具的参数结构仅输出 JSON 后重新调用。"
 	}
 
+	// SearchKnowledge is released only inside the knowledge_qa agent-loop lane,
+	// whose final answer is checked against the turn's evidence ledger. Hiding the
+	// tool from req.Tools is not an authorization boundary by itself: a model can
+	// still hallucinate a de-advertised function name. Reject that name here before
+	// retrieval so generic ReAct cannot create an unverified mixed-evidence answer.
+	if action == "SearchKnowledge" && !e.knowledgeQAAgentLoopThisTurn {
+		msg := "SearchKnowledge is unavailable for this route"
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		return msg
+	}
+
 	// Knowledge tools execute locally — no API call, no security check needed
 	if knowledge.IsKnowledgeTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
@@ -4247,11 +4253,11 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return knowledge.ResultToJSON(result)
 	}
 
-	// Agentic-RAG SearchKnowledge (P3) executes locally on the engine's retriever
+	// Agentic-RAG SearchKnowledge executes locally on the engine's retriever
 	// — like the knowledge tools above, never through SafeToolExecutor (its Route
 	// is knowledge, not external_api). The LLM can only emit this when the
-	// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate made it visible, so this branch is
-	// unreachable when the flag is off (byte-identical behavior).
+	// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate made it visible to the active
+	// knowledge_qa lane. The route check above also rejects hallucinated calls.
 	if action == "SearchKnowledge" {
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)

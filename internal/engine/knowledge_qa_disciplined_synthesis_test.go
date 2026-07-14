@@ -26,6 +26,7 @@ func TestDisciplinedKnowledgeQASynthesisEnabled_DefaultOff(t *testing.T) {
 // The live repair seam accepts only an answer carrying an exact, server-checked
 // proof against the same EvidenceLedger.
 func TestSynthesizeKnowledgeQAFromLedger_ProofCarryingAnswerAccepted(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
 		{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用。","supported":true,"claims":[{"answer_quote":"可以把 max-model-len 调小来降低显存占用","chunk_id":"ext-vllm-oom-001","evidence_quote":"把 max-model-len 设置得小一些就能显著降低显存占用"}],"unsupported":[]}`},
 	}}, &mockExecutor{}, nil)
@@ -45,6 +46,7 @@ func TestSynthesizeKnowledgeQAFromLedger_NoHitsReturnsFalse(t *testing.T) {
 }
 
 func TestSynthesizeKnowledgeQAFromLedger_UnsupportedAnswerRefused(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
 		{Content: `{"answer":"猜测的答案","supported":false,"claims":[],"unsupported":["证据不足"]}`},
 	}}, &mockExecutor{}, nil)
@@ -56,6 +58,7 @@ func TestSynthesizeKnowledgeQAFromLedger_UnsupportedAnswerRefused(t *testing.T) 
 }
 
 func TestSynthesizeKnowledgeQAFromLedger_UnknownChunkRefused(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
 		{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用。","supported":true,"claims":[{"answer_quote":"可以把 max-model-len 调小来降低显存占用","chunk_id":"unknown","evidence_quote":"把 max-model-len 设置得小一些"}],"unsupported":[]}`},
 	}}, &mockExecutor{}, nil)
@@ -67,6 +70,7 @@ func TestSynthesizeKnowledgeQAFromLedger_UnknownChunkRefused(t *testing.T) {
 }
 
 func TestSynthesizeKnowledgeQAFromLedger_RawEvidenceDumpRefused(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	hit := disciplinedSynthHit()
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
 		{Content: `{"answer":"` + hit.Chunk.Content + `","supported":true,"claims":[{"answer_quote":"` + hit.Chunk.Content + `","chunk_id":"ext-vllm-oom-001","evidence_quote":"` + hit.Chunk.Content + `"}],"unsupported":[]}`},

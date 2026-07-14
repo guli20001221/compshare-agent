@@ -38,14 +38,18 @@ import (
 // boundary.
 //
 // So: an unrecognized intent is not authorized to WRITE. It still gets the full
-// read-only registry, because unknown is also the catch-all lane that legitimately
-// answers bare follow-ups ("嗯嗯", "那这个呢") and starving it of read tools would
-// break turns that work today. Narrowing knowledge_qa to SearchKnowledge-only, and
-// unknown to nothing at all, are CAPABILITY restrictions on the majority of
-// traffic — they change what the agent can still answer, so they belong behind a
-// per-intent A/B, not in a permission fix.
+// ordinary read-only registry, because unknown is also the catch-all lane that
+// legitimately answers bare follow-ups ("嗯嗯", "那这个呢"). Knowledge retrieval is
+// different: accepting it also requires the final answer to be checked against
+// its evidence ledger. It is therefore named explicitly only for knowledge_qa.
+// Diagnosis skills that need KB evidence use the orchestrator's separate virtual
+// SearchKnowledge path with structured diagnosis-claim validation.
 func visibleRegistryForIntentRoute(route intent.IntentRoute, mutatingEnabled bool) []openai.Tool {
-	return tools.VisibleRegistryForScope(toolScopeForIntent(route.Intent), mutatingEnabled)
+	window := tools.VisibleRegistryForScope(toolScopeForIntent(route.Intent), mutatingEnabled)
+	if route.Intent != intent.IntentKnowledgeQA {
+		window = toolListWithoutFunction(window, "SearchKnowledge")
+	}
+	return window
 }
 
 // toolScopeForIntent resolves an intent to an EXPLICIT authorization, replacing the
@@ -53,6 +57,9 @@ func visibleRegistryForIntentRoute(route intent.IntentRoute, mutatingEnabled boo
 // exactly one named mode, so a new intent added without an allowlist fails closed
 // (read-only) instead of silently inheriting write access.
 func toolScopeForIntent(i intent.Intent) tools.ToolScope {
+	if i == intent.IntentKnowledgeQA {
+		return tools.ToolScope{Mode: tools.ToolScopeNamed, Names: []string{"SearchKnowledge"}}
+	}
 	if subset := intent.IntentToolSubset(i); len(subset) > 0 {
 		return tools.ToolScope{Mode: tools.ToolScopeNamed, Names: subset}
 	}

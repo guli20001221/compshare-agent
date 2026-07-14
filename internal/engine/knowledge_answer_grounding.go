@@ -76,7 +76,7 @@ func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
 
 func (e *Engine) verifyKnowledgeAnswer(ctx context.Context, fallbackQuestion, answer string) (string, knowledge.GroundedAnswerReport, bool) {
 	answer = strings.TrimSpace(answer)
-	if e.llmClient == nil || answer == "" || isKnowledgeRefusal(answer) || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
+	if !knowledgeAnswerVerifierOn || e.llmClient == nil || answer == "" || isKnowledgeRefusal(answer) || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
@@ -109,7 +109,7 @@ func (e *Engine) verifyKnowledgeAnswer(ctx context.Context, fallbackQuestion, an
 // and its evidence proof are returned together, which avoids paying for a repair
 // and then discarding it because a second validation call would cross the budget.
 func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQuestion string, allowOverBudget bool) (string, knowledge.GroundedAnswerReport, bool) {
-	if e.llmClient == nil || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
+	if !knowledgeAnswerVerifierOn || e.llmClient == nil || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	if !allowOverBudget && e.tokenBudgetExceeded() {
@@ -143,7 +143,7 @@ func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQue
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	answer, report, ok := validateKnowledgeGroundingProof(repaired.Answer, repaired.knowledgeGroundingVerdict, e.searchKnowledgeLedgerThisTurn)
-	if !ok || knowledge.ValidateNoRawEvidenceLeak(answer, e.searchKnowledgeHitsThisTurn) != nil {
+	if !ok || knowledgeAnswerHasRawLeak(repaired.Answer, e.searchKnowledgeHitsThisTurn) {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	return answer, report, true
@@ -151,8 +151,10 @@ func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQue
 
 // finalizeAgentLoopKnowledgeAnswer is the only production agent-loop exit for a
 // SearchKnowledge answer. Every candidate, including one carrying a syntactically
-// valid citation, passes the same semantic proof. The terminal RAG fallback does
-// not call this function and is intentionally unchanged.
+// valid citation, passes the same model-assisted semantic check and local evidence
+// constraints. This reduces unsupported releases but is not a mathematical proof.
+// The terminal RAG fallback does not call this function and is intentionally
+// unchanged.
 func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQuestion, candidate string) string {
 	if !e.knowledgeQAAgentLoopThisTurn || !e.searchKnowledgeRanThisTurn {
 		return e.guardSearchKnowledgeSynthesis(candidate)
@@ -161,8 +163,12 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 		return ragNoEvidenceReply
 	}
 	_ = e.resolvedKnowledgeQuestion(fallbackQuestion)
+	if !knowledgeAnswerVerifierOn {
+		e.emitSearchKnowledgeHardBlock("search_knowledge_verifier_disabled")
+		return ragUngroundableReply
+	}
 
-	leaked := knowledge.ValidateNoRawEvidenceLeak(candidate, e.searchKnowledgeHitsThisTurn) != nil
+	leaked := knowledgeAnswerHasRawLeak(candidate, e.searchKnowledgeHitsThisTurn)
 	if leaked {
 		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
 	} else if domainMatchGuardOn {
@@ -257,6 +263,9 @@ func validateKnowledgeGroundingProof(answer string, verdict knowledgeGroundingVe
 		if !strings.Contains(evidenceText, evidenceQuote) {
 			return "", knowledge.GroundedAnswerReport{}, false
 		}
+		if obviousKnowledgeGroundingContradiction(claim.AnswerQuote, claim.EvidenceQuote) {
+			return "", knowledge.GroundedAnswerReport{}, false
+		}
 		validQuotes = append(validQuotes, answerQuote)
 		id := strings.TrimSpace(claim.ChunkID)
 		if _, ok := seen[id]; !ok {
@@ -311,6 +320,17 @@ func isNonSubstantiveKnowledgePhrase(s string) bool {
 
 func normalizeGroundingText(s string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(s)), " "))
+}
+
+func knowledgeAnswerHasRawLeak(answer string, hits []knowledge.RetrievalHit) bool {
+	if knowledge.ValidateNoRawEvidenceLeak(answer, hits) != nil {
+		return true
+	}
+	// Citation markers can be inserted inside a raw 32+ rune excerpt to break
+	// the leak detector's contiguous needle. The user sees the markers stripped,
+	// so validate that exact display text as well.
+	display := knowledge.StripCiteMarkers(answer)
+	return knowledge.ValidateNoRawEvidenceLeak(display, hits) != nil
 }
 
 func (e *Engine) emitKnowledgeHardBlock(trace observability.EngineHardBlockTrace) {

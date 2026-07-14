@@ -259,6 +259,24 @@ func TestKnowledgeQAAgentLoopEnabledFromEnv_DefaultOn(t *testing.T) {
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
 
+func TestKnowledgeAnswerVerifierEnabledFromEnv_DefaultOn(t *testing.T) {
+	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
+	for _, v := range on {
+		got, unknown := knowledgeAnswerVerifierEnabledFromEnv(func(string) string { return v })
+		require.Truef(t, got, "value %q should be on (default-on)", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
+	for _, v := range off {
+		got, unknown := knowledgeAnswerVerifierEnabledFromEnv(func(string) string { return v })
+		require.Falsef(t, got, "value %q should explicitly disable", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	got, unknown := knowledgeAnswerVerifierEnabledFromEnv(func(string) string { return "maybe" })
+	require.False(t, got, "unknown value is fail-closed")
+	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
+}
+
 func TestDisciplinedKnowledgeQASynthesisEnabledFromEnv_DefaultOn(t *testing.T) {
 	// 2026-06-09: COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS is DEFAULT-ON — when the agent-loop
 	// route is on (also default), the final knowledge_qa answer is written by terminal

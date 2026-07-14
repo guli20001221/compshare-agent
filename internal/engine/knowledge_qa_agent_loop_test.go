@@ -43,6 +43,7 @@ func knowledgeQAAgentLoopBillingVerdict() llm.ChatResponse {
 // parity (a properly [[chunk_id]]-cited synthesis is kept with markers stripped, NOT
 // refused) — all WITHOUT the global grounded-validator flag.
 func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	SetKnowledgeQAAgentLoopEnabled(true)
 	defer SetKnowledgeQAAgentLoopEnabled(false)
 	tools.SetAgenticSearchKnowledgeEnabled(true)
@@ -241,6 +242,7 @@ func TestKnowledgeQAAgentLoop_CiteOrRefuseParity_WithoutGlobalValidator(t *testi
 // An uncited answer is accepted when the semantic verifier proves every claim.
 // Citation punctuation is no longer the recovery target.
 func TestKnowledgeQAAgentLoop_SemanticGateAcceptsUncitedGroundedSynthesis(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	SetKnowledgeQAAgentLoopEnabled(true)
 	defer SetKnowledgeQAAgentLoopEnabled(false)
 	tools.SetAgenticSearchKnowledgeEnabled(true)
@@ -277,6 +279,7 @@ func TestKnowledgeQAAgentLoop_SemanticGateAcceptsUncitedGroundedSynthesis(t *tes
 // also fails, the reply states the real failure instead of claiming no evidence.
 func TestKnowledgeQAAgentLoop_FailedSemanticRepairKeepsHonestRefusal(t *testing.T) {
 	enableDisciplinedKnowledgeRepair(t)
+	enableKnowledgeAnswerVerifier(t)
 	SetKnowledgeQAAgentLoopEnabled(true)
 	defer SetKnowledgeQAAgentLoopEnabled(false)
 	tools.SetAgenticSearchKnowledgeEnabled(true)
@@ -313,6 +316,7 @@ func TestKnowledgeQAAgentLoop_FailedSemanticRepairKeepsHonestRefusal(t *testing.
 // fires SearchKnowledge and the turn proceeds to a grounded answer instead of the
 // round-0 cited-gate refusal.
 func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
 	SetKnowledgeQAAgentLoopEnabled(true)
 	defer SetKnowledgeQAAgentLoopEnabled(false)
 	tools.SetAgenticSearchKnowledgeEnabled(true)
@@ -345,6 +349,53 @@ func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
 	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费")
 	assert.NotEqual(t, ragNoEvidenceReply, reply)
 	assert.GreaterOrEqual(t, len(mock.calls), 3, "round0 misfire + forced-hop retry + final synthesis")
+}
+
+// Production enables the flash route correction, agent loop and semantic
+// verifier together. A flash-corrected product-fact turn must enter the common
+// SearchKnowledge loop instead of escaping through the legacy terminal RAG exit.
+func TestKnowledgeQAAgentLoop_FlashGuardUsesUnifiedVerifiedExit(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
+	previousLoop := KnowledgeQAAgentLoopEnabled()
+	SetKnowledgeQAAgentLoopEnabled(true)
+	t.Cleanup(func() { SetKnowledgeQAAgentLoopEnabled(previousLoop) })
+	previousAgentic := tools.AgenticSearchKnowledgeEnabled()
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	t.Cleanup(func() { tools.SetAgenticSearchKnowledgeEnabled(previousAgentic) })
+	previousFlash := FlashKnowledgeRouteGuardEnabled()
+	SetFlashKnowledgeRouteGuardEnabled(true)
+	t.Cleanup(func() { SetFlashKnowledgeRouteGuardEnabled(previousFlash) })
+
+	chunk := knowledgeQAAgentLoopBillingChunk()
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
+		SchemaVersion: intent.SchemaVersion,
+		Intent:        intent.IntentStockAvailability,
+		Confidence:    0.9,
+	}}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true, KBVersion: "kb.v1",
+		Hits:     []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{{ID: "search", Type: openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"stopped instance disk billing"}`}}}},
+		{Content: "停止的按量实例的磁盘仍会计费。"},
+		knowledgeQAAgentLoopBillingVerdict(),
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "关机后磁盘还收费吗", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "磁盘仍会计费")
+	require.Len(t, retriever.calls, 1)
+	require.Len(t, mock.calls, 3, "tool call, draft and semantic verifier must all run")
+	assert.True(t, toolListContainsFunction(mock.calls[0].Tools, "SearchKnowledge"))
+	assert.Contains(t, mock.calls[2].Messages[0].Content, "知识答案事实核查员")
+	assert.True(t, eng.knowledgeQAAgentLoopThisTurn)
 }
 
 // TestToolListContainsFunction unit-tests the 400-trap helper: present, absent, and
