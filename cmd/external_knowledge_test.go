@@ -14,7 +14,7 @@ func envFromMap(m map[string]string) getenvFunc {
 }
 
 // DEFAULT ON (2026-06-07): unset/empty/affirmative => on; explicit negative => off;
-// unknown => off (logged). Enabled together with COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE.
+// unknown => off (logged).
 func TestExternalKnowledgeEnabled(t *testing.T) {
 	on := []string{"", " ", "1", "true", "TRUE", "yes", "on", " On "}
 	for _, v := range on {

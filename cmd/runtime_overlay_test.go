@@ -37,18 +37,6 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		assert.False(t, enabled)
 		assert.Empty(t, unknown)
 	})
-	t.Run("default-on flag explicit false encodes to 0, no warn", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{AgenticSearchKnowledge: boolPtr(false)}}}
-		enabled, unknown := agenticSearchKnowledgeEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.False(t, enabled, "explicit YAML false turns the default-on flag off")
-		assert.Empty(t, unknown, "0 must be a clean off, not unknown")
-	})
-	t.Run("default-on flag omitted stays on via default", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{}} // nothing set
-		enabled, unknown := agenticSearchKnowledgeEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
-		assert.Empty(t, unknown)
-	})
 	t.Run("flash knowledge route guard explicit true", func(t *testing.T) {
 		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{FlashKnowledgeRouteGuard: boolPtr(true)}}}
 		enabled, unknown := flashKnowledgeRouteGuardEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
@@ -126,12 +114,6 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		cfg := &config.Config{Agent: config.AgentConfig{}}
 		enabled, unknown := createPreferenceExtractorEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
 		assert.True(t, enabled, "omitted + no env → built-in default ON preserved")
-		assert.Empty(t, unknown)
-	})
-	t.Run("knowledge_qa agent loop omitted stays on", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{}}
-		enabled, unknown := knowledgeQAAgentLoopEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.True(t, enabled)
 		assert.Empty(t, unknown)
 	})
 	t.Run("knowledge answer verifier omitted stays on", func(t *testing.T) {

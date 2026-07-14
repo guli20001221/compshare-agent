@@ -178,14 +178,35 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 				}
 			}
 			for _, text := range []string{
-				"平台知识类问题先结合当前可见的完整对话",
-				"不要凭内置 FAQ 或模型记忆补全对话、知识库、工具和诊断结果中都没有的平台规则",
+				"先阅读当前可见的完整对话和已验证记忆",
+				"不得添加对话、知识证据或工具结果中不存在的条件和平台规则",
 			} {
 				if !strings.Contains(system, text) {
 					t.Fatalf("system prompt should contain knowledge-source boundary %q:\n%s", text, system)
 				}
 			}
 		})
+	}
+}
+
+func TestRenderPromptSectionsRejectsDuplicatePolicyID(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("duplicate section id must fail prompt construction")
+		}
+	}()
+	renderPromptSections([]PromptSection{
+		{ID: "knowledge_turn_policy", Text: "first"},
+		{ID: "knowledge_turn_policy", Text: "second"},
+	})
+}
+
+func TestKnowledgeTurnPolicyAppearsExactlyOnce(t *testing.T) {
+	for _, mutating := range []bool{true, false} {
+		got := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: mutating})
+		if count := strings.Count(got, "## 知识来源与检索规则"); count != 1 {
+			t.Fatalf("mutating=%v: knowledge policy count=%d, want 1", mutating, count)
+		}
 	}
 }
 

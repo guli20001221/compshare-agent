@@ -69,8 +69,6 @@ agent:
     confirm_form: true
     guided_create: true
     # Agentic-RAG answer stack (RAG as a tool the agent calls in-loop).
-    agentic_search_knowledge: true
-    knowledge_qa_agent_loop: true
     # Model-assisted semantic check, bounded by deterministic evidence guards.
     # Explicit false is fail-closed: unchecked KB answers are not released.
     knowledge_answer_verifier: true
@@ -151,7 +149,7 @@ agent:
     # follow-ups (the 80000 cap was tripping those, fully refusing answerable
     # questions). When the cap IS hit mid-turn, the engine now synthesizes a
     # grounded answer from any evidence already retrieved instead of returning
-    # a bare "请简化问题" (see answerWithRetrievedEvidence / synthesizeOnBudgetExceeded);
+    # a bare "请简化问题";
     # it only refuses when no evidence is in hand. Observe
     # trace.outcome.total_tokens and tighten once steady-state is known.
     max_tokens_per_turn: 200000

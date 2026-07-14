@@ -281,8 +281,7 @@ type Engine struct {
 	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the agentic
 	// SearchKnowledge tool (P3) so the final-answer no-raw-leak guard validates
 	// the synthesis against exactly the evidence the agent was shown. Reset per
-	// turn. Inert unless the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate exposed the
-	// tool (flag off => tool never visible => never runs => both stay zero).
+	// turn. ToolScope controls whether the tool is available for the active intent.
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
 	// instanceTableThisTurn holds the deterministically rendered instance table for the
@@ -323,15 +322,14 @@ type Engine struct {
 	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
-	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn that the
-	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP route sent into the shared ReAct loop
-	// instead of the terminal-RAG route. A first-turn question forces retrieval;
+	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn sent into the shared
+	// ReAct loop. A first-turn question forces retrieval;
 	// a follow-up may reuse sufficient visible conversation. Set
-	// in tryPlannerDispatch when the flag + agentic tool + retriever are all on;
+	// in tryPlannerDispatch;
 	// read by the ReAct loop, executeSearchKnowledge / the semantic evidence
 	// verifier, and
 	// emitPlannerTrace (projects PlannedExecutionPath=agent so planned==actual).
-	// Reset per turn; always false when the flag is off => byte-identical.
+	// Reset per turn.
 	knowledgeQAAgentLoopThisTurn bool
 	createPreferenceThisTurn     *CreatePreferenceExtractionResult
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
@@ -2162,30 +2160,13 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		reply, handled := e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
 		return reply, handled
 	}
-	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP migration: route a knowledge_qa turn into
-	// the shared ReAct loop instead of the
-	// deterministic terminal-RAG route below. Gated so flag-off is byte-identical,
-	// and so a mandatory first-turn hop can never reference an absent tool (the 400 trap):
-	// it fires ONLY when the agentic SearchKnowledge tool is actually enabled AND a
-	// retriever is wired. With agentic off or no retriever the flag is inert and the
-	// turn stays on the terminal route (which emits its own fallback trace and, for
-	// the nil-retriever case, falls through identically). The distinct
-	// dispatched_knowledge_agent_loop route status + the turn-scoped planned-form
-	// projection (emitPlannerTrace) keep planned==actual==agent so the runtime-form
-	// mismatch gate does not false-flag. When retrieval runs, the turn-scoped
-	// semantic evidence verifier owns answer release.
-	if knowledgeQAAgentLoopOn &&
-		dispatch.result.Plan.Intent == intent.IntentKnowledgeQA &&
-		tools.AgenticSearchKnowledgeEnabled() &&
-		e.knowledgeRetriever != nil {
+	// Knowledge Q&A has one production execution path: the shared Agent loop.
+	// SearchKnowledge is a tool in that loop, and verified prior conversation may
+	// be reused when it already answers the follow-up. There is no terminal-RAG
+	// rollback path.
+	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 		e.knowledgeQAAgentLoopThisTurn = true
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedKnowledgeAgentLoop, dispatch.latency)
-		return "", false
-	}
-	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
-		return reply, true
-	}
-	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 		return "", false
 	}
 
@@ -2459,24 +2440,10 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch routerDispatchResult)
 		if len(dispatch.result.Plan.Slots.TargetRefs) > 0 || countPlannerSnapshotInstances(dispatch.snapshot) <= 1 {
 			return "", false
 		}
-		// Compatibility behavior from the original agentic-search rollout: when
-		// that flag is on, do not short-circuit an empty-target diagnosis with the
-		// canned which-instance reply. The diagnosis ReAct lane may use its scoped
-		// diagnosis/API tools or clarify in-loop from conversation history. Generic
-		// diagnosis no longer receives SearchKnowledge itself because its mixed KB
-		// and API prose does not use the knowledge_qa evidence-verification exit;
-		// diagnosis skills that need KB evidence use the separate structured-claim
-		// path. Flag off keeps the historical deterministic clarification behavior.
-		if tools.AgenticSearchKnowledgeEnabled() {
-			return "", false
-		}
-		reply := diagnosisMissingTargetClarificationReply
-		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: reply,
-		})
-		return reply, true
+		// The scoped diagnosis Agent owns clarification because it can inspect the
+		// complete conversation. Router confidence and registry cardinality are not
+		// sufficient evidence that the turn has no usable context.
+		return "", false
 	default:
 		return "", false
 	}
@@ -3070,241 +3037,6 @@ func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResu
 	return
 }
 
-func (e *Engine) knowledgeRetrievalQuery(userMsg string) string {
-	text := strings.TrimSpace(userMsg)
-	if text == "" || !isShortKnowledgeFollowup(text) {
-		return userMsg
-	}
-	for i := len(e.messages) - 2; i >= 0; i-- {
-		msg := e.messages[i]
-		if msg.Role != openai.ChatMessageRoleUser {
-			continue
-		}
-		prev := strings.TrimSpace(msg.Content)
-		if prev == "" || prev == text {
-			continue
-		}
-		return prev + "\n" + text
-	}
-	return userMsg
-}
-
-func isShortKnowledgeFollowup(text string) bool {
-	compact := strings.TrimSpace(normalizeResourceText(text))
-	if compact == "" {
-		return false
-	}
-	if utf8.RuneCountInString(compact) > 16 {
-		return false
-	}
-	hasSignal := false
-	for _, r := range compact {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			hasSignal = true
-			break
-		}
-	}
-	return hasSignal
-}
-
-func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
-	result := dispatch.result
-	if result.Plan.Intent != intent.IntentKnowledgeQA {
-		return "", false
-	}
-	if e.knowledgeRetriever == nil {
-		e.emitRetrievalTrace(observability.RetrievalTrace{})
-		e.emitPlannerTrace(result, intent.RouteStatusFallbackRetrievalDisabled, dispatch.latency)
-		return "", false
-	}
-
-	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
-	retrievalQuery := e.knowledgeRetrievalQuery(userMsg)
-	questionArea := ""
-	retrieved := e.knowledgeRetriever.Retrieve(retrievalQuery, questionArea)
-	hitItems := retrieved.HitItems
-	trace := observability.RetrievalTrace{
-		Enabled:                retrieved.Enabled,
-		KBVersion:              retrieved.KBVersion,
-		QueryRaw:               retrievalQuery,
-		QueryNormalized:        retrieved.QueryNormalized,
-		QueryExpansions:        []string{},
-		Hits:                   len(retrieved.Hits),
-		HybridMode:             retrieved.HybridMode,
-		HybridFallbackReason:   retrieved.HybridFallbackReason,
-		EmbeddingLatencyMS:     retrieved.EmbeddingLatencyMS,
-		EmbeddingModel:         retrieved.EmbeddingModel,
-		RerankerMode:           retrieved.RerankerMode,
-		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
-		RerankerFallbackReason: retrieved.RerankerFallbackReason,
-		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
-		Activities: []observability.RetrievalActivity{{
-			ID:    "search_1",
-			Query: retrievalQuery,
-			Hits:  len(retrieved.Hits),
-		}},
-	}
-	if trace.QueryNormalized == "" {
-		trace.QueryNormalized = knowledge.NormalizeQuery(retrievalQuery)
-	}
-	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
-	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
-	trace.References = retrievalReferencesFromHits(hitItems, "search_1")
-	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: "retrieval", Message: "搜索完成"})
-	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
-		trace.RefusedReason = "no_evidence"
-		trace.RankingErrorCandidate = true
-		e.emitRetrievalTrace(trace)
-		e.emitPlannerTrace(result, intent.RouteStatusFallbackRetrievalMiss, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: ragNoEvidenceReply,
-		})
-		return ragNoEvidenceReply, true
-	}
-
-	weak := isWeakEvidence(hitItems, retrieved.HybridMode)
-	if weak {
-		trace.WeakEvidence = true
-	}
-	if weak || isRankingAmbiguous(hitItems, retrieved.HybridMode) {
-		trace.RankingErrorCandidate = true
-	}
-	// Buffer LLM deltas so we can decide whether to replay them after
-	// post-processing. answerWithRetrievedEvidence may discard the LLM
-	// output (token budget, refusal, retry-no-cite) and return a canned
-	// string instead. Replaying raw deltas in those cases would leave the
-	// SSE stream inconsistent with done.Content.
-	var bufferedDeltas []string
-	var bufferDelta func(string)
-	if onTextDelta != nil {
-		bufferDelta = func(s string) { bufferedDeltas = append(bufferedDeltas, s) }
-	}
-	reply, outcome, refusedReason, rankingCandidate, err := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, weak, bufferDelta)
-	if err != nil {
-		trace.RefusedReason = "llm_error"
-		trace.RankingErrorCandidate = true
-		e.emitRetrievalTrace(trace)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: ragNoEvidenceReply,
-		})
-		return ragNoEvidenceReply, true
-	}
-	if refusedReason != "" {
-		trace.RefusedReason = refusedReason
-	}
-	if rankingCandidate {
-		trace.RankingErrorCandidate = true
-	}
-	// #5 domain guard. The verdict over the retrieved evidence is recorded in the
-	// trace regardless of the flag (AllCitedOffDomain / DomainInferenceEmpty); the
-	// COMPSHARE_RAG_DOMAIN_MATCH_GUARD refuse arm (default-off) additionally
-	// replaces an all-off-domain answer with the canned no-evidence reply and
-	// stamps refusal_type=wrong_domain. Treated like a refusal so the buffered
-	// deltas are not replayed.
-	allOff, inferEmpty := allCitedOffDomain(questionArea, hitProductAreas(hitItems))
-	trace.DomainInferenceEmpty = inferEmpty
-	trace.AllCitedOffDomain = allOff
-	if domainMatchGuardOn && allOff {
-		trace.RefusedReason = "wrong_domain"
-		reply = ragNoEvidenceReply
-		refusedReason = "wrong_domain"
-	}
-	trace.CitedChunkIDs = extractCitedChunkIDs(reply, hitItems)
-	trace.CitedRefs = citedRefsFromChunkIDs(trace.CitedChunkIDs, trace.References)
-	displayReply := stripCitationMarkers(reply)
-
-	// Replay buffered deltas only when the LLM's first-call output was
-	// accepted (reply == resp.Content path). Refusal / budget / retry
-	// paths return a different string, so we skip replay and let the
-	// handler's done.Content carry the final text instead.
-	if onTextDelta != nil && len(bufferedDeltas) > 0 && refusedReason == "" {
-		for _, d := range bufferedDeltas {
-			onTextDelta(d)
-		}
-	}
-
-	e.emitRetrievalTrace(trace)
-	e.emitOutcomeTrace(outcome)
-	e.emitPlannerTrace(result, intent.RouteStatusDispatchedRetrieval, dispatch.latency)
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: clipKnowledgeHistoryContent(displayReply),
-	})
-	return displayReply, true
-}
-
-func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string, evidences []envelope.Evidence, weak bool, onTextDelta func(string)) (string, observability.OutcomeTrace, string, bool, error) {
-	outcome := observability.OutcomeTrace{}
-	req := llm.ChatRequest{
-		Messages:    prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, false),
-		OnTextDelta: onTextDelta,
-	}
-	resp, err := e.llmClient.Chat(ctx, req)
-	if err != nil {
-		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
-	}
-	e.emitTokenUsage(resp.Usage)
-
-	answer := strings.TrimSpace(resp.Content)
-	// A grounded (cited) first answer or an honest refusal is delivered
-	// regardless of the per-turn token budget — PR2 budget policy: when we
-	// already have an answer grounded on retrieved evidence, do NOT discard
-	// it for a bare "请简化问题". The budget only suppresses spending MORE
-	// tokens (the cite-harder retry below), never the delivery of an answer
-	// already in hand.
-	if isKnowledgeRefusal(answer) {
-		return answer, outcome, refusedReasonForRefusal(weak), false, nil
-	}
-	if hasNumberedCitation(answer) {
-		return answer, outcome, "", false, nil
-	}
-
-	// The first answer is neither an honest refusal nor cited; normally we
-	// retry once with a cite-harder prompt. That is another LLM call, so
-	// gate it on the budget: if the per-turn cap is already blown, do NOT
-	// spend the retry — return the budget refusal rather than ship an
-	// uncited answer (the "no groundable answer → refuse, never fabricate"
-	// guard). EscapedHallucinatedCount stays 0 here (no hallucination was
-	// scored), distinct from organic retry_no_cite which sets it to 1.
-	if e.tokenBudgetExceeded() {
-		e.emitTokenBudgetExceededHardBlock()
-		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
-	}
-
-	outcome.AttemptedHallucinatedCount = 1
-	retryReq := llm.ChatRequest{
-		Messages: prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, true),
-	}
-	retryResp, err := e.llmClient.Chat(ctx, retryReq)
-	if err != nil {
-		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
-	}
-	e.emitTokenUsage(retryResp.Usage)
-
-	// No post-retry budget gate (PR2): the retry only runs when we were
-	// under cap at the first-call gate, and a cited retry answer is an
-	// answer grounded on retrieved evidence — deliver it even if the retry
-	// itself tipped over cap, rather than discarding it for "请简化问题".
-	retryAnswer := strings.TrimSpace(retryResp.Content)
-	if isKnowledgeRefusal(retryAnswer) {
-		return retryAnswer, outcome, refusedReasonForRefusal(weak), false, nil
-	}
-	if hasNumberedCitation(retryAnswer) {
-		return retryAnswer, outcome, "", false, nil
-	}
-	outcome.EscapedHallucinatedCount = 1
-	return ragNoEvidenceReply, outcome, "retry_no_cite", true, nil
-}
-
-func refusedReasonForRefusal(weak bool) string {
-	if weak {
-		return "weak_evidence"
-	}
-	return "refusal"
-}
-
 func evidencesFromRetrievalHits(items []knowledge.RetrievalHit, queryNormalized string) ([]envelope.Evidence, error) {
 	evidences := make([]envelope.Evidence, 0, len(items))
 	producedAt := time.Now().UTC()
@@ -3492,19 +3224,6 @@ func citedRefsFromChunkIDs(chunkIDs []string, refs []observability.RetrievalRefe
 	return out
 }
 
-func ragReferencesFromEvidence(evidences []envelope.Evidence) []prompt.RAGReference {
-	refs := make([]prompt.RAGReference, 0, len(evidences))
-	for i, evidence := range evidences {
-		view := evidence.ForLLM()
-		refs = append(refs, prompt.RAGReference{
-			Number:  i + 1,
-			Title:   view.SourceTitle,
-			Content: view.Snippet,
-		})
-	}
-	return refs
-}
-
 // isWeakEvidence reports whether the top hit's score is below the weak-evidence
 // threshold for the retrieval path that produced it. hybridMode comes from
 // knowledge.RetrievalResult.HybridMode and tracks the actual scoring path used
@@ -3623,12 +3342,7 @@ func (e *Engine) emitPlannerTrace(result intent.IntentRouterResult, status inten
 		Latency: latency,
 	})
 	trace.RouteStatus = string(status)
-	// Turn-scoped runtime-form projection for the knowledge_qa agent-loop route
-	// (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). PlannedExecutionPathForIntent stays pure
-	// (knowledge_qa -> terminal_rag) because a flag-on-but-agentic-off knowledge_qa
-	// turn still runs the terminal route; only a turn actually routed into the agent
-	// loop projects agent, so planned==actual==agent and ExecutionPathMismatch does not
-	// false-flag. Off-flag this is never reached (the field is always false).
+	// Keep planned and actual execution forms aligned for knowledge turns.
 	if e.knowledgeQAAgentLoopThisTurn && trace.Intent == string(intent.IntentKnowledgeQA) {
 		trace.PlannedExecutionPath = observability.ExecutionPathAgent
 	}

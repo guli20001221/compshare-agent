@@ -37,15 +37,13 @@ func TestPlannedExecutionPathForIntent_RuntimeIntentPartition(t *testing.T) {
 			IntentImageList,
 			IntentPricingQuery,
 		},
-		ExecutionPathTerminalRAG: {
-			IntentKnowledgeQA,
-		},
 		ExecutionPathAgent: {
 			IntentMonitorHistory,
 			IntentBillingInstance,
 			IntentDiagnosis,
 			IntentVagueFailure,
 			IntentOperationLifecycle,
+			IntentKnowledgeQA,
 			IntentDiskInfo,
 			IntentDeployModel,
 			IntentCreateInstance,
@@ -82,10 +80,6 @@ func TestPlannedExecutionPathForIntent_RoutingWorkflowIntents(t *testing.T) {
 	}
 }
 
-func TestPlannedExecutionPathForIntent_TerminalRAGIntent(t *testing.T) {
-	assert.Equal(t, ExecutionPathTerminalRAG, PlannedExecutionPathForIntent(IntentKnowledgeQA))
-}
-
 func TestPlannedExecutionPathForIntent_AgentDefault(t *testing.T) {
 	for _, i := range []Intent{
 		IntentMonitorHistory,
@@ -93,6 +87,7 @@ func TestPlannedExecutionPathForIntent_AgentDefault(t *testing.T) {
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
+		IntentKnowledgeQA,
 		IntentDiskInfo,
 		IntentDeployModel,
 		IntentCreateInstance,

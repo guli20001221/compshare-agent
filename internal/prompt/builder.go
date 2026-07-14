@@ -12,8 +12,34 @@ type BuildOptions struct {
 	IntentScopedReActPrompt bool
 }
 
+type PromptSection struct {
+	ID   string
+	Text string
+}
+
+func renderPromptSections(sections []PromptSection) string {
+	seen := make(map[string]struct{}, len(sections))
+	var b strings.Builder
+	for _, section := range sections {
+		id := strings.TrimSpace(section.ID)
+		text := strings.TrimSpace(section.Text)
+		if id == "" || text == "" {
+			panic("prompt section requires non-empty id and text")
+		}
+		if _, exists := seen[id]; exists {
+			panic("duplicate prompt section id: " + id)
+		}
+		seen[id] = struct{}{}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(text)
+	}
+	return b.String()
+}
+
 // BuildSystemWithOptions creates the system prompt for the active runtime mode.
-// Shared sections (segmentIdentity, segmentScopeBoundary, segmentKnowledgeBoundary)
+// Shared sections (segmentIdentity, segmentScopeBoundary, segmentKnowledgeTurnPolicy)
 // are defined once in segments.go; mode-specific sections live in
 // segment_operation.go (mutating) and segment_readonly.go (read-only).
 func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
@@ -21,64 +47,44 @@ func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 		userContext = "暂无用户信息（首次对话，正在获取...）"
 	}
 
-	var b strings.Builder
-
-	b.WriteString(segmentIdentity)
-	b.WriteString("\n\n")
-
-	// KV-cache prefix stability (P0 阶段1A): the static body is written first and
-	// the volatile per-turn "## 用户当前状态" block is appended LAST (see below), so
-	// everything up to that block is byte-identical across turns and the provider's
-	// automatic prefix cache hits it. The block used to sit mid-prompt (after
-	// capabilities in mutating mode, after the readonly boundary in read-only mode)
-	// — that position was frozen only for snapshot stability, not for any semantic
-	// reason — which left the entire static tail (boundary/rules/knowledge/reply
-	// style) downstream of a value that changes every round, defeating the cache.
+	sections := []PromptSection{{ID: "identity", Text: segmentIdentity}}
 	if opts.MutatingToolsEnabled {
-		b.WriteString(segmentMutatingCapabilities)
-		b.WriteString("\n\n")
-		b.WriteString(segmentScopeBoundary)
-		b.WriteString("\n\n")
+		sections = append(sections,
+			PromptSection{ID: "capabilities", Text: segmentMutatingCapabilities},
+			PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
+		)
 		if opts.IntentScopedReActPrompt {
-			b.WriteString(segmentIntentScopedMutatingRules)
+			sections = append(sections, PromptSection{ID: "behavior", Text: segmentIntentScopedMutatingRules})
 		} else {
-			b.WriteString(segmentMutatingRules)
+			sections = append(sections, PromptSection{ID: "behavior", Text: segmentMutatingRules})
 		}
-		b.WriteString("\n\n")
-		b.WriteString(segmentKnowledgeBoundary)
-		b.WriteString("\n\n")
+		sections = append(sections, PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy})
 		if opts.IntentScopedReActPrompt {
-			b.WriteString(segmentIntentScopedMutatingReplyStyle)
+			sections = append(sections, PromptSection{ID: "reply_style", Text: segmentIntentScopedMutatingReplyStyle})
 		} else {
-			b.WriteString(segmentMutatingReplyStyle)
+			sections = append(sections, PromptSection{ID: "reply_style", Text: segmentMutatingReplyStyle})
 		}
-		b.WriteString("\n")
 	} else {
-		b.WriteString(segmentReadOnlyCapabilities)
-		b.WriteString("\n\n")
-		b.WriteString(segmentReadOnlyBoundary)
-		b.WriteString("\n\n")
-		b.WriteString(segmentScopeBoundary)
-		b.WriteString("\n\n")
+		sections = append(sections,
+			PromptSection{ID: "capabilities", Text: segmentReadOnlyCapabilities},
+			PromptSection{ID: "readonly_boundary", Text: segmentReadOnlyBoundary},
+			PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
+		)
 		if opts.IntentScopedReActPrompt {
-			b.WriteString(segmentIntentScopedReadOnlyBehavior)
+			sections = append(sections, PromptSection{ID: "behavior", Text: segmentIntentScopedReadOnlyBehavior})
 		} else {
-			b.WriteString(segmentReadOnlyBehavior)
+			sections = append(sections, PromptSection{ID: "behavior", Text: segmentReadOnlyBehavior})
 		}
-		b.WriteString("\n\n")
-		b.WriteString(segmentKnowledgeBoundary)
-		b.WriteString("\n\n")
-		b.WriteString(segmentReadOnlyReplyStyle)
-		b.WriteString("\n")
+		sections = append(sections,
+			PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy},
+			PromptSection{ID: "reply_style", Text: segmentReadOnlyReplyStyle},
+		)
 	}
 
-	// Volatile tail — the ONLY part that changes turn-to-turn. Keep it last so the
-	// static prefix above stays cacheable. Guard: TestReActPromptStaticPrefixStable.
-	b.WriteString("\n## 用户当前状态\n")
-	b.WriteString(userContext)
-	b.WriteString("\n")
-
-	return b.String()
+	// Volatile tail is a named section and stays last so the static prefix remains
+	// cacheable. Section IDs make duplicate policy injection a construction error.
+	sections = append(sections, PromptSection{ID: "user_state", Text: "## 用户当前状态\n" + userContext})
+	return renderPromptSections(sections) + "\n"
 }
 
 // FormatInstanceContext formats instance list into a context string.

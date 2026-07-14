@@ -10,7 +10,6 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/store"
-	"github.com/compshare-agent/internal/tools"
 )
 
 func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, getenv getenvFunc) (*agentpool.Pool, error) {
@@ -75,16 +74,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if useSkillExecutor {
 		log.Printf("runtime: HTTP skill executor enabled (USE_SKILL_EXECUTOR=1, diagnosis_pilots=%v)", diagnosisPilots)
 	}
-	agenticSearch, unknownAgenticSearch := agenticSearchKnowledgeEnabledFromEnv(getenv)
-	if unknownAgenticSearch != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE value %q", unknownAgenticSearch)
-	}
-	tools.SetAgenticSearchKnowledgeEnabled(agenticSearch)
-	if agenticSearch {
-		log.Printf("runtime: HTTP agentic SearchKnowledge enabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE default-on; disable with =0)")
-	} else {
-		log.Printf("runtime: HTTP agentic SearchKnowledge disabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=0)")
-	}
+	log.Printf("runtime: HTTP agentic SearchKnowledge enabled (single production knowledge path)")
 	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(getenv)
 	if unknownGroundedValidator != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q", unknownGroundedValidator)
@@ -124,16 +114,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	engine.SetAgentDeterministicRenderEnabled(deterministicRender)
 	if deterministicRender {
 		log.Printf("runtime: agent-loop deterministic instance rendering enabled (COMPSHARE_AGENT_DETERMINISTIC_RENDER default-on; disable with =0; instance tables are rendered from the payload, not retyped by the model)")
-	}
-	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
-	if unknownKnowledgeQAAgentLoop != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q", unknownKnowledgeQAAgentLoop)
-	}
-	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
-	if knowledgeQAAgentLoop {
-		log.Printf("runtime: HTTP knowledge_qa agent-loop route enabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP default-on; context-aware retrieval, terminal RAG bypassed; disable with =0)")
-	} else {
-		log.Printf("runtime: HTTP knowledge_qa agent-loop route disabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0; deterministic terminal RAG route)")
 	}
 	knowledgeAnswerVerifier, unknownKnowledgeAnswerVerifier := knowledgeAnswerVerifierEnabledFromEnv(getenv)
 	if unknownKnowledgeAnswerVerifier != "" {

@@ -163,8 +163,6 @@ func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQue
 // SearchKnowledge answer. Every candidate, including one carrying a syntactically
 // valid citation, passes the same model-assisted semantic check and local evidence
 // constraints. This reduces unsupported releases but is not a mathematical proof.
-// The terminal RAG fallback does not call this function and is intentionally
-// unchanged.
 func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQuestion, candidate string) string {
 	if !e.knowledgeQAAgentLoopThisTurn {
 		return e.guardSearchKnowledgeSynthesis(candidate)

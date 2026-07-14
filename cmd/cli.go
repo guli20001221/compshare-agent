@@ -161,11 +161,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
 	}
 	engine.SetSkillExecutorEnabled(useSkillExecutor)
-	agenticSearch, unknownAgenticSearch := agenticSearchKnowledgeEnabledFromEnv(getenv)
-	if unknownAgenticSearch != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE value %q\n", unknownAgenticSearch)
-	}
-	tools.SetAgenticSearchKnowledgeEnabled(agenticSearch)
 	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(getenv)
 	if unknownGroundedValidator != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q\n", unknownGroundedValidator)
@@ -196,11 +191,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CONTEXT_CONTINUATION value %q\n", unknownContextContinuation)
 	}
 	engine.SetContextContinuationEnabled(contextContinuation)
-	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
-	if unknownKnowledgeQAAgentLoop != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)
-	}
-	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
 	knowledgeAnswerVerifier, unknownKnowledgeAnswerVerifier := knowledgeAnswerVerifierEnabledFromEnv(getenv)
 	if unknownKnowledgeAnswerVerifier != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER value %q\n", unknownKnowledgeAnswerVerifier)

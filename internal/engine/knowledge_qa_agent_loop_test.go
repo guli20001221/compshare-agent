@@ -172,8 +172,8 @@ func TestKnowledgeQAAgentLoop_ShortFollowupReusesSufficientConversationWithoutRA
 	assert.Contains(t, visible, "粘贴呢")
 	assert.Contains(t, visible, "完整对话")
 	assert.Contains(t, visible, "可以直接回答")
-	assert.Contains(t, visible, "信息不足")
-	assert.Contains(t, visible, "独立、完整、可检索")
+	assert.Contains(t, visible, "需要新事实")
+	assert.Contains(t, visible, "脱离上文")
 	assert.NotEqual(t, ragNoEvidenceReply, reply)
 }
 
@@ -238,89 +238,19 @@ func TestKnowledgeQAAgentLoop_AgentFormulatesQueryWhenConversationIsInsufficient
 		}
 	}
 	require.NotNil(t, searchTool)
-	assert.Contains(t, searchTool.Description, "当前可见的完整对话")
+	assert.Equal(t, "检索平台与第三方工具运维知识，返回带 chunk_id 的证据条目。", searchTool.Description)
 	parameters, ok := searchTool.Parameters.(map[string]any)
 	require.True(t, ok)
 	properties, ok := parameters["properties"].(map[string]any)
 	require.True(t, ok)
 	querySchema, ok := properties["query"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, querySchema["description"], "独立、完整检索问题")
+	assert.Contains(t, querySchema["description"], "独立理解")
 	require.GreaterOrEqual(t, len(mock.calls), 3)
 	verifierPayload := mock.calls[2].Messages[1].Content
 	assert.NotContains(t, verifierPayload, "请回到终端继续操作",
 		"the previous assistant answer may resolve the query but must never become retrieval evidence")
 	assert.Contains(t, verifierPayload, `"resolved_question":"`+resolved+`"`)
-}
-
-// TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged proves the default-off
-// byte-identity of the ROUTE: with the flag off (even with agentic on), a knowledge_qa
-// turn still takes the deterministic terminal-RAG route (dispatched_retrieval, no tools
-// exposed, no forced tool_choice) and is never marked as agent-loop routed.
-func TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged(t *testing.T) {
-	// Flag OFF (default). Agentic ON to prove the FLAG, not agentic, gates the route.
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-
-	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-		Enabled:   true,
-		KBVersion: "kb.v1",
-		Hits:      []knowledge.KBChunk{chunk},
-		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	var plannerTraces []observability.RouterTrace
-	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-	eng.SetKnowledgeRetriever(retriever)
-
-	_, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
-	require.NoError(t, err)
-
-	assert.False(t, eng.knowledgeQAAgentLoopThisTurn, "flag off: turn must NOT be agent-loop routed")
-	require.Len(t, mock.calls, 1)
-	assert.Empty(t, mock.calls[0].Tools, "flag off: terminal RAG must not expose API tools")
-	assert.Nil(t, mock.calls[0].ToolChoice, "flag off: terminal RAG must not force a tool")
-	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus)
-}
-
-// TestKnowledgeQAAgentLoop_InertWhenAgenticOff proves the 400-trap guard: with the
-// flag ON but agentic SearchKnowledge OFF, the route gate is inert (the tool is not in
-// the registry, so forcing it would 400) — the turn stays on the terminal route.
-func TestKnowledgeQAAgentLoop_InertWhenAgenticOff(t *testing.T) {
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	// Agentic OFF (default) => SearchKnowledge not visible => flag must be inert.
-
-	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-		Enabled:   true,
-		KBVersion: "kb.v1",
-		Hits:      []knowledge.KBChunk{chunk},
-		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	var plannerTraces []observability.RouterTrace
-	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-	eng.SetKnowledgeRetriever(retriever)
-
-	_, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
-	require.NoError(t, err)
-
-	assert.False(t, eng.knowledgeQAAgentLoopThisTurn, "agentic off: flag must be inert (stay on terminal route)")
-	require.Len(t, mock.calls, 1)
-	assert.Nil(t, mock.calls[0].ToolChoice, "agentic off: never force an absent tool")
-	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus)
 }
 
 // TestKnowledgeQAAgentLoop_CiteOrRefuseParity_WithoutGlobalValidator proves the

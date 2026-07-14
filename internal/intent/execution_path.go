@@ -3,9 +3,8 @@ package intent
 type ExecutionPath string
 
 const (
-	ExecutionPathRouting     ExecutionPath = "routing"
-	ExecutionPathTerminalRAG ExecutionPath = "terminal_rag"
-	ExecutionPathAgent       ExecutionPath = "agent"
+	ExecutionPathRouting ExecutionPath = "routing"
+	ExecutionPathAgent   ExecutionPath = "agent"
 )
 
 func PlannedExecutionPathForIntent(i Intent) ExecutionPath {
@@ -23,8 +22,6 @@ func PlannedExecutionPathForIntent(i Intent) ExecutionPath {
 		IntentImageList,
 		IntentPricingQuery:
 		return ExecutionPathRouting
-	case IntentKnowledgeQA:
-		return ExecutionPathTerminalRAG
 	default:
 		return ExecutionPathAgent
 	}
@@ -32,7 +29,7 @@ func PlannedExecutionPathForIntent(i Intent) ExecutionPath {
 
 func IsExecutionPath(value ExecutionPath) bool {
 	switch value {
-	case ExecutionPathRouting, ExecutionPathTerminalRAG, ExecutionPathAgent:
+	case ExecutionPathRouting, ExecutionPathAgent:
 		return true
 	default:
 		return false

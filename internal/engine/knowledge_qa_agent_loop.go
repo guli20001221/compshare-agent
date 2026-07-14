@@ -2,41 +2,12 @@ package engine
 
 import openai "github.com/sashabaranov/go-openai"
 
-// knowledgeQAAgentLoopOn gates the terminal-knowledge_qa → agent-loop migration.
-// Default false => byte-identical: a knowledge_qa turn keeps the deterministic
-// terminal-RAG route (tryStage2BRetrieval). When on (AND the agentic SearchKnowledge
-// tool is enabled AND a retriever is wired), a knowledge_qa turn instead SKIPS the
-// terminal route and enters the shared ReAct loop. A first-turn question forces
-// SearchKnowledge; a follow-up may reuse sufficient visible conversation or search,
-// so platform/external knowledge flows through the same agent loop as
-// every other turn — the lead's north star ("没有单独的 rag — rag 作为 tool 供 agent
-// 在 loop 里调用").
-//
-// Deliberately SEPARATE from COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE (default-on, which
-// only makes the tool AVAILABLE) and from COMPSHARE_RAG_GROUNDED_VALIDATOR
-// (default-off, the route-independent cite/leak validator): this flag changes the
-// knowledge_qa ROUTE. It stays default-off until a flag-on A/B eval proves the
-// agent-loop answer matches the terminal route at the hard-gate bar (faithfulness
-// 0-fab, 100% cite-or-refuse, retrieval-coverage, no mis-route). Flipping it on is a
-// separate, eval-gated PR (the migration's Phase 3). Set once at boot from
-// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP (cmd); the Go-package default stays false so the
-// engine/tools unit tests are unaffected. Rollback = COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0.
-var knowledgeQAAgentLoopOn bool
-
-// SetKnowledgeQAAgentLoopEnabled toggles the knowledge_qa agent-loop route.
-// Boot-only (reversible by restart), mirroring tools.SetAgenticSearchKnowledgeEnabled
-// and SetGroundedAnswerValidatorEnabled.
-func SetKnowledgeQAAgentLoopEnabled(v bool) { knowledgeQAAgentLoopOn = v }
-
-// KnowledgeQAAgentLoopEnabled reports whether the knowledge_qa agent-loop route is on.
-func KnowledgeQAAgentLoopEnabled() bool { return knowledgeQAAgentLoopOn }
-
 // knowledgeQAAgentLoopSearchNote makes retrieval a context-dependent decision.
 // A follow-up may be answered directly when the visible conversation already
 // contains enough information. If retrieval is needed, the same agent that sees
 // the conversation owns the standalone query. A first-turn question still gets a
 // forced SearchKnowledge hop in engine.go because there is no prior answer to reuse.
-const knowledgeQAAgentLoopSearchNote = "本轮为知识问答：先阅读当前可见的完整对话。若已有上下文足以直接、准确回答当前问题，可以直接回答，不要为了形式重复检索；若信息不足、需要新事实或需要确认时效，请先把用户此刻真正要解决的问题组织成独立、完整、可检索且不依赖上文的 query，再调用 SearchKnowledge。必须消解指代并保留已有的产品、环境、目标和约束，不得添加对话中没有的事实。没有实际检索时，不得声称知识库未覆盖。"
+const knowledgeQAAgentLoopSearchNote = "本轮已进入知识问答路径；请遵守基础提示中的知识来源与检索规则。"
 
 // knowledgeQASearchCapNote is injected once the per-turn SearchKnowledge cap is hit
 // and the tool is withdrawn (see maxSearchKnowledgeCallsPerTurn). It steers the model

@@ -22,10 +22,14 @@ const segmentScopeBoundary = `## 范围边界（必须遵守）
 - 第 2 类（GPU / CUDA / 框架 / 运维 / 环境的 how-to 与排障）属于范围内，按"行为规则"正常回答，不要按本节拒答。
 - 平台知识库已覆盖的问题（发票 / 计费 / 镜像 / JupyterLab / 诊断）按"行为规则"回答，不要按本节拒答。`
 
-const segmentKnowledgeBoundary = `## 知识来源边界
-- 平台知识类问题先结合当前可见的完整对话；前文已有回答足以准确续答时可以直接回答，需要新事实或确认时效时再调用知识库/RAG。系统提示中不再内置平台 FAQ 正文。
-- 不要凭内置 FAQ 或模型记忆补全对话、知识库、工具和诊断结果中都没有的平台规则；没有任何可用依据时，应说明当前资料不足。
-- 价格、状态、监控、库存、镜像列表、实例详情等实时事实必须来自工具返回，不要使用历史快照或常识估计。`
+// segmentKnowledgeTurnPolicy is the only complete knowledge-turn policy placed
+// in the ReAct prompt. Tool descriptions define an interface; turn-local notes
+// describe only state. Neither may restate this policy.
+const segmentKnowledgeTurnPolicy = `## 知识来源与检索规则
+- 先阅读当前可见的完整对话和已验证记忆。它们足以准确回答时可以直接回答，不要为了形式重复检索。
+- 需要新事实或确认时效时，调用 SearchKnowledge；query 必须是脱离上文也能理解的完整问题，并保留对话中已有的产品、环境、目标和约束。
+- 不得添加对话、知识证据或工具结果中不存在的条件和平台规则。没有实际检索时，不得声称知识库未覆盖。
+- 价格、状态、监控、库存、镜像列表、实例详情等实时事实必须来自本轮工具返回，不要使用历史快照或常识估计。`
 
 const sharedInstanceReadOnlySelfCheckCommandRule = "可以给用户实例内只读自查命令，例如 systemctl status ... --no-pager、ss -lntp、nvidia-smi、free -h、df -h。必须明确这些命令由用户自行执行，助手没有执行。"
 

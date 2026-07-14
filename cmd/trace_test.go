@@ -93,31 +93,6 @@ func TestTraceWriterFromEnvEnabled(t *testing.T) {
 	}
 }
 
-func TestAgenticSearchKnowledgeEnabledFromEnv_DefaultOn(t *testing.T) {
-	// 2026-06-07: COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is DEFAULT-ON, enabled together
-	// with COMPSHARE_EXTERNAL_KNOWLEDGE. The joint enablement was eval-gated on merged
-	// main: the 34-probe joint eval showed no platform-hosted-API vs self-hosted-service
-	// confusion + clean regression, and the platform-FAQ faithfulness eval showed zero
-	// external-corpus contamination of platform answers. unset/empty/affirmative => on;
-	// explicit negative => off; unknown => off + non-empty warn string per CLAUDE.md
-	// (never silently coerce). Boot-only reversible (=0 restores).
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
-	for _, v := range on {
-		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should be on (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
 func TestGroundedAnswerValidatorEnabledFromEnv_DefaultOff(t *testing.T) {
 	// COMPSHARE_RAG_GROUNDED_VALIDATOR is DEFAULT-OFF (#126): the cite contract on the
 	// agentic SearchKnowledge synthesis stays off until a flag-on eval proves the agent
@@ -230,31 +205,6 @@ func TestContextContinuationEnabledFromEnv_DefaultOn(t *testing.T) {
 		require.Emptyf(t, unknown, "value %q should not warn", v)
 	}
 	got, unknown := contextContinuationEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestKnowledgeQAAgentLoopEnabledFromEnv_DefaultOn(t *testing.T) {
-	// 2026-06-09: COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is DEFAULT-ON — a knowledge_qa turn
-	// routes through the agent loop (context-aware SearchKnowledge + disciplined
-	// synthesis) instead of the terminal-RAG route. Flip gated on the #150 A/B: the
-	// decisive code-heavy probe (DDP N=20) matched terminal RAG at refusal 0.00 / 0 fab
-	// (opus judge). The terminal route is retained as the =0 rollback. unset/empty/
-	// affirmative => on; explicit negative => off; unknown => off + non-empty warn string
-	// per CLAUDE.md (never silently coerce). Boot-only reversible (=0 restores terminal).
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
-	for _, v := range on {
-		got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should be on (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return "maybe" })
 	require.False(t, got, "unknown value treated as off")
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }

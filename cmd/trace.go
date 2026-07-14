@@ -272,41 +272,9 @@ func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// agenticSearchKnowledgeEnabledFromEnv gates the agentic-RAG SearchKnowledge
-// registry tool. DEFAULT ON. The production dispatch boundary exposes it only to
-// knowledge_qa, whose final answer uses the common evidence-verification exit;
-// generic diagnosis and unknown-intent ReAct windows cannot execute it. Diagnosis
-// skills that need KB evidence use their separate structured-claim path.
-// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
-// non-empty warn string (CLAUDE.md: never silently coerce). Boot-only: resolved
-// once in cmd (CLI + HTTP) and frozen via tools.SetAgenticSearchKnowledgeEnabled;
-// the Go-package default (tools.agenticSearchKnowledgeOn) stays false so the
-// engine/tools unit tests are unaffected. Rollback = COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=0.
-//
-// WHY DEFAULT-ON (2026-06-07): enabled TOGETHER with COMPSHARE_EXTERNAL_KNOWLEDGE
-// (the agentic value comes from the external tool/ops KB — agentic-alone at
-// external-off had no positive value and a false-grounding risk, see the P5 report).
-// The joint enablement was eval-gated on merged main: the 34-probe joint eval
-// (170 runs) showed no platform-hosted-API vs self-hosted-service confusion and a
-// clean regression set, and the platform-FAQ faithfulness eval (15 probes x both
-// conditions) showed ZERO external-corpus contamination of platform answers. See
-// eval/trace_gate/{joint_onmain_anchor_observations.jsonl, agentic_rag_default_on_report.md}.
-func agenticSearchKnowledgeEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
 // groundedAnswerValidatorEnabledFromEnv gates the route-independent grounded-answer
 // (cite + leak) validator on the agentic SearchKnowledge synthesis (#126). DEFAULT
-// OFF — deliberately separate from COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE (default-on)
-// because the cite contract must stay off until a flag-on eval proves the agent
+// OFF by default because the cite contract must stay off until a flag-on eval proves the agent
 // attributes its answer at the hard-gate bar (100% cite-or-refuse / 0 raw-leak).
 // When on, the SearchKnowledge tool result carries a [[chunk_id]] cite_protocol and
 // a synthesis that does not cite a retrieved chunk (or cites an unknown one) is
@@ -428,36 +396,6 @@ func contextContinuationEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
-// route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
-// turn routes through the agent loop: the agent reuses sufficient conversation or
-// retrieves evidence, then the unified verifier checks any retrieved-evidence answer
-// (see disciplinedKnowledgeQASynthesisEnabledFromEnv, also default-on). This collapses the
-// separate deterministic terminal-RAG route into the single agent loop (the lead's
-// "rag as a tool the agent calls in a loop" north star). The flip was gated on the
-// #150 A/B: on the decisive code-heavy probe (PyTorch DDP, N=20) the
-// agent-loop+disciplined answer matched terminal RAG — refusal 0.00 == terminal, 0
-// fabrication / 0 contamination (opus-4-7 judge); the other 7 real-tone probes were
-// already 0-refusal. The terminal route (tryStage2BRetrieval) is retained as the =0
-// rollback, not deleted. Inert unless COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is also on
-// (the tool must be visible) and a retriever is wired — the engine route gate enforces
-// both, so a mandatory first-turn hop can never name an absent tool (the 400 trap).
-// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn string
-// (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
-// (engine.knowledgeQAAgentLoopOn) stays false so engine/tools unit tests are
-// unaffected. Rollback = COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0.
-func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
 // knowledgeAnswerVerifierEnabledFromEnv gates the model-assisted semantic
 // verifier on the knowledge_qa agent-loop exit. DEFAULT ON. The verifier is not
 // a mathematical proof and this flag does not claim an offline eval guarantee;
@@ -482,9 +420,8 @@ func knowledgeAnswerVerifierEnabledFromEnv(getenv getenvFunc) (bool, string) {
 
 // disciplinedKnowledgeQASynthesisEnabledFromEnv gates one bounded, proof-carrying
 // repair after the common knowledge-answer verifier rejects an agent-loop draft.
-// DEFAULT ON and effective only when COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is also on.
-// The backward-compatible flag name is retained for rollout; the implementation no
-// longer borrows terminal RAG or retries merely to add citation punctuation.
+// DEFAULT ON for the unified knowledge Agent path. The backward-compatible flag
+// name is retained for rollout; the implementation performs one proof-carrying repair.
 // ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn
 // (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
 // (engine.disciplinedKnowledgeQASynthesisOn) stays false so unit tests are unaffected.

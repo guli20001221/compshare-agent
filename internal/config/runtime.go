@@ -20,7 +20,7 @@ import (
 //
 //   - nil            → field omitted in YAML; fall back to the env var, then to
 //     the built-in default for that flag (NOT all default off — e.g.
-//     agentic_search_knowledge / knowledge_qa_* / external_knowledge default ON).
+//     knowledge verification / external_knowledge default ON).
 //   - &true / &false → explicit value; it WINS over any env var.
 //
 // SkillExecutorDiagnosisPilots is a list (joined to the CSV the env parser
@@ -30,8 +30,6 @@ type FeaturesConfig struct {
 	DurableTurns                    *bool    `yaml:"durable_turns"`                      // COMPSHARE_DURABLE_TURNS (server-only, default off)
 	ConfirmForm                     *bool    `yaml:"confirm_form"`                       // COMPSHARE_CONFIRM_FORM (server-only, default off)
 	GuidedCreate                    *bool    `yaml:"guided_create"`                      // COMPSHARE_GUIDED_CREATE (server-only, default off)
-	AgenticSearchKnowledge          *bool    `yaml:"agentic_search_knowledge"`           // COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE (default ON)
-	KnowledgeQAAgentLoop            *bool    `yaml:"knowledge_qa_agent_loop"`            // COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP (default ON)
 	KnowledgeAnswerVerifier         *bool    `yaml:"knowledge_answer_verifier"`          // COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER (default ON; explicit off fails closed)
 	KnowledgeQADisciplinedSynthesis *bool    `yaml:"knowledge_qa_disciplined_synthesis"` // COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS (default ON)
 	KnowledgeQASelfRevision         *bool    `yaml:"knowledge_qa_self_revision"`         // COMPSHARE_KQA_SELF_REVISION (default ON)
@@ -119,11 +117,9 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_UNIFIED_CREATE", f.UnifiedCreate, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CONTEXT_CONTINUATION", f.ContextContinuation, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_AGENT_DETERMINISTIC_RENDER", f.AgentDeterministicRender, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE", f.AgenticSearchKnowledge, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_GROUNDED_VALIDATOR", f.GroundedValidator, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD", f.FlashKnowledgeRouteGuard, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP", f.KnowledgeQAAgentLoop, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_ANSWER_VERIFIER", f.KnowledgeAnswerVerifier, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS", f.KnowledgeQADisciplinedSynthesis, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_KQA_SELF_REVISION", f.KnowledgeQASelfRevision, "1", "0")
