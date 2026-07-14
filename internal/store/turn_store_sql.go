@@ -271,7 +271,7 @@ FOR UPDATE
 	return nil
 }
 
-func startTurnTx(ctx context.Context, tx *sql.Tx, turn Turn, lease ConversationLease) error {
+func startTurnTx(ctx context.Context, tx *sql.Tx, turn Turn, lease ConversationLease, contextVersion int) error {
 	if turn.Status.Terminal() {
 		return ErrInvalidTurnState
 	}
@@ -288,9 +288,10 @@ func startTurnTx(ctx context.Context, tx *sql.Tx, turn Turn, lease ConversationL
 	res, err := tx.ExecContext(ctx, `
 UPDATE chat_turns
 SET status = $1, executor_id = $2, lease_epoch = $3,
+    base_context_version = $4,
     error_code = NULL, started_at = COALESCE(started_at, NOW())
-WHERE id = $4 AND status = $5
-`, nextStatus, lease.HolderID, lease.Epoch, turn.ID, turn.Status)
+WHERE id = $5 AND status = $6
+`, nextStatus, lease.HolderID, lease.Epoch, contextVersion, turn.ID, turn.Status)
 	if err != nil {
 		return fmt.Errorf("start turn: %w", err)
 	}
@@ -646,6 +647,18 @@ func durationMillis(ttl time.Duration) int64 {
 	return millis
 }
 
+func marshalInteractionRequestedEvent(key, kind string, payload json.RawMessage) (json.RawMessage, error) {
+	event, err := json.Marshal(struct {
+		InteractionKey string          `json:"interaction_key"`
+		Kind           string          `json:"kind"`
+		Payload        json.RawMessage `json:"payload"`
+	}{InteractionKey: key, Kind: kind, Payload: payload})
+	if err != nil {
+		return nil, fmt.Errorf("encode interaction event: %w", err)
+	}
+	return event, nil
+}
+
 func hashCommit(in CommitTurnInput, contextJSON, eventJSON json.RawMessage) string {
 	fields := []string{
 		in.TurnID,
@@ -654,6 +667,7 @@ func hashCommit(in CommitTurnInput, contextJSON, eventJSON json.RawMessage) stri
 		in.Lease.HolderID,
 		strconv.FormatInt(in.Lease.Epoch, 10),
 		strconv.Itoa(in.ExpectedContextVersion),
+		string(in.ContextWriteMode),
 		string(contextJSON),
 		in.Assistant.Content,
 		in.TerminalEventType,

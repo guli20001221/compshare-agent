@@ -104,7 +104,8 @@ func (s *PostgresTurnStore) AcquireConversationLease(ctx context.Context, owner 
 		return ConversationLease{}, fmt.Errorf("acquire lease begin: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := lockSession(ctx, tx, owner, sessionID); err != nil {
+	contextVersion, err := lockSession(ctx, tx, owner, sessionID)
+	if err != nil {
 		return ConversationLease{}, err
 	}
 
@@ -131,7 +132,7 @@ FROM conversation_leases WHERE session_id = $1 FOR UPDATE
 		if insertErr != nil {
 			return ConversationLease{}, insertErr
 		}
-		if err := startTurnTx(ctx, tx, turn, lease); err != nil {
+		if err := startTurnTx(ctx, tx, turn, lease, contextVersion); err != nil {
 			return ConversationLease{}, err
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
@@ -172,7 +173,7 @@ FROM conversation_leases WHERE session_id = $1 FOR UPDATE
 	if err != nil {
 		return ConversationLease{}, err
 	}
-	if err := startTurnTx(ctx, tx, turn, lease); err != nil {
+	if err := startTurnTx(ctx, tx, turn, lease, contextVersion); err != nil {
 		return ConversationLease{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -358,6 +359,10 @@ func (s *PostgresTurnStore) CreateInteraction(
 		return TurnInteraction{}, false, fmt.Errorf("%w: invalid interaction", ErrInvalidArgument)
 	}
 	requestHash := HashTurnRequest(kind, string(canonicalPayload))
+	interactionEvent, err := marshalInteractionRequestedEvent(key, kind, canonicalPayload)
+	if err != nil {
+		return TurnInteraction{}, false, err
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return TurnInteraction{}, false, fmt.Errorf("create interaction begin: %w", err)
@@ -385,6 +390,25 @@ func (s *PostgresTurnStore) CreateInteraction(
 		if existing.RequestHash != requestHash {
 			return TurnInteraction{}, false, ErrInteractionConflict
 		}
+		if existing.Status == InteractionStatusPending && existing.LeaseEpoch != lease.Epoch {
+			existing, err = scanInteraction(tx.QueryRowContext(ctx, `
+UPDATE turn_interactions
+SET lease_epoch = $1
+WHERE id = $2 AND status = 'pending' AND expires_at > NOW()
+RETURNING id, turn_id, interaction_key, kind, request_hash, request_payload,
+	      lease_epoch, expires_at, status, resolution_hash,
+	      response_payload, created_at, resolved_at
+`, lease.Epoch, existing.ID))
+			if errors.Is(err, sql.ErrNoRows) {
+				return TurnInteraction{}, false, ErrInteractionExpired
+			}
+			if err != nil {
+				return TurnInteraction{}, false, fmt.Errorf("rebind pending interaction: %w", err)
+			}
+			if _, err := appendEventTx(ctx, tx, lease.TurnID, lease.Epoch, "interaction.requested", interactionEvent, true); err != nil {
+				return TurnInteraction{}, false, err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return TurnInteraction{}, false, fmt.Errorf("create existing interaction commit: %w", err)
 		}
@@ -407,14 +431,6 @@ RETURNING id, turn_id, interaction_key, kind, request_hash, request_payload,
 		lease.Epoch, durationMillis(ttl)))
 	if err != nil {
 		return TurnInteraction{}, false, fmt.Errorf("create interaction: %w", err)
-	}
-	interactionEvent, err := json.Marshal(struct {
-		InteractionKey string          `json:"interaction_key"`
-		Kind           string          `json:"kind"`
-		Payload        json.RawMessage `json:"payload"`
-	}{InteractionKey: key, Kind: kind, Payload: canonicalPayload})
-	if err != nil {
-		return TurnInteraction{}, false, fmt.Errorf("encode interaction event: %w", err)
 	}
 	if _, err := appendEventTx(ctx, tx, lease.TurnID, lease.Epoch, "interaction.requested", interactionEvent, true); err != nil {
 		return TurnInteraction{}, false, err
@@ -663,7 +679,7 @@ RETURNING turn_id, action_index, lease_epoch, action_name, args_hash,
 
 func (s *PostgresTurnStore) CommitTurn(ctx context.Context, owner Owner, in CommitTurnInput) (Turn, error) {
 	canonicalContext, err := canonicalJSON(in.Context)
-	if err != nil || in.TurnID == "" || in.Lease.TurnID != in.TurnID || in.TerminalEventType == "" {
+	if err != nil || !in.ContextWriteMode.Valid() || in.TurnID == "" || in.Lease.TurnID != in.TurnID || in.TerminalEventType == "" {
 		return Turn{}, fmt.Errorf("%w: invalid turn commit", ErrInvalidArgument)
 	}
 	canonicalEvent, err := canonicalJSON(in.TerminalEventPayload)
@@ -707,7 +723,8 @@ func (s *PostgresTurnStore) CommitTurn(ctx context.Context, owner Owner, in Comm
 	}
 
 	var newContextVersion int
-	if err := tx.QueryRowContext(ctx, `
+	if in.ContextWriteMode == ContextWriteUpdate {
+		if err := tx.QueryRowContext(ctx, `
 UPDATE sessions
 SET context = $1, context_version = context_version + 1,
     message_count = message_count + 2, updated_at = NOW()
@@ -715,10 +732,24 @@ WHERE id = $2 AND top_organization_id = $3 AND organization_id = $4
   AND deleted_at IS NULL AND context_version = $5
 RETURNING context_version
 `, nullableJSON(canonicalContext), in.Lease.SessionID, owner.TopOrganizationID,
-		owner.OrganizationID, in.ExpectedContextVersion).Scan(&newContextVersion); errors.Is(err, sql.ErrNoRows) {
-		return Turn{}, ErrContextConflict
-	} else if err != nil {
-		return Turn{}, fmt.Errorf("commit turn session context: %w", err)
+			owner.OrganizationID, in.ExpectedContextVersion).Scan(&newContextVersion); errors.Is(err, sql.ErrNoRows) {
+			return Turn{}, ErrContextConflict
+		} else if err != nil {
+			return Turn{}, fmt.Errorf("commit turn session context: %w", err)
+		}
+	} else {
+		if err := tx.QueryRowContext(ctx, `
+UPDATE sessions
+SET message_count = message_count + 2, updated_at = NOW()
+WHERE id = $1 AND top_organization_id = $2 AND organization_id = $3
+  AND deleted_at IS NULL AND context_version = $4
+RETURNING context_version
+`, in.Lease.SessionID, owner.TopOrganizationID, owner.OrganizationID,
+			in.ExpectedContextVersion).Scan(&newContextVersion); errors.Is(err, sql.ErrNoRows) {
+			return Turn{}, ErrContextConflict
+		} else if err != nil {
+			return Turn{}, fmt.Errorf("commit turn preserving session context: %w", err)
+		}
 	}
 	userResult, err := tx.ExecContext(ctx, `
 UPDATE messages
@@ -775,7 +806,7 @@ RETURNING `+turnColumns,
 // their own durable commit from a later executor's different result.
 func HashTurnCommit(in CommitTurnInput) (string, error) {
 	canonicalContext, err := canonicalJSON(in.Context)
-	if err != nil || in.TurnID == "" || in.Lease.TurnID != in.TurnID || in.TerminalEventType == "" {
+	if err != nil || !in.ContextWriteMode.Valid() || in.TurnID == "" || in.Lease.TurnID != in.TurnID || in.TerminalEventType == "" {
 		return "", fmt.Errorf("%w: invalid turn commit", ErrInvalidArgument)
 	}
 	canonicalEvent, err := canonicalJSON(in.TerminalEventPayload)

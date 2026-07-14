@@ -143,7 +143,8 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 
 	_, err = turns.CommitTurn(ctx, owner, CommitTurnInput{
 		TurnID: turn.ID, Lease: leaseA, ExpectedContextVersion: turn.BaseContextVersion,
-		Context: json.RawMessage(`{"stale":true}`), Assistant: AssistantPatch{Content: "stale"},
+		ContextWriteMode: ContextWriteUpdate,
+		Context:          json.RawMessage(`{"stale":true}`), Assistant: AssistantPatch{Content: "stale"},
 		TerminalEventType: "turn.committed",
 	})
 	require.ErrorIs(t, err, ErrLeaseFenced, "an old epoch cannot commit after takeover")
@@ -217,6 +218,7 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		TurnID:                 turn.ID,
 		Lease:                  leaseB2,
 		ExpectedContextVersion: turn.BaseContextVersion,
+		ContextWriteMode:       ContextWriteUpdate,
 		Context:                json.RawMessage(`{"schema_version":"1.0","last_intent":"chat"}`),
 		Assistant:              AssistantPatch{Content: "world"},
 		TerminalEventType:      "turn.committed",
@@ -292,7 +294,8 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		require.ErrorIs(t, reserveErr, ErrInteractionExpired)
 		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
 			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: candidate.BaseContextVersion,
-			Context: json.RawMessage(`{"must":"not-commit"}`), Assistant: AssistantPatch{Content: "must not commit"},
+			ContextWriteMode: ContextWriteUpdate,
+			Context:          json.RawMessage(`{"must":"not-commit"}`), Assistant: AssistantPatch{Content: "must not commit"},
 			TerminalEventType: "turn.committed",
 		})
 		require.ErrorIs(t, commitErr, ErrInteractionExpired)
@@ -311,7 +314,8 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		require.NoError(t, updateErr)
 		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
 			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: candidate.BaseContextVersion,
-			Context: json.RawMessage(`{"loser":true}`), Assistant: AssistantPatch{Content: "must not persist"}, TerminalEventType: "turn.committed",
+			ContextWriteMode: ContextWriteUpdate,
+			Context:          json.RawMessage(`{"loser":true}`), Assistant: AssistantPatch{Content: "must not persist"}, TerminalEventType: "turn.committed",
 		})
 		require.ErrorIs(t, commitErr, ErrContextConflict)
 		got, getErr := turns.GetTurn(ctx, owner, candidate.ID)
@@ -335,7 +339,8 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		require.NoError(t, acquireErr)
 		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
 			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: latest.ContextVersion,
-			Context: json.RawMessage(`{"must":"rollback"}`), Assistant: AssistantPatch{Content: "must rollback"},
+			ContextWriteMode: ContextWriteUpdate,
+			Context:          json.RawMessage(`{"must":"rollback"}`), Assistant: AssistantPatch{Content: "must rollback"},
 			TerminalEventType: strings.Repeat("x", 65),
 		})
 		require.Error(t, commitErr)
@@ -369,7 +374,8 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		require.NoError(t, updateErr)
 		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
 			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: latest.ContextVersion,
-			Context: json.RawMessage(`{"must":"not-write"}`), Assistant: AssistantPatch{Content: "must not persist"},
+			ContextWriteMode: ContextWriteUpdate,
+			Context:          json.RawMessage(`{"must":"not-write"}`), Assistant: AssistantPatch{Content: "must not persist"},
 			TerminalEventType: "turn.committed",
 		})
 		require.ErrorIs(t, commitErr, ErrInvalidTurnState)
@@ -470,7 +476,8 @@ func TestPostgresTurnStore_Integration(t *testing.T) {
 		require.ErrorIs(t, appendErr, ErrLeaseFenced)
 		_, commitErr := turns.CommitTurn(ctx, owner, CommitTurnInput{
 			TurnID: candidate.ID, Lease: lease, ExpectedContextVersion: candidate.BaseContextVersion,
-			Context: json.RawMessage(`{"must":"not-commit"}`), Assistant: AssistantPatch{Content: "must not commit"},
+			ContextWriteMode: ContextWriteUpdate,
+			Context:          json.RawMessage(`{"must":"not-commit"}`), Assistant: AssistantPatch{Content: "must not commit"},
 			TerminalEventType: "turn.committed",
 		})
 		require.ErrorIs(t, commitErr, ErrLeaseFenced)
@@ -564,4 +571,149 @@ func TestPostgresTurnStore_ConcurrentFencing(t *testing.T) {
 	assert.Equal(t, takeover.Epoch, replayed[0].LeaseEpoch)
 	require.NoError(t, stores[1].ReleaseConversationLease(ctx, owner, takeover))
 	require.NoError(t, VerifySchema(ctx, db), "schema probes must also work after protocol tables contain rows")
+}
+
+func TestPostgresTurnStore_PreserveContextCommitLeavesUnknownStateUntouched(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 73001, OrganizationID: 73002}
+	unknownContext := json.RawMessage(`{"schema_version":"99.0","opaque":{"new_field":true,"nested":[3,2,1]}}`)
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, unknownContext)
+	require.NoError(t, err)
+
+	var beforeText string
+	var beforeVersion, beforeCount int
+	require.NoError(t, db.QueryRow(`SELECT context::text, context_version, message_count FROM sessions WHERE id = $1`, session.ID).
+		Scan(&beforeText, &beforeVersion, &beforeCount))
+
+	turns := NewPostgresTurnStore(db)
+	turn, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "preserve-unknown", RequestHash: HashTurnRequest("preserve-unknown"), UserContent: "continue",
+	})
+	require.NoError(t, err)
+	lease, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-preserve", time.Minute)
+	require.NoError(t, err)
+	turn, err = turns.GetTurn(ctx, owner, turn.ID)
+	require.NoError(t, err)
+
+	committed, err := turns.CommitTurn(ctx, owner, CommitTurnInput{
+		TurnID: turn.ID, Lease: lease, ExpectedContextVersion: turn.BaseContextVersion,
+		ContextWriteMode:  ContextWritePreserve,
+		Context:           json.RawMessage(`{"schema_version":"1.0","must_not":"overwrite"}`),
+		Assistant:         AssistantPatch{Content: "safe read-only answer"},
+		TerminalEventType: "turn.committed",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, committed.CommittedContextVersion)
+	assert.Equal(t, beforeVersion, *committed.CommittedContextVersion)
+
+	var afterText string
+	var afterVersion, afterCount int
+	require.NoError(t, db.QueryRow(`SELECT context::text, context_version, message_count FROM sessions WHERE id = $1`, session.ID).
+		Scan(&afterText, &afterVersion, &afterCount))
+	assert.Equal(t, beforeText, afterText, "preserve mode must not rewrite even semantically equivalent JSONB state")
+	assert.Equal(t, beforeVersion, afterVersion, "preserve mode must not advance the context version")
+	assert.Equal(t, beforeCount+2, afterCount, "the committed user and assistant messages still count")
+}
+
+func TestPostgresTurnStore_TakeoverRebindsPendingInteractionAndReplaysItsCard(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 74001, OrganizationID: 74002}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := NewPostgresTurnStore(db)
+	turn, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "takeover-interaction", RequestHash: HashTurnRequest("takeover-interaction"), UserContent: "delete it",
+	})
+	require.NoError(t, err)
+	firstLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-first", time.Minute)
+	require.NoError(t, err)
+	payload := json.RawMessage(`{"question":"continue?","options":["yes","no"]}`)
+	original, created, err := turns.CreateInteraction(ctx, owner, firstLease, "confirm-delete", "confirmation", payload, 10*time.Minute)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	resolvedOriginal, created, err := turns.CreateInteraction(ctx, owner, firstLease, "already-resolved", "confirmation", json.RawMessage(`{"question":"resolved?"}`), 10*time.Minute)
+	require.NoError(t, err)
+	require.True(t, created)
+	resolvedOriginal, err = turns.ResolveInteraction(ctx, owner, turn.ID, "already-resolved", json.RawMessage(`{"confirmed":true}`))
+	require.NoError(t, err)
+
+	_, err = db.Exec(`UPDATE conversation_leases SET lease_until = NOW() - INTERVAL '1 second' WHERE session_id = $1`, session.ID)
+	require.NoError(t, err)
+	takeover, err := turns.AcquireConversationLease(ctx, owner, session.ID, turn.ID, "replica-takeover", time.Minute)
+	require.NoError(t, err)
+	require.Greater(t, takeover.Epoch, firstLease.Epoch)
+
+	rebound, created, err := turns.CreateInteraction(ctx, owner, takeover, "confirm-delete", "confirmation", json.RawMessage(`{"options":["yes","no"],"question":"continue?"}`), 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, created, "takeover resumes the same durable interaction instead of creating another")
+	assert.Equal(t, original.ID, rebound.ID)
+	assert.Equal(t, takeover.Epoch, rebound.LeaseEpoch, "the pending card belongs to the current fenced executor")
+
+	_, created, err = turns.CreateInteraction(ctx, owner, takeover, "confirm-delete", "confirmation", payload, 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, created)
+	_, _, err = turns.CreateInteraction(ctx, owner, takeover, "confirm-delete", "confirmation", json.RawMessage(`{"question":"different"}`), 10*time.Minute)
+	require.ErrorIs(t, err, ErrInteractionConflict)
+
+	resolvedAfterTakeover, created, err := turns.CreateInteraction(ctx, owner, takeover, "already-resolved", "confirmation", json.RawMessage(`{"question":"resolved?"}`), 10*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, InteractionStatusResolved, resolvedAfterTakeover.Status)
+	assert.Equal(t, resolvedOriginal.LeaseEpoch, resolvedAfterTakeover.LeaseEpoch, "resolved history must not be rebound to a new attempt")
+
+	events, err := turns.ListEvents(ctx, owner, turn.ID, 0, 20)
+	require.NoError(t, err)
+	var currentRequested []TurnEvent
+	for _, event := range events {
+		if event.Type == "interaction.requested" {
+			currentRequested = append(currentRequested, event)
+		}
+	}
+	require.Len(t, currentRequested, 1, "resume must expose exactly one current-epoch confirmation card")
+	assert.Equal(t, takeover.Epoch, currentRequested[0].LeaseEpoch)
+}
+
+func TestPostgresTurnStore_AcquireQueuedTurnRefreshesItsContextSnapshot(t *testing.T) {
+	db := openIsolatedTurnTestDB(t)
+	ctx := context.Background()
+	owner := Owner{TopOrganizationID: 75001, OrganizationID: 75002}
+	session, err := NewSessionStore(db).Create(ctx, owner, nil, json.RawMessage(`{"step":0}`))
+	require.NoError(t, err)
+	turns := NewPostgresTurnStore(db)
+	first, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "first", RequestHash: HashTurnRequest("first"), UserContent: "first",
+	})
+	require.NoError(t, err)
+	queued, _, err := turns.AcceptTurn(ctx, owner, AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: "queued", RequestHash: HashTurnRequest("queued"), UserContent: "queued",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, first.BaseContextVersion, queued.BaseContextVersion, "both were accepted before the first commit")
+
+	firstLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, first.ID, "replica-first", time.Minute)
+	require.NoError(t, err)
+	first, err = turns.GetTurn(ctx, owner, first.ID)
+	require.NoError(t, err)
+	_, err = turns.CommitTurn(ctx, owner, CommitTurnInput{
+		TurnID: first.ID, Lease: firstLease, ExpectedContextVersion: first.BaseContextVersion,
+		ContextWriteMode: ContextWriteUpdate, Context: json.RawMessage(`{"step":1}`),
+		Assistant: AssistantPatch{Content: "first answer"}, TerminalEventType: "turn.committed",
+	})
+	require.NoError(t, err)
+
+	queuedLease, err := turns.AcquireConversationLease(ctx, owner, session.ID, queued.ID, "replica-queued", time.Minute)
+	require.NoError(t, err)
+	queued, err = turns.GetTurn(ctx, owner, queued.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, queued.BaseContextVersion, "execution must bind the latest committed snapshot, not the acceptance-time snapshot")
+
+	_, err = turns.CommitTurn(ctx, owner, CommitTurnInput{
+		TurnID: queued.ID, Lease: queuedLease, ExpectedContextVersion: queued.BaseContextVersion,
+		ContextWriteMode: ContextWriteUpdate, Context: json.RawMessage(`{"step":2}`),
+		Assistant: AssistantPatch{Content: "queued answer"}, TerminalEventType: "turn.committed",
+	})
+	require.NoError(t, err)
 }

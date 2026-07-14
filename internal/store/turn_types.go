@@ -93,6 +93,21 @@ const (
 	InteractionStatusResolved InteractionStatus = "resolved"
 )
 
+// ContextWriteMode makes context mutation an explicit part of the durable
+// commit contract. The zero value is intentionally invalid: callers handling
+// a state schema they cannot understand must choose Preserve rather than
+// accidentally overwriting it with an empty/default state.
+type ContextWriteMode string
+
+const (
+	ContextWriteUpdate   ContextWriteMode = "update"
+	ContextWritePreserve ContextWriteMode = "preserve"
+)
+
+func (m ContextWriteMode) Valid() bool {
+	return m == ContextWriteUpdate || m == ContextWritePreserve
+}
+
 type Turn struct {
 	ID                      string
 	SessionID               string
@@ -183,6 +198,7 @@ type CommitTurnInput struct {
 	TurnID                 string
 	Lease                  ConversationLease
 	ExpectedContextVersion int
+	ContextWriteMode       ContextWriteMode
 	Context                json.RawMessage
 	Assistant              AssistantPatch
 	TerminalEventType      string

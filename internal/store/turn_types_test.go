@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,4 +42,40 @@ func TestActionStatusMayHaveExecuted(t *testing.T) {
 	assert.True(t, ActionStatusSucceeded.MayHaveExecuted())
 	assert.True(t, ActionStatusAmbiguous.MayHaveExecuted())
 	assert.False(t, ActionStatusFailed.MayHaveExecuted())
+}
+
+func TestHashTurnCommitRequiresAndIncludesContextWriteMode(t *testing.T) {
+	base := CommitTurnInput{
+		TurnID: "turn-1",
+		Lease: ConversationLease{
+			SessionID: "session-1",
+			TurnID:    "turn-1",
+			HolderID:  "replica-1",
+			Epoch:     7,
+		},
+		ExpectedContextVersion: 3,
+		Context:                json.RawMessage(`{"schema_version":"1.0"}`),
+		Assistant:              AssistantPatch{Content: "answer"},
+		TerminalEventType:      "turn.committed",
+		TerminalEventPayload:   json.RawMessage(`{"saved":true}`),
+	}
+
+	_, err := HashTurnCommit(base)
+	require.ErrorIs(t, err, ErrInvalidArgument, "a zero-valued write mode must never choose a context policy implicitly")
+
+	update := base
+	update.ContextWriteMode = ContextWriteUpdate
+	updateHash, err := HashTurnCommit(update)
+	require.NoError(t, err)
+
+	preserve := base
+	preserve.ContextWriteMode = ContextWritePreserve
+	preserveHash, err := HashTurnCommit(preserve)
+	require.NoError(t, err)
+	assert.NotEqual(t, updateHash, preserveHash, "commit reconciliation must distinguish updating from preserving context")
+
+	invalid := base
+	invalid.ContextWriteMode = ContextWriteMode("future-mode")
+	_, err = HashTurnCommit(invalid)
+	require.ErrorIs(t, err, ErrInvalidArgument)
 }
