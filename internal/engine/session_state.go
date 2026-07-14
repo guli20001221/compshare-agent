@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/compshare-agent/internal/knowledge"
 )
 
 // SessionStateSchemaV1 is the first persisted JSON schema version for SessionState.
@@ -31,7 +33,13 @@ const SessionStateSchemaV4 = "4.0"
 // transcripts are deliberately not part of this schema.
 const SessionStateSchemaV5 = "5.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV5
+// SessionStateSchemaV6 persists bounded evidence from answers that passed the
+// semantic knowledge verifier. It lets a cold/restarted agent validate a short
+// follow-up against the same source instead of trusting arbitrary assistant text
+// or forcing another retrieval.
+const SessionStateSchemaV6 = "6.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV6
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -57,6 +65,7 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV3: {},
 	SessionStateSchemaV4: {},
 	SessionStateSchemaV5: {},
+	SessionStateSchemaV6: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -90,30 +99,42 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // persisted session facts. With fact context enabled, stock follow-ups use
 // RecentFacts StockSnapshot entries instead.
 type SessionState struct {
-	SchemaVersion                   string                 `json:"schema_version"`
-	SelectedInstanceID              string                 `json:"selected_instance_id,omitempty"`
-	SelectedInstanceName            string                 `json:"selected_instance_name,omitempty"`
-	SelectedInstanceSource          string                 `json:"selected_instance_source,omitempty"`
-	SelectedInstanceAtUnix          int64                  `json:"selected_instance_at_unix,omitempty"`
-	SelectedInstanceFreshness       string                 `json:"selected_instance_freshness,omitempty"`
-	LastIntent                      string                 `json:"last_intent,omitempty"`
-	LastStockGpuModel               string                 `json:"last_stock_gpu_model,omitempty"`
-	LastDeployWorkload              string                 `json:"last_deploy_workload,omitempty"`
-	LastDeployZone                  string                 `json:"last_deploy_zone,omitempty"`
-	PendingDeployModel              string                 `json:"pending_deploy_model,omitempty"`
-	PendingSelectionKind            string                 `json:"pending_selection_kind,omitempty"`
-	PendingSelectionIntent          string                 `json:"pending_selection_intent,omitempty"`
-	PendingSelectionOriginalUserMsg string                 `json:"pending_selection_original_user_msg,omitempty"`
-	PendingSelectionCreatedTurn     int                    `json:"pending_selection_created_turn,omitempty"`
-	PendingSelectionProducedAtUnix  int64                  `json:"pending_selection_produced_at_unix,omitempty"`
-	PendingSelectionTTLSeconds      int                    `json:"pending_selection_ttl_seconds,omitempty"`
-	PendingSelectionTruncated       bool                   `json:"pending_selection_truncated,omitempty"`
-	PendingSelectionTotalCount      int                    `json:"pending_selection_total_count,omitempty"`
-	PendingSelectionItems           []PendingSelectionItem `json:"pending_selection_items,omitempty"`
-	ContextFrame                    ContextFrame           `json:"context_frame,omitempty"`
-	RecentFacts                     []ToolFact             `json:"recent_facts,omitempty"`
-	TaskSnapshot                    TaskSnapshot           `json:"task_snapshot,omitempty"`
-	ConversationDigest              ConversationDigest     `json:"conversation_digest,omitempty"`
+	SchemaVersion                   string                  `json:"schema_version"`
+	SelectedInstanceID              string                  `json:"selected_instance_id,omitempty"`
+	SelectedInstanceName            string                  `json:"selected_instance_name,omitempty"`
+	SelectedInstanceSource          string                  `json:"selected_instance_source,omitempty"`
+	SelectedInstanceAtUnix          int64                   `json:"selected_instance_at_unix,omitempty"`
+	SelectedInstanceFreshness       string                  `json:"selected_instance_freshness,omitempty"`
+	LastIntent                      string                  `json:"last_intent,omitempty"`
+	LastStockGpuModel               string                  `json:"last_stock_gpu_model,omitempty"`
+	LastDeployWorkload              string                  `json:"last_deploy_workload,omitempty"`
+	LastDeployZone                  string                  `json:"last_deploy_zone,omitempty"`
+	PendingDeployModel              string                  `json:"pending_deploy_model,omitempty"`
+	PendingSelectionKind            string                  `json:"pending_selection_kind,omitempty"`
+	PendingSelectionIntent          string                  `json:"pending_selection_intent,omitempty"`
+	PendingSelectionOriginalUserMsg string                  `json:"pending_selection_original_user_msg,omitempty"`
+	PendingSelectionCreatedTurn     int                     `json:"pending_selection_created_turn,omitempty"`
+	PendingSelectionProducedAtUnix  int64                   `json:"pending_selection_produced_at_unix,omitempty"`
+	PendingSelectionTTLSeconds      int                     `json:"pending_selection_ttl_seconds,omitempty"`
+	PendingSelectionTruncated       bool                    `json:"pending_selection_truncated,omitempty"`
+	PendingSelectionTotalCount      int                     `json:"pending_selection_total_count,omitempty"`
+	PendingSelectionItems           []PendingSelectionItem  `json:"pending_selection_items,omitempty"`
+	ContextFrame                    ContextFrame            `json:"context_frame,omitempty"`
+	RecentFacts                     []ToolFact              `json:"recent_facts,omitempty"`
+	TaskSnapshot                    TaskSnapshot            `json:"task_snapshot,omitempty"`
+	ConversationDigest              ConversationDigest      `json:"conversation_digest,omitempty"`
+	VerifiedKnowledge               []VerifiedKnowledgeTurn `json:"verified_knowledge,omitempty"`
+}
+
+// VerifiedKnowledgeTurn is compact, durable provenance for an answer that
+// already passed the semantic evidence verifier. It is reference-only memory:
+// it can support later read-only prose, never authorize writes or satisfy a
+// real-time state query.
+type VerifiedKnowledgeTurn struct {
+	Question       string                   `json:"question,omitempty"`
+	Answer         string                   `json:"answer,omitempty"`
+	Evidence       knowledge.EvidenceLedger `json:"evidence"`
+	VerifiedAtUnix int64                    `json:"verified_at_unix,omitempty"`
 }
 
 const (

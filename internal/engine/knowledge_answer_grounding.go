@@ -79,16 +79,22 @@ func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
 }
 
 func (e *Engine) verifyKnowledgeAnswer(ctx context.Context, fallbackQuestion, answer string) (string, knowledge.GroundedAnswerReport, bool) {
+	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
+	return e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, answer, e.knowledgeLedgerForVerification(resolved))
+}
+
+func (e *Engine) verifyKnowledgeAnswerAgainstLedger(ctx context.Context, resolved, answer string, ledger knowledge.EvidenceLedger) (string, knowledge.GroundedAnswerReport, bool) {
 	answer = strings.TrimSpace(answer)
-	if !knowledgeAnswerVerifierOn || e.llmClient == nil || answer == "" || isKnowledgeRefusal(answer) || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
+	resolved = strings.TrimSpace(resolved)
+	if !knowledgeAnswerVerifierOn || e.llmClient == nil || resolved == "" || answer == "" || isKnowledgeRefusal(answer) || len(ledger.Items) == 0 {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
-	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
+	ledger.Query = resolved
 	payload, err := json.Marshal(struct {
 		ResolvedQuestion string                   `json:"resolved_question"`
 		Evidence         knowledge.EvidenceLedger `json:"evidence"`
 		Answer           string                   `json:"answer"`
-	}{resolved, e.searchKnowledgeLedgerThisTurn, answer})
+	}{resolved, ledger, answer})
 	if err != nil {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
@@ -106,7 +112,7 @@ func (e *Engine) verifyKnowledgeAnswer(ctx context.Context, fallbackQuestion, an
 	if !parseKnowledgeGroundingJSON(resp.Content, &verdict) {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
-	return validateKnowledgeGroundingProof(answer, verdict, e.searchKnowledgeLedgerThisTurn)
+	return validateKnowledgeGroundingProof(answer, verdict, ledger)
 }
 
 // repairKnowledgeAnswerWithProof performs one bounded repair call. The answer
@@ -160,10 +166,30 @@ func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQue
 // The terminal RAG fallback does not call this function and is intentionally
 // unchanged.
 func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQuestion, candidate string) string {
-	if !e.knowledgeQAAgentLoopThisTurn || !e.searchKnowledgeRanThisTurn {
+	if !e.knowledgeQAAgentLoopThisTurn {
 		return e.guardSearchKnowledgeSynthesis(candidate)
 	}
+	if !e.searchKnowledgeRanThisTurn {
+		resolved := strings.TrimSpace(fallbackQuestion)
+		ledger := e.verifiedKnowledgeLedgerForQuestion(resolved)
+		if answer, report, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
+			e.emitSearchKnowledgeCitationTrace(report)
+			return answer
+		}
+		// No retrieval and no durable verified source supported this answer. Do
+		// not trust arbitrary historical assistant prose merely because it exists.
+		e.emitSearchKnowledgeHardBlock("conversation_knowledge_ungrounded")
+		return ragUngroundableReply
+	}
 	if len(e.searchKnowledgeHitsThisTurn) == 0 || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
+		// An empty current retrieval does not erase a previously verified source,
+		// but arbitrary assistant prose is not evidence. Re-check the candidate
+		// against durable prior provenance before releasing it.
+		resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
+		ledger := e.verifiedKnowledgeLedgerForQuestion(resolved)
+		if answer, _, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
+			return answer
+		}
 		return ragNoEvidenceReply
 	}
 	_ = e.resolvedKnowledgeQuestion(fallbackQuestion)
@@ -189,6 +215,8 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 		if answer, report, ok := e.verifyKnowledgeAnswer(ctx, fallbackQuestion, candidate); ok {
 			e.emitSearchKnowledgeCitationTrace(report)
 			e.retractKnowledgeHardBlock()
+			resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
+			e.rememberVerifiedKnowledge(resolved, answer, e.knowledgeLedgerForVerification(resolved))
 			return answer
 		}
 		e.emitSearchKnowledgeHardBlock("search_knowledge_ungrounded")
@@ -196,6 +224,7 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 
 	if disciplinedKnowledgeQASynthesisOn {
 		if repaired, ok := e.synthesizeKnowledgeQAFromLedger(ctx, fallbackQuestion); ok {
+			e.rememberVerifiedKnowledge(e.resolvedKnowledgeQuestion(fallbackQuestion), repaired, e.searchKnowledgeLedgerThisTurn)
 			return repaired
 		}
 	}
@@ -224,6 +253,7 @@ func (e *Engine) synthesizeKnowledgeAnswerAfterBudget(ctx context.Context, fallb
 	}
 	e.emitSearchKnowledgeCitationTrace(report)
 	e.retractKnowledgeHardBlock()
+	e.rememberVerifiedKnowledge(resolved, answer, e.searchKnowledgeLedgerThisTurn)
 	return answer, true
 }
 

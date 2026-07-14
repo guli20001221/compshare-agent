@@ -141,8 +141,9 @@ func RenderIntentScopedReActCard(intentName intent.Intent, mutatingToolsEnabled 
 	case intent.IntentKnowledgeQA:
 		return strings.Join([]string{
 			"## 本轮 ReAct 知识卡片",
-			"- 平台知识类问题必须通过知识库/RAG资料、工具事实或诊断结果回答。",
-			"- 当前轮次没有资料或事实时，不要凭模型记忆直接回答。",
+			"- 先结合当前可见的完整对话；前文已有回答足以准确续答时可以直接回答。",
+			"- 信息不足、需要新平台事实或确认时效时，调用 SearchKnowledge，并把检索词改写成脱离上文也完整的问题。",
+			"- 不得凭模型记忆补全对话、知识库、工具和诊断结果中都没有的平台规则。",
 		}, "\n")
 	default:
 		// IntentUnknown, empty intent (planner not run / failed), and any

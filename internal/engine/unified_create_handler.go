@@ -76,6 +76,9 @@ func (e *Engine) tryCreateInstance(ctx context.Context, dispatch routerDispatchR
 }
 
 func (e *Engine) tryResumeCreateContextFrame(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
+	if e.deferTaskCarryThisTurn {
+		return "", false
+	}
 	if !ContextContinuationEnabled() {
 		return "", false
 	}

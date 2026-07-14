@@ -476,10 +476,10 @@ func TestBuildRAGMessagesPartialCoverageDefersToAntiFab(t *testing.T) {
 
 	// The precedence clause and its two bounded escape hatches must be present.
 	for _, want := range []string{
-		"指出缺口属元陈述",          // gap is a meta-statement (no citation needed)
+		"指出缺口属元陈述",       // gap is a meta-statement (no citation needed)
 		"缺口之后只允许两类资料外补充", // only two evidence-external supplements allowed
-		"指向平台既有入口",         // (1) point to a platform entry (console / official docs)
-		"请用户补充",            // (2) ask the user for the missing specifics
+		"指向平台既有入口",       // (1) point to a platform entry (console / official docs)
+		"请用户补充",          // (2) ask the user for the missing specifics
 		"冲突时以反编造锚点为准",    // explicit deferral to the anti-fab anchor
 	} {
 		if !strings.Contains(system, want) {

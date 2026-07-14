@@ -18,11 +18,9 @@ import (
 //	"it had the context and ignored it"  -> fix the prompt
 //	"it was never given the context"     -> fix the plumbing
 //
-// It turns out to be the second, and it was invisible. The ReAct loop carries
-// maxHistoryMessages (120) of conversation. The intent ROUTER runs FIRST, decides which
-// path the turn takes at all, and — per callPlannerOnce's own comment — has the
-// transcript WITHHELD from its prompt (PR1 hotfix 2026-05-28: emitting PriorText grew
-// multi-turn input until ds-v4-flash stopped returning schema-valid JSON).
+// The ReAct loop carries maxHistoryMessages (120) of conversation. The intent ROUTER
+// runs FIRST and decides which path the turn takes, so it must receive a hard-bounded
+// recent projection rather than a 200-rune hint or an unbounded transcript.
 //
 // So the router is effectively stateless about the conversation. No amount of widening
 // the loop's history rescues a turn the router already misrouted on its blind view —
@@ -61,14 +59,7 @@ func TestRouterAndLoopSeeDifferentContext(t *testing.T) {
 		"the ReAct loop should be carrying the conversation by turn 2, got %d messages",
 		second.LoopMessages)
 
-	// The ROUTER does not. This is the finding. PriorText is assembled, handed to the
-	// router, and then dropped by buildUserPrompt before the model ever sees it.
-	//
-	// If someone wires it back in, this assertion fails — and that failure is CORRECT.
-	// It means the amnesia fix landed, and it is also precisely what caused the 2026-05-28
-	// schema-validity avalanche, so planner schema_valid must be re-checked on real
-	// multi-turn traffic in the same change. Do not delete this to get green.
-	assert.False(t, second.RouterPriorInPrompt,
-		"the conversation now reaches the router's prompt — re-verify planner schema_valid "+
-			"on real multi-turn traffic before accepting this (see PR1 hotfix 2026-05-28)")
+	assert.True(t, second.RouterPriorInPrompt,
+		"the router must see bounded recent conversation before it can terminate a follow-up")
+	assert.LessOrEqual(t, second.RouterPriorRunes, maxPlannerPriorTextRunes)
 }

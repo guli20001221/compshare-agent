@@ -873,8 +873,8 @@ func TestInit_InjectsContextAndKnowledgeBoundary(t *testing.T) {
 	systemMsg := eng.messages[0]
 	assert.Equal(t, openai.ChatMessageRoleSystem, systemMsg.Role)
 	assert.Contains(t, systemMsg.Content, "uhost-abc")
-	assert.Contains(t, systemMsg.Content, "平台知识类问题必须通过知识库/RAG资料回答")
-	assert.Contains(t, systemMsg.Content, "不要凭内置 FAQ 或模型记忆补全平台规则")
+	assert.Contains(t, systemMsg.Content, "平台知识类问题先结合当前可见的完整对话")
+	assert.Contains(t, systemMsg.Content, "不要凭内置 FAQ 或模型记忆补全对话、知识库、工具和诊断结果中都没有的平台规则")
 	assert.NotContains(t, systemMsg.Content, "平台常见问题")
 	assert.NotContains(t, systemMsg.Content, "计费/回收规则")
 }
@@ -888,7 +888,7 @@ func TestInit_FailedContextInjection(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, suggestions)
 	// Should still have system prompt with knowledge-source boundaries.
-	assert.Contains(t, eng.messages[0].Content, "平台知识类问题必须通过知识库/RAG资料回答")
+	assert.Contains(t, eng.messages[0].Content, "平台知识类问题先结合当前可见的完整对话")
 	assert.NotContains(t, eng.messages[0].Content, "平台常见问题")
 }
 
@@ -3172,6 +3172,29 @@ func TestPlannerVagueFailureAsksForInstanceAndSymptom(t *testing.T) {
 	require.Len(t, planner.calls, 1)
 }
 
+func TestPlannerVagueFailureFollowupUsesConversationInsteadOfCannedClarification(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: vagueFailurePlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "你刚才说 SSH 仍然连不上，我们继续检查安全组和端口。"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "train-a 的 SSH 连不上"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "请先确认 22 端口是否放通。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentVagueFailure},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "还是不行", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "SSH")
+	assert.NotEqual(t, diagnosisVagueFailureClarificationReply, reply)
+	require.Len(t, mock.calls, 1)
+	assert.Contains(t, renderTestMessages(mock.calls[0].Messages), "train-a 的 SSH 连不上")
+}
+
 func TestPlannerDiagnosisMissingTargetWithSingleInstanceFallsBackToReAct(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
@@ -4018,20 +4041,14 @@ func TestStage2BRetrievalCommonPredicateFallbacksDoNotCallRetriever(t *testing.T
 			reply, err := eng.Chat(context.Background(), "billing FAQ", noopStep)
 
 			require.NoError(t, err)
-			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): with RAG enabled, the
-			// fallback ReAct path's plain "react fallback" text would silently
-			// break the cited 100% contract (no [n], not a refusal template).
-			// The engine invariant coerces it to ragNoEvidenceReply and emits a
-			// cited_contract_violation hard-block trace.
-			assert.Equal(t, ragNoEvidenceReply, reply)
+			// Low router confidence is not evidence that a context-aware answer is
+			// unsupported. Since retrieval did not run, no retrieval guard may
+			// rewrite the fallback into a fake KB refusal.
+			assert.Equal(t, "react fallback", reply)
 			assert.Empty(t, retriever.calls)
 			require.Len(t, plannerTraces, 1)
 			assert.Equal(t, string(tc.wantStatus), plannerTraces[0].RouteStatus)
-			require.Len(t, hardBlocks, 1)
-			assert.Equal(t, "cited_contract_violation", hardBlocks[0].Category)
-			assert.True(t, hardBlocks[0].Hit)
-			// PR #61: single-source attribution — post-LLM cited-contract gate
-			assert.Equal(t, observability.HardBlockTriggerPostLLM, hardBlocks[0].TriggeredBy)
+			assert.Empty(t, hardBlocks)
 		})
 	}
 }
@@ -4172,7 +4189,7 @@ func TestRAGCitedContractInvariantSkipsDiagnosisPlannerFallback(t *testing.T) {
 	assert.Empty(t, hardBlocks, "diagnosis planner fallback must not trigger the cited contract gate")
 }
 
-func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing.T) {
+func TestKnowledgeFallbackDoesNotCarryRuleStateAcrossTurns(t *testing.T) {
 	knowledgePlan := knowledgeQAPlan(false)
 	knowledgePlan.Confidence = 0.3 // PR #61: HardBlockHint no longer forces fallback; use low confidence instead
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{
@@ -4199,13 +4216,13 @@ func TestRAGCitedContractInvariantResetsKnowledgeFallbackFlagEachTurn(t *testing
 
 	firstReply, err := eng.Chat(context.Background(), "billing FAQ", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, ragNoEvidenceReply, firstReply)
-	require.Len(t, hardBlocks, 1)
+	assert.Equal(t, "first fallback", firstReply)
+	assert.Empty(t, hardBlocks)
 
 	secondReply, err := eng.Chat(context.Background(), "4090 多少钱", noopStep)
 	require.NoError(t, err)
 	assert.Equal(t, "second fallback", secondReply)
-	require.Len(t, hardBlocks, 1, "knowledge-path citation flag must be cleared at the start of each turn")
+	assert.Empty(t, hardBlocks, "a prior low-confidence route must not arm a later post-LLM block")
 }
 
 func TestStage2BFinanceFAQRetrievalDoesNotUseBillingAreaHint(t *testing.T) {
@@ -4750,6 +4767,29 @@ func TestRouteDispatchMonitorTodayWindowReturnsFixedReplyWithoutReAct(t *testing
 	assert.Empty(t, executor.calls, "non-current monitor window must not call monitor as current data")
 	require.Len(t, traces, 1)
 	assert.Equal(t, string(intent.RouteStatusFallbackTimeWindow), traces[0].RouteStatus)
+}
+
+func TestRouteDispatchMonitorMissingWindowFollowupUsesConversation(t *testing.T) {
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1MonitorTodayPlan()}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "按你刚才说的昨晚 8 点到 10 点继续查询。"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "昨晚 8 点到 10 点"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "好的，接下来要看哪台实例？"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{
+		EnabledIntents: []intent.Intent{intent.IntentMonitorQuery},
+		Model:          "deepseek-v4-flash",
+	})
+
+	reply, err := eng.Chat(context.Background(), "train-a 的 CPU 呢", noopStep)
+
+	require.NoError(t, err)
+	assert.Contains(t, reply, "昨晚 8 点到 10 点")
+	assert.NotEqual(t, monitorHistoryNeedTimeWindowMessage, reply)
+	require.Len(t, mock.calls, 1)
+	assert.Contains(t, renderTestMessages(mock.calls[0].Messages), "昨晚 8 点到 10 点")
 }
 
 func TestPlannerMonitorHistoryReturnsFixedReplyWithoutReAct(t *testing.T) {
@@ -5769,6 +5809,52 @@ func TestChat_TokenBudget_DisabledByDefault(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "done", reply,
 		"with maxTokensPerTurn=0 the LLM reply must pass through even with absurdly high usage")
+}
+
+func TestChat_TokenBudgetDoesNotDiscardCompletedAnswer(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{
+		Content: "这是已经生成完成的答案。",
+		Usage:   llm.TokenUsage{TotalTokens: 60000},
+	}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	var hardBlocks []observability.EngineHardBlockTrace
+	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) { hardBlocks = append(hardBlocks, trace) })
+
+	reply, err := eng.Chat(context.Background(), "请解释一下", noopStep)
+
+	require.NoError(t, err)
+	assert.Equal(t, "这是已经生成完成的答案。", reply)
+	assert.Len(t, mock.calls, 1)
+	assert.Empty(t, hardBlocks, "an already-complete answer is not a blocked turn")
+}
+
+func TestPlannerBudgetDoesNotDiscardCompletedContextClarification(t *testing.T) {
+	SetContextContinuationEnabled(true)
+	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+	for _, tc := range []struct {
+		name string
+		plan intent.IntentRouterResult
+	}{
+		{name: "confident", plan: intent.IntentRouterResult{Plan: intent.IntentRoute{SchemaVersion: intent.SchemaVersion, Intent: intent.IntentResourceInfo, Confidence: 0.9}, Usage: llm.TokenUsage{TotalTokens: 60000}}},
+		{name: "router_uncertain", plan: intent.IntentRouterResult{Plan: intent.IntentRoute{SchemaVersion: intent.SchemaVersion, Intent: intent.IntentUnknown, Confidence: 0.2}, Fallback: true, Usage: llm.TokenUsage{TotalTokens: 60000}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+			eng.maxTokensPerTurn = 50000
+			eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, ContextFrame: pendingCreateDiskFrame()}, 1)
+			eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{Decision: ContextDecisionClarify, Clarify: "你是要继续给刚才那台实例加盘吗？"}})
+			eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{tc.plan}}, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentResourceInfo}})
+
+			reply, err := eng.Chat(context.Background(), "继续呢", noopStep)
+
+			require.NoError(t, err)
+			assert.Equal(t, "你是要继续给刚才那台实例加盘吗？", reply)
+			assert.NotEqual(t, tokenBudgetExceededMessage, reply)
+		})
+	}
 }
 
 // TestChat_TokenBudget_PlannerHandledPath_GateFires — covers the C1 gap

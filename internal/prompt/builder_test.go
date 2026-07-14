@@ -178,8 +178,8 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 				}
 			}
 			for _, text := range []string{
-				"平台知识类问题必须通过知识库/RAG资料回答",
-				"不要凭内置 FAQ 或模型记忆补全平台规则",
+				"平台知识类问题先结合当前可见的完整对话",
+				"不要凭内置 FAQ 或模型记忆补全对话、知识库、工具和诊断结果中都没有的平台规则",
 			} {
 				if !strings.Contains(system, text) {
 					t.Fatalf("system prompt should contain knowledge-source boundary %q:\n%s", text, system)

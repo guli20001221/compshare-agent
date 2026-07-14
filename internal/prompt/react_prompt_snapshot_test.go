@@ -30,12 +30,14 @@ const (
 	// selection card + trigger boundaries now render only SSH + billing.
 	// 2026-07-10: G4-⑤ prompt softening removes vague-failure phrase enumerations
 	// while keeping the semantic rule and Diagnose* prohibition.
-	mutatingReActPromptSHA256 = "4ca4c37834092c28a1dd42217ced838c81b7a7bba73171a1658d3c5c4e958237"
+	// 2026-07-14: knowledge follow-ups may reuse sufficient visible conversation;
+	// retrieval remains required for new or time-sensitive facts.
+	mutatingReActPromptSHA256 = "520d14c8c8ccc394172ea0e68573f637dbfd6db69d94a1e382c908b935a66a65"
 	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
 	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
 	// 2026-07-08: diagnosis catalog trimmed to SSH + billing (see mutating note).
 	// 2026-07-10: G4-⑤ prompt softening removes vague-failure phrase enumerations.
-	readOnlyReActPromptSHA256 = "adf2bad7f1664e2bcb5103cf7d6c3e6c35ad138f6d2d5c35ab64a6f1d41c8cbf"
+	readOnlyReActPromptSHA256 = "b827c2dbdcbdbb29af1de396d80bee6a178ef80c33ea9a86673564d46fb4d528"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

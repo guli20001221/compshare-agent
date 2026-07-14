@@ -430,8 +430,8 @@ func contextContinuationEnabledFromEnv(getenv getenvFunc) (bool, string) {
 
 // knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
 // route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
-// turn routes through the agent loop: a forced SearchKnowledge first hop retrieves
-// evidence, then the disciplined-synthesis primitive writes the final cited answer
+// turn routes through the agent loop: the agent reuses sufficient conversation or
+// retrieves evidence, then the unified verifier checks any retrieved-evidence answer
 // (see disciplinedKnowledgeQASynthesisEnabledFromEnv, also default-on). This collapses the
 // separate deterministic terminal-RAG route into the single agent loop (the lead's
 // "rag as a tool the agent calls in a loop" north star). The flip was gated on the
@@ -441,7 +441,7 @@ func contextContinuationEnabledFromEnv(getenv getenvFunc) (bool, string) {
 // already 0-refusal. The terminal route (tryStage2BRetrieval) is retained as the =0
 // rollback, not deleted. Inert unless COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is also on
 // (the tool must be visible) and a retriever is wired — the engine route gate enforces
-// both, so the forced first hop can never name an absent tool (the 400 trap).
+// both, so a mandatory first-turn hop can never name an absent tool (the 400 trap).
 // ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn string
 // (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
 // (engine.knowledgeQAAgentLoopOn) stays false so engine/tools unit tests are

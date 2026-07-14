@@ -196,6 +196,19 @@ func TestParseContextDecisionAnswerFollowupKeepsOnlySafeSlotUpdates(t *testing.T
 	assert.NotContains(t, decision.SlotUpdates, "password")
 }
 
+func TestParseContextDecisionUnknownOrEmptyPreservesTask(t *testing.T) {
+	for _, raw := range []string{
+		`{"decision":""}`,
+		`{"decision":"unexpected_schema_value"}`,
+	} {
+		decision, err := parseContextDecision(raw)
+		require.NoError(t, err)
+		require.NotNil(t, decision)
+		assert.Equal(t, ContextDecisionClarify, decision.Decision)
+		assert.Equal(t, []string{"task:preserve", "reply:clarify"}, contextDecisionStateDelta(decision))
+	}
+}
+
 func TestContextDecisionToCreateContinuationUsesOnlyContinueTask(t *testing.T) {
 	cont := contextDecisionToContinuation(ContextDecision{
 		Decision:    ContextDecisionContinueTask,

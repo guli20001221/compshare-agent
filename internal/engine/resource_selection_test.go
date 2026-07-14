@@ -695,6 +695,9 @@ func TestTryResumeResourceSelectionNaturalPlainSelectionStopsBeforeOldWorkflowFr
 			if strings.Contains(reply, "数据盘") || strings.Contains(reply, "确认") {
 				t.Fatalf("plain selection must not continue stale workflow task, got %q", reply)
 			}
+			if e.sessionState.ContextFrame.Kind != ContextFrameKindWorkflowTask {
+				t.Fatal("plain selection must not silently delete an unrelated active task")
+			}
 		})
 	}
 }

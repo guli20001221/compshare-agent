@@ -8,6 +8,7 @@ import (
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -235,6 +236,29 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	assert.Equal(t, "给训练机扩容", pc.AgentSessionState.TaskSnapshot.Goal)
 	assert.Equal(t, []string{"target_size_gb"}, pc.AgentSessionState.TaskSnapshot.MissingSlots)
 	assert.Equal(t, "目标：给训练机扩容", pc.AgentSessionState.ConversationDigest.Narrative)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"6.0","verified_knowledge":[{"question":"终端怎么粘贴","answer":"使用 Ctrl+Shift+V","evidence":{"query":"终端怎么粘贴","items":[{"chunk_id":"terminal-paste-001","snippet":"使用 Ctrl+Shift+V 粘贴"}]},"verified_at_unix":1716530100}]}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV6, pc.AgentSessionState.SchemaVersion)
+	require.Len(t, pc.AgentSessionState.VerifiedKnowledge, 1)
+	assert.Equal(t, "terminal-paste-001", pc.AgentSessionState.VerifiedKnowledge[0].Evidence.Items[0].ChunkID)
+}
+
+func TestSessionState_VerifiedKnowledgeRoundTrip(t *testing.T) {
+	state := SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+		Question: "终端怎么粘贴",
+		Answer:   "使用 Ctrl+Shift+V",
+		Evidence: knowledge.EvidenceLedger{Query: "终端怎么粘贴", Items: []knowledge.EvidenceItem{{
+			ChunkID: "terminal-paste-001", Title: "终端粘贴", Snippet: "使用 Ctrl+Shift+V 粘贴",
+		}}},
+		VerifiedAtUnix: 1716530100,
+	}}}
+	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
+	require.NoError(t, err)
+	parsed, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, state, parsed.AgentSessionState)
 }
 
 // ---------------------------------------------------------------------------

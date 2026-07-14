@@ -195,6 +195,58 @@ func TestKnowledgeAnswerGrounding_NoEvidenceCannotPass(t *testing.T) {
 	assert.Empty(t, eng.llmClient.(*mockLLM).calls, "empty evidence must fail before another model call")
 }
 
+func TestKnowledgeAnswerGrounding_EmptyCurrentSearchDoesNotErasePriorAnswer(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"使用 Ctrl+Shift+V 粘贴","chunk_id":"terminal-paste-001","evidence_quote":"使用 Ctrl+Shift+V 粘贴"}],"unsupported":[]}`}}}, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.sessionState.VerifiedKnowledge = []VerifiedKnowledgeTurn{{
+		Question: "Windows Terminal 怎么粘贴？",
+		Answer:   "使用 Ctrl+Shift+V 粘贴。",
+		Evidence: knowledge.EvidenceLedger{Query: "Windows Terminal 怎么粘贴？", Items: []knowledge.EvidenceItem{{
+			ChunkID: "terminal-paste-001", Snippet: "使用 Ctrl+Shift+V 粘贴。",
+		}}},
+	}}
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Windows Terminal 怎么粘贴？"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "使用 Ctrl+Shift+V 粘贴。"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "粘贴呢"},
+	)
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "粘贴呢", "使用 Ctrl+Shift+V 粘贴。")
+
+	assert.Equal(t, "使用 Ctrl+Shift+V 粘贴。", got)
+	assert.Len(t, eng.llmClient.(*mockLLM).calls, 1, "empty current retrieval must be checked against durable prior provenance")
+}
+
+func TestKnowledgeAnswerGrounding_MergesPriorVerifiedAndCurrentEvidence(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"粘贴使用 Ctrl+Shift+V","chunk_id":"terminal-paste-001","evidence_quote":"使用 Ctrl+Shift+V 粘贴"},{"answer_quote":"复制使用 Ctrl+Shift+C","chunk_id":"terminal-copy-002","evidence_quote":"使用 Ctrl+Shift+C 复制"}],"unsupported":[]}`}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{{Chunk: knowledge.KBChunk{ChunkID: "terminal-copy-002", Content: "使用 Ctrl+Shift+C 复制。"}, Kept: true}}
+	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{Query: "Windows Terminal 复制和粘贴", Items: []knowledge.EvidenceItem{{
+		ChunkID: "terminal-copy-002", Snippet: "使用 Ctrl+Shift+C 复制。",
+	}}}
+	eng.sessionState.VerifiedKnowledge = []VerifiedKnowledgeTurn{{
+		Question: "Windows Terminal 怎么粘贴？",
+		Answer:   "使用 Ctrl+Shift+V 粘贴。",
+		Evidence: knowledge.EvidenceLedger{Query: "Windows Terminal 怎么粘贴？", Items: []knowledge.EvidenceItem{{
+			ChunkID: "terminal-paste-001", Snippet: "使用 Ctrl+Shift+V 粘贴。",
+		}}},
+	}}
+
+	answer := "粘贴使用 Ctrl+Shift+V；复制使用 Ctrl+Shift+C。"
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "Windows Terminal 复制和粘贴", answer)
+
+	assert.Equal(t, answer, got)
+	require.Len(t, mock.calls, 1)
+	payload := mock.calls[0].Messages[1].Content
+	assert.Contains(t, payload, "terminal-paste-001")
+	assert.Contains(t, payload, "terminal-copy-002")
+}
+
 func TestKnowledgeAnswerGrounding_RawLeakCannotUseVerifierAsBypass(t *testing.T) {
 	enableDisciplinedKnowledgeRepair(t)
 	record := loadSanitizedContextRAGRecords(t)[2]

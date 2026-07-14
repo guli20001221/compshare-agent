@@ -349,10 +349,11 @@ func TestReplayRegression_ExactSelectionDoesNotResumeStaleWorkflowFrame(t *testi
 	reply, err := eng.Chat(context.Background(), "选第2台", noopStep)
 	require.NoError(t, err)
 	require.Equal(t, "继续处理所选实例", reply)
-	require.Empty(t, decisionLayer.calls, "plain selection must clear stale workflow context before planner dispatch")
+	require.NotEmpty(t, decisionLayer.calls, "the unified decision may inspect the task, but this selection turn must not execute it")
 	require.NotContains(t, exec.calls, "CreateDiskWorkflow")
 	require.Equal(t, "uhost-select-002", eng.sessionState.SelectedInstanceID)
-	require.Empty(t, eng.sessionState.ContextFrame.Kind)
+	require.Equal(t, ContextFrameKindWorkflowTask, eng.sessionState.ContextFrame.Kind,
+		"an unrelated selection must defer, not delete, the old task")
 }
 
 func TestReplayRegression_ExactSelectionPreservesWaitingCreateDiskSize(t *testing.T) {

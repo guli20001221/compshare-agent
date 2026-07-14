@@ -52,13 +52,10 @@ type IntentRouterInput struct {
 	UserText     string
 	ImageContext string
 	LastIntent   string
-	// PriorText is retained as the validator's `source:prior_turn` span
-	// haystack (see ValidationContext.PriorText). The intent-router USER prompt
-	// no longer dumps it verbatim — PR1 hotfix Bug 2 (2026-05-28): structured
-	// signals (LastSelectedInstanceID + LastAssistantSnippet) replace it to
-	// avoid the 5k→11k input_tok avalanche that broke ds-v4-flash JSON
-	// schema reliability across turns. See memory:planner-input-only-needs-
-	// structured-signals.
+	// PriorText is both the validator's `source:prior_turn` haystack and a bounded
+	// recent-conversation block in the router prompt. The bound is reapplied by
+	// buildUserPrompt so callers cannot reintroduce the historic unbounded prompt
+	// growth that broke schema reliability.
 	PriorText string
 	// LastSelectedInstanceID surfaces SessionState.SelectedInstanceID so the
 	// intent router can resolve "那台机" / "它" cross-turn references without
@@ -603,10 +600,9 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 		// terminal evidence the agent asked for and being told, in effect, "I don't handle that".
 		//
 		// These directives are SYSTEM-prompt text: constant, cacheable, paid once per turn.
-		// That is what makes them safe, and it is the whole difference from re-enabling
-		// PriorText — which grew the USER prompt with the transcript every turn until
-		// ds-v4-flash stopped returning schema-valid JSON (PR1 hotfix Bug 2, 2026-05-28).
-		// Do not "improve" these by dumping the conversation here.
+		// The recent transcript is separately bounded before it reaches the USER prompt;
+		// the old unbounded form grew every turn until ds-v4-flash stopped returning
+		// schema-valid JSON (PR1 hotfix Bug 2, 2026-05-28). Do not remove that bound.
 		//
 		// Phrasing is imperative and list-shaped on purpose: conditional prose makes
 		// ds-v4-flash narrate its reasoning instead of emitting the JSON.
@@ -622,9 +618,9 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 		//	「bash: start_app.sh: No such file」  last=knowledge_qa -> knowledge_qa -> 「当前知识库未覆盖该问题」
 		//	「32」 (answering a create question)   last=deploy_model -> deploy_model -> a create card
 		//
-		// knowledge_qa is not an ordinary label: its route FORCES a SearchKnowledge hop and
-		// then refuses under cite-or-refuse when the retrieval comes back empty. Inheriting it
-		// onto a turn that contains no question is a guaranteed canned refusal. Same for the
+		// knowledge_qa is not an ordinary label: without durable verified prior evidence its
+		// route forces SearchKnowledge and may refuse when retrieval comes back empty. Inheriting
+		// it onto a turn that contains no question can therefore create a canned refusal. Same for the
 		// create family, whose route ends in a confirmation card.
 		//
 		// And `unknown` was never the enemy. It falls through to ReAct, which carries
@@ -639,7 +635,7 @@ func basePromptScaffoldWithUnifiedCreate(unified bool) string {
 		"Conversation state. When a conversation is already in progress the user prompt carries Last intent, Last selected instance, and Last assistant snippet. They tell you the turn is a CONTINUATION, not a new standalone question. Read them before classifying.",
 		"Pasted machine output is a RUNTIME FAILURE REPORT. Terminal prompts (root@host:~#), stack traces, pip/apt/conda logs, nvidia-smi output, SSH login banners, command-not-found and permission-denied lines, error text, error codes, and JSON API responses: emit diagnosis. Emit diagnosis for these NO MATTER what Last intent says — the user is showing you evidence of something that is broken, not asking a documentation question.",
 		"A follow-up that continues a TROUBLESHOOT stays diagnosis. When Last intent is diagnosis and the current message is a symptom, a bare 还是不行 / 打不开 / 不行 / 没有, or an answer to what the assistant just asked, emit diagnosis.",
-		"Never INHERIT knowledge_qa. Emit knowledge_qa only when the CURRENT message is itself a platform question a document could answer. That route searches the documentation and refuses when it finds nothing, so a turn carrying no question — an acknowledgement, a pasted error, a bare number — must never be sent there just because the previous turn was.",
+		"Never INHERIT knowledge_qa. Emit knowledge_qa only when the CURRENT message is itself a platform question or a clear referential follow-up that the visible conversation can resolve. A turn carrying no question — an acknowledgement, a pasted error, a bare number — must never be sent there just because the previous turn was.",
 		"Never INHERIT deploy_model or create_instance. Creating an instance needs an explicit request in the CURRENT message. A bare number or GPU name answering the assistant's question is not a new create request.",
 		"A bare acknowledgement asks nothing: 嗯嗯 / 好的 / 是的 / 对 / 谢谢 / 收到 / ok. Emit unknown for these. They are not questions, not evidence, and not requests, and the agent answers them from the conversation itself.",
 		"Override Last intent whenever the current message is a COMPLETE new request by itself — a new stock, price, inventory, lifecycle, or how-to question. Classify those on their own text.",
@@ -715,6 +711,11 @@ func routerRuntimeIntents(unified bool) []Intent {
 // the prior reply to disambiguate topic continuity (e.g. "刚才聊的 Suno").
 const lastAssistantSnippetCap = 200
 
+// routerPriorContextCap is a hard prompt-side bound, independent from the
+// engine's assembler. It is large enough for the newest two complete exchanges
+// and small enough to keep router JSON reliability stable across long sessions.
+const routerPriorContextCap = 2000
+
 func buildUserPrompt(input IntentRouterInput, retryInstruction string) string {
 	var b strings.Builder
 	if retryInstruction != "" {
@@ -730,6 +731,10 @@ func buildUserPrompt(input IntentRouterInput, retryInstruction string) string {
 	if input.LastIntent != "" {
 		b.WriteString("\nLast intent: ")
 		b.WriteString(input.LastIntent)
+	}
+	if prior := truncatePlannerSnippet(input.PriorText, routerPriorContextCap); prior != "" {
+		b.WriteString("\nRecent conversation (bounded):\n")
+		b.WriteString(prior)
 	}
 	if input.LastSelectedInstanceID != "" {
 		b.WriteString("\nLast selected instance: ")

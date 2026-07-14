@@ -40,7 +40,7 @@ func handleRefundEstimate(ctx context.Context, h *DemoHandler, req HandlerReques
 				SourceSpan: id,
 			}}
 		} else {
-			result := HandledResult("请先告诉我要估算哪台实例的退费，例如实例名称或实例 ID。退费估算不会释放实例。")
+			result := ClarificationResult("请先告诉我要估算哪台实例的退费，例如实例名称或实例 ID。退费估算不会释放实例。")
 			result.ToolAction = action
 			result.ToolArgs = copyArgs(map[string]any{})
 			return result
@@ -140,14 +140,14 @@ func handleCFSCreatePrice(ctx context.Context, h *DemoHandler, req HandlerReques
 	const action = "GetCompShareCFSPrice"
 	size := req.Plan.Slots.SizeGB
 	if size <= 0 {
-		result := HandledResult("请补充要创建的 CFS 容量，单位 GB，例如 50GB。CFS 询价只读，不会创建资源。")
+		result := ClarificationResult("请补充要创建的 CFS 容量，单位 GB，例如 50GB。CFS 询价只读，不会创建资源。")
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{})
 		return result
 	}
 	zone, ok := resolveCFSZoneFromSlot(ctx, h, req.Plan.Slots.Zone)
 	if !ok || zone.Zone == "" || zone.ZoneID == 0 {
-		result := HandledResult("请补充要创建 CFS 的可用区。CFS 当前只支持 Pod/容器可用区，询价只读，不会创建资源。")
+		result := ClarificationResult("请补充要创建 CFS 的可用区。CFS 当前只支持 Pod/容器可用区，询价只读，不会创建资源。")
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{"Size": size})
 		return result
@@ -180,14 +180,14 @@ func handleCFSUpgradePrice(ctx context.Context, h *DemoHandler, req HandlerReque
 	const action = "GetCompShareCFSUpgradePrice"
 	cfsID := extractCFSIDFromText(req.UserText)
 	if cfsID == "" {
-		result := HandledResult("请补充要扩容的 CFS ID。CFS 扩容询价只读，不会直接扩容。")
+		result := ClarificationResult("请补充要扩容的 CFS ID。CFS 扩容询价只读，不会直接扩容。")
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{})
 		return result
 	}
 	size := req.Plan.Slots.SizeGB
 	if size <= 0 {
-		result := HandledResult("请补充 CFS 扩容后的目标容量，单位 GB，例如 200GB。Size 是目标容量，不是新增容量。")
+		result := ClarificationResult("请补充 CFS 扩容后的目标容量，单位 GB，例如 200GB。Size 是目标容量，不是新增容量。")
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{"CfsId": cfsID})
 		return result
@@ -211,7 +211,7 @@ func handleCFSRefundEstimate(ctx context.Context, h *DemoHandler, req HandlerReq
 	const action = "GetCompShareCFSRefundPrice"
 	cfsID := extractCFSIDFromText(req.UserText)
 	if cfsID == "" {
-		result := HandledResult("请补充要估算退费的 CFS ID。这个查询只做估算，不会删除或释放 CFS。")
+		result := ClarificationResult("请补充要估算退费的 CFS ID。这个查询只做估算，不会删除或释放 CFS。")
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{})
 		return result

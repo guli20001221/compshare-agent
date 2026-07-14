@@ -3,6 +3,7 @@ package engine
 import (
 	"strings"
 
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	grounded "github.com/compshare-agent/internal/renderer"
 	openai "github.com/sashabaranov/go-openai"
@@ -116,6 +117,14 @@ func (e *Engine) recentCompleteConversationForTaskSpec() string {
 	return strings.Join(pairs, "。")
 }
 
+// hasReusableCompleteConversation reports only whether a completed prior
+// exchange is visible to the model. It does not declare that exchange factual;
+// the agent still decides whether it is sufficient, and any new SearchKnowledge
+// result still passes the evidence verifier before release.
+func (e *Engine) hasReusableCompleteConversation() bool {
+	return e.recentCompleteConversationForTaskSpec() != ""
+}
+
 func hasContextDependentDirectSignal(text string) bool {
 	text = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), ""))
 	if text == "" {
@@ -132,8 +141,58 @@ func hasContextDependentDirectSignal(text string) bool {
 	return strings.HasSuffix(text, "呢") || strings.HasPrefix(text, "那")
 }
 
-func (e *Engine) shouldResolveDirectClarificationInAgent(result intent.HandlerResult, userMsg string) bool {
-	return result.NeedsClarification && hasContextDependentDirectSignal(userMsg) && e.recentCompleteConversationForTaskSpec() != ""
+// shouldResolveContextDependentDirectReplyInAgent closes the remaining split
+// between context-aware direct rendering and legacy plain-text handlers. A
+// grounded Envelope can safely be rendered with TaskSpec context. A plain-text
+// result has no evidence boundary through which to pass that context, so a
+// clearly referential follow-up continues in the intent-scoped read-only Agent.
+func (e *Engine) shouldResolveContextDependentDirectReplyInAgent(result intent.HandlerResult, userMsg string) bool {
+	// Read failures already have a dedicated context-aware fallback that carries
+	// the failure advisory into ReAct. Do not steal that path here.
+	if result.Status == intent.HandlerStatusFailureAfterTool {
+		return false
+	}
+	if !hasContextDependentDirectSignal(userMsg) || !e.hasReusableCompleteConversation() {
+		return false
+	}
+	// A deterministic handled reply without an Envelope may still be an
+	// authoritative fresh result (for example an empty refund query). Plain text
+	// alone therefore cannot mean "context was ignored". Handlers must opt in by
+	// declaring that they need clarification; evidence envelopes use TaskSpec and
+	// are context-aware already.
+	return result.NeedsClarification
+}
+
+// contextEnvelopeForPlainDirectReply gives legacy deterministic handlers an
+// evidence boundary only when history is actually needed. The handler's own
+// tool-derived reply is evidence; conversation remains TaskSpec understanding
+// context and therefore cannot launder a user's false premise into a fact.
+func (e *Engine) contextEnvelopeForPlainDirectReply(result intent.HandlerResult, plan intent.IntentRoute, userMsg string) intent.HandlerResult {
+	if result.Envelope != nil || result.Status != intent.HandlerStatusHandled || result.NeedsClarification ||
+		!isContextAwareDirectIntent(plan.Intent) || !hasContextDependentDirectSignal(userMsg) ||
+		!e.hasReusableCompleteConversation() || strings.TrimSpace(result.Reply) == "" {
+		return result
+	}
+	sources := []string{}
+	if action := strings.TrimSpace(result.ToolAction); action != "" {
+		sources = append(sources, action)
+	}
+	env := envelope.Envelope{
+		Kind:          envelope.KindContextualDirectReply,
+		SourceActions: sources,
+		Facts: []envelope.Fact{{
+			Key:    "deterministic_reply",
+			Label:  "本轮确定性查询结果",
+			Value:  result.Reply,
+			Source: envelope.FactSourceComputed,
+		}},
+		Constraints: envelope.Constraints{DoNotInventInstances: true, DoNotInventMetrics: true},
+	}
+	result.Envelope = &env
+	if hash, err := envelope.Hash(env); err == nil && hash != "" {
+		result.RendererInputEnvelopeHashes = []string{hash}
+	}
+	return result
 }
 
 func appendTaskSpecEntityHints(existing []grounded.TaskSpecEntityHint, incoming []SemanticEntityHint) []grounded.TaskSpecEntityHint {

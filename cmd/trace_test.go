@@ -236,7 +236,7 @@ func TestContextContinuationEnabledFromEnv_DefaultOn(t *testing.T) {
 
 func TestKnowledgeQAAgentLoopEnabledFromEnv_DefaultOn(t *testing.T) {
 	// 2026-06-09: COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is DEFAULT-ON — a knowledge_qa turn
-	// routes through the agent loop (forced SearchKnowledge first hop + disciplined
+	// routes through the agent loop (context-aware SearchKnowledge + disciplined
 	// synthesis) instead of the terminal-RAG route. Flip gated on the #150 A/B: the
 	// decisive code-heavy probe (DDP N=20) matched terminal RAG at refusal 0.00 / 0 fab
 	// (opus judge). The terminal route is retained as the =0 rollback. unset/empty/

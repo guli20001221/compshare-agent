@@ -557,10 +557,13 @@ func normalizeContextDecision(v string) string {
 		return ContextDecisionClearContext
 	case ContextDecisionClarify, "ask":
 		return ContextDecisionClarify
-	case ContextDecisionNewTask, "", "new", "new_question", "new_query":
+	case ContextDecisionNewTask, "new", "new_question", "new_query":
 		return ContextDecisionNewTask
 	default:
-		return ContextDecisionNewTask
+		// Empty or unknown model output is uncertainty, not evidence that the user
+		// started a new task. Treat it as clarification so the caller preserves the
+		// active frame and can continue through the context-aware read-only path.
+		return ContextDecisionClarify
 	}
 }
 

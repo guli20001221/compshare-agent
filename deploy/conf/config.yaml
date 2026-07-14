@@ -166,10 +166,10 @@ agent:
     max_input_length: 4000
     pool_capacity: 200
     pool_idle_ttl: "30m"
-    # Per-session question-answer pair cap. Once a session has reached this
-    # many turns (= 2 * value rows in `messages`), further Chat calls return
-    # SessionTurnLimitExceeded and the client must open a new session.
-    # Omit or 0 falls back to the built-in default (10).
+    # Compatibility-path rollback setting only. Production has durable_turns
+    # enabled, so conversations continue from committed history and do not roll
+    # to an empty session after 10 turns. If durable turns are explicitly
+    # disabled, the legacy path still caps at 10 turns.
     max_session_turns: 10
     # Skip the built-in CORS middleware. Default false = agent emits
     # Access-Control-Allow-* headers itself (needed when the front-end dev

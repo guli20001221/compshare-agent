@@ -265,7 +265,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 16 shared + 55 per-session = 71 fields. Any drift
+// Whitelist totals: 16 shared + 88 per-session = 104 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -295,25 +295,26 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"zoneCatalog": true,
 	}
 	perSessionFields := map[string]bool{
-		"safeExecutor":                     true,
-		"confirmFn":                        true,
-		"confirmEditsFn":                   true,
-		"registry":                         true,
-		"rateLimitSubject":                 true,
-		"mutatingToolsEnabled":             true,
-		"messages":                         true,
-		"userTurn":                         true,
-		"lastUserMsg":                      true,
-		"lastInstanceQueryTurn":            true,
-		"lastMonitorTurn":                  true,
-		"currentMonitorTargets":            true,
-		"currentMonitorNoData":             true,
-		"currentMonitorStart":              true,
-		"currentMonitorEnd":                true,
-		"currentMonitorWindow":             true,
-		"pendingResourceSelection":         true,
-		"readExpensiveCallsThisTurn":       true,
-		"requireKnowledgeCitationThisTurn": true,
+		"safeExecutor":                  true,
+		"confirmFn":                     true,
+		"confirmEditsFn":                true,
+		"registry":                      true,
+		"rateLimitSubject":              true,
+		"mutatingToolsEnabled":          true,
+		"messages":                      true,
+		"userTurn":                      true,
+		"lastUserMsg":                   true,
+		"lastInstanceQueryTurn":         true,
+		"lastMonitorTurn":               true,
+		"currentMonitorTargets":         true,
+		"currentMonitorNoData":          true,
+		"currentMonitorStart":           true,
+		"currentMonitorEnd":             true,
+		"currentMonitorWindow":          true,
+		"pendingResourceSelection":      true,
+		"readExpensiveCallsThisTurn":    true,
+		"lastWorkflowSucceededThisCall": true,
+		"deferTaskCarryThisTurn":        true,
 		// Per-turn agentic SearchKnowledge state (P3): whether the tool ran this
 		// turn and the hits it returned, used by the final-answer no-raw-leak
 		// guard. Per-session by design — sharing would validate one tenant's
@@ -451,12 +452,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 87, len(perSessionFields); want != got {
+	if want, got := 88, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 103, typ.NumField(); want != got {
+	if want, got := 104, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

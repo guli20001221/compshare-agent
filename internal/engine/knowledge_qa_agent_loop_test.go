@@ -119,12 +119,68 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	assert.Equal(t, "faq-billing-001", finalRetrieval.References[0].ChunkID)
 }
 
-// A context-dependent follow-up is not a special server rewrite route. The same
-// agent receives the complete conversation and owns the standalone SearchKnowledge
-// query on every call. This test pins the real "粘贴呢" failure shape: retrieval,
-// evidence and final verification all use the agent's resolved query, while the
-// previous assistant answer remains context rather than evidence.
-func TestKnowledgeQAAgentLoop_AgentFormulatesQueryFromCompleteConversation(t *testing.T) {
+// A context-dependent follow-up does not need another retrieval when the prior
+// completed answer already contains everything needed. This pins the real
+// "粘贴呢" shape: the agent sees the previous answer, gives the correct direct
+// continuation, and does not pay for or risk a lossy query rewrite.
+func TestKnowledgeQAAgentLoop_ShortFollowupReusesSufficientConversationWithoutRAG(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
+	SetKnowledgeQAAgentLoopEnabled(true)
+	defer SetKnowledgeQAAgentLoopEnabled(false)
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "在 Windows Terminal 中直接按 Ctrl+Shift+V 粘贴，然后回车执行。"},
+		{Content: `{"supported":true,"claims":[{"answer_quote":"在 Windows Terminal 中直接按 Ctrl+Shift+V 粘贴","chunk_id":"terminal-paste-001","evidence_quote":"使用 Ctrl+Shift+V 粘贴"},{"answer_quote":"然后回车执行","chunk_id":"terminal-paste-001","evidence_quote":"再按回车执行"}],"unsupported":[]}`},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+		Question: "Windows 终端里复制命令后怎么操作？",
+		Answer:   "复制后回到 Windows Terminal，使用 Ctrl+Shift+V 粘贴，再按回车执行。",
+		Evidence: knowledge.EvidenceLedger{Query: "Windows 终端里复制命令后怎么操作？", Items: []knowledge.EvidenceItem{{
+			ChunkID: "terminal-paste-001", Title: "Windows Terminal 粘贴", Snippet: "使用 Ctrl+Shift+V 粘贴，再按回车执行。",
+		}}},
+	}}}, 1)
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Windows 终端里复制命令后怎么操作？"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "复制后回到 Windows Terminal，使用 Ctrl+Shift+V 粘贴，再按回车执行。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "粘贴呢", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "Ctrl+Shift+V")
+	assert.Contains(t, reply, "回车")
+	assert.Empty(t, retriever.calls, "sufficient committed context must not trigger redundant RAG")
+	assert.False(t, eng.searchKnowledgeRanThisTurn)
+
+	require.Len(t, mock.calls, 2, "direct continuation uses one bounded provenance check and no retrieval")
+	first := mock.calls[0]
+	assert.Nil(t, first.ToolChoice, "a complete prior turn lets the agent decide whether retrieval is needed")
+	joined := make([]string, 0, len(first.Messages))
+	for _, message := range first.Messages {
+		joined = append(joined, message.Content)
+	}
+	visible := strings.Join(joined, "\n")
+	assert.Contains(t, visible, "Windows 终端里复制命令后怎么操作？")
+	assert.Contains(t, visible, "使用 Ctrl+Shift+V 粘贴")
+	assert.Contains(t, visible, "粘贴呢")
+	assert.Contains(t, visible, "完整对话")
+	assert.Contains(t, visible, "可以直接回答")
+	assert.Contains(t, visible, "信息不足")
+	assert.Contains(t, visible, "独立、完整、可检索")
+	assert.NotEqual(t, ragNoEvidenceReply, reply)
+}
+
+// When prior conversation does not contain the missing fact, the same agent
+// elects to search and owns the standalone query. The previous answer can
+// resolve the query, but it never becomes retrieval evidence.
+func TestKnowledgeQAAgentLoop_AgentFormulatesQueryWhenConversationIsInsufficient(t *testing.T) {
 	enableKnowledgeAnswerVerifier(t)
 	SetKnowledgeQAAgentLoopEnabled(true)
 	defer SetKnowledgeQAAgentLoopEnabled(false)
@@ -159,7 +215,7 @@ func TestKnowledgeQAAgentLoop_AgentFormulatesQueryFromCompleteConversation(t *te
 	eng.InitWithContext("test user")
 	eng.messages = append(eng.messages,
 		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Windows 终端里复制命令后怎么操作？"},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "你可以先复制命令，再回到终端执行。"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "请回到终端继续操作。"},
 	)
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 	eng.SetKnowledgeRetriever(retriever)
@@ -171,22 +227,11 @@ func TestKnowledgeQAAgentLoop_AgentFormulatesQueryFromCompleteConversation(t *te
 	assert.Equal(t, resolved, retriever.calls[0].question)
 	assert.Equal(t, resolved, eng.resolvedKnowledgeQuestionThisTurn)
 	assert.Equal(t, resolved, eng.searchKnowledgeLedgerThisTurn.Query)
-
 	require.NotEmpty(t, mock.calls)
-	first := mock.calls[0]
-	joined := make([]string, 0, len(first.Messages))
-	for _, message := range first.Messages {
-		joined = append(joined, message.Content)
-	}
-	visible := strings.Join(joined, "\n")
-	assert.Contains(t, visible, "Windows 终端里复制命令后怎么操作？")
-	assert.Contains(t, visible, "你可以先复制命令，再回到终端执行。")
-	assert.Contains(t, visible, "粘贴呢")
-	assert.Contains(t, visible, "完整对话")
-	assert.Contains(t, visible, "独立、完整、可检索")
+	assert.NotNil(t, mock.calls[0].ToolChoice, "without verified prior provenance the first search remains mandatory")
 
 	var searchTool *openai.FunctionDefinition
-	for _, tool := range first.Tools {
+	for _, tool := range mock.calls[0].Tools {
 		if tool.Function != nil && tool.Function.Name == "SearchKnowledge" {
 			searchTool = tool.Function
 			break
@@ -203,7 +248,7 @@ func TestKnowledgeQAAgentLoop_AgentFormulatesQueryFromCompleteConversation(t *te
 	assert.Contains(t, querySchema["description"], "独立、完整检索问题")
 	require.GreaterOrEqual(t, len(mock.calls), 3)
 	verifierPayload := mock.calls[2].Messages[1].Content
-	assert.NotContains(t, verifierPayload, "你可以先复制命令，再回到终端执行",
+	assert.NotContains(t, verifierPayload, "请回到终端继续操作",
 		"the previous assistant answer may resolve the query but must never become retrieval evidence")
 	assert.Contains(t, verifierPayload, `"resolved_question":"`+resolved+`"`)
 }
@@ -439,6 +484,57 @@ func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
 	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费")
 	assert.NotEqual(t, ragNoEvidenceReply, reply)
 	assert.GreaterOrEqual(t, len(mock.calls), 3, "round0 misfire + forced-hop retry + final synthesis")
+}
+
+// A prior turn makes retrieval optional, but it does not let the model claim
+// that the KB has no answer without checking. That negative claim triggers one
+// forced search; a substantive context answer would have been returned directly.
+func TestKnowledgeQAAgentLoop_ContextAwareUnsearchedRefusalTriggersOneSearch(t *testing.T) {
+	enableKnowledgeAnswerVerifier(t)
+	SetKnowledgeQAAgentLoopEnabled(true)
+	defer SetKnowledgeQAAgentLoopEnabled(false)
+	tools.SetAgenticSearchKnowledgeEnabled(true)
+	defer tools.SetAgenticSearchKnowledgeEnabled(false)
+
+	chunk := knowledgeQAAgentLoopBillingChunk()
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true, KBVersion: "kb.v1",
+		Hits:     []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: ragNoEvidenceReply},
+		{ToolCalls: []openai.ToolCall{{ID: "search", Type: openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"stopped instance disk billing"}`}}}},
+		{Content: "停止的按量实例的磁盘仍会计费。"},
+		knowledgeQAAgentLoopBillingVerdict(),
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+		Question: "按量实例关机后还收费吗？",
+		Answer:   "CPU 和 GPU 会停止计费；其他保留资源需另行确认。",
+		Evidence: knowledge.EvidenceLedger{Query: "按量实例关机后还收费吗？", Items: []knowledge.EvidenceItem{{
+			ChunkID: "prior-billing-001", Title: "关机计费", Snippet: "关机后 CPU 和 GPU 停止计费，保留资源另行计费。",
+		}}},
+	}}}, 1)
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "按量实例关机后还收费吗？"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "CPU 和 GPU 会停止计费；其他保留资源需另行确认。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "磁盘呢？", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "磁盘仍会计费")
+	require.Len(t, retriever.calls, 1)
+	require.GreaterOrEqual(t, len(mock.calls), 4)
+	assert.Nil(t, mock.calls[0].ToolChoice, "prior conversation makes the initial decision agentic")
+	forced, ok := mock.calls[1].ToolChoice.(openai.ToolChoice)
+	require.True(t, ok, "an unsearched no-coverage claim must trigger a forced check")
+	assert.Equal(t, "SearchKnowledge", forced.Function.Name)
 }
 
 // Production enables the flash route correction, agent loop and semantic

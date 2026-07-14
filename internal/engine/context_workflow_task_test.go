@@ -571,7 +571,10 @@ func TestResumeWorkflowContextFrameAppliesSlotUpdateAndReachesConfirm(t *testing
 	require.NotNil(t, confirmArgs)
 	assert.Equal(t, float64(200), confirmArgs["disk_size_gb"])
 	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind, "filled workflow task should not keep the stale missing-slot frame after reaching confirm")
+	assert.Equal(t, ContextFrameKindWorkflowTask, state.ContextFrame.Kind,
+		"an unresolved/declined confirmation is not a successful workflow and must remain resumable")
+	assert.Empty(t, state.ContextFrame.MissingSlots)
+	assert.Equal(t, "200G", state.ContextFrame.Slots["size_gb"])
 }
 
 func TestResumeWorkflowContextFrameIgnoresModelChangedInstanceWithoutUserText(t *testing.T) {

@@ -124,6 +124,42 @@ func TestDirectClarificationFromRealPricingFollowupContinuesWithContextAwareAgen
 	}
 }
 
+func TestContextDependentPlainDirectReplyContinuesInScopedAgent(t *testing.T) {
+	eng := &Engine{messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "有哪些共享镜像？"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "目前有镜像 A 和镜像 B。"},
+		{Role: openai.ChatMessageRoleUser, Content: "还有呢？"},
+	}}
+
+	clarification := intent.HandledResult("请说明你想继续看哪类镜像。")
+	clarification.NeedsClarification = true
+	assert.True(t, eng.shouldResolveContextDependentDirectReplyInAgent(
+		clarification, "还有呢？",
+	), "an explicit clarification should let the context-aware agent resolve the referent")
+	assert.False(t, eng.shouldResolveContextDependentDirectReplyInAgent(
+		intent.HandledResult("未找到符合条件的退款记录。"), "还有呢？",
+	), "authoritative deterministic replies must not be replaced merely because they have no envelope")
+	failure := intent.HandlerResult{
+		Status:             intent.HandlerStatusFailureAfterTool,
+		Reply:              "查询失败",
+		FailureClass:       intent.HandlerFailureGenericRead,
+		NeedsClarification: true,
+	}
+	assert.False(t, eng.shouldResolveContextDependentDirectReplyInAgent(
+		failure, "还有呢？",
+	), "read failures have their own context-aware fallback and advisory")
+
+	env := envelope.Envelope{Kind: envelope.KindResourceInfo}
+	groundedResult := intent.HandledResult("deterministic")
+	groundedResult.Envelope = &env
+	assert.False(t, eng.shouldResolveContextDependentDirectReplyInAgent(
+		groundedResult, "还有呢？",
+	), "an envelope-backed result can consume context in the grounded renderer")
+	assert.False(t, eng.shouldResolveContextDependentDirectReplyInAgent(
+		intent.HandledResult("当前镜像列表"), "查看共享镜像",
+	), "a self-contained current question does not need historical resolution")
+}
+
 func TestGroundedDirectRendererReceivesShortFollowupAsTaskNotEvidence(t *testing.T) {
 	renderer := &mockGroundedGenerator{result: grounded.RenderResult{
 		Text:            "train-a 当前状态是 Running。",
@@ -173,6 +209,42 @@ func TestGroundedDirectRendererReceivesShortFollowupAsTaskNotEvidence(t *testing
 	payload, err := json.Marshal(request.Envelope)
 	require.NoError(t, err)
 	assert.NotContains(t, string(payload), "那它现在呢")
+}
+
+func TestPlainDeterministicFollowupGetsContextEnvelope(t *testing.T) {
+	eng := &Engine{messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "有哪些共享镜像？"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "有镜像 A 和镜像 B。"},
+		{Role: openai.ChatMessageRoleUser, Content: "还有呢？"},
+	}}
+	result := intent.HandledResult("本轮查询返回镜像 A、镜像 B、镜像 C。")
+	result.ToolAction = "DescribeCompShareSharingImages"
+
+	got := eng.contextEnvelopeForPlainDirectReply(result, intent.IntentRoute{Intent: intent.IntentImageList}, "还有呢？")
+
+	require.NotNil(t, got.Envelope)
+	assert.Equal(t, envelope.KindContextualDirectReply, got.Envelope.Kind)
+	require.Len(t, got.Envelope.Facts, 1)
+	assert.Equal(t, result.Reply, got.Envelope.Facts[0].Value)
+	assert.NotContains(t, got.Envelope.Facts[0].Value, "有哪些共享镜像",
+		"conversation is understanding context, never evidence")
+}
+
+func TestGroundedDirectRendererBudgetReturnsDeterministicAnswer(t *testing.T) {
+	renderer := &mockGroundedGenerator{result: grounded.RenderResult{Text: "不应调用"}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.groundedRenderer = renderer
+	eng.groundedRendererModel = "test-model"
+	eng.maxTokensPerTurn = 10
+	eng.turnTokensConsumed = 10
+	env := envelope.Envelope{Kind: envelope.KindResourceInfo}
+
+	got := eng.renderGroundedHandlerResult(context.Background(), intent.HandlerResult{
+		Status: intent.HandlerStatusHandled, Reply: "train-a 当前正在运行。", Envelope: &env,
+	}, intent.IntentRoute{Intent: intent.IntentResourceInfo}, "它现在呢")
+
+	assert.Equal(t, "train-a 当前正在运行。", got)
+	assert.Empty(t, renderer.requests, "budget blocks only the optional renderer call")
 }
 
 func TestDirectRenderTaskSpecCarriesSemanticMemoryButNoExecutionAuthority(t *testing.T) {

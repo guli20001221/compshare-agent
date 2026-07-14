@@ -196,6 +196,15 @@ func (e *Engine) buildReActHistorySummary(now time.Time) string {
 		if digest := compactSemanticNarrative(e.sessionState.ConversationDigest.Narrative); digest != "" {
 			lines = append(lines, "早期对话摘要（只作参考）："+digest)
 		}
+		for i := len(e.sessionState.VerifiedKnowledge) - 1; i >= 0 && len(e.sessionState.VerifiedKnowledge)-i <= 3; i-- {
+			memory := e.sessionState.VerifiedKnowledge[i]
+			if strings.TrimSpace(memory.Question) == "" || strings.TrimSpace(memory.Answer) == "" {
+				continue
+			}
+			lines = append(lines, "已验证知识结论（非实时状态）："+
+				truncateRunes(strings.TrimSpace(memory.Question), 180)+" → "+
+				truncateRunes(strings.TrimSpace(memory.Answer), 360))
+		}
 		lines = append(lines, recentFactBreadcrumbs(e.sessionState.RecentFacts, now)...)
 		lines = append(lines, expiredFactBreadcrumbs(e.sessionState.RecentFacts, now)...)
 	}
