@@ -151,22 +151,22 @@ func (h *Handlers) handleDurableWS(
 				key = strings.TrimSpace(frame.Get("ConfirmationId").MustString())
 			}
 			if sessionID == "" || turnID == "" || key == "" {
-				h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("SessionId, TurnId and InteractionKey are required"))
+				h.writeDurableInteractionError(writer, turnID, key, ErrInvalidParam.WithMessage("SessionId, TurnId and InteractionKey are required"))
 				continue
 			}
 			if err := h.validateDurableTurnSession(ctx, base.Owner, sessionID, turnID); err != nil {
-				h.writeDurableCoordinatorError(writer, err)
+				h.writeDurableInteractionError(writer, turnID, key, err)
 				continue
 			}
 			overrides, overrideErr := overridesFromFrame(frame)
 			if overrideErr != nil {
-				h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("%v", overrideErr))
+				h.writeDurableInteractionError(writer, turnID, key, ErrInvalidParam.WithMessage("%v", overrideErr))
 				continue
 			}
 			if err := h.turnCoordinator.ResolveInteraction(ctx, base.Owner, turnID, key, turncoord.ConfirmationResponse{
 				Confirmed: frame.Get("Confirmed").MustBool(false), Overrides: overrides,
 			}); err != nil {
-				h.writeDurableCoordinatorError(writer, err)
+				h.writeDurableInteractionError(writer, turnID, key, err)
 			}
 
 		case "ConfirmCSAgentSelection":
@@ -373,6 +373,28 @@ func (h *Handlers) writeDurableStreamError(writer streamWriter, err error) {
 }
 
 func (h *Handlers) writeDurableCoordinatorError(writer streamWriter, err error) {
+	code, message := durableCoordinatorError(err)
+	h.writeDurableCode(writer, code, message)
+}
+
+type durableInteractionErrorEvent struct {
+	Code           string `json:"Code"`
+	Message        string `json:"Message"`
+	TurnID         string `json:"TurnId,omitempty"`
+	InteractionKey string `json:"InteractionKey,omitempty"`
+}
+
+// writeDurableInteractionError reports a rejected confirmation submission
+// without ending the observed turn. The durable interaction remains pending,
+// so the same card must stay editable and may be submitted again.
+func (h *Handlers) writeDurableInteractionError(writer streamWriter, turnID, key string, err error) {
+	code, message := durableCoordinatorError(err)
+	_ = writer.WriteEvent("interaction_error", durableInteractionErrorEvent{
+		Code: code, Message: message, TurnID: turnID, InteractionKey: key,
+	})
+}
+
+func durableCoordinatorError(err error) (string, string) {
 	code, message := "InternalError", "durable turn request failed"
 	switch {
 	case errors.Is(err, store.ErrInvalidArgument):
@@ -388,7 +410,7 @@ func (h *Handlers) writeDurableCoordinatorError(writer streamWriter, err error) 
 	case errors.Is(err, store.ErrInteractionConflict), errors.Is(err, store.ErrInvalidTurnState):
 		code, message = "Conflict", "the turn state changed; resume it before retrying"
 	}
-	h.writeDurableCode(writer, code, message)
+	return code, message
 }
 
 func (h *Handlers) writeDurableCode(writer streamWriter, code, message string) {

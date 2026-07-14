@@ -383,21 +383,23 @@ func TestWSDurable_PostgresEditableConfirmationSurvivesReconnectAndCrossReplicaR
 	wrongOwner := `{"Action":"ConfirmCSAgentAction","SessionId":"` + session.ID + `","TurnId":"` + turnID + `","InteractionKey":"` + firstKey + `","Confirmed":true,"Overrides":{"GpuType":"A800"}}`
 	require.NoError(t, attacker.Write(ctx, websocket.MessageText, []byte(wrongOwner)))
 	wrongOwnerFrame := readDurableFrame(t, attacker)
-	assert.Equal(t, "error", wrongOwnerFrame["event"])
+	assert.Equal(t, "interaction_error", wrongOwnerFrame["event"])
 	assert.Equal(t, "NotFound", wrongOwnerFrame["Code"])
 	require.NoError(t, attacker.Close(websocket.StatusNormalClosure, "done"))
 
 	wrongSession := `{"Action":"ConfirmCSAgentAction","SessionId":"wrong-session","TurnId":"` + turnID + `","InteractionKey":"` + firstKey + `","Confirmed":true,"Overrides":{"GpuType":"A800"}}`
 	require.NoError(t, resumed.Write(ctx, websocket.MessageText, []byte(wrongSession)))
 	wrongSessionFrame := readDurableFrame(t, resumed)
-	assert.Equal(t, "error", wrongSessionFrame["event"])
+	assert.Equal(t, "interaction_error", wrongSessionFrame["event"])
 	assert.Equal(t, "NotFound", wrongSessionFrame["Code"])
 
 	invalid := `{"Action":"ConfirmCSAgentAction","SessionId":"` + session.ID + `","TurnId":"` + turnID + `","InteractionKey":"` + firstKey + `","Confirmed":true,"Overrides":{"GpuType":"H100"}}`
 	require.NoError(t, resumed.Write(ctx, websocket.MessageText, []byte(invalid)))
 	invalidFrame := readDurableFrame(t, resumed)
-	assert.Equal(t, "error", invalidFrame["event"])
+	assert.Equal(t, "interaction_error", invalidFrame["event"])
 	assert.Equal(t, "InvalidParam", invalidFrame["Code"])
+	assert.Equal(t, turnID, invalidFrame["TurnId"])
+	assert.Equal(t, firstKey, invalidFrame["InteractionKey"])
 	pending, err := store.NewPostgresTurnStore(db).GetInteraction(ctx, gatewayOwner, turnID, firstKey)
 	require.NoError(t, err)
 	assert.Equal(t, store.InteractionStatusPending, pending.Status)

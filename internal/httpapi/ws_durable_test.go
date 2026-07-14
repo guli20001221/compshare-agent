@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -27,6 +28,7 @@ type fakeDurableCoordinator struct {
 	lastSeq    int64
 	abortCalls int
 	resolved   []fakeResolvedInteraction
+	resolveErr error
 	// imageIdentityGate emulates the coordinator's persisted request hash at
 	// the transport seam so these tests isolate raw-image digest wiring.
 	imageIdentityGate bool
@@ -126,6 +128,9 @@ func (f *fakeDurableCoordinator) FindTurnByClientID(_ context.Context, owner sto
 func (f *fakeDurableCoordinator) ResolveInteraction(_ context.Context, owner store.Owner, turnID, key string, value turncoord.ConfirmationResponse) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.resolveErr != nil {
+		return f.resolveErr
+	}
 	f.resolved = append(f.resolved, fakeResolvedInteraction{owner: owner, turnID: turnID, key: key, value: value})
 	return nil
 }
@@ -278,6 +283,36 @@ func TestWSDurable_ForwardsClientEditsToDurableValidation(t *testing.T) {
 	coordinator.mu.Unlock()
 }
 
+func TestWSDurable_RejectedEditKeepsInteractionOpenForCorrection(t *testing.T) {
+	coordinator := &fakeDurableCoordinator{
+		turn:       store.Turn{ID: "turn-1", SessionID: "sess-1", Owner: gatewayOwner},
+		resolveErr: fmt.Errorf("%w: value is not one of the reviewed options", store.ErrInvalidArgument),
+	}
+	srv := durableWSTestServer(t, coordinator)
+	conn := dialWS(t, srv, gatewayHeaders())
+	rejected := `{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","TurnId":"turn-1","InteractionKey":"confirmation/0","Confirmed":true,"Overrides":{"Zone":"invalid"}}`
+	require.NoError(t, conn.Write(context.Background(), websocket.MessageText, []byte(rejected)))
+
+	frame := readDurableFrame(t, conn)
+	assert.Equal(t, "interaction_error", frame["event"])
+	assert.Equal(t, "InvalidParam", frame["Code"])
+	assert.Equal(t, "turn-1", frame["TurnId"])
+	assert.Equal(t, "confirmation/0", frame["InteractionKey"])
+
+	// The socket and card remain usable. A corrected submission reaches the
+	// same durable interaction instead of forcing a new turn.
+	coordinator.mu.Lock()
+	coordinator.resolveErr = nil
+	coordinator.mu.Unlock()
+	corrected := `{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","TurnId":"turn-1","InteractionKey":"confirmation/0","Confirmed":true,"Overrides":{"Zone":"cn-bj2-02"}}`
+	require.NoError(t, conn.Write(context.Background(), websocket.MessageText, []byte(corrected)))
+	require.Eventually(t, func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		return len(coordinator.resolved) == 1
+	}, time.Second, 10*time.Millisecond)
+}
+
 func TestWSDurable_BootGateKeepsClientOptInDisabled(t *testing.T) {
 	coordinator := &fakeDurableCoordinator{}
 	srv := durableWSTestServer(t, coordinator)
@@ -338,7 +373,7 @@ func TestWSDurable_WrongSessionCannotResolveAnotherTurnsInteraction(t *testing.T
 		`{"Action":"ConfirmCSAgentAction","SessionId":"sess-other","TurnId":"turn-1","InteractionKey":"confirmation/0","Confirmed":true}`,
 	)))
 	frame := readDurableFrame(t, conn)
-	assert.Equal(t, "error", frame["event"])
+	assert.Equal(t, "interaction_error", frame["event"])
 	assert.Equal(t, "NotFound", frame["Code"])
 	coordinator.mu.Lock()
 	assert.Empty(t, coordinator.resolved)
