@@ -243,6 +243,14 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	assert.Equal(t, SessionStateSchemaV6, pc.AgentSessionState.SchemaVersion)
 	require.Len(t, pc.AgentSessionState.VerifiedKnowledge, 1)
 	assert.Equal(t, "terminal-paste-001", pc.AgentSessionState.VerifiedKnowledge[0].Evidence.Items[0].ChunkID)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"7.0","conversation_digest":{"decisions":["采用第二种方案"],"sources":{"decisions":[{"value":"采用第二种方案","pair_index":1,"quote":"第二种"}]},"excerpts":[{"user":"继续","assistant":"请确认实例"}],"summary_frontier":8}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV7, pc.AgentSessionState.SchemaVersion)
+	require.Len(t, pc.AgentSessionState.ConversationDigest.Sources.Decisions, 1)
+	assert.Equal(t, "第二种", pc.AgentSessionState.ConversationDigest.Sources.Decisions[0].Quote)
+	assert.Equal(t, int64(8), pc.AgentSessionState.ConversationDigest.SummaryFrontier)
 }
 
 func TestSessionState_VerifiedKnowledgeRoundTrip(t *testing.T) {

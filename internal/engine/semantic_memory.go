@@ -53,13 +53,38 @@ type TaskSnapshot struct {
 // ConversationDigest is reference-only memory for early conversation
 // semantics. It stores no model messages or raw tool JSON.
 type ConversationDigest struct {
-	Narrative       string               `json:"narrative,omitempty"`
-	Goals           []string             `json:"goals,omitempty"`
-	Constraints     []string             `json:"constraints,omitempty"`
-	Decisions       []string             `json:"decisions,omitempty"`
-	UnresolvedTasks []string             `json:"unresolved_tasks,omitempty"`
-	EntityHints     []SemanticEntityHint `json:"entity_hints,omitempty"`
-	UpdatedAtUnix   int64                `json:"updated_at_unix,omitempty"`
+	Narrative       string                `json:"narrative,omitempty"`
+	Goals           []string              `json:"goals,omitempty"`
+	Constraints     []string              `json:"constraints,omitempty"`
+	Decisions       []string              `json:"decisions,omitempty"`
+	UnresolvedTasks []string              `json:"unresolved_tasks,omitempty"`
+	EntityHints     []SemanticEntityHint  `json:"entity_hints,omitempty"`
+	Sources         MemoryDelta           `json:"sources,omitempty"`
+	Excerpts        []ConversationExcerpt `json:"excerpts,omitempty"`
+	SummaryFrontier int64                 `json:"summary_frontier,omitempty"`
+	UpdatedAtUnix   int64                 `json:"updated_at_unix,omitempty"`
+}
+
+// SourcedMemory is accepted only when Quote occurs verbatim in PairIndex.
+// Value is the compact semantic projection shown to later turns.
+type SourcedMemory struct {
+	Value     string `json:"value,omitempty"`
+	PairIndex int    `json:"pair_index"`
+	Quote     string `json:"quote,omitempty"`
+}
+
+type MemoryDelta struct {
+	Goals           []SourcedMemory `json:"goals,omitempty"`
+	Constraints     []SourcedMemory `json:"constraints,omitempty"`
+	Decisions       []SourcedMemory `json:"decisions,omitempty"`
+	UnresolvedTasks []SourcedMemory `json:"unresolved_tasks,omitempty"`
+}
+
+// ConversationExcerpt is an unlabelled fallback. It preserves what was said
+// without guessing whether the text was a goal, decision, or constraint.
+type ConversationExcerpt struct {
+	User      string `json:"user,omitempty"`
+	Assistant string `json:"assistant,omitempty"`
 }
 
 // ContinuityAdvisories is an ephemeral coordinator-to-engine view. It MUST NOT
@@ -327,6 +352,10 @@ func (e *Engine) semanticMemoryPrompt(now time.Time) string {
 	if narrative := compactSemanticNarrative(e.sessionState.ConversationDigest.Narrative); narrative != "" {
 		lines = append(lines, "早期对话摘要（只作参考，不授权操作）："+narrative)
 	}
+	for _, excerpt := range recentConversationExcerpts(e.sessionState.ConversationDigest.Excerpts, 3) {
+		lines = append(lines, "早期原文摘录（未分类，不授权操作）：用户："+
+			truncateRunes(excerpt.User, 180)+"；助手："+truncateRunes(excerpt.Assistant, 240))
+	}
 	for _, fact := range e.sessionState.RecentFacts {
 		freshness := fact.Freshness
 		if freshness == "" {
@@ -484,5 +513,8 @@ func taskSnapshotEmpty(task TaskSnapshot) bool {
 func conversationDigestEmpty(digest ConversationDigest) bool {
 	return digest.Narrative == "" && len(digest.Goals) == 0 && len(digest.Constraints) == 0 &&
 		len(digest.Decisions) == 0 && len(digest.UnresolvedTasks) == 0 && len(digest.EntityHints) == 0 &&
+		len(digest.Sources.Goals) == 0 && len(digest.Sources.Constraints) == 0 &&
+		len(digest.Sources.Decisions) == 0 && len(digest.Sources.UnresolvedTasks) == 0 &&
+		len(digest.Excerpts) == 0 && digest.SummaryFrontier == 0 &&
 		digest.UpdatedAtUnix == 0
 }

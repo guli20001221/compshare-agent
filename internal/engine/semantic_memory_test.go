@@ -14,9 +14,9 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-func TestSemanticMemory_V5RoundTripAndAdvisoriesStayEphemeral(t *testing.T) {
+func TestSemanticMemory_V7RoundTripAndAdvisoriesStayEphemeral(t *testing.T) {
 	state := SessionState{
-		SchemaVersion: SessionStateSchemaV5,
+		SchemaVersion: SessionStateSchemaV7,
 		TaskSnapshot: TaskSnapshot{
 			Goal:          "给训练机扩容",
 			Workflow:      "ResizeDiskWorkflow",
@@ -32,6 +32,11 @@ func TestSemanticMemory_V5RoundTripAndAdvisoriesStayEphemeral(t *testing.T) {
 			Narrative:       "目标：给训练机扩容。未完成：需要选择数据盘",
 			Goals:           []string{"给训练机扩容"},
 			UnresolvedTasks: []string{"需要选择数据盘"},
+			Sources: MemoryDelta{Goals: []SourcedMemory{{
+				Value: "给训练机扩容", PairIndex: 0, Quote: "给训练机扩容",
+			}}},
+			Excerpts:        []ConversationExcerpt{{User: "继续", Assistant: "请先选择数据盘"}},
+			SummaryFrontier: 12,
 			UpdatedAtUnix:   1_800_000_000,
 		},
 	}
@@ -180,14 +185,14 @@ func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSummary(t *testing.
 	assert.False(t, strings.Contains(summary, "MUST_NOT_SURVIVE"))
 }
 
-func TestTrimHistory_PersistsMeaningFromDiscardedEarlyTurns(t *testing.T) {
+func TestTrimHistory_PreservesDiscardedTurnsWithoutGuessingTheirMeaning(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV5}, 1)
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system"}}
 	for i := 0; i < maxHistoryMessages; i++ {
 		user := "普通问题"
 		if i < maxHistoryMessages/2 {
-			user = "决定就用 A100，并且必须在华北二A"
+			user = "第二种，区域保持不变"
 		}
 		eng.messages = append(eng.messages,
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: user},
@@ -199,9 +204,10 @@ func TestTrimHistory_PersistsMeaningFromDiscardedEarlyTurns(t *testing.T) {
 	eng.trimHistory()
 
 	state, _, _ := eng.SessionStateSnapshot()
-	assert.Contains(t, state.ConversationDigest.Goals, "决定就用 A100，并且必须在华北二A")
-	assert.Contains(t, state.ConversationDigest.Decisions, "决定就用 A100，并且必须在华北二A")
-	assert.Contains(t, state.ConversationDigest.Narrative, "A100")
-	assert.Contains(t, state.ConversationDigest.Narrative, "华北二A")
+	assert.Empty(t, state.ConversationDigest.Goals)
+	assert.Empty(t, state.ConversationDigest.Decisions)
+	require.NotEmpty(t, state.ConversationDigest.Excerpts)
+	assert.Contains(t, state.ConversationDigest.Excerpts[0].User, "第二种")
+	assert.Greater(t, state.ConversationDigest.SummaryFrontier, int64(0))
 	assert.LessOrEqual(t, len(eng.messages), 1+maxHistoryMessages)
 }

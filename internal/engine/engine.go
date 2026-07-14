@@ -1494,7 +1494,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
-	e.trimHistory()
+	e.trimHistoryWithContext(ctx)
 	priorText := e.PlannerPriorTextSnapshot()
 
 	// Pre-LLM hard-block chain — runs on raw userMsg only, BEFORE OCR
@@ -6028,9 +6028,13 @@ type StepEvent struct {
 // Cut point is aligned to a safe message boundary to avoid orphaned tool_calls
 // or tool responses (which would make the history malformed for the LLM).
 func (e *Engine) trimHistory() {
+	e.trimHistoryWithContext(context.Background())
+}
+
+func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 	e.messages = stripHistoricalToolTranscript(e.messages)
 	if e.reactHistoryCompactionEnabled {
-		e.trimHistoryByCompaction(time.Now())
+		e.trimHistoryByCompactionContext(ctx, time.Now())
 		return
 	}
 	if len(e.messages) <= 1+maxHistoryMessages {

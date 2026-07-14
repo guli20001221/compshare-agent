@@ -39,7 +39,12 @@ const SessionStateSchemaV5 = "5.0"
 // or forcing another retrieval.
 const SessionStateSchemaV6 = "6.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV6
+// SessionStateSchemaV7 adds provenance-bearing long-term memory and bounded
+// verbatim excerpts for compaction failure. Both live in the existing context
+// envelope, so they commit atomically with the turn and require no DB migration.
+const SessionStateSchemaV7 = "7.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV7
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -66,6 +71,7 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV4: {},
 	SessionStateSchemaV5: {},
 	SessionStateSchemaV6: {},
+	SessionStateSchemaV7: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
