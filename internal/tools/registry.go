@@ -1212,21 +1212,7 @@ type ToolScope struct {
 // may see. An unrecognized mode is treated as least-privilege (read-only), so a
 // zero-valued ToolScope cannot hand out write access by accident.
 func VisibleRegistryForScope(scope ToolScope, mutatingEnabled bool) []openai.Tool {
-	switch scope.Mode {
-	case ToolScopeNamed:
-		if len(scope.Names) == 0 {
-			// An empty allowlist authorizes nothing. This is the branch the old
-			// nil-sentinel took to mean "everything".
-			return nil
-		}
-		return visibleRegistryForNames(scope.Names, mutatingEnabled)
-	case ToolScopeMutableFull:
-		return VisibleRegistry(mutatingEnabled)
-	case ToolScopeReadOnlyFull:
-		return VisibleRegistry(false)
-	default:
-		return VisibleRegistry(false)
-	}
+	return DefaultCapabilityRegistry().VisibleTools(scope, mutatingEnabled)
 }
 
 // VisibleRegistryForSubset filters the registry to a named subset.
@@ -1266,19 +1252,9 @@ func visibleRegistryForNames(subset []string, mutatingEnabled bool) []openai.Too
 // runtime mode. Read-only mode hides mutating workflow tools while keeping
 // query, knowledge, and cloud-side diagnosis tools available.
 func VisibleRegistry(mutatingEnabled bool) []openai.Tool {
-	policies := DefaultToolExecutionPolicies()
-	visible := make([]openai.Tool, 0, len(Registry))
-	for _, tool := range Registry {
-		if tool.Function == nil {
-			continue
-		}
-		if !mutatingEnabled {
-			policy, ok := policies[tool.Function.Name]
-			if ok && (policy.Route == ActionRouteWorkflow || policy.Class == ActionClassMutating) {
-				continue
-			}
-		}
-		visible = append(visible, tool)
+	mode := ToolScopeReadOnlyFull
+	if mutatingEnabled {
+		mode = ToolScopeMutableFull
 	}
-	return visible
+	return DefaultCapabilityRegistry().VisibleTools(ToolScope{Mode: mode}, mutatingEnabled)
 }

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/compshare-agent/internal/security"
@@ -68,6 +69,10 @@ const (
 )
 
 func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
+	return DefaultCapabilityRegistry().Policies()
+}
+
+func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 	policies := map[string]ToolExecutionPolicy{}
 	registryParams := registryAllowedParams()
 
@@ -401,6 +406,7 @@ func allowedParamsFromDefinition(params any) []string {
 	for k := range props {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return keys
 }
 
