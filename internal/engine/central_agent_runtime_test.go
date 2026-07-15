@@ -101,3 +101,12 @@ func TestAgentContextCarriesPendingSelectionOrderWithoutResumingLegacyHandler(t 
 	require.Contains(t, card, "uhost-2")
 	require.Contains(t, card, "序号=2")
 }
+
+func TestCentralSessionUsesCentralPromptInsteadOfLegacyWorkflowCatalog(t *testing.T) {
+	deps := &SharedDeps{LLMClient: &mockLLM{}, ExternalExecutor: &mockExecutor{}}
+	eng := NewSession(deps, SessionOptions{CentralAgentRuntimeEnabled: true, MutatingToolsEnabled: true})
+	eng.InitWithContext("test user")
+	system := renderTestMessages(eng.MessagesSnapshot())
+	require.Contains(t, system, "本轮唯一的业务判断者")
+	require.NotContains(t, system, "StopInstanceWorkflow")
+}

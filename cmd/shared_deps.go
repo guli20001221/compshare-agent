@@ -18,9 +18,10 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 		return nil, err
 	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
-		Capacity:             cfg.Agent.HTTP.PoolCapacity,
-		IdleTTL:              cfg.Agent.HTTP.PoolIdleTTL,
-		MutatingToolsEnabled: mutating,
+		Capacity:                   cfg.Agent.HTTP.PoolCapacity,
+		IdleTTL:                    cfg.Agent.HTTP.PoolIdleTTL,
+		MutatingToolsEnabled:       mutating,
+		CentralAgentRuntimeEnabled: true,
 	}), nil
 }
 
@@ -106,10 +107,6 @@ func buildLLMRouter(cfg *config.Config) (*llm.ModelRouter, error) {
 }
 
 func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv getenvFunc) error {
-	routeIntents, unknownRoute := intentPlannerRouteIntentsFromEnv(getenv)
-	for _, value := range unknownRoute {
-		log.Printf("warning: ignoring unknown COMPSHARE_DIRECT_DISPATCH_INTENTS value %q", value)
-	}
 	sessionFactContext, unknownSessionFactContext := sessionFactContextEnabledFromEnv(getenv)
 	if unknownSessionFactContext != "" {
 		log.Printf("warning: ignoring unknown USE_SESSION_FACT_CONTEXT value %q", unknownSessionFactContext)
@@ -172,18 +169,8 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 		deps.FastTemplateRenderer = groundedMode == "fast_template"
 	}
 
-	plannerStructuredOutput, unknownPlannerStructuredOutput := plannerStructuredOutputModeFromEnv(getenv)
-	if unknownPlannerStructuredOutput != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT value %q", unknownPlannerStructuredOutput)
-	}
-
-	routeEnabled := len(routeIntents) > 0
-	if routeEnabled || knowledgeEnabled {
-		deps.IntentPlanner = newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutput)
-		deps.IntentPlannerModel = cfg.Agent.LLM.Model
-		enabled, routeMap := engine.BuildIntentPlannerMaps(routeIntents)
-		deps.IntentPlannerEnabledIntents = enabled
-		deps.IntentRouteIntents = routeMap
-	}
+	// HTTP sessions use the central Agent runtime. An intent router would add a
+	// second semantic model before the Agent and could once again delete or hide
+	// context, so it is deliberately not constructed on the server path.
 	return nil
 }
