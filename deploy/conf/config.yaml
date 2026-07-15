@@ -57,8 +57,11 @@ agent:
   # below (qwen3-vl-flash) — it is already on.
   features:
     # Every chat turn is accepted, executed and committed through the durable
-    # global coordinator. Requires migrations 0005 + 0006 + 0007 before boot.
-    durable_turns: true
+    # global coordinator. Requires migrations 0005 through 0010 before boot.
+    # Keep this OFF while old binaries exist. Enable it only during a drained,
+    # cluster-wide backend + frontend cutover; mixed legacy/durable execution
+    # can process one conversation twice.
+    durable_turns: false
     # Write operations: create/start/stop/reboot/reset-password/resize-disk.
     # Destructive actions (delete / L2 terminate) stay refused REGARDLESS.
     mutating_tools: true
@@ -159,10 +162,9 @@ agent:
     max_input_length: 4000
     pool_capacity: 200
     pool_idle_ttl: "30m"
-    # Compatibility-path rollback setting only. Production has durable_turns
-    # enabled, so conversations continue from committed history and do not roll
-    # to an empty session after 10 turns. If durable turns are explicitly
-    # disabled, the legacy path still caps at 10 turns.
+    # Compatibility-path setting only. After the coordinated durable cutover,
+    # conversations continue from committed history and do not roll to an empty
+    # session after 10 turns. Until then, the legacy path still uses this cap.
     max_session_turns: 10
     # Skip the built-in CORS middleware. Default false = agent emits
     # Access-Control-Allow-* headers itself (needed when the front-end dev

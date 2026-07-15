@@ -324,7 +324,7 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 		}
 		args["Name"] = newName
 	case intent.LifecycleActionResetPwd:
-		password := resetPasswordFromUserText(userMsg)
+		password := e.resetPasswordForTurn(userMsg)
 		if password == "" {
 			reply := "请提供要设置的新密码。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
@@ -432,7 +432,7 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			Retrieval:     intent.Retrieval{Enabled: false},
 			Confidence:    1,
 		}
-		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
+		if reply, ok := populateLifecycleActionArgs(args, action, userMsg, e.resetPasswordForTurn(userMsg)); !ok {
 			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk || action == intent.LifecycleActionRename {
 				reply = e.executeWorkflow(ctx, workflowName, args, onStep)
 				if final, ok := isFinalReply(reply); ok {
@@ -570,7 +570,7 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 	}
 	args := map[string]any{"UHostId": inst.UHostId}
 	e.clearContextFrameForNewDirectWorkflow()
-	if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
+	if reply, ok := populateLifecycleActionArgs(args, action, userMsg, e.resetPasswordForTurn(userMsg)); !ok {
 		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk || action == intent.LifecycleActionRename {
 			reply = e.executeWorkflow(ctx, workflowName, args, onStep)
 			if final, ok := isFinalReply(reply); ok {
@@ -602,7 +602,7 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 	return reply, true
 }
 
-func populateLifecycleActionArgs(args map[string]any, action intent.LifecycleAction, userMsg string) (string, bool) {
+func populateLifecycleActionArgs(args map[string]any, action intent.LifecycleAction, userMsg, secretPassword string) (string, bool) {
 	switch action {
 	case intent.LifecycleActionResize:
 		resizeArgs := resizeWorkflowArgsFromUserText(userMsg)
@@ -619,7 +619,11 @@ func populateLifecycleActionArgs(args map[string]any, action intent.LifecycleAct
 		}
 		args["Name"] = newName
 	case intent.LifecycleActionResetPwd:
-		password := resetPasswordFromUserText(userMsg)
+		password := secretPassword
+		if password == "" {
+			value := resetPasswordFromUserText(userMsg)
+			password = value
+		}
 		if password == "" {
 			return "请提供要设置的新密码。", false
 		}
@@ -1530,11 +1534,28 @@ func renameWorkflowNameFromUserText(userText string) string {
 }
 
 func resetPasswordFromUserText(userText string) string {
-	m := resetPasswordSpecRE.FindStringSubmatch(strings.TrimSpace(userText))
-	if len(m) != 2 {
-		return ""
+	secret, _, _ := ExtractResetPasswordSecret(userText)
+	return secret
+}
+
+// ExtractResetPasswordSecret is the single parser for password values embedded
+// in legacy free-text requests. Byte offsets let the durable boundary remove
+// the exact value before persistence without maintaining a second regex.
+func ExtractResetPasswordSecret(userText string) (secret string, start, end int) {
+	match := resetPasswordSpecRE.FindStringSubmatchIndex(userText)
+	if len(match) < 4 || match[2] < 0 || match[3] < 0 {
+		return "", 0, 0
 	}
-	return strings.TrimSpace(m[1])
+	return strings.TrimSpace(userText[match[2]:match[3]]), match[2], match[3]
+}
+
+func (e *Engine) resetPasswordForTurn(userText string) string {
+	if e != nil && e.secretInputsThisTurn != nil {
+		if password := strings.TrimSpace(e.secretInputsThisTurn["Password"]); password != "" {
+			return password
+		}
+	}
+	return resetPasswordFromUserText(userText)
 }
 
 func stopSchedulerAfterMinutesFromUserText(userText string) (int, bool) {

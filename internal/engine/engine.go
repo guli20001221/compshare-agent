@@ -204,6 +204,10 @@ type ChatOptions struct {
 	// order flow for this turn. Only the HTTP path sets it after both backend
 	// and client feature gates are open.
 	GuidedCreate bool
+	// SecretInputs are turn-scoped values supplied through the durable secret
+	// channel. They are consumed only by deterministic workflows, never added to
+	// model messages, session state, traces, or assistant output.
+	SecretInputs map[string]string
 }
 
 type IntentPlannerOptions struct {
@@ -399,6 +403,7 @@ type Engine struct {
 	// history) so it cannot mistake an unavailable read for an empty resource set.
 	routeReadFailureThisTurn bool
 	imageContextThisTurn     string
+	secretInputsThisTurn     map[string]string
 	baseUserContext          string
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
@@ -1358,6 +1363,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	})
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
+	e.secretInputsThisTurn = opts.SecretInputs
+	defer func() { e.secretInputsThisTurn = nil }()
 	defer e.emitTurnCompletion()
 	if u, ok := tools.UserFrom(ctx); ok {
 		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {

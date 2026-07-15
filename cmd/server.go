@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -93,11 +95,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// OpenMySQL has already run the full column-level VerifySchema probe,
 		// including every durable turn/lease/event/interaction table. Construct
 		// the coordinator only after that fail-fast check succeeds.
+		coordinatorOptions, err := serverTurnCoordinatorOptions(overlayGetenv, traceWriter)
+		if err != nil {
+			return err
+		}
 		coordinator := turncoord.NewCoordinator(
 			store.NewPostgresTurnStore(db),
 			sessionStore,
 			turncoord.EngineFactoryFromPool(pool),
-			serverTurnCoordinatorOptions(overlayGetenv, traceWriter),
+			coordinatorOptions,
 		)
 		handlers.SetTurnCoordinator(coordinator)
 		defer coordinator.Close()
@@ -147,12 +153,18 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	return serveUntilSignal(srv)
 }
 
-func serverTurnCoordinatorOptions(getenv getenvFunc, traceWriter observability.Writer) turncoord.Options {
+func serverTurnCoordinatorOptions(getenv getenvFunc, traceWriter observability.Writer) (turncoord.Options, error) {
+	encodedKey := strings.TrimSpace(getenv("COMPSHARE_TURN_SECRET_KEY"))
+	secretKey, err := base64.StdEncoding.DecodeString(encodedKey)
+	if err != nil || len(secretKey) != 32 {
+		return turncoord.Options{}, fmt.Errorf("COMPSHARE_TURN_SECRET_KEY must be base64 for exactly 32 random bytes")
+	}
 	return turncoord.Options{
 		ReplicaID:            serverReplicaID(),
 		MutatingToolsEnabled: getenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1",
 		TraceWriter:          traceWriter,
-	}
+		SecretKey:            secretKey,
+	}, nil
 }
 
 type interactionFeatureSetter interface {

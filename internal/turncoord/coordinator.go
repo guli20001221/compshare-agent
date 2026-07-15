@@ -2,7 +2,12 @@ package turncoord
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -98,6 +103,9 @@ type Options struct {
 	RecoveryBatchSize    int
 	MutatingToolsEnabled bool
 	TraceWriter          observability.Writer
+	// SecretKey seals turn-scoped workflow secrets in the recoverable envelope.
+	// It must be exactly 32 random bytes and identical on every replica.
+	SecretKey []byte
 }
 
 func (o Options) withDefaults() Options {
@@ -143,9 +151,15 @@ type SubmitInput struct {
 	UserContext  tools.UserContext
 	ConfirmForm  bool
 	GuidedCreate bool
+	// SecretInputs exist only after a sealed envelope is opened. Callers must
+	// never populate this field directly.
+	SecretInputs map[string]string
 }
 
-const executionEnvelopeVersion = 1
+const (
+	executionEnvelopeVersion       = 2
+	legacyExecutionEnvelopeVersion = 1
+)
 
 type executionEnvelope struct {
 	Version        int                    `json:"version"`
@@ -155,6 +169,9 @@ type executionEnvelope struct {
 	AssistantModel *string                `json:"assistant_model,omitempty"`
 	UserContext    stableExecutionContext `json:"user_context"`
 	Features       executionFeatures      `json:"features"`
+	SealedSecrets  string                 `json:"sealed_secrets,omitempty"`
+	SecretKeyID    string                 `json:"secret_key_id,omitempty"`
+	SecretDigest   string                 `json:"secret_digest,omitempty"`
 }
 
 type stableExecutionContext struct {
@@ -268,7 +285,7 @@ func (c *Coordinator) Submit(ctx context.Context, in SubmitInput, sink EventSink
 		(in.UserContext.OrganizationID != 0 && in.UserContext.OrganizationID != in.Owner.OrganizationID) {
 		return Submission{}, fmt.Errorf("%w: request identity does not match owner", store.ErrInvalidArgument)
 	}
-	envelope, envelopeRaw, err := freezeSubmitInput(in)
+	envelope, envelopeRaw, err := freezeSubmitInputWithSecretKey(in, c.opts.SecretKey)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -560,7 +577,7 @@ func (c *Coordinator) run(turn store.Turn) {
 		trace.RetryCount = turn.RetryCount
 		trace.RecoveryAttempt = turn.RetryCount > 0 || turn.Status == store.TurnStatusFailedRetryable
 	})
-	in, err := thawSubmitInput(turn)
+	in, err := thawSubmitInputWithSecretKey(turn, c.opts.SecretKey)
 	if err != nil {
 		reason := executionEnvelopeFailureReason(err)
 		attemptTrace.SetContinuity(func(trace *observability.ContinuityTrace) { trace.EnvelopeParseOutcome = reason })
@@ -678,6 +695,7 @@ func (c *Coordinator) run(turn store.Turn) {
 		ConfirmFunc:      confirm,
 		ConfirmEditsFunc: confirmEdits,
 		GuidedCreate:     in.GuidedCreate,
+		SecretInputs:     in.SecretInputs,
 		OnUsage:          func(value llm.TokenUsage) { usage = value },
 	})
 	eventMu.Lock()
@@ -979,12 +997,26 @@ func normalizedUserContext(in SubmitInput) tools.UserContext {
 }
 
 func freezeSubmitInput(in SubmitInput) (executionEnvelope, json.RawMessage, error) {
+	return freezeSubmitInputWithSecretKey(in, nil)
+}
+
+func freezeSubmitInputWithSecretKey(in SubmitInput, secretKey []byte) (executionEnvelope, json.RawMessage, error) {
 	digest, err := normalizeImageDigest(in.ImageDigest)
 	if err != nil {
 		return executionEnvelope{}, nil, err
 	}
-	message := strings.TrimSpace(guardrails.RedactCredentials(in.Message))
-	ocrText := strings.TrimSpace(guardrails.RedactCredentials(in.ImageContext))
+	message := strings.TrimSpace(in.Message)
+	secretInputs := map[string]string{}
+	if password, start, end := engine.ExtractResetPasswordSecret(message); password != "" {
+		secretInputs["Password"] = password
+		message = message[:start] + guardrails.CredentialRedactedOutput + message[end:]
+	}
+	message = strings.TrimSpace(guardrails.RedactCredentials(message))
+	ocrText := strings.TrimSpace(in.ImageContext)
+	if password, start, end := engine.ExtractResetPasswordSecret(ocrText); password != "" {
+		ocrText = ocrText[:start] + guardrails.CredentialRedactedOutput + ocrText[end:]
+	}
+	ocrText = strings.TrimSpace(guardrails.RedactCredentials(ocrText))
 	if message == "" {
 		return executionEnvelope{}, nil, fmt.Errorf("%w: empty redacted message", store.ErrInvalidArgument)
 	}
@@ -1024,6 +1056,15 @@ func freezeSubmitInput(in SubmitInput) (executionEnvelope, json.RawMessage, erro
 		},
 		Features: executionFeatures{ConfirmForm: in.ConfirmForm, GuidedCreate: in.GuidedCreate},
 	}
+	if len(secretInputs) != 0 {
+		sealed, keyID, digest, sealErr := sealTurnSecrets(secretKey, secretInputs, executionEnvelopeAAD(in.Owner, in.SessionID, in.ClientTurnID))
+		if sealErr != nil {
+			return executionEnvelope{}, nil, sealErr
+		}
+		envelope.SealedSecrets = sealed
+		envelope.SecretKeyID = keyID
+		envelope.SecretDigest = digest
+	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
 		return executionEnvelope{}, nil, fmt.Errorf("encode execution envelope: %w", err)
@@ -1032,6 +1073,10 @@ func freezeSubmitInput(in SubmitInput) (executionEnvelope, json.RawMessage, erro
 }
 
 func thawSubmitInput(turn store.Turn) (SubmitInput, error) {
+	return thawSubmitInputWithSecretKey(turn, nil)
+}
+
+func thawSubmitInputWithSecretKey(turn store.Turn, secretKey []byte) (SubmitInput, error) {
 	var envelope executionEnvelope
 	if len(turn.ExecutionEnvelope) == 0 {
 		return SubmitInput{}, store.ErrExecutionEnvelopeMissing
@@ -1045,8 +1090,11 @@ func thawSubmitInput(turn store.Turn) (SubmitInput, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return SubmitInput{}, fmt.Errorf("decode execution envelope: trailing data")
 	}
-	if envelope.Version != executionEnvelopeVersion {
+	if envelope.Version != executionEnvelopeVersion && envelope.Version != legacyExecutionEnvelopeVersion {
 		return SubmitInput{}, fmt.Errorf("unsupported execution envelope version %d", envelope.Version)
+	}
+	if envelope.Version == legacyExecutionEnvelopeVersion && (envelope.SealedSecrets != "" || envelope.SecretKeyID != "" || envelope.SecretDigest != "") {
+		return SubmitInput{}, fmt.Errorf("%w: legacy envelope contains secret fields", store.ErrInvalidArgument)
 	}
 	if strings.TrimSpace(envelope.Message) == "" ||
 		envelope.UserContext.TopOrganizationID != turn.Owner.TopOrganizationID ||
@@ -1058,6 +1106,14 @@ func thawSubmitInput(turn store.Turn) (SubmitInput, error) {
 		return SubmitInput{}, fmt.Errorf("%w: invalid execution image identity", store.ErrInvalidArgument)
 	}
 	envelope.ImageDigest = digest
+	var secretInputs map[string]string
+	if envelope.SealedSecrets != "" {
+		secretInputs, err = openTurnSecrets(secretKey, envelope.SealedSecrets, envelope.SecretKeyID, envelope.SecretDigest,
+			executionEnvelopeAAD(turn.Owner, turn.SessionID, turn.ClientTurnID))
+		if err != nil {
+			return SubmitInput{}, err
+		}
+	}
 	return SubmitInput{
 		Owner: turn.Owner, SessionID: turn.SessionID, ClientTurnID: turn.ClientTurnID,
 		Message: envelope.Message, AssistantModel: envelope.AssistantModel,
@@ -1072,6 +1128,7 @@ func thawSubmitInput(turn store.Turn) (SubmitInput, error) {
 			UserEmail: envelope.UserContext.UserEmail, ClientIP: envelope.UserContext.ClientIP,
 		},
 		ConfirmForm: envelope.Features.ConfirmForm, GuidedCreate: envelope.Features.GuidedCreate,
+		SecretInputs: secretInputs,
 	}, nil
 }
 
@@ -1089,8 +1146,76 @@ func hashExecutionEnvelope(owner store.Owner, sessionID, clientTurnID string, en
 	return store.HashTurnRequest(
 		fmt.Sprint(owner.TopOrganizationID), fmt.Sprint(owner.OrganizationID),
 		sessionID, clientTurnID, envelope.Message, envelope.ImageDigest,
-		string(stableUserContext), model, string(features),
+		string(stableUserContext), model, string(features), envelope.SecretKeyID, envelope.SecretDigest,
 	)
+}
+
+func executionEnvelopeAAD(owner store.Owner, sessionID, clientTurnID string) []byte {
+	return []byte(fmt.Sprintf("turn-secret-v1:%d:%d:%s:%s", owner.TopOrganizationID, owner.OrganizationID, sessionID, clientTurnID))
+}
+
+func sealTurnSecrets(key []byte, secrets map[string]string, aad []byte) (sealed, keyID, digest string, err error) {
+	if len(key) != 32 {
+		return "", "", "", fmt.Errorf("%w: durable secret key must be 32 bytes", store.ErrInvalidArgument)
+	}
+	plain, err := json.Marshal(secrets)
+	if err != nil {
+		return "", "", "", fmt.Errorf("encode turn secrets: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", "", "", fmt.Errorf("create turn secret cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", "", "", fmt.Errorf("create turn secret envelope: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", "", "", fmt.Errorf("create turn secret nonce: %w", err)
+	}
+	ciphertext := gcm.Seal(nil, nonce, plain, aad)
+	keyHash := sha256.Sum256(key)
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(plain)
+	return base64.RawStdEncoding.EncodeToString(append(nonce, ciphertext...)),
+		hex.EncodeToString(keyHash[:8]), hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func openTurnSecrets(key []byte, sealed, expectedKeyID, expectedDigest string, aad []byte) (map[string]string, error) {
+	if len(key) != 32 {
+		return nil, fmt.Errorf("%w: durable secret key unavailable", store.ErrInvalidArgument)
+	}
+	keyHash := sha256.Sum256(key)
+	if !hmac.Equal([]byte(expectedKeyID), []byte(hex.EncodeToString(keyHash[:8]))) {
+		return nil, fmt.Errorf("%w: durable secret key mismatch", store.ErrInvalidArgument)
+	}
+	payload, err := base64.RawStdEncoding.DecodeString(sealed)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid sealed turn secrets", store.ErrInvalidArgument)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil || len(payload) < gcm.NonceSize() {
+		return nil, fmt.Errorf("%w: invalid sealed turn secrets", store.ErrInvalidArgument)
+	}
+	plain, err := gcm.Open(nil, payload[:gcm.NonceSize()], payload[gcm.NonceSize():], aad)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open sealed turn secrets", store.ErrInvalidArgument)
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(plain)
+	if !hmac.Equal([]byte(expectedDigest), []byte(hex.EncodeToString(mac.Sum(nil)))) {
+		return nil, fmt.Errorf("%w: turn secret digest mismatch", store.ErrInvalidArgument)
+	}
+	var secrets map[string]string
+	if err := json.Unmarshal(plain, &secrets); err != nil || strings.TrimSpace(secrets["Password"]) == "" {
+		return nil, fmt.Errorf("%w: invalid turn secrets", store.ErrInvalidArgument)
+	}
+	return secrets, nil
 }
 
 func normalizeImageDigest(value string) (string, error) {

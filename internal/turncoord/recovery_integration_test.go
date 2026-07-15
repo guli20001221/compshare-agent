@@ -1,6 +1,7 @@
 package turncoord
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -82,6 +83,56 @@ func TestCoordinator_StartupRecoversEveryOrphanExecutionStateFromEnvelope(t *tes
 			factory.mu.Unlock()
 		})
 	}
+}
+
+func TestCoordinator_AnotherReplicaRecoversSealedPasswordWithoutPersistingPlaintext(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx := context.Background()
+	owner := store.Owner{TopOrganizationID: 82151, OrganizationID: 82152}
+	sessions := store.NewSessionStore(db)
+	session, err := sessions.Create(ctx, owner, nil, nil)
+	require.NoError(t, err)
+	turns := store.NewPostgresTurnStore(db)
+	key := bytes.Repeat([]byte{0x42}, 32)
+	in := SubmitInput{
+		Owner: owner, SessionID: session.ID, ClientTurnID: "sealed-password",
+		Message: "给 uhost-1 改密为 Aa123456!",
+	}
+	envelope, raw, err := freezeSubmitInputWithSecretKey(in, key)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "Aa123456!")
+	turn, _, err := turns.AcceptTurn(ctx, owner, store.AcceptTurnInput{
+		SessionID: session.ID, ClientTurnID: in.ClientTurnID,
+		RequestHash: hashExecutionEnvelope(owner, session.ID, in.ClientTurnID, envelope),
+		UserContent: envelope.Message, ExecutionEnvelope: raw,
+	})
+	require.NoError(t, err)
+
+	seen := make(chan engine.ChatOptions, 1)
+	factory := &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(_ context.Context, _ func(engine.StepEvent), opts engine.ChatOptions) (string, error) {
+			seen <- opts
+			return "answer", nil
+		}
+	}}
+	c := NewCoordinator(turns, sessions, EngineFactoryFunc(factory.New), Options{
+		ReplicaID: "recovery-replica", SecretKey: key,
+		LeaseTTL: 500 * time.Millisecond, LeaseRenewInterval: 100 * time.Millisecond,
+		InteractionPoll: 10 * time.Millisecond, RecoveryScanInterval: 20 * time.Millisecond,
+		ExecutionTimeout: 3 * time.Second,
+	})
+	t.Cleanup(c.Close)
+	committed := waitTurnStatus(t, turns, owner, turn.ID, store.TurnStatusCommitted)
+	require.Empty(t, committed.ExecutionEnvelope)
+	select {
+	case opts := <-seen:
+		require.Equal(t, "Aa123456!", opts.SecretInputs["Password"])
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovered workflow did not receive sealed password")
+	}
+	var persisted string
+	require.NoError(t, db.QueryRow(`SELECT content FROM messages WHERE id = $1`, turn.UserMessageID).Scan(&persisted))
+	require.NotContains(t, persisted, "Aa123456!")
 }
 
 func TestCoordinator_SubscribeRecoversTurnAcceptedAfterStartupScan(t *testing.T) {

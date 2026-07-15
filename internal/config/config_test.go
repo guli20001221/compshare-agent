@@ -9,6 +9,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -16,6 +17,16 @@ func writeConfig(t *testing.T, body string) string {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
+}
+
+func TestDeployConfigStagesDurableExecutionOffForSafeClusterCutover(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "conf", "config.yaml"))
+	require.NoError(t, err)
+	var cfg Config
+	require.NoError(t, yaml.Unmarshal(raw, &cfg))
+	require.NotNil(t, cfg.Agent.Features.DurableTurns)
+	assert.False(t, *cfg.Agent.Features.DurableTurns,
+		"the tracked deploy config must not activate durable execution during a rolling binary deploy")
 }
 
 func setRequiredSecretEnv(t *testing.T) {

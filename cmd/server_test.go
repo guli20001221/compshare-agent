@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -157,15 +159,27 @@ func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
 
 func TestServerDurableCoordinatorReceivesProductionTraceWriter(t *testing.T) {
 	writer := &captureAppendWriter{}
-	opts := serverTurnCoordinatorOptions(func(key string) string {
+	secretKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	opts, err := serverTurnCoordinatorOptions(func(key string) string {
 		if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
 			return "1"
 		}
+		if key == "COMPSHARE_TURN_SECRET_KEY" {
+			return secretKey
+		}
 		return ""
 	}, writer)
+	require.NoError(t, err)
 	require.Same(t, writer, opts.TraceWriter)
 	require.True(t, opts.MutatingToolsEnabled)
 	require.NotEmpty(t, opts.ReplicaID)
+	require.Len(t, opts.SecretKey, 32)
+}
+
+func TestServerDurableCoordinatorRejectsMissingSecretKey(t *testing.T) {
+	_, err := serverTurnCoordinatorOptions(func(string) string { return "" }, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "COMPSHARE_TURN_SECRET_KEY")
 }
 
 type recordingInteractionFeatures struct {

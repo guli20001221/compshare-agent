@@ -787,6 +787,48 @@ func TestReplayRegression_ResetPasswordAbbreviationEntersWorkflow(t *testing.T) 
 	require.Len(t, mock.calls, 0, "explicit 改密 command with exact instance name must not enter the ReAct loop")
 }
 
+func TestReplayRegression_DurableSecretChannelFeedsWorkflowWithoutPuttingPasswordInMessage(t *testing.T) {
+	data := manyInstancesWithNamedTarget("reset-target", "Stopped")
+	for _, item := range data["UHostSet"].([]any) {
+		row := item.(map[string]any)
+		if row["UHostId"] == "uhost-target" {
+			row["InstanceType"] = "Normal"
+		}
+	}
+	var resetArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			if ids := stringSliceArg(args["UHostIds"]); len(ids) > 0 {
+				return filterDescribeInstances(data, ids), nil
+			}
+			return data, nil
+		case "ResetCompShareInstancePassword":
+			resetArgs = args
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		require.Equal(t, "ResetPasswordWorkflow", action)
+		require.Equal(t, "[已设置,不显示]", args["Password"])
+		return true
+	})
+	eng.Init(context.Background())
+
+	reply, err := eng.ChatWithOptions(context.Background(), "给 reset-target 改密为 [TOKEN_REDACTED]", noopStep, ChatOptions{
+		SecretInputs: map[string]string{"Password": "Aa123456!"},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resetArgs)
+	require.Equal(t, "QWExMjM0NTYh", resetArgs["Password"])
+	require.NotContains(t, reply, "Aa123456!")
+	require.Len(t, mock.calls, 0)
+}
+
 func TestReplayRegression_LifecycleBillingQuestionDoesNotEnterDirectWorkflow(t *testing.T) {
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("billing-target", "Running"))
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{

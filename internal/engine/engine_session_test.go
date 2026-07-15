@@ -443,6 +443,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// failure alter another user's prompt.
 		"routeReadFailureThisTurn":           true,
 		"imageContextThisTurn":               true,
+		"secretInputsThisTurn":               true,
 		"baseUserContext":                    true,
 		"displayedResourceSelectionThisTurn": true,
 		"trustedWorkflowFrameActionThisTurn": true,
@@ -452,12 +453,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 90, len(perSessionFields); want != got {
+	if want, got := 91, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 106, typ.NumField(); want != got {
+	if want, got := 107, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

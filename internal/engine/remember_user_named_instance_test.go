@@ -122,6 +122,8 @@ func TestDiagnosisDoesNotTrustInstanceNameInsideAnotherWord(t *testing.T) {
 		{name: "test", message: "pytest"},
 		{name: "host", message: "ghost"},
 		{name: "a", message: "data"},
+		{name: "机", message: "机器坏了"},
+		{name: "测试", message: "测试环境异常"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
@@ -131,6 +133,11 @@ func TestDiagnosisDoesNotTrustInstanceNameInsideAnotherWord(t *testing.T) {
 			}}
 			eng.rememberUserNamedInstance(tc.message, snapshot)
 			assert.Empty(t, eng.sessionState.SelectedInstanceID)
+			eng.selectedInstanceIDAtTurnStart = eng.sessionState.SelectedInstanceID
+			eng.selectedInstanceSourceAtTurnStart = eng.sessionState.SelectedInstanceSource
+			eng.lastUserMsg = "关掉它"
+			assert.False(t, eng.workflowTargetIsTrusted("StopInstanceWorkflow", "uhost-target", false),
+				"an ordinary substring on turn one must not authorize a write on turn two")
 		})
 	}
 }
