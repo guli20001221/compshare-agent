@@ -16,6 +16,8 @@ start-ws-liantiao.ps1
 eval/.smoke_env.ps1
 *.smoke_env.ps1
 __pycache__/
+deploy/kb/v2/.cache/
+eval/.cache/
 *.pyc
 .worktrees/
 

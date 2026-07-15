@@ -38,6 +38,30 @@ function IsAllowedSecretFile($path) {
     return $false
 }
 
+function IsGeneratedNonSecretFile($path) {
+    # Embedding sidecars contain only chunk IDs and numeric vectors; image assets
+    # are binary. Reading either as text makes the release scan unnecessarily slow.
+    if ($path -match '^deploy/kb/embeddings_[^/]+\.jsonl$') {
+        return $true
+    }
+    # RAG V2 corpora and model locks intentionally preserve pinned public API
+    # examples without redaction. Source selection, not generic regex rewriting,
+    # is their trust boundary; code/config files remain covered by this scan.
+    if ($path -match '^deploy/kb/(stage2b_w0|external_w0)\.jsonl$') {
+        return $true
+    }
+    if ($path -match '^deploy/kb/v2/(stage2b_v2|external_v2|legacy_external_lock)\.jsonl$') {
+        return $true
+    }
+    if ($path -match '^deploy/kb/v2/(asset_lock|asset_report)\.json$') {
+        return $true
+    }
+    if ($path -match '^deploy/kb/v2/assets/.*\.(png|jpe?g|gif|webp|bmp|tiff?)$') {
+        return $true
+    }
+    return $false
+}
+
 function Fail($message) {
     Write-Error $message
     exit 1
@@ -54,7 +78,7 @@ if ($Staged) {
     }
 
     foreach ($path in $paths) {
-        if (IsAllowedSecretFile $path) {
+        if ((IsAllowedSecretFile $path) -or (IsGeneratedNonSecretFile $path)) {
             continue
         }
         # Scan only newly added content. Removed lines may contain the exact
@@ -81,7 +105,7 @@ foreach ($path in $trackedAndUntracked) {
             Fail "Secret-bearing local config is present in git-visible files: $path"
         }
     }
-    if (IsAllowedSecretFile $path) {
+    if ((IsAllowedSecretFile $path) -or (IsGeneratedNonSecretFile $path)) {
         continue
     }
     $content = Get-Content -LiteralPath $path -Raw -ErrorAction SilentlyContinue

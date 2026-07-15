@@ -10,17 +10,11 @@ import (
 )
 
 // CorpusDigestExpected pins deploy/kb/stage2b_w0.jsonl (LF-normalized SHA256).
-// Bumped 2026-06-24 for the W1-R5 platform-docs freshness update: re-synced from
-// compshare-docs @ 98d28a9 (36 commits since the prior baseline). Re-chunked 21
-// docs — 4 new (Agent 社区 introduce/console/billing, codexagent, 云存储挂载
-// networkvolume, region, SwitchChargeType) + 11 substantive rewrites (instance
-// monitor, login, bill, disk, uploaddata, community, firewall, recycle, usecases,
-// createcompshareinstance, update-gpu) + 6 Agent 社区 docs — deleted s3describe
-// (removed upstream), re-pointed the renamed quickstart (+typo fix) and agents/
-// models, and de-duplicated the touched docs' historical dash/underscore/bare
-// naming variants into one canonical ref each. 687 -> 689 chunks. The qwen3
-// sidecar is FULLY re-embedded over this corpus (689 rows, 4096-dim).
-const CorpusDigestExpected = "46f399520186e6a92d67d623b54f2a1b82ef0779192a878f66262b8af4a7527e"
+// Bumped 2026-07-15 for the RAG V2 source-locked rebuild from compshare-docs
+// @ 8a81268 plus the three public FAQ exports. V2 keeps complete short API
+// references and operation guides as one chunk, uses VL text plus clickable
+// source-image links, performs no redaction, and emits 562 chunks.
+const CorpusDigestExpected = "40a89023fd871f7bced30f6da296060ad61fb207c93428dcc343b17a97b67b22"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
@@ -34,7 +28,7 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 // RAG_RETRIEVAL_MODE=qwen3_full; the text-emb-3 sidecar above remains the
 // default for hybrid_cosine / hybrid_rerank modes. Same mismatch semantics
 // as EmbeddingDigestExpected: stale sidecar = hybrid path refuses to load.
-const EmbeddingDigestExpectedQwen3 = "a168ce3df6fd8e2498156e4721e36f9793ae385a8472f36ee30e8563eaf6ebb2"
+const EmbeddingDigestExpectedQwen3 = "eeaa00c5fe55c80bb733e8ca1076f14cf0d1c50e4aaf37a8e1cfefaadbe52d4d"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
 // external tool/ops corpus. It is intentionally platform-neutral and stable:
@@ -45,12 +39,12 @@ const EmbeddingDigestExpectedQwen3 = "a168ce3df6fd8e2498156e4721e36f9793ae385a84
 // community-image rankings belong in the internal platform corpus instead.
 // Loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. Same
 // refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "cc3546678c5a5c21f46f77da83f98900eaf32fba3c289372f452abbbd3b1b4a7"
+const ExternalCorpusDigestExpected = "6eaa76dc81d236787055f6c0e1870ae238bf8a967f20d9feb4717700d88c0ffa"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "332d2b2ce9500a7077bfb894a6b7a303bf7a43fe6acf4abdad90545bfc8f2f8b"
+const ExternalEmbeddingDigestExpectedQwen3 = "7db4ae0fa2140eeb4bdfdc0ee28459e06c810d82fab6e9649ba5468772fce817"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.
