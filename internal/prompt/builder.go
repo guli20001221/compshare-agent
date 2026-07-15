@@ -10,6 +10,7 @@ import (
 type BuildOptions struct {
 	MutatingToolsEnabled    bool
 	IntentScopedReActPrompt bool
+	CentralAgentRuntime     bool
 }
 
 type PromptSection struct {
@@ -63,7 +64,16 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 	}
 
 	sections := []PromptSection{{ID: "identity", Text: segmentIdentity}}
-	if opts.MutatingToolsEnabled {
+	if opts.CentralAgentRuntime {
+		if !opts.MutatingToolsEnabled {
+			sections = append(sections, PromptSection{ID: "readonly_boundary", Text: segmentReadOnlyBoundary})
+		}
+		sections = append(sections, PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
+			PromptSection{ID: "behavior", Text: segmentCentralAgentBehavior},
+			PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy},
+			PromptSection{ID: "reply_style", Text: segmentCentralAgentReplyStyle},
+		)
+	} else if opts.MutatingToolsEnabled {
 		sections = append(sections,
 			PromptSection{ID: "capabilities", Text: segmentMutatingCapabilities},
 			PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},

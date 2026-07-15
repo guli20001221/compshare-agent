@@ -31,6 +31,9 @@ type Options struct {
 	// Default false (read-only). Set from COMPSHARE_ENABLE_MUTATING_TOOLS
 	// at server startup.
 	MutatingToolsEnabled bool
+	// CentralAgentRuntimeEnabled switches the whole pool to the unified Agent
+	// path. It must not be combined with legacy semantic dispatch per session.
+	CentralAgentRuntimeEnabled bool
 }
 
 const (
@@ -61,11 +64,12 @@ type entry struct {
 // rehydrates history from the MessageStore. Call Close when done to stop the
 // background gc goroutine.
 type Pool struct {
-	deps                 *engine.SharedDeps
-	messageStore         store.MessageStore
-	capacity             int
-	idleTTL              time.Duration
-	mutatingToolsEnabled bool
+	deps                       *engine.SharedDeps
+	messageStore               store.MessageStore
+	capacity                   int
+	idleTTL                    time.Duration
+	mutatingToolsEnabled       bool
+	centralAgentRuntimeEnabled bool
 
 	mu      sync.Mutex
 	lruList *list.List                 // front = most recently used
@@ -109,14 +113,15 @@ func NewWithDeps(deps *engine.SharedDeps, ms store.MessageStore, opts Options) *
 	}
 
 	p := &Pool{
-		deps:                 deps,
-		messageStore:         ms,
-		capacity:             cap,
-		idleTTL:              ttl,
-		mutatingToolsEnabled: opts.MutatingToolsEnabled,
-		lruList:              list.New(),
-		items:                make(map[entryKey]*list.Element),
-		stopCh:               make(chan struct{}),
+		deps:                       deps,
+		messageStore:               ms,
+		capacity:                   cap,
+		idleTTL:                    ttl,
+		mutatingToolsEnabled:       opts.MutatingToolsEnabled,
+		centralAgentRuntimeEnabled: opts.CentralAgentRuntimeEnabled,
+		lruList:                    list.New(),
+		items:                      make(map[entryKey]*list.Element),
+		stopCh:                     make(chan struct{}),
 	}
 
 	p.wg.Add(1)

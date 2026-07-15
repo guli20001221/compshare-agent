@@ -546,6 +546,10 @@ type SessionOptions struct {
 	Subject              string
 	ConfirmFn            ConfirmFunc
 	MutatingToolsEnabled bool
+	// CentralAgentRuntimeEnabled selects the complete Agent architecture for
+	// this session. It is a grouped choice: understanding, reads, task state,
+	// writes and final answers move together.
+	CentralAgentRuntimeEnabled bool
 	// InitialCommittedTurns is the authoritative number of turns preceding
 	// this private engine. ChatWithOptions increments userTurn at entry, so a
 	// durable turn with sequence N must construct with N-1.
@@ -644,6 +648,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		registry:                       entity.NewRegistry(),
 		rateLimitSubject:               opts.Subject,
 		mutatingToolsEnabled:           opts.MutatingToolsEnabled,
+		centralAgentRuntimeEnabled:     opts.CentralAgentRuntimeEnabled,
 		userTurn:                       max(opts.InitialCommittedTurns, 0),
 		sessionFactContextEnabled:      deps.SessionFactContextEnabled,
 		reactResultProjectionEnabled:   deps.ReactResultProjectionEnabled,
@@ -677,9 +682,10 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 		fmt.Fprintln(os.Stderr, "warning: rate limiter using anonymous subject (public key missing)")
 	}
 	return NewSession(deps, SessionOptions{
-		Subject:              subject,
-		ConfirmFn:            confirmFn,
-		MutatingToolsEnabled: false,
+		Subject:                    subject,
+		ConfirmFn:                  confirmFn,
+		MutatingToolsEnabled:       false,
+		CentralAgentRuntimeEnabled: true,
 	})
 }
 
@@ -746,10 +752,15 @@ func (e *Engine) SetIntentScopedReActPromptEnabled(v bool) {
 // switch for the semantic stack, not a per-intent patch list.
 func (e *Engine) SetCentralAgentRuntimeEnabled(v bool) { e.centralAgentRuntimeEnabled = v }
 
+// CentralAgentRuntimeEnabled reports the grouped architecture selected when
+// the session was constructed. It exists for boot-wiring and acceptance tests.
+func (e *Engine) CentralAgentRuntimeEnabled() bool { return e.centralAgentRuntimeEnabled }
+
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	return prompt.BuildOptions{
 		MutatingToolsEnabled:    e.mutatingToolsEnabled,
 		IntentScopedReActPrompt: e.intentScopedReActPromptEnabled,
+		CentralAgentRuntime:     e.centralAgentRuntimeEnabled,
 	}
 }
 

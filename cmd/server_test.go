@@ -6,17 +6,14 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -289,36 +286,16 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 
 	eng, err := pool.Get(context.Background(), store.Owner{TopOrganizationID: 1, OrganizationID: 2}, "sess")
 	require.NoError(t, err)
-	require.NotNil(t, eng.IntentPlannerPointer(), "HTTP server pool should inherit intent planner env wiring")
+	require.True(t, eng.CentralAgentRuntimeEnabled(), "HTTP sessions must use the complete central Agent architecture")
+	require.Nil(t, eng.IntentPlannerPointer(), "the server must not put a second semantic model before the Agent")
 }
 
-func TestConfigureSharedDepsUnifiedCreateReachesServerPlanner(t *testing.T) {
+func TestConfigureSharedDepsDoesNotConstructServerIntentPlanner(t *testing.T) {
 	engine.SetUnifiedCreateEnabled(false)
 	t.Cleanup(func() { engine.SetUnifiedCreateEnabled(true) })
 
-	var captured map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
-		require.NoError(t, json.Unmarshal(body, &captured))
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"schema_version\\\":\\\"1.0\\\",\\\"intent\\\":\\\"unknown\\\",\\\"slots\\\":{\\\"target_refs\\\":[],\\\"metrics\\\":[],\\\"time_window\\\":null},\\\"confidence\\\":0.1}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer srv.Close()
-
-	capabilityPath := filepath.Join(t.TempDir(), "capabilities.yaml")
-	require.NoError(t, os.WriteFile(capabilityPath, []byte(`capabilities:
-- base_url: "`+srv.URL+`/v1"
-  model: "deepseek-v4-flash"
-  supports_json_schema: true
-  supports_json_object: true
-`), 0o644))
-	t.Setenv("COMPSHARE_LLM_CAPABILITY_FILE", capabilityPath)
-
 	cfg := &config.Config{Agent: config.AgentConfig{
-		LLM: config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "deepseek-v4-flash"},
+		LLM: config.LLMConfig{BaseURL: "http://localhost:1/v1", APIKey: "test-key", Model: "deepseek-v4-flash"},
 	}}
 	deps, _, err := configureSharedDepsFromEnv(cfg, func(key string) string {
 		switch key {
@@ -332,29 +309,9 @@ func TestConfigureSharedDepsUnifiedCreateReachesServerPlanner(t *testing.T) {
 		return ""
 	})
 	require.NoError(t, err)
-	require.NotNil(t, deps.IntentPlanner)
-
-	_, err = deps.IntentPlanner.Plan(context.Background(), intent.IntentRouterInput{UserText: "创建一台4090"})
-	require.NoError(t, err)
-
-	messages, ok := captured["messages"].([]any)
-	require.True(t, ok)
-	require.NotEmpty(t, messages)
-	system, ok := messages[0].(map[string]any)
-	require.True(t, ok)
-	require.Contains(t, system["content"], "create_instance")
-
-	responseFormat, ok := captured["response_format"].(map[string]any)
-	require.True(t, ok)
-	jsonSchema, ok := responseFormat["json_schema"].(map[string]any)
-	require.True(t, ok)
-	schema, ok := jsonSchema["schema"].(map[string]any)
-	require.True(t, ok)
-	props, ok := schema["properties"].(map[string]any)
-	require.True(t, ok)
-	intentProp, ok := props["intent"].(map[string]any)
-	require.True(t, ok)
-	require.Contains(t, intentProp["enum"], "create_instance")
+	require.Nil(t, deps.IntentPlanner)
+	require.Empty(t, deps.IntentPlannerEnabledIntents)
+	require.Empty(t, deps.IntentRouteIntents)
 }
 
 func TestApplySharedDepsSessionFactContextFromEnv(t *testing.T) {
@@ -449,11 +406,11 @@ func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, deps.KnowledgeRetriever, "default runtime should enable qwen3_rrf retrieval")
-	require.NotNil(t, deps.IntentPlanner, "default retrieval needs the intent planner")
+	require.Nil(t, deps.IntentPlanner, "knowledge retrieval is selected by the central Agent, not a preceding router")
 	require.NotNil(t, deps.GroundedGenerator, "default runtime should enable LLM grounded renderer")
 	require.Equal(t, "deepseek-v4-flash", deps.GroundedGeneratorModel)
-	require.Equal(t, "deepseek-v4-flash", deps.IntentPlannerModel)
-	require.Contains(t, deps.IntentRouteIntents, intent.IntentPricingQuery, "default runtime should cut over pricing queries")
+	require.Empty(t, deps.IntentPlannerModel)
+	require.Empty(t, deps.IntentRouteIntents)
 }
 
 func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {
