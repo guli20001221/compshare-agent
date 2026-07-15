@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -27,7 +28,10 @@ func defaultActionCatalog() (*actionresolver.Catalog, error) {
 	return actionCatalog, actionCatalogErr
 }
 
-type agentContextEvidenceVerifier struct{ context AgentContext }
+type agentContextEvidenceVerifier struct {
+	context AgentContext
+	engine  *Engine
+}
 
 func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.SlotCandidate) bool {
 	if candidate.Evidence == nil {
@@ -39,10 +43,9 @@ func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.S
 			return false
 		}
 		value, _ := candidate.Value.(string)
-		for _, entity := range v.context.SelectedEntities {
-			if entity.ID == value && entity.Freshness != ContinuityFreshnessExpired {
-				return true
-			}
+		if v.engine != nil {
+			_, ok := v.engine.RegistrySnapshot().Instances[value]
+			return ok
 		}
 		return false
 	case actionresolver.SourceVerifiedContext:
@@ -56,10 +59,14 @@ func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.S
 			}
 		}
 	case actionresolver.SourceToolObservation:
+		value, _ := candidate.Value.(string)
+		if candidate.Evidence.ContextField == "current_turn_read" && v.engine != nil {
+			_, ok := v.engine.readCapabilitySubjectsThisTurn[value]
+			return ok
+		}
 		if candidate.Evidence.ContextField != "recent_observations" {
 			return false
 		}
-		value, _ := candidate.Value.(string)
 		for _, observation := range v.context.RecentObservations {
 			if observation.SubjectID == value && !observation.RefreshRequired {
 				return true
@@ -123,7 +130,10 @@ func (e *Engine) resolveActionProposalShadow(args map[string]any) (actionresolve
 	if !e.turnContextViewReady {
 		view = (ContextCompiler{}).CompileForTurn(e, e.lastUserMsg, proposal.TurnID, time.Now())
 	}
-	return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view}).Resolve(proposal), nil
+	if view.TurnID != "" && proposal.TurnID != view.TurnID {
+		return actionresolver.ResolvedAction{}, fmt.Errorf("proposal turn_id does not match the active turn")
+	}
+	return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}).Resolve(proposal), nil
 }
 
 func (e *Engine) executeActionProposalShadow(args map[string]any, onStep func(StepEvent)) string {
@@ -141,6 +151,31 @@ func (e *Engine) executeActionProposalShadow(args map[string]any, onStep func(St
 	tracePayload, _ := json.Marshal(security.RedactForTrace(wire))
 	_ = json.Unmarshal(tracePayload, &trace)
 	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceShadowOnly, Message: "影子解析完成，未执行操作", TraceResult: trace})
+	return string(payload)
+}
+
+func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
+	if !e.centralAgentRuntimeEnabled {
+		return e.executeActionProposalShadow(args, onStep)
+	}
+	resolved, err := e.resolveActionProposalShadow(args)
+	if err != nil {
+		onStep(StepEvent{Type: StepError, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: err.Error()})
+		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "ready_for_confirmation": false})
+		return string(payload)
+	}
+	if !resolved.ReadyForConfirmation {
+		return resolvedActionForModel(resolved)
+	}
+	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案已验证，进入统一确认与执行门"})
+	return e.executeWorkflow(ctx, resolved.Operation, resolved.Arguments, onStep)
+}
+
+func resolvedActionForModel(resolved actionresolver.ResolvedAction) string {
+	raw, _ := json.Marshal(resolved)
+	var wire map[string]any
+	_ = json.Unmarshal(raw, &wire)
+	payload, _ := json.Marshal(security.RedactForLLM(wire))
 	return string(payload)
 }
 

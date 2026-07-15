@@ -101,6 +101,16 @@ func (e *Engine) executeReadPlatformCapability(ctx context.Context, args map[str
 	result := e.invokeReadHandler(ctx, plan, userMsg, snapshot, onStep)
 	e.annotateHandlerResultForUserQuestion(&result, plan, userMsg)
 	result = e.contextEnvelopeForPlainDirectReply(result, plan, userMsg)
+	if result.Envelope != nil {
+		if e.readCapabilitySubjectsThisTurn == nil {
+			e.readCapabilitySubjectsThisTurn = map[string]struct{}{}
+		}
+		for _, subject := range result.Envelope.Subjects {
+			if subject.ID != "" {
+				e.readCapabilitySubjectsThisTurn[subject.ID] = struct{}{}
+			}
+		}
+	}
 
 	observation := ReadCapabilityObservation{
 		Capability:           string(capability),

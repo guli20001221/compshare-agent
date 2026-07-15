@@ -4,6 +4,7 @@ import openai "github.com/sashabaranov/go-openai"
 
 const ReadPlatformCapabilityName = "ReadPlatformCapability"
 const ProposeActionName = "ProposeAction"
+const UpdateTaskStateName = "UpdateTaskState"
 
 // ShadowCapabilityDefinitions are fully executable contracts that are not yet
 // advertised to production model windows. P6 promotes them by changing Stage;
@@ -29,7 +30,7 @@ var ShadowCapabilityDefinitions = []CapabilityDefinition{
 		Stage: CapabilityStageShadow,
 		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
 			Name:        ProposeActionName,
-			Description: "提出结构化写操作候选，仅进行参数归并、冲突和安全条件检查；不会执行任何写操作。每个候选值必须声明来源。",
+			Description: "提出结构化写操作候选。每个候选值必须声明来源；参数归并和安全条件检查通过后，操作仍必须经过服务端权限、确认、日志和执行门。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -53,6 +54,26 @@ var ShadowCapabilityDefinitions = []CapabilityDefinition{
 					},
 				},
 				"required": []string{"turn_id", "operation", "slots"},
+			},
+		}},
+	},
+	{
+		Stage: CapabilityStageShadow,
+		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
+			Name:        UpdateTaskStateName,
+			Description: "提交结构化任务关系变更。只更新对话任务状态，不执行任何平台操作。relation 明确表示继续、替换、完成或清除旧任务。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"relation": map[string]any{"type": "string", "enum": []string{"continue", "replace", "complete", "clear"}},
+					"task": map[string]any{"type": "object", "properties": map[string]any{
+						"goal": map[string]any{"type": "string"}, "intent": map[string]any{"type": "string"}, "workflow": map[string]any{"type": "string"},
+						"stage": map[string]any{"type": "string"}, "constraints": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						"decisions":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						"missing_slots": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					}},
+				},
+				"required": []string{"relation"},
 			},
 		}},
 	},
