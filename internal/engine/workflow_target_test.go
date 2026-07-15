@@ -351,52 +351,6 @@ func TestExecuteWorkflowCreateCFSRejectsNonPodZoneDeterministically(t *testing.T
 	assert.NotContains(t, reply, "cn-pod-01")
 }
 
-func TestOperationLifecycleCFSCreateFromUserTextUsesWorkflow(t *testing.T) {
-	var priceArgs map[string]any
-	var createArgs map[string]any
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareSupportZone":
-			return map[string]any{"ZoneInfo": []any{
-				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
-			}}, nil
-		case "GetCompShareCFSPrice":
-			priceArgs = args
-			return map[string]any{"PriceDetails": []any{
-				map[string]any{"ChargeType": "Month", "Disks": float64(99)},
-			}}, nil
-		case "CreateCFS":
-			createArgs = args
-			return map[string]any{"CfsId": "cfs-new"}, nil
-		case "DescribeCFS":
-			return map[string]any{"CFSSet": []any{
-				map[string]any{"CfsId": "cfs-new", "Name": "codex-cfs-test", "Size": float64(100)},
-			}}, nil
-		default:
-			return map[string]any{}, nil
-		}
-	}}
-	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
-
-	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{
-		SchemaVersion: intent.SchemaVersion,
-		Intent:        intent.IntentOperationLifecycle,
-	}}}
-	_, handled := eng.tryCFSWorkflowDispatch(zoneUserCtx(), dispatch, "帮我在华北一C创建一个100G的CFS共享文件存储，名字叫codex-cfs-test", noopStep)
-
-	require.True(t, handled)
-	require.NotNil(t, priceArgs)
-	require.NotNil(t, createArgs)
-	assert.Equal(t, "cn-bj2-03", priceArgs["Zone"])
-	assert.Equal(t, "cn-bj2-03", createArgs["Zone"])
-	assert.Equal(t, uint32(5001), priceArgs["zone_id"])
-	assert.Equal(t, uint32(5001), createArgs["zone_id"])
-	assert.Equal(t, uint32(3003), priceArgs["az_group"])
-	assert.Equal(t, uint32(3003), createArgs["az_group"])
-	assert.Equal(t, "codex-cfs-test", createArgs["Name"])
-	assert.Equal(t, float64(100), createArgs["Size"])
-}
-
 func TestExecuteWorkflowEnableNetOptimizerResolvesAzGroup(t *testing.T) {
 	var syncArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {

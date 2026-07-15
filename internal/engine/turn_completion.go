@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -22,8 +21,6 @@ func (e *Engine) resetTurnCompletion() {
 	e.turnCompletionClassHint = ""
 	e.turnCompletionReasonHint = ""
 	e.turnCompletionEmittedThisTurn = false
-	e.lastPlannerRouteStatusThisTurn = intent.RouteStatusNone
-	e.lastPlannerIntentForCompletionThisTurn = ""
 	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
 }
 
@@ -74,28 +71,6 @@ func (e *Engine) classifyTurnCompletion() (string, string) {
 		return observability.CompletionClassAgent, observability.CompletionReasonAgentLoop
 	}
 
-	switch e.lastPlannerRouteStatusThisTurn {
-	case intent.RouteStatusDispatchedAgent, intent.RouteStatusDispatchedKnowledgeAgentLoop:
-		return observability.CompletionClassAgent, observability.CompletionReasonAgentDispatch
-	case intent.RouteStatusDispatchedRetrieval:
-		return observability.CompletionClassAgent, observability.CompletionReasonModelAssistedAnswer
-	case intent.RouteStatusDispatched:
-		return observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectDispatch
-	case intent.RouteStatusSelectionRequired, intent.RouteStatusFallbackUnresolvedTarget:
-		return observability.CompletionClassStructuredClarify, observability.CompletionReasonSelectionRequired
-	case intent.RouteStatusFallbackTimeWindow:
-		return observability.CompletionClassStructuredClarify, observability.CompletionReasonMissingTimeWindow
-	case intent.RouteStatusFailureAfterTool:
-		return observability.CompletionClassDeterministicAnswer, observability.CompletionReasonHandlerFailure
-	case intent.RouteStatusFallbackRetrievalMiss:
-		return observability.CompletionClassDeterministicAnswer, observability.CompletionReasonRetrievalNoEvidence
-	case intent.RouteStatusFallbackRetrievalDisabled:
-		return observability.CompletionClassDeterministicAnswer, observability.CompletionReasonRetrievalUnavailable
-	case intent.RouteStatusFallbackInvalid:
-		return observability.CompletionClassParserFailureFallback, observability.CompletionReasonRouteParseFailure
-	case intent.RouteStatusFallbackLowConfidence, intent.RouteStatusFallbackIneligible:
-		return observability.CompletionClassParserFailureFallback, observability.CompletionReasonRouteFallbackWithoutModel
-	}
 	if e.turnModelCallsThisTurn > 0 {
 		return observability.CompletionClassAgent, observability.CompletionReasonModelAssistedAnswer
 	}

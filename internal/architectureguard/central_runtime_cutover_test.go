@@ -26,6 +26,15 @@ func TestProductionCannotReEnableLegacySemanticRuntime(t *testing.T) {
 		"ResolveContextDecision",
 		"SetContextDecisionLayer",
 		"llmContextDecisionLayer",
+		"IntentRouterResult",
+		"func IntentToolSubset(",
+		"func visibleRegistryForIntentRoute(",
+		"func (e *Engine) tryRouteDispatch(",
+		"func (e *Engine) tryResumeResourceSelection(",
+		"func (e *Engine) tryDeployModel(",
+		"func (e *Engine) tryOperationLifecycleDispatch(",
+		"func (e *Engine) tryDirectLifecycleFromUserText(",
+		"func (e *Engine) tryCFSWorkflowDispatch(",
 	}
 	for _, top := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d fs.DirEntry, walkErr error) error {

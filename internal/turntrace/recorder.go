@@ -86,7 +86,7 @@ func (r *Recorder) Hooks() engine.TraceHooks {
 		return engine.TraceHooks{}
 	}
 	return engine.TraceHooks{
-		Planner: r.SetPlannerTrace, Context: r.SetContextTrace,
+		Context:   r.SetContextTrace,
 		Retrieval: r.SetRetrievalTrace, Freshness: r.SetFreshnessTrace,
 		Diagnosis: r.SetDiagnosisTrace, Outcome: r.SetOutcomeTrace,
 		Renderer: r.SetRendererTrace, HardBlock: r.SetEngineHardBlock,

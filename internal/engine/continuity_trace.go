@@ -1,6 +1,11 @@
 package engine
 
-import "github.com/compshare-agent/internal/intent"
+type ResponseContract string
+
+const (
+	ResponseAgent          ResponseContract = "agent"
+	ResponsePolicyTerminal ResponseContract = "policy_terminal"
+)
 
 const (
 	memoryUpdateNone       = "none"
@@ -48,9 +53,6 @@ func (e *Engine) effectiveResponseContract() ResponseContract {
 	}
 	if e.hardBlockStandingThisTurn {
 		return ResponsePolicyTerminal
-	}
-	if e.lastPlannerIntentThisTurn != "" && e.lastPlannerIntentThisTurn != intent.IntentUnknown {
-		return specForIntent(e.lastPlannerIntentThisTurn).ResponseContract
 	}
 	return ResponseAgent
 }

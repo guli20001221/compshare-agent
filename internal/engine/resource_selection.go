@@ -236,46 +236,6 @@ func isResourceSelectionFallbackReason(reason intent.FallbackReason) bool {
 	}
 }
 
-func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result intent.IntentRouterResult, snapshot entity.RegistrySnapshot, _ func(StepEvent)) (*pendingResourceSelection, bool, error) {
-	if result.Plan.Intent != intent.IntentMonitorQuery && result.Plan.Intent != intent.IntentMonitorHistory {
-		return nil, false, nil
-	}
-	candidates, refreshedSnapshot, truncated, ok, err := e.candidateInstancesForSelection(ctx, result.Plan, snapshot, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	if !ok || len(candidates) == 0 {
-		return nil, false, nil
-	}
-
-	// Deterministic explicit-ID backstop (Rule 5): the intent router intermittently
-	// fails to extract a literal instance ID from a monitor query into Slots.TargetRefs,
-	// which collapses to "all instances" and a needless "select one" prompt even
-	// though the user already named the instance. Resolve it from the raw message.
-	// A single resolved candidate flows through the existing len==1 auto-dispatch
-	// (engine.go) → HandleMonitorQuery → recordSelectedInstanceFromEnvelope, so
-	// SelectedInstanceID is populated exactly as a manual pick would (the all-
-	// instances prompt path never set it — a real context gap this also closes).
-	notFoundRef := ""
-	if len(result.Plan.Slots.TargetRefs) == 0 && len(candidates) > 1 {
-		if matched, notFound := findExplicitInstanceRef(e.lastUserMsg, refreshedSnapshot); matched != nil {
-			candidates = []entity.InstanceSnapshot{*matched}
-		} else if notFound != "" {
-			notFoundRef = notFound
-		}
-	}
-
-	return &pendingResourceSelection{
-		originalUserMsg: e.lastUserMsg,
-		plan:            result.Plan,
-		snapshot:        refreshedSnapshot,
-		candidates:      candidates,
-		truncated:       truncated,
-		createdTurn:     e.userTurn,
-		notFoundRef:     notFoundRef,
-	}, true, nil
-}
-
 func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnapshot, sourceIntent intent.Intent, originalUserMsg string, total int, truncated bool) {
 	if e == nil || !e.sessionStateHydrated || len(instances) == 0 {
 		return

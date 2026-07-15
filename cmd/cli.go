@@ -293,7 +293,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		var traceRecorder *cliTraceRecorder
 		// Reset each turn so a previous trace recorder is never retained
 		// when the next turn creates a fresh recorder.
-		eng.SetPlannerTraceObserver(nil)
 		eng.SetRetrievalTraceObserver(nil)
 		eng.SetFreshnessTraceObserver(nil)
 		eng.SetDiagnosisTraceObserver(nil)

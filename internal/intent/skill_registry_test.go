@@ -148,24 +148,6 @@ func keysOf(m map[string]bool) []string {
 	return out
 }
 
-// TestRouteSkills_ReactToolSubsetMatchesIntentToolSubset pins each migrated
-// route skill's react_tool_subset to the live IntentToolSubset() value for
-// its intent. They are equal today by hand; this guard keeps them equal so that
-// when USE_SKILL_REGISTRY (P2 part 2) sources the ReAct tool window from the skill
-// registry, the planner-visible tool set stays byte-identical to the legacy
-// tool_subset.go source. Without it the two could silently diverge after the flip.
-func TestRouteSkills_ReactToolSubsetMatchesIntentToolSubset(t *testing.T) {
-	for _, route := range routing.GeneratedRoutes() {
-		if route.IntentLabel == "" {
-			continue
-		}
-		want := IntentToolSubset(Intent(route.IntentLabel))
-		if !reflect.DeepEqual(route.ToolSubset, want) {
-			t.Errorf("%s: tool_subset=%v but IntentToolSubset(%s)=%v", route.Name, route.ToolSubset, route.IntentLabel, want)
-		}
-	}
-}
-
 // TestSkillRegistryRouteMetadata_Shape asserts the skill-sourced metadata is
 // ordered by routingIntentOrder, projects each route skill's required tool
 // (RequiredTools[0]) into RequiredTool, and never sets required_citation
