@@ -30,6 +30,7 @@ type SemanticEntityHint struct {
 	Kind      string `json:"kind,omitempty"`
 	ID        string `json:"id,omitempty"`
 	Name      string `json:"name,omitempty"`
+	Ordinal   int    `json:"ordinal,omitempty"`
 	Source    string `json:"source,omitempty"`
 	Freshness string `json:"freshness,omitempty"`
 }

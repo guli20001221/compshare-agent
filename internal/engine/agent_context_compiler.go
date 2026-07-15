@@ -214,7 +214,11 @@ func renderAgentContextCard(view AgentContext) string {
 	for _, entity := range view.SelectedEntities {
 		label := strings.TrimSpace(entity.Name + " " + entity.ID)
 		if label != "" {
-			lines = append(lines, fmt.Sprintf("相关对象：%s（类型=%s，来源=%s，新鲜度=%s）", safeContextText(label), safeContextText(entity.Kind), safeContextText(entity.Source), safeContextText(entity.Freshness)))
+			ordinal := ""
+			if entity.Ordinal > 0 {
+				ordinal = fmt.Sprintf("，序号=%d", entity.Ordinal)
+			}
+			lines = append(lines, fmt.Sprintf("相关对象：%s（类型=%s，来源=%s，新鲜度=%s%s）", safeContextText(label), safeContextText(entity.Kind), safeContextText(entity.Source), safeContextText(entity.Freshness), ordinal))
 		}
 	}
 	for _, observation := range view.RecentObservations {
