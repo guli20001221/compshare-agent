@@ -101,7 +101,6 @@ func TestChat_ExpiredFrameKeepsSemanticsButCannotResume(t *testing.T) {
 	assert.Equal(t, ContinuityFreshnessExpired, state.ContextFrame.Freshness)
 	assert.Empty(t, state.ContextFrame.SlotSources,
 		"expired slots must lose write-authorizing provenance")
-	assert.False(t, contextFrameSlotSourceTrusted(state.ContextFrame, "instance_id"))
 	assert.Equal(t, "把训练机的数据盘扩到 200G", state.TaskSnapshot.Goal)
 	assert.Equal(t, "missing_slots", state.TaskSnapshot.Stage)
 	assert.Equal(t, []string{"disk_id"}, state.TaskSnapshot.MissingSlots)

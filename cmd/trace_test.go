@@ -115,24 +115,6 @@ func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
 
-func TestCreatePreferenceExtractorEnabledFromEnv_DefaultOn(t *testing.T) {
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := createPreferenceExtractorEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := createPreferenceExtractorEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := createPreferenceExtractorEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
 func TestUnifiedCreateEnabledFromEnv_DefaultOn(t *testing.T) {
 	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes", " On "}
 	for _, v := range on {
@@ -340,33 +322,6 @@ func TestReactHistoryCompactionEnabledFromEnv(t *testing.T) {
 	})
 	require.False(t, enabled)
 	require.Equal(t, "yes", unknown)
-}
-
-func TestIntentScopedReActPromptEnabledFromEnv(t *testing.T) {
-	enabled, unknown := intentScopedReActPromptEnabledFromEnv(func(string) string { return "" })
-	if enabled || unknown != "" {
-		t.Fatalf("unset USE_INTENT_SCOPED_REACT_PROMPT = (%v,%q), want disabled with no warning", enabled, unknown)
-	}
-
-	enabled, unknown = intentScopedReActPromptEnabledFromEnv(func(key string) string {
-		if key == "USE_INTENT_SCOPED_REACT_PROMPT" {
-			return "1"
-		}
-		return ""
-	})
-	if !enabled || unknown != "" {
-		t.Fatalf("USE_INTENT_SCOPED_REACT_PROMPT=1 = (%v,%q), want enabled", enabled, unknown)
-	}
-
-	enabled, unknown = intentScopedReActPromptEnabledFromEnv(func(key string) string {
-		if key == "USE_INTENT_SCOPED_REACT_PROMPT" {
-			return "maybe"
-		}
-		return ""
-	})
-	if enabled || unknown != "maybe" {
-		t.Fatalf("unknown USE_INTENT_SCOPED_REACT_PROMPT = (%v,%q), want disabled with unknown value", enabled, unknown)
-	}
 }
 
 func TestUseSkillExecutorFromEnv(t *testing.T) {

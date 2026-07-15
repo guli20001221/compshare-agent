@@ -94,13 +94,12 @@ func (e *Engine) executeReadPlatformCapability(ctx context.Context, args map[str
 	onStep(StepEvent{Type: StepToolCall, Action: tools.ReadPlatformCapabilityName, Source: observability.ToolSourceMainReAct, Args: filtered})
 
 	plan := intent.IntentRoute{SchemaVersion: intent.SchemaVersion, Intent: capability, Slots: slots, Confidence: 1}
-	userMsg := e.lastUserMsg
-	plan = planWithUserTextMonitorMetrics(plan, userMsg)
+	// Legacy handlers receive only the Agent's structured capability arguments.
+	// They must not independently reinterpret the raw current question.
+	handlerInput := structuredReadHandlerInput(slots)
 	snapshot := e.RegistrySnapshot()
-	plan = augmentPlanTargetRefsFromUserText(plan, userMsg, snapshot)
-	result := e.invokeReadHandler(ctx, plan, userMsg, snapshot, onStep)
-	e.annotateHandlerResultForUserQuestion(&result, plan, userMsg)
-	result = e.contextEnvelopeForPlainDirectReply(result, plan, userMsg)
+	result := e.invokeReadHandler(ctx, plan, handlerInput, snapshot, onStep)
+	result = e.contextEnvelopeForPlainDirectReply(result)
 	if result.Envelope != nil {
 		if e.readCapabilitySubjectsThisTurn == nil {
 			e.readCapabilitySubjectsThisTurn = map[string]struct{}{}
@@ -141,6 +140,22 @@ func (e *Engine) executeReadPlatformCapability(ctx context.Context, args map[str
 	_ = json.Unmarshal(payload, &traceResult)
 	onStep(StepEvent{Type: StepToolResult, Action: tools.ReadPlatformCapabilityName, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
+}
+
+func structuredReadHandlerInput(slots intent.Slots) string {
+	parts := make([]string, 0, len(slots.TargetRefs)+2)
+	if query := strings.TrimSpace(slots.SearchQuery); query != "" {
+		parts = append(parts, query)
+	}
+	for _, ref := range slots.TargetRefs {
+		if value := strings.TrimSpace(ref.Value); value != "" {
+			parts = append(parts, value)
+		}
+	}
+	if zone := strings.TrimSpace(slots.Zone); zone != "" {
+		parts = append(parts, zone)
+	}
+	return strings.Join(parts, " ")
 }
 
 func marshalReadCapabilityError(err error) string {

@@ -146,12 +146,6 @@ func (e *Engine) recordDeployContextFrameFromError(userMsg, matchUserMsg, zone, 
 	frame.Zone = strings.TrimSpace(zone)
 	frame.ZoneLabel = e.zoneDisplayName(e.currentCtx, zone)
 	frame.FailureReason = strings.TrimSpace(reason)
-	if pref := e.createPreferenceThisTurn; pref != nil {
-		frame.GPU = strings.TrimSpace(pref.GPUPref)
-		frame.ImagePref = strings.TrimSpace(pref.ImagePref)
-		frame.ImageSource = strings.TrimSpace(pref.ImageSource)
-		frame.Workload = strings.TrimSpace(pref.WorkloadPref)
-	}
 	if frame.GPU == "" {
 		frame.GPU = extractDeployGPU(matchUserMsg)
 	}

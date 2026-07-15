@@ -35,6 +35,22 @@ func TestProductionCannotReEnableLegacySemanticRuntime(t *testing.T) {
 		"func (e *Engine) tryOperationLifecycleDispatch(",
 		"func (e *Engine) tryDirectLifecycleFromUserText(",
 		"func (e *Engine) tryCFSWorkflowDispatch(",
+		"taskSlotSpecs",
+		"TaskSlotUpdatesFromUserText",
+		"TaskArgsFromSlots",
+		"inferLifecycleAction",
+		"createDiskSizeFromUserText",
+		"PlannedExecutionPathForIntent",
+		"USE_INTENT_SCOPED_REACT_PROMPT",
+		"RenderIntentScopedReActCard",
+		"ClassifyResetPasswordValue",
+		"CreatePreferenceExtractor",
+		"COMPSHARE_CREATE_PREF_EXTRACTOR",
+		"SourceLegacyArguments",
+		"observeLegacyWorkflowArguments",
+		"startWithoutGPURequestedByText",
+		"planWithUserTextMonitorMetrics",
+		"augmentPlanTargetRefsFromUserText",
 	}
 	for _, top := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d fs.DirEntry, walkErr error) error {

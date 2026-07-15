@@ -6,7 +6,6 @@ import (
 
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
-	grounded "github.com/compshare-agent/internal/renderer"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -132,53 +131,6 @@ func (e *Engine) contextViewForTurn(userMsg string) TurnContextView {
 	return e.buildTurnContextView(userMsg)
 }
 
-// directRenderTaskSpec builds understanding-only input for the grounded
-// renderer. The result deliberately excludes ContextFrame slots, tool facts,
-// permissions, and trust sources. None of these fields authorize an operation
-// or become factual evidence; renderer validates the answer against Envelope.
-func (e *Engine) directRenderTaskSpec(plan intent.IntentRoute, userMsg string) grounded.TaskSpec {
-	view := e.contextViewForTurn(userMsg)
-	spec := grounded.TaskSpec{
-		CurrentQuestion: view.CurrentQuestion,
-		Intent:          compactSemanticText(string(plan.Intent)),
-	}
-	recentContext := renderConversationPairs(view.RecentConversation)
-	if e == nil || !e.sessionStateHydrated {
-		if recentContext != "" {
-			spec.ContextSummary = compactSemanticNarrative("最近完整问答：" + recentContext)
-		}
-		return spec
-	}
-
-	if view.ActiveTask != nil {
-		task := *view.ActiveTask
-		spec.Goal = compactSemanticText(task.Goal)
-		spec.Stage = compactSemanticText(task.Stage)
-		spec.Freshness = compactSemanticText(task.Freshness)
-		spec.Constraints = compactSemanticItems(task.Constraints)
-		spec.Decisions = compactSemanticItems(task.Decisions)
-		spec.MissingSlots = compactSemanticItems(task.MissingSlots)
-		spec.EntityHints = appendTaskSpecEntityHints(spec.EntityHints, task.Entities)
-	}
-
-	digest := view.ConversationDigest
-	contextParts := []string{}
-	if narrative := compactSemanticNarrative(digest.Narrative); narrative != "" {
-		contextParts = append(contextParts, narrative)
-	}
-	if recentContext != "" {
-		contextParts = append(contextParts, "最近完整问答："+recentContext)
-	}
-	spec.ContextSummary = compactSemanticNarrative(strings.Join(contextParts, "。"))
-	spec.UnresolvedTasks = compactSemanticItems(digest.UnresolvedTasks)
-	spec.Constraints = mergeSemanticItems(spec.Constraints, digest.Constraints)
-	spec.Decisions = mergeSemanticItems(spec.Decisions, digest.Decisions)
-	spec.EntityHints = appendTaskSpecEntityHints(spec.EntityHints, view.SelectedEntities)
-	return spec
-}
-
-const directTaskSpecRecentPairs = 2
-
 // recentCompleteConversationForTaskSpec projects only complete plain-text
 // user/assistant pairs. The current unanswered user message and raw tool
 // transcripts are excluded. This is understanding-only context; the renderer's
@@ -207,45 +159,10 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 	return pairs
 }
 
-func renderConversationPairs(pairs []ConversationPair) string {
-	parts := make([]string, 0, len(pairs))
-	for _, pair := range pairs {
-		if pair.User == "" || pair.Assistant == "" {
-			continue
-		}
-		parts = append(parts, "用户："+pair.User+"；助手："+pair.Assistant)
-	}
-	return strings.Join(parts, "。")
-}
-
-func (e *Engine) recentCompleteConversationForTaskSpec() string {
-	return renderConversationPairs(e.recentCompleteConversationPairs(directTaskSpecRecentPairs))
-}
-
-// hasReusableCompleteConversation reports only whether a completed prior
-// exchange is visible to the model. It does not declare that exchange factual;
-// the agent still decides whether it is sufficient, and any new SearchKnowledge
-// result still passes the evidence verifier before release.
-func (e *Engine) hasReusableCompleteConversation() bool {
-	return e.recentCompleteConversationForTaskSpec() != ""
-}
-
-// shouldResolveDirectClarificationInAgent keeps a deterministic handler from
-// asking the user to repeat information that is already present in a complete
-// prior turn. This decision depends on available data, never on wording.
-func (e *Engine) shouldResolveContextDependentDirectReplyInAgent(result intent.HandlerResult, userMsg string) bool {
-	// Read failures already have a dedicated context-aware fallback that carries
-	// the failure advisory into ReAct. Do not steal that path here.
-	if result.Status == intent.HandlerStatusFailureAfterTool {
-		return false
-	}
-	return result.NeedsClarification && e.hasReusableCompleteConversation()
-}
-
 // contextEnvelopeForPlainDirectReply gives every deterministic handled reply an
 // evidence boundary. Conversation remains TaskSpec understanding context and
 // can never launder a user's false premise into a fact.
-func (e *Engine) contextEnvelopeForPlainDirectReply(result intent.HandlerResult, plan intent.IntentRoute, userMsg string) intent.HandlerResult {
+func (e *Engine) contextEnvelopeForPlainDirectReply(result intent.HandlerResult) intent.HandlerResult {
 	if result.Envelope != nil || result.Status != intent.HandlerStatusHandled || result.NeedsClarification ||
 		strings.TrimSpace(result.Reply) == "" {
 		return result
@@ -270,30 +187,4 @@ func (e *Engine) contextEnvelopeForPlainDirectReply(result intent.HandlerResult,
 		result.RendererInputEnvelopeHashes = []string{hash}
 	}
 	return result
-}
-
-func appendTaskSpecEntityHints(existing []grounded.TaskSpecEntityHint, incoming []SemanticEntityHint) []grounded.TaskSpecEntityHint {
-	positions := make(map[string]int, len(existing)+len(incoming))
-	for i, hint := range existing {
-		positions[strings.ToLower(hint.Kind+"\x00"+hint.ID+"\x00"+hint.Name)] = i
-	}
-	for _, hint := range incoming {
-		converted := grounded.TaskSpecEntityHint{
-			Kind:      compactSemanticText(hint.Kind),
-			ID:        compactSemanticText(hint.ID),
-			Name:      compactSemanticText(hint.Name),
-			Freshness: compactSemanticText(hint.Freshness),
-		}
-		if converted.ID == "" && converted.Name == "" {
-			continue
-		}
-		key := strings.ToLower(converted.Kind + "\x00" + converted.ID + "\x00" + converted.Name)
-		if idx, ok := positions[key]; ok {
-			existing[idx] = converted
-			continue
-		}
-		positions[key] = len(existing)
-		existing = append(existing, converted)
-	}
-	return existing
 }

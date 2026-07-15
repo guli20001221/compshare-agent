@@ -100,23 +100,16 @@ func TestTranslateState(t *testing.T) {
 	}
 }
 
-func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
-	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
-	for _, tool := range []string{"DiagnoseSSH", "DiagnoseBilling"} {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("system prompt should contain %s routing", tool)
-		}
-	}
-}
-
-func TestBuildSystem_ContainsDiagnosisCommandBoundary(t *testing.T) {
+func TestBuildSystem_ContainsCentralAgentContract(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
 	for _, text := range []string{
-		"实例内只读自查命令",
-		"修改实例环境的命令必须标为可选修复",
+		"本轮唯一的业务判断者",
+		"先阅读完整对话",
+		"写操作只能通过动作建议工具提交结构化候选",
+		"不要从关键词自行清除旧任务",
 	} {
 		if !strings.Contains(prompt, text) {
-			t.Fatalf("system prompt should contain diagnosis command boundary %q", text)
+			t.Fatalf("system prompt should contain central-agent contract %q", text)
 		}
 	}
 }
@@ -148,10 +141,8 @@ func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing
 		"当前阶段不直接执行开机、关机、重启",
 		"可以提供控制台操作步骤",
 		"诊断工具本身仅做云侧只读检查",
-		"可以给用户实例内只读自查命令",
-		"systemctl status",
-		"修改实例环境的命令必须标为可选修复",
-		"DiagnoseSSH",
+		"不能 SSH 登录实例",
+		"删除或销毁类操作始终拒绝执行",
 	} {
 		if !strings.Contains(prompt, text) {
 			t.Fatalf("read-only prompt should contain %q", text)
@@ -230,37 +221,27 @@ func TestBuildSystemWithOptionsAndTraceReportsExactUniqueSectionIDs(t *testing.T
 	}
 }
 
-func TestBuildSystemWithOptions_MutatingModeKeepsWorkflowGuidance(t *testing.T) {
+func TestBuildSystemWithOptions_MutatingModeDoesNotEmbedWorkflowRoutingTable(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
-	if strings.Contains(prompt, "CreateInstanceWorkflow") {
-		t.Fatalf("mutating ReAct prompt must not expose %q after create_instance became the create entry", "CreateInstanceWorkflow")
-	}
 	for _, text := range []string{
+		"CreateInstanceWorkflow",
 		"StopInstanceWorkflow",
 		"ResetPasswordWorkflow",
 	} {
-		if !strings.Contains(prompt, text) {
-			t.Fatalf("mutating-enabled prompt should contain %q", text)
+		if strings.Contains(prompt, text) {
+			t.Fatalf("central prompt must not embed workflow routing entry %q", text)
 		}
 	}
 }
 
-func TestBuildSystemWithOptions_CompleteListingRuleInBothModes(t *testing.T) {
+func TestBuildSystemWithOptions_UsesOneKnowledgePolicyInBothModes(t *testing.T) {
 	for name, prompt := range map[string]string{
 		"mutating":  BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true}),
 		"read_only": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false}),
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, text := range []string{
-				"未显示全",
-				"剩余 N 台",
-				"还有 X 个",
-				"DescribeCompShareInstance",
-				"UHostSet",
-			} {
-				if !strings.Contains(prompt, text) {
-					t.Fatalf("system prompt should contain complete-listing rule fragment %q", text)
-				}
+			if count := strings.Count(prompt, "## 知识来源与检索规则"); count != 1 {
+				t.Fatalf("knowledge policy count=%d, want 1", count)
 			}
 		})
 	}

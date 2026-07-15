@@ -33,9 +33,6 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 		}
 	}
 
-	if corrected, ok := e.correctFalseInstanceNotFoundReply(userMsg, content); ok {
-		content = corrected
-	}
 	if strings.TrimSpace(content) == "" {
 		content = emptyReplyFallbackMessage
 	}

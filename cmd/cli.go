@@ -149,11 +149,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_HISTORY_COMPACTION value %q\n", unknownReactHistoryCompaction)
 	}
 	eng.SetReactHistoryCompactionEnabled(reactHistoryCompaction)
-	intentScopedReActPrompt, unknownIntentScopedReActPrompt := intentScopedReActPromptEnabledFromEnv(getenv)
-	if unknownIntentScopedReActPrompt != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_INTENT_SCOPED_REACT_PROMPT value %q\n", unknownIntentScopedReActPrompt)
-	}
-	eng.SetIntentScopedReActPromptEnabled(intentScopedReActPrompt)
 	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(getenv)
 	if unknownSkillExecutor != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
@@ -164,11 +159,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
 	}
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
-	createPrefExtractor, unknownCreatePrefExtractor := createPreferenceExtractorEnabledFromEnv(getenv)
-	if unknownCreatePrefExtractor != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q\n", unknownCreatePrefExtractor)
-	}
-	engine.SetCreatePreferenceExtractionEnabled(createPrefExtractor)
 	unifiedCreate, unknownUnifiedCreate := unifiedCreateEnabledFromEnv(getenv)
 	if unknownUnifiedCreate != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q\n", unknownUnifiedCreate)

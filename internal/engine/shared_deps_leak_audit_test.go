@@ -140,17 +140,16 @@ func TestSharedDeps_NoMutatingSetterLeakage(t *testing.T) {
 // Without this counter-test the audit could silently drift when SharedDeps
 // grows — a new mutable type could slip in unaudited.
 var nonAuditableFields = map[string]string{
-	"IntentRouteIntents":             "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
-	"GroundedGeneratorModel":         "string — no methods",
-	"FastTemplateRenderer":           "bool — no methods",
-	"SupportsObjectToolChoice":       "bool — no methods",
-	"SupportsRequiredToolChoice":     "bool — no methods",
-	"MaxTokensPerTurn":               "int — no methods",
-	"SessionFactContextEnabled":      "bool — no methods",
-	"ReactResultProjectionEnabled":   "bool — no methods",
-	"ReactHistoryCompactionEnabled":  "bool — no methods",
-	"IntentScopedReActPromptEnabled": "bool — no methods",
-	"ExternalExecutor":               "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
+	"IntentRouteIntents":            "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
+	"GroundedGeneratorModel":        "string — no methods",
+	"FastTemplateRenderer":          "bool — no methods",
+	"SupportsObjectToolChoice":      "bool — no methods",
+	"SupportsRequiredToolChoice":    "bool — no methods",
+	"MaxTokensPerTurn":              "int — no methods",
+	"SessionFactContextEnabled":     "bool — no methods",
+	"ReactResultProjectionEnabled":  "bool — no methods",
+	"ReactHistoryCompactionEnabled": "bool — no methods",
+	"ExternalExecutor":              "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
 }
 
 func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {

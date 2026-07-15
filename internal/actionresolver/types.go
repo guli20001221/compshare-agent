@@ -13,7 +13,6 @@ const (
 	SourceToolObservation  CandidateSource = "tool_observation"
 	SourceUserConfirmation CandidateSource = "user_confirmation"
 	SourceAgentInference   CandidateSource = "agent_inference"
-	SourceLegacyArguments  CandidateSource = "legacy_arguments"
 )
 
 type SourceEvidence struct {

@@ -8,9 +8,7 @@ import (
 )
 
 type BuildOptions struct {
-	MutatingToolsEnabled    bool
-	IntentScopedReActPrompt bool
-	CentralAgentRuntime     bool
+	MutatingToolsEnabled bool
 }
 
 type PromptSection struct {
@@ -46,10 +44,7 @@ func renderPromptSectionsWithIDs(sections []PromptSection) (string, []string) {
 	return b.String(), ids
 }
 
-// BuildSystemWithOptions creates the system prompt for the active runtime mode.
-// Shared sections (segmentIdentity, segmentScopeBoundary, segmentKnowledgeTurnPolicy)
-// are defined once in segments.go; mode-specific sections live in
-// segment_operation.go (mutating) and segment_readonly.go (read-only).
+// BuildSystemWithOptions creates the system prompt for the central Agent.
 func BuildSystemWithOptions(userContext string, opts BuildOptions) string {
 	text, _ := BuildSystemWithOptionsAndTrace(userContext, opts)
 	return text
@@ -64,47 +59,14 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 	}
 
 	sections := []PromptSection{{ID: "identity", Text: segmentIdentity}}
-	if opts.CentralAgentRuntime {
-		if !opts.MutatingToolsEnabled {
-			sections = append(sections, PromptSection{ID: "readonly_boundary", Text: segmentReadOnlyBoundary})
-		}
-		sections = append(sections, PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
-			PromptSection{ID: "behavior", Text: segmentCentralAgentBehavior},
-			PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy},
-			PromptSection{ID: "reply_style", Text: segmentCentralAgentReplyStyle},
-		)
-	} else if opts.MutatingToolsEnabled {
-		sections = append(sections,
-			PromptSection{ID: "capabilities", Text: segmentMutatingCapabilities},
-			PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
-		)
-		if opts.IntentScopedReActPrompt {
-			sections = append(sections, PromptSection{ID: "behavior", Text: segmentIntentScopedMutatingRules})
-		} else {
-			sections = append(sections, PromptSection{ID: "behavior", Text: segmentMutatingRules})
-		}
-		sections = append(sections, PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy})
-		if opts.IntentScopedReActPrompt {
-			sections = append(sections, PromptSection{ID: "reply_style", Text: segmentIntentScopedMutatingReplyStyle})
-		} else {
-			sections = append(sections, PromptSection{ID: "reply_style", Text: segmentMutatingReplyStyle})
-		}
-	} else {
-		sections = append(sections,
-			PromptSection{ID: "capabilities", Text: segmentReadOnlyCapabilities},
-			PromptSection{ID: "readonly_boundary", Text: segmentReadOnlyBoundary},
-			PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
-		)
-		if opts.IntentScopedReActPrompt {
-			sections = append(sections, PromptSection{ID: "behavior", Text: segmentIntentScopedReadOnlyBehavior})
-		} else {
-			sections = append(sections, PromptSection{ID: "behavior", Text: segmentReadOnlyBehavior})
-		}
-		sections = append(sections,
-			PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy},
-			PromptSection{ID: "reply_style", Text: segmentReadOnlyReplyStyle},
-		)
+	if !opts.MutatingToolsEnabled {
+		sections = append(sections, PromptSection{ID: "readonly_boundary", Text: segmentReadOnlyBoundary})
 	}
+	sections = append(sections, PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
+		PromptSection{ID: "behavior", Text: segmentCentralAgentBehavior},
+		PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy},
+		PromptSection{ID: "reply_style", Text: segmentCentralAgentReplyStyle},
+	)
 
 	// Volatile tail is a named section and stays last so the static prefix remains
 	// cacheable. Section IDs make duplicate policy injection a construction error.

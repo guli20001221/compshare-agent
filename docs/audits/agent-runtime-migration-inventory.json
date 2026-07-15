@@ -13,56 +13,5 @@
       "phase": "P6a"
     }
   ],
-  "semantic_owners": [
-    {
-      "id": "owner-lifecycle-action",
-      "path": "internal/engine/deterministic_targets.go",
-      "symbol": "inferLifecycleAction",
-      "needle": "strings.Contains",
-      "category": "semantic_owner",
-      "current_role": "关键词动作推断",
-      "target": "Agent ActionProposal",
-      "phase": "P7"
-    },
-    {
-      "id": "owner-disk-size",
-      "path": "internal/engine/deterministic_targets.go",
-      "symbol": "createDiskSizeFromUserText",
-      "needle": "diskSizeSpecRE",
-      "category": "semantic_owner",
-      "current_role": "整句第一个容量提取",
-      "target": "SlotCandidate + 容量 Codec",
-      "phase": "P7"
-    },
-    {
-      "id": "owner-task-slot-update",
-      "path": "internal/workflow/missing_slots.go",
-      "symbol": "TaskSlotUpdatesFromUserText",
-      "needle": "taskSlotSpecs",
-      "category": "semantic_owner",
-      "current_role": "10 个工作流专属补参入口",
-      "target": "Action Resolver",
-      "phase": "P7"
-    },
-    {
-      "id": "owner-task-args",
-      "path": "internal/workflow/missing_slots.go",
-      "symbol": "TaskArgsFromSlots",
-      "needle": "buildArgs",
-      "category": "semantic_owner",
-      "current_role": "工作流专属槽位到参数映射",
-      "target": "OperationSpec + ExecutionContract",
-      "phase": "P7"
-    },
-    {
-      "id": "owner-execution-path",
-      "path": "internal/intent/execution_path.go",
-      "symbol": "PlannedExecutionPathForIntent",
-      "needle": "ExecutionPath",
-      "category": "semantic_owner",
-      "current_role": "意图到执行路径映射",
-      "target": "中心 Agent Runtime",
-      "phase": "P7"
-	}
-  ]
+  "semantic_owners": []
 }

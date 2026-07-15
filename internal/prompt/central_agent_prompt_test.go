@@ -9,7 +9,7 @@ import (
 )
 
 func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *testing.T) {
-	text, ids := BuildSystemWithOptionsAndTrace("context", BuildOptions{MutatingToolsEnabled: true, CentralAgentRuntime: true})
+	text, ids := BuildSystemWithOptionsAndTrace("context", BuildOptions{MutatingToolsEnabled: true})
 	require.Equal(t, []string{"identity", "scope_boundary", "behavior", "knowledge_turn_policy", "reply_style", "user_state"}, ids)
 	for _, action := range workflow.RegisteredWorkflowActions() {
 		require.NotContains(t, text, action)

@@ -94,7 +94,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 
 func knownSource(source CandidateSource) bool {
 	switch source {
-	case SourceUserExplicit, SourceVerifiedContext, SourceToolObservation, SourceUserConfirmation, SourceAgentInference, SourceLegacyArguments:
+	case SourceUserExplicit, SourceVerifiedContext, SourceToolObservation, SourceUserConfirmation, SourceAgentInference:
 		return true
 	default:
 		return false

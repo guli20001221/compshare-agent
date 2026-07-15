@@ -81,7 +81,6 @@ agent:
     # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
     # guards only when their flag-on path is the validated production path.
     domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
-    intent_scoped_react_prompt: false   # intent-specific ReAct system prompts
     skill_executor: false               # body-driven skill executor gate (P2a gray-rollout)
     skill_executor_diagnosis_pilots: [] # e.g. [diagnose-ssh, diagnose-billing] — requires skill_executor: true
 

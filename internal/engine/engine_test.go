@@ -1855,28 +1855,6 @@ func TestChat_WorkflowTool_ArgsFiltered(t *testing.T) {
 	}
 }
 
-func TestStartWithoutGPURequestedByTextRequiresExplicitStartIntent(t *testing.T) {
-	cases := []struct {
-		name string
-		text string
-		want bool
-	}{
-		{name: "positive chinese no gpu start", text: "请无卡启动 uhost-start-001", want: true},
-		{name: "positive chinese without gpu boot", text: "不带 GPU 开机", want: true},
-		{name: "positive spaced gpu", text: "请无 GPU 开机 uhost-start-001", want: true},
-		{name: "positive unassigned gpu", text: "请不分配 GPU 开机 uhost-start-001", want: true},
-		{name: "positive english", text: "start without gpu uhost-start-001", want: true},
-		{name: "negative normal start", text: "不要无卡，正常开机 uhost-start-001", want: false},
-		{name: "question not action", text: "无卡模式是什么", want: false},
-		{name: "price question not action", text: "无卡启动多少钱", want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, startWithoutGPURequestedByText(tc.text))
-		})
-	}
-}
-
 func TestChat_DiagnosisTool_SSHStopped(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
