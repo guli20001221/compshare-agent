@@ -178,6 +178,9 @@ type HistoryMessage struct {
 // is returned verbatim, or as a single override chunk when engine guards
 // rewrite the reply.
 type ChatOptions struct {
+	// TurnID is the durable server turn identity. It is trace/context metadata
+	// only and grants no execution authority.
+	TurnID string
 	// OnTextDelta, if non-nil, is called once per text token in order, but
 	// only for the final LLM reply (not for intermediate ReAct tool-call rounds).
 	// Canned-reply branches (monitor_history, etc.) skip the LLM entirely and
@@ -1312,40 +1315,11 @@ func (e *Engine) refreshSystemPrompt() {
 		ctx = "暂无用户信息"
 	}
 	hasSessionBinding := e.sessionStateHydrated && e.sessionState.SelectedInstanceID != ""
-	if hasSessionBinding {
-		historicalOnly := e.sessionState.SelectedInstanceFreshness == ContinuityFreshnessExpired ||
-			(e.sessionState.SelectedInstanceAtUnix <= 0 && e.sessionState.SelectedInstanceSource == "")
-		prefix := "当前会话已选实例："
-		suffix := ""
-		if historicalOnly {
-			prefix = "此前会话提到实例："
-			suffix = "。该绑定只帮助理解，不得授权写操作；执行前需重新确认"
-		}
-		if e.sessionState.SelectedInstanceName != "" {
-			ctx += "\n\n" + prefix + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）" + suffix
-		} else {
-			ctx += "\n\n" + prefix + e.sessionState.SelectedInstanceID + suffix
-		}
-	}
-	singleID, singleName := e.singleRegistryInstance()
-	if singleID != "" {
-		if singleName != "" {
-			ctx += "\n\n当前账户只有 1 个实例：" + singleName + "（" + singleID + "），操作时可直接使用，无需追问。"
-		} else {
-			ctx += "\n\n当前账户只有 1 个实例：" + singleID + "，操作时可直接使用，无需追问。"
-		}
-	}
-	hasFactContext := false
-	if e.sessionFactContextEnabled && e.sessionStateHydrated {
-		now := time.Now()
-		if factCtx := assembleFactContext(e.sessionState.RecentFacts, now); factCtx != "" {
-			ctx += "\n\n" + factCtx
-			hasFactContext = true
-			e.factCacheOldestAgeSecondsThisTurn = oldestFreshFactAgeSeconds(e.sessionState.RecentFacts, now)
-		}
-	}
-	if semanticCtx := e.semanticMemoryPrompt(time.Now()); semanticCtx != "" {
-		ctx += "\n\n" + semanticCtx
+	singleID, _ := e.singleRegistryInstance()
+	hasFactContext := e.sessionFactContextEnabled && e.sessionStateHydrated &&
+		assembleFactContext(e.sessionState.RecentFacts, time.Now()) != ""
+	if hasFactContext {
+		e.factCacheOldestAgeSecondsThisTurn = oldestFreshFactAgeSeconds(e.sessionState.RecentFacts, time.Now())
 	}
 	// #3 StateTrace: record how the turn-start instance binding was determined.
 	// Priority mirrors the injection order above — an explicit prior selection is
@@ -1471,7 +1445,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.expireStaleSelectedInstance(continuityNow)
 	e.expireStaleToolFacts(continuityNow)
 	e.refreshConversationDigest(continuityNow)
-	e.turnContextViewThisTurn = e.buildTurnContextView(userMsg)
+	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, opts.TurnID, continuityNow)
 	e.turnContextViewReady = true
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
@@ -5846,7 +5820,7 @@ const routeReadFailureNote = "本轮已经尝试过一次只读查询，但没�
 // If instance state from a prior turn may be stale, a temporary system note
 // is appended. The note is NOT persisted in e.messages.
 func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
-	messages := e.messages
+	messages := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
 	if e.lastInstanceQueryTurn >= 0 && e.lastInstanceQueryTurn < e.userTurn {
 		// Insert stale note immediately before the latest user message, so the
 		// model sees the warning right next to the ask it's about to answer.
@@ -5863,6 +5837,47 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 		messages = withEphemeralSystemBeforeLastUser(messages, routeReadFailureNote)
 	}
 	return messages
+}
+
+// messagesFromAgentContext is the sole history entrance for the main model.
+// It restores bounded complete exchanges and structured memory from the
+// compiled view, then appends only this turn's live assistant/tool transcript.
+// Previous raw tool payloads can therefore never survive a hot cache merely
+// because e.messages happened to retain them.
+func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view AgentContext, ready bool) []openai.ChatCompletionMessage {
+	if !ready || len(messages) == 0 {
+		return messages
+	}
+	out := make([]openai.ChatCompletionMessage, 0, 2+len(view.RecentConversation)*2+4)
+	for _, message := range messages {
+		if message.Role != openai.ChatMessageRoleSystem {
+			break
+		}
+		out = append(out, message)
+	}
+	if card := renderAgentContextCard(view); card != "" {
+		out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: card})
+	}
+	for _, pair := range view.RecentConversation {
+		if pair.User == "" || pair.Assistant == "" {
+			continue
+		}
+		out = append(out,
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: pair.User},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: pair.Assistant},
+		)
+	}
+	currentStart := -1
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role == openai.ChatMessageRoleUser {
+			currentStart = index
+			break
+		}
+	}
+	if currentStart >= 0 {
+		out = append(out, messages[currentStart:]...)
+	}
+	return out
 }
 
 func withEphemeralSystemBeforeLastUser(messages []openai.ChatCompletionMessage, content string) []openai.ChatCompletionMessage {

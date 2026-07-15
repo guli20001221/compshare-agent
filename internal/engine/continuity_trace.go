@@ -27,6 +27,12 @@ func contextSourceIDs(view TurnContextView) []string {
 	if view.ActiveTask != nil {
 		ids = append(ids, "active_task")
 	}
+	if len(view.SelectedEntities) > 0 {
+		ids = append(ids, "selected_entities")
+	}
+	if len(view.RecentObservations) > 0 {
+		ids = append(ids, "recent_observations")
+	}
 	if len(view.VerifiedKnowledge) > 0 {
 		ids = append(ids, "verified_knowledge")
 	}

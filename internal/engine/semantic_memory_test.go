@@ -107,7 +107,7 @@ func TestChat_ExpiredFrameKeepsSemanticsButCannotResume(t *testing.T) {
 	assert.Equal(t, []string{"disk_id"}, state.TaskSnapshot.MissingSlots)
 	assert.Equal(t, TaskSnapshotStatusExpired, state.TaskSnapshot.Status)
 	assert.Contains(t, state.ConversationDigest.Narrative, "把训练机的数据盘扩到 200G")
-	assert.Contains(t, eng.messages[0].Content, "不得直接继续执行")
+	assert.Contains(t, renderTestMessages(eng.llmClient.(*mockLLM).calls[0].Messages), "新鲜度=expired")
 	_, active := eng.activeContextFrame(time.Now())
 	assert.False(t, active, "semantic retention must never reactivate an expired workflow")
 }
@@ -143,8 +143,9 @@ func TestChat_ExpiredToolFactKeepsTopicAndTimeButDropsValue(t *testing.T) {
 	assert.Nil(t, fact.Payload)
 	assert.Equal(t, ContinuityFreshnessExpired, fact.Freshness)
 	assert.True(t, fact.RefreshRequired)
-	assert.Contains(t, eng.messages[0].Content, "当前值必须重新查询")
-	assert.NotContains(t, eng.messages[0].Content, "SECRET_OLD_99")
+	modelInput := renderTestMessages(eng.llmClient.(*mockLLM).calls[0].Messages)
+	assert.Contains(t, modelInput, "当前值必须重新查询")
+	assert.NotContains(t, modelInput, "SECRET_OLD_99")
 }
 
 func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSummary(t *testing.T) {
