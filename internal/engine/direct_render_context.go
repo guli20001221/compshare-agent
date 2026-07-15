@@ -101,6 +101,14 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		view.SelectedEntities = append(view.SelectedEntities, task.Entities...)
 	}
 	view.SelectedEntities = append(view.SelectedEntities, e.sessionState.ConversationDigest.EntityHints...)
+	if !isPersistedSelectionExpired(buildAt.Unix(), e.sessionState) {
+		for _, item := range e.sessionState.PendingSelectionItems {
+			view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
+				Kind: "instance", ID: item.ID, Name: item.Name, Ordinal: item.Index,
+				Source: "pending_selection", Freshness: ContinuityFreshnessFresh,
+			})
+		}
+	}
 	if id := strings.TrimSpace(e.sessionState.SelectedInstanceID); id != "" {
 		view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
 			Kind:      "instance",

@@ -389,6 +389,11 @@ type Engine struct {
 	// intentScopedReActPromptEnabled keeps the persisted system prompt slim
 	// and injects intent cards only into the per-call message copy.
 	intentScopedReActPromptEnabled bool
+	// centralAgentRuntimeEnabled cuts model-preceding semantic dispatch out of
+	// the turn. It remains opt-in until the write proposal and response gateway
+	// are both promoted, so a deployment never mixes half of the new runtime with
+	// half of the old semantic stack.
+	centralAgentRuntimeEnabled bool
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -728,6 +733,10 @@ func (e *Engine) SetReactHistoryCompactionEnabled(v bool) {
 func (e *Engine) SetIntentScopedReActPromptEnabled(v bool) {
 	e.intentScopedReActPromptEnabled = v
 }
+
+// SetCentralAgentRuntimeEnabled is the grouped rollout seam for P6. It is one
+// switch for the semantic stack, not a per-intent patch list.
+func (e *Engine) SetCentralAgentRuntimeEnabled(v bool) { e.centralAgentRuntimeEnabled = v }
 
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	return prompt.BuildOptions{
@@ -1506,35 +1515,32 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorWindow = false
 	e.displayedResourceSelectionThisTurn = nil
 
-	if reply, handled := e.tryBillingAccountUnsupportedBeforeResourceSelection(ctx, userMsg, priorText); handled {
-		return reply, nil
-	}
-	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
-		if e.displayedResourceSelectionThisTurn != nil {
-			e.markTurnCompletion(observability.CompletionClassStructuredClarify, observability.CompletionReasonSelectionRequired)
-		} else {
-			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
-		}
-		return reply, nil
-	}
-	// The deterministic lifecycle shortcut predates the context decision layer.
-	// It is safe only when there is no carried task/fact/selection to adjudicate;
-	// otherwise it would execute before the one component that can tell a new
-	// command from a continuation. Context-bearing turns go through the planner
-	// and the shared decision below. A failed planner/resolver then falls back to
-	// a read-only ReAct window, never to an unreviewed mutation.
-	if !e.hasContextDecisionContext() {
-		if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
-			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+	if !e.centralAgentRuntimeEnabled {
+		if reply, handled := e.tryBillingAccountUnsupportedBeforeResourceSelection(ctx, userMsg, priorText); handled {
 			return reply, nil
 		}
-		if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
-			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+		if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
+			if e.displayedResourceSelectionThisTurn != nil {
+				e.markTurnCompletion(observability.CompletionClassStructuredClarify, observability.CompletionReasonSelectionRequired)
+			} else {
+				e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+			}
 			return reply, nil
 		}
-	}
-	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
-		return reply, nil
+		// Legacy write shortcuts remain together behind the legacy semantic stack.
+		if !e.hasContextDecisionContext() {
+			if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
+				e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+				return reply, nil
+			}
+			if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
+				e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+				return reply, nil
+			}
+		}
+		if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
+			return reply, nil
+		}
 	}
 
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
@@ -1576,13 +1582,17 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
 		messages := e.buildMessagesForLLM()
+		toolWindow := visibleRegistryForIntentRoute(intent.IntentRoute{Intent: e.lastPlannerIntentThisTurn}, e.mutatingToolsEnabled)
+		if e.centralAgentRuntimeEnabled {
+			toolWindow = centralAgentReadToolWindow()
+		}
 		req := llm.ChatRequest{
 			Messages: messages,
 			// The dispatch tool window is derived solely from the planner intent
 			// via this seam; the planner-emitted RequiredTools is validation/
 			// trace-only and never authorizes dispatch (see
 			// visibleRegistryForIntentRoute + TestPlannerRequiredToolsDoNotAuthorizeDispatch).
-			Tools: visibleRegistryForIntentRoute(intent.IntentRoute{Intent: e.lastPlannerIntentThisTurn}, e.mutatingToolsEnabled),
+			Tools: toolWindow,
 		}
 		// Per-turn SearchKnowledge cap: once the agent loop has searched
 		// maxSearchKnowledgeCallsPerTurn times, withdraw the tool so a corpus-gap
@@ -3685,7 +3695,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// tool from req.Tools is not an authorization boundary by itself: a model can
 	// still hallucinate a de-advertised function name. Reject that name here before
 	// retrieval so generic ReAct cannot create an unverified mixed-evidence answer.
-	if action == "SearchKnowledge" && !e.knowledgeQAAgentLoopThisTurn {
+	if action == "SearchKnowledge" && !e.knowledgeQAAgentLoopThisTurn && !e.centralAgentRuntimeEnabled {
 		msg := "SearchKnowledge is unavailable for this route"
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
@@ -3709,6 +3719,9 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// SafeToolExecutor. The knowledge-route check above is the authorization
 	// boundary and rejects calls invented outside that lane.
 	if action == "SearchKnowledge" {
+		if e.centralAgentRuntimeEnabled {
+			e.knowledgeQAAgentLoopThisTurn = true
+		}
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
 	}
@@ -3731,6 +3744,11 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// (not LLM-controlled) and each workflow has its own Confirm step for user approval.
 	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
+		if e.centralAgentRuntimeEnabled {
+			msg := "write workflows are unavailable until a verified ActionProposal is accepted"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			return friendlyToolResultJSON(msg)
+		}
 		if !e.mutatingToolsEnabled {
 			args = e.safeExecutor.FilterArgs(action, args)
 			msg := mutatingToolsDisabledMessage

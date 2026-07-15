@@ -7,6 +7,28 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
+// centralAgentReadToolWindow is the P6a capability surface. It intentionally
+// does not expose the underlying API tools used by deterministic handlers, so
+// every platform fact crosses ReadPlatformCapability and its EvidenceEnvelope.
+// The two internal capabilities remain shadowed in the legacy registry until
+// the grouped P6 rollout is complete; this function is the only opt-in view.
+func centralAgentReadToolWindow() []openai.Tool {
+	registry := tools.DefaultCapabilityRegistry()
+	var out []openai.Tool
+	if capability, ok := registry.Lookup(tools.ReadPlatformCapabilityName); ok {
+		out = append(out, capability.Tool)
+	}
+	for _, capability := range registry.All() {
+		if !capability.ExposedToAgent || capability.Tool.Function == nil {
+			continue
+		}
+		if capability.Name == "SearchKnowledge" || capability.Policy.Route == tools.ActionRouteDiagnosis {
+			out = append(out, capability.Tool)
+		}
+	}
+	return out
+}
+
 // visibleRegistryForIntentRoute is the single production seam that builds the
 // ReAct dispatch tool window for a planner route. The window is derived SOLELY
 // from the route's intent (intent.IntentToolSubset → tools.VisibleRegistryForScope).
