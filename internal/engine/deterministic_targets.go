@@ -1576,7 +1576,11 @@ func ClassifyResetPasswordValue(userText string) (value string, start, end int, 
 		return value, match[4], match[5], false
 	}
 	if prefixBytes := leadingASCIIPasswordBytes(value); prefixBytes > 0 && prefixBytes < len(value) {
-		return value[:prefixBytes], match[4], match[4] + prefixBytes, false
+		// Without an explicit question boundary, an ASCII-to-Han transition is
+		// ambiguous: it may be prose after a sample or part of the password.
+		// Protect the complete candidate and refuse execution instead of either
+		// leaking the suffix or guessing a destructive password value.
+		return value, match[4], match[5], false
 	}
 	return value, match[4], match[5], true
 }

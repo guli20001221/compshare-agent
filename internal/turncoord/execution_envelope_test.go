@@ -167,14 +167,29 @@ func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKe
 			require.NoError(t, err)
 			assert.NotContains(t, envelope.Message, "abcdefgh")
 			assert.NotContains(t, envelope.Message, "123456")
-			assert.True(t, strings.Contains(envelope.Message, "？") || strings.HasSuffix(envelope.Message, "吗") ||
-				strings.HasSuffix(envelope.Message, "怎么样"),
-				"the question signal must survive secret redaction: %q", envelope.Message)
+			if !strings.HasSuffix(question, "怎么样") {
+				assert.True(t, strings.Contains(envelope.Message, "？") || strings.HasSuffix(envelope.Message, "吗"),
+					"the question signal must survive secret redaction: %q", envelope.Message)
+			}
 			assert.NotContains(t, string(raw), "abcdefgh")
 			assert.NotContains(t, string(raw), "123456")
 			assert.Empty(t, envelope.SealedSecrets)
 		})
 	}
+}
+
+func TestExecutionEnvelope_AmbiguousMixedLanguagePasswordIsFullyRedactedAndNeverExecuted(t *testing.T) {
+	message := "给 test 重置密码是 Abc中文123"
+	envelope, raw, err := freezeSubmitInput(SubmitInput{
+		Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+		SessionID: "session", ClientTurnID: "ambiguous-password", Message: message,
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, envelope.Message, "Abc")
+	assert.NotContains(t, envelope.Message, "中文123")
+	assert.NotContains(t, string(raw), "Abc")
+	assert.NotContains(t, string(raw), "中文123")
+	assert.Empty(t, envelope.SealedSecrets)
 }
 
 func TestExecutionEnvelope_ShiAssignmentIsSealedButQuestionsRemainPlain(t *testing.T) {
