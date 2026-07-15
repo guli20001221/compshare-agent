@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,8 +74,15 @@ type factContextPromptLLM struct {
 }
 
 func (m *factContextPromptLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	if len(req.Messages) > 0 {
-		m.systemPrompts = append(m.systemPrompts, req.Messages[0].Content)
+	var system strings.Builder
+	for _, message := range req.Messages {
+		if message.Role == openai.ChatMessageRoleSystem {
+			system.WriteString(message.Content)
+			system.WriteByte('\n')
+		}
+	}
+	if system.Len() > 0 {
+		m.systemPrompts = append(m.systemPrompts, system.String())
 	}
 	return &llm.ChatResponse{
 		Content: "ok",
@@ -200,8 +208,8 @@ func TestSessionState_FactContextHydratedHTTPPrompt(t *testing.T) {
 	assert.True(t, sink.has("done"))
 	require.NotEmpty(t, llmFake.systemPrompts)
 	systemPrompt := llmFake.systemPrompts[0]
-	assert.Contains(t, systemPrompt, "最近观测缓存")
-	assert.Contains(t, systemPrompt, "实时状态请重新查询")
+	assert.Contains(t, systemPrompt, "本轮统一上下文")
+	assert.Contains(t, systemPrompt, "近期可信观测")
 	assert.Contains(t, systemPrompt, "http-fact-box")
 	assert.Contains(t, systemPrompt, "uhost-http-fact")
 }

@@ -1901,11 +1901,11 @@ func TestScenario_SingleInstancePromptInjection(t *testing.T) {
 
 	_, _ = eng.Chat(context.Background(), "hi", noopStep)
 
-	assert.NotEmpty(t, eng.messages)
-	sysPrompt := eng.messages[0].Content
-	assert.Contains(t, sysPrompt, "当前账户只有 1 个实例")
-	assert.Contains(t, sysPrompt, "uhost-only")
-	assert.Contains(t, sysPrompt, "solo-gpu")
+	assert.NotEmpty(t, mock.calls)
+	modelInput := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, modelInput, "account_registry_single")
+	assert.Contains(t, modelInput, "uhost-only")
+	assert.Contains(t, modelInput, "solo-gpu")
 }
 
 // Auto-fill must NOT fire when registry is invalidated (stale).

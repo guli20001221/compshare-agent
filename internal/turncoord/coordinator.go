@@ -688,6 +688,7 @@ func (c *Coordinator) run(turn store.Turn) {
 		}
 		c.deliver(event)
 	}, engine.ChatOptions{
+		TurnID:           lease.TurnID,
 		ImageContext:     in.ImageContext,
 		ConfirmFunc:      confirm,
 		ConfirmEditsFunc: confirmEdits,

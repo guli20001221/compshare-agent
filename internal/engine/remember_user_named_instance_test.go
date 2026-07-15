@@ -98,9 +98,9 @@ func TestDiagnosisRemembersTheMachineTheUserNamed(t *testing.T) {
 		"turn 2's router must know which machine is under discussion. If this is empty, the "+
 			"follow-up is classified as if it were the first thing the user ever said")
 
-	require.NotEmpty(t, eng.messages)
-	assert.Contains(t, eng.messages[0].Content, "uhost-1exampleaa02",
-		"and the ReAct loop must SEE it — 「当前会话已选实例」 in the system prompt is what stops "+
+	require.Len(t, eng.llmClient.(*mockLLM).calls, 2)
+	assert.Contains(t, renderTestMessages(eng.llmClient.(*mockLLM).calls[1].Messages), "uhost-1exampleaa02",
+		"and the ReAct loop must SEE it in AgentContext, which stops "+
 			"the model asking the user to identify a machine they already named")
 }
 
