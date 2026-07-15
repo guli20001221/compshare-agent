@@ -90,6 +90,21 @@ func TestActionJournal_RefusesCredentialBearingActionWithoutKeyedIdentity(t *tes
 	assert.Zero(t, actions.reserveCalls)
 }
 
+func TestActionJournal_RefusesNestedCredentialWithoutKeyedIdentity(t *testing.T) {
+	actions := &journalStoreStub{}
+	journal := NewActionJournal(actions, store.Owner{}, store.ConversationLease{TurnID: "turn"})
+	called := false
+	_, err := journal.Execute(context.Background(), "ExternalWrite", map[string]any{
+		"Items": []map[string]any{{"Password": "Aa12" + "3456!"}},
+	}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		called = true
+		return nil, nil
+	})
+	require.Error(t, err)
+	assert.False(t, called)
+	assert.Zero(t, actions.reserveCalls)
+}
+
 func TestActionJournal_NonDefiniteExternalErrorsBecomeAmbiguous(t *testing.T) {
 	cases := []struct {
 		name string

@@ -1368,7 +1368,7 @@ var (
 	// A password value is extracted only from an explicit assignment. Keeping
 	// the separator mandatory prevents help questions such as “密码怎么改？” or
 	// “重置密码需要停机吗” from being mistaken for secrets and erased.
-	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|:|：)\s*([^\s，。；;]+)`)
+	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(为|成|是|:|：)\s*([^\s，。；;]+)`)
 	diskSizeSpecRE      = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
 	cfsNameSpecRE       = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
 	cfsIDSpecRE         = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
@@ -1546,10 +1546,28 @@ func resetPasswordFromUserText(userText string) string {
 // the exact value before persistence without maintaining a second regex.
 func ExtractResetPasswordSecret(userText string) (secret string, start, end int) {
 	match := resetPasswordSpecRE.FindStringSubmatchIndex(userText)
-	if len(match) < 4 || match[2] < 0 || match[3] < 0 {
+	if len(match) < 6 || match[2] < 0 || match[3] < 0 || match[4] < 0 || match[5] < 0 {
 		return "", 0, 0
 	}
-	return strings.TrimSpace(userText[match[2]:match[3]]), match[2], match[3]
+	connector := userText[match[2]:match[3]]
+	value := strings.TrimSpace(userText[match[4]:match[5]])
+	if connector == "是" && !looksLikePasswordValue(value) {
+		return "", 0, 0
+	}
+	return value, match[4], match[5]
+}
+
+func looksLikePasswordValue(value string) bool {
+	runes := []rune(value)
+	if len(runes) < 8 || len(runes) > 64 || strings.ContainsAny(value, "?？") {
+		return false
+	}
+	for _, r := range runes {
+		if r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) resetPasswordForTurn(userText string) string {

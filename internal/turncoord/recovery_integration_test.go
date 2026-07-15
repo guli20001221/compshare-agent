@@ -96,7 +96,7 @@ func TestCoordinator_AnotherReplicaRecoversSealedPasswordWithoutPersistingPlaint
 	key := bytes.Repeat([]byte{0x42}, 32)
 	in := SubmitInput{
 		Owner: owner, SessionID: session.ID, ClientTurnID: "sealed-password",
-		Message: "给 uhost-1 改密为 Aa123456!",
+		Message: "给 uhost-1 改密是 Aa123456!",
 	}
 	envelope, raw, err := freezeSubmitInputWithSecretKey(in, key)
 	require.NoError(t, err)

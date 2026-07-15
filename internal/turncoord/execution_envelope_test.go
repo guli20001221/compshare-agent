@@ -129,7 +129,7 @@ func TestExecutionEnvelope_PasswordRequiresTheClusterSecretKey(t *testing.T) {
 }
 
 func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKey(t *testing.T) {
-	for _, question := range []string{"密码怎么改？", "重置密码需要停机吗"} {
+	for _, question := range []string{"密码怎么改？", "重置密码需要停机吗", "密码是怎么改的？", "密码是不是需要定期修改？"} {
 		t.Run(question, func(t *testing.T) {
 			envelope, raw, err := freezeSubmitInput(SubmitInput{
 				Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
@@ -141,6 +141,24 @@ func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKe
 			assert.Empty(t, envelope.SealedSecrets)
 		})
 	}
+}
+
+func TestExecutionEnvelope_ShiAssignmentIsSealedButQuestionsRemainPlain(t *testing.T) {
+	key := bytes.Repeat([]byte{0x71}, 32)
+	message := "重置密码是 Aa12" + "3456!"
+	envelope, raw, err := freezeSubmitInputWithSecretKey(SubmitInput{
+		Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+		SessionID: "session", ClientTurnID: "shi-assignment", Message: message,
+	}, key)
+	require.NoError(t, err)
+	assert.NotContains(t, envelope.Message, "Aa123456!")
+	assert.NotContains(t, string(raw), "Aa123456!")
+	assert.NotEmpty(t, envelope.SealedSecrets)
+	_, _, err = freezeSubmitInput(SubmitInput{
+		Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+		SessionID: "session", ClientTurnID: "shi-without-key", Message: message,
+	})
+	require.ErrorIs(t, err, store.ErrInvalidArgument)
 }
 
 func TestExecutionEnvelope_V1IsRejectedInsteadOfSendingLegacyPlaintextToTheModel(t *testing.T) {

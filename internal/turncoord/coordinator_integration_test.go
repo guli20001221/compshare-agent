@@ -264,7 +264,7 @@ func TestCoordinator_UnrecoverableEnvelopeTerminatesOnceAndReopensAdmission(t *t
 	}{
 		{name: "missing", envelope: nil, reason: "execution_envelope_missing"},
 		{name: "unsupported", envelope: json.RawMessage(`{"version":99}`), reason: "execution_envelope_unsupported"},
-		{name: "invalid", envelope: json.RawMessage(`{"version":1}`), reason: "execution_envelope_invalid"},
+		{name: "invalid", envelope: json.RawMessage(`{"version":2}`), reason: "execution_envelope_invalid"},
 	}
 	for index, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -325,7 +325,7 @@ func TestCoordinator_UnrecoverableEnvelopeAfterPossibleActionBecomesAmbiguous(t 
 	turns := store.NewPostgresTurnStore(db)
 	broken, _, err := turns.AcceptTurn(ctx, owner, store.AcceptTurnInput{
 		SessionID: session.ID, ClientTurnID: "uncertain-broken", RequestHash: store.HashTurnRequest("uncertain-broken"),
-		UserContent: "change it", ExecutionEnvelope: json.RawMessage(`{"version":1}`),
+		UserContent: "change it", ExecutionEnvelope: json.RawMessage(`{"version":2}`),
 	})
 	require.NoError(t, err)
 	lease, err := turns.AcquireConversationLease(ctx, owner, session.ID, broken.ID, "lost-replica", 100*time.Millisecond)

@@ -424,7 +424,11 @@ func canonicalActionArgsHashWithKey(args map[string]any, key []byte) string {
 		_, _ = mac.Write(raw)
 		return hex.EncodeToString(mac.Sum(nil))
 	}
-	if containsCredentialField(args) {
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return ""
+	}
+	if containsCredentialField(normalized) {
 		return ""
 	}
 	return canonicalActionArgsHash(args)

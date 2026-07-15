@@ -204,7 +204,7 @@ func TestCoordinator_MalformedEnvelopeWritesZeroModelTrace(t *testing.T) {
 	turns := store.NewPostgresTurnStore(db)
 	broken, _, err := turns.AcceptTurn(ctx, owner, store.AcceptTurnInput{
 		SessionID: session.ID, ClientTurnID: "trace-broken", RequestHash: store.HashTurnRequest("trace-broken"),
-		UserContent: "continue", ExecutionEnvelope: json.RawMessage(`{"version":1}`),
+		UserContent: "continue", ExecutionEnvelope: json.RawMessage(`{"version":2}`),
 	})
 	require.NoError(t, err)
 	writer := &captureDurableTraceWriter{}
