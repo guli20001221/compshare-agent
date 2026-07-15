@@ -44,6 +44,16 @@ type DispatchSpec struct {
 	AgentSkillName   string
 }
 
+// ResolveCapabilities projects the intent's authorization window through the
+// central capability owner. DispatchSpec never duplicates capability risk or
+// result metadata.
+func (s DispatchSpec) ResolveCapabilities(registry *tools.CapabilityRegistry, mutatingEnabled bool) []tools.Capability {
+	if registry == nil {
+		registry = tools.DefaultCapabilityRegistry()
+	}
+	return registry.CapabilitiesForScope(s.ToolScope, mutatingEnabled)
+}
+
 // specForIntent is the single immutable per-intent dispatch contract. Engine
 // consumers read it instead of maintaining parallel response, authorization or
 // agent-skill maps.
