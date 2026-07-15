@@ -2,6 +2,7 @@ package turncoord
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -49,13 +51,18 @@ type ActionJournal struct {
 	replayOnly   bool
 	replayCursor int
 	consumed     map[int]bool
+	hashKey      []byte
 }
 
-func NewActionJournal(actions actionStore, owner store.Owner, lease store.ConversationLease) *ActionJournal {
+func NewActionJournal(actions actionStore, owner store.Owner, lease store.ConversationLease, hashKey ...[]byte) *ActionJournal {
 	if actions == nil {
 		panic("turncoord: action journal requires a store")
 	}
-	return &ActionJournal{store: actions, owner: owner, lease: lease}
+	j := &ActionJournal{store: actions, owner: owner, lease: lease}
+	if len(hashKey) != 0 {
+		j.hashKey = append([]byte(nil), hashKey[0]...)
+	}
+	return j
 }
 
 // Execute implements tools.ActionJournal.
@@ -66,7 +73,7 @@ func (j *ActionJournal) Execute(ctx context.Context, action string, args map[str
 	if err := j.loadBaseline(ctx); err != nil {
 		return nil, err
 	}
-	argsHash := canonicalActionArgsHash(args)
+	argsHash := canonicalActionArgsHashWithKey(args, j.hashKey)
 	if argsHash == "" {
 		return nil, j.poison(fmt.Errorf("action arguments cannot be canonicalized"))
 	}
@@ -402,6 +409,49 @@ func canonicalActionArgsHash(args map[string]any) string {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+func canonicalActionArgsHashWithKey(args map[string]any, key []byte) string {
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return ""
+	}
+	if len(key) != 0 && len(key) != 32 {
+		return ""
+	}
+	if len(key) == 32 {
+		mac := hmac.New(sha256.New, key)
+		_, _ = mac.Write(raw)
+		return hex.EncodeToString(mac.Sum(nil))
+	}
+	if containsCredentialField(args) {
+		return ""
+	}
+	return canonicalActionArgsHash(args)
+}
+
+func containsCredentialField(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if guardrails.IsCredentialKey(key) || containsCredentialField(child) {
+				return true
+			}
+		}
+	case map[string]string:
+		for key := range typed {
+			if guardrails.IsCredentialKey(key) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if containsCredentialField(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func decodeActionResult(raw json.RawMessage) (map[string]any, error) {

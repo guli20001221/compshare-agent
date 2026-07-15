@@ -1365,7 +1365,10 @@ func looksLikeScheduledShutdownText(compact string) bool {
 }
 
 var (
-	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|是|:|：)?\s*([^\s，。；;]+)`)
+	// A password value is extracted only from an explicit assignment. Keeping
+	// the separator mandatory prevents help questions such as “密码怎么改？” or
+	// “重置密码需要停机吗” from being mistaken for secrets and erased.
+	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|:|：)\s*([^\s，。；;]+)`)
 	diskSizeSpecRE      = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
 	cfsNameSpecRE       = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
 	cfsIDSpecRE         = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)

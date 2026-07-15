@@ -1,6 +1,7 @@
 package turncoord
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func testActionJournalKey() []byte {
+	return bytes.Repeat([]byte{0x6b}, 32)
+}
 
 type journalStoreStub struct {
 	reserveCalls int
@@ -68,6 +73,21 @@ func TestActionJournal_IndexesAreStableAndMonotonicWithinTurn(t *testing.T) {
 	require.Len(t, actions.reserveInput, 2)
 	assert.Equal(t, 0, actions.reserveInput[0].Index)
 	assert.Equal(t, 1, actions.reserveInput[1].Index)
+}
+
+func TestActionJournal_RefusesCredentialBearingActionWithoutKeyedIdentity(t *testing.T) {
+	actions := &journalStoreStub{}
+	journal := NewActionJournal(actions, store.Owner{}, store.ConversationLease{TurnID: "turn"})
+	called := false
+	_, err := journal.Execute(context.Background(), "ResetCompShareInstancePassword", map[string]any{
+		"UHostId": "u-1", "Password": "Aa12" + "3456!",
+	}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		called = true
+		return map[string]any{"RetCode": 0}, nil
+	})
+	require.Error(t, err)
+	assert.False(t, called)
+	assert.Zero(t, actions.reserveCalls)
 }
 
 func TestActionJournal_NonDefiniteExternalErrorsBecomeAmbiguous(t *testing.T) {

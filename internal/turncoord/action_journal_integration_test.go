@@ -184,7 +184,7 @@ func TestActionJournal_KnownSuccessCanBeConsumedAsAdvisoryWithoutReissuingWrite(
 	db := openActionJournalTestDB(t)
 	ctx, owner, turns, leaseA := newJournalTurn(t, db)
 	upstreamCalls := 0
-	journalA := NewActionJournal(turns, owner, leaseA)
+	journalA := NewActionJournal(turns, owner, leaseA, testActionJournalKey())
 	_, err := journalA.Execute(ctx, "StopCompShareInstance", map[string]any{
 		"UHostId": "uhost-advisory", "Region": "cn-bj2", "Password": "must-not-persist-in-hint",
 	}, func(context.Context, string, map[string]any) (map[string]any, error) {
@@ -193,7 +193,7 @@ func TestActionJournal_KnownSuccessCanBeConsumedAsAdvisoryWithoutReissuingWrite(
 	})
 	require.NoError(t, err)
 	leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
-	journalB := NewActionJournal(turns, owner, leaseB)
+	journalB := NewActionJournal(turns, owner, leaseB, testActionJournalKey())
 	advisories, err := journalB.RestoredActionAdvisory(ctx)
 	require.NoError(t, err)
 	require.Len(t, advisories, 1)
@@ -211,6 +211,28 @@ func TestActionJournal_KnownSuccessCanBeConsumedAsAdvisoryWithoutReissuingWrite(
 	})
 	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
 	assert.Equal(t, 1, upstreamCalls, "advisory consumption must not open an extra write slot")
+}
+
+func TestActionJournal_CredentialActionIdentityIsKeyedAndNotOfflineVerifiable(t *testing.T) {
+	db := openActionJournalTestDB(t)
+	ctx, owner, turns, lease := newJournalTurn(t, db)
+	password := "Aa12" + "3456!"
+	args := map[string]any{"UHostId": "uhost-secret", "Password": password}
+	journal := NewActionJournal(turns, owner, lease, testActionJournalKey())
+	_, err := journal.Execute(ctx, "ResetCompShareInstancePassword", args, func(context.Context, string, map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": 0}, nil
+	})
+	require.NoError(t, err)
+
+	actions, err := turns.ListTurnActions(ctx, owner, lease.TurnID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+	assert.NotEqual(t, canonicalActionArgsHash(args), actions[0].ArgsHash,
+		"the database must not contain an offline-verifiable SHA-256 of password-bearing arguments")
+	assert.Equal(t, canonicalActionArgsHashWithKey(args, testActionJournalKey()), actions[0].ArgsHash)
+	persisted, err := json.Marshal(actions[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(persisted), password)
 }
 
 func TestActionJournal_KnownFailureCanBeConsumedAsAdvisoryWithoutReissuingWrite(t *testing.T) {

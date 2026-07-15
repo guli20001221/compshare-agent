@@ -156,10 +156,7 @@ type SubmitInput struct {
 	SecretInputs map[string]string
 }
 
-const (
-	executionEnvelopeVersion       = 2
-	legacyExecutionEnvelopeVersion = 1
-)
+const executionEnvelopeVersion = 2
 
 type executionEnvelope struct {
 	Version        int                    `json:"version"`
@@ -623,7 +620,7 @@ func (c *Coordinator) run(turn store.Turn) {
 		trace.SnapshotContextVersion = sess.ContextVersion
 		trace.ContextParseOutcome = contextParseOutcome
 	})
-	journal := NewActionJournal(c.turns, in.Owner, lease)
+	journal := NewActionJournal(c.turns, in.Owner, lease, c.opts.SecretKey)
 	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause)
 	var confirmEdits workflow.ConfirmEditsFunc
 	if in.ConfirmForm {
@@ -1090,11 +1087,8 @@ func thawSubmitInputWithSecretKey(turn store.Turn, secretKey []byte) (SubmitInpu
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return SubmitInput{}, fmt.Errorf("decode execution envelope: trailing data")
 	}
-	if envelope.Version != executionEnvelopeVersion && envelope.Version != legacyExecutionEnvelopeVersion {
+	if envelope.Version != executionEnvelopeVersion {
 		return SubmitInput{}, fmt.Errorf("unsupported execution envelope version %d", envelope.Version)
-	}
-	if envelope.Version == legacyExecutionEnvelopeVersion && (envelope.SealedSecrets != "" || envelope.SecretKeyID != "" || envelope.SecretDigest != "") {
-		return SubmitInput{}, fmt.Errorf("%w: legacy envelope contains secret fields", store.ErrInvalidArgument)
 	}
 	if strings.TrimSpace(envelope.Message) == "" ||
 		envelope.UserContext.TopOrganizationID != turn.Owner.TopOrganizationID ||

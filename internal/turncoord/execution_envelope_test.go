@@ -2,6 +2,7 @@ package turncoord
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -125,6 +126,31 @@ func TestExecutionEnvelope_PasswordRequiresTheClusterSecretKey(t *testing.T) {
 		SessionID: "session", ClientTurnID: "turn", Message: "密码为 Aa123456!",
 	})
 	require.ErrorIs(t, err, store.ErrInvalidArgument)
+}
+
+func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKey(t *testing.T) {
+	for _, question := range []string{"密码怎么改？", "重置密码需要停机吗"} {
+		t.Run(question, func(t *testing.T) {
+			envelope, raw, err := freezeSubmitInput(SubmitInput{
+				Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+				SessionID: "session", ClientTurnID: question, Message: question,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, question, envelope.Message)
+			assert.Contains(t, string(raw), question)
+			assert.Empty(t, envelope.SealedSecrets)
+		})
+	}
+}
+
+func TestExecutionEnvelope_V1IsRejectedInsteadOfSendingLegacyPlaintextToTheModel(t *testing.T) {
+	owner := store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+	_, err := thawSubmitInputWithSecretKey(store.Turn{
+		Owner: owner, SessionID: "session", ClientTurnID: "legacy",
+		ExecutionEnvelope: json.RawMessage(`{"version":1,"message":"密码为 LegacyPass123!","user_context":{"top_organization_id":1,"organization_id":2},"features":{}}`),
+	}, bytes.Repeat([]byte{0x44}, 32))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported execution envelope version 1")
 }
 
 func TestExecutionEnvelope_SecretIdentityIsStableButDetectsChangedPassword(t *testing.T) {
