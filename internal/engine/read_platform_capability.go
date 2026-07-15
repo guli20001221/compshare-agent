@@ -111,6 +111,13 @@ func (e *Engine) executeReadPlatformCapability(ctx context.Context, args map[str
 			}
 		}
 	}
+	if result.Status == intent.HandlerStatusHandled && !result.NeedsClarification && result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
+		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
+			Capability: string(capability),
+			Reply:      strings.TrimSpace(result.Reply),
+			Envelope:   *result.Envelope,
+		})
+	}
 
 	observation := ReadCapabilityObservation{
 		Capability:           string(capability),

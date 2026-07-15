@@ -398,6 +398,10 @@ type Engine struct {
 	// ActionProposal target verifier. It never persists and never carries values
 	// other than exact resource IDs returned by a read capability.
 	readCapabilitySubjectsThisTurn map[string]struct{}
+	// readResponseEvidenceThisTurn keeps server-rendered replies for successful
+	// central read capabilities. The Response Gateway can submit these facts
+	// without asking the model to retype identifiers, counts or measurements.
+	readResponseEvidenceThisTurn []readResponseEvidence
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -1452,6 +1456,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.readCapabilitySubjectsThisTurn = map[string]struct{}{}
+	e.readResponseEvidenceThisTurn = nil
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.createPreferenceThisTurn = nil
 	continuityNow := time.Now()
@@ -1647,6 +1652,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// live mode does not leak partial tool args.
 		guardMayRewrite := e.currentMonitorWindow ||
 			e.lastPlannerIntentThisTurn == intent.IntentDiagnosis ||
+			len(e.readResponseEvidenceThisTurn) > 0 ||
 			// Every knowledge-agent answer is semantically checked before release,
 			// including a follow-up answered from durable prior evidence without a
 			// new SearchKnowledge call. Buffer the model's tokens until that check
@@ -1739,39 +1745,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
 			rawContent := resp.Content
-			content := e.guardMonitorTemporalFinalReply(rawContent)
-			content = security.RedactOperationalTokensInText(content)
-			// Production knowledge_qa uses the agent loop. Its single final exit validates
-			// every substantive claim against the exact EvidenceLedger, regardless of
-			// whether the model happened to type a citation marker. A cited fabrication and
-			// an uncited answer therefore face the same test; repair is derived from the same
-			// resolved query and ledger.
-			content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
-			if corrected, ok := e.correctFalseInstanceNotFoundReply(userMsg, content); ok {
-				content = corrected
-			}
-			// P0 empty-reply safety net: a successful round (err == nil) that
-			// produced no text — flash intermittently returns empty content with
-			// no tool call — must not surface as a blank reply ("空回复"). Replace
-			// it with an honest fallback BEFORE the replay below, so the fallback
-			// flows through the normal stream + persist path (content != rawContent
-			// → emitted as one corrective chunk in both live and buffered modes).
-			// Fires only when the reply is genuinely empty; the error path returns
-			// a non-nil err separately, so this never masks a real failure.
-			if strings.TrimSpace(content) == "" {
-				content = emptyReplyFallbackMessage
-			}
-			// Splice the deterministically rendered instance table in HERE, before the
-			// reply is streamed, persisted, or appended to history — not on the way out
-			// of ChatWithOptions. Doing it on the named return only fixed the final SSE
-			// frame and the DB row, while the token stream had already spelled
-			// "{{INSTANCE_TABLE}}" into the user's browser and e.messages kept the
-			// placeholder forever. content != rawContent from here on, which is precisely
-			// the signal the block below uses to emit the corrected text as one chunk
-			// instead of replaying stale deltas.
-			if substituted, ok := substituteInstanceTable(content, e.instanceTableThisTurn); ok {
-				content = substituted
-			}
+			content := e.finalizeResponse(ctx, userMsg, rawContent)
 			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
