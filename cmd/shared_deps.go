@@ -18,10 +18,9 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 		return nil, err
 	}
 	return agentpool.NewWithDeps(deps, messageStore, agentpool.Options{
-		Capacity:                   cfg.Agent.HTTP.PoolCapacity,
-		IdleTTL:                    cfg.Agent.HTTP.PoolIdleTTL,
-		MutatingToolsEnabled:       mutating,
-		CentralAgentRuntimeEnabled: true,
+		Capacity:             cfg.Agent.HTTP.PoolCapacity,
+		IdleTTL:              cfg.Agent.HTTP.PoolIdleTTL,
+		MutatingToolsEnabled: mutating,
 	}), nil
 }
 

@@ -67,15 +67,8 @@ type TraceConfig struct {
 	Dir     string `yaml:"dir"`     // COMPSHARE_TRACE_DIR (file/both only)
 }
 
-// PlannerConfig holds the intent-router / direct-dispatch knobs.
-type PlannerConfig struct {
-	RouterMode            string `yaml:"router_mode"`             // COMPSHARE_INTENT_ROUTER_MODE: shadow (else off)
-	DirectDispatchIntents string `yaml:"direct_dispatch_intents"` // COMPSHARE_DIRECT_DISPATCH_INTENTS: CSV or "off"
-	StructuredOutput      string `yaml:"structured_output"`       // COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT: json_object|json_schema|off
-}
-
 // RuntimeGetenv returns a getenv function that overlays the YAML runtime-flag
-// fields (agent.features / agent.retrieval / agent.trace / agent.planner) on top
+// fields (agent.features / agent.retrieval / agent.trace) on top
 // of the supplied base getenv (normally os.Getenv). A field SET in YAML wins; a
 // field omitted in YAML falls through to base(key). This keeps "YAML is the
 // source of truth, env is the fallback" while the cmd/ flag parsers continue to
@@ -134,11 +127,6 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_TRACE_ENABLED", t.Enabled, "1", "0")
 	putStrEnv(overrides, "COMPSHARE_TRACE_SINK", t.Sink)
 	putStrEnv(overrides, "COMPSHARE_TRACE_DIR", t.Dir)
-
-	p := c.Agent.Planner
-	putStrEnv(overrides, "COMPSHARE_INTENT_ROUTER_MODE", p.RouterMode)
-	putStrEnv(overrides, "COMPSHARE_DIRECT_DISPATCH_INTENTS", p.DirectDispatchIntents)
-	putStrEnv(overrides, "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT", p.StructuredOutput)
 
 	// The RAG embedding/reranker clients read the API key through getenv
 	// (MODELVERSE_API_KEY, falling back to LLM_API_KEY). Expose the resolved

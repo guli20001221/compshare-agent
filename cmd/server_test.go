@@ -274,8 +274,6 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 
 	pool, err := buildHTTPServerPool(cfg, serverTestMessageStore{}, func(key string) string {
 		switch key {
-		case "COMPSHARE_DIRECT_DISPATCH_INTENTS":
-			return "resource"
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
 		}
@@ -299,10 +297,6 @@ func TestConfigureSharedDepsDoesNotConstructServerIntentPlanner(t *testing.T) {
 	}}
 	deps, _, err := configureSharedDepsFromEnv(cfg, func(key string) string {
 		switch key {
-		case "COMPSHARE_DIRECT_DISPATCH_INTENTS":
-			return "resource"
-		case "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT":
-			return "json_schema"
 		case "USE_KNOWLEDGE_RETRIEVAL", "USE_GROUNDED_RENDERER":
 			return "off"
 		}

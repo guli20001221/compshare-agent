@@ -22,7 +22,7 @@ func TestCentralResponseGatewaySubmitsServerReadReplyInsteadOfModelRetyping(t *t
 		}}},
 	}}
 	eng := NewWithDeps(model, executor, nil)
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 
 	var deltas []string
 	reply, err := eng.ChatWithOptions(context.Background(), "我有哪些实例？", noopStep, ChatOptions{
@@ -39,7 +39,7 @@ func TestCentralResponseGatewaySubmitsServerReadReplyInsteadOfModelRetyping(t *t
 
 func TestResponseGatewayDoesNotOverrideConversationOnlyAnswer(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	require.Equal(t, "结合上一轮的回答继续即可。", eng.finalizeResponse(context.Background(), "那继续呢", "结合上一轮的回答继续即可。"))
 }
 

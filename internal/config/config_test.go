@@ -934,9 +934,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
   trace:
     enabled: true
     sink: mysql
-  planner:
-    direct_dispatch_intents: "resource,monitor"
-    structured_output: ""
 `))
 
 	cfg, err := Load(path)
@@ -957,7 +954,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	require.NotNil(t, cfg.Agent.Trace.Enabled)
 	assert.True(t, *cfg.Agent.Trace.Enabled)
 	assert.Equal(t, "mysql", cfg.Agent.Trace.Sink)
-	assert.Equal(t, "resource,monitor", cfg.Agent.Planner.DirectDispatchIntents)
 }
 
 func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {

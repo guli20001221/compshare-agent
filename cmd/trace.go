@@ -14,7 +14,6 @@ import (
 	"github.com/compshare-agent/internal/embedding"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -145,20 +144,6 @@ func cleanupTraceWriter(writer observability.Writer, now time.Time) error {
 	return observability.Cleanup(dir, observability.DefaultTraceRetentionDays, now)
 }
 
-func intentPlannerShadowEnabled(getenv getenvFunc) bool {
-	return getenv("COMPSHARE_INTENT_ROUTER_MODE") == "shadow"
-}
-
-func plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled bool, routeIntents []intent.Intent) string {
-	mode := "off"
-	if plannerDispatchEnabled {
-		mode = "dispatch"
-	} else if shadowEnabled {
-		mode = "shadow"
-	}
-	return fmt.Sprintf("router_mode=%s route_intents=%s", mode, formatRouteIntents(routeIntents))
-}
-
 func groundedRendererRuntimeLine(mode string) string {
 	if mode == "" {
 		mode = "off"
@@ -230,28 +215,6 @@ func intentScopedReActPromptEnabledFromEnv(getenv getenvFunc) (bool, string) {
 		return true, ""
 	default:
 		return false, value
-	}
-}
-
-type plannerStructuredOutputMode string
-
-const (
-	plannerStructuredOutputOff        plannerStructuredOutputMode = ""
-	plannerStructuredOutputJSONObject plannerStructuredOutputMode = "json_object"
-	plannerStructuredOutputJSONSchema plannerStructuredOutputMode = "json_schema"
-)
-
-func plannerStructuredOutputModeFromEnv(getenv getenvFunc) (plannerStructuredOutputMode, string) {
-	value := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT")))
-	switch value {
-	case "", "0", "off":
-		return plannerStructuredOutputOff, ""
-	case string(plannerStructuredOutputJSONObject):
-		return plannerStructuredOutputJSONObject, ""
-	case string(plannerStructuredOutputJSONSchema):
-		return plannerStructuredOutputJSONSchema, ""
-	default:
-		return plannerStructuredOutputOff, value
 	}
 }
 
@@ -379,59 +342,6 @@ func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string)
 		}
 	}
 	return pilots, unknown
-}
-
-func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, routeIntents []intent.Intent) observability.RuntimeTrace {
-	mode := "off"
-	if plannerDispatchEnabled {
-		mode = "dispatch"
-	} else if shadowEnabled {
-		mode = "shadow"
-	}
-	return observability.RuntimeTrace{
-		RouterMode:   mode,
-		RouteIntents: routeIntentLabels(routeIntents),
-	}
-}
-
-func formatRouteIntents(routeIntents []intent.Intent) string {
-	labels := routeIntentLabels(routeIntents)
-	if len(labels) == 0 {
-		return "[]"
-	}
-	return "[" + strings.Join(labels, ",") + "]"
-}
-
-func routeIntentLabels(routeIntents []intent.Intent) []string {
-	if len(routeIntents) == 0 {
-		return nil
-	}
-	labels := make([]string, 0, len(routeIntents))
-	for _, enabled := range routeIntents {
-		switch enabled {
-		case intent.IntentResourceInfo:
-			labels = append(labels, "resource")
-		case intent.IntentMonitorQuery:
-			labels = append(labels, "monitor")
-		case intent.IntentGPUSpecsQuery:
-			labels = append(labels, "gpu_specs")
-		case intent.IntentStockAvailability:
-			labels = append(labels, "stock")
-		case intent.IntentImageTagCatalog:
-			labels = append(labels, "image_tags")
-		case intent.IntentModelRepositoryBrowse:
-			labels = append(labels, "model_repo")
-		case intent.IntentImageList:
-			labels = append(labels, "image_list")
-		case intent.IntentDiagnosis:
-			labels = append(labels, "diagnosis")
-		case intent.IntentVagueFailure:
-			labels = append(labels, "vague_failure")
-		default:
-			labels = append(labels, string(enabled))
-		}
-	}
-	return labels
 }
 
 const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
@@ -794,89 +704,6 @@ func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
 		return 0
 	}
 	return time.Duration(ms) * time.Millisecond
-}
-
-func defaultRouteIntents() []intent.Intent {
-	return []intent.Intent{
-		intent.IntentResourceInfo,
-		intent.IntentMonitorQuery,
-		intent.IntentBillingAccountUnsupported,
-		intent.IntentGPUSpecsQuery,
-		intent.IntentStockAvailability,
-		intent.IntentPricingQuery,
-		intent.IntentRefundEstimate,
-		intent.IntentImageTagCatalog,
-		intent.IntentModelRepositoryBrowse,
-		intent.IntentImageList,
-		intent.IntentNetAcceleratorStatus,
-	}
-}
-
-func intentPlannerRouteIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
-	raw := getenv("COMPSHARE_DIRECT_DISPATCH_INTENTS")
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return defaultRouteIntents(), nil
-	}
-	switch strings.ToLower(trimmed) {
-	case "off", "none", "disabled":
-		return nil, nil
-	}
-	seen := map[intent.Intent]struct{}{}
-	intents := []intent.Intent{}
-	unknown := []string{}
-	for _, part := range strings.Split(raw, ",") {
-		value := strings.ToLower(strings.TrimSpace(part))
-		if value == "" {
-			continue
-		}
-		var enabled intent.Intent
-		switch value {
-		case "resource":
-			enabled = intent.IntentResourceInfo
-		case "monitor":
-			enabled = intent.IntentMonitorQuery
-		case "billing_account_unsupported", "account_billing_unsupported":
-			enabled = intent.IntentBillingAccountUnsupported
-		case "gpu_specs":
-			enabled = intent.IntentGPUSpecsQuery
-		case "stock":
-			enabled = intent.IntentStockAvailability
-		case "image_tags", "image_tag", "image_tag_catalog":
-			enabled = intent.IntentImageTagCatalog
-		case "model_repo", "model_repository", "model_repository_browse":
-			enabled = intent.IntentModelRepositoryBrowse
-		case "image", "image_list", "platform_image", "platform_image_list", "custom_image", "custom_image_list", "community_image", "community_image_list", "shared_image", "sharing_image", "shared_image_list":
-			enabled = intent.IntentImageList
-		case "network_accelerator", "network_accelerator_status", "net_accelerator":
-			enabled = intent.IntentNetAcceleratorStatus
-		case "pricing", "pricing_query":
-			// Accept both the short form ("pricing", convention-consistent
-			// with the sibling cases above) and the full intent label
-			// ("pricing_query") so existing eval scripts and operator runbooks
-			// using either form work. Short form is canonical going forward.
-			enabled = intent.IntentPricingQuery
-		case "refund", "refund_estimate":
-			enabled = intent.IntentRefundEstimate
-		case "diagnosis":
-			enabled = intent.IntentDiagnosis
-		case "vague_failure":
-			enabled = intent.IntentVagueFailure
-		default:
-			unknown = append(unknown, value)
-			continue
-		}
-		if _, ok := seen[enabled]; ok {
-			continue
-		}
-		seen[enabled] = struct{}{}
-		intents = append(intents, enabled)
-	}
-	return intents, unknown
-}
-
-func useSeparateShadowRunner(traceEnabled, shadowEnabled, routeEnabled bool) bool {
-	return traceEnabled && shadowEnabled && !routeEnabled
 }
 
 type cliTraceRecorder struct {

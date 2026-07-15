@@ -13,7 +13,6 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -21,7 +20,6 @@ import (
 	"github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/tools"
 
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/spf13/cobra"
 )
 
@@ -181,12 +179,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q\n", value)
 	}
 	engine.SetSkillExecutorDiagnosisPilots(diagnosisPilots)
-	routeIntents, unknownRouteValues := intentPlannerRouteIntentsFromEnv(getenv)
-	for _, value := range unknownRouteValues {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_DIRECT_DISPATCH_INTENTS value %q\n", value)
-	}
-	routeEnabled := len(routeIntents) > 0
-	shadowEnabled := intentPlannerShadowEnabled(getenv)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)
@@ -210,17 +202,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		if groundedRendererMode == "fast_template" {
 			eng.SetFastTemplate(true)
 		}
-	}
-	plannerStructuredOutput, unknownPlannerStructuredOutput := plannerStructuredOutputModeFromEnv(getenv)
-	if unknownPlannerStructuredOutput != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT value %q\n", unknownPlannerStructuredOutput)
-	}
-	plannerDispatchEnabled := routeEnabled || knowledgeRetrievalEnabled
-	if plannerDispatchEnabled {
-		eng.SetIntentPlanner(newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutput), engine.IntentPlannerOptions{
-			EnabledIntents: routeIntents,
-			Model:          cfg.Agent.LLM.Model,
-		})
 	}
 	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(getenv)
 	if traceErr != nil {
@@ -248,15 +229,10 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			}
 		}()
 	}
-	var shadowRunner *intent.ShadowRunner
-	if useSeparateShadowRunner(traceEnabled, shadowEnabled, plannerDispatchEnabled) {
-		shadowRunner = newCLIShadowRunner(cfg, eng, plannerStructuredOutput)
-	}
-
 	fmt.Println("╭──────────────────────────────────────╮")
 	fmt.Println("│     Compshare Copilot v0.1           │")
 	fmt.Println("╰──────────────────────────────────────╯")
-	fmt.Printf("runtime: %s\n", plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled, routeIntents))
+	fmt.Println("runtime: agent_runtime=central")
 	fmt.Printf("renderer: %s\n", groundedRendererRuntimeLine(groundedRendererMode))
 	fmt.Printf("tools: %s\n", mutatingToolsRuntimeLine(mutatingToolsEnabled))
 	fmt.Println()
@@ -266,7 +242,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	initStart := time.Now()
 	if traceEnabled {
 		initTraceRecorder = newCLITraceRecorder(traceWriter, "", 0, "init_context", initStart)
-		initTraceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled, routeIntents))
+		initTraceRecorder.SetRuntimeTrace(observability.RuntimeTrace{RouterMode: "central_agent"})
 		initTraceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 		eng.SetRateLimitObserver(initTraceRecorder.SetRateLimitDecision)
 	}
@@ -326,33 +302,20 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		eng.SetTokenUsageObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, "", turnIndex, input, turnStart)
-			traceRecorder.SetRuntimeTrace(plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled, routeIntents))
+			traceRecorder.SetRuntimeTrace(observability.RuntimeTrace{RouterMode: "central_agent"})
 			traceRecorder.SetRegistryTraceSupplier(eng.RegistryTraceState)
 			eng.SetRateLimitObserver(traceRecorder.SetRateLimitDecision)
 			eng.SetHardBlockObserver(traceRecorder.SetEngineHardBlock)
 			eng.SetTokenUsageObserver(traceRecorder.AddTokenUsage)
 			eng.SetFreshnessTraceObserver(traceRecorder.SetFreshnessTrace)
 			eng.SetDiagnosisTraceObserver(traceRecorder.SetDiagnosisTrace)
-			if plannerDispatchEnabled {
-				// When Phase 1 routing or Stage 2B retrieval is enabled, Engine
-				// owns the single planner call for this turn and writes that same
-				// result into trace.planner.
-				traceRecorder.SetPlannerTraceSupplier(nil)
-				eng.SetPlannerTraceObserver(traceRecorder.SetPlannerTrace)
-				eng.SetContextTraceObserver(traceRecorder.SetContextTrace)
-				if knowledgeRetrievalEnabled {
-					eng.SetRetrievalTraceObserver(traceRecorder.SetRetrievalTrace)
-					eng.SetOutcomeTraceObserver(traceRecorder.SetOutcomeTrace)
-				}
-				eng.SetRendererTraceObserver(traceRecorder.SetRendererTrace)
-			} else if shadowRunner != nil {
-				// By construction, shadowRunner is only created for the
-				// trace+shadow+no-route case.
-				plannerInput := cliShadowPlannerInput(eng, input)
-				traceRecorder.SetPlannerTraceSupplier(func() observability.RouterTrace {
-					return shadowRunner.Run(ctx, plannerInput)
-				})
+			traceRecorder.SetPlannerTraceSupplier(nil)
+			eng.SetContextTraceObserver(traceRecorder.SetContextTrace)
+			if knowledgeRetrievalEnabled {
+				eng.SetRetrievalTraceObserver(traceRecorder.SetRetrievalTrace)
+				eng.SetOutcomeTraceObserver(traceRecorder.SetOutcomeTrace)
 			}
+			eng.SetRendererTraceObserver(traceRecorder.SetRendererTrace)
 		}
 
 		onStep := func(ev engine.StepEvent) {
@@ -438,121 +401,4 @@ func applyStartupSuggestion(input string, suggestions []prompt.Suggestion, turnI
 		return input, false
 	}
 	return suggestions[n-1].Text, true
-}
-
-func cliShadowPlannerInput(eng *engine.Engine, userText string) intent.IntentRouterInput {
-	input := intent.IntentRouterInput{UserText: userText}
-	if eng == nil {
-		return input
-	}
-	input.PriorText = eng.PlannerPriorTextSnapshot()
-	input.Resolver = eng.RegistrySnapshot()
-	// PR1 hotfix Bug 2 (2026-05-28): structured prior-turn signals for the
-	// planner USER prompt. PriorText is retained above for the validator's
-	// source:prior_turn span check; buildUserPrompt no longer emits it.
-	if state, _, hydrated := eng.SessionStateSnapshot(); hydrated {
-		input.LastSelectedInstanceID = state.SelectedInstanceID
-		input.LastIntent = state.LastIntent
-	}
-	input.LastAssistantSnippet = eng.PlannerLastAssistantSnippet()
-	return input
-}
-
-type cliPlannerLLM struct {
-	client               *llm.Client
-	structuredOutputMode plannerStructuredOutputMode
-}
-
-func (c cliPlannerLLM) CompleteIntentPlan(ctx context.Context, req intent.IntentRouterLLMRequest) (string, error) {
-	resp, err := c.CompleteIntentPlanWithUsage(ctx, req)
-	return resp.Content, err
-}
-
-func (c cliPlannerLLM) CompleteIntentPlanWithUsage(ctx context.Context, req intent.IntentRouterLLMRequest) (intent.IntentRouterLLMResponse, error) {
-	// Planner requests intentionally provide no tools. Omitting ToolChoice here
-	// avoids provider-specific validation for tool_choice without tools while
-	// still preventing planner-side tool calls.
-	resp, err := c.client.Chat(ctx, llm.ChatRequest{
-		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
-			{Role: openai.ChatMessageRoleUser, Content: req.UserPrompt},
-		},
-		ResponseFormat: plannerResponseFormatForMode(req.Mode, c.structuredOutputMode, req.ResponseSchema),
-	})
-	if err != nil {
-		return intent.IntentRouterLLMResponse{}, err
-	}
-	return intent.IntentRouterLLMResponse{Content: resp.Content, Usage: resp.Usage}, nil
-}
-
-// plannerResponseFormatForMode maps the operator opt-in (structuredOutput, from
-// COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT) AND the model capability (mode, from
-// intent.SelectOutputMode) to a response_format, or nil for the un-gated default.
-//
-//   - off                → nil (shipped default; byte-identical to no opt-in).
-//   - json_schema opt-in → json_schema when the model supports it (mode==json_schema),
-//     degrading to json_object when the model only supports object-level structured
-//     output, else nil.
-//   - json_object opt-in → json_object whenever the model supports object-level
-//     structured output (mode is json_object OR the richer json_schema). The
-//     "|| json_schema" arm keeps the explicit json_object opt-in working on a
-//     json_schema-capable model (e.g. ds-v4-flash after the 2026-06-23 capability
-//     flip), which the A/B needs to compare json_object vs json_schema.
-func plannerResponseFormatForMode(mode intent.OutputMode, structuredOutput plannerStructuredOutputMode, schema json.RawMessage) *openai.ChatCompletionResponseFormat {
-	jsonObject := &openai.ChatCompletionResponseFormat{
-		Type: openai.ChatCompletionResponseFormatTypeJSONObject,
-	}
-	if len(schema) == 0 {
-		schema = intent.IntentRouteResponseSchema()
-	}
-	switch structuredOutput {
-	case plannerStructuredOutputJSONSchema:
-		if mode == intent.OutputModeJSONSchema {
-			return &openai.ChatCompletionResponseFormat{
-				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
-				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
-					Name:   "intent_route",
-					Schema: schema,
-					Strict: false,
-				},
-			}
-		}
-		if mode == intent.OutputModeJSONObject {
-			return jsonObject
-		}
-		return nil
-	case plannerStructuredOutputJSONObject:
-		if mode == intent.OutputModeJSONObject || mode == intent.OutputModeJSONSchema {
-			return jsonObject
-		}
-		return nil
-	default:
-		return nil
-	}
-}
-
-func newCLIPlanner(cfg *config.Config) *intent.IntentRouter {
-	return newCLIPlannerWithStructuredOutput(cfg, plannerStructuredOutputOff)
-}
-
-func newCLIPlannerWithStructuredOutput(cfg *config.Config, structuredOutput plannerStructuredOutputMode) *intent.IntentRouter {
-	plannerClient := cliPlannerLLM{
-		client:               llm.NewClient(cfg.Agent.LLM),
-		structuredOutputMode: structuredOutput,
-	}
-	return intent.NewIntentRouter(plannerClient, intent.IntentRouterOptions{
-		BaseURL:       cfg.Agent.LLM.BaseURL,
-		Model:         cfg.Agent.LLM.Model,
-		UnifiedCreate: engine.UnifiedCreateEnabled(),
-	})
-}
-
-func newCLIShadowRunner(cfg *config.Config, eng *engine.Engine, structuredOutput plannerStructuredOutputMode) *intent.ShadowRunner {
-	planner := newCLIPlannerWithStructuredOutput(cfg, structuredOutput)
-	return intent.NewShadowRunner(planner, intent.ShadowRunnerOptions{
-		Enabled:      true,
-		Model:        cfg.Agent.LLM.Model,
-		QuotaSubject: eng.RateLimitSubjectKey(),
-		QuotaHook:    eng.RateLimitDecision,
-	})
 }

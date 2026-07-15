@@ -50,13 +50,11 @@ git config core.hooksPath .githooks
 
 ## Runtime feature flags
 
-**Config is YAML (`deploy/conf/config.yaml`).** Runtime flags have typed fields under `agent.features` / `agent.retrieval` / `agent.trace` / `agent.planner` (see `internal/config/runtime.go`). The deploy file also carries secrets directly: LLM key, STS service AK/SK, role URN, and PostgreSQL DSN. The env-var names below are still the historical parser names in code, but deployment must set the matching YAML fields instead of exporting environment variables. The default answer path uses the current demo stack: ds-v4-flash, qwen3 RRF retrieval, and LLM grounded rendering.
+**Config is YAML (`deploy/conf/config.yaml`).** Runtime flags have typed fields under `agent.features` / `agent.retrieval` / `agent.trace` (see `internal/config/runtime.go`). The deploy file also carries secrets directly: LLM key, STS service AK/SK, role URN, and PostgreSQL DSN. The env-var names below are still the historical parser names in code, but deployment must set the matching YAML fields instead of exporting environment variables. The default answer path uses the current demo stack: ds-v4-flash, qwen3 RRF retrieval, and LLM grounded rendering.
 
 | Var | Values | Effect |
 |---|---|---|
 | `COMPSHARE_ENABLE_MUTATING_TOOLS` | `1` | Enables start/stop/reboot/reset-password/create. Default off — read-only mode. |
-| `COMPSHARE_INTENT_ROUTER_MODE` | `shadow` | Runs the LLM intent router alongside ReAct for trace-only comparison. |
-| `COMPSHARE_DIRECT_DISPATCH_INTENTS` | default `resource,monitor,gpu_specs,stock,pricing,platform_image,custom_image,community_image`; explicit comma list overrides; `off` disables | Enables direct dispatch: the engine owns the intent-router call for those intents and dispatches deterministically (no ReAct). |
 | `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
 | `RAG_RETRIEVAL_MODE` | `qwen3_rrf` (default), `bm25_only`, `hybrid_cosine`, `hybrid_rerank`, `qwen3_full` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` or `LLM_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
 | `RAG_HYBRID_ENABLED` | `1` | Legacy switch; only consulted when `RAG_RETRIEVAL_MODE` is unset. |
@@ -70,7 +68,6 @@ git config core.hooksPath .githooks
 | `USE_SESSION_FACT_CONTEXT` | `1` | Injects a near-term fact cache (recent instance state, ~5min TTL) into context. Server-only wiring. **Go code default off; deploy config ships it on**. |
 | `USE_REACT_RESULT_PROJECTION` | `1` | Compresses large read tool results (list endpoints) before re-feeding ReAct. **Go code default off; deploy template ships it on.** |
 | `USE_REACT_HISTORY_COMPACTION` | `1` | Summarizes old turns once history exceeds the window. **Go code default off; deploy template ships it on.** |
-| `COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT` | `json_object` \| `json_schema` | Forces the intent router to emit via `response_format`. `json_object` requests bare JSON; `json_schema` (2026-06-23) requests the typed `IntentRoute` schema (`intent.IntentRouteResponseSchema`, **non-strict** — ds-v4-flash enforces the enum/const even without `strict`; live-probed). `json_schema` only takes effect when the model capability resolves to `OutputModeJSONSchema` (`SupportsJSONSchema`), degrading to `json_object` on object-only models. **Plumbed through config.yaml but shipped OFF** — the earlier `json_object` A/B showed no schema-valid improvement (json_object carries no schema); enable `json_schema` only after the intent-router accuracy A/B validates it. |
 | `MYSQL_DSN` | DSN string | PostgreSQL libpq URL (env var name kept for compat). Required by `compshare-agent server`; ignored by `compshare-agent cli`. |
 | `COMPSHARE_SERVICE_PUBLIC_KEY` | AK string | Service long-term public key for STS `AssumeRole`. Required when `agent.sts` is configured. |
 | `COMPSHARE_SERVICE_PRIVATE_KEY` | SK string | Service long-term private key for STS `AssumeRole`. Required when `agent.sts` is configured. |
@@ -91,12 +88,10 @@ The loader **refuses to start** if any pin mismatches. When the corpus changes, 
 ## Architecture
 
 ### Entry path
-`cmd/agent.go` (CLI loop) → `engine.Engine.Init()` → per-turn `Engine.Chat()`. `cmd/trace.go` is the env-flag wiring layer that builds the planner, retriever, renderer, and JSONL trace writer before injecting them into the engine.
+`cmd/agent.go` (CLI loop) → `engine.Engine.Init()` → per-turn `Engine.Chat()`. HTTP、CLI、缓存冷建和 durable rehydrate 都通过 `engine.NewSession` 创建同一个中心 AgentRuntime。`cmd/trace.go` 只负责检索、渲染和 trace 等运行依赖，不再创建独立 Router。
 
 ### Engine (`internal/engine/`)
-Runs a ReAct loop (`maxReActRounds=10`, `maxHistoryMessages=40`) with a tool-call budget per turn (`maxReadExpensiveCallsPerTurn=20`). Two dispatch paths coexist:
-1. **Direct dispatch** (formerly "Phase-1 cutover") — the default direct-dispatch set handles resource, monitor, GPU specs, stock, and image-list intents; `COMPSHARE_DIRECT_DISPATCH_INTENTS` can override the set or disable it with `off`. `tryRouteDispatch` calls handlers in `internal/intent/handler*.go` directly and emits `StepEvent`s without going through ReAct.
-2. **ReAct** — default; the LLM picks tools registered in `internal/tools/registry.go`. Mutating tools are blocked unless `COMPSHARE_ENABLE_MUTATING_TOOLS=1`.
+Runs a single central agent loop (`maxReActRounds=10`, `maxHistoryMessages=40`) with a tool-call budget per turn (`maxReadExpensiveCallsPerTurn=20`). The Agent receives compiled `AgentContext`, selects read capabilities or proposes writes, and observes tool results in the same loop. Read capabilities may return deterministic evidence/rendering after the Agent selects them. Mutating operations remain blocked unless `COMPSHARE_ENABLE_MUTATING_TOOLS=1` and must pass resolver, confirmation, permission and action-journal gates.
 
 Force-tool / hard-block priority chain (highest first) is documented inline in `engine.go` and **must be kept in sync** when adding new force paths: unsupported-historical-monitor canned reply > monitor-recall force tool (the account-billing-unsupported keyword hard-block was removed 2026-06-10 — that intent now dispatches to ReAct). Capability gating is required for any new object-`tool_choice` path: callers must short-circuit when `supportsObjectToolChoice=false` — gate on the per-model `llm.Capability` flag, never a hardcoded model name (e.g. `ds-v4-flash` 400'd on object tool_choice in the 2026-05-08 probe but was re-probed `true` on 2026-06-08, so the flag now reads true for it).
 
