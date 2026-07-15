@@ -19,11 +19,11 @@
   "metrics": {
     "kb_applicable": 50,
     "not_kb_applicable": 0,
-    "full": 14,
-    "partial": 25,
-    "miss": 11,
-    "full_rate": 0.28,
-    "coverage_rate_full_or_partial": 0.78
+    "full": 16,
+    "partial": 22,
+    "miss": 12,
+    "full_rate": 0.32,
+    "coverage_rate_full_or_partial": 0.76
   },
   "per_day": {
     "2026-06-26": 10,
@@ -70,9 +70,9 @@
       "date": "2026-06-29",
       "category": "model_api",
       "top3_chunk_ids": [
-        "v2-modelverse-bbe6b7bfb292a1ac",
-        "v2-windows-18b3136010f970c8",
-        "v2-modelverse-b10b0f5006357e40"
+        "v2-billing_rule-5d7423789139636b",
+        "v2-driver_cuda-08b26fbec80606c8",
+        "v2-resource_purchase-9682866fb2fc4726"
       ],
       "judge": {
         "case_id": "real-06228e5917a3bc27",
@@ -119,8 +119,8 @@
       "category": "billing",
       "top3_chunk_ids": [
         "v2-resource_purchase-a49bf03b0f53c014",
-        "v2-resource_purchase-581fc3349d6dff35",
-        "v2-billing_rule-2bb6c4dabc32100c"
+        "v2-billing_rule-2bb6c4dabc32100c",
+        "v2-resource_purchase-872a1c7e7b05c299"
       ],
       "judge": {
         "case_id": "real-0fb2d6f2a2dba780",
@@ -135,8 +135,8 @@
       "category": "billing",
       "top3_chunk_ids": [
         "v2-resource_purchase-aa3bfb8bbcf71e95",
-        "v2-billing_rule-b3d6e648d9eca773",
-        "v2-billing_rule-dfa26140778a8c8f"
+        "v2-resource_purchase-a49bf03b0f53c014",
+        "v2-resource_purchase-581fc3349d6dff35"
       ],
       "judge": {
         "case_id": "real-10eefed959bb891f",
@@ -150,15 +150,15 @@
       "date": "2026-06-28",
       "category": "comfyui_image",
       "top3_chunk_ids": [
-        "ext-v2-resource_purchase-883c13ad74b028ce",
-        "ext-v2-image-9f37d91270cd0ae8",
+        "ext-v2-resource_purchase-9089539dd67128ae",
+        "ext-v2-image-202b82e1922a5a21",
         "ext-v2-resource_purchase-ea6cabe96fe105a9"
       ],
       "judge": {
         "case_id": "real-13ce3b287ab596ee",
         "kb_applicable": true,
-        "retrieval_grade": "partial",
-        "reason_category": "partial_evidence"
+        "retrieval_grade": "full",
+        "reason_category": "grounded"
       }
     },
     {
@@ -166,9 +166,9 @@
       "date": "2026-07-08",
       "category": "instance_lifecycle",
       "top3_chunk_ids": [
+        "v2-resource_purchase-2f92082066da08fd",
         "v2-resource_purchase-f2e72a2a0a07f253",
-        "v2-image-ec6545894dd480d5",
-        "v2-resource_purchase-1d0e6d9a2ed73f66"
+        "v2-image-ec6545894dd480d5"
       ],
       "judge": {
         "case_id": "real-14d1004f6c93b68e",
@@ -182,7 +182,7 @@
       "date": "2026-07-09",
       "category": "environment_troubleshooting",
       "top3_chunk_ids": [
-        "v2-driver_cuda-9021191ba9602987",
+        "v2-driver_cuda-38d9cfadb460c200",
         "v2-driver_cuda-9a2b8d9435cce67a",
         "ext-dockerfile-cuda-image-build-001"
       ],
@@ -198,9 +198,9 @@
       "date": "2026-07-09",
       "category": "billing",
       "top3_chunk_ids": [
+        "v2-resource_purchase-ac94d9679403ee37",
         "v2-resource_purchase-2f69fc3a9ba0d7f0",
-        "v2-resource_purchase-08fd968ffb94e419",
-        "v2-billing_rule-a6888bcda5da0aec"
+        "v2-resource_purchase-872a1c7e7b05c299"
       ],
       "judge": {
         "case_id": "real-15f26f6809613b7e",
@@ -247,8 +247,8 @@
       "category": "instance_lifecycle",
       "top3_chunk_ids": [
         "v2-resource_purchase-aa3bfb8bbcf71e95",
-        "v2-resource_purchase-1d0e6d9a2ed73f66",
-        "v2-billing_rule-dfa26140778a8c8f"
+        "v2-resource_purchase-2f92082066da08fd",
+        "v2-resource_purchase-ed003861d9069698"
       ],
       "judge": {
         "case_id": "real-2074c7712bbb65fe",
@@ -278,9 +278,9 @@
       "date": "2026-06-26",
       "category": "model_api",
       "top3_chunk_ids": [
-        "v2-resource_purchase-058e9a3485da79c3",
-        "v2-billing_rule-6d3b7334e9a3f942",
-        "v2-resource_purchase-ac1ad1cd356a4d89"
+        "v2-resource_purchase-7512374233e96097",
+        "v2-driver_cuda-60393ac0506a5f9f",
+        "v2-resource_purchase-872a1c7e7b05c299"
       ],
       "judge": {
         "case_id": "real-2912bf8f80316403",
@@ -294,9 +294,9 @@
       "date": "2026-07-01",
       "category": "files_storage",
       "top3_chunk_ids": [
-        "v2-billing_rule-4666714a8fbb31fa",
+        "v2-linux_ops-c8a5fe7bd65795ad",
         "v2-resource_purchase-5f4ae896503c75e4",
-        "v2-driver_cuda-3ec98dc0fb4de5d6"
+        "v2-resource_purchase-1a7392bf1f687588"
       ],
       "judge": {
         "case_id": "real-2d17a70bab94c600",
@@ -310,8 +310,8 @@
       "date": "2026-07-01",
       "category": "files_storage",
       "top3_chunk_ids": [
-        "v2-resource_purchase-67499289e1ee6581",
-        "v2-image-36a6eee0f2ee2be8",
+        "v2-resource_purchase-1a7392bf1f687588",
+        "v2-image-645ce32e28972074",
         "ext-model-files-persistence-boundary-001"
       ],
       "judge": {
@@ -326,7 +326,7 @@
       "date": "2026-06-27",
       "category": "access_network",
       "top3_chunk_ids": [
-        "v2-resource_purchase-5e6e01d8895f25cc",
+        "ext-v2-image-d30ab46e140a245a",
         "v2-login-0d952796cff9f12a",
         "ext-webapp-streamlit-uvicorn-remote-001"
       ],
@@ -342,9 +342,9 @@
       "date": "2026-07-09",
       "category": "comfyui_image",
       "top3_chunk_ids": [
+        "ext-v2-gpu_troubleshooting-386a83e1f51dc054",
         "ext-v2-image-fd24cc80ffe189af",
-        "ext-v2-image-85c7fed1778e1d71",
-        "ext-v2-image-a12b67525f5050b8"
+        "ext-v2-image-abf44e2b1a3cc3e0"
       ],
       "judge": {
         "case_id": "real-3865cd0be33b90aa",
@@ -358,7 +358,7 @@
       "date": "2026-07-09",
       "category": "access_network",
       "top3_chunk_ids": [
-        "v2-resource_purchase-f7fdeec7138c628e",
+        "v2-login-7f65bb11388e29c6",
         "ext-vscode-remote-server-001",
         "ext-linux-ssh-keepalive-001"
       ],
@@ -374,9 +374,9 @@
       "date": "2026-07-04",
       "category": "comfyui_image",
       "top3_chunk_ids": [
+        "v2-image-e9ad8067345e3cf4",
         "ext-comfyui-manager-001",
-        "ext-comfyui-custom-nodes-001",
-        "v2-image-61b8cd3a21952d53"
+        "ext-comfyui-custom-nodes-001"
       ],
       "judge": {
         "case_id": "real-3ab019c81f6164b6",
@@ -413,8 +413,8 @@
       "judge": {
         "case_id": "real-415c8125db892ca7",
         "kb_applicable": true,
-        "retrieval_grade": "partial",
-        "reason_category": "partial_evidence"
+        "retrieval_grade": "full",
+        "reason_category": "grounded"
       }
     },
     {
@@ -438,15 +438,15 @@
       "date": "2026-07-09",
       "category": "access_network",
       "top3_chunk_ids": [
-        "v2-resource_purchase-68146f3efe3cd21d",
-        "v2-resource_purchase-84f8982f16e8a3a4",
-        "v2-resource_purchase-b1bc33fcb997adc5"
+        "v2-resource_purchase-ce3a1e83c14103ea",
+        "v2-resource_purchase-dd8a7011679068d2",
+        "v2-resource_purchase-ed003861d9069698"
       ],
       "judge": {
         "case_id": "real-4bccf35d1155ec72",
         "kb_applicable": true,
-        "retrieval_grade": "partial",
-        "reason_category": "partial_evidence"
+        "retrieval_grade": "full",
+        "reason_category": "grounded"
       }
     },
     {
@@ -454,9 +454,9 @@
       "date": "2026-07-08",
       "category": "files_storage",
       "top3_chunk_ids": [
-        "v2-billing_rule-10526dd7c2c683f1",
+        "v2-billing_rule-f848fe7924f5a3c5",
         "v2-login-0c25ec8404639cf2",
-        "v2-login-7352e383617cae25"
+        "v2-login-5cc0d1640532dff6"
       ],
       "judge": {
         "case_id": "real-509c8970c6795352",
@@ -486,9 +486,9 @@
       "date": "2026-07-04",
       "category": "instance_lifecycle",
       "top3_chunk_ids": [
-        "v2-resource_purchase-57422968be22803b",
-        "v2-billing_rule-42340df9fea28c10",
-        "v2-resource_purchase-1d0e6d9a2ed73f66"
+        "v2-resource_purchase-c0f957a9419ac180",
+        "v2-resource_purchase-2f92082066da08fd",
+        "v2-resource_purchase-f8bd3960814aa2e8"
       ],
       "judge": {
         "case_id": "real-5ef9c7281516018f",
@@ -502,9 +502,9 @@
       "date": "2026-07-03",
       "category": "files_storage",
       "top3_chunk_ids": [
-        "ext-v2-resource_purchase-e5612b9839e7c6ce",
-        "v2-image-e5bf921163f236ac",
-        "ext-v2-image-fa4b004ae1dbcfae"
+        "ext-v2-image-559f6dfab893dc2b",
+        "v2-image-fbc07e009185f673",
+        "ext-v2-resource_purchase-840ac59e231c49c1"
       ],
       "judge": {
         "case_id": "real-5f66aae0bd3ecb46",
@@ -519,8 +519,8 @@
       "category": "access_network",
       "top3_chunk_ids": [
         "v2-login-edf496a3ba111d37",
-        "ext-v2-login-ed2cf7354b973077",
-        "v2-resource_purchase-3594779c70bf883d"
+        "v2-login-9d44256d52a6aa3b",
+        "ext-v2-login-e5aa145ddbe84e7d"
       ],
       "judge": {
         "case_id": "real-600d35c95c0434ac",
@@ -536,7 +536,7 @@
       "top3_chunk_ids": [
         "v2-login-1a2da42683ce6fbe",
         "v2-login-fdb2eefdb5525ae0",
-        "v2-resource_purchase-84f8982f16e8a3a4"
+        "v2-resource_purchase-ce3a1e83c14103ea"
       ],
       "judge": {
         "case_id": "real-625d6bf92bda4590",
@@ -550,9 +550,9 @@
       "date": "2026-06-27",
       "category": "access_network",
       "top3_chunk_ids": [
-        "v2-login-58b90b52fe5859a6",
-        "v2-login-1af2042d94409c91",
-        "v2-resource_purchase-f7fdeec7138c628e"
+        "v2-login-827cd17b58e8b142",
+        "v2-login-7f65bb11388e29c6",
+        "v2-linux_ops-74d9d85bb5ea7bfb"
       ],
       "judge": {
         "case_id": "real-699312922e67d717",
@@ -567,14 +567,14 @@
       "category": "billing",
       "top3_chunk_ids": [
         "v2-resource_purchase-2f69fc3a9ba0d7f0",
-        "v2-resource_purchase-08fd968ffb94e419",
+        "v2-resource_purchase-ac94d9679403ee37",
         "v2-billing_rule-a6888bcda5da0aec"
       ],
       "judge": {
         "case_id": "real-6ac4f955f7bc5e1d",
         "kb_applicable": true,
-        "retrieval_grade": "miss",
-        "reason_category": "no_evidence"
+        "retrieval_grade": "partial",
+        "reason_category": "partial_evidence"
       }
     },
     {
@@ -582,9 +582,9 @@
       "date": "2026-07-03",
       "category": "comfyui_image",
       "top3_chunk_ids": [
-        "v2-windows-579a47bf497a1826",
+        "v2-windows-21457691ef2496f0",
         "ext-serve-local-path-001",
-        "v2-resource_purchase-67499289e1ee6581"
+        "v2-resource_purchase-1a7392bf1f687588"
       ],
       "judge": {
         "case_id": "real-6bee07ee3f76aa30",
@@ -598,15 +598,15 @@
       "date": "2026-07-09",
       "category": "files_storage",
       "top3_chunk_ids": [
-        "v2-resource_purchase-37fdd9cb0abb59e4",
+        "v2-resource_purchase-264f263ff28d5447",
         "v2-windows-2fdc6962073cc434",
-        "v2-windows-579a47bf497a1826"
+        "v2-windows-21457691ef2496f0"
       ],
       "judge": {
         "case_id": "real-70f3b4491c54805a",
         "kb_applicable": true,
-        "retrieval_grade": "full",
-        "reason_category": "grounded"
+        "retrieval_grade": "partial",
+        "reason_category": "partial_evidence"
       }
     },
     {
@@ -621,8 +621,8 @@
       "judge": {
         "case_id": "real-77087bda9d5844b0",
         "kb_applicable": true,
-        "retrieval_grade": "partial",
-        "reason_category": "partial_evidence"
+        "retrieval_grade": "miss",
+        "reason_category": "no_evidence"
       }
     },
     {
@@ -630,9 +630,9 @@
       "date": "2026-06-28",
       "category": "comfyui_image",
       "top3_chunk_ids": [
-        "ext-v2-image-6104461a4a189dc8",
+        "ext-v2-image-1be4d40632e9fd08",
         "ext-comfyui-custom-nodes-001",
-        "ext-comfyui-manager-001"
+        "v2-image-e9ad8067345e3cf4"
       ],
       "judge": {
         "case_id": "real-7b589d8e55acbd22",
@@ -648,7 +648,7 @@
       "top3_chunk_ids": [
         "v2-modelverse-d39a25ace5934f45",
         "v2-modelverse-a0c8882c939eaf8f",
-        "v2-modelverse-e660c2c998035a12"
+        "v2-modelverse-cb19dd7313a3ae9e"
       ],
       "judge": {
         "case_id": "real-7b9643e0e4175e84",
@@ -664,7 +664,7 @@
       "top3_chunk_ids": [
         "v2-resource_purchase-3a90085d89e377f6",
         "v2-resource_purchase-2f69fc3a9ba0d7f0",
-        "v2-resource_purchase-f8120f40ee4795c9"
+        "v2-resource_purchase-872a1c7e7b05c299"
       ],
       "judge": {
         "case_id": "real-7e349d983332d29d",
@@ -678,9 +678,9 @@
       "date": "2026-06-26",
       "category": "files_storage",
       "top3_chunk_ids": [
-        "v2-resource_purchase-67499289e1ee6581",
-        "ext-linux-transfer-001",
-        "v2-login-d840c9243a9fc3fa"
+        "v2-resource_purchase-1a7392bf1f687588",
+        "ext-rclone-sync-copy-001",
+        "ext-linux-transfer-001"
       ],
       "judge": {
         "case_id": "real-8013243bb6f37e55",
@@ -695,8 +695,8 @@
       "category": "files_storage",
       "top3_chunk_ids": [
         "ext-linux-disk-cleanup-001",
-        "v2-billing_rule-42340df9fea28c10",
-        "ext-model-files-persistence-boundary-001"
+        "v2-resource_purchase-f8bd3960814aa2e8",
+        "v2-resource_purchase-2f92082066da08fd"
       ],
       "judge": {
         "case_id": "real-8124d3fc938f8500",
@@ -742,15 +742,15 @@
       "date": "2026-07-01",
       "category": "model_api",
       "top3_chunk_ids": [
+        "v2-resource_purchase-b977ec82693da433",
         "v2-billing_rule-fb03cfe05a2ae982",
-        "v2-resource_purchase-2f69fc3a9ba0d7f0",
-        "v2-resource_purchase-e30600822d0db2a7"
+        "v2-resource_purchase-2f69fc3a9ba0d7f0"
       ],
       "judge": {
         "case_id": "real-9a5aad9ce1e9c748",
         "kb_applicable": true,
-        "retrieval_grade": "partial",
-        "reason_category": "partial_evidence"
+        "retrieval_grade": "miss",
+        "reason_category": "no_evidence"
       }
     },
     {
@@ -774,9 +774,9 @@
       "date": "2026-07-09",
       "category": "instance_lifecycle",
       "top3_chunk_ids": [
-        "v2-billing_rule-dfa26140778a8c8f",
-        "v2-resource_purchase-c5e93a8c2467362d",
-        "ext-v2-resource_purchase-a106e87ec69841a2"
+        "v2-billing_rule-7ff3ef302cba5933",
+        "ext-v2-resource_purchase-064ca02f70b583b8",
+        "ext-v2-image-085beff1753d8eb0"
       ],
       "judge": {
         "case_id": "real-bc5262c4c06ea0c7",
@@ -790,9 +790,9 @@
       "date": "2026-07-09",
       "category": "billing",
       "top3_chunk_ids": [
-        "v2-resource_purchase-046e2547c57c77be",
         "v2-resource_purchase-a2b04efc21f66bc7",
-        "v2-resource_purchase-ad2065467d4c824c"
+        "v2-resource_purchase-ad2065467d4c824c",
+        "v2-resource_purchase-81003d68908f2da7"
       ],
       "judge": {
         "case_id": "real-c5b0f136edceff3d",
@@ -806,9 +806,9 @@
       "date": "2026-07-01",
       "category": "billing",
       "top3_chunk_ids": [
-        "v2-resource_purchase-08fd968ffb94e419",
-        "v2-resource_purchase-2f69fc3a9ba0d7f0",
-        "v2-resource_purchase-e30600822d0db2a7"
+        "v2-resource_purchase-ac94d9679403ee37",
+        "v2-resource_purchase-b977ec82693da433",
+        "v2-resource_purchase-bd2231c90e534689"
       ],
       "judge": {
         "case_id": "real-c5c136fef289dff9",
@@ -839,7 +839,7 @@
       "category": "comfyui_image",
       "top3_chunk_ids": [
         "ext-comfyui-cant-connect-001",
-        "v2-driver_cuda-0e56da46a3359a25",
+        "v2-driver_cuda-be7c3329f773a6f5",
         "ext-comfyui-start-001"
       ],
       "judge": {

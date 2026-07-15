@@ -103,8 +103,8 @@ func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("off-path load: %v", err)
 	}
-	if len(corpus.Chunks) != 562 {
-		t.Fatalf("external off: got %d chunks, want 562 (platform-only)", len(corpus.Chunks))
+	if len(corpus.Chunks) != 544 {
+		t.Fatalf("external off: got %d chunks, want 544 (platform-only)", len(corpus.Chunks))
 	}
 
 	onEnv := envFromMap(map[string]string{
@@ -116,7 +116,7 @@ func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("on-path merge load: %v", err)
 	}
-	if len(merged.Chunks) != 562+1118 {
+	if len(merged.Chunks) != 544+1180 {
 		t.Fatalf("external on: got %d chunks, want 1680 (merged)", len(merged.Chunks))
 	}
 
@@ -130,8 +130,8 @@ func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("degrade load should not error (external is additive): %v", err)
 	}
-	if len(degraded.Chunks) != 562 {
-		t.Fatalf("graceful degrade: got %d chunks, want 562 (platform-only fallback)", len(degraded.Chunks))
+	if len(degraded.Chunks) != 544 {
+		t.Fatalf("graceful degrade: got %d chunks, want 544 (platform-only fallback)", len(degraded.Chunks))
 	}
 }
 

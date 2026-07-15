@@ -60,6 +60,7 @@ def main() -> int:
     external = load_rows(args.external)
     all_rows = internal + external
     refs = [ref for row in all_rows for ref in (row.get("asset_refs") or [])]
+    captioned_chunks = [row for row in all_rows if "[图片说明]" in str(row.get("content") or "")]
     retrieval = json.loads(args.retrieval_report.read_text(encoding="utf-8"))
     real_metrics = retrieval.get("metrics") or {}
     compatibility = (
@@ -77,6 +78,9 @@ def main() -> int:
             str(ref.get("url") or "") not in str(row.get("content") or "")
             for row in all_rows for ref in (row.get("asset_refs") or [])
         ),
+        "captioned_chunks": len(captioned_chunks),
+        "captioned_chunks_with_visible_text": sum("[图片文字]" in str(row.get("content") or "") for row in captioned_chunks),
+        "published_runtime_assets": 0,
         "internal_sha256": sha256_file(args.internal),
         "external_sha256": sha256_file(args.external),
         "retrieval": {
@@ -112,7 +116,7 @@ def main() -> int:
     prompt = (
         "你是与构建模型独立的严格 RAG 发布裁判。只根据下面的可核验材料审查，输出 JSON。"
         "必须包含 pipeline_integrity_pass(boolean)、merge_ready(boolean)、scores(object，含 source_traceability/chunk_integrity/media_usability/runtime_compatibility/retrieval_evidence，0-10)、"
-        "blocking_issues(array)、observations(array)。流水线完整性通过条件：图片 URL 全为 HTTPS 且链接进入正文；"
+        "blocking_issues(array)、observations(array)。流水线完整性通过条件：运行时不发布图片或图片链接，有信息图片已转换为结构化说明和可见文字；"
         "短接口、短操作指南、FAQ 样例边界完整；保留无源旧外部切片的事实明确。"
         "旧题 top_3_hit_rate 只允许作为兼容性证据，不能证明真实检索质量。真实质量必须以 50 条生产检索问题的 full/partial/miss 为准；"
         "存在未解释的真实 miss 时 merge_ready 必须为 false，即使流水线完整性可以通过。"

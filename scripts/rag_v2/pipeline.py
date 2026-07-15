@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import time
 from typing import Any, Iterable
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 import zipfile
 
@@ -21,6 +21,16 @@ import zipfile
 MAX_CONTENT_RUNES = 4000
 TARGET_CONTENT_RUNES = 3400
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+FLEX_IMAGE_RE = re.compile(r"!\[([^\]\n]{0,500})\]\(\s*([^\s)]+)(?:\s+\"[^\"\n]*\")?\s*\)")
+GENERAL_IMAGE_RE = re.compile(
+    r"!\[([^\]\n]{0,500})\]\(\s*(?:<([^>\n]{1,2000})>|([^\n)]{1,2000}))\s*\)"
+)
+HTML_IMAGE_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE | re.DOTALL)
+HTML_ATTR_RE = re.compile(r"\b(src|alt)\s*=\s*([\"'])(.*?)\2", re.IGNORECASE | re.DOTALL)
+DIRECT_IMAGE_LINK_RE = re.compile(
+    r"(?<!!)\[([^\]\n]{1,500})\]\((https?://[^\s)]+\.(?:png|jpe?g|gif|webp|bmp|tiff?)(?:\?[^\s)]*)?)\)",
+    re.IGNORECASE,
+)
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 FRONT_MATTER_RE = re.compile(r"\A---\s*\n.*?\n---\s*\n", re.DOTALL)
 HTML_NOISE_RE = re.compile(r"<(?:script|style)\b.*?</(?:script|style)>", re.DOTALL | re.IGNORECASE)
@@ -126,8 +136,35 @@ def clean_public_text(text: str) -> str:
     text = FRONT_MATTER_RE.sub("", text)
     text = HTML_NOISE_RE.sub("", text)
     text = HTML_COMMENT_RE.sub("", text)
+    text = normalize_image_markup(text)
     lines = [SPACE_RE.sub(" ", line).rstrip() for line in text.splitlines()]
     return BLANK_RE.sub("\n\n", "\n".join(lines)).strip() + "\n"
+
+
+def normalize_image_markup(text: str) -> str:
+    """Normalize supported image syntaxes before VL discovery."""
+    def html_image(match: re.Match[str]) -> str:
+        attrs = {name.lower(): value.strip() for name, _quote, value in HTML_ATTR_RE.findall(match.group(0))}
+        src = attrs.get("src", "")
+        return f"![{attrs.get('alt', '')}]({src})" if src else ""
+
+    def markdown_image(match: re.Match[str]) -> str:
+        alt = match.group(1).strip()
+        ref = (match.group(2) or match.group(3) or "").strip()
+        # Tolerate invalid exports containing literal spaces or non-ASCII
+        # characters in image targets, then hand a canonical target to IMAGE_RE.
+        if ref.endswith('"') and ' "' in ref:
+            ref = ref.rsplit(' "', 1)[0].strip()
+        # Keep already-valid references byte-stable so incremental builds can
+        # reuse the prior VL lock. Literal spaces are the only characters that
+        # prevent IMAGE_RE from consuming the normalized target.
+        ref = ref.replace(" ", "%20")
+        return f"![{alt}]({ref})"
+
+    text = HTML_IMAGE_RE.sub(html_image, text)
+    text = GENERAL_IMAGE_RE.sub(markdown_image, text)
+    text = FLEX_IMAGE_RE.sub(lambda match: f"![{match.group(1).strip()}]({match.group(2).strip()})", text)
+    return DIRECT_IMAGE_LINK_RE.sub(lambda match: f"![{match.group(1).strip()}]({match.group(2).strip()})", text)
 
 
 def markdown_title(text: str, fallback: str) -> str:
@@ -434,6 +471,7 @@ def describe_assets(
     assets_dir: Path,
     raw_asset_base_url: str,
     workers: int = 8,
+    reuse_existing_notes: bool = False,
 ) -> tuple[dict[tuple[str, str, str], AssetNote], list[dict[str, Any]]]:
     notes: dict[tuple[str, str, str], AssetNote] = {}
     failures: list[dict[str, Any]] = []
@@ -451,6 +489,7 @@ def describe_assets(
 
     lock_path = assets_dir.parent / "asset_lock.json"
     lock_fingerprint = sha256_bytes(json.dumps({
+        "processor": "caption-only-v3",
         "model": model,
         "fallback_model": fallback_model,
         "references": sorted(
@@ -459,6 +498,9 @@ def describe_assets(
             for doc, alt, ref in aliases
         ),
     }, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    reusable_notes: dict[tuple[str, str, str], AssetNote] = {}
+    reusable_failures: dict[tuple[str, str, str], dict[str, Any]] = {}
+    reusable_failures_by_path: dict[tuple[str, str], dict[str, Any]] = {}
     if lock_path.exists():
         try:
             locked = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -467,6 +509,20 @@ def describe_assets(
                     note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
                     notes[(str(item["source_id"]), str(item["source_path"]), str(item["ref"]))] = AssetNote(**note_fields)
                 return notes, list(locked.get("failures") or [])
+            if reuse_existing_notes:
+                for item in locked.get("notes") or []:
+                    note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
+                    note = AssetNote(**note_fields)
+                    if note.model in {model, fallback_model}:
+                        reusable_notes[(str(item["source_id"]), str(item["source_path"]), str(item["ref"]))] = note
+                for item in locked.get("failures") or []:
+                    failure_key = (
+                        str(item.get("source_id") or ""),
+                        str(item.get("source") or ""),
+                        str(item.get("ref") or ""),
+                    )
+                    reusable_failures[failure_key] = dict(item)
+                    reusable_failures_by_path[(failure_key[1], failure_key[2])] = dict(item)
         except (OSError, ValueError, TypeError, KeyError):
             notes = {}
 
@@ -500,7 +556,8 @@ def describe_assets(
                         last_download_error: Exception | None = None
                         for download_attempt in range(1):
                             try:
-                                request = Request(decoded, headers={"User-Agent": "compshare-rag-v2/1.0"})
+                                request_url = quote(decoded, safe="/:?&=%#@+;,[]!$'()*")
+                                request = Request(request_url, headers={"User-Agent": "compshare-rag-v2/1.0"})
                                 with urlopen(request, timeout=10) as response:
                                     data = response.read(20 * 1024 * 1024 + 1)
                                     content_type = response.headers.get_content_type()
@@ -594,8 +651,38 @@ def describe_assets(
             severity = "warning" if doc.source_origin.startswith("external_") else "error"
             return key, None, {"source": doc.source_path, "ref": ref, "reason": f"vl_failed:{type(exc).__name__}:{exc}", "severity": severity}
 
+    pending_groups: list[list[tuple[SourceDocument, str, str]]] = []
+    for aliases in task_groups.values():
+        first_doc, _first_alt, first_ref = aliases[0]
+        reusable = reusable_notes.get((first_doc.source_id, first_doc.source_path, first_ref))
+        if reusable is not None:
+            for alias_doc, _alias_alt, alias_ref in aliases:
+                notes[(alias_doc.source_id, alias_doc.source_path, alias_ref)] = replace(reusable, source_path=alias_doc.source_path)
+            continue
+        reusable_failure = reusable_failures.get((first_doc.source_id, first_doc.source_path, first_ref))
+        if reusable_failure is None:
+            reusable_failure = reusable_failures_by_path.get((first_doc.source_path, first_ref))
+        # Internal/public-platform images are mandatory. Never preserve a prior
+        # failure for them: retry it and let the release gate block if it still
+        # cannot be described. Missing images in third-party snapshots remain
+        # non-blocking source warnings.
+        if reusable_failure is not None and all(alias_doc.source_origin.startswith("external_") for alias_doc, _alt, _ref in aliases):
+            for alias_doc, _alias_alt, alias_ref in aliases:
+                failures.append({
+                    **reusable_failure,
+                    "source_id": alias_doc.source_id,
+                    "source": alias_doc.source_path,
+                    "ref": alias_ref,
+                    "severity": "warning",
+                })
+            continue
+        pending_groups.append(aliases)
+
+    if reuse_existing_notes:
+        print(f"asset_groups={len(task_groups)} reused={len(task_groups) - len(pending_groups)} pending_vl={len(pending_groups)}", flush=True)
+
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        pending = {executor.submit(process, aliases[0]): aliases for aliases in task_groups.values()}
+        pending = {executor.submit(process, aliases[0]): aliases for aliases in pending_groups}
         for future in as_completed(pending):
             aliases = pending[future]
             key, note, failure = future.result()
@@ -604,7 +691,13 @@ def describe_assets(
                     notes[(alias_doc.source_id, alias_doc.source_path, alias_ref)] = replace(note, source_path=alias_doc.source_path)
             if failure is not None:
                 for alias_doc, _alias_alt, alias_ref in aliases:
-                    failures.append({**failure, "source": alias_doc.source_path, "ref": alias_ref})
+                    failures.append({
+                        **failure,
+                        "source_id": alias_doc.source_id,
+                        "source": alias_doc.source_path,
+                        "ref": alias_ref,
+                        "severity": "warning" if alias_doc.source_origin.startswith("external_") else "error",
+                    })
     locked_notes = []
     for (source_id, source_path, ref), note in sorted(notes.items()):
         locked_notes.append({"source_id": source_id, "source_path": source_path, "ref": ref, **asdict(note)})
@@ -618,6 +711,8 @@ def describe_assets(
 
 
 def inject_asset_notes(doc: SourceDocument, notes: dict[tuple[str, str, str], AssetNote]) -> tuple[str, list[dict[str, Any]]]:
+    # Images are build-time evidence only. The runtime corpus carries the
+    # structured VL extraction, never a hosted asset or clickable URL.
     media: list[dict[str, Any]] = []
 
     def replace(match: re.Match[str]) -> str:
@@ -627,13 +722,6 @@ def inject_asset_notes(doc: SourceDocument, notes: dict[tuple[str, str, str], As
             return f"[原文图片未包含在来源快照：{alt}]" if alt and alt.lower() not in {"image", "img"} else ""
         if not note.include_in_rag:
             return ""
-        media.append({
-            "asset_id": note.asset_id,
-            "url": note.public_url,
-            "description": note.description,
-            "confidence": note.confidence,
-            "visual_type": note.visual_type,
-        })
         parts = [f"[图片说明] {note.description}"]
         if note.visible_text:
             parts.append("[图片文字] " + "；".join(note.visible_text))
@@ -641,7 +729,6 @@ def inject_asset_notes(doc: SourceDocument, notes: dict[tuple[str, str, str], As
             parts.append("[界面控件] " + "；".join(note.controls))
         if note.relations:
             parts.append("[界面关系] " + "；".join(note.relations))
-        parts.append(f"[查看原图]({note.public_url})")
         return "\n\n".join(parts)
 
     return IMAGE_RE.sub(replace, doc.text), media
@@ -951,10 +1038,16 @@ def build_chunks(
 def _question_patterns(title: str, heading_path: list[str], area: str, source_path: str = "", content: str = "") -> list[str]:
     values = [title, "怎么" + title, title + "怎么办", " ".join(heading_path), area.replace("_", " ")]
     haystack = (title + " " + " ".join(heading_path) + " " + source_path + " " + content[:1200]).lower()
-    if area == "billing_rule" and any(token in haystack for token in ("磁盘", "硬盘", "计费概览")):
-        values.extend(["磁盘空间怎么收费", "系统盘免费额度", "数据盘收费", "100GB 原始空间免费吗"])
+    location = (title + " " + " ".join(heading_path) + " " + source_path).lower()
+    disk_excerpt = content[:2000]
+    disk_billing_source = (
+        any(token in location for token in ("计费概览", "磁盘计费", "硬盘计费", "operation/charge/bill"))
+        or bool(re.search(r"系统盘.{0,100}(?:免费|100\s*G(?:B)?)|(?:免费|100\s*G(?:B)?).{0,100}系统盘", disk_excerpt, re.DOTALL | re.IGNORECASE))
+    )
+    if disk_billing_source:
+        values.extend(["磁盘空间怎么收费", "系统盘免费额度", "系统盘100GB为什么还收费", "数据盘收费", "100GB 原始空间免费吗"])
     if "coding plan" in haystack or "code plan" in haystack:
-        values.extend(["删除 Coding Plan 包", "Coding Plan 套餐管理", "Coding Plan 支持退款吗", "Coding Plan 不支持退款"])
+        values.extend(["删除 Coding Plan 包", "Coding Plan 套餐管理", "Coding Plan 支持退款吗", "Coding Plan 不支持退款", "Coding Plan 单次调用为什么扣多次", "不同模型额度倍率"])
     if any(token in haystack for token in ("checkcompshareresourcecapacity", "describeavailablecompshareinstancetypes", "资源可用性", "可用机型")):
         values.extend(["一直暂无资源是什么情况", "怎么检查库存", "Normal 状态一定有库存吗", "ResourceEnough", "SoldOut"])
     out: list[str] = []
