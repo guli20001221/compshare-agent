@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,52 +80,6 @@ func TestRefreshSystemPrompt_PreservesBaseUserContext(t *testing.T) {
 		"base user context must be preserved")
 	assert.True(t, strings.Contains(modelInput, "train-node-1 uhost-111"),
 		"legacy session identity must be appended without restoring write trust")
-}
-
-func TestPlannerInput_ReceivesLastIntent(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
-		Plan: unknownEngineTestPlan(),
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		Model:          "test",
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-	})
-
-	eng.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaV1,
-		LastIntent:    "resource_info",
-	}, 1)
-
-	_, err := eng.ChatWithOptions(context.Background(), "重启它", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Len(t, planner.calls, 1)
-
-	assert.Equal(t, "resource_info", planner.calls[0].LastIntent,
-		"planner must receive LastIntent from session state")
-	assert.Equal(t, "重启它", planner.calls[0].UserText)
-}
-
-func TestPlannerInput_LastIntentEmptyWhenNotHydrated(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
-		Plan: unknownEngineTestPlan(),
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		Model:          "test",
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-	})
-
-	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Len(t, planner.calls, 1)
-
-	assert.Empty(t, planner.calls[0].LastIntent,
-		"planner LastIntent must be empty when session state not hydrated")
 }
 
 func TestRefreshSystemPrompt_ClearsStaleInstance(t *testing.T) {

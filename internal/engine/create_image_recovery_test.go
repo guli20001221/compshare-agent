@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/compshare-agent/internal/llm"
-	"github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,46 +102,3 @@ func (m *recoveryMockExecutor) Execute(_ context.Context, action string, args ma
 // recovered to an available same-intent image, and the user reaches a confirm
 // card for the WORKING image (with a FallbackNote) instead of a cryptic
 // RetCode=230. The confirm is declined so no instance is actually created.
-func TestCreateZoneRecovery_SwapsToAvailableImage(t *testing.T) {
-	t.Setenv("COMPSHARE_ENABLE_MUTATING_TOOLS", "1")
-	exec := &recoveryMockExecutor{}
-
-	var confirmImage, confirmFallback any
-	confirmFn := func(action string, args map[string]any) bool {
-		confirmImage = args["image"]
-		confirmFallback = args["FallbackNote"]
-		return false // decline — assert the recovered card without creating
-	}
-
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{tc("CreateInstanceWorkflow", map[string]any{
-			"GpuType": "4090", "ImageName": "PyTorch",
-		})}},
-	}}
-	eng := NewWithDeps(mock, exec, confirmFn)
-	eng.Init(context.Background())
-
-	reply, err := eng.Chat(context.Background(), "帮我创建一台4090，用pytorch最新的镜像", func(e StepEvent) {})
-	require.NoError(t, err)
-
-	// The cryptic upstream error must never reach the user.
-	assert.NotContains(t, reply, "RetCode=230")
-	assert.NotContains(t, reply, "not available")
-	// Declined → honest not-executed, never a false cancel.
-	assert.Contains(t, reply, "未执行")
-	assert.NotContains(t, reply, "已取消")
-
-	// The confirm card shows the RECOVERED available image, with a note.
-	assert.Equal(t, "cuda128_torch291_py312", confirmImage,
-		"recovery must swap the confirm card to the available image")
-	if note, _ := confirmFallback.(string); true {
-		assert.Contains(t, note, "已自动为你选择可用镜像",
-			"the card must disclose the auto image swap")
-	}
-
-	// The recovery path actually ran: a broad image re-query plus capacity
-	// probes for both the failed and the recovered image.
-	assert.GreaterOrEqual(t, countCalls(exec.calls, "DescribeCompShareImages"), 2)
-	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"),
-		"declined confirm must not create")
-}

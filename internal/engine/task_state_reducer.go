@@ -144,10 +144,6 @@ func valueOrEmpty(items *[]string) []string {
 }
 
 func (e *Engine) executeTaskStateDelta(args map[string]any, onStep func(StepEvent)) string {
-	if !e.centralAgentRuntimeEnabled {
-		payload, _ := json.Marshal(TaskStateResult{Error: "central Agent runtime is not enabled"})
-		return string(payload)
-	}
 	delta, err := decodeTaskStateDelta(args)
 	if err != nil {
 		return taskStateError(delta.Relation, err, onStep)

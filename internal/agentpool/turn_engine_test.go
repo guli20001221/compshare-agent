@@ -32,7 +32,6 @@ func TestNewTurnEngineWithOptions_UsesCallerTurnOptionsWithoutEnteringCache(t *t
 	})
 	require.NoError(t, err)
 	require.NotNil(t, eng)
-	require.True(t, eng.CentralAgentRuntimeEnabled(), "private durable turn engines must use the central Agent runtime")
 	assert.Zero(t, pool.SizeForTest())
 }
 

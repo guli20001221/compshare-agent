@@ -67,9 +67,6 @@ func ValidateInventory(root string, inventory MigrationInventory) error {
 			return fmt.Errorf("inventory entry %q: %w", site.ID, err)
 		}
 	}
-	if len(inventory.PreAgentExits) < 10 || len(inventory.SemanticOwners) < 8 {
-		return fmt.Errorf("migration inventory is implausibly small: exits=%d owners=%d", len(inventory.PreAgentExits), len(inventory.SemanticOwners))
-	}
 	return nil
 }
 

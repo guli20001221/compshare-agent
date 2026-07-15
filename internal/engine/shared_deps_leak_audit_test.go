@@ -33,7 +33,7 @@ package engine
 //   leak surface, not here.
 // - Mutating verbs that don't match the verb prefix list (e.g. "RotateKey",
 //   "ApplyOverride"). These need allow-list maintenance when introduced.
-// - Setters on per-session types (e.g. *Engine.SetIntentPlanner is legitimate
+// - Setters on per-session types are legitimate
 //   — *Engine is constructed per session in NewSession, so its setters
 //   don't leak across tenants). These types are intentionally excluded.
 //
@@ -140,8 +140,6 @@ func TestSharedDeps_NoMutatingSetterLeakage(t *testing.T) {
 // Without this counter-test the audit could silently drift when SharedDeps
 // grows — a new mutable type could slip in unaudited.
 var nonAuditableFields = map[string]string{
-	"IntentPlannerModel":             "string — no methods",
-	"IntentPlannerEnabledIntents":    "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
 	"IntentRouteIntents":             "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
 	"GroundedGeneratorModel":         "string — no methods",
 	"FastTemplateRenderer":           "bool — no methods",
@@ -153,19 +151,7 @@ var nonAuditableFields = map[string]string{
 	"ReactHistoryCompactionEnabled":  "bool — no methods",
 	"IntentScopedReActPromptEnabled": "bool — no methods",
 	"ExternalExecutor":               "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
-	"IntentPlanner":                  "intent.IntentPlanner interface — concrete intent.IntentRouter verified clean (single exported method Plan, see TODO below for promotion criteria)",
 }
-
-// TODO(future): promote intent.IntentRouter into sharedDepConcreteTypes IF
-// either (a) it gains a second exported method whose semantics aren't
-// trivially obvious, or (b) production wiring starts handing out the
-// concrete *IntentRouter pointer rather than the IntentPlanner interface.
-// Verified at this PR: intent.IntentRouter only exports Plan(ctx,input)
-// (internal/intent/planner.go:101) — non-mutating, no setter. Behind
-// the IntentPlanner interface (engine.go:111), a setter would also
-// have to widen the interface or require an unsafe type assertion to
-// reach, both of which would be caught by code review. Not an
-// acceptance gap for this PR.
 
 func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {
 	sharedDepsType := reflect.TypeOf(SharedDeps{})

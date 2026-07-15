@@ -1,109 +1,14 @@
 package engine
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	openai "github.com/sashabaranov/go-openai"
-
 	"github.com/compshare-agent/internal/entity"
-	"github.com/compshare-agent/internal/intent"
-	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/workflow"
 )
-
-func (e *Engine) tryResumeWorkflowContextFrame(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if e.deferTaskCarryThisTurn {
-		return "", false
-	}
-	frame, ok := e.activeContextFrame(time.Now())
-	if !ok || frame.Kind != ContextFrameKindWorkflowTask || strings.TrimSpace(frame.Workflow) == "" {
-		return "", false
-	}
-	decision, err := e.resolveContextDecision(ctx, userMsg, dispatch.result.Plan.Intent, frame)
-	if err != nil || decision == nil {
-		return "", false
-	}
-	switch decision.Decision {
-	case ContextDecisionNewTask, ContextDecisionClearContext:
-		e.clearContextFrame()
-		return "", false
-	case ContextDecisionClarify:
-		if decision.Clarify != "" {
-			return e.deployReply(dispatch.result, dispatch.latency, decision.Clarify)
-		}
-		return "", false
-	case ContextDecisionContinueTask:
-	default:
-		return "", false
-	}
-	updates := decision.SlotUpdates
-	if len(updates) == 0 {
-		updates = workflowTaskSlotUpdatesFromUserText(frame.Workflow, frame.MissingSlots, userMsg)
-	}
-	if len(updates) == 0 {
-		if strings.TrimSpace(decision.Clarify) != "" {
-			return e.deployReply(dispatch.result, dispatch.latency, strings.TrimSpace(decision.Clarify))
-		}
-		return "", false
-	}
-	return e.resumeWorkflowContextFrameWithSlotUpdates(ctx, dispatch, userMsg, frame, updates, onStep)
-}
-
-func (e *Engine) resumeWorkflowContextFrameWithSlotUpdates(ctx context.Context, dispatch routerDispatchResult, userMsg string, frame ContextFrame, updates map[string]string, onStep func(StepEvent)) (string, bool) {
-	updates = sanitizeWorkflowTaskSlotUpdates(frame, updates, userMsg)
-	slots := mergeStringMaps(frame.Slots, updates)
-	args, missing := workflowArgsFromTaskSlots(frame.Workflow, slots)
-	if len(missing) > 0 {
-		next := frame
-		next.Slots = slots
-		next.MissingSlots = missing
-		next.FailureReason = workflowMissingSlotsClarification(frame.Workflow, missing)
-		next.ProducedAtUnix = time.Now().Unix()
-		e.setContextFrame(next)
-		return e.deployReply(dispatch.result, dispatch.latency, next.FailureReason)
-	}
-
-	// Keep the fully resolved task until the workflow actually succeeds. Optional
-	// confirmation, rate limiting, disabled writes, upstream errors and disconnects
-	// must not turn "all parameters collected" into "task forgotten".
-	next := frame
-	next.Slots = slots
-	next.MissingSlots = nil
-	next.FailureReason = ""
-	next.ProducedAtUnix = time.Now().Unix()
-	e.setContextFrame(next)
-	action := frame.Workflow
-	if workflowRequiresInstanceTarget(action) {
-		if target := trustedWorkflowFrameTarget(frame, slots, userMsg); target != "" {
-			e.trustedWorkflowFrameActionThisTurn = action
-			e.trustedWorkflowFrameTargetThisTurn = target
-		}
-	}
-	e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedAgent, dispatch.latency)
-	args = e.safeExecutor.FilterArgs(action, args)
-	onStep(StepEvent{
-		Type:   StepToolCall,
-		Action: action,
-		Source: observability.ToolSourceMainReAct,
-		Args:   e.safeExecutor.RedactArgs(action, args),
-	})
-	raw := e.executeWorkflow(ctx, action, args, onStep)
-	reply := workflowDirectReply(action, raw)
-	if e.lastWorkflowSucceededThisCall {
-		e.clearContextFrame()
-	} else if current, ok := e.activeContextFrame(time.Now()); ok && current.Kind == ContextFrameKindWorkflowTask {
-		current.Status = ContextFrameStatusFailedRecoverable
-		current.FailureReason = truncateRunes(strings.TrimSpace(reply), 600)
-		current.ProducedAtUnix = time.Now().Unix()
-		e.setContextFrame(current)
-	}
-	e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
-	return reply, true
-}
 
 func workflowTaskSlotUpdatesFromUserText(workflowName string, missing []string, userMsg string) map[string]string {
 	return workflow.TaskSlotUpdatesFromUserText(workflowName, missing, userMsg)
@@ -286,11 +191,14 @@ func workflowMissingSlotsClarification(workflowName string, missing []string) st
 
 func mergeStringMaps(base, updates map[string]string) map[string]string {
 	out := map[string]string{}
-	for k, v := range normalizeContextSlotUpdates(base) {
-		out[k] = v
-	}
-	for k, v := range normalizeContextSlotUpdates(updates) {
-		out[k] = v
+	for _, values := range []map[string]string{base, updates} {
+		for k, v := range values {
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k != "" && v != "" {
+				out[k] = v
+			}
+		}
 	}
 	if len(out) == 0 {
 		return nil

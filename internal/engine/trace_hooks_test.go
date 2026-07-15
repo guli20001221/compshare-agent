@@ -23,8 +23,8 @@ func TestAttachTraceHooksWiresEveryEngineObserver(t *testing.T) {
 		Retrieval: func(observability.RetrievalTrace) {}, Freshness: func(observability.FreshnessTrace) {},
 		Diagnosis: func(observability.DiagnosisTrace) {}, Outcome: func(observability.OutcomeTrace) {},
 		Renderer: func(observability.RendererTrace) {}, HardBlock: func(observability.EngineHardBlockTrace) {},
-		ContextDecision: func(ContextDecisionTrace) {}, Completion: func(observability.TurnCompletionTrace) {},
-		RateLimit: func(governance.Decision) {}, TokenUsage: func(llm.TokenUsage) {}, StepSink: sink,
+		Completion: func(observability.TurnCompletionTrace) {},
+		RateLimit:  func(governance.Decision) {}, TokenUsage: func(llm.TokenUsage) {}, StepSink: sink,
 	})
 	require.NotNil(t, eng.plannerTraceObserver)
 	require.NotNil(t, eng.contextTraceObserver)
@@ -34,7 +34,6 @@ func TestAttachTraceHooksWiresEveryEngineObserver(t *testing.T) {
 	require.NotNil(t, eng.outcomeTraceObserver)
 	require.NotNil(t, eng.rendererTraceObserver)
 	require.NotNil(t, eng.hardBlockObserver)
-	require.NotNil(t, eng.contextDecisionObserver)
 	require.NotNil(t, eng.turnCompletionObserver)
 	require.NotNil(t, eng.rateLimitObserver)
 	require.NotNil(t, eng.tokenUsageObserver)

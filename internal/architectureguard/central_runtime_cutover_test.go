@@ -18,6 +18,14 @@ func TestProductionCannotReEnableLegacySemanticRuntime(t *testing.T) {
 		"COMPSHARE_DIRECT_DISPATCH_INTENTS",
 		"COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT",
 		"SetCentralAgentRuntimeEnabled",
+		"type IntentRouter struct",
+		"IntentRouterLLM",
+		"IntentRouterInput",
+		"NewIntentRouter",
+		"ContextDecisionLayer",
+		"ResolveContextDecision",
+		"SetContextDecisionLayer",
+		"llmContextDecisionLayer",
 	}
 	for _, top := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d fs.DirEntry, walkErr error) error {

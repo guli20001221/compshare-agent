@@ -250,11 +250,7 @@ func (e *Engine) runDeployModel(ctx context.Context, dispatch routerDispatchResu
 	}
 	if !sagaResult.Success {
 		reply := e.deployStopReplyWithAlternatives(ctx, sagaResult, plan)
-		if createAttemptShouldClearContextFrame(reply) {
-			e.clearCreateFamilyCarry()
-		} else {
-			e.recordDeployContextFrameFromPlan(userMsg, plan, reply)
-		}
+		e.recordDeployContextFrameFromPlan(userMsg, plan, reply)
 		return e.deployReply(result, dispatch.latency, reply)
 	}
 

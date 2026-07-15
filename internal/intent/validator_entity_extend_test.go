@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-func TestPlannerTargetRefTypesDoNotExposeUnwiredPlatformEntities(t *testing.T) {
+func TestValidatedTargetRefTypesDoNotExposeUnwiredPlatformEntities(t *testing.T) {
 	root := filepath.Join("..", "..", "internal", "intent")
-	files := []string{"types.go", "validator.go", "router_schema.go"}
+	files := []string{"types.go", "validator.go"}
 	for _, file := range files {
 		data, err := os.ReadFile(filepath.Join(root, file))
 		if err != nil {

@@ -8,7 +8,6 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/stretchr/testify/assert"
@@ -31,7 +30,7 @@ func TestChatEmitsExactlyOneCompletionForPreLLMBlock(t *testing.T) {
 	assert.Zero(t, got.ModelCalls)
 	assert.Equal(t, observability.CompletionDecisionNotInvoked, got.ContextDecision)
 	assert.Equal(t, "named", got.ToolScope)
-	assert.Empty(t, got.ToolNames)
+	assert.Equal(t, centralAgentToolNames(true), got.ToolNames)
 }
 
 func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
@@ -55,36 +54,8 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	require.Len(t, completions, 1)
 	assert.Equal(t, observability.CompletionClassAgent, completions[0].Class)
 	assert.Equal(t, 1, completions[0].ModelCalls, "count must come from the real outbound boundary")
-	assert.Equal(t, "read_only_full", completions[0].ToolScope)
-}
-
-func TestChatCompletionCarriesContextReadSetAndStateDelta(t *testing.T) {
-
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, ContextFrame: pendingCreateDiskFrame()}, 1)
-	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
-		Decision: ContextDecisionClarify,
-		Clarify:  "请补充数据盘大小。",
-	}})
-	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{
-		plannerResult(intent.IntentOperationLifecycle, 0.4),
-	}}, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentOperationLifecycle}})
-	var completions []observability.TurnCompletionTrace
-	eng.SetTurnCompletionObserver(func(trace observability.TurnCompletionTrace) {
-		completions = append(completions, trace)
-	})
-
-	reply, err := eng.Chat(context.Background(), "继续", noopStep)
-	require.NoError(t, err)
-	assert.Equal(t, "请补充数据盘大小。", reply)
-	require.Len(t, completions, 1)
-	got := completions[0]
-	assert.Equal(t, observability.CompletionClassStructuredClarify, got.Class)
-	assert.Equal(t, observability.CompletionReasonContextClarification, got.Reason)
-	assert.Equal(t, ContextDecisionClarify, got.ContextDecision)
-	assert.Contains(t, got.ReadSet, "active_task")
-	assert.ElementsMatch(t, []string{"task:preserve", "reply:clarify"}, got.StateDelta)
-	assert.Equal(t, "read_only_full", got.ToolScope)
+	assert.Equal(t, "named", completions[0].ToolScope)
+	assert.Equal(t, centralAgentToolNames(true), completions[0].ToolNames)
 }
 
 func TestChatCompletionMarksTerminalRateLimit(t *testing.T) {

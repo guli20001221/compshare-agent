@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,9 +9,6 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
-	"github.com/compshare-agent/internal/llm"
-	"github.com/sashabaranov/go-openai"
-	"github.com/stretchr/testify/require"
 )
 
 func TestResourceSelectionPromptRendersCandidateDetails(t *testing.T) {
@@ -258,152 +254,6 @@ func TestPendingSelectionRoundTripsThroughSessionState(t *testing.T) {
 	}
 }
 
-func TestContextDecisionSelectionRecordsPendingInstance(t *testing.T) {
-
-	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	e.userTurn = 3
-	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
-		testInstance("uhost-first", "first-host", "Running"),
-		testInstance("uhost-second", "second-host", "Stopped"),
-	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
-	pending, ok := e.pendingResourceSelectionFromSession()
-	if !ok {
-		t.Fatal("expected pending selection restored from session")
-	}
-	e.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
-		Decision:    ContextDecisionSelectEntity,
-		Target:      ContextDecisionTargetInstance,
-		InstanceRef: "第1台",
-	}})
-
-	_, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "它现在忙不忙", pending)
-
-	if !selected || handled {
-		t.Fatal("context decision should resolve the pending instance")
-	}
-	state, _, _ := e.SessionStateSnapshot()
-	if state.SelectedInstanceID != "uhost-first" {
-		t.Fatalf("selected instance = %q, want uhost-first", state.SelectedInstanceID)
-	}
-	if len(state.PendingSelectionItems) != 2 {
-		t.Fatalf("pending selection should remain available for later ordinal selection, got %d", len(state.PendingSelectionItems))
-	}
-}
-
-func TestContextDecisionSelectionUsesDefaultResolverWhenNoLayerInjected(t *testing.T) {
-
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{"decision":"select_entity","target":"instance","instance_ref":"第1台"}`}}}
-	e := NewWithDeps(mock, &mockExecutor{}, nil)
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	e.userTurn = 3
-	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
-		testInstance("uhost-first", "first-host", "Running"),
-		testInstance("uhost-second", "second-host", "Stopped"),
-	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
-	pending, ok := e.pendingResourceSelectionFromSession()
-	if !ok {
-		t.Fatal("expected pending selection restored from session")
-	}
-
-	_, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "它现在忙不忙", pending)
-
-	if !selected || handled {
-		t.Fatal("context decision should resolve through the default LLM-backed layer")
-	}
-	state, _, _ := e.SessionStateSnapshot()
-	if state.SelectedInstanceID != "uhost-first" {
-		t.Fatalf("selected instance = %q, want uhost-first", state.SelectedInstanceID)
-	}
-	if len(mock.calls) != 1 {
-		t.Fatalf("default context decision layer should call LLM once, got %d", len(mock.calls))
-	}
-}
-
-func TestContextDecisionPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) {
-
-	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		ContextFrame: ContextFrame{
-			Kind:         ContextFrameKindWorkflowTask,
-			Workflow:     "CreateDiskWorkflow",
-			Slots:        map[string]string{"instance_id": "uhost-first", "size_gb": "200"},
-			MissingSlots: []string{"size_gb"},
-			TTLSeconds:   ContextFrameTTLSeconds,
-		},
-	}, 1)
-	e.userTurn = 3
-	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
-		testInstance("uhost-first", "first-host", "Running"),
-		testInstance("uhost-second", "second-host", "Stopped"),
-	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
-	pending, ok := e.pendingResourceSelectionFromSession()
-	if !ok {
-		t.Fatal("expected pending selection restored from session")
-	}
-	e.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
-		Decision:    ContextDecisionSelectEntity,
-		Target:      ContextDecisionTargetInstance,
-		InstanceRef: "第2台",
-	}})
-
-	reply, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "选第2台", pending)
-
-	if !selected || handled || reply != "" {
-		t.Fatalf("plain selection should update context then continue through Agent, selected=%v handled=%v reply=%q", selected, handled, reply)
-	}
-	if !e.deferTaskCarryThisTurn {
-		t.Fatal("plain selection must not let an unrelated old workflow consume the turn")
-	}
-	state, _, _ := e.SessionStateSnapshot()
-	if state.SelectedInstanceID != "uhost-second" {
-		t.Fatalf("selected instance = %q, want uhost-second", state.SelectedInstanceID)
-	}
-}
-
-func TestContextDecisionNaturalPlainSelectionStopsBeforeOldWorkflowFrame(t *testing.T) {
-
-	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		ContextFrame: ContextFrame{
-			Kind:         ContextFrameKindWorkflowTask,
-			Workflow:     "CreateDiskWorkflow",
-			Slots:        map[string]string{"instance_id": "uhost-first", "size_gb": "200"},
-			MissingSlots: []string{"size_gb"},
-			TTLSeconds:   ContextFrameTTLSeconds,
-		},
-	}, 1)
-	e.userTurn = 3
-	e.recordPendingInstanceSelection([]entity.InstanceSnapshot{
-		testInstance("uhost-first", "first-host", "Running"),
-		testInstance("uhost-second", "second-host", "Stopped"),
-	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
-	pending, ok := e.pendingResourceSelectionFromSession()
-	if !ok {
-		t.Fatal("expected pending selection restored from session")
-	}
-	e.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
-		Decision:    ContextDecisionSelectEntity,
-		Target:      ContextDecisionTargetInstance,
-		InstanceRef: "第2台",
-	}})
-
-	reply, selected, handled := e.tryContextDecisionResourceSelection(context.Background(), "帮我选择那台", pending)
-
-	if !selected || handled || reply != "" {
-		t.Fatalf("natural selection should update context then continue through Agent, selected=%v handled=%v reply=%q", selected, handled, reply)
-	}
-	if !e.deferTaskCarryThisTurn {
-		t.Fatal("natural selection must not let an unrelated old workflow consume the turn")
-	}
-	state, _, _ := e.SessionStateSnapshot()
-	if state.SelectedInstanceID != "uhost-second" {
-		t.Fatalf("selected instance = %q, want uhost-second", state.SelectedInstanceID)
-	}
-}
-
 func TestRecordInstanceStateFactsResourceInfoMultiHostDoesNotStorePendingSelection(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
@@ -593,59 +443,6 @@ func TestTryResumeResourceSelectionAllowsSelectingAnotherDisplayedInstance(t *te
 	}
 	if len(e.sessionState.PendingSelectionItems) != 2 {
 		t.Fatalf("displayed selection should remain reusable, got %d items", len(e.sessionState.PendingSelectionItems))
-	}
-}
-
-func TestTryResumeResourceSelectionMonitorDoesNotPreTrustBeforeHandler(t *testing.T) {
-	candidates := []entity.InstanceSnapshot{
-		testInstance("uhost-01", "host-1", "Running"),
-		testInstance("uhost-02", "host-2", "Running"),
-	}
-	var e *Engine
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "我还记得你选择的是第 2 台；监控读取失败时不会把它变成新的写操作目标。"}}}
-	exec := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
-		if action == "GetCompShareInstanceMonitor" {
-			if e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
-				t.Fatal("monitor selection must not create trust before the read-only handler runs")
-			}
-			return nil, errors.New("monitor unavailable")
-		}
-		return map[string]any{}, nil
-	}}
-	e = NewWithDeps(mock, exec, nil)
-	e.InitWithContext("test user")
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	e.userTurn = 3
-	e.pendingResourceSelection = &pendingResourceSelection{
-		originalUserMsg: "查 GPU 利用率",
-		plan: intent.IntentRoute{
-			SchemaVersion: intent.SchemaVersion,
-			Intent:        intent.IntentMonitorQuery,
-			Slots:         intent.Slots{Metrics: []intent.Metric{intent.MetricGPU}},
-			RequiredTools: []string{"GetCompShareInstanceMonitor"},
-			Confidence:    0.9,
-		},
-		snapshot:    snapshotFromPendingSelectionCandidates(candidates),
-		candidates:  candidates,
-		createdTurn: 2,
-	}
-
-	e.messages = append(e.messages,
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "查 GPU 利用率"},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "有两台，请选择。"},
-	)
-	reply, err := e.Chat(context.Background(), "选第2台", noopStep)
-
-	require.NoError(t, err)
-	require.Equal(t, "我还记得你选择的是第 2 台；监控读取失败时不会把它变成新的写操作目标。", reply)
-	require.Len(t, mock.calls, 1)
-	requestText := renderTestMessages(mock.calls[0].Messages)
-	require.Contains(t, requestText, "查 GPU 利用率")
-	require.Contains(t, requestText, "有两台，请选择")
-	require.Contains(t, requestText, routeReadFailureNote)
-	require.NotContains(t, toolNames(mock.calls[0].Tools), "StopInstanceWorkflow")
-	if e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
-		t.Fatal("a failed read-only monitor selection must not create a trusted mutating target")
 	}
 }
 

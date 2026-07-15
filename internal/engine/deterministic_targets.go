@@ -773,30 +773,6 @@ func assistantMessage(reply string) openai.ChatCompletionMessage {
 	}
 }
 
-func (e *Engine) resolveContextDecisionInstanceRef(ref string, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return entity.InstanceSnapshot{}, false
-	}
-	if pending := e.pendingResourceSelection; pending != nil && !isResourceSelectionExpired(e.userTurn, *pending) {
-		if match := matchResourceSelection(ref, *pending); match.ok && !match.ambiguous {
-			return match.instance, true
-		}
-		if match, _ := matchResourceSelectionReference(ref, *pending); match.ok && !match.ambiguous {
-			return match.instance, true
-		}
-	}
-	if pending, ok := e.pendingResourceSelectionFromSession(); ok {
-		if match := matchResourceSelection(ref, *pending); match.ok && !match.ambiguous {
-			return match.instance, true
-		}
-		if match, _ := matchResourceSelectionReference(ref, *pending); match.ok && !match.ambiguous {
-			return match.instance, true
-		}
-	}
-	return resolveContinuationInstance(ref, snapshot)
-}
-
 func resolveContinuationInstance(userMsg string, snapshot entity.RegistrySnapshot) (entity.InstanceSnapshot, bool) {
 	if inst, _ := findExplicitInstanceRef(userMsg, snapshot); inst != nil {
 		return *inst, true

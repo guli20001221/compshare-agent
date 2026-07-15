@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
@@ -101,7 +100,6 @@ func vllmRetriever() *scriptedKnowledgeRetriever {
 func prepareKnowledgeRecoveryLane(t *testing.T, eng *Engine) {
 	t.Helper()
 	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 }
 
 // TestChat_RoundCeiling_RecoversFromGatheredEvidence: round 0 calls
