@@ -17,6 +17,18 @@ const (
 	ResultContractWorkflowResult   ResultContract = "workflow_result"
 )
 
+type CapabilityStage string
+
+const (
+	CapabilityStageActive CapabilityStage = "active"
+	CapabilityStageShadow CapabilityStage = "shadow"
+)
+
+type CapabilityDefinition struct {
+	Tool  openai.Tool
+	Stage CapabilityStage
+}
+
 // Capability is the runtime-owned contract for one tool or internal action.
 // Tool schema, execution policy, risk, confirmation and result ownership are
 // read together so callers cannot accidentally authorize from one table and
@@ -25,6 +37,7 @@ type Capability struct {
 	Name             string
 	Tool             openai.Tool
 	ExposedToAgent   bool
+	Stage            CapabilityStage
 	Policy           ToolExecutionPolicy
 	ResultContract   ResultContract
 	ResultOwner      string
@@ -37,8 +50,17 @@ type CapabilityRegistry struct {
 }
 
 func BuildCapabilityRegistry(toolDefinitions []openai.Tool, policies map[string]ToolExecutionPolicy) (*CapabilityRegistry, error) {
-	registry := &CapabilityRegistry{byName: make(map[string]Capability, len(toolDefinitions)+len(policies))}
+	definitions := make([]CapabilityDefinition, 0, len(toolDefinitions))
 	for _, tool := range toolDefinitions {
+		definitions = append(definitions, CapabilityDefinition{Tool: tool, Stage: CapabilityStageActive})
+	}
+	return BuildCapabilityRegistryFromDefinitions(definitions, policies)
+}
+
+func BuildCapabilityRegistryFromDefinitions(definitions []CapabilityDefinition, policies map[string]ToolExecutionPolicy) (*CapabilityRegistry, error) {
+	registry := &CapabilityRegistry{byName: make(map[string]Capability, len(definitions)+len(policies))}
+	for _, definition := range definitions {
+		tool := definition.Tool
 		if tool.Function == nil || tool.Function.Name == "" {
 			return nil, fmt.Errorf("capability registry: tool without function name")
 		}
@@ -53,6 +75,10 @@ func BuildCapabilityRegistry(toolDefinitions []openai.Tool, policies map[string]
 		capability := capabilityFromPolicy(name, policy)
 		capability.Tool = tool
 		capability.ExposedToAgent = true
+		capability.Stage = definition.Stage
+		if capability.Stage == "" {
+			capability.Stage = CapabilityStageActive
+		}
 		capability.AgentInstruction = tool.Function.Description
 		registry.ordered = append(registry.ordered, capability)
 		registry.byName[name] = capability
@@ -157,7 +183,7 @@ func (r *CapabilityRegistry) CapabilitiesForScope(scope ToolScope, mutatingEnabl
 
 	visible := make([]Capability, 0, len(r.ordered))
 	for _, capability := range r.ordered {
-		if !capability.ExposedToAgent {
+		if !capability.ExposedToAgent || capability.Stage != CapabilityStageActive {
 			continue
 		}
 		if allowedNames != nil {
@@ -194,7 +220,12 @@ var (
 
 func DefaultCapabilityRegistry() *CapabilityRegistry {
 	defaultCapabilitiesOnce.Do(func() {
-		defaultCapabilities, defaultCapabilitiesErr = BuildCapabilityRegistry(Registry, buildToolExecutionPolicies())
+		definitions := make([]CapabilityDefinition, 0, len(Registry)+len(ShadowCapabilityDefinitions))
+		for _, tool := range Registry {
+			definitions = append(definitions, CapabilityDefinition{Tool: tool, Stage: CapabilityStageActive})
+		}
+		definitions = append(definitions, ShadowCapabilityDefinitions...)
+		defaultCapabilities, defaultCapabilitiesErr = BuildCapabilityRegistryFromDefinitions(definitions, buildToolExecutionPolicies())
 		if defaultCapabilitiesErr == nil {
 			defaultCapabilitiesErr = defaultCapabilities.ValidateSafety()
 		}

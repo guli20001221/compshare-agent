@@ -2408,7 +2408,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	result := dispatch.result
 	result.Plan = planWithUserTextMonitorMetrics(result.Plan, userMsg)
 	result.Plan = augmentPlanTargetRefsFromUserText(result.Plan, userMsg, dispatch.snapshot)
-	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && result.Plan.Intent != intent.IntentMonitorHistory && !intent.IsRoutingIntent(result.Plan.Intent) {
+	if !isReadHandlerIntent(result.Plan.Intent) {
 		return "", false
 	}
 	if status, ok := e.phase1RouteCandidateStatus(result); !ok {
@@ -2436,33 +2436,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 		}
 		routeSnapshot = e.RegistrySnapshot()
 	}
-	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
-	req := intent.HandlerRequest{
-		Plan:     result.Plan,
-		Resolver: routeSnapshot,
-		UserText: userMsg,
-	}
-	if fallbackInstanceID != "" {
-		req.FallbackInstanceID = fallbackInstanceID
-	}
-	req.FallbackGpuModel = e.fallbackStockGpuModel(time.Now())
-	var handled intent.HandlerResult
-	switch result.Plan.Intent {
-	case intent.IntentResourceInfo:
-		handled = handler.HandleResourceInfo(ctx, req)
-	case intent.IntentMonitorQuery, intent.IntentMonitorHistory:
-		handled = handler.HandleMonitorQuery(ctx, req)
-	default:
-		// Routing Registry v1: any registered route intent dispatches
-		// through the registry. Engine.go does not need per-case wiring as new
-		// routes are added — see internal/intent/routing_registry.go.
-		if intent.IsRoutingIntent(result.Plan.Intent) {
-			handled = handler.DispatchRoute(ctx, req)
-		} else {
-			e.emitPlannerTrace(result, intent.RouteStatusFallbackIneligible, dispatch.latency)
-			return "", false
-		}
-	}
+	handled := e.invokeReadHandler(ctx, result.Plan, userMsg, routeSnapshot, onStep)
 	if e.shouldResolveContextDependentDirectReplyInAgent(handled, userMsg) {
 		// The direct path has no evidence envelope through which to carry task
 		// context (or explicitly asked for clarification), but a complete recent
@@ -2500,12 +2474,7 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 				if len(selection.candidates) == 1 {
 					resumed := result
 					resumed.Plan = planWithSelectedResource(result.Plan, selection.candidates[0].UHostId)
-					req := intent.HandlerRequest{
-						Plan:     resumed.Plan,
-						Resolver: selection.snapshot,
-						UserText: userMsg,
-					}
-					handled = handler.HandleMonitorQuery(ctx, req)
+					handled = e.invokeReadHandler(ctx, resumed.Plan, userMsg, selection.snapshot, onStep)
 					e.emitPlannerTrace(resumed, handled.RouteStatus, dispatch.latency)
 					if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
 						e.routeReadFailureThisTurn = true
@@ -3742,6 +3711,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	if action == "SearchKnowledge" {
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
+	}
+
+	// Shadow read-capability adapter. The capability registry deliberately keeps
+	// this tool out of production model windows until P6; direct execution here
+	// lets parity and safety gates prove the contract before that cutover.
+	if action == tools.ReadPlatformCapabilityName {
+		args = e.safeExecutor.FilterArgs(action, args)
+		return e.executeReadPlatformCapability(ctx, args, onStep)
 	}
 
 	// Workflow meta-tools → delegate to workflow engine.
