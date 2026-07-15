@@ -1,0 +1,25 @@
+{
+  "schema_version": "compshare.rag.real-chat-gap-audit.v1",
+  "basis": "Manual source-and-top3 review of all 11 misses in the 50-case production retrieval evaluation.",
+  "privacy": "Case IDs are one-way query hashes. No raw production query text is committed.",
+  "summary": {
+    "reported_misses": 11,
+    "source_document_gaps": 10,
+    "retrieval_pipeline_gaps_confirmed": 0,
+    "judge_false_negatives": 1
+  },
+  "cases": [
+    {"case_id":"real-076e949e9ffc49bf","classification":"source_document_gap","note":"The public docs do not state the complete resource-retention rule for this instance shutdown scenario."},
+    {"case_id":"real-0fb2d6f2a2dba780","classification":"source_document_gap","note":"The public docs do not provide a complete prepaid cancellation and refund policy."},
+    {"case_id":"real-14e8c76369ce6732","classification":"source_document_gap","note":"The requested exact preinstalled image environment combination is not documented as a searchable environment list."},
+    {"case_id":"real-2074c7712bbb65fe","classification":"source_document_gap","note":"The public docs do not state the complete data and system-disk retention behavior for this resize scenario."},
+    {"case_id":"real-509c8970c6795352","classification":"source_document_gap","note":"The correct file-management document was ranked first, but it does not list causes for the missing control."},
+    {"case_id":"real-5f66aae0bd3ecb46","classification":"source_document_gap","note":"The imported ComfyUI sources do not document the requested history and output-image path behavior."},
+    {"case_id":"real-600d35c95c0434ac","classification":"source_document_gap","note":"The public docs do not provide a complete JupyterLab procedure for this virtual-machine scenario."},
+    {"case_id":"real-6ac4f955f7bc5e1d","classification":"judge_false_negative","note":"The first retrieved chunk explicitly says quota exhaustion does not auto-bill and that users must manually switch to a metered API key."},
+    {"case_id":"real-8124d3fc938f8500","classification":"source_document_gap","note":"The sources do not document open-deleted-file handle diagnosis and release."},
+    {"case_id":"real-bc5262c4c06ea0c7","classification":"source_document_gap","note":"The public docs describe regional isolation but do not provide a complete cross-zone migration procedure or policy."},
+    {"case_id":"real-c5c136fef289dff9","classification":"source_document_gap","note":"The package docs list quotas and intended users, but do not define a separate speed difference between tiers."}
+  ],
+  "release_effect": "Pipeline review may continue, but merge readiness remains false until the source gaps are supplied or explicitly accepted."
+}

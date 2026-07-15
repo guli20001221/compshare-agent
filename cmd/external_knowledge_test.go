@@ -83,9 +83,8 @@ func TestExternalKnowledgeSourceNonQwen3Skips(t *testing.T) {
 }
 
 // TestLoadKnowledgeCorporaMergeAndDegrade exercises the cmd-layer load logic
-// against the real pinned corpora: OFF = platform-only (687, byte-identical to
-// the pre-Phase-2 path), ON = merged (942), ON + broken external path =
-// graceful fall back to platform-only (687, never fatal).
+// against the real pinned V2 corpora: OFF = platform-only, ON = merged, and
+// ON + broken external path gracefully falls back to platform-only.
 func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	platformCorpus := filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
 	platformSidecar := filepath.Join("..", "deploy", "kb", "embeddings_"+knowledge.CorpusDigestExpected+"_qwen3-embedding-8b.jsonl")
@@ -104,8 +103,8 @@ func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("off-path load: %v", err)
 	}
-	if len(corpus.Chunks) != 689 {
-		t.Fatalf("external off: got %d chunks, want 689 (platform-only)", len(corpus.Chunks))
+	if len(corpus.Chunks) != 562 {
+		t.Fatalf("external off: got %d chunks, want 562 (platform-only)", len(corpus.Chunks))
 	}
 
 	onEnv := envFromMap(map[string]string{
@@ -117,8 +116,8 @@ func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("on-path merge load: %v", err)
 	}
-	if len(merged.Chunks) != 689+255 {
-		t.Fatalf("external on: got %d chunks, want 944 (merged)", len(merged.Chunks))
+	if len(merged.Chunks) != 562+1118 {
+		t.Fatalf("external on: got %d chunks, want 1680 (merged)", len(merged.Chunks))
 	}
 
 	// ON but the external file is missing -> graceful fall back to platform-only.
@@ -131,8 +130,8 @@ func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("degrade load should not error (external is additive): %v", err)
 	}
-	if len(degraded.Chunks) != 689 {
-		t.Fatalf("graceful degrade: got %d chunks, want 689 (platform-only fallback)", len(degraded.Chunks))
+	if len(degraded.Chunks) != 562 {
+		t.Fatalf("graceful degrade: got %d chunks, want 562 (platform-only fallback)", len(degraded.Chunks))
 	}
 }
 
