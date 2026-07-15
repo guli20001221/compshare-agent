@@ -1368,7 +1368,7 @@ var (
 	// A password value is extracted only from an explicit assignment. Keeping
 	// the separator mandatory prevents help questions such as “密码怎么改？” or
 	// “重置密码需要停机吗” from being mistaken for secrets and erased.
-	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(为|成|是|:|：)\s*([^\s，。；;]+)`)
+	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(为|成|是|:|：)\s*([^\s，。；;?？]+)`)
 	diskSizeSpecRE      = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
 	cfsNameSpecRE       = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
 	cfsIDSpecRE         = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
@@ -1562,21 +1562,30 @@ func ClassifyResetPasswordValue(userText string) (value string, start, end int, 
 		return "", 0, 0, false
 	}
 	value = strings.TrimSpace(userText[match[4]:match[5]])
-	tail := strings.TrimSpace(userText[match[1]:])
 	if endsWithQuestionMark(userText) {
-		if tail != "" {
-			return value, match[4], match[5], false
-		}
 		if allHanQuestion(value) {
 			return "", 0, 0, false
 		}
+		if prefixBytes := leadingASCIIPasswordBytes(value); prefixBytes > 0 {
+			return value[:prefixBytes], match[4], match[4] + prefixBytes, false
+		}
+		return value, match[4], match[5], false
 	}
 	return value, match[4], match[5], true
 }
 
+func leadingASCIIPasswordBytes(value string) int {
+	for index, r := range value {
+		if r > unicode.MaxASCII {
+			return index
+		}
+	}
+	return len(value)
+}
+
 func endsWithQuestionMark(value string) bool {
 	value = strings.TrimSpace(value)
-	return strings.HasSuffix(value, "?") || strings.HasSuffix(value, "？")
+	return strings.HasSuffix(value, "?") || strings.HasSuffix(value, "？") || strings.HasSuffix(value, "吗")
 }
 
 func allHanQuestion(value string) bool {

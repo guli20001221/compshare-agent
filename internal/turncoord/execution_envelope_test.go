@@ -154,6 +154,25 @@ func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKe
 	assert.Contains(t, envelope.Message, "安全吗？")
 	assert.NotContains(t, string(raw), "abcdefgh")
 	assert.Empty(t, envelope.SealedSecrets)
+	for _, question := range []string{
+		"密码是abcdefgh安全吗？", "密码是123456安全吗？", "密码是 abcdefgh？", "密码为 abcdefgh？",
+		"密码是123456吗", "给 test 重置密码是abcdefgh安全吗？",
+	} {
+		t.Run(question, func(t *testing.T) {
+			envelope, raw, err := freezeSubmitInput(SubmitInput{
+				Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+				SessionID: "session", ClientTurnID: question, Message: question,
+			})
+			require.NoError(t, err)
+			assert.NotContains(t, envelope.Message, "abcdefgh")
+			assert.NotContains(t, envelope.Message, "123456")
+			assert.True(t, strings.Contains(envelope.Message, "？") || strings.HasSuffix(envelope.Message, "吗"),
+				"the question signal must survive secret redaction: %q", envelope.Message)
+			assert.NotContains(t, string(raw), "abcdefgh")
+			assert.NotContains(t, string(raw), "123456")
+			assert.Empty(t, envelope.SealedSecrets)
+		})
+	}
 }
 
 func TestExecutionEnvelope_ShiAssignmentIsSealedButQuestionsRemainPlain(t *testing.T) {
