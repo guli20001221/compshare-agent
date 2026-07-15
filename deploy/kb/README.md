@@ -7,9 +7,9 @@ sidecars for the CompShare console agent's RAG path.
 
 | File | Purpose | Bound to |
 |---|---|---|
-| `stage2b_w0.jsonl` | Public platform corpus rebuilt by RAG V2 (562 chunks @ 2026-07-15, no redaction) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
+| `stage2b_w0.jsonl` | Public platform corpus rebuilt by RAG V2 (544 chunks @ 2026-07-15, no redaction, caption-only images) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
 | `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes (current default) | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
-| `external_w0.jsonl` | External corpus (1118 chunks: 255 locked legacy + 863 source-backed V2 chunks @ 2026-07-15) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
+| `external_w0.jsonl` | External corpus (1180 chunks: 255 locked legacy + 925 source-backed V2 chunks @ 2026-07-15) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
 | `embeddings_<external-corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for the external corpus | `internal/knowledge/corpus_digest.go:ExternalEmbeddingDigestExpectedQwen3` |
 
 `text-embedding-3-large` sidecar is **no longer maintained** as of W1-R2

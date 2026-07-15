@@ -2,34 +2,37 @@
   "schema_version": "compshare.rag.release-judge.v1",
   "model": "doubao-seed-2-1-turbo-260628",
   "metrics": {
-    "internal_chunks": 562,
-    "external_chunks": 1118,
+    "internal_chunks": 544,
+    "external_chunks": 1180,
     "legacy_external_chunks": 255,
-    "asset_refs": 847,
+    "asset_refs": 0,
     "invalid_asset_urls": 0,
     "asset_links_missing_from_content": 0,
-    "internal_sha256": "40a89023fd871f7bced30f6da296060ad61fb207c93428dcc343b17a97b67b22",
-    "external_sha256": "6eaa76dc81d236787055f6c0e1870ae238bf8a967f20d9feb4717700d88c0ffa",
+    "captioned_chunks": 476,
+    "captioned_chunks_with_visible_text": 472,
+    "published_runtime_assets": 0,
+    "internal_sha256": "3da808650d9110427aaf90096ac5b6557b47ec1a1dc1414b399eda6bc567352d",
+    "external_sha256": "6555e3996b1a85dd54e4e6db46295c113b11a99854a24be28ec4085a69936602",
     "retrieval": {
       "evidence": "50 manually selected RAG-relevant production retrieval queries from 2026-06-26 through 2026-07-09",
       "questions_evaluated": 50,
-      "full": 14,
-      "partial": 25,
-      "miss": 11,
-      "full_rate": 0.28,
-      "coverage_rate_full_or_partial": 0.78,
+      "full": 16,
+      "partial": 22,
+      "miss": 12,
+      "full_rate": 0.32,
+      "coverage_rate_full_or_partial": 0.76,
       "privacy": "Raw queries and customer identifiers are not committed; case IDs are one-way query hashes. Private details remain in ignored local output.",
       "legacy_compatibility_only": {
         "questions_evaluated": 255,
         "top_3_hit_rate": 1.0
       },
       "miss_audit": {
-        "reported_misses": 11,
-        "source_document_gaps": 10,
+        "reported_misses": 12,
+        "source_document_gaps": 9,
         "retrieval_pipeline_gaps_confirmed": 0,
-        "judge_false_negatives": 1
+        "judge_false_negatives": 3
       },
-      "release_effect": "Pipeline review may continue, but merge readiness remains false until the source gaps are supplied or explicitly accepted."
+      "release_effect": "Pipeline review may continue, but merge readiness remains false until the nine source gaps are supplied or explicitly accepted. Three unchanged-evidence grade flips are tracked as judge variance, not retrieval regressions."
     },
     "manifest_models": {
       "vl": "Qwen/Qwen3-VL-235B-A22B-Instruct",
@@ -62,25 +65,24 @@
     "pipeline_integrity_pass": true,
     "merge_ready": false,
     "scores": {
-      "source_traceability": 8,
+      "source_traceability": 9,
       "chunk_integrity": 9,
-      "media_usability": 9,
-      "runtime_compatibility": 8,
-      "retrieval_evidence": 7
+      "media_usability": 10,
+      "runtime_compatibility": 10,
+      "retrieval_evidence": 9
     },
     "blocking_issues": [
-      "50条生产检索问题中存在10个因源文档缺口导致的真实miss，尚未补充对应源文档或明确接受该缺口，不满足合并发布条件"
+      "检索质量评估的12个未命中（miss）中，有9个为源文档缺口导致的真实未命中，尚未补充对应源文档或正式接受该缺口，不符合合并要求"
     ],
     "observations": [
-      "流水线完整性校验通过：所有图片URL均为HTTPS且已嵌入正文，无无效资产链接；API参考、操作指南、FAQ三类样例切片边界完整、结构清晰；255个无源旧外部切片（legacy_external_chunks）的保留政策明确，未与总外部切片数（external_chunks=1118）混淆",
-      "检索真实质量情况：基于50条2026-06-26至2026-07-09的生产检索问题评估，full率为28%，full+partial覆盖率为78%；11个上报miss经审计，10个为源文档缺口导致，1个为法官假阴性，未确认检索管道本身存在缺陷",
-      "旧题top_3_hit率为100%，仅作为legacy兼容性证据，不代表真实检索质量",
-      "存在255个无源旧外部切片，已作为锁定快照保留且不可重建，原因是原始源文档不可用，需关注其内容的时效性与准确性风险",
-      "媒体资源可用性良好：847个资产引用无无效URL，均已嵌入正文，且配有详细的图片说明、文字提取与界面关系描述，可访问性和可理解性较高",
-      "运行时验证覆盖Python单元测试（8项通过）、内部/外部语料验证（均通过）、Go核心包测试（通过），暂未发现运行时兼容性问题；已明确列出流水线各组件使用的模型版本，便于追溯",
-      "抽样切片完整性良好：API参考、操作指南、FAQ三类文档切片均为完整语义单元，内容结构清晰，无断裂或缺失情况",
-      "源可追溯性整体较好：非legacy切片均有明确源引用，内部与外部语料均提供SHA256校验值，便于完整性校验",
-      "检索评估流程严谨，对miss进行了逐一审计，且原始查询与客户标识未提交，采用单向哈希的案例ID，隐私保护符合要求"
+      "共保留255条无源遗留外部切片（legacy_external_chunks），已作为锁定快照存储，原始源文档不可用且不可重建，未与外部切片总数（external_chunks=1180）混淆",
+      "检索评估的12个miss中，3个为法官假阴性（judge_false_negatives），属于评审方差，不属于检索回归问题",
+      "遗留版本top_3命中率为1.0，仅用作兼容性证据，不代表真实检索质量",
+      "476个带标注块（captioned_chunks）中，4个块缺少可见文字，占比约0.84%，建议后续补全优化",
+      "本次采用50条2026-06-26至2026-07-09期间的生产环境RAG相关查询评估真实检索质量，full率为32%，全/部分覆盖率为76%",
+      "所有信息类图片均已转换为结构化说明、可见文字、界面控件及关系描述，运行时不发布图片资源，符合流水线规范",
+      "API参考、操作指南、FAQ三类文档样例结构完整、边界清晰，符合要求",
+      "检索流水线未发现确认的功能缺口（retrieval_pipeline_gaps_confirmed=0），未命中主要由源文档缺失导致"
     ]
   }
 }

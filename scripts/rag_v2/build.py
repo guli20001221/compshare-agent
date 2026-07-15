@@ -102,6 +102,14 @@ def main(argv: list[str] | None = None) -> int:
             source_locks.append({"id": f"external-{package}", "kind": "zip", "filename": zip_path.name, "sha256": sha256_file(zip_path)})
         report["external_selection"] = external_selection
 
+        reuse_existing_asset_notes = False
+        prior_manifest = out / "release_manifest.json"
+        if prior_manifest.exists():
+            try:
+                reuse_existing_asset_notes = json.loads(prior_manifest.read_text(encoding="utf-8")).get("sources") == source_locks
+            except (OSError, ValueError, TypeError):
+                reuse_existing_asset_notes = False
+
         internal_docs = collect_internal_docs(args.internal_docs) + faq_docs
         all_image_docs = [*internal_docs, *external_docs]
         if args.skip_vl:
@@ -116,14 +124,20 @@ def main(argv: list[str] | None = None) -> int:
                 assets_dir=out / "assets",
                 raw_asset_base_url=args.asset_base_url,
                 workers=args.vl_workers,
+                reuse_existing_notes=reuse_existing_asset_notes,
             )
-        report["assets"] = {"described": len(asset_notes), "failures": asset_failures}
-        referenced_local_assets = {
-            Path(note.repo_path).name for note in asset_notes.values() if note.repo_path
+        report["assets"] = {
+            "described": len(asset_notes),
+            "published": 0,
+            "runtime_mode": "caption_only",
+            "failures": asset_failures,
         }
+        # Source-local images are temporary VL inputs, not release artifacts.
         for generated_asset in (out / "assets").glob("*"):
-            if generated_asset.is_file() and generated_asset.name not in referenced_local_assets:
+            if generated_asset.is_file():
                 generated_asset.unlink()
+        if (out / "assets").exists():
+            (out / "assets").rmdir()
         (out / "asset_report.json").write_text(
             json.dumps(report["assets"], ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

@@ -168,6 +168,12 @@ def main() -> int:
         cases = stratified_sample(population, args.per_day)
     print(f"population={len(population)} sample={len(cases)}", flush=True)
     chunks = [row for path in args.corpus for row in read_jsonl(path)]
+    corpus_fingerprint = hashlib.sha256(
+        "\n".join(
+            f"{row['chunk_id']}\x1f{chunk_repr(row)}"
+            for row in sorted(chunks, key=lambda item: str(item["chunk_id"]))
+        ).encode("utf-8")
+    ).hexdigest()[:16]
     embeddings: dict[str, list[float]] = {}
     for path in args.embeddings:
         embeddings.update(_load_chunk_embedding_sidecar(path))
@@ -180,7 +186,7 @@ def main() -> int:
     index = BM25Index(chunks)
     for case, vector in zip(cases, vectors):
         case["pool"] = rrf_pool(case["query"], vector, chunks, index, embeddings)
-    rerank_cache_path = args.private_output.parent / "rag_v2_real_chat_rerank_cache.jsonl"
+    rerank_cache_path = args.private_output.parent / f"rag_v2_real_chat_rerank_cache_{corpus_fingerprint}.jsonl"
     rerank_cache = {row["case_id"]: row for row in read_jsonl(rerank_cache_path)} if rerank_cache_path.exists() else {}
     pending_cases = [case for case in cases if case["case_id"] not in rerank_cache]
     with ThreadPoolExecutor(max_workers=args.workers) as pool, rerank_cache_path.open("a", encoding="utf-8") as cache_file:
@@ -193,7 +199,7 @@ def main() -> int:
     cases.sort(key=lambda item: item["case_id"])
 
     batches = [cases[i:i + 6] for i in range(0, len(cases), 6)]
-    judge_cache_path = args.private_output.parent / "rag_v2_real_chat_judge_cache.jsonl"
+    judge_cache_path = args.private_output.parent / f"rag_v2_real_chat_judge_cache_{corpus_fingerprint}.jsonl"
     case_ids = {case["case_id"] for case in cases}
     cached_verdicts = {row["case_id"]: row for row in read_jsonl(judge_cache_path) if row.get("case_id") in case_ids} if judge_cache_path.exists() else {}
     batches = [[case for case in batch if case["case_id"] not in cached_verdicts] for batch in batches]
