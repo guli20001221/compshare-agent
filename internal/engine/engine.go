@@ -394,6 +394,10 @@ type Engine struct {
 	// are both promoted, so a deployment never mixes half of the new runtime with
 	// half of the old semantic stack.
 	centralAgentRuntimeEnabled bool
+	// readCapabilitySubjectsThisTurn is current-turn server evidence for the
+	// ActionProposal target verifier. It never persists and never carries values
+	// other than exact resource IDs returned by a read capability.
+	readCapabilitySubjectsThisTurn map[string]struct{}
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -1447,6 +1451,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
+	e.readCapabilitySubjectsThisTurn = map[string]struct{}{}
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.createPreferenceThisTurn = nil
 	continuityNow := time.Now()
@@ -1584,7 +1589,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		messages := e.buildMessagesForLLM()
 		toolWindow := visibleRegistryForIntentRoute(intent.IntentRoute{Intent: e.lastPlannerIntentThisTurn}, e.mutatingToolsEnabled)
 		if e.centralAgentRuntimeEnabled {
-			toolWindow = centralAgentReadToolWindow()
+			toolWindow = centralAgentToolWindow(e.mutatingToolsEnabled)
 		}
 		req := llm.ChatRequest{
 			Messages: messages,
@@ -3735,7 +3740,11 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	}
 	if action == tools.ProposeActionName {
 		args = e.safeExecutor.FilterArgs(action, args)
-		return e.executeActionProposalShadow(args, onStep)
+		return e.executeActionProposal(ctx, args, onStep)
+	}
+	if action == tools.UpdateTaskStateName {
+		args = e.safeExecutor.FilterArgs(action, args)
+		return e.executeTaskStateDelta(args, onStep)
 	}
 
 	// Workflow meta-tools → delegate to workflow engine.

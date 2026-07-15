@@ -7,16 +7,24 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
-// centralAgentReadToolWindow is the P6a capability surface. It intentionally
+// centralAgentToolWindow is the grouped P6 capability surface. It intentionally
 // does not expose the underlying API tools used by deterministic handlers, so
 // every platform fact crosses ReadPlatformCapability and its EvidenceEnvelope.
 // The two internal capabilities remain shadowed in the legacy registry until
 // the grouped P6 rollout is complete; this function is the only opt-in view.
-func centralAgentReadToolWindow() []openai.Tool {
+func centralAgentToolWindow(mutatingEnabled bool) []openai.Tool {
 	registry := tools.DefaultCapabilityRegistry()
 	var out []openai.Tool
 	if capability, ok := registry.Lookup(tools.ReadPlatformCapabilityName); ok {
 		out = append(out, capability.Tool)
+	}
+	if capability, ok := registry.Lookup(tools.UpdateTaskStateName); ok {
+		out = append(out, capability.Tool)
+	}
+	if mutatingEnabled {
+		if capability, ok := registry.Lookup(tools.ProposeActionName); ok {
+			out = append(out, capability.Tool)
+		}
 	}
 	for _, capability := range registry.All() {
 		if !capability.ExposedToAgent || capability.Tool.Function == nil {
