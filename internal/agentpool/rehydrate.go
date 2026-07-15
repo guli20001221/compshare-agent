@@ -46,10 +46,9 @@ func filterHistory(messages []store.Message) []engine.HistoryMessage {
 // NOT called (HTTP path skips the welcome/suggestion pre-warm — see design §6.3).
 func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
 	eng := engine.NewSession(p.deps, engine.SessionOptions{
-		Subject:                    governance.AnonymousSubjectKey,
-		ConfirmFn:                  denyConfirm,
-		MutatingToolsEnabled:       p.mutatingToolsEnabled,
-		CentralAgentRuntimeEnabled: p.centralAgentRuntimeEnabled,
+		Subject:              governance.AnonymousSubjectKey,
+		ConfirmFn:            denyConfirm,
+		MutatingToolsEnabled: p.mutatingToolsEnabled,
 	})
 
 	// Fetch up to 100 prior messages for the session (sufficient for context
@@ -71,10 +70,9 @@ func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID str
 func (p *Pool) NewTurnEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
 	subject, _ := governance.SubjectKeyFromOrganization(owner.TopOrganizationID, owner.OrganizationID)
 	return p.NewTurnEngineWithOptions(ctx, owner, sessionID, engine.SessionOptions{
-		Subject:                    subject,
-		ConfirmFn:                  denyConfirm,
-		MutatingToolsEnabled:       p.mutatingToolsEnabled,
-		CentralAgentRuntimeEnabled: p.centralAgentRuntimeEnabled,
+		Subject:              subject,
+		ConfirmFn:            denyConfirm,
+		MutatingToolsEnabled: p.mutatingToolsEnabled,
 	})
 }
 
@@ -105,7 +103,6 @@ func (p *Pool) NewTurnEngineWithOptions(
 		opts.Subject, _ = governance.SubjectKeyFromOrganization(owner.TopOrganizationID, owner.OrganizationID)
 	}
 	opts.MutatingToolsEnabled = opts.MutatingToolsEnabled && p.mutatingToolsEnabled
-	opts.CentralAgentRuntimeEnabled = p.centralAgentRuntimeEnabled
 	eng := engine.NewSession(p.deps, opts)
 	eng.RehydrateHistory(history)
 	return eng, nil

@@ -3525,9 +3525,8 @@ func TestRouteDispatchUsesSinglePlannerCall(t *testing.T) {
 	assert.Equal(t, "intent_planner", limiter.requests[0].Action)
 	assert.Equal(t, governance.ClassReadExpensiveTool, limiter.requests[1].Class)
 	assert.Equal(t, "DescribeCompShareInstance", limiter.requests[1].Action)
-	// CLI passes plannerDispatchEnabled into useSeparateShadowRunner, so adding
-	// COMPSHARE_INTENT_ROUTER_MODE=shadow on top of Phase 1 + Stage 2B still leaves Engine
-	// as the single planner-call owner for this turn.
+	// The rate limiter records one central model decision followed by the read
+	// tool call; no independent semantic router runs ahead of this turn.
 }
 
 func TestRouteDispatchGateUnsetDoesNotCallPlanner(t *testing.T) {

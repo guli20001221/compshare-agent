@@ -27,7 +27,7 @@ func TestCentralAgentReadTurnHasOneSemanticChainAndStructuredCapability(t *testi
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{SchemaVersion: intent.SchemaVersion, Intent: intent.IntentResourceInfo, Confidence: 1}}}}
 	eng := NewWithDeps(model, executor, nil)
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentResourceInfo}})
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 
 	reply, err := eng.Chat(context.Background(), "我有哪些实例？", noopStep)
 	require.NoError(t, err)
@@ -49,7 +49,7 @@ func TestCentralAgentShortFollowupReceivesCommittedConversation(t *testing.T) {
 		{Role: "user", Content: "Windows 终端怎么复制？"},
 		{Role: "assistant", Content: "可以用 Ctrl+Shift+C 复制。"},
 	})
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 
 	_, err := eng.Chat(context.Background(), "粘贴呢", noopStep)
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestCentralAgentBlocksHallucinatedLegacyWriteTool(t *testing.T) {
 	}}
 	executor := &mockExecutor{}
 	eng := NewWithDeps(model, executor, func(string, map[string]any) bool { return true })
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	eng.SetMutatingToolsEnabled(true)
 
 	reply, err := eng.Chat(context.Background(), "停止 uhost-1", noopStep)
@@ -79,7 +79,7 @@ func TestCentralAgentBlocksHallucinatedLegacyWriteTool(t *testing.T) {
 func TestCentralAgentAuthorizesSearchAtExecutionBoundary(t *testing.T) {
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{Enabled: true, Empty: true}}}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	eng.SetKnowledgeRetriever(retriever)
 	out := eng.executeTool(context.Background(), toolCall("search", "SearchKnowledge", `{"query":"终端粘贴快捷键"}`), noopStep)
 	require.False(t, strings.Contains(out, "unavailable for this route"))
@@ -104,7 +104,7 @@ func TestAgentContextCarriesPendingSelectionOrderWithoutResumingLegacyHandler(t 
 
 func TestCentralSessionUsesCentralPromptInsteadOfLegacyWorkflowCatalog(t *testing.T) {
 	deps := &SharedDeps{LLMClient: &mockLLM{}, ExternalExecutor: &mockExecutor{}}
-	eng := NewSession(deps, SessionOptions{CentralAgentRuntimeEnabled: true, MutatingToolsEnabled: true})
+	eng := NewSession(deps, SessionOptions{MutatingToolsEnabled: true})
 	eng.InitWithContext("test user")
 	system := renderTestMessages(eng.MessagesSnapshot())
 	require.Contains(t, system, "本轮唯一的业务判断者")

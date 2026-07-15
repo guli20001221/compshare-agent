@@ -112,15 +112,6 @@ agent:
     sink: mysql                        # file | mysql | both
     dir: ""                            # JSONL dir for file/both sinks; ignored for mysql
 
-  # Intent router / direct dispatch. Empty direct_dispatch_intents = the
-  # built-in platform set (resource,monitor,gpu_specs,stock,pricing,
-  # platform_image,custom_image,community_image,shared_image,net_accelerator).
-  # Set "off" to disable direct dispatch (everything via ReAct, debugging only).
-  planner:
-    router_mode: ""                    # "" (off) | shadow (trace-only A/B)
-    direct_dispatch_intents: ""        # "" (default set) | CSV | off
-    structured_output: ""              # "" (off) | json_object | json_schema — plumbed, not yet validated on flash
-
   # 0 or omitted uses the built-in defaults for llm / mutating /
   # read_expensive. The user_turn_* and max_tokens_per_turn fields are
   # OPT-IN test-phase guardrails — 0 / omitted = no enforcement (NOT

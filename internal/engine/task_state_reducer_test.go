@@ -43,7 +43,7 @@ func TestTaskStateReducerOwnsReplaceContinueCompleteAndClear(t *testing.T) {
 func TestUpdateTaskStatePersistsIntoNextAgentContextWithoutExecutor(t *testing.T) {
 	executor := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
 	out := eng.executeTool(context.Background(), toolCall("task", tools.UpdateTaskStateName,
@@ -73,7 +73,7 @@ func TestCentralToolWindowSeparatesUnderstandingFromWriteAuthority(t *testing.T)
 
 func TestUpdateTaskStateRejectsUnstructuredAndLegacyExecution(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	out := eng.executeTaskStateDelta(map[string]any{"relation": "continue", "raw_user_text": "就用之前那个"}, noopStep)
 	require.Contains(t, out, "unknown field")
 

@@ -94,7 +94,7 @@ func TestCentralAgentProposalExecutesOnlyThroughExistingWorkflowGate(t *testing.
 		require.Equal(t, "StopInstanceWorkflow", action)
 		return true
 	})
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	eng.SetMutatingToolsEnabled(true)
 	eng.lastUserMsg = "停止 uhost-1"
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "train-a", "State": "Running"}}}, "test"))
@@ -115,7 +115,7 @@ func TestCentralAgentProposalCannotExecuteWithoutVerifiedSource(t *testing.T) {
 		t.Fatal("unverified proposal must not reach confirmation")
 		return true
 	})
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	eng.SetMutatingToolsEnabled(true)
 	eng.lastUserMsg = "关机"
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-unverified", time.Now())
@@ -139,7 +139,7 @@ func TestCentralAgentProposalCannotWriteWithoutRequiredJournal(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, executor, confirm)
 	eng.safeExecutor = newSafeToolExecutor(executor, confirm, nil, true)
 	eng.safeExecutor.SetMutatingToolsEnabled(true)
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	eng.SetMutatingToolsEnabled(true)
 	eng.lastUserMsg = "停止 uhost-1"
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "train-a", "State": "Running"}}}, "test"))
@@ -154,7 +154,7 @@ func TestCentralAgentProposalCannotWriteWithoutRequiredJournal(t *testing.T) {
 
 func TestCurrentTurnReadBecomesProposalEvidenceOnlyAfterItWasObserved(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetCentralAgentRuntimeEnabled(true)
+	eng.enableCentralAgentRuntimeForTest()
 	eng.lastUserMsg = "停止它"
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-read-source", time.Now())
 	eng.turnContextViewReady = true

@@ -1,8 +1,10 @@
 # Agent 中心化与上下文全链路收敛执行规格
 
-> 状态：Ready for implementation
+> 状态：设计合同已批准，P0–P6、P7a、P8 已实施
 >
-> 实施基线：`origin/main@15f2cc38`（PR #454 已合并）
+> 原始实施基线：`origin/main@15f2cc38`（PR #454 已合并）
+>
+> 当前执行状态与剩余步骤：`docs/plans/2026-07-15-agent-runtime-convergence-continuation.md`
 >
 > 替代未合并规格：`codex/routing-convergence-spec` 上的 `2026-07-14-routing-hardcoding-convergence-spec.md`
 >

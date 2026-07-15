@@ -64,8 +64,8 @@ Verified against `main` (file:line where it helps). "Why" cites the mismatch.
 | `CSAgent` | `CompShareAgent` | Avoid an unfriendly external abbreviation. **DEFERRED (won't-fix for the byte-stable sweep):** `CSAgent` survives ONLY as HTTP **Action wire values** the frontend posts and `dispatch.go`/`ws.go` route on (`SendCSAgentChat`, `ConfirmCSAgentAction`, `GetCSAgentMeta`, `CreateCSAgentSession`, `GetCSAgentSession`, `SendCSAgentFeedback`, `CreateCSAgentWS`) — there are **no internal Go symbols**. Renaming the strings breaks the deployed frontend, so it needs a coordinated server+frontend change or a dual-route compat window. Revisit with a planned API v2. |
 | `capability` (non-LLM senses) | reserve only for `ModelCapability` | Historically meant skill/route-abstraction; now should mean only model capability (`SupportsObjectToolChoice`, …). The route-abstraction sense was retired (#115). |
 | `KQA` | `KnowledgeQA` | Over-abbreviated; opaque outside the team. |
-| Env: `USE_INTENT_PLANNER` | `COMPSHARE_INTENT_ROUTER_MODE` | Reflect the router + unify the prefix. |
-| Env: `USE_INTENT_PLANNER_FOR` | `COMPSHARE_DIRECT_DISPATCH_INTENTS` | The set of intents the engine dispatches deterministically. |
+| Env: `USE_INTENT_PLANNER`, `COMPSHARE_INTENT_ROUTER_MODE` | retired | The independent intent-router runtime was removed when the central AgentRuntime became the only production path. |
+| Env: `USE_INTENT_PLANNER_FOR`, `COMPSHARE_DIRECT_DISPATCH_INTENTS` | retired | Direct business dispatch no longer selects the production semantic path. |
 | Env: `USE_*` / `RAG_*` / `PLANNER_*` mix | `COMPSHARE_*` | One config prefix. |
 
 **Kept as-is (industry-standard already):** `RAG` (internal use is fine — it's the standard acronym; spell out as "knowledge retrieval" only in user-facing product copy), `Tool`, `Guardrail`, `Trace`, `Agent`, `Workflow`, `MCP`.
