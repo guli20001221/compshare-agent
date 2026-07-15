@@ -131,8 +131,8 @@ func TestPromptSofteningRemovesVagueFailureEnumerations(t *testing.T) {
 		"模糊故障描述优先于具体 Diagnose 路由",
 	}
 	for name, prompt := range map[string]string{
-		"mutating_full": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true}),
-		"readonly_full": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false}),
+		"mutating_full":  BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true}),
+		"readonly_full":  BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false}),
 		"diagnosis_card": RenderIntentScopedReActCard(intent.IntentDiagnosis, true),
 	} {
 		t.Run(name, func(t *testing.T) {

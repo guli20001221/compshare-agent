@@ -20,18 +20,31 @@ func createDispatch() routerDispatchResult {
 	}
 }
 
-type fakeContextContinuationResolver struct {
+type fakeCreateContextDecisionLayer struct {
 	decision *ContextContinuationDecision
 	err      error
-	calls    []ContextContinuationInput
+	calls    []ContextDecisionInput
 }
 
-func (f *fakeContextContinuationResolver) ResolveContextContinuation(_ context.Context, in ContextContinuationInput) (*ContextContinuationDecision, error) {
+func (f *fakeCreateContextDecisionLayer) ResolveContextDecision(_ context.Context, in ContextDecisionInput) (*ContextDecision, error) {
 	f.calls = append(f.calls, in)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.decision, nil
+	if f.decision == nil {
+		return nil, nil
+	}
+	d := f.decision
+	switch d.Decision {
+	case ContextContinuationContinue:
+		return &ContextDecision{Decision: ContextDecisionContinueTask, Target: ContextDecisionTargetCreate, GPUPref: d.GPUPref, ZonePref: d.ZonePref, ImagePref: d.ImagePref, ImageSource: d.ImageSource, WorkloadPref: d.WorkloadPref, InstanceRef: d.InstanceRef, Reason: d.Reason}, nil
+	case ContextContinuationClear:
+		return &ContextDecision{Decision: ContextDecisionClearContext, Reason: d.Reason}, nil
+	case ContextContinuationClarify:
+		return &ContextDecision{Decision: ContextDecisionClarify, Clarify: d.Clarify, Reason: d.Reason}, nil
+	default:
+		return &ContextDecision{Decision: ContextDecisionNewTask, Reason: d.Reason}, nil
+	}
 }
 
 func TestUnifiedCreateFlag_DefaultOn(t *testing.T) {
@@ -52,23 +65,8 @@ func TestDispatchAgentSkill_CreateInstanceFlagOffFallsThrough(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
-func TestRecordCreateContextFrame_FlagOffDoesNotPersistFrame(t *testing.T) {
-	SetContextContinuationEnabled(false)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
+func TestTryPlannerDispatch_UnknownDoesNotClearPendingDeployModelByItself(t *testing.T) {
 
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-
-	eng.recordCreateContextFrameFromCreateAttempt("创建一台4090", intent.IntentRoute{Intent: intent.IntentCreateInstance}, map[string]any{
-		"GpuType": "4090",
-		"Zone":    "cn-wlcb-01",
-	}, "华北一C暂无库存")
-
-	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind)
-}
-
-func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
@@ -93,12 +91,16 @@ func TestTryPlannerDispatch_UnknownClearsPendingDeployModel(t *testing.T) {
 			Confidence:    0.9,
 		},
 	}}}, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentResourceInfo}})
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionAnswerFollowup,
+		Target:   ContextDecisionTargetKnowledge,
+	}})
 
 	_, _ = eng.tryPlannerDispatch(context.Background(), "随便问个无关问题", "", noopStep, nil)
 
 	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.PendingDeployModel)
-	assert.Empty(t, state.ContextFrame.Kind)
+	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel)
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
 }
 
 func TestDispatchAgentSkill_CreateInstanceFlagOnSpecOnlyStartsCreateWorkflowWithoutImageMatch(t *testing.T) {
@@ -405,11 +407,9 @@ func TestDispatchAgentSkill_UnifiedCreateMixedWorkloadUsesDeployMatcherWithPinne
 }
 
 func TestResumeCreateContextFrame_ZoneFollowupContinuesPriorDeploy(t *testing.T) {
-	SetContextContinuationEnabled(true)
 	SetUnifiedCreateEnabled(true)
 	SetCreatePreferenceExtractionEnabled(true)
 	t.Cleanup(func() {
-		SetContextContinuationEnabled(false)
 		SetUnifiedCreateEnabled(true)
 		SetCreatePreferenceExtractionEnabled(true)
 	})
@@ -455,7 +455,7 @@ func TestResumeCreateContextFrame_ZoneFollowupContinuesPriorDeploy(t *testing.T)
 	}}
 	eng := NewWithDeps(client, exec, okConfirm)
 	eng.zoneCatalog = zones.NewCatalog(0)
-	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+	eng.SetContextDecisionLayer(&fakeCreateContextDecisionLayer{decision: &ContextContinuationDecision{
 		Decision: ContextContinuationContinue,
 		ZonePref: "华北二A",
 	}})
@@ -491,11 +491,9 @@ func TestResumeCreateContextFrame_ZoneFollowupContinuesPriorDeploy(t *testing.T)
 }
 
 func TestTryPlannerDispatch_AllowsDeployFrameResumeBeforeNonCreateCleanup(t *testing.T) {
-	SetContextContinuationEnabled(true)
 	SetUnifiedCreateEnabled(true)
 	SetCreatePreferenceExtractionEnabled(true)
 	t.Cleanup(func() {
-		SetContextContinuationEnabled(false)
 		SetUnifiedCreateEnabled(true)
 		SetCreatePreferenceExtractionEnabled(true)
 	})
@@ -541,7 +539,7 @@ func TestTryPlannerDispatch_AllowsDeployFrameResumeBeforeNonCreateCleanup(t *tes
 	}}
 	eng := NewWithDeps(client, exec, okConfirm)
 	eng.zoneCatalog = zones.NewCatalog(0)
-	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+	eng.SetContextDecisionLayer(&fakeCreateContextDecisionLayer{decision: &ContextContinuationDecision{
 		Decision: ContextContinuationContinue,
 		ZonePref: "华北二A",
 	}})
@@ -580,8 +578,13 @@ func TestTryPlannerDispatch_AllowsDeployFrameResumeBeforeNonCreateCleanup(t *tes
 	assert.Equal(t, "cn-wlcb-01", createArgs["Zone"])
 }
 
-func TestTryPlannerDispatch_HandledNonCreateTurnClearsDeployContextFrame(t *testing.T) {
+func TestTryPlannerDispatch_HandledNonCreateTurnDoesNotClearWithoutResolverDecision(t *testing.T) {
+
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetContextDecisionLayer(&fakeContextDecisionLayer{decision: &ContextDecision{
+		Decision: ContextDecisionAnswerFollowup,
+		Target:   ContextDecisionTargetKnowledge,
+	}})
 	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{
 		Plan: intent.IntentRoute{
 			SchemaVersion: intent.SchemaVersion,
@@ -609,8 +612,8 @@ func TestTryPlannerDispatch_HandledNonCreateTurnClearsDeployContextFrame(t *test
 	require.True(t, handled)
 	assert.Contains(t, reply, "当前不支持直接查询账号余额")
 	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.PendingDeployModel)
-	assert.Empty(t, state.ContextFrame.Kind)
+	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel)
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind)
 }
 
 func TestApplyContextContinuationDecision_ZoneFallbackUsesUserTextWhenModelInventsZoneCode(t *testing.T) {
@@ -676,38 +679,6 @@ func TestApplyContextContinuationDecision_ContinueCanExtractMissingGPUFromUserTe
 	assert.Equal(t, "cn-wlcb-01", next.Zone)
 }
 
-func TestResumeCreateContextFrame_ContextContinuationFlagOffDoesNotCallResolver(t *testing.T) {
-	SetContextContinuationEnabled(false)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
-
-	resolver := &fakeContextContinuationResolver{decision: &ContextContinuationDecision{
-		Decision: ContextContinuationContinue,
-		ZonePref: "华北二A",
-	}}
-	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
-	eng.SetContextContinuationResolver(resolver)
-	eng.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		ContextFrame: ContextFrame{
-			Version:        1,
-			Kind:           ContextFrameKindDeploy,
-			Status:         ContextFrameStatusFailedRecoverable,
-			Intent:         string(intent.IntentDeployModel),
-			GPU:            "4090",
-			ImagePref:      "PyTorch",
-			ProducedAtUnix: time.Now().Unix(),
-			TTLSeconds:     ContextFrameTTLSeconds,
-		},
-	}, 1)
-	dispatch := routerDispatchResult{result: intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentStockAvailability}}}
-
-	reply, handled := eng.tryResumeCreateContextFrame(context.Background(), dispatch, "那华北二A呢", noopStep)
-
-	assert.False(t, handled)
-	assert.Empty(t, reply)
-	assert.Empty(t, resolver.calls, "flag-off must not call the context resolver")
-}
-
 func TestResumeCreateContextFrame_NoFrameDoesNotInventCreate(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
@@ -720,11 +691,9 @@ func TestResumeCreateContextFrame_NoFrameDoesNotInventCreate(t *testing.T) {
 }
 
 func TestResumeCreateContextFrame_PricingPlanDoesNotResumeCreate(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
-	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+	eng.SetContextDecisionLayer(&fakeCreateContextDecisionLayer{decision: &ContextContinuationDecision{
 		Decision: ContextContinuationNew,
 	}})
 	eng.SetSessionState(SessionState{
@@ -751,11 +720,9 @@ func TestResumeCreateContextFrame_PricingPlanDoesNotResumeCreate(t *testing.T) {
 }
 
 func TestResumeCreateContextFrame_GpuFollowupContinuesPriorDeploy(t *testing.T) {
-	SetContextContinuationEnabled(true)
 	SetUnifiedCreateEnabled(true)
 	SetCreatePreferenceExtractionEnabled(true)
 	t.Cleanup(func() {
-		SetContextContinuationEnabled(false)
 		SetUnifiedCreateEnabled(true)
 		SetCreatePreferenceExtractionEnabled(true)
 	})
@@ -803,7 +770,7 @@ func TestResumeCreateContextFrame_GpuFollowupContinuesPriorDeploy(t *testing.T) 
 	}}
 	eng := NewWithDeps(client, exec, okConfirm)
 	eng.zoneCatalog = zones.NewCatalog(0)
-	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+	eng.SetContextDecisionLayer(&fakeCreateContextDecisionLayer{decision: &ContextContinuationDecision{
 		Decision: ContextContinuationContinue,
 		GPUPref:  "5090",
 	}})
@@ -837,11 +804,9 @@ func TestResumeCreateContextFrame_GpuFollowupContinuesPriorDeploy(t *testing.T) 
 }
 
 func TestResumeCreateContextFrame_ImageSourceFollowupContinuesPriorDeploy(t *testing.T) {
-	SetContextContinuationEnabled(true)
 	SetUnifiedCreateEnabled(true)
 	SetCreatePreferenceExtractionEnabled(true)
 	t.Cleanup(func() {
-		SetContextContinuationEnabled(false)
 		SetUnifiedCreateEnabled(true)
 		SetCreatePreferenceExtractionEnabled(true)
 	})
@@ -860,7 +825,7 @@ func TestResumeCreateContextFrame_ImageSourceFollowupContinuesPriorDeploy(t *tes
 	}}
 	eng := NewWithDeps(client, exec, okConfirm)
 	eng.zoneCatalog = zones.NewCatalog(0)
-	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+	eng.SetContextDecisionLayer(&fakeCreateContextDecisionLayer{decision: &ContextContinuationDecision{
 		Decision:    ContextContinuationContinue,
 		ImageSource: "community",
 	}})
@@ -891,11 +856,9 @@ func TestResumeCreateContextFrame_ImageSourceFollowupContinuesPriorDeploy(t *tes
 }
 
 func TestResumeCreateContextFrame_ClearDecisionDropsFrame(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	eng := NewWithDeps(&mockLLM{}, newDeployMockWithSupportZones(deployMockConfig{capacityEnough: true}), okConfirm)
-	eng.SetContextContinuationResolver(&fakeContextContinuationResolver{decision: &ContextContinuationDecision{
+	eng.SetContextDecisionLayer(&fakeCreateContextDecisionLayer{decision: &ContextContinuationDecision{
 		Decision: ContextContinuationClear,
 	}})
 	eng.SetSessionState(SessionState{

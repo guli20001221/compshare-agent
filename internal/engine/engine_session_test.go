@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -9,6 +11,18 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+type sessionActionJournal struct {
+	calls int
+	err   error
+}
+
+func (j *sessionActionJournal) Execute(ctx context.Context, action string, args map[string]any, call tools.ActionCall) (map[string]any, error) {
+	j.calls++
+	return call(ctx, action, args)
+}
+
+func (j *sessionActionJournal) Err() error { return j.err }
 
 // newTwoSessions constructs two Engines from the same SharedDeps. Used by the
 // P0 isolation tests below. mockLLM / mockExecutor live in engine_test.go (same
@@ -145,6 +159,55 @@ func TestSessionIsolation_ConfirmFn(t *testing.T) {
 	}
 }
 
+func TestSessionIsolation_ActionJournalIsInjectedPerTurn(t *testing.T) {
+	inner := &mockExecutor{results: map[string]map[string]any{"StopCompShareInstance": {"RetCode": 0}}}
+	deps := &SharedDeps{
+		LLMClient: &mockLLM{}, RateLimiter: governance.NewInMemoryRateLimiter(governance.DefaultLimits()), ExternalExecutor: inner,
+	}
+	journalA := &sessionActionJournal{}
+	confirm := func(string, map[string]any) bool { return true }
+	engA := NewSession(deps, SessionOptions{
+		Subject: "subj-A", ConfirmFn: confirm, MutatingToolsEnabled: true,
+		ActionJournal: journalA, RequireActionJournal: true,
+	})
+	engB := NewSession(deps, SessionOptions{
+		Subject: "subj-B", ConfirmFn: confirm, MutatingToolsEnabled: true,
+		RequireActionJournal: true,
+	})
+
+	_, err := engA.safeExecutor.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-a"})
+	if err != nil {
+		t.Fatalf("session A journaled mutation: %v", err)
+	}
+	if journalA.calls != 1 {
+		t.Fatalf("session A journal calls=%d, want 1", journalA.calls)
+	}
+	_, err = engB.safeExecutor.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-b"})
+	if !errors.Is(err, tools.ErrActionJournalRequired) {
+		t.Fatalf("session B mutation error=%v, want missing journal", err)
+	}
+	if journalA.calls != 1 {
+		t.Fatalf("session B leaked into session A journal; calls=%d", journalA.calls)
+	}
+}
+
+func TestEngine_ActionJournalErrorIsCommitBarrier(t *testing.T) {
+	deps := &SharedDeps{ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}}}
+	poisoned := &sessionActionJournal{err: tools.ErrActionOutcomeUncertain}
+	eng := NewSession(deps, SessionOptions{ActionJournal: poisoned, RequireActionJournal: true})
+	if !errors.Is(eng.ActionJournalError(), tools.ErrActionOutcomeUncertain) {
+		t.Fatalf("coordinator-visible journal error=%v", eng.ActionJournalError())
+	}
+	required := NewSession(deps, SessionOptions{RequireActionJournal: true})
+	if !errors.Is(required.ActionJournalError(), tools.ErrActionJournalRequired) {
+		t.Fatalf("missing required journal error=%v", required.ActionJournalError())
+	}
+	legacy := NewSession(deps, SessionOptions{})
+	if err := legacy.ActionJournalError(); err != nil {
+		t.Fatalf("legacy session unexpectedly requires journal: %v", err)
+	}
+}
+
 // TestSessionIsolation_SharedPointersEqual — P0-4.
 // Sibling assertion to the per-session checks: shared fields MUST be pointer-
 // equal across sessions. If a session refactor accidentally copies an LLM
@@ -202,7 +265,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 16 shared + 55 per-session = 71 fields. Any drift
+// Whitelist totals: 16 shared + 88 per-session = 104 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -232,25 +295,26 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"zoneCatalog": true,
 	}
 	perSessionFields := map[string]bool{
-		"safeExecutor":                     true,
-		"confirmFn":                        true,
-		"confirmEditsFn":                   true,
-		"registry":                         true,
-		"rateLimitSubject":                 true,
-		"mutatingToolsEnabled":             true,
-		"messages":                         true,
-		"userTurn":                         true,
-		"lastUserMsg":                      true,
-		"lastInstanceQueryTurn":            true,
-		"lastMonitorTurn":                  true,
-		"currentMonitorTargets":            true,
-		"currentMonitorNoData":             true,
-		"currentMonitorStart":              true,
-		"currentMonitorEnd":                true,
-		"currentMonitorWindow":             true,
-		"pendingResourceSelection":         true,
-		"readExpensiveCallsThisTurn":       true,
-		"requireKnowledgeCitationThisTurn": true,
+		"safeExecutor":                  true,
+		"confirmFn":                     true,
+		"confirmEditsFn":                true,
+		"registry":                      true,
+		"rateLimitSubject":              true,
+		"mutatingToolsEnabled":          true,
+		"messages":                      true,
+		"userTurn":                      true,
+		"lastUserMsg":                   true,
+		"lastInstanceQueryTurn":         true,
+		"lastMonitorTurn":               true,
+		"currentMonitorTargets":         true,
+		"currentMonitorNoData":          true,
+		"currentMonitorStart":           true,
+		"currentMonitorEnd":             true,
+		"currentMonitorWindow":          true,
+		"pendingResourceSelection":      true,
+		"readExpensiveCallsThisTurn":    true,
+		"lastWorkflowSucceededThisCall": true,
+		"deferTaskCarryThisTurn":        true,
 		// Per-turn agentic SearchKnowledge state (P3): whether the tool ran this
 		// turn and the hits it returned, used by the final-answer no-raw-leak
 		// guard. Per-session by design — sharing would validate one tenant's
@@ -263,14 +327,10 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// instance IDs and prices ground another tenant's answer, which is precisely
 		// the fabrication this is built to catch, laundered into looking legitimate.
 		// Unlike its neighbours it is NOT reset per turn (see grounding.Facts).
-		"turnFacts": true,
 		// The rendered instance table awaiting {{INSTANCE_TABLE}} substitution. Per-session
 		// for the obvious reason: a shared one would splice tenant A's machine list into
 		// tenant B's answer. Reset every turn.
 		"instanceTableThisTurn": true,
-		// Whether the model referenced the table via placeholder this turn. Per-session so
-		// one tenant's compliance is never read as another's. Reset every turn.
-		"placeholderObeyedThisTurn": true,
 		// Per-turn SearchKnowledge call counter feeding the agent-loop search cap.
 		// Per-session/per-turn by design — a shared counter would let one tenant's
 		// searches withdraw the tool from another's turn. Reset every turn.
@@ -280,13 +340,16 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-session by design — same cross-tenant-leak reasoning as the hits
 		// above. Reset every turn.
 		"searchKnowledgeLedgerThisTurn": true,
+		// Stable standalone question formulated from the full conversation. It is
+		// turn-local and must never cross tenants or turns.
+		"resolvedKnowledgeQuestionThisTurn": true,
 		// Per-turn reference-ledger observability state: tracks SearchKnowledge
 		// activity ids and which chunks came from each activity. Sharing would
 		// cross-link one tenant's citations to another tenant's retrieval trace.
 		// Reset every turn.
 		"searchKnowledgeActivitiesThisTurn":   true,
 		"searchKnowledgeActivityIDsByChunkID": true,
-		// Per-turn knowledge_qa agent-loop route marker (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP).
+		// Per-turn knowledge_qa route marker.
 		// Per-session by design — it carries the turn-scoped cite-or-refuse coupling and
 		// the runtime-form projection; sharing it would cross one tenant's route decision
 		// into another's. Reset every turn.
@@ -294,16 +357,32 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Optional deploy preference extractor injection + its per-turn result.
 		// Kept per-session so test doubles / future stateful wrappers cannot
 		// leak calls or extracted preferences across users.
-		"createPreferenceExtractor":   true,
-		"contextContinuationResolver": true,
-		"contextDecisionLayer":        true,
-		"createPreferenceThisTurn":    true,
-		"turnTokensConsumed":          true,
+		"createPreferenceExtractor": true,
+		"contextDecisionLayer":      true,
+		// One cached context judgment per turn. These are reset at the start
+		// of ChatWithOptions and must remain session-local: sharing them would
+		// apply one user's continue/clear decision to another user's task.
+		"contextDecisionAttemptedThisTurn": true,
+		"contextDecisionUserTextThisTurn":  true,
+		"contextDecisionThisTurn":          true,
+		"contextDecisionErrThisTurn":       true,
+		"contextDecisionTraceThisTurn":     true,
+		"contextDecisionTraceSeenThisTurn": true,
+		"createPreferenceThisTurn":         true,
+		"turnTokensConsumed":               true,
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
-		"reactRoundsThisTurn":     true,
-		"reactCeilingHitThisTurn": true,
+		"reactRoundsThisTurn":                    true,
+		"reactCeilingHitThisTurn":                true,
+		"turnModelCallsThisTurn":                 true,
+		"turnCompletionClassHint":                true,
+		"turnCompletionReasonHint":               true,
+		"turnCompletionEmittedThisTurn":          true,
+		"lastPlannerRouteStatusThisTurn":         true,
+		"lastPlannerIntentForCompletionThisTurn": true,
+		"hardBlockStandingThisTurn":              true,
+		"hardBlockTraceThisTurn":                 true,
 		// Per-turn instance-binding observables (#3 StateTrace). Per-session/
 		// per-turn by design — sharing would attribute one tenant's bound
 		// instance / fact-cache age to another's turn. Reset every turn.
@@ -316,15 +395,16 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"contextTraceObserver":              true,
 		// Per-session: whether this session's history was ever trimmed/compacted.
 		// Leaking it across sessions would report a fresh session as already-trimmed.
-		"historyTrimmedThisSession":         true,
-		"retrievalTraceObserver":            true,
-		"freshnessTraceObserver":            true,
-		"diagnosisTraceObserver":            true,
-		"outcomeTraceObserver":              true,
-		"tokenUsageObserver":                true,
-		"rateLimitObserver":                 true,
-		"hardBlockObserver":                 true,
-		"contextDecisionObserver":           true,
+		"historyTrimmedThisSession": true,
+		"retrievalTraceObserver":    true,
+		"freshnessTraceObserver":    true,
+		"diagnosisTraceObserver":    true,
+		"outcomeTraceObserver":      true,
+		"tokenUsageObserver":        true,
+		"rateLimitObserver":         true,
+		"hardBlockObserver":         true,
+		"contextDecisionObserver":   true,
+		"turnCompletionObserver":    true,
 		// stepSink is the agent-tier saga StepTrace sink (B8), set per-turn via
 		// SetStepSink to THIS session's trace recorder. Per-session by design:
 		// sharing it would route one tenant's step traces into another tenant's
@@ -341,6 +421,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"sessionState":                   true,
 		"sessionStateVersion":            true,
 		"sessionStateHydrated":           true,
+		"continuityAdvisories":           true,
+		"turnContextViewThisTurn":        true,
+		"turnContextViewReady":           true,
+		"promptSectionIDsThisTurn":       true,
+		"memoryUpdateSourceThisTurn":     true,
+		"groundingOutcomeThisTurn":       true,
 		"sessionFactContextEnabled":      true,
 		"reactResultProjectionEnabled":   true,
 		"reactHistoryCompactionEnabled":  true,
@@ -351,8 +437,13 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// candidate instance list by State. Per-session by definition —
 		// sharing across sessions would let one user's "stop" verb mask
 		// another's "start" subset.
-		"lastPlannerActionThisTurn":          true,
+		"lastPlannerActionThisTurn": true,
+		// Per-turn marker for a failed deterministic read. It only controls an
+		// ephemeral ReAct warning; sharing it would make one user's upstream
+		// failure alter another user's prompt.
+		"routeReadFailureThisTurn":           true,
 		"imageContextThisTurn":               true,
+		"secretInputsThisTurn":               true,
 		"baseUserContext":                    true,
 		"displayedResourceSelectionThisTurn": true,
 		"trustedWorkflowFrameActionThisTurn": true,
@@ -362,12 +453,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 16, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 69, len(perSessionFields); want != got {
+	if want, got := 91, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 85, typ.NumField(); want != got {
+	if want, got := 107, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

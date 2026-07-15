@@ -17,26 +17,12 @@ func hasTool(tools []openai.Tool, name string) bool {
 	return false
 }
 
-// TestSearchKnowledgeGatedVisibility pins the P3 gating mechanism (design 2):
-// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is the single tool-visibility gate. Flag off
-// => SearchKnowledge invisible for EVERY surface (full read-only, mutating, and
-// any subset), so the tool surface is byte-identical to before it existed. Flag
-// on => present in full-registry surfaces and in subsets that list it; subset
-// scoping still excludes it from subsets that do not.
-func TestSearchKnowledgeGatedVisibility(t *testing.T) {
-	defer SetAgenticSearchKnowledgeEnabled(false) // restore default for other tests
-
-	SetAgenticSearchKnowledgeEnabled(false)
-	assert.False(t, hasTool(VisibleRegistry(false), "SearchKnowledge"), "off: read-only surface")
-	assert.False(t, hasTool(VisibleRegistry(true), "SearchKnowledge"), "off: mutating surface")
-	assert.False(t, hasTool(VisibleRegistryForSubset([]string{"SearchKnowledge", "DescribeCompShareInstance"}, false), "SearchKnowledge"), "off: subset listing it")
-
-	SetAgenticSearchKnowledgeEnabled(true)
-	assert.True(t, hasTool(VisibleRegistry(false), "SearchKnowledge"), "on: read-only (read_cheap survives the filter)")
-	assert.True(t, hasTool(VisibleRegistry(true), "SearchKnowledge"), "on: mutating surface")
-	assert.Equal(t, len(Registry), len(VisibleRegistry(true)), "on: mutating shows the full registry incl SearchKnowledge")
-	assert.True(t, hasTool(VisibleRegistryForSubset([]string{"SearchKnowledge", "DescribeCompShareInstance"}, false), "SearchKnowledge"), "on: subset listing it")
-	assert.False(t, hasTool(VisibleRegistryForSubset([]string{"DescribeCompShareInstance"}, false), "SearchKnowledge"), "on: subset NOT listing it (subset scoping holds)")
+func TestSearchKnowledgeVisibilityFollowsToolScope(t *testing.T) {
+	assert.True(t, hasTool(VisibleRegistry(false), "SearchKnowledge"), "read-only registry includes knowledge search")
+	assert.True(t, hasTool(VisibleRegistry(true), "SearchKnowledge"), "mutating registry includes knowledge search")
+	assert.Equal(t, len(Registry), len(VisibleRegistry(true)), "mutating registry exposes all registered tools")
+	assert.True(t, hasTool(VisibleRegistryForSubset([]string{"SearchKnowledge", "DescribeCompShareInstance"}, false), "SearchKnowledge"), "scope listing SearchKnowledge exposes it")
+	assert.False(t, hasTool(VisibleRegistryForSubset([]string{"DescribeCompShareInstance"}, false), "SearchKnowledge"), "scope omitting SearchKnowledge hides it")
 }
 
 // TestSearchKnowledgePolicyIsLocalReadOnly proves SearchKnowledge is a read-only

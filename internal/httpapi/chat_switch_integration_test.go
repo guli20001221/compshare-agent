@@ -21,21 +21,21 @@ const httpITMessagesDDL = `
 CREATE TABLE IF NOT EXISTS messages (
   id            CHAR(36)     NOT NULL PRIMARY KEY,
   session_id    CHAR(36)     NOT NULL,
-  request_uuid  VARCHAR(64)  NULL,
+  request_uuid  VARCHAR(64),
   role          VARCHAR(16)  NOT NULL,
-  content       MEDIUMTEXT   NOT NULL,
+  content       TEXT         NOT NULL,
   status        VARCHAR(16)  NOT NULL,
-  error_code    VARCHAR(64)  NULL,
-  model         VARCHAR(64)  NULL,
-  input_tokens  INT          NULL,
-  output_tokens INT          NULL,
-  ttft_ms       INT          NULL,
-  latency_ms    INT          NULL,
-  metadata      JSON         NULL,
-  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  KEY idx_session_created (session_id, created_at),
-  KEY idx_request_uuid    (request_uuid)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`
+  error_code    VARCHAR(64),
+  model         VARCHAR(64),
+  input_tokens  INT,
+  output_tokens INT,
+  ttft_ms       INT,
+  latency_ms    INT,
+  metadata      JSONB,
+  created_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_session_created ON messages (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_request_uuid ON messages (request_uuid)`
 
 // TestChatSwitchSessions_CarriesCorrectContext_Integration is the end-to-end
 // proof that switching conversations carries the CORRECT per-session context.
@@ -72,8 +72,8 @@ func TestChatSwitchSessions_CarriesCorrectContext_Integration(t *testing.T) {
 		sessB = "switch-test-session-b"
 	)
 	cleanup := func() {
-		_, _ = db.ExecContext(ctx, "DELETE FROM messages WHERE session_id IN (?, ?)", sessA, sessB)
-		_, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE top_organization_id = ?", owner.TopOrganizationID)
+		_, _ = db.ExecContext(ctx, "DELETE FROM messages WHERE session_id IN ($1, $2)", sessA, sessB)
+		_, _ = db.ExecContext(ctx, "DELETE FROM sessions WHERE top_organization_id = $1", owner.TopOrganizationID)
 	}
 	cleanup()
 	t.Cleanup(cleanup)
@@ -97,7 +97,7 @@ func TestChatSwitchSessions_CarriesCorrectContext_Integration(t *testing.T) {
 	// Seed two sessions of the SAME owner with distinct context envelopes.
 	seedSession := func(id, instanceID string) {
 		_, sErr := db.ExecContext(ctx,
-			"INSERT INTO sessions (id, top_organization_id, organization_id, context, context_version) VALUES (?, ?, ?, ?, 1)",
+			"INSERT INTO sessions (id, top_organization_id, organization_id, context, context_version) VALUES ($1, $2, $3, $4, 1)",
 			id, owner.TopOrganizationID, owner.OrganizationID, string(envelope(instanceID)))
 		require.NoError(t, sErr, "seed session %s", id)
 	}

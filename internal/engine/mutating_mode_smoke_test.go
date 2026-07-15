@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
@@ -32,6 +33,10 @@ func TestMutatingModeSmoke_L1WorkflowStopsAtConfirmWhenDenied(t *testing.T) {
 		return false
 	})
 	eng.SetMutatingToolsEnabled(true)
+	var completions []observability.TurnCompletionTrace
+	eng.SetTurnCompletionObserver(func(trace observability.TurnCompletionTrace) {
+		completions = append(completions, trace)
+	})
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
 	onStep, events := collectSteps()
 
@@ -45,6 +50,9 @@ func TestMutatingModeSmoke_L1WorkflowStopsAtConfirmWhenDenied(t *testing.T) {
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 	assert.NotContains(t, executor.calls, "StopCompShareInstance",
 		"denied confirmation must stop before the mutating API call")
+	require.Len(t, completions, 1)
+	assert.Equal(t, observability.CompletionClassConfirmation, completions[0].Class)
+	assert.Equal(t, observability.CompletionReasonConfirmationDeclined, completions[0].Reason)
 }
 
 func TestMutatingModeSmoke_CreateCustomImageStopsAtConfirmWhenDenied(t *testing.T) {

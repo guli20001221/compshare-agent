@@ -161,26 +161,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
 	}
 	engine.SetSkillExecutorEnabled(useSkillExecutor)
-	agenticSearch, unknownAgenticSearch := agenticSearchKnowledgeEnabledFromEnv(getenv)
-	if unknownAgenticSearch != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE value %q\n", unknownAgenticSearch)
-	}
-	tools.SetAgenticSearchKnowledgeEnabled(agenticSearch)
-	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(getenv)
-	if unknownGroundedValidator != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q\n", unknownGroundedValidator)
-	}
-	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
 	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
 	if unknownDomainMatchGuard != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
 	}
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
-	flashKnowledgeRouteGuard, unknownFlashKnowledgeRouteGuard := flashKnowledgeRouteGuardEnabledFromEnv(getenv)
-	if unknownFlashKnowledgeRouteGuard != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD value %q\n", unknownFlashKnowledgeRouteGuard)
-	}
-	engine.SetFlashKnowledgeRouteGuardEnabled(flashKnowledgeRouteGuard)
 	createPrefExtractor, unknownCreatePrefExtractor := createPreferenceExtractorEnabledFromEnv(getenv)
 	if unknownCreatePrefExtractor != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q\n", unknownCreatePrefExtractor)
@@ -191,26 +176,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q\n", unknownUnifiedCreate)
 	}
 	engine.SetUnifiedCreateEnabled(unifiedCreate)
-	contextContinuation, unknownContextContinuation := contextContinuationEnabledFromEnv(getenv)
-	if unknownContextContinuation != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CONTEXT_CONTINUATION value %q\n", unknownContextContinuation)
-	}
-	engine.SetContextContinuationEnabled(contextContinuation)
-	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
-	if unknownKnowledgeQAAgentLoop != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q\n", unknownKnowledgeQAAgentLoop)
-	}
-	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
-	disciplinedKnowledgeQASynthesis, unknownDisciplinedKnowledgeQASynthesis := disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv)
-	if unknownDisciplinedKnowledgeQASynthesis != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS value %q\n", unknownDisciplinedKnowledgeQASynthesis)
-	}
-	engine.SetDisciplinedKnowledgeQASynthesisEnabled(disciplinedKnowledgeQASynthesis)
-	kqaSelfRevision, unknownKQASelfRevision := kqaSelfRevisionEnabledFromEnv(getenv)
-	if unknownKQASelfRevision != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_KQA_SELF_REVISION value %q\n", unknownKQASelfRevision)
-	}
-	engine.SetKQASelfRevisionEnabled(kqaSelfRevision)
 	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(getenv)
 	for _, value := range unknownDiagnosisPilots {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q\n", value)

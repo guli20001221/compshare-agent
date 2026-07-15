@@ -18,6 +18,25 @@ func twoDigit(n int) string {
 	return fmt.Sprintf("%02d", n)
 }
 
+func agenticKnowledgeMock(query, answer string, result knowledge.RetrievalResult) *mockLLM {
+	chunk := result.Hits[0]
+	if len(result.HitItems) > 0 {
+		chunk = result.HitItems[0].Chunk
+	}
+	verdict := fmt.Sprintf(
+		`{"supported":true,"claims":[{"answer_quote":%q,"chunk_id":%q,"evidence_quote":%q}],"unsupported":[]}`,
+		answer, chunk.ChunkID, chunk.Content,
+	)
+	return &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{{
+			ID: "search-knowledge", Type: openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: fmt.Sprintf(`{"query":%q}`, query)},
+		}}},
+		{Content: answer},
+		{Content: verdict},
+	}}
+}
+
 func TestReplayRegression_ResourceInfoResolvesNamedInstanceFromFullSnapshot(t *testing.T) {
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": manyInstancesWithNamedTarget("claude-write-test", "Stopped"),
@@ -299,8 +318,6 @@ func TestReplayRegression_LifecycleBareIDSelectionResumesPlannerWithoutAutoMutat
 }
 
 func TestReplayRegression_ExactSelectionDoesNotResumeStaleWorkflowFrame(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
@@ -349,15 +366,14 @@ func TestReplayRegression_ExactSelectionDoesNotResumeStaleWorkflowFrame(t *testi
 	reply, err := eng.Chat(context.Background(), "选第2台", noopStep)
 	require.NoError(t, err)
 	require.Equal(t, "继续处理所选实例", reply)
-	require.Empty(t, decisionLayer.calls, "plain selection must clear stale workflow context before planner dispatch")
+	require.NotEmpty(t, decisionLayer.calls, "the unified decision may inspect the task, but this selection turn must not execute it")
 	require.NotContains(t, exec.calls, "CreateDiskWorkflow")
 	require.Equal(t, "uhost-select-002", eng.sessionState.SelectedInstanceID)
-	require.Empty(t, eng.sessionState.ContextFrame.Kind)
+	require.Equal(t, ContextFrameKindWorkflowTask, eng.sessionState.ContextFrame.Kind,
+		"an unrelated selection must defer, not delete, the old task")
 }
 
 func TestReplayRegression_ExactSelectionPreservesWaitingCreateDiskSize(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
@@ -769,6 +785,48 @@ func TestReplayRegression_ResetPasswordAbbreviationEntersWorkflow(t *testing.T) 
 	require.Contains(t, reply, "未执行")
 	require.Equal(t, 1, confirmCalls)
 	require.Len(t, mock.calls, 0, "explicit 改密 command with exact instance name must not enter the ReAct loop")
+}
+
+func TestReplayRegression_DurableSecretChannelFeedsWorkflowWithoutPuttingPasswordInMessage(t *testing.T) {
+	data := manyInstancesWithNamedTarget("reset-target", "Stopped")
+	for _, item := range data["UHostSet"].([]any) {
+		row := item.(map[string]any)
+		if row["UHostId"] == "uhost-target" {
+			row["InstanceType"] = "Normal"
+		}
+	}
+	var resetArgs map[string]any
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			if ids := stringSliceArg(args["UHostIds"]); len(ids) > 0 {
+				return filterDescribeInstances(data, ids), nil
+			}
+			return data, nil
+		case "ResetCompShareInstancePassword":
+			resetArgs = args
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
+	eng := NewWithDeps(mock, exec, func(action string, args map[string]any) bool {
+		require.Equal(t, "ResetPasswordWorkflow", action)
+		require.Equal(t, "[已设置,不显示]", args["Password"])
+		return true
+	})
+	eng.Init(context.Background())
+
+	reply, err := eng.ChatWithOptions(context.Background(), "给 reset-target 改密为 [TOKEN_REDACTED]", noopStep, ChatOptions{
+		SecretInputs: map[string]string{"Password": "Aa123456!"},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resetArgs)
+	require.Equal(t, "QWExMjM0NTYh", resetArgs["Password"])
+	require.NotContains(t, reply, "Aa123456!")
+	require.Len(t, mock.calls, 0)
 }
 
 func TestReplayRegression_LifecycleBillingQuestionDoesNotEnterDirectWorkflow(t *testing.T) {
@@ -1184,8 +1242,10 @@ func TestReplayRegression_DirectLifecycleStopColloquialPhraseBypassesReActLoop(t
 func TestReplayRegressionWiring_CodingPlanDeleteUsesKnowledgePath(t *testing.T) {
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Stopped"))
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{codingPlanManagementKnowledgeResult()}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Coding Plan 的套餐管理入口在控制台左侧导航「Agent Plan」→「套餐管理」。资料未提供删除、取消或退订 Coding Plan 套餐的操作入口；订阅服务购买后不支持退款。 [1]"}}}
+	result := codingPlanManagementKnowledgeResult()
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}
+	answer := "Coding Plan 可在「Agent Plan」的套餐管理中查看。资料未提供可用的删除入口；订阅后不支持退款。"
+	mock := agenticKnowledgeMock("删除 Coding Plan 套餐", answer, result)
 	eng := NewWithDeps(mock, exec, nil)
 	eng.Init(context.Background())
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -1201,7 +1261,7 @@ func TestReplayRegressionWiring_CodingPlanDeleteUsesKnowledgePath(t *testing.T) 
 	require.NotContains(t, reply, "轮次超限")
 	require.Len(t, exec.calls, 0, "Coding Plan package management is product knowledge, not instance lookup")
 	require.Len(t, retriever.calls, 1, "Coding Plan package management must be answered through knowledge retrieval")
-	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
+	require.Len(t, mock.calls, 3, "Agent 检索、回答并校验证据")
 }
 
 func TestReplayRegression_CurrentAccountGPUFactOverridesStale5090Knowledge(t *testing.T) {
@@ -1257,8 +1317,9 @@ func TestReplayRegression_DiagnosisTargetFollowupDefersToPlanner(t *testing.T) {
 func TestReplayRegression_SSHDisconnectTimeoutDefersToPlannerKnowledgeQA(t *testing.T) {
 	exec := replayInstanceExecutor(manyInstancesWithNamedTarget("claude-write-test", "Running"))
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(true)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{stockShortageKnowledgeResult()}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "SSH 频繁断连可以先检查 keepalive、网络抖动和客户端超时配置。 [1]"}}}
+	result := stockShortageKnowledgeResult()
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}
+	mock := agenticKnowledgeMock("SSH 频繁断连 timeout 掉线怎么处理", "SSH 频繁断连可以先检查 keepalive、网络抖动和客户端超时配置。", result)
 	eng := NewWithDeps(mock, exec, nil)
 	eng.Init(context.Background())
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -1275,8 +1336,10 @@ func TestReplayRegression_SSHDisconnectTimeoutDefersToPlannerKnowledgeQA(t *test
 
 func TestReplayRegressionWiring_GenericNoResourceUsesKnowledgePath(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{stockShortageKnowledgeResult()}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "“暂无资源”通常表示当前 GPU、卡数、CPU、内存、镜像和可用区组合没有通过创建前容量预检，不等于机型已经下架。机型状态 Normal 只表示平台仍在售；真正能不能创建，需要以 CheckCompShareResourceCapacity 的具体配置校验为准。 [1]"}}}
+	result := stockShortageKnowledgeResult()
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}
+	answer := "“暂无资源”通常表示当前 GPU、卡数、CPU、内存、镜像和可用区组合没有通过创建前容量预检，不等于机型已经下架。机型状态 Normal 只表示平台仍在售；真正能不能创建，需要以 CheckCompShareResourceCapacity 的具体配置校验为准。"
+	mock := agenticKnowledgeMock("一直暂无资源是什么情况", answer, result)
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -1290,38 +1353,15 @@ func TestReplayRegressionWiring_GenericNoResourceUsesKnowledgePath(t *testing.T)
 	require.Contains(t, reply, "容量预检")
 	require.NotContains(t, reply, "所有机型都是 Normal")
 	require.Len(t, retriever.calls, 1, "generic stock shortage explanation must be answered through knowledge retrieval")
-	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
-}
-
-func TestReplayRegressionWiring_FlashGuardRedirectsStockMisrouteWhenEnabled(t *testing.T) {
-	SetFlashKnowledgeRouteGuardEnabled(true)
-	t.Cleanup(func() { SetFlashKnowledgeRouteGuardEnabled(false) })
-
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: intent.IntentRoute{
-		SchemaVersion: intent.SchemaVersion,
-		Intent:        intent.IntentStockAvailability,
-		Confidence:    0.9,
-	}}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{stockShortageKnowledgeResult()}}
-	exec := &mockExecutor{}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "“暂无资源”表示具体创建配置没有通过容量预检，不等于机型下架。 [1]"}}}
-	eng := NewWithDeps(mock, exec, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-	eng.SetKnowledgeRetriever(retriever)
-
-	reply, err := eng.Chat(context.Background(), "一直暂无资源 是什么情况", noopStep)
-
-	require.NoError(t, err)
-	require.Contains(t, reply, "容量预检")
-	require.Len(t, exec.calls, 0, "guarded product-fact question must not call live stock tools")
-	require.Len(t, retriever.calls, 1)
+	require.Len(t, mock.calls, 3, "Agent 检索、回答并校验证据")
 }
 
 func TestReplayRegressionWiring_DiskBillingQuestionUsesKnowledgePath(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{diskBillingKnowledgeResult()}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "系统盘默认 100GB 免费；数据盘创建即收费；按量实例关机后 CPU、GPU、内存停止计费，但额外扩容的系统盘和数据盘继续计费。 [1]"}}}
+	result := diskBillingKnowledgeResult()
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}
+	answer := "系统盘默认 100GB 免费；数据盘创建即收费；按量实例关机后 CPU、GPU、内存停止计费，但额外扩容的系统盘和数据盘继续计费。"
+	mock := agenticKnowledgeMock("磁盘空间如何收费，100GB 原始空间是否免费", answer, result)
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -1335,13 +1375,15 @@ func TestReplayRegressionWiring_DiskBillingQuestionUsesKnowledgePath(t *testing.
 	require.Contains(t, reply, "GPU、内存停止计费")
 	require.NotContains(t, reply, "选择 GPU")
 	require.Len(t, retriever.calls, 1, "disk billing must be answered through knowledge retrieval")
-	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
+	require.Len(t, mock.calls, 3, "Agent 检索、回答并校验证据")
 }
 
 func TestReplayRegressionWiring_DiskBillingFollowupGPUModelStaysOnDisk(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{diskBillingKnowledgeResult()}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "磁盘空间收费和 GPU 型号无关。系统盘默认 100GB 免费，数据盘创建即收费。 [1]"}}}
+	result := diskBillingKnowledgeResult()
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}}
+	answer := "磁盘空间收费和 GPU 型号无关。系统盘默认 100GB 免费，数据盘创建即收费。"
+	mock := agenticKnowledgeMock("磁盘空间是如何收费的？100GB原始空间是免费的吗？GPU 型号是 4090", answer, result)
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
@@ -1360,7 +1402,7 @@ func TestReplayRegressionWiring_DiskBillingFollowupGPUModelStaysOnDisk(t *testin
 	require.Len(t, retriever.calls, 1, "GPU-only follow-up after disk billing must still retrieve disk evidence")
 	require.Contains(t, retriever.calls[0].question, "磁盘空间是如何收费的")
 	require.Contains(t, retriever.calls[0].question, "4090")
-	require.Len(t, mock.calls, 1, "retrieved evidence should be synthesized by the RAG answerer")
+	require.Len(t, mock.calls, 3, "Agent 检索、回答并校验证据")
 }
 
 func diskBillingKnowledgeResult() knowledge.RetrievalResult {
@@ -1372,7 +1414,7 @@ func diskBillingKnowledgeResult() knowledge.RetrievalResult {
 		ACL:         "customer_safe",
 		Confidence:  "high",
 		Title:       "云盘资源计费（系统盘与数据盘）",
-		Content:     "系统盘默认一定的免费额度，系统盘扩容、新增数据盘根据单价、云盘容量和使用时长收取费用。数据盘创建即收费，与是否挂载无关；按量实例关机后，超免费额度部分正常计费。",
+		Content:     "系统盘默认 100GB 免费额度，系统盘扩容、新增数据盘根据单价、云盘容量和使用时长收取费用。数据盘创建即收费，与是否挂载无关；按量实例关机后 CPU、GPU、内存停止计费，但超出免费额度的系统盘和数据盘继续计费。",
 	}
 	return knowledge.RetrievalResult{
 		Enabled:    true,

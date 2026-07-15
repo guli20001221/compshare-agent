@@ -117,26 +117,15 @@ func TestRehydrateHistorySkipsNonUserNonAssistantRoles(t *testing.T) {
 	assert.Equal(t, "hi", eng.messages[1].Content)
 }
 
-// TestOnTextDeltaReplacedWhenCitedContractOverrides verifies that when the
-// cited-contract guard fires (requireKnowledgeCitationThisTurn=true, retriever
-// non-nil, content has no numbered citation), OnTextDelta receives the
-// ragNoEvidenceReply as a single chunk instead of the raw streamed deltas.
-//
-// The guard is triggered via the low-confidence planner path: a scripted
-// IntentPlanner returns a KnowledgeQA plan with confidence 0.3 (below the 0.60
-// threshold), causing commonPlannerCandidateStatus to return !ok and setting
-// requireKnowledgeCitationThisTurn=true before the ReAct loop runs. The
-// non-nil knowledgeRetriever satisfies the second guard condition. The mock LLM
-// returns "你好" (no [n] citation), so the guard replaces it with ragNoEvidenceReply.
-func TestOnTextDeltaReplacedWhenCitedContractOverrides(t *testing.T) {
-	// deltaMockLLM fires "你" + "好" and returns Content:"你好" — no numbered
-	// citation, so the cited-contract guard will replace it with ragNoEvidenceReply.
+// Low router confidence says nothing about answer validity. It must not turn a
+// normal context-aware fallback into a fake KB refusal merely because the answer
+// lacks citation punctuation.
+func TestOnTextDeltaLowConfidenceKnowledgeFallbackPreservesAnswer(t *testing.T) {
 	client := &deltaMockLLM{}
 	eng := NewWithDeps(client, &mockExecutor{}, func(string, map[string]any) bool { return false })
 	eng.InitWithContext("用户当前没有实例。")
 
-	// Low-confidence KnowledgeQA plan triggers requireKnowledgeCitationThisTurn=true
-	// via the !ok branch of commonPlannerCandidateStatus (confidence < 0.60).
+	// Low-confidence KnowledgeQA falls back to the shared read-only agent.
 	lowConfPlan := intent.IntentRoute{
 		SchemaVersion: intent.SchemaVersion,
 		Intent:        intent.IntentKnowledgeQA,
@@ -145,8 +134,7 @@ func TestOnTextDeltaReplacedWhenCitedContractOverrides(t *testing.T) {
 	eng.intentPlanner = &scriptedIntentPlanner{
 		results: []intent.IntentRouterResult{{Plan: lowConfPlan}},
 	}
-	// A non-nil retriever satisfies the guard's knowledgeRetriever != nil check.
-	// plannerDispatchEnabled also returns true when knowledgeRetriever != nil.
+	// A non-nil retriever keeps planner dispatch enabled, but retrieval never ran.
 	eng.knowledgeRetriever = &scriptedKnowledgeRetriever{}
 
 	var deltas []string
@@ -155,12 +143,8 @@ func TestOnTextDeltaReplacedWhenCitedContractOverrides(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	// The engine must return the override content, not the raw LLM response.
-	assert.Equal(t, ragNoEvidenceReply, reply)
-	// OnTextDelta must emit exactly one chunk containing the override, not the
-	// raw streamed deltas ("你", "好").
-	require.Len(t, deltas, 1, "expected a single override chunk, not raw deltas")
-	assert.Equal(t, ragNoEvidenceReply, deltas[0])
+	assert.Equal(t, "你好", reply)
+	assert.Equal(t, []string{"你", "好"}, deltas)
 }
 
 // TestOnTextDeltaReplaysRawDeltasWhenNoOverride verifies that when no engine
@@ -170,7 +154,7 @@ func TestOnTextDeltaReplaysRawDeltasWhenNoOverride(t *testing.T) {
 	client := &deltaMockLLM{}
 	eng := NewWithDeps(client, &mockExecutor{}, func(string, map[string]any) bool { return false })
 	eng.InitWithContext("用户当前没有实例。")
-	// No retriever, no requireKnowledgeCitationThisTurn — guard cannot fire.
+	// No retriever; the ordinary direct path is unchanged.
 
 	var deltas []string
 	reply, err := eng.ChatWithOptions(context.Background(), "你好", nil, ChatOptions{

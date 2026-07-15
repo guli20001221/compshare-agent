@@ -28,6 +28,17 @@ const (
 	HandlerStatusFailureAfterTool   HandlerStatus = "failure_after_tool"
 )
 
+// HandlerFailureClass is control-flow metadata. User-facing wording may change
+// without changing whether the engine should continue into its context-aware,
+// read-only agent lane.
+type HandlerFailureClass string
+
+const (
+	HandlerFailureNone               HandlerFailureClass = ""
+	HandlerFailureGenericRead        HandlerFailureClass = "generic_read"
+	HandlerFailureActionableUpstream HandlerFailureClass = "actionable_upstream"
+)
+
 type FallbackReason string
 
 const (
@@ -51,8 +62,8 @@ const (
 	// — the deploy handler runs a TierAgent LLM match + the orchestrator saga.
 	RouteStatusDispatchedAgent RouteStatus = "dispatched_agent"
 	// RouteStatusDispatchedKnowledgeAgentLoop marks a knowledge_qa turn that the
-	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP route sent into the shared ReAct loop with a
-	// forced SearchKnowledge first hop, instead of the terminal-RAG route
+	// knowledge_qa route sent into the shared context-aware
+	// ReAct knowledge loop, instead of the terminal-RAG route
 	// (dispatched_retrieval). Distinct so mainline reports tell the agent-loop
 	// knowledge turn apart from BOTH the terminal-RAG route AND the deploy_model
 	// agent-skill dispatch (dispatched_agent): DeriveActualExecutionPath maps it to
@@ -79,13 +90,18 @@ const (
 )
 
 type HandlerResult struct {
-	Status         HandlerStatus
-	Reply          string
-	FallbackReason FallbackReason
-	RouteStatus    RouteStatus
-	ToolAction     string
-	ToolArgs       map[string]any
-	Envelope       *envelope.Envelope
+	Status HandlerStatus
+	Reply  string
+	// NeedsClarification marks a complete deterministic clarification rather
+	// than a factual answer. The engine may let the context-aware Agent resolve
+	// it when the current utterance clearly depends on a recent complete turn.
+	NeedsClarification bool
+	FallbackReason     FallbackReason
+	RouteStatus        RouteStatus
+	FailureClass       HandlerFailureClass
+	ToolAction         string
+	ToolArgs           map[string]any
+	Envelope           *envelope.Envelope
 	// RendererInputToolArgHashes records tool args consumed by deterministic
 	// handler renderers before engine-level tool call ids exist. Phase 1 demo
 	// populates this for monitor handler results only.
@@ -101,6 +117,12 @@ type HandlerResult struct {
 	// SessionState.LastStockGpuModel so a later subject-eliding stock turn can
 	// reuse it as the referent (RC017). Populated by handleStockAvailability only.
 	ResolvedStockGpuModel string
+}
+
+func ClarificationResult(reply string) HandlerResult {
+	result := HandledResult(reply)
+	result.NeedsClarification = true
+	return result
 }
 
 type HandlerExecutor interface {
@@ -165,9 +187,10 @@ func FailureAfterTool(label string) HandlerResult {
 		reply = label + ": " + reply
 	}
 	return HandlerResult{
-		Status:      HandlerStatusFailureAfterTool,
-		Reply:       reply,
-		RouteStatus: RouteStatusFailureAfterTool,
+		Status:       HandlerStatusFailureAfterTool,
+		Reply:        reply,
+		RouteStatus:  RouteStatusFailureAfterTool,
+		FailureClass: HandlerFailureGenericRead,
 	}
 }
 
@@ -459,11 +482,12 @@ func failureAfterToolForError(action string, args map[string]any, label string, 
 		// through to the generic friendly reply rather than answering blank.
 		if msg := strings.TrimSpace(friendly.UserMessage()); msg != "" {
 			return HandlerResult{
-				Status:      HandlerStatusFailureAfterTool,
-				Reply:       msg,
-				RouteStatus: RouteStatusFailureAfterTool,
-				ToolAction:  action,
-				ToolArgs:    copyArgs(args),
+				Status:       HandlerStatusFailureAfterTool,
+				Reply:        msg,
+				RouteStatus:  RouteStatusFailureAfterTool,
+				FailureClass: HandlerFailureActionableUpstream,
+				ToolAction:   action,
+				ToolArgs:     copyArgs(args),
 			}
 		}
 	}

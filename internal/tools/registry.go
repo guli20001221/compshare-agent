@@ -2,23 +2,6 @@ package tools
 
 import openai "github.com/sashabaranov/go-openai"
 
-// agenticSearchKnowledgeOn gates the agentic-RAG SearchKnowledge tool (P3) in
-// VisibleRegistry. Default false => byte-identical to before the tool existed,
-// for EVERY intent. Set once at boot from COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE
-// (cmd/trace.go). The flag is read at the single tool-visibility choke point
-// (VisibleRegistry/VisibleRegistryForSubset), so that filter IS the gate
-// (unified plan P3, gating design 2 — full byte-identity when off).
-var agenticSearchKnowledgeOn bool
-
-// SetAgenticSearchKnowledgeEnabled toggles SearchKnowledge visibility. Boot-only
-// (reversible by restart), mirroring the USE_SKILL_REGISTRY precedent (#114).
-func SetAgenticSearchKnowledgeEnabled(v bool) { agenticSearchKnowledgeOn = v }
-
-// AgenticSearchKnowledgeEnabled reports whether the agentic SearchKnowledge gate
-// is on. Used by the engine (P4a) to decide whether to relax the diagnosis
-// instance-demand dead-end so the agent can retrieve evidence first.
-func AgenticSearchKnowledgeEnabled() bool { return agenticSearchKnowledgeOn }
-
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
 	// --- Knowledge Tools (local, no API call) ---
@@ -26,13 +9,13 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SearchKnowledge",
-			Description: "检索平台与第三方工具（vLLM/SGLang/Ollama/ComfyUI 等）运维知识库，返回带证据片段的条目（chunk_id/标题/摘要/片段）。排查报错、定位原因或回答“怎么做/为什么”类工具问题时，先用它取证再作答；引用返回的 chunk 内容，不要凭空编造命令或参数。",
+			Description: "检索平台与第三方工具运维知识，返回带 chunk_id 的证据条目。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"query": map[string]any{
 						"type":        "string",
-						"description": "要检索的症状、报错或问题（简短自然语言）。",
+						"description": "脱离对话上文也能独立理解的检索问题。",
 					},
 					"context_hint": map[string]any{
 						"type":        "string",
@@ -1195,10 +1178,73 @@ var Registry = []openai.Tool{
 // tool names. If subset is nil or empty, falls back to VisibleRegistry (full
 // read-only or mutating set). Used by the ReAct loop when the planner
 // classified an intent that has a defined tool subset (e.g. diagnosis).
+// ToolScopeMode is an EXPLICIT tool authorization. It exists because the previous
+// design encoded authorization as a nil slice, and nil had to mean two opposite
+// things at once: "this intent named no tools" and "this intent may use every tool".
+// VisibleRegistryForSubset resolved that ambiguity in the most dangerous direction —
+// see its doc comment. A mode is never inferred from emptiness.
+type ToolScopeMode string
+
+const (
+	// ToolScopeNamed authorizes exactly the tools in Names and nothing else.
+	// An EMPTY Names under this mode authorizes NOTHING; it is not "everything".
+	ToolScopeNamed ToolScopeMode = "named"
+
+	// ToolScopeReadOnlyFull authorizes every read tool and no mutating tool,
+	// regardless of whether mutating tools are enabled for the process. This is
+	// the fail-closed default for an intent with no allowlist.
+	ToolScopeReadOnlyFull ToolScopeMode = "read_only_full"
+
+	// ToolScopeMutableFull authorizes the entire registry, mutating tools included
+	// (subject to the process-wide mutating flag). Nothing selects this today; it
+	// exists so that "the agent may write anything" must be TYPED by a caller who
+	// means it, and can be grepped for. It must never become a fallback.
+	ToolScopeMutableFull ToolScopeMode = "mutable_full"
+)
+
+// ToolScope is the authorization handed to a dispatch window.
+type ToolScope struct {
+	Mode  ToolScopeMode
+	Names []string
+}
+
+// VisibleRegistryForScope resolves an explicit ToolScope to the tool list the model
+// may see. An unrecognized mode is treated as least-privilege (read-only), so a
+// zero-valued ToolScope cannot hand out write access by accident.
+func VisibleRegistryForScope(scope ToolScope, mutatingEnabled bool) []openai.Tool {
+	switch scope.Mode {
+	case ToolScopeNamed:
+		if len(scope.Names) == 0 {
+			// An empty allowlist authorizes nothing. This is the branch the old
+			// nil-sentinel took to mean "everything".
+			return nil
+		}
+		return visibleRegistryForNames(scope.Names, mutatingEnabled)
+	case ToolScopeMutableFull:
+		return VisibleRegistry(mutatingEnabled)
+	case ToolScopeReadOnlyFull:
+		return VisibleRegistry(false)
+	default:
+		return VisibleRegistry(false)
+	}
+}
+
+// VisibleRegistryForSubset filters the registry to a named subset.
+//
+// DEPRECATED for dispatch authorization: prefer VisibleRegistryForScope, which cannot
+// confuse "no tools named" with "all tools allowed". This function is retained for the
+// read-only skill executor, which always passes a non-empty skill.RequiredTools with
+// mutatingEnabled=false. Its len(subset)==0 branch returns the FULL registry and is the
+// exact defect that gave ~65% of production turns (knowledge_qa, unknown, empty intent)
+// a mutating-capable tool window; no dispatch path may rely on it.
 func VisibleRegistryForSubset(subset []string, mutatingEnabled bool) []openai.Tool {
 	if len(subset) == 0 {
 		return VisibleRegistry(mutatingEnabled)
 	}
+	return visibleRegistryForNames(subset, mutatingEnabled)
+}
+
+func visibleRegistryForNames(subset []string, mutatingEnabled bool) []openai.Tool {
 	allowed := make(map[string]struct{}, len(subset))
 	for _, name := range subset {
 		allowed[name] = struct{}{}
@@ -1220,20 +1266,10 @@ func VisibleRegistryForSubset(subset []string, mutatingEnabled bool) []openai.To
 // runtime mode. Read-only mode hides mutating workflow tools while keeping
 // query, knowledge, and cloud-side diagnosis tools available.
 func VisibleRegistry(mutatingEnabled bool) []openai.Tool {
-	agenticSearch := AgenticSearchKnowledgeEnabled()
 	policies := DefaultToolExecutionPolicies()
 	visible := make([]openai.Tool, 0, len(Registry))
 	for _, tool := range Registry {
 		if tool.Function == nil {
-			continue
-		}
-		// Agentic-RAG SearchKnowledge (P3) is gated behind
-		// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE. When off it is invisible for EVERY
-		// intent (full-registry AND subset), so the flag-off tool surface is
-		// byte-identical to before this tool existed. When on it survives the
-		// read-only filter below (Route=knowledge, read_cheap) and is scoped by
-		// the subset filter (P4a adds it only to the diagnosis subset).
-		if tool.Function.Name == "SearchKnowledge" && !agenticSearch {
 			continue
 		}
 		if !mutatingEnabled {

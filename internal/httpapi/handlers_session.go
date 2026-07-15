@@ -81,6 +81,10 @@ func (h *Handlers) handleGetSession(c *gin.Context, base BaseRequest, raw *simpl
 	}
 	cursor := raw.Get("Cursor").MustString()
 
+	if h.turnCoordinator != nil {
+		return h.handleGetDurableSession(c.Request.Context(), base.Owner, sessionID, limit, cursor)
+	}
+
 	sess, created, err := h.getOrCreateSession(c.Request.Context(), base.Owner, sessionID)
 	if err != nil {
 		return nil, err
@@ -117,6 +121,47 @@ func (h *Handlers) handleGetSession(c *gin.Context, base BaseRequest, raw *simpl
 		UpdatedAt:    sess.UpdatedAt,
 		Messages:     dtos,
 		NextCursor:   nextCursor,
+	}, nil
+}
+
+// handleGetDurableSession is deliberately strict: an unknown, deleted, or
+// foreign SessionId is not replaced behind the client's back. It also exposes
+// only complete committed question/answer pairs, so the UI can never continue
+// from a ghost user message or an answer that failed to commit.
+func (h *Handlers) handleGetDurableSession(ctx context.Context, owner store.Owner, sessionID string, limit int, cursor string) (any, error) {
+	sess, err := h.sessions.GetByID(ctx, owner, sessionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound.WithMessage("session not found; create a new session explicitly")
+		}
+		return nil, err
+	}
+	committed, ok := h.messages.(store.CommittedPageMessageStore)
+	if !ok {
+		return nil, ErrInternal.WithMessage("committed session reader is not configured")
+	}
+	messages, nextCursor, total, err := committed.ListCommittedBySession(ctx, owner, sessionID, limit, cursor)
+	if err != nil {
+		var cursorErr *store.ErrInvalidCursor
+		if errors.As(err, &cursorErr) {
+			return nil, ErrInvalidParam.WithMessage("invalid Cursor")
+		}
+		return nil, err
+	}
+	dtos := make([]MessageDTO, 0, len(messages))
+	for _, msg := range messages {
+		dtos = append(dtos, MessageDTO{
+			MessageID: msg.ID,
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Status:    msg.Status,
+			CreatedAt: msg.CreatedAt,
+		})
+	}
+	return getSessionData{
+		SessionID: sess.ID, Title: sess.Title, MessageCount: total,
+		CreatedAt: sess.CreatedAt, UpdatedAt: sess.UpdatedAt,
+		Messages: dtos, NextCursor: nextCursor,
 	}, nil
 }
 

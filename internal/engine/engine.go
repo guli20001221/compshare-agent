@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/deployment"
@@ -20,7 +18,6 @@ import (
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/grounding"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
@@ -108,6 +105,12 @@ const (
 	// separate path and is surfaced as such; this only substitutes for a
 	// genuinely empty successful turn.
 	emptyReplyFallbackMessage = "抱歉，本次没有生成有效回复，请重试，或换一种方式描述您的问题。"
+	// reactCeilingRefusal is the last resort when the ReAct loop burned all
+	// maxReActRounds without producing an answer AND neither recovery path
+	// (evidence ledger / resolved-instance context) had anything to synthesize
+	// from. Named rather than inlined so the history-parity test can pin the
+	// exact text the user is told.
+	reactCeilingRefusal = "抱歉，处理轮次超限，请重新描述您的需求。"
 )
 
 const (
@@ -201,6 +204,10 @@ type ChatOptions struct {
 	// order flow for this turn. Only the HTTP path sets it after both backend
 	// and client feature gates are open.
 	GuidedCreate bool
+	// SecretInputs are turn-scoped values supplied through the durable secret
+	// channel. They are consumed only by deterministic workflows, never added to
+	// model messages, session state, traces, or assistant output.
+	SecretInputs map[string]string
 }
 
 type IntentPlannerOptions struct {
@@ -236,35 +243,45 @@ type Engine struct {
 	knowledgeRetriever          KnowledgeRetriever
 	createPreferenceExtractor   CreatePreferenceExtractor
 	contextDecisionLayer        ContextDecisionLayer
-	contextContinuationResolver ContextContinuationResolver
-	groundedRenderer            grounded.Renderer
-	groundedRendererModel       string
+	// contextDecision* is turn-local. A turn may pass through resource selection,
+	// workflow continuation, fact follow-up and create continuation, but all of
+	// them must consume one shared judgment over the same user message instead of
+	// independently asking the model and getting contradictory answers.
+	contextDecisionAttemptedThisTurn bool
+	contextDecisionUserTextThisTurn  string
+	contextDecisionThisTurn          *ContextDecision
+	contextDecisionErrThisTurn       error
+	contextDecisionTraceThisTurn     ContextDecisionTrace
+	contextDecisionTraceSeenThisTurn bool
+	groundedRenderer                 grounded.Renderer
+	groundedRendererModel            string
 	// fastTemplate, when true, makes fast-tier catalog envelopes
 	// (gpu_specs / stock / image_list) render via the handler's
 	// deterministic Reply instead of the LLM grounded renderer (B3). The
 	// LLM renderer is still used for the other tiers. Shared (process-wide
 	// flag), copied into every session.
-	fastTemplate                     bool
-	rendererTraceObserver            func(observability.RendererTrace)
-	plannerTraceObserver             func(observability.RouterTrace)
-	contextTraceObserver             func(observability.ContextTrace)
-	historyTrimmedThisSession        bool
-	retrievalTraceObserver           func(observability.RetrievalTrace)
-	freshnessTraceObserver           func(observability.FreshnessTrace)
-	diagnosisTraceObserver           func(observability.DiagnosisTrace)
-	contextDecisionObserver          func(ContextDecisionTrace)
-	outcomeTraceObserver             func(observability.OutcomeTrace)
-	tokenUsageObserver               func(llm.TokenUsage)
-	rateLimiter                      governance.RateLimiter
-	rateLimitSubject                 string
-	rateLimitObserver                func(governance.Decision)
-	readExpensiveCallsThisTurn       int
-	requireKnowledgeCitationThisTurn bool
+	fastTemplate                  bool
+	rendererTraceObserver         func(observability.RendererTrace)
+	plannerTraceObserver          func(observability.RouterTrace)
+	contextTraceObserver          func(observability.ContextTrace)
+	historyTrimmedThisSession     bool
+	retrievalTraceObserver        func(observability.RetrievalTrace)
+	freshnessTraceObserver        func(observability.FreshnessTrace)
+	diagnosisTraceObserver        func(observability.DiagnosisTrace)
+	contextDecisionObserver       func(ContextDecisionTrace)
+	turnCompletionObserver        func(observability.TurnCompletionTrace)
+	outcomeTraceObserver          func(observability.OutcomeTrace)
+	tokenUsageObserver            func(llm.TokenUsage)
+	rateLimiter                   governance.RateLimiter
+	rateLimitSubject              string
+	rateLimitObserver             func(governance.Decision)
+	readExpensiveCallsThisTurn    int
+	lastWorkflowSucceededThisCall bool
+	deferTaskCarryThisTurn        bool
 	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the agentic
 	// SearchKnowledge tool (P3) so the final-answer no-raw-leak guard validates
 	// the synthesis against exactly the evidence the agent was shown. Reset per
-	// turn. Inert unless the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate exposed the
-	// tool (flag off => tool never visible => never runs => both stay zero).
+	// turn. ToolScope controls whether the tool is available for the active intent.
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
 	// instanceTableThisTurn holds the deterministically rendered instance table for the
@@ -272,20 +289,6 @@ type Engine struct {
 	// substituted with the text WE rendered from the payload — never with anything the
 	// model has retyped. Per-turn; empty when no instance lookup ran.
 	instanceTableThisTurn string
-	// placeholderObeyedThisTurn records whether the model actually referenced the table
-	// via {{INSTANCE_TABLE}} instead of hand-writing a list. Offered-but-not-obeyed is the
-	// turn where the mechanism was available and declined, i.e. the turn that can still
-	// invent a machine — so it is measured, not assumed. Reset per turn.
-	placeholderObeyedThisTurn bool
-	// turnFacts holds the literal values the tools returned, against which the final
-	// reply's checkable claims are tested. Schema-blind by design (see
-	// internal/grounding): it is fed raw payloads from the single executeSafeTool choke
-	// point, so a tool added later is covered without touching this.
-	//
-	// SESSION-scoped, NOT reset per turn — unlike every *ThisTurn field around it. The
-	// model must stay free to refer to an instance it was shown three turns ago without
-	// that being mistaken for invention. See grounding.Facts before "fixing" this.
-	turnFacts *grounding.Facts
 	// searchKnowledgeCallsThisTurn counts SearchKnowledge invocations this turn so
 	// the ReAct loop can withdraw the tool once it hits maxSearchKnowledgeCallsPerTurn,
 	// bounding the corpus-gap re-search thrash that otherwise exhausts the token
@@ -297,18 +300,22 @@ type Engine struct {
 	// synthesis cites only ChunkIDs present here. Reset per turn; populated only
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
-	searchKnowledgeLedgerThisTurn       knowledge.EvidenceLedger
+	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
+	// resolvedKnowledgeQuestionThisTurn is the first standalone question the
+	// agent formulated from the complete visible conversation. Later searches
+	// may use narrower subqueries, but answer verification must keep one stable
+	// question instead of joining unrelated retrieval strings with " | ".
+	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
-	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn that the
-	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP route sent into the shared ReAct loop
-	// (forced SearchKnowledge first hop) instead of the terminal-RAG route. Set
-	// in tryPlannerDispatch when the flag + agentic tool + retriever are all on;
-	// read by the ReAct loop (forces the first hop), executeSearchKnowledge /
-	// guardSearchKnowledgeSynthesis (turn-scoped cite-or-refuse parity with the
-	// terminal route, independent of the global grounded-validator flag), and
+	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn sent into the shared
+	// ReAct loop. A first-turn question forces retrieval;
+	// a follow-up may reuse sufficient visible conversation. Set
+	// in tryPlannerDispatch;
+	// read by the ReAct loop, executeSearchKnowledge / the semantic evidence
+	// verifier, and
 	// emitPlannerTrace (projects PlannedExecutionPath=agent so planned==actual).
-	// Reset per turn; always false when the flag is off => byte-identical.
+	// Reset per turn.
 	knowledgeQAAgentLoopThisTurn bool
 	createPreferenceThisTurn     *CreatePreferenceExtractionResult
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
@@ -325,9 +332,20 @@ type Engine struct {
 	// answer (that path emits no hard-block, so the trace's budget terminus is
 	// otherwise underivable). Both reset at the top of Chat; read post-turn by the
 	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
-	reactRoundsThisTurn     int
-	reactCeilingHitThisTurn bool
-	hardBlockObserver       func(observability.EngineHardBlockTrace)
+	reactRoundsThisTurn                    int
+	reactCeilingHitThisTurn                bool
+	turnModelCallsThisTurn                 int
+	turnCompletionClassHint                string
+	turnCompletionReasonHint               string
+	turnCompletionEmittedThisTurn          bool
+	lastPlannerRouteStatusThisTurn         intent.RouteStatus
+	lastPlannerIntentForCompletionThisTurn intent.Intent
+	// A post-LLM or token-budget block can be recovered later in the same turn.
+	// Keep the standing bit so a successfully validated answer can overwrite the
+	// earlier failure attribution instead of being stored as "blocked".
+	hardBlockStandingThisTurn bool
+	hardBlockTraceThisTurn    observability.EngineHardBlockTrace
+	hardBlockObserver         func(observability.EngineHardBlockTrace)
 	// stepSink receives agent-tier saga StepTraces (B8). Set per-turn via
 	// SetStepSink to the trace recorder, which folds them into the turn's
 	// trace_json.steps[]. nil = no step observability. Consumed by RunAgentSaga.
@@ -379,8 +397,14 @@ type Engine struct {
 	// pre-filter DescribeCompShareInstance results by State so the LLM sees
 	// only actionable rows. Reset per turn.
 	lastPlannerActionThisTurn intent.LifecycleAction
-	imageContextThisTurn      string
-	baseUserContext           string
+	// routeReadFailureThisTurn marks that a deterministic route already attempted
+	// a read but got no usable facts before falling through to ReAct. The ReAct
+	// request receives a temporary warning (never persisted in conversation
+	// history) so it cannot mistake an unavailable read for an empty resource set.
+	routeReadFailureThisTurn bool
+	imageContextThisTurn     string
+	secretInputsThisTurn     map[string]string
+	baseUserContext          string
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
 	currentCtx context.Context
@@ -393,6 +417,20 @@ type Engine struct {
 	sessionState         SessionState
 	sessionStateVersion  int
 	sessionStateHydrated bool
+	// continuityAdvisories is a turn-local, read-only view supplied by the
+	// coordinator. It is intentionally not part of SessionState: transport and
+	// execution truth remain in chat_turns / turn_actions, not in a second JSON
+	// snapshot.
+	continuityAdvisories ContinuityAdvisories
+	// turnContextViewThisTurn is the immutable understanding projection shared by
+	// routing fallbacks and grounded rendering. It is rebuilt exactly once after
+	// turn-entry expiry/refresh and before the current user message is appended.
+	turnContextViewThisTurn TurnContextView
+	turnContextViewReady    bool
+	// Bounded, content-free continuity metadata for the durable turn trace.
+	promptSectionIDsThisTurn   []string
+	memoryUpdateSourceThisTurn string
+	groundingOutcomeThisTurn   string
 	// sessionFactContextEnabled injects fresh RecentFacts into the system
 	// prompt as advisory same-session context. Default off.
 	sessionFactContextEnabled bool
@@ -489,6 +527,14 @@ type SessionOptions struct {
 	Subject              string
 	ConfirmFn            ConfirmFunc
 	MutatingToolsEnabled bool
+	// InitialCommittedTurns is the authoritative number of turns preceding
+	// this private engine. ChatWithOptions increments userTurn at entry, so a
+	// durable turn with sequence N must construct with N-1.
+	InitialCommittedTurns int
+	// ActionJournal belongs to exactly one durable v2 turn. It must never be
+	// stored in SharedDeps because its action index and lease are turn-local.
+	ActionJournal        tools.ActionJournal
+	RequireActionJournal bool
 }
 
 // NewSharedDeps assembles the always-shared engine dependencies from config.
@@ -579,6 +625,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		registry:                       entity.NewRegistry(),
 		rateLimitSubject:               opts.Subject,
 		mutatingToolsEnabled:           opts.MutatingToolsEnabled,
+		userTurn:                       max(opts.InitialCommittedTurns, 0),
 		sessionFactContextEnabled:      deps.SessionFactContextEnabled,
 		reactResultProjectionEnabled:   deps.ReactResultProjectionEnabled,
 		reactHistoryCompactionEnabled:  deps.ReactHistoryCompactionEnabled,
@@ -586,10 +633,10 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		lastInstanceQueryTurn:          -1,
 		lastMonitorTurn:                -1,
 		// messages, userTurn, lastUserMsg, currentMonitor*, pendingResourceSelection,
-		// readExpensiveCallsThisTurn, requireKnowledgeCitationThisTurn,
+		// readExpensiveCallsThisTurn,
 		// *Observer fields all start at zero values which is correct.
 	}
-	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn)
+	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn, opts.ActionJournal, opts.RequireActionJournal)
 	eng.safeExecutor.SetMutatingToolsEnabled(opts.MutatingToolsEnabled)
 	eng.externalExecutor = deps.ExternalExecutor
 	return eng
@@ -633,7 +680,7 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		supportsRequiredToolChoice: true,
 		mutatingToolsEnabled:       true,
 	}
-	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn, nil, false)
 	eng.externalExecutor = executor
 	return eng
 }
@@ -791,16 +838,11 @@ func (e *Engine) emitContextTrace(priorText, lastIntent, selectedHost string) {
 	e.contextTraceObserver(observability.ContextTrace{
 		RouterPriorMessages: priorMsgs,
 		RouterPriorRunes:    runes,
-		// PriorText is BUILT and passed to the router, but callPlannerOnce's own comment
-		// records that buildUserPrompt does not emit it into the prompt (PR1 hotfix
-		// 2026-05-28, to stop multi-turn input growth from breaking flash's JSON schema).
-		// So these two numbers describe context that was ASSEMBLED and then WITHHELD.
-		// That is the single most important thing this trace can tell you, and it is why
-		// the field is named for the bound rather than for the payload.
-		RouterPriorInPrompt: false,
-		// Did the bound bite? Recorded even though the text is withheld, because if the
-		// prompt ever starts emitting PriorText again this is the field that shows the
-		// avalanche returning.
+		// The router now sees the same bounded recent conversation that was assembled
+		// here, instead of deciding the whole turn from a 200-rune assistant prefix.
+		RouterPriorInPrompt: strings.TrimSpace(priorText) != "",
+		// Did the bound bite? The router receives this projection, so this flag shows
+		// when its recent-conversation view was intentionally shortened.
 		RouterPriorTruncated:  priorMsgs >= maxPlannerPriorMessages || runes >= maxPlannerPriorTextRunes,
 		RouterHasLastIntent:   lastIntent != "",
 		RouterHasSelectedHost: selectedHost != "",
@@ -884,6 +926,16 @@ func (e *Engine) RateLimitSubjectKey() string {
 	return e.rateLimitSubject
 }
 
+// ActionJournalError must be checked by the durable turn coordinator before
+// CommitTurn. It carries in-memory uncertainty that cannot always be inferred
+// from database rows after a transaction acknowledgement failure.
+func (e *Engine) ActionJournalError() error {
+	if e == nil || e.safeExecutor == nil {
+		return nil
+	}
+	return e.safeExecutor.ActionJournalError()
+}
+
 // SetRateLimitSubject overrides the subject derived at Engine.New so the
 // server path can swap to the per-WS-connection tenant identity right after
 // engine.NewSession (A2). Returns the previous subject for tests that need
@@ -958,12 +1010,17 @@ func (e *Engine) RateLimiterPointer() governance.RateLimiter { return e.rateLimi
 // can assert that two sessions hold DIFFERENT registries. Test-only.
 func (e *Engine) RegistryPointer() *entity.EntityRegistry { return e.registry }
 
-func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
+func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc, journal tools.ActionJournal, requireJournal bool) *tools.SafeToolExecutor {
 	var safeConfirm tools.ConfirmFunc
 	if confirmFn != nil {
 		safeConfirm = tools.ConfirmFunc(confirmFn)
 	}
-	return tools.NewSafeToolExecutor(executor, tools.WithConfirmFunc(safeConfirm))
+	return tools.NewSafeToolExecutor(
+		executor,
+		tools.WithConfirmFunc(safeConfirm),
+		tools.WithActionJournal(journal),
+		tools.WithRequireActionJournal(requireJournal),
+	)
 }
 
 // Init performs first-turn context injection:
@@ -1171,6 +1228,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 func (e *Engine) SetSessionState(state SessionState, version int) {
 	if e.sessionStateHydrated && version <= e.sessionStateVersion {
 		e.sessionState.RecentFacts = mergeFactsByProducedAt(e.sessionState.RecentFacts, state.RecentFacts)
+		e.sessionState.VerifiedKnowledge = mergeVerifiedKnowledge(e.sessionState.VerifiedKnowledge, state.VerifiedKnowledge)
 		// SelectedInstance{ID,Name} / LastIntent / PendingSelection* /
 		// SchemaVersion: keep the in-memory value. The local engine has not
 		// yet persisted, so its scalars are at-or-newer than the incoming row.
@@ -1230,10 +1288,18 @@ func (e *Engine) refreshSystemPrompt() {
 	}
 	hasSessionBinding := e.sessionStateHydrated && e.sessionState.SelectedInstanceID != ""
 	if hasSessionBinding {
+		historicalOnly := e.sessionState.SelectedInstanceFreshness == ContinuityFreshnessExpired ||
+			(e.sessionState.SelectedInstanceAtUnix <= 0 && e.sessionState.SelectedInstanceSource == "")
+		prefix := "当前会话已选实例："
+		suffix := ""
+		if historicalOnly {
+			prefix = "此前会话提到实例："
+			suffix = "。该绑定只帮助理解，不得授权写操作；执行前需重新确认"
+		}
 		if e.sessionState.SelectedInstanceName != "" {
-			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）"
+			ctx += "\n\n" + prefix + e.sessionState.SelectedInstanceName + "（" + e.sessionState.SelectedInstanceID + "）" + suffix
 		} else {
-			ctx += "\n\n当前会话已选实例：" + e.sessionState.SelectedInstanceID
+			ctx += "\n\n" + prefix + e.sessionState.SelectedInstanceID + suffix
 		}
 	}
 	singleID, singleName := e.singleRegistryInstance()
@@ -1253,6 +1319,9 @@ func (e *Engine) refreshSystemPrompt() {
 			e.factCacheOldestAgeSecondsThisTurn = oldestFreshFactAgeSeconds(e.sessionState.RecentFacts, now)
 		}
 	}
+	if semanticCtx := e.semanticMemoryPrompt(time.Now()); semanticCtx != "" {
+		ctx += "\n\n" + semanticCtx
+	}
 	// #3 StateTrace: record how the turn-start instance binding was determined.
 	// Priority mirrors the injection order above — an explicit prior selection is
 	// the strongest binding, the single-host shortcut next, the fact cache
@@ -1268,7 +1337,9 @@ func (e *Engine) refreshSystemPrompt() {
 	default:
 		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceUnresolved
 	}
-	e.messages[0].Content = prompt.BuildSystemWithOptions(ctx, e.reactPromptBuildOptions())
+	systemPrompt, sectionIDs := prompt.BuildSystemWithOptionsAndTrace(ctx, e.reactPromptBuildOptions())
+	e.messages[0].Content = systemPrompt
+	e.promptSectionIDsThisTurn = append([]string(nil), sectionIDs...)
 }
 
 // Chat processes one user message through the ReAct loop and returns the final text reply.
@@ -1285,45 +1356,57 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // skip the LLM and therefore never fire callbacks.
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
+	e.resetTurnCompletion()
+	e.resetContextDecisionTurn()
+	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
+		e.turnModelCallsThisTurn++
+	})
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
-	// Substitute the deterministically rendered instance table into the finished reply,
-	// then capture. Ordering matters both ways: the substitution must happen before the
-	// grounding observer runs (otherwise the placeholder, not the real table, is what
-	// gets checked), and both must sit on a defer so they cover EVERY exit path — the
-	// direct-dispatch routes return early, and those are precisely the answers the
-	// false-positive baseline needs.
-	// Capture only. The table substitution itself happens inside the ReAct loop, before
-	// the reply is streamed and persisted — see the substituteInstanceTable call there.
-	// Rewriting a reply on the way OUT of this function is too late: the tokens have
-	// already gone to the browser.
-	//
-	// Whether the model USED the placeholder is the compliance signal for the whole
-	// mechanism — a turn where a table was offered and the model hand-wrote a list anyway
-	// is precisely the turn that can still invent a machine. Recording it is the
-	// difference between measuring the contract and merely hoping it holds.
-	defer func() {
-		e.dumpGroundingTurn(userMsg, reply, e.instanceTableThisTurn != "", e.placeholderObeyedThisTurn)
-	}()
+	e.secretInputsThisTurn = opts.SecretInputs
+	defer func() { e.secretInputsThisTurn = nil }()
+	defer e.emitTurnCompletion()
 	if u, ok := tools.UserFrom(ctx); ok {
 		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
 			e.rateLimitSubject = subject
 		}
 	}
-	// Per-turn ConfirmFunc override (HTTP path injects SSE-backed confirm).
-	if opts.ConfirmFunc != nil {
+	// Per-turn confirmation wrapper records an explicit user denial as the
+	// terminal path. It wraps both the HTTP override and the stored CLI gate.
+	if opts.ConfirmFunc != nil || e.confirmFn != nil {
 		origConfirm := e.confirmFn
-		e.confirmFn = ConfirmFunc(opts.ConfirmFunc)
-		e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(opts.ConfirmFunc))
+		confirm := e.confirmFn
+		if opts.ConfirmFunc != nil {
+			confirm = ConfirmFunc(opts.ConfirmFunc)
+		}
+		wrappedConfirm := ConfirmFunc(func(action string, args map[string]any) bool {
+			confirmed := confirm(action, args)
+			if !confirmed {
+				e.markTurnCompletion(observability.CompletionClassConfirmation, observability.CompletionReasonConfirmationDeclined)
+			}
+			return confirmed
+		})
+		e.confirmFn = wrappedConfirm
+		e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(wrappedConfirm))
 		defer func() {
 			e.confirmFn = origConfirm
 			e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(origConfirm))
 		}()
 	}
 	// Per-turn editable-form gate (HTTP path, flag+opt-in only).
-	if opts.ConfirmEditsFunc != nil {
+	if opts.ConfirmEditsFunc != nil || e.confirmEditsFn != nil {
 		origEdits := e.confirmEditsFn
-		e.confirmEditsFn = opts.ConfirmEditsFunc
+		confirmEdits := e.confirmEditsFn
+		if opts.ConfirmEditsFunc != nil {
+			confirmEdits = opts.ConfirmEditsFunc
+		}
+		e.confirmEditsFn = func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+			resolution := confirmEdits(action, args, form)
+			if !resolution.Confirmed {
+				e.markTurnCompletion(observability.CompletionClassConfirmation, observability.CompletionReasonConfirmationDeclined)
+			}
+			return resolution
+		}
 		defer func() { e.confirmEditsFn = origEdits }()
 	}
 	if opts.GuidedCreate {
@@ -1335,38 +1418,35 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.lastUserMsg = userMsg
 	e.imageContextThisTurn = opts.ImageContext
 	e.readExpensiveCallsThisTurn = 0
-	e.requireKnowledgeCitationThisTurn = false
 	e.turnTokensConsumed = 0
 	e.reactRoundsThisTurn = 0
 	e.reactCeilingHitThisTurn = false
+	e.hardBlockStandingThisTurn = false
+	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
 	e.lastPlannerIntentThisTurn = ""
 	e.lastPlannerActionThisTurn = ""
+	e.routeReadFailureThisTurn = false
+	e.deferTaskCarryThisTurn = false
+	e.promptSectionIDsThisTurn = nil
+	e.memoryUpdateSourceThisTurn = "none"
+	e.groundingOutcomeThisTurn = "unavailable"
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.instanceTableThisTurn = ""
-	e.placeholderObeyedThisTurn = false
-	// Deliberately NOT reset per turn — see grounding.Facts. The model must be free to
-	// keep referring to an instance it was shown three turns ago without that being
-	// mistaken for invention.
-	if e.turnFacts == nil {
-		e.turnFacts = grounding.NewFacts()
-	}
-	// A screenshot the user uploaded is a rendering of the platform's own UI, so
-	// figures the model reads back off it are quoted, not invented. Only the fenced
-	// OCR block counts — never the user's own typed words (see AddScreenshotEvidence).
-	e.turnFacts.AddScreenshotEvidence(userMsg)
-	// The instance the user names is a referent they established, not a claim the model
-	// made — including (especially) when it turns out not to exist, which is the one
-	// case no tool can ever ground. IDs only; the user's figures are not evidence.
-	e.turnFacts.AddUserReferents(userMsg)
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
+	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.createPreferenceThisTurn = nil
-	e.expireContextFrame(time.Now())
-	e.expireStaleSelectedInstance(time.Now())
+	continuityNow := time.Now()
+	e.expireContextFrame(continuityNow)
+	e.expireStaleSelectedInstance(continuityNow)
+	e.expireStaleToolFacts(continuityNow)
+	e.refreshConversationDigest(continuityNow)
+	e.turnContextViewThisTurn = e.buildTurnContextView(userMsg)
+	e.turnContextViewReady = true
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
@@ -1379,21 +1459,18 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
-	e.trimHistory()
+	e.trimHistoryWithContext(ctx)
 	priorText := e.PlannerPriorTextSnapshot()
 
 	// Pre-LLM hard-block chain — runs on raw userMsg only, BEFORE OCR
 	// image context is prepended. This prevents screenshot UI labels
 	// (e.g. "运维监控", "最近访问") from triggering false-positive blocks.
 	if decision := enginePreBlock.Decide(userMsg); decision.Matched {
-		e.pendingResourceSelection = nil
-		if e.hardBlockObserver != nil {
-			e.hardBlockObserver(observability.EngineHardBlockTrace{
-				Hit:         true,
-				Category:    decision.Category,
-				TriggeredBy: observability.HardBlockTriggerKeyword,
-			})
-		}
+		e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
+			Hit:         true,
+			Category:    decision.Category,
+			TriggeredBy: observability.HardBlockTriggerKeyword,
+		})
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleUser,
 			Content: userMsg,
@@ -1433,13 +1510,28 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		return reply, nil
 	}
 	if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
+		if e.displayedResourceSelectionThisTurn != nil {
+			e.markTurnCompletion(observability.CompletionClassStructuredClarify, observability.CompletionReasonSelectionRequired)
+		} else {
+			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+		}
 		return reply, nil
 	}
-	if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
-		return reply, nil
-	}
-	if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
-		return reply, nil
+	// The deterministic lifecycle shortcut predates the context decision layer.
+	// It is safe only when there is no carried task/fact/selection to adjudicate;
+	// otherwise it would execute before the one component that can tell a new
+	// command from a continuation. Context-bearing turns go through the planner
+	// and the shared decision below. A failed planner/resolver then falls back to
+	// a read-only ReAct window, never to an unreviewed mutation.
+	if !e.hasContextDecisionContext() {
+		if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
+			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+			return reply, nil
+		}
+		if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
+			e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
+			return reply, nil
+		}
 	}
 	if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
 		return reply, nil
@@ -1501,32 +1593,28 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			req.Tools = toolListWithoutFunction(req.Tools, "SearchKnowledge")
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQASearchCapNote)
 		}
-		// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced first hop: a knowledge_qa turn
-		// routed into the agent loop must deterministically retrieve before it
-		// answers — soft prompt directives don't reliably move flash (#145), so the
-		// terminal route's guaranteed retrieval is reproduced by forcing
-		// SearchKnowledge on the FIRST ReAct call. The in-registry assert is the
-		// belt-and-suspenders half of the 400 trap: the route gate
-		// already requires the agentic tool be enabled, so SearchKnowledge is in the
-		// full knowledge_qa (nil-subset) tool list — but never force a tool absent from
-		// req.Tools. Non-object models fall back to "required" + an ephemeral note.
+		// A knowledge_qa turn always sees the complete conversation and decides
+		// whether it needs retrieval. Reusing an already sufficient prior answer is
+		// valid; forcing another search would discard useful context and add jitter.
+		// With no complete prior turn there is nothing to reuse, so preserve the
+		// strong first-hop retrieval guarantee. Never force a tool absent from the
+		// active scope (the object tool_choice 400 trap).
 		if round == 0 && e.knowledgeQAAgentLoopThisTurn &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") {
-			// Inject the advisory note UNCONDITIONALLY: forced object/"required"
-			// tool_choice 400s on thinking-mode-only Modelverse keys (per-key,
-			// probed 2026-06-10); llm.Client.Chat then retries with auto, and this
-			// note keeps auto calling SearchKnowledge first. Harmless when honored.
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
-			if e.supportsObjectToolChoice {
-				req.ToolChoice = openai.ToolChoice{
-					Type:     openai.ToolTypeFunction,
-					Function: openai.ToolFunction{Name: "SearchKnowledge"},
+			if !e.hasReusableVerifiedKnowledge() {
+				if e.supportsObjectToolChoice {
+					req.ToolChoice = openai.ToolChoice{
+						Type:     openai.ToolTypeFunction,
+						Function: openai.ToolFunction{Name: "SearchKnowledge"},
+					}
+				} else if e.supportsRequiredToolChoice {
+					req.ToolChoice = "required"
 				}
-			} else if e.supportsRequiredToolChoice {
-				req.ToolChoice = "required"
 			}
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
+			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
 			content := rateLimitMessage(decision.Reason)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
@@ -1541,9 +1629,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// Intermediate tool-call rounds emit no content deltas in practice, so
 		// live mode does not leak partial tool args.
 		guardMayRewrite := e.currentMonitorWindow ||
-			(round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil) ||
 			e.lastPlannerIntentThisTurn == intent.IntentDiagnosis ||
-			e.searchKnowledgeRanThisTurn ||
+			// Every knowledge-agent answer is semantically checked before release,
+			// including a follow-up answered from durable prior evidence without a
+			// new SearchKnowledge call. Buffer the model's tokens until that check
+			// succeeds; otherwise an unsupported draft can reach the browser even
+			// though the final frame is correctly replaced by a refusal.
+			e.knowledgeQAAgentLoopThisTurn ||
 			e.mayCorrectFalseInstanceNotFoundReply(userMsg) ||
 			// An instance table is waiting to be substituted into this reply, so the
 			// text WILL be rewritten before the user sees it. Streaming raw tokens
@@ -1591,19 +1683,26 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			opts.OnUsage(resp.Usage)
 		}
 
-		// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced-hop reliability: flash occasionally
-		// ignores the forced SearchKnowledge object tool_choice and returns a direct text
-		// answer (the round-0 cited gate then refuses a turn that should have retrieved).
-		// Retry the forced first hop ONCE — the misfire is jittery, so the retry usually
-		// fires — reinforcing with the ephemeral note alongside the force. The condition is
-		// re-derived (not a tracking flag) and bounded to one extra call: the forced round,
-		// SearchKnowledge available, and the response carrying no SearchKnowledge call.
+		// Retry SearchKnowledge once only when retrieval was mandatory (no prior
+		// complete turn) or when a context-aware first answer tried to claim that the
+		// KB had no answer without actually checking it. A substantive direct answer
+		// based on prior conversation is allowed through to the normal final exit.
 		if round == 0 && e.knowledgeQAAgentLoopThisTurn &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") &&
-			!toolCallsContain(resp.ToolCalls, "SearchKnowledge") && !e.tokenBudgetExceeded() {
+			!toolCallsContain(resp.ToolCalls, "SearchKnowledge") &&
+			(!e.hasReusableVerifiedKnowledge() || isKnowledgeRefusal(resp.Content)) &&
+			!e.tokenBudgetExceeded() {
 			retryReq := req
 			retryReq.OnTextDelta = nil
 			retryReq.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
+			if e.supportsObjectToolChoice {
+				retryReq.ToolChoice = openai.ToolChoice{
+					Type:     openai.ToolTypeFunction,
+					Function: openai.ToolFunction{Name: "SearchKnowledge"},
+				}
+			} else if e.supportsRequiredToolChoice {
+				retryReq.ToolChoice = "required"
+			}
 			if retryResp, retryErr := e.llmClient.Chat(ctx, retryReq); retryErr == nil {
 				e.emitTokenUsage(retryResp.Usage)
 				if opts.OnUsage != nil {
@@ -1615,86 +1714,21 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			}
 		}
 
-		// Post-call budget check: emitTokenUsage just accumulated this
-		// call's usage. If the single call already blew the cap, gate
-		// here so the user gets the canned reply instead of an answer
-		// that already exceeded budget. (c) invariant still holds: this
-		// branch has NO tool_calls in flight — len(resp.ToolCalls)==0
-		// is part of the condition — so no orphan pair.
-		//
-		// PR2 budget policy: refuse here ONLY when no evidence was gathered
-		// this turn. If SearchKnowledge already surfaced evidence
-		// (searchKnowledgeHitsThisTurn non-empty), fall through to the
-		// no-tool-calls block below, which writes a final answer grounded on
-		// that evidence (disciplined cited synthesis) instead of discarding
-		// the work for a bare "请简化问题". The answerer it calls is itself
-		// budget-aware (delivers a grounded answer over cap, only suppressing
-		// its extra retry), so this never fabricates an ungrounded answer.
-		if len(resp.ToolCalls) == 0 && e.tokenBudgetExceeded() && len(e.searchKnowledgeHitsThisTurn) == 0 {
-			e.emitTokenBudgetExceededHardBlock()
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: tokenBudgetExceededMessage,
-			})
-			return tokenBudgetExceededMessage, nil
-		}
+		// The call has already been paid for. A budget can prevent another model
+		// call, but it must not erase a complete answer that is already in hand.
+		// The next loop iteration still enforces the cap before any further call.
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
 			rawContent := resp.Content
 			content := e.guardMonitorTemporalFinalReply(rawContent)
 			content = security.RedactOperationalTokensInText(content)
-			// PR-RAG-PLANNER-INTENT-AUDIT (2026-05-17): cited contract invariant.
-			// Keep the hard gate for planner-classified knowledge questions that
-			// fall back to a pure LLM answer, but do not apply it to diagnosis,
-			// price/tool, or other non-knowledge intents.
-			if round == 0 && e.requireKnowledgeCitationThisTurn && e.knowledgeRetriever != nil &&
-				!isKnowledgeRefusal(content) && !hasNumberedCitation(content) {
-				if e.hardBlockObserver != nil {
-					e.hardBlockObserver(observability.EngineHardBlockTrace{
-						Hit:         true,
-						Category:    "cited_contract_violation",
-						TriggeredBy: observability.HardBlockTriggerPostLLM,
-					})
-				}
-				content = ragNoEvidenceReply
-			}
-			// Convergent agent-loop synthesis (synthesis-discipline lever): for a
-			// knowledge_qa agent-loop turn where SearchKnowledge surfaced evidence, write the
-			// FINAL answer with the shared disciplined cited-synthesis primitive
-			// (answerWithRetrievedEvidence) on the gathered evidence — NOT the free ReAct
-			// write, which under flash intermittently omits the cite / dumps raw text. This
-			// makes the agent loop self-sufficient on knowledge turns: the precondition for
-			// retiring the separate terminal route (tryStage2BRetrieval) so knowledge flows
-			// through ONE loop. The primitive cite-validates (its own cite-harder retry) and
-			// synthesizeKnowledgeQAFromLedger leak-checks + strips, so this path needs no
-			// post-hoc guard. Default-off; on failure (or when disabled) it falls through to
-			// the free-write guard + cite-retry below, so it is never worse than B4.
-			synthDone := false
-			if disciplinedKnowledgeQASynthesisOn && e.knowledgeQAAgentLoopThisTurn &&
-				e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-				if synth, ok := e.synthesizeKnowledgeQAFromLedger(ctx, userMsg); ok {
-					content = synth
-					synthDone = true
-				}
-			}
-			if !synthDone {
-				preGuardContent := content
-				content = e.guardSearchKnowledgeSynthesis(content)
-				// Cite-retry parity with the terminal route: when the guard replaced a real
-				// synthesis with the canned refusal (typically flash omitted/garbled the
-				// [[chunk_id]] marker, not a content problem), give it ONE more chance with an
-				// explicit cite reminder before the refusal stands — mirroring
-				// answerWithRetrievedEvidence's single retry. Scoped to turns where
-				// SearchKnowledge surfaced evidence (the guard's own scope); a retry that still
-				// won't cite keeps the refusal. No-op when the guard accepted the answer.
-				if content == ragNoEvidenceReply && strings.TrimSpace(preGuardContent) != ragNoEvidenceReply &&
-					e.searchKnowledgeRanThisTurn && len(e.searchKnowledgeHitsThisTurn) > 0 {
-					if retried, ok := e.retrySearchKnowledgeCitation(ctx); ok {
-						content = retried
-					}
-				}
-			}
+			// Production knowledge_qa uses the agent loop. Its single final exit validates
+			// every substantive claim against the exact EvidenceLedger, regardless of
+			// whether the model happened to type a citation marker. A cited fabrication and
+			// an uncited answer therefore face the same test; repair is derived from the same
+			// resolved query and ledger.
+			content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
 			if corrected, ok := e.correctFalseInstanceNotFoundReply(userMsg, content); ok {
 				content = corrected
 			}
@@ -1719,7 +1753,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// instead of replaying stale deltas.
 			if substituted, ok := substituteInstanceTable(content, e.instanceTableThisTurn); ok {
 				content = substituted
-				e.placeholderObeyedThisTurn = true
 			}
 			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
@@ -1831,7 +1864,27 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		return synth, nil
 	}
-	return "抱歉，处理轮次超限，请重新描述您的需求。", nil
+	// Neither recovery had anything to synthesize from, so the user gets the bare
+	// refusal — and it MUST enter the history like every other terminal reply.
+	//
+	// This was the one exit in ChatWithOptions that returned a reply without
+	// appending it (verified by scanning every terminal return in this function
+	// and each try* handler it delegates to). The HTTP layer stores whatever
+	// Chat returns, so the row went to the DB regardless. The result: this
+	// engine's in-memory history and the history a cold rebuild reads back from
+	// the DB disagreed by exactly one assistant turn. On the next turn the hot
+	// engine saw the user's new message land straight after a run of tool
+	// results with no answer between them — a malformed conversation the model
+	// then had to interpret — while a rebuilt engine saw the correct one.
+	//
+	// The divergence was manufactured entirely in memory, so no amount of
+	// storage correctness could have fixed it.
+	e.messages = append(e.messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleAssistant,
+		Content: reactCeilingRefusal,
+	})
+	e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonReactRoundCeiling)
+	return reactCeilingRefusal, nil
 }
 
 type routerDispatchResult struct {
@@ -1863,11 +1916,78 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 
 	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
 	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
-		e.clearDeployClarificationCarry()
-		if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
-			e.requireKnowledgeCitationThisTurn = true
+		// The router is UNSURE, or it broke. That is not evidence the user abandoned
+		// their task, and it must not be treated as permission to delete it.
+		//
+		// Every condition that lands here (commonPlannerCandidateStatus) says something
+		// about the ROUTER, never about the user: the planner call errored or was
+		// rate-limited (Fallback), its JSON failed validation, its schema version drifted,
+		// or its confidence came in under 0.60. This branch used to open with
+		// clearDeployClarificationCarry(), which wipes PendingDeployModel and the deploy
+		// ContextFrame — the whole in-progress task, GPU / zone / image / why it failed —
+		// and only THEN fall through to ReAct. The continuation resolver that would have
+		// adjudicated the frame sits ~90 lines below and never got the turn.
+		//
+		// So a bare 「嗯」 mid-deploy, or one 5xx from the router, silently destroyed the
+		// deployment. And the correlation runs the wrong way: a short, vague follow-up is
+		// exactly the input flash is least confident on, so the gate tripped hardest on
+		// precisely the turns where continuation mattered most. The failure path was more
+		// destructive than the success path — a CONFIDENT non-create turn leaves the frame
+		// standing for resolveContextContinuation to judge (continue / new / clear /
+		// clarify), while a router wobble deleted it with no adjudication at all.
+		//
+		// The authors named this hazard themselves, ~40 lines below, and routed the SUCCESS
+		// path around it ("would run BEFORE the deploy/create resume logic and tear down the
+		// frame it is about to need"). The failure path was left doing exactly the forbidden
+		// thing.
+		//
+		// The route signal is untrusted here, but the already-persisted workflow frame is
+		// still trusted state. Resolve it with router_intent=unknown: a Continue may resume
+		// only through the existing trusted-slot + confirmation path, a Clarify may answer,
+		// and New/Clear may retire the task. Resolver failure preserves the task and falls
+		// into a read-only ReAct window.
+		e.lastPlannerIntentThisTurn = intent.IntentUnknown
+		e.lastPlannerActionThisTurn = ""
+		decision, hasContext, err := e.resolveTurnContextDecision(ctx, userMsg, intent.IntentUnknown)
+		if err != nil {
+			e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
+			return "", false
 		}
-		e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
+		if hasContext && decision != nil {
+			if decision.Decision == ContextDecisionClarify && strings.TrimSpace(decision.Clarify) != "" {
+				reply := strings.TrimSpace(decision.Clarify)
+				e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
+				return reply, true
+			}
+			if e.tokenBudgetExceeded() {
+				e.emitTokenBudgetExceededHardBlock()
+				e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
+				e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: tokenBudgetExceededMessage})
+				return tokenBudgetExceededMessage, true
+			}
+			// Strip the guessed route before any continuation consumer sees it. The
+			// workflow/action comes from the server-created frame, never from this plan.
+			safeDispatch := dispatch
+			safeDispatch.result.Plan = intent.IntentRoute{
+				SchemaVersion: intent.SchemaVersion,
+				Intent:        intent.IntentUnknown,
+				Confidence:    0,
+			}
+			if decision.Decision == ContextDecisionContinueTask {
+				if reply, handled := e.tryResumeWorkflowContextFrame(ctx, safeDispatch, userMsg, onStep); handled {
+					return reply, true
+				}
+				if reply, handled := e.tryResumeCreateContextFrame(ctx, safeDispatch, userMsg, onStep); handled {
+					return reply, true
+				}
+			}
+			if decision.Decision == ContextDecisionAnswerFollowup {
+				if reply, handled := e.tryRecentFactFollowup(ctx, safeDispatch, userMsg, onStep); handled {
+					return reply, true
+				}
+			}
+		}
 		e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
 		return "", false
 	}
@@ -1908,15 +2028,40 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// PR1 hotfix Bug 4 (2026-05-28): capture slots.action so executeTool can
 	// deterministically pre-filter DescribeCompShareInstance rows by State.
 	e.lastPlannerActionThisTurn = dispatch.result.Plan.Slots.Action
-	e.clearPendingDeployModelForNonCreateFamily(dispatch.result.Plan.Intent)
 	if dispatch.result.Plan.Intent == intent.IntentDiagnosis {
-		dispatch.result.Plan = augmentPlanTargetRefsFromUserText(dispatch.result.Plan, userMsg, dispatch.snapshot)
+		// ...and remember WHICH MACHINE, which is the other half of the same hole. The
+		// scan below already derives the referent from the user's own words; until now
+		// the turn used it and then threw it away, because diagnosis has no
+		// direct-dispatch handler to record it (see rememberUserNamedInstance).
+		snapshot := e.diagnosisResolutionSnapshot(ctx, dispatch.snapshot)
+		dispatch.result.Plan = augmentPlanTargetRefsFromUserText(dispatch.result.Plan, userMsg, snapshot)
+		e.rememberUserNamedInstance(userMsg, snapshot)
+	}
+
+	turnContextDecision, hasTurnContext, contextDecisionErr := e.resolveTurnContextDecision(ctx, userMsg, dispatch.result.Plan.Intent)
+	if contextDecisionErr != nil {
+		// A confident route does not become permission to mutate when the one
+		// component responsible for deciding context lifetime is unavailable.
+		// Preserve the task and let ReAct explain/re-query with read-only tools.
+		e.lastPlannerIntentThisTurn = intent.IntentUnknown
+		e.lastPlannerActionThisTurn = ""
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackInvalid, dispatch.latency)
+		return "", false
+	}
+
+	// A context decision has already paid for and produced this clarification.
+	// Deliver it before applying the budget to any next operation.
+	if hasTurnContext && turnContextDecision != nil && turnContextDecision.Decision == ContextDecisionClarify && strings.TrimSpace(turnContextDecision.Clarify) != "" {
+		reply := strings.TrimSpace(turnContextDecision.Clarify)
+		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
+		return reply, true
 	}
 
 	// Token budget gate. callPlannerOnce already added planner usage to
 	// the per-turn counter; if that alone blew the cap, return the
-	// canned reply BEFORE any further LLM call (route handler,
-	// answerWithRetrievedEvidence, grounded renderer). Without this
+	// canned reply BEFORE any further LLM call (route handler or grounded
+	// renderer). Without this
 	// every planner-handled path could spend an extra answerer call's
 	// worth of tokens past the cap — the C1 finding from 2026-05-21
 	// review. Returning handled=true short-circuits Chat() so it does
@@ -1925,7 +2070,6 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 	// here (planner-handled paths don't emit ReAct tool events), so
 	// the (c) protocol invariant is naturally satisfied.
 	if e.tokenBudgetExceeded() {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		e.emitTokenBudgetExceededHardBlock()
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -1934,96 +2078,50 @@ func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText stri
 		})
 		return tokenBudgetExceededMessage, true
 	}
-
 	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryResumeWorkflowContextFrame(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
 		return reply, true
 	}
 	if reply, handled := e.tryRecentFactFollowup(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
 	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
 	// the uniform seam — not as routes: a route handler reaches only the
 	// ToolExecutor and cannot drive the orchestrator saga. The seam maps the intent
-	// to its handler (agentSkillForIntent) and delegates; deploy_model's handler does
+	// to its handler (DispatchSpec.AgentSkillName) and delegates; deploy_model's handler does
 	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
 	// (see deploy_model.go). This is byte-stable wiring: the handler body is unchanged.
 	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return reply, true
 	}
-	if FlashKnowledgeRouteGuardEnabled() {
-		if match, _ := matchFlashKnowledgeRouteGuard(userMsg); match {
-			dispatch.result.Plan.Intent = intent.IntentKnowledgeQA
-			e.lastPlannerIntentThisTurn = intent.IntentKnowledgeQA
-			if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
-				e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
-				return reply, true
-			}
-		}
-	}
-	if dispatch.result.Plan.Intent == intent.IntentResourceInfo || dispatch.result.Plan.Intent == intent.IntentMonitorQuery || dispatch.result.Plan.Intent == intent.IntentMonitorHistory || intent.IsRoutingIntent(dispatch.result.Plan.Intent) {
+	if specForIntent(dispatch.result.Plan.Intent).ExecutionMode == intent.ExecutionPathRouting {
 		reply, handled := e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
-		if handled {
-			e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
-		}
 		return reply, handled
 	}
-	// COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP migration: route a knowledge_qa turn into
-	// the shared ReAct loop (forced SearchKnowledge first hop) instead of the
-	// deterministic terminal-RAG route below. Gated so flag-off is byte-identical,
-	// and so the forced first hop can never reference an absent tool (the 400 trap):
-	// it fires ONLY when the agentic SearchKnowledge tool is actually enabled AND a
-	// retriever is wired. With agentic off or no retriever the flag is inert and the
-	// turn stays on the terminal route (which emits its own fallback trace and, for
-	// the nil-retriever case, falls through identically). The distinct
-	// dispatched_knowledge_agent_loop route status + the turn-scoped planned-form
-	// projection (emitPlannerTrace) keep planned==actual==agent so the runtime-form
-	// mismatch gate does not false-flag; cite-or-refuse parity with the terminal
-	// route is preserved turn-scoped (see knowledgeQAAgentLoopThisTurn).
-	if knowledgeQAAgentLoopOn &&
-		dispatch.result.Plan.Intent == intent.IntentKnowledgeQA &&
-		tools.AgenticSearchKnowledgeEnabled() &&
-		e.knowledgeRetriever != nil {
-		e.requireKnowledgeCitationThisTurn = true
+	// Knowledge Q&A has one production execution path: the shared Agent loop.
+	// SearchKnowledge is a tool in that loop, and verified prior conversation may
+	// be reused when it already answers the follow-up. There is no terminal-RAG
+	// rollback path.
+	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
 		e.knowledgeQAAgentLoopThisTurn = true
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedKnowledgeAgentLoop, dispatch.latency)
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
-		return "", false
-	}
-	if reply, handled := e.tryStage2BRetrieval(ctx, dispatch, userMsg, onStep, onTextDelta); handled {
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
-		return reply, true
-	}
-	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
-		e.requireKnowledgeCitationThisTurn = true
-		e.clearDeployContextFrameForHandledNonCreate(dispatch.result.Plan.Intent)
 		return "", false
 	}
 
-	if !createFamilyIntent(dispatch.result.Plan.Intent) {
-		e.clearDeployContextFrame()
-	}
 	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
 	return "", false
 }
@@ -2055,7 +2153,6 @@ func (e *Engine) tryBillingAccountUnsupportedBeforeResourceSelection(ctx context
 	}
 	e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
 	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
-		e.pendingResourceSelection = nil
 		return reply, true
 	}
 	return "", false
@@ -2107,77 +2204,7 @@ func monitorHistoryNameIDs(userMsg string, snapshot entity.RegistrySnapshot) []s
 }
 
 func monitorHistoryNameMentioned(userMsg, name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	lowerMsg := strings.ToLower(userMsg)
-	lowerName := strings.ToLower(name)
-	if monitorHistoryGenericShortName(lowerName) {
-		return false
-	}
-	if monitorHistoryExplicitNameMention(lowerMsg, lowerName) {
-		return true
-	}
-	if utf8.RuneCountInString(lowerName) < 5 {
-		return false
-	}
-	return containsStandaloneASCIIName(lowerMsg, lowerName)
-}
-
-func monitorHistoryExplicitNameMention(lowerMsg, lowerName string) bool {
-	for _, marker := range []string{"实例名", "实例", "云主机", "主机", "机器", "名称"} {
-		idx := strings.Index(lowerMsg, marker)
-		for idx >= 0 {
-			tail := strings.TrimLeft(lowerMsg[idx+len(marker):], " \t\r\n:：为是叫名")
-			if strings.HasPrefix(tail, lowerName) && monitorHistoryNameBoundaryAfter(tail, len(lowerName)) {
-				return true
-			}
-			next := strings.Index(lowerMsg[idx+len(marker):], marker)
-			if next < 0 {
-				break
-			}
-			idx += len(marker) + next
-		}
-	}
-	return false
-}
-
-func monitorHistoryGenericShortName(lowerName string) bool {
-	switch lowerName {
-	case "gpu", "cpu", "vram", "mem", "memory", "test", "monitor", "history":
-		return true
-	default:
-		return false
-	}
-}
-
-func containsStandaloneASCIIName(lowerMsg, lowerName string) bool {
-	if lowerName == "" || !isASCIIIdentifierLike(lowerName) {
-		return strings.Contains(lowerMsg, lowerName)
-	}
-	pattern := `(?i)(^|[^a-z0-9_])` + regexp.QuoteMeta(lowerName) + `($|[^a-z0-9_])`
-	return regexp.MustCompile(pattern).FindStringIndex(lowerMsg) != nil
-}
-
-func isASCIIIdentifierLike(value string) bool {
-	for _, r := range value {
-		if r > 127 {
-			return false
-		}
-	}
-	return true
-}
-
-func monitorHistoryNameBoundaryAfter(text string, n int) bool {
-	if len(text) == n {
-		return true
-	}
-	if len(text) < n {
-		return false
-	}
-	r, _ := utf8.DecodeRuneInString(text[n:])
-	return unicode.IsSpace(r) || strings.ContainsRune("，。,.、;；:：)）]】", r)
+	return entity.TextExplicitlyMentionsName(userMsg, name)
 }
 
 func workflowDirectReply(action, raw string) string {
@@ -2243,18 +2270,6 @@ func workflowFriendlyActionName(action string) string {
 	}
 }
 
-// agentSkillForIntent maps an agent-tier intent to the skill name its dispatch
-// handler runs. deploy_model is the only agent handler today; this table is the extension
-// point future agent skills (P3b) register into — adding one is a row here plus a
-// case in dispatchAgentSkill, not a new branch in the dispatch chain. Each value is
-// a skill Name in the generated registry (skills.GeneratedSkills) AND the saga
-// skillID the handler stamps on every StepTrace; TestAgentSkillForIntent_* lock both
-// bindings so a rename or typo fails CI rather than shipping.
-var agentSkillForIntent = map[intent.Intent]string{
-	intent.IntentDeployModel:    "deploy_model",
-	intent.IntentCreateInstance: "create_instance",
-}
-
 // dispatchAgentSkill is the uniform agent-tier dispatch seam: it routes an
 // agent-skill intent to its handler and returns (reply, true) exactly when an handler owns
 // the turn. An unmapped intent returns ("", false) so the caller falls through to
@@ -2265,8 +2280,8 @@ var agentSkillForIntent = map[intent.Intent]string{
 // registry drift. A future body-loop handler does its own findGeneratedSkill + Body()
 // inside its case, like runDiagnosisSkill, where the lookup is load-bearing.
 func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	skillName, ok := agentSkillForIntent[dispatch.result.Plan.Intent]
-	if !ok {
+	skillName := specForIntent(dispatch.result.Plan.Intent).AgentSkillName
+	if skillName == "" {
 		return "", false
 	}
 	switch skillName {
@@ -2287,6 +2302,14 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch routerDispatchResult)
 		if !e.plannerIntentEnabled(dispatch.result.Plan.Intent) {
 			return "", false
 		}
+		if e.hasReusableCompleteConversation() {
+			// A vague opening turn needs a deterministic clarification. A vague
+			// follow-up does not: the shared Agent can read the preceding exchange
+			// and decide what "还是不行" or "那个又坏了" refers to. Ending here
+			// would turn a router loss of confidence into an artificial memory wall.
+			e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
+			return "", false
+		}
 		reply := diagnosisVagueFailureClarificationReply
 		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -2298,31 +2321,10 @@ func (e *Engine) tryPlannerDiagnosisClarification(dispatch routerDispatchResult)
 		if len(dispatch.result.Plan.Slots.TargetRefs) > 0 || countPlannerSnapshotInstances(dispatch.snapshot) <= 1 {
 			return "", false
 		}
-		// P4a (flag-gated, env-reversible): when agentic SearchKnowledge is on, do
-		// NOT short-circuit empty-target diagnosis with the canned which-instance
-		// reply. Fall through to the agent lane so the ReAct loop calls
-		// SearchKnowledge for prior tool/ops evidence FIRST, and asks "which
-		// instance?" only if a Diagnose* tool genuinely needs instance-specific
-		// data (the LLM clarifies in-loop, e.g. before DiagnoseSSH). Flag off =>
-		// byte-identical: the canned dead-end still fires. The TargetRefs>0 and
-		// <=1-instance escape hatches above are unchanged. ACTIVE FOR THE SYMPTOM
-		// SET (verified live, zero jitter): naturally-phrased tool-ops/error
-		// symptoms already classify as IntentDiagnosis with empty target (the
-		// 2026-06-03 diagnosis recall fix closed #123), so this relax removes
-		// their pre-ReAct dead-end directly — no planner-prompt change (P4b) is
-		// needed. It does NOT force SearchKnowledge: the ReAct loop may still
-		// clarify in-loop for overly-generic platform symptoms (e.g. "实例突然
-		// 连不上了") instead of retrieving — that in-loop tool choice is the LLM's.
-		if tools.AgenticSearchKnowledgeEnabled() {
-			return "", false
-		}
-		reply := diagnosisMissingTargetClarificationReply
-		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: reply,
-		})
-		return reply, true
+		// The scoped diagnosis Agent owns clarification because it can inspect the
+		// complete conversation. Router confidence and registry cardinality are not
+		// sufficient evidence that the turn has no usable context.
+		return "", false
 	default:
 		return "", false
 	}
@@ -2346,12 +2348,9 @@ func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string)
 	result := engineFallbackPlannerResult()
 	snapshot := e.RegistrySnapshot()
 	if _, ok := e.allowRateLimited(governance.ClassLLM, "intent_planner"); ok {
-		// PR1 hotfix Bug 2 (2026-05-28): pass STRUCTURED prior-turn signals
-		// instead of dumping the full transcript via PriorText into the user
-		// prompt. PriorText is still passed for the validator's
-		// source:prior_turn span check, but buildUserPrompt no longer emits
-		// it — capping per-turn input growth so ds-v4-flash JSON schema
-		// remains stable across multi-turn sessions.
+		// Pass both structured continuity signals and the hard-bounded recent
+		// conversation. buildUserPrompt reapplies its own 2k-rune cap, so complete
+		// follow-ups reach the router without reviving unbounded prompt growth.
 		var selectedID string
 		if e.sessionStateHydrated {
 			selectedID = e.sessionState.SelectedInstanceID
@@ -2414,12 +2413,15 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	if fallbackInstanceID != "" && result.Plan.Intent == intent.IntentRefundEstimate {
 		if _, err := e.refreshRegistry(ctx, entity.RefreshReasonManual); err != nil {
 			e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
-			reply := intent.FriendlyToolFailureReply
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: reply,
-			})
-			return reply, true
+			if reply, actionable := friendlyToolErrorMessage(err); actionable {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				return reply, true
+			}
+			e.routeReadFailureThisTurn = true
+			return "", false
 		}
 		routeSnapshot = e.RegistrySnapshot()
 	}
@@ -2450,21 +2452,39 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 			return "", false
 		}
 	}
+	if e.shouldResolveContextDependentDirectReplyInAgent(handled, userMsg) {
+		// The direct path has no evidence envelope through which to carry task
+		// context (or explicitly asked for clarification), but a complete recent
+		// turn exists. Do not terminate with context-free plain text: the scoped
+		// read-only Agent already has that conversation and may resolve the referent
+		// or ask a better question.
+		e.emitPlannerTrace(result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
+		return "", false
+	}
 
 	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
 		if isResourceSelectionFallbackReason(handled.FallbackReason) {
 			if selection, ok, err := e.buildResourceSelectionForPlan(ctx, result, dispatch.snapshot, onStep); err != nil {
-				reply := intent.FriendlyToolFailureReply
 				if msg, friendly := friendlyToolErrorMessage(err); friendly {
-					reply = msg
+					e.pendingResourceSelection = nil
+					e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
+					e.messages = append(e.messages, openai.ChatCompletionMessage{
+						Role:    openai.ChatMessageRoleAssistant,
+						Content: msg,
+					})
+					return msg, true
 				}
+				// The route had enough information to try a read, but the read did
+				// not produce any facts. A generic canned failure would terminate
+				// the turn without letting the existing conversation participate at
+				// all. Keep the failed-read trace, clear the incomplete selection,
+				// and continue into the intent-scoped read-only ReAct lane. That lane
+				// sees the full history and may explain, clarify, or retry the read;
+				// it cannot acquire lifecycle/write tools for a monitor intent.
 				e.pendingResourceSelection = nil
 				e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: reply,
-				})
-				return reply, true
+				e.routeReadFailureThisTurn = true
+				return "", false
 			} else if ok {
 				if len(selection.candidates) == 1 {
 					resumed := result
@@ -2476,7 +2496,15 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 					}
 					handled = handler.HandleMonitorQuery(ctx, req)
 					e.emitPlannerTrace(resumed, handled.RouteStatus, dispatch.latency)
+					if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
+						e.routeReadFailureThisTurn = true
+						return "", false
+					}
 					if handled.Status == intent.HandlerStatusFallbackBeforeTool && handled.FallbackReason == intent.FallbackTimeWindow {
+						if e.hasReusableCompleteConversation() {
+							e.emitPlannerTrace(resumed, handled.RouteStatus, dispatch.latency)
+							return "", false
+						}
 						reply := monitorHistoryNeedTimeWindowMessage
 						e.messages = append(e.messages, openai.ChatCompletionMessage{
 							Role:    openai.ChatMessageRoleAssistant,
@@ -2487,7 +2515,8 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 					e.annotateHandlerResultForUserQuestion(&handled, resumed.Plan, e.lastUserMsg)
 					reply := handled.Reply
 					if handled.Status == intent.HandlerStatusHandled {
-						reply = e.renderGroundedHandlerResult(ctx, handled)
+						handled = e.contextEnvelopeForPlainDirectReply(handled, resumed.Plan, userMsg)
+						reply = e.renderGroundedHandlerResult(ctx, handled, resumed.Plan, userMsg)
 						e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 						e.recordLastIntentFromPlan(resumed.Plan)
 						e.recordPendingSelectionFromHandlerResult(handled, resumed.Plan, userMsg)
@@ -2511,6 +2540,12 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 		}
 		if handled.FallbackReason == intent.FallbackTimeWindow {
 			e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
+			if e.hasReusableCompleteConversation() {
+				// The handler only knows the current slots. A preceding turn may
+				// already contain the missing interval, so let the scoped read-only
+				// Agent resolve it before asking the user to repeat themselves.
+				return "", false
+			}
 			reply := monitorHistoryNeedTimeWindowMessage
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
@@ -2523,10 +2558,20 @@ func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchRe
 	}
 
 	e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
+	if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
+		// A handler's generic failure sentence contains no answer and no useful
+		// clarification. Returning it here used to skip the model even though the
+		// model already has the conversation and an intent-scoped read-only tool
+		// set. Preserve specific upstream recovery hints as deterministic answers;
+		// only the generic no-information fallback continues into ReAct.
+		e.routeReadFailureThisTurn = true
+		return "", false
+	}
 	e.annotateHandlerResultForUserQuestion(&handled, result.Plan, e.lastUserMsg)
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
-		reply = e.renderGroundedHandlerResult(ctx, handled)
+		handled = e.contextEnvelopeForPlainDirectReply(handled, result.Plan, userMsg)
+		reply = e.renderGroundedHandlerResult(ctx, handled, result.Plan, userMsg)
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(result.Plan)
 		e.recordLastStockGpuModel(handled.ResolvedStockGpuModel)
@@ -2561,34 +2606,15 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 	match := matchResourceSelection(userMsg, *pending)
 	if !match.ok {
 		if embedded, exact := matchResourceSelectionReference(userMsg, *pending); embedded.ok && !exact {
-			if plan, ok := monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg); ok {
-				e.pendingResourceSelection = nil
-				return e.handleResourceSelectionMonitor(ctx, plan, pending.snapshot, embedded.instance, userMsg, onStep)
-			}
 			if action := inferLifecycleAction(userMsg); action != "" {
 				e.pendingResourceSelection = nil
 				plan := lifecyclePlanForSelectedInstance(action, embedded.instance)
 				return e.tryLifecycleActionForSelectedInstance(ctx, embedded.instance, action, userMsg, plan, onStep)
 			}
-			if reply, ok := resourceSelectionInfoReply(userMsg, embedded.instance); ok {
-				e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
-				e.pendingResourceSelection = nil
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: reply,
-				})
-				return reply, true
-			}
 			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
 			e.pendingResourceSelection = nil
-			if resourceSelectionLooksLikeReply(userMsg, *pending) {
-				reply := renderResourceSelectionSelectedReply(embedded.instance)
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: reply,
-				})
-				return reply, true
-			}
+			e.deferTaskCarryThisTurn = true
+			e.refreshSystemPrompt()
 			return "", false
 		}
 		if reply, selected, handled := e.tryContextDecisionResourceSelection(ctx, userMsg, pending); handled {
@@ -2618,9 +2644,13 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 		return e.handleResourceSelectionMonitor(ctx, pending.plan, pending.snapshot, match.instance, pending.originalUserMsg, onStep)
 	}
 	e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
+	// Bind only when the waiting workflow explicitly needs an instance. An
+	// unrelated active task is preserved for the unified context decision layer;
+	// a selection shortcut has no authority to silently delete it.
 	if !e.bindSelectedInstanceToWaitingWorkflowFrame(match.instance) {
-		// A plain selection must not become an answer to an unrelated old task.
-		e.clearContextFrame()
+		// The selection belongs to another read task. Keep the old task durable,
+		// but do not let this same utterance accidentally resume it.
+		e.deferTaskCarryThisTurn = true
 	}
 	e.refreshSystemPrompt()
 	return "", false
@@ -2636,11 +2666,16 @@ func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent
 		UserText: userMsg,
 	})
 	e.emitPlannerTrace(intent.IntentRouterResult{Plan: resumedPlan}, handled.RouteStatus, 0)
+	if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
+		e.routeReadFailureThisTurn = true
+		return "", false
+	}
 	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, userMsg)
 
 	reply := handled.Reply
 	if handled.Status == intent.HandlerStatusHandled {
-		reply = e.renderGroundedHandlerResult(ctx, handled)
+		handled = e.contextEnvelopeForPlainDirectReply(handled, resumedPlan, userMsg)
+		reply = e.renderGroundedHandlerResult(ctx, handled, resumedPlan, userMsg)
 		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
 		e.recordLastIntentFromPlan(resumedPlan)
 	}
@@ -2652,90 +2687,6 @@ func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent
 		Content: reply,
 	})
 	return reply, true
-}
-
-func monitorPlanFromEmbeddedResourceSelectionQuestion(userMsg string) (intent.IntentRoute, bool) {
-	if !mentionsMonitorQuestionText(userMsg) {
-		return intent.IntentRoute{}, false
-	}
-	return intent.IntentRoute{
-		SchemaVersion: intent.SchemaVersion,
-		Intent:        intent.IntentMonitorQuery,
-		Slots:         intent.Slots{Metrics: []intent.Metric{intent.MetricCPU, intent.MetricMemory, intent.MetricGPU, intent.MetricVRAM}},
-		RequiredTools: []string{"GetCompShareInstanceMonitor"},
-		Retrieval:     intent.Retrieval{Enabled: false},
-		Confidence:    1,
-	}, true
-}
-
-func mentionsMonitorQuestionText(userMsg string) bool {
-	lower := strings.ToLower(userMsg)
-	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(lower)
-	for _, marker := range []string{"监控", "使用率", "占用率", "负载", "忙不忙", "空闲", "繁忙", "压力", "占用", "利用率"} {
-		if strings.Contains(compact, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-func resourceSelectionInfoReply(userMsg string, inst entity.InstanceSnapshot) (string, bool) {
-	compact := strings.ToLower(strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(userMsg))
-	if compact == "" || resourceSelectionTextContainsAny(compact,
-		"多少钱", "价格", "费用", "库存", "有货", "适合", "推荐", "哪个好",
-		"怎么", "如何", "为什么", "故障", "问题", "报错", "错误", "异常", "失败", "不可用", "连不上", "打不开", "不工作", "oom",
-		"部署", "创建", "新建", "开一台", "跑", "训练", "推理", "能跑", "能不能",
-	) {
-		return "", false
-	}
-	prefix := fmt.Sprintf("第 %s 台是 %s（%s）。", resourceSelectionOrdinalLabel(userMsg), emptyLabel(inst.Name), inst.UHostId)
-	switch {
-	case resourceSelectionTextContainsAny(compact, "gpu型号", "显卡型号"):
-		return fmt.Sprintf("%s GPU 型号是 %s，%s。", prefix, emptyLabel(inst.GpuType), resourceSelectionGPUCountText(inst)), true
-	case strings.Contains(compact, "gpu") || strings.Contains(compact, "显卡"):
-		return fmt.Sprintf("%s GPU：%s，%s。", prefix, emptyLabel(inst.GpuType), resourceSelectionGPUCountText(inst)), true
-	case strings.Contains(compact, "内存"):
-		if inst.Memory > 0 {
-			return fmt.Sprintf("%s 内存是 %d MB。", prefix, inst.Memory), true
-		}
-		return fmt.Sprintf("%s 内存信息未返回。", prefix), true
-	case strings.Contains(compact, "cpu") || strings.Contains(compact, "几核") || strings.Contains(compact, "多少核"):
-		if inst.CPU > 0 {
-			return fmt.Sprintf("%s CPU 是 %d 核。", prefix, inst.CPU), true
-		}
-		return fmt.Sprintf("%s CPU 信息未返回。", prefix), true
-	case resourceSelectionTextContainsAny(compact, "可用区", "在哪个区", "在哪一区", "区域"):
-		return fmt.Sprintf("%s 可用区是 %s。", prefix, emptyLabel(inst.Zone)), true
-	case resourceSelectionTextContainsAny(compact, "状态", "运行中", "关机", "开机"):
-		return fmt.Sprintf("%s 当前状态是 %s。", prefix, emptyStateLabel(inst.State)), true
-	case resourceSelectionTextContainsAny(compact, "配置", "规格", "详情", "信息"):
-		return fmt.Sprintf("%s 当前可确认的信息是：\n\n%s", prefix, renderInstanceSummaryBullets(inst)), true
-	default:
-		return "", false
-	}
-}
-
-func resourceSelectionTextContainsAny(text string, needles ...string) bool {
-	for _, needle := range needles {
-		if needle != "" && strings.Contains(text, strings.ToLower(needle)) {
-			return true
-		}
-	}
-	return false
-}
-
-func resourceSelectionOrdinalLabel(userMsg string) string {
-	if n, ok := extractResourceSelectionOrdinal(userMsg); ok && n > 0 {
-		return strconv.Itoa(n)
-	}
-	return "选中的"
-}
-
-func resourceSelectionGPUCountText(inst entity.InstanceSnapshot) string {
-	if inst.GPU > 0 {
-		return fmt.Sprintf("数量 %d 张", inst.GPU)
-	}
-	return "数量未返回"
 }
 
 // isFastTierEnvelope reports whether an envelope kind is fast-tier catalog
@@ -2753,7 +2704,7 @@ func isFastTierEnvelope(kind envelope.Kind) bool {
 	}
 }
 
-func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent.HandlerResult) string {
+func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent.HandlerResult, plan intent.IntentRoute, userMsg string) string {
 	if e.groundedRenderer == nil || handled.Envelope == nil {
 		return handled.Reply
 	}
@@ -2789,21 +2740,17 @@ func (e *Engine) renderGroundedHandlerResult(ctx context.Context, handled intent
 		e.emitRendererTrace(trace)
 		return handled.Reply
 	}
-	// Token budget gate before issuing the renderer LLM call. Returning
-	// the canned message keeps the contract consistent with the other
-	// gate sites: hard_block fires → message_recorder marks the row
-	// status="blocked" → user MUST see the budget message, not a
-	// normal-looking handled.Reply. Pre-fix this path returned
-	// handled.Reply while still firing hard_block, which made the user
-	// view ("normal answer") disagree with the DB view ("blocked") —
-	// the C3 finding from the user's 2026-05-21 self-review.
+	// The deterministic handler already produced a complete answer. If the
+	// budget cannot afford optional prose rendering, return that answer exactly
+	// as the rate-limit fallback does; do not falsely mark a successful turn as
+	// blocked or replace useful context with a budget message.
 	if e.tokenBudgetExceeded() {
-		e.emitTokenBudgetExceededHardBlock()
 		e.emitRendererTrace(trace)
-		return tokenBudgetExceededMessage
+		return handled.Reply
 	}
 	result := e.groundedRenderer.Render(ctx, grounded.RenderRequest{
 		Envelope: *handled.Envelope,
+		TaskSpec: e.directRenderTaskSpec(plan, userMsg),
 		Fallback: handled.Reply,
 		Model:    e.groundedRendererModel,
 	})
@@ -2866,241 +2813,6 @@ func removeMonitorMetric(metrics []intent.Metric, metric intent.Metric) []intent
 
 func (e *Engine) annotateHandlerResultForUserQuestion(result *intent.HandlerResult, plan intent.IntentRoute, userMsg string) {
 	return
-}
-
-func (e *Engine) knowledgeRetrievalQuery(userMsg string) string {
-	text := strings.TrimSpace(userMsg)
-	if text == "" || !isShortKnowledgeFollowup(text) {
-		return userMsg
-	}
-	for i := len(e.messages) - 2; i >= 0; i-- {
-		msg := e.messages[i]
-		if msg.Role != openai.ChatMessageRoleUser {
-			continue
-		}
-		prev := strings.TrimSpace(msg.Content)
-		if prev == "" || prev == text {
-			continue
-		}
-		return prev + "\n" + text
-	}
-	return userMsg
-}
-
-func isShortKnowledgeFollowup(text string) bool {
-	compact := strings.TrimSpace(normalizeResourceText(text))
-	if compact == "" {
-		return false
-	}
-	if utf8.RuneCountInString(compact) > 16 {
-		return false
-	}
-	hasSignal := false
-	for _, r := range compact {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			hasSignal = true
-			break
-		}
-	}
-	return hasSignal
-}
-
-func (e *Engine) tryStage2BRetrieval(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
-	result := dispatch.result
-	if result.Plan.Intent != intent.IntentKnowledgeQA {
-		return "", false
-	}
-	if e.knowledgeRetriever == nil {
-		e.emitRetrievalTrace(observability.RetrievalTrace{})
-		e.emitPlannerTrace(result, intent.RouteStatusFallbackRetrievalDisabled, dispatch.latency)
-		return "", false
-	}
-
-	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
-	retrievalQuery := e.knowledgeRetrievalQuery(userMsg)
-	questionArea := ""
-	retrieved := e.knowledgeRetriever.Retrieve(retrievalQuery, questionArea)
-	hitItems := retrieved.HitItems
-	trace := observability.RetrievalTrace{
-		Enabled:                retrieved.Enabled,
-		KBVersion:              retrieved.KBVersion,
-		QueryRaw:               retrievalQuery,
-		QueryNormalized:        retrieved.QueryNormalized,
-		QueryExpansions:        []string{},
-		Hits:                   len(retrieved.Hits),
-		HybridMode:             retrieved.HybridMode,
-		HybridFallbackReason:   retrieved.HybridFallbackReason,
-		EmbeddingLatencyMS:     retrieved.EmbeddingLatencyMS,
-		EmbeddingModel:         retrieved.EmbeddingModel,
-		RerankerMode:           retrieved.RerankerMode,
-		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
-		RerankerFallbackReason: retrieved.RerankerFallbackReason,
-		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
-		Activities: []observability.RetrievalActivity{{
-			ID:    "search_1",
-			Query: retrievalQuery,
-			Hits:  len(retrieved.Hits),
-		}},
-	}
-	if trace.QueryNormalized == "" {
-		trace.QueryNormalized = knowledge.NormalizeQuery(retrievalQuery)
-	}
-	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
-	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
-	trace.References = retrievalReferencesFromHits(hitItems, "search_1")
-	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: "retrieval", Message: "搜索完成"})
-	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
-		trace.RefusedReason = "no_evidence"
-		trace.RankingErrorCandidate = true
-		e.emitRetrievalTrace(trace)
-		e.emitPlannerTrace(result, intent.RouteStatusFallbackRetrievalMiss, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: ragNoEvidenceReply,
-		})
-		return ragNoEvidenceReply, true
-	}
-
-	weak := isWeakEvidence(hitItems, retrieved.HybridMode)
-	if weak {
-		trace.WeakEvidence = true
-	}
-	if weak || isRankingAmbiguous(hitItems, retrieved.HybridMode) {
-		trace.RankingErrorCandidate = true
-	}
-	// Buffer LLM deltas so we can decide whether to replay them after
-	// post-processing. answerWithRetrievedEvidence may discard the LLM
-	// output (token budget, refusal, retry-no-cite) and return a canned
-	// string instead. Replaying raw deltas in those cases would leave the
-	// SSE stream inconsistent with done.Content.
-	var bufferedDeltas []string
-	var bufferDelta func(string)
-	if onTextDelta != nil {
-		bufferDelta = func(s string) { bufferedDeltas = append(bufferedDeltas, s) }
-	}
-	reply, outcome, refusedReason, rankingCandidate, err := e.answerWithRetrievedEvidence(ctx, userMsg, evidences, weak, bufferDelta)
-	if err != nil {
-		trace.RefusedReason = "llm_error"
-		trace.RankingErrorCandidate = true
-		e.emitRetrievalTrace(trace)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: ragNoEvidenceReply,
-		})
-		return ragNoEvidenceReply, true
-	}
-	if refusedReason != "" {
-		trace.RefusedReason = refusedReason
-	}
-	if rankingCandidate {
-		trace.RankingErrorCandidate = true
-	}
-	// #5 domain guard. The verdict over the retrieved evidence is recorded in the
-	// trace regardless of the flag (AllCitedOffDomain / DomainInferenceEmpty); the
-	// COMPSHARE_RAG_DOMAIN_MATCH_GUARD refuse arm (default-off) additionally
-	// replaces an all-off-domain answer with the canned no-evidence reply and
-	// stamps refusal_type=wrong_domain. Treated like a refusal so the buffered
-	// deltas are not replayed.
-	allOff, inferEmpty := allCitedOffDomain(questionArea, hitProductAreas(hitItems))
-	trace.DomainInferenceEmpty = inferEmpty
-	trace.AllCitedOffDomain = allOff
-	if domainMatchGuardOn && allOff {
-		trace.RefusedReason = "wrong_domain"
-		reply = ragNoEvidenceReply
-		refusedReason = "wrong_domain"
-	}
-	trace.CitedChunkIDs = extractCitedChunkIDs(reply, hitItems)
-	trace.CitedRefs = citedRefsFromChunkIDs(trace.CitedChunkIDs, trace.References)
-	displayReply := stripCitationMarkers(reply)
-
-	// Replay buffered deltas only when the LLM's first-call output was
-	// accepted (reply == resp.Content path). Refusal / budget / retry
-	// paths return a different string, so we skip replay and let the
-	// handler's done.Content carry the final text instead.
-	if onTextDelta != nil && len(bufferedDeltas) > 0 && refusedReason == "" {
-		for _, d := range bufferedDeltas {
-			onTextDelta(d)
-		}
-	}
-
-	e.emitRetrievalTrace(trace)
-	e.emitOutcomeTrace(outcome)
-	e.emitPlannerTrace(result, intent.RouteStatusDispatchedRetrieval, dispatch.latency)
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: clipKnowledgeHistoryContent(displayReply),
-	})
-	return displayReply, true
-}
-
-func (e *Engine) answerWithRetrievedEvidence(ctx context.Context, userMsg string, evidences []envelope.Evidence, weak bool, onTextDelta func(string)) (string, observability.OutcomeTrace, string, bool, error) {
-	outcome := observability.OutcomeTrace{}
-	req := llm.ChatRequest{
-		Messages:    prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, false),
-		OnTextDelta: onTextDelta,
-	}
-	resp, err := e.llmClient.Chat(ctx, req)
-	if err != nil {
-		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
-	}
-	e.emitTokenUsage(resp.Usage)
-
-	answer := strings.TrimSpace(resp.Content)
-	// A grounded (cited) first answer or an honest refusal is delivered
-	// regardless of the per-turn token budget — PR2 budget policy: when we
-	// already have an answer grounded on retrieved evidence, do NOT discard
-	// it for a bare "请简化问题". The budget only suppresses spending MORE
-	// tokens (the cite-harder retry below), never the delivery of an answer
-	// already in hand.
-	if isKnowledgeRefusal(answer) {
-		return answer, outcome, refusedReasonForRefusal(weak), false, nil
-	}
-	if hasNumberedCitation(answer) {
-		return answer, outcome, "", false, nil
-	}
-
-	// The first answer is neither an honest refusal nor cited; normally we
-	// retry once with a cite-harder prompt. That is another LLM call, so
-	// gate it on the budget: if the per-turn cap is already blown, do NOT
-	// spend the retry — return the budget refusal rather than ship an
-	// uncited answer (the "no groundable answer → refuse, never fabricate"
-	// guard). EscapedHallucinatedCount stays 0 here (no hallucination was
-	// scored), distinct from organic retry_no_cite which sets it to 1.
-	if e.tokenBudgetExceeded() {
-		e.emitTokenBudgetExceededHardBlock()
-		return tokenBudgetExceededMessage, outcome, "token_budget", false, nil
-	}
-
-	outcome.AttemptedHallucinatedCount = 1
-	retryReq := llm.ChatRequest{
-		Messages: prompt.BuildRAGMessages(userMsg, ragReferencesFromEvidence(evidences), weak, true),
-	}
-	retryResp, err := e.llmClient.Chat(ctx, retryReq)
-	if err != nil {
-		return "", outcome, "", false, fmt.Errorf("LLM 调用失败: %w", err)
-	}
-	e.emitTokenUsage(retryResp.Usage)
-
-	// No post-retry budget gate (PR2): the retry only runs when we were
-	// under cap at the first-call gate, and a cited retry answer is an
-	// answer grounded on retrieved evidence — deliver it even if the retry
-	// itself tipped over cap, rather than discarding it for "请简化问题".
-	retryAnswer := strings.TrimSpace(retryResp.Content)
-	if isKnowledgeRefusal(retryAnswer) {
-		return retryAnswer, outcome, refusedReasonForRefusal(weak), false, nil
-	}
-	if hasNumberedCitation(retryAnswer) {
-		return retryAnswer, outcome, "", false, nil
-	}
-	outcome.EscapedHallucinatedCount = 1
-	return ragNoEvidenceReply, outcome, "retry_no_cite", true, nil
-}
-
-func refusedReasonForRefusal(weak bool) string {
-	if weak {
-		return "weak_evidence"
-	}
-	return "refusal"
 }
 
 func evidencesFromRetrievalHits(items []knowledge.RetrievalHit, queryNormalized string) ([]envelope.Evidence, error) {
@@ -3290,19 +3002,6 @@ func citedRefsFromChunkIDs(chunkIDs []string, refs []observability.RetrievalRefe
 	return out
 }
 
-func ragReferencesFromEvidence(evidences []envelope.Evidence) []prompt.RAGReference {
-	refs := make([]prompt.RAGReference, 0, len(evidences))
-	for i, evidence := range evidences {
-		view := evidence.ForLLM()
-		refs = append(refs, prompt.RAGReference{
-			Number:  i + 1,
-			Title:   view.SourceTitle,
-			Content: view.Snippet,
-		})
-	}
-	return refs
-}
-
 // isWeakEvidence reports whether the top hit's score is below the weak-evidence
 // threshold for the retrieval path that produced it. hybridMode comes from
 // knowledge.RetrievalResult.HybridMode and tracks the actual scoring path used
@@ -3408,6 +3107,10 @@ func countPlannerSnapshotInstances(snapshot entity.RegistrySnapshot) int {
 }
 
 func (e *Engine) emitPlannerTrace(result intent.IntentRouterResult, status intent.RouteStatus, latency time.Duration) {
+	e.lastPlannerRouteStatusThisTurn = status
+	if result.Plan.Intent != "" {
+		e.lastPlannerIntentForCompletionThisTurn = result.Plan.Intent
+	}
 	if e.plannerTraceObserver == nil {
 		return
 	}
@@ -3417,12 +3120,7 @@ func (e *Engine) emitPlannerTrace(result intent.IntentRouterResult, status inten
 		Latency: latency,
 	})
 	trace.RouteStatus = string(status)
-	// Turn-scoped runtime-form projection for the knowledge_qa agent-loop route
-	// (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). PlannedExecutionPathForIntent stays pure
-	// (knowledge_qa -> terminal_rag) because a flag-on-but-agentic-off knowledge_qa
-	// turn still runs the terminal route; only a turn actually routed into the agent
-	// loop projects agent, so planned==actual==agent and ExecutionPathMismatch does not
-	// false-flag. Off-flag this is never reached (the field is always false).
+	// Keep planned and actual execution forms aligned for knowledge turns.
 	if e.knowledgeQAAgentLoopThisTurn && trace.Intent == string(intent.IntentKnowledgeQA) {
 		trace.PlannedExecutionPath = observability.ExecutionPathAgent
 	}
@@ -3504,13 +3202,11 @@ func (e *Engine) tokenBudgetExceeded() bool {
 // can keep its own assistant-message conventions (route handlers
 // already manage their history slot; the ReAct loop appends inline).
 func (e *Engine) emitTokenBudgetExceededHardBlock() {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    observability.HardBlockCategoryTokenBudget,
-			TriggeredBy: observability.HardBlockTriggerTokenBudget,
-		})
-	}
+	e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
+		Hit:         true,
+		Category:    observability.HardBlockCategoryTokenBudget,
+		TriggeredBy: observability.HardBlockTriggerTokenBudget,
+	})
 }
 
 func tokenUsageTotal(usage llm.TokenUsage) int {
@@ -3791,6 +3487,17 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if query == "" {
 		query = hint
 	}
+	// The same agent that sees the full conversation owns query formulation.
+	// The first accepted query is therefore the turn's standalone resolved
+	// question; subsequent calls remain observable as actual subqueries but do
+	// not change what the final answer is supposed to answer.
+	if e.resolvedKnowledgeQuestionThisTurn == "" && query != "" {
+		e.resolvedKnowledgeQuestionThisTurn = query
+	}
+	resolvedQuestion := e.resolvedKnowledgeQuestionThisTurn
+	if resolvedQuestion == "" {
+		resolvedQuestion = query
+	}
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Args: map[string]any{"query": query}})
 	// Count every invocation (incl. the degenerate no-retriever/empty-query path)
 	// so the ReAct loop can withdraw the tool once the per-turn cap is hit.
@@ -3798,7 +3505,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
 	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
-		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: query}, true, false)
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true)
 	}
 	retrieved := e.knowledgeRetriever.Retrieve(query, "")
 	rawHits := retrieved.HitItems
@@ -3809,7 +3516,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// existing weak-evidence floor (weakEvidenceSemanticThreshold=0.5) discriminates
 	// cleanly — verified live: relevant ext-* hits score 0.60-0.99 (kept); irrelevant
 	// platform hits at external-off score 0.01-0.07 (dropped). Drop to no-evidence
-	// when weak, mirroring the terminal-RAG weak refusal (engine.go:2031), so the
+	// when weak, so the
 	// agent gets an honest empty ledger and gives general guidance instead of
 	// pretending the irrelevant chunks support a specific answer.
 	hits := rawHits
@@ -3820,7 +3527,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		// (rawHits==0) is corpus_gap, not all_below_floor.
 		floorDroppedAll = len(rawHits) > 0
 	}
-	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
+	ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 	e.searchKnowledgeRanThisTurn = true
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
 	e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
@@ -3829,56 +3536,27 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		Hits:            len(retrieved.Hits),
 		FloorDroppedAll: floorDroppedAll,
 	}, hits)
-	// Accumulate the per-turn ChunkID-keyed, deduped ledger so the grounded-answer
-	// validator can check the final synthesis cites only retrieved ChunkIDs (#126).
-	// Gated so flag-off does no extra work and keeps no extra state (byte-identical
-	// to before #126): the global grounded-validator flag, OR a knowledge_qa turn
-	// routed into the agent loop, which cite-or-refuses turn-scoped regardless of the
-	// global flag to preserve the terminal route's guarantee (see
-	// guardSearchKnowledgeSynthesis).
-	if groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn {
-		e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
-	}
+	// Keep exactly the evidence shown during this turn for the semantic answer
+	// verifier. This ledger is the single grounding source.
+	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
 	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
 	// (enabled, hit count, chunk_ids, weak_evidence) is OBSERVABLE in traces and eval
-	// — including when the relevance floor dropped it. Without this the rec.retrieval
-	// block is populated only by the terminal-RAG path. Mirrors
-	// recordDiagnosisKnowledgeProbe's trace emission.
+	// — including when the relevance floor dropped it. Mirrors the diagnosis
+	// knowledge probe's trace emission.
 	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll, activityID)
 	empty := retrieved.Empty || len(ledger.Items) == 0
 	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
-	out := searchKnowledgeResultJSON(ledger, empty, groundedAnswerValidatorOn || e.knowledgeQAAgentLoopThisTurn)
+	out := searchKnowledgeResultJSON(ledger, empty)
 
-	// Retrieved evidence is grounding evidence, and SearchKnowledge never runs through
-	// executeSafeTool, so without this a knowledge answer would have an empty fact set
-	// and every figure it correctly quoted from a chunk would read as invented.
-	//
-	// Harvest EXACTLY the string handed to the model — not a hand-picked subset of the
-	// ledger. The first cut fed only Summary+Snippet, which are narrower than what
-	// searchKnowledgeResultJSON actually emits, and the gap produced precisely the
-	// false accusation this validator exists to prevent: asked 是多少钱, the model read
-	// the disk-price table straight out of chunk w0-billing_rule-...-7e69b1aa and quoted
-	// 0.0005元/GB/小时 · 0.011元/GB/日 · 0.3元/GB/月 — all three verbatim and correct — and
-	// the validator called all three fabrications, because the harvest had only been
-	// shown part of the evidence the model was reading from.
-	//
-	// The invariant is the point: the fact bag must contain what the model was shown,
-	// no less (or correct answers get flagged) and no more (or invented ones get
-	// certified). Feeding the returned payload itself is the only version of that which
-	// cannot drift out of sync when the tool's serialization changes.
-	if e.turnFacts != nil {
-		e.turnFacts.AddRaw(out)
-	}
 	return out
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
-// retrieval as a RetrievalTrace so it is observable in traces/eval, exactly like
-// the terminal-RAG path and recordDiagnosisKnowledgeProbe. Enabled + Hits +
+// retrieval as a RetrievalTrace so it is observable in traces/eval. Enabled + Hits +
 // HitItems (the retrieved chunk_ids) populate rec.retrieval; an empty/no-hit
 // retrieval honestly records refused_reason=no_evidence (so a corpus-gap query
-// is visible, not silently presented as grounded). CitedChunkIDs is left to the
-// terminal-RAG cited-strip pass; this is the RETRIEVED set, not the cited set.
+// is visible, not silently presented as grounded). This is the RETRIEVED set,
+// not the cited set.
 func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit, floorDroppedAll bool, activityID string) {
 	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
 		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
@@ -3931,7 +3609,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 	// evidence the agent actually received — skip when the floor dropped it all,
 	// since the agent grounded on nothing. The COMPSHARE_RAG_DOMAIN_MATCH_GUARD
 	// refuse arm (default-off) additionally stamps refusal_type=wrong_domain here;
-	// guardSearchKnowledgeSynthesis enforces the matching refusal.
+	// the unified semantic exit enforces the matching refusal.
 	allOff, inferEmpty := allCitedOffDomain("", hitProductAreas(hitItems))
 	trace.DomainInferenceEmpty = inferEmpty
 	if !floorDroppedAll {
@@ -3941,113 +3619,6 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		}
 	}
 	e.emitRetrievalTrace(trace)
-}
-
-// guardSearchKnowledgeSynthesis enforces the no-raw-leak discipline on the final
-// ReAct answer when SearchKnowledge fed the agent evidence this turn (P3). The
-// answer must not dump >=32-rune raw chunk content — the route-independent
-// discipline BuildRAGMessages+cited-strip give terminal RAG but a ReAct tool does
-// not. On leak it records a hardblock trace and replaces the answer with the
-// canned no-evidence reply. cite-grounding is verified empirically by the P3
-// substance gate; P5 generalizes a route-independent cite validator. No-op (and
-// thus byte-identical) when SearchKnowledge did not run this turn — which is
-// always the case while the COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate is off.
-func (e *Engine) guardSearchKnowledgeSynthesis(content string) string {
-	// SCOPE (both guards below): this validates the synthesis only when SearchKnowledge
-	// actually surfaced evidence the agent was shown this turn. When the tool ran but
-	// the relevance floor dropped every hit (len==0 — a corpus-gap / weak-evidence
-	// turn), the agent was handed an EMPTY ledger: there is nothing to cite, so the
-	// cite-grounding validator does NOT gate the answer (forcing a refusal here would
-	// suppress legitimate general guidance). This matches the no-raw-leak guard's
-	// identical gating. The cite-or-refuse contract is therefore scoped to
-	// "the agent was shown retrieved evidence", NOT "SearchKnowledge was merely
-	// invoked". A weak/empty-evidence turn falls back to the un-gated agent answer
-	// exactly as before #126 — see TestGuardSearchKnowledgeSynthesis_EmptyEvidenceUngated.
-	if !e.searchKnowledgeRanThisTurn || len(e.searchKnowledgeHitsThisTurn) == 0 {
-		return content
-	}
-	if lerr := knowledge.ValidateNoRawEvidenceLeak(content, e.searchKnowledgeHitsThisTurn); lerr != nil {
-		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
-		return ragNoEvidenceReply
-	}
-	// #5 wrong-domain refuse arm (COMPSHARE_RAG_DOMAIN_MATCH_GUARD, default-off).
-	// Recompute the verdict over the ledger the agent was actually shown; refuse
-	// when every cited/retrieved chunk is off the question's product area. The
-	// retrieval trace already recorded AllCitedOffDomain at emit; this enforces the
-	// reply. Fail-safe: allCitedOffDomain never flags an unknown / un-judgeable
-	// question area, so an answer is suppressed only on a clear domain mismatch.
-	if domainMatchGuardOn {
-		if allOff, _ := allCitedOffDomain("", ledgerProductAreas(e.searchKnowledgeLedgerThisTurn)); allOff {
-			e.emitSearchKnowledgeHardBlock("search_knowledge_wrong_domain")
-			return ragNoEvidenceReply
-		}
-	}
-	// Route-independent cite-grounding (#126), default-off via
-	// COMPSHARE_RAG_GROUNDED_VALIDATOR — OR turn-scoped on for a knowledge_qa turn
-	// routed into the agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP), which must
-	// cite-or-refuse exactly as the terminal route did regardless of the global
-	// validator flag. Off (neither): the leak check above is the only guard
-	// (byte-identical to pre-#126). On: the agent was told (cite_protocol in the tool
-	// result) to attribute each conclusion with [[chunk_id]]; require >=1 citation
-	// resolving to a retrieved ChunkID and no citation to an unknown chunk_id, then
-	// strip the markers for display.
-	if !groundedAnswerValidatorOn && !e.knowledgeQAAgentLoopThisTurn {
-		return content
-	}
-	report := knowledge.ValidateGroundedCitations(content, e.searchKnowledgeLedgerThisTurn)
-	if report.Grounded() {
-		e.emitSearchKnowledgeCitationTrace(report)
-		return knowledge.StripCiteMarkers(content)
-	}
-	// Not properly cited. The ONLY cite-exempt answer is the explicit canned
-	// no-evidence refusal — deliberately NOT a substring/hedge match: a substantive
-	// answer that merely contains a phrase like "知识库未覆盖" is NOT a refusal and
-	// must cite the evidence it used, else it is replaced with the canned refusal.
-	if strings.TrimSpace(content) == ragNoEvidenceReply {
-		return content
-	}
-	e.emitSearchKnowledgeHardBlock("search_knowledge_uncited")
-	return ragNoEvidenceReply
-}
-
-// retrySearchKnowledgeCitation gives an agent-loop synthesis that the grounded
-// validator would refuse ONE more chance to cite before the refusal stands — the
-// parity the terminal route already has (answerWithRetrievedEvidence retries once with
-// a stronger cite instruction). It re-prompts with the current history (which still
-// carries the SearchKnowledge tool result + its evidence) plus an explicit
-// [[chunk_id]] reminder, then re-runs the same no-raw-leak + grounded-citation gates.
-// Returns (stripped grounded answer, true) only when the retry is clean AND properly
-// cited; ("", false) on budget/LLM error, refusal, leak, or still-uncited — the caller
-// then keeps the original refusal. The retry uses no tools, so it must produce text.
-func (e *Engine) retrySearchKnowledgeCitation(ctx context.Context) (string, bool) {
-	if e.tokenBudgetExceeded() {
-		return "", false
-	}
-	msgs := append(e.buildMessagesForLLM(), openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: searchKnowledgeCiteRetryNote,
-	})
-	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{Messages: msgs})
-	if err != nil {
-		return "", false
-	}
-	e.emitTokenUsage(resp.Usage)
-	if e.tokenBudgetExceeded() {
-		return "", false
-	}
-	retry := security.RedactOperationalTokensInText(strings.TrimSpace(resp.Content))
-	if retry == "" || isKnowledgeRefusal(retry) {
-		return "", false
-	}
-	if knowledge.ValidateNoRawEvidenceLeak(retry, e.searchKnowledgeHitsThisTurn) != nil {
-		return "", false
-	}
-	report := knowledge.ValidateGroundedCitations(retry, e.searchKnowledgeLedgerThisTurn)
-	if !report.Grounded() {
-		return "", false
-	}
-	e.emitSearchKnowledgeCitationTrace(report)
-	return knowledge.StripCiteMarkers(retry), true
 }
 
 func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswerReport) {
@@ -4083,13 +3654,11 @@ func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswe
 // emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic
 // SearchKnowledge synthesis guard (raw-leak or uncited). Shared by both guard arms.
 func (e *Engine) emitSearchKnowledgeHardBlock(category string) {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    category,
-			TriggeredBy: observability.HardBlockTriggerPostLLM,
-		})
-	}
+	e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
+		Hit:         true,
+		Category:    category,
+		TriggeredBy: observability.HardBlockTriggerPostLLM,
+	})
 }
 
 func searchKnowledgeArg(args map[string]any, key string) string {
@@ -4101,15 +3670,10 @@ func searchKnowledgeArg(args map[string]any, key string) string {
 	return ""
 }
 
-func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool, citeProtocol bool) string {
+func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool) string {
 	result := map[string]any{"EvidenceLedger": ledger}
 	if empty || len(ledger.Items) == 0 {
 		result["empty"] = true
-	} else if citeProtocol {
-		// Only when the grounded-answer validator is on: tell the agent to attribute
-		// each conclusion with [[chunk_id]] so the synthesis can be cite-validated.
-		// Flag-off this key is absent => byte-identical result JSON.
-		result["cite_protocol"] = searchKnowledgeCiteProtocol
 	}
 	b, err := json.Marshal(result)
 	if err != nil {
@@ -4136,6 +3700,17 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return errClass + "。工具参数必须是合法的 JSON 对象，请按该工具的参数结构仅输出 JSON 后重新调用。"
 	}
 
+	// SearchKnowledge is released only inside the knowledge_qa agent-loop lane,
+	// whose final answer is checked against the turn's evidence ledger. Hiding the
+	// tool from req.Tools is not an authorization boundary by itself: a model can
+	// still hallucinate a de-advertised function name. Reject that name here before
+	// retrieval so generic ReAct cannot create an unverified mixed-evidence answer.
+	if action == "SearchKnowledge" && !e.knowledgeQAAgentLoopThisTurn {
+		msg := "SearchKnowledge is unavailable for this route"
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		return msg
+	}
+
 	// Knowledge tools execute locally — no API call, no security check needed
 	if knowledge.IsKnowledgeTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
@@ -4147,22 +3722,12 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			return errMsg
 		}
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceKnowledgeLocal, Message: "查询成功", TraceResult: result})
-		// Knowledge tools return BEFORE executeSafeTool, so the grounding harvest
-		// there never sees them. Without this the validator called a correctly
-		// tool-sourced GPU spec (GetGPUSpecs -> FP16 82.6 for a 4090) a fabrication:
-		// the figure is real, it came from knowledge/gpu_specs.go, and the model was
-		// reading it off a tool result the harvest had simply not been shown.
-		if e.turnFacts != nil {
-			e.turnFacts.AddRaw(result)
-		}
 		return knowledge.ResultToJSON(result)
 	}
 
-	// Agentic-RAG SearchKnowledge (P3) executes locally on the engine's retriever
-	// — like the knowledge tools above, never through SafeToolExecutor (its Route
-	// is knowledge, not external_api). The LLM can only emit this when the
-	// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE gate made it visible, so this branch is
-	// unreachable when the flag is off (byte-identical behavior).
+	// SearchKnowledge executes locally on the engine's retriever, never through
+	// SafeToolExecutor. The knowledge-route check above is the authorization
+	// boundary and rejects calls invented outside that lane.
 	if action == "SearchKnowledge" {
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
@@ -4355,14 +3920,6 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	}
 	if err == nil {
 		e.trackMonitorResult(result)
-	}
-	// Harvest grounding facts from EVERY successful tool call, whatever its
-	// origin. Unlike recordToolFacts (below) this is not restricted to
-	// OriginDirectLLM: a fact the user sees in the reply is grounded no matter
-	// which layer fetched it, and a direct-dispatch handler's result is exactly
-	// the kind of evidence the final answer must not contradict.
-	if err == nil && result != nil && e.turnFacts != nil {
-		e.turnFacts.AddRaw(result.RawResult)
 	}
 	if err == nil && req.Origin == tools.OriginDirectLLM {
 		e.markRegistryInvalidated(req.Action)
@@ -4926,6 +4483,7 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	e.sessionState.SelectedInstanceName = name
 	e.sessionState.SelectedInstanceSource = source
 	e.sessionState.SelectedInstanceAtUnix = time.Now().Unix()
+	e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessFresh
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
@@ -4940,24 +4498,27 @@ const selectedInstanceTTLSeconds = 1800
 // expireStaleSelectedInstance clears the carried instance binding when it has
 // gone untouched longer than selectedInstanceTTLSeconds. Runs at turn entry,
 // before the turn-start snapshot is frozen, so a stale binding is never carried
-// into workflowTargetIsTrusted. A zero SelectedInstanceAtUnix (legacy rows
-// persisted before this field existed) is treated as "unstamped" and never
-// auto-expired, so the rollout does not drop existing selections.
+// into workflowTargetIsTrusted. A zero SelectedInstanceAtUnix is a legacy row
+// whose age cannot be proven. Keep its id/name for conversational continuity,
+// but remove the user-trusted provenance so it cannot authorize a write.
 func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
 		return
 	}
 	at := e.sessionState.SelectedInstanceAtUnix
 	if at <= 0 {
+		e.sessionState.SelectedInstanceSource = ""
+		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessStale
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	if now.Unix()-at > selectedInstanceTTLSeconds {
-		e.sessionState.SelectedInstanceID = ""
-		e.sessionState.SelectedInstanceName = ""
 		e.sessionState.SelectedInstanceSource = ""
-		e.sessionState.SelectedInstanceAtUnix = 0
+		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessExpired
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+		return
 	}
+	e.sessionState.SelectedInstanceFreshness = continuityFreshness(at, selectedInstanceTTLSeconds, now)
 }
 
 // recordLastStockGpuModel tracks the legacy stock referent for paths that do
@@ -5058,72 +4619,22 @@ func (e *Engine) rememberLastIntentForRouter(plan intent.IntentRoute) {
 	e.sessionState.LastIntent = string(plan.Intent)
 }
 
-// recordLastIntentFromPlan sets SessionState.LastIntent from the plan's
-// classified Intent, AND tears down create-flow carry state that a resolved
-// non-create turn has invalidated. Called on route/resume success paths — i.e.
-// when the user's intent was confirmed by a fully-dispatched handler reply.
-// Refuses to write IntentUnknown / empty / non-RuntimeIntents values, so the
-// stored value is always a legal short-circuited enum string.
-//
-// For the LastIntent write alone — with none of the create-flow side effects, and
-// on every routed turn rather than only handler-dispatched ones — use
-// rememberLastIntentForRouter.
+// recordLastIntentFromPlan records the classified topic after a handled route.
+// Task lifetime is intentionally absent from this helper: handler success says
+// the current question was answered, not that the user abandoned a different
+// pending workflow. Only the turn's shared context decision (New/Clear) or an
+// explicitly completed workflow may clear that state.
 func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
 	if !e.sessionStateHydrated {
 		return
 	}
 	if plan.Intent == "" || plan.Intent == intent.IntentUnknown {
-		e.clearDeployClarificationCarry()
 		return
 	}
 	if !runtimeIntentMember(plan.Intent) {
 		return
 	}
 	e.sessionState.LastIntent = string(plan.Intent)
-	if !createFamilyIntent(plan.Intent) {
-		e.clearPendingDeployModel()
-	}
-	if !createFamilyIntent(plan.Intent) {
-		if !(plan.Intent == intent.IntentOperationLifecycle && e.sessionState.ContextFrame.Kind == ContextFrameKindWorkflowTask) {
-			e.clearContextFrame()
-		}
-	}
-}
-
-func (e *Engine) clearPendingDeployModel() {
-	if !e.sessionStateHydrated {
-		return
-	}
-	e.sessionState.PendingDeployModel = ""
-}
-
-func (e *Engine) clearDeployContextFrame() {
-	if !e.sessionStateHydrated {
-		return
-	}
-	if e.sessionState.ContextFrame.Kind == ContextFrameKindDeploy {
-		e.sessionState.ContextFrame = ContextFrame{}
-	}
-}
-
-func (e *Engine) clearDeployClarificationCarry() {
-	if !e.sessionStateHydrated {
-		return
-	}
-	e.sessionState.PendingDeployModel = ""
-	e.clearDeployContextFrame()
-}
-
-func (e *Engine) clearDeployContextFrameForHandledNonCreate(i intent.Intent) {
-	if !createFamilyIntent(i) {
-		e.clearDeployContextFrame()
-	}
-}
-
-func (e *Engine) clearPendingDeployModelForNonCreateFamily(i intent.Intent) {
-	if !createFamilyIntent(i) {
-		e.clearPendingDeployModel()
-	}
 }
 
 func createFamilyIntent(i intent.Intent) bool {
@@ -5342,6 +4853,7 @@ func uniqueStrings(values []string) []string {
 // executeWorkflow runs a predefined workflow and returns the result as a JSON string
 // for the LLM to narrate.
 func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	e.lastWorkflowSucceededThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
@@ -5582,6 +5094,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	}
 
 	if result.Success {
+		e.lastWorkflowSucceededThisCall = true
 		e.markRegistryInvalidated(action)
 		// Successful no-return-data or password-bearing workflows return a
 		// deterministic final reply so the engine SKIPS the post-workflow LLM
@@ -5653,22 +5166,7 @@ func selectedInstanceSourceTrustedForWorkflow(source string) bool {
 }
 
 func workflowTargetNameMentioned(userMsg, name string) bool {
-	if monitorHistoryNameMentioned(userMsg, name) {
-		return true
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	lowerMsg := strings.ToLower(userMsg)
-	lowerName := strings.ToLower(name)
-	if monitorHistoryGenericShortName(lowerName) {
-		return false
-	}
-	if utf8.RuneCountInString(lowerName) < 2 {
-		return false
-	}
-	return strings.Contains(lowerMsg, lowerName)
+	return entity.TextExplicitlyMentionsName(userMsg, name)
 }
 
 func workflowRequiresInstanceTarget(action string) bool {
@@ -5858,11 +5356,16 @@ func cfsWorkflowFailureReply(message string) string {
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.
 func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	reply, _ := e.executeDiagnosisWithOutcome(ctx, action, args, onStep)
+	return reply
+}
+
+func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) (string, intent.HandlerFailureClass) {
 	chain, ok := diagnosis.GetChain(action)
 	if !ok {
 		msg := fmt.Sprintf("未知的诊断链: %s", action)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg
+		return msg, intent.HandlerFailureGenericRead
 	}
 	// P2/P3b pilot (USE_SKILL_EXECUTOR, default off): route an explicitly
 	// allowlisted diagnosis skill through the body-driven orchestrator loop
@@ -5871,7 +5374,7 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	// rather than failing the turn.
 	if skillName, piloted := diagnosisSkillExecutorPilotForAction(action); piloted {
 		if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
-			return reply
+			return reply, intent.HandlerFailureNone
 		}
 	}
 
@@ -5908,21 +5411,23 @@ func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[s
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
-			return finalReplyPrefix + msg
+			return finalReplyPrefix + msg, intent.HandlerFailureActionableUpstream
 		}
 		msg := fmt.Sprintf("诊断执行错误: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg
+		return msg, intent.HandlerFailureGenericRead
 	}
 	if !result.Success {
 		if msg, ok := friendlyMessageFromText(result.Conclusion); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
-			return finalReplyPrefix + msg
+			return finalReplyPrefix + msg, intent.HandlerFailureActionableUpstream
 		}
+		b, _ := json.Marshal(result)
+		return string(b), intent.HandlerFailureGenericRead
 	}
 
 	b, _ := json.Marshal(result)
-	return string(b)
+	return string(b), intent.HandlerFailureNone
 }
 
 // skillExecutorEnabled is the process-global, boot-only USE_SKILL_EXECUTOR gate.
@@ -6246,8 +5751,13 @@ type StepEvent struct {
 // Cut point is aligned to a safe message boundary to avoid orphaned tool_calls
 // or tool responses (which would make the history malformed for the LLM).
 func (e *Engine) trimHistory() {
+	e.trimHistoryWithContext(context.Background())
+}
+
+func (e *Engine) trimHistoryWithContext(ctx context.Context) {
+	e.messages = stripHistoricalToolTranscript(e.messages)
 	if e.reactHistoryCompactionEnabled {
-		e.trimHistoryByCompaction(time.Now())
+		e.trimHistoryByCompactionContext(ctx, time.Now())
 		return
 	}
 	if len(e.messages) <= 1+maxHistoryMessages {
@@ -6281,6 +5791,7 @@ func (e *Engine) trimHistory() {
 		return // no safe cut point found, don't trim
 	}
 
+	e.absorbConversationDigest(e.messages[1:safeStart], time.Now())
 	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
 	e.historyTrimmedThisSession = true
@@ -6291,6 +5802,8 @@ func (e *Engine) trimHistory() {
 const staleStateNote = "注意：本轮之前的对话中获取的实例状态信息可能已过时，用户可能已在控制台侧手动操作实例。\n如果本轮需要基于实例当前状态作出判断，或执行实例变更操作，必须先调用 DescribeCompShareInstance 获取最新状态后再决策。"
 
 const monitorRecallRequiredToolNote = "The previous user turn queried instance monitoring. For this follow-up, call GetCompShareInstanceMonitor again before answering and do not reuse prior monitor values."
+
+const routeReadFailureNote = "本轮已经尝试过一次只读查询，但没有取得可用结果。不要把查询失败解释成资源不存在、没有库存或状态没有变化。你可以使用本轮允许的只读工具重新查询；如果仍无法取得当前事实，就结合已有对话明确说明哪些信息仍然有效、哪些当前状态无法确认。不得执行任何写操作。"
 
 // buildMessagesForLLM returns the message slice to send to the LLM.
 // If instance state from a prior turn may be stale, a temporary system note
@@ -6308,6 +5821,9 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 		if card := prompt.RenderIntentScopedReActCard(e.lastPlannerIntentThisTurn, e.mutatingToolsEnabled); card != "" {
 			messages = withEphemeralSystemBeforeLastUser(messages, card)
 		}
+	}
+	if e.routeReadFailureThisTurn {
+		messages = withEphemeralSystemBeforeLastUser(messages, routeReadFailureNote)
 	}
 	return messages
 }

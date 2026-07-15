@@ -627,14 +627,8 @@ func TestBuildUserPromptUsesReadableLabels(t *testing.T) {
 	if !strings.Contains(prompt, "User question: show monitor") {
 		t.Fatalf("user prompt missing readable user label: %q", prompt)
 	}
-	// PR1 hotfix Bug 2 (2026-05-28): the planner USER prompt no longer dumps
-	// PriorText verbatim. Multi-turn input_tok growth was the schema_valid=
-	// false avalanche driver — see memory:priortext-avalanche-invalidates-
-	// planner. PriorText is still passed via IntentRouterInput for the validator's
-	// source:prior_turn span check, but buildUserPrompt must emit ONLY the
-	// structured signals.
-	if strings.Contains(prompt, "Prior turns:") {
-		t.Fatalf("user prompt must not include legacy Prior turns block: %q", prompt)
+	if !strings.Contains(prompt, "Recent conversation (bounded):\nassistant: prior answer") {
+		t.Fatalf("user prompt missing bounded prior conversation: %q", prompt)
 	}
 	if !strings.Contains(prompt, "Last selected instance: uhost-1qy6d8tkfrl4") {
 		t.Fatalf("user prompt missing LastSelectedInstanceID structured field: %q", prompt)
@@ -649,6 +643,19 @@ func TestBuildUserPromptUsesReadableLabels(t *testing.T) {
 		if strings.Contains(prompt, staleLabel) {
 			t.Fatalf("user prompt contains stale non-ASCII label %q: %q", staleLabel, prompt)
 		}
+	}
+}
+
+func TestBuildUserPrompt_PriorConversationIsHardBounded(t *testing.T) {
+	long := strings.Repeat("上", routerPriorContextCap+50)
+	prompt := buildUserPrompt(IntentRouterInput{UserText: "那这个呢", PriorText: long}, "")
+	idx := strings.Index(prompt, "Recent conversation (bounded):\n")
+	if idx < 0 {
+		t.Fatalf("expected bounded conversation label, got %q", prompt)
+	}
+	prior := prompt[idx+len("Recent conversation (bounded):\n"):]
+	if got := len([]rune(prior)); got != routerPriorContextCap {
+		t.Fatalf("prior conversation rune length = %d, want %d", got, routerPriorContextCap)
 	}
 }
 

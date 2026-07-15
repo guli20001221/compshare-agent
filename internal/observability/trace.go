@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.5"
+const SchemaVersion = "trace.v0.7"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -140,6 +140,8 @@ type TraceRecord struct {
 	Retrieval           RetrievalTrace       `json:"retrieval"`
 	Diagnosis           DiagnosisTrace       `json:"diagnosis"`
 	State               StateTrace           `json:"state"`
+	Continuity          ContinuityTrace      `json:"continuity"`
+	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
 	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
 	// omitempty for all non-agent turns, so trace output stays byte-identical
@@ -169,6 +171,8 @@ type traceRecordJSON struct {
 	Retrieval           *RetrievalTrace       `json:"retrieval,omitempty"`
 	Diagnosis           *DiagnosisTrace       `json:"diagnosis,omitempty"`
 	State               *StateTrace           `json:"state,omitempty"`
+	Continuity          *ContinuityTrace      `json:"continuity,omitempty"`
+	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Steps               []StepTrace           `json:"steps,omitempty"`
 }
@@ -221,6 +225,12 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	if traceStateObserved(r.State) {
 		out.State = &r.State
 	}
+	if traceContinuityObserved(r.Continuity) {
+		out.Continuity = &r.Continuity
+	}
+	if traceCompletionObserved(r.Completion) {
+		out.Completion = &r.Completion
+	}
 	if traceOutcomeObserved(r.Outcome) {
 		out.Outcome = &r.Outcome
 	}
@@ -228,6 +238,30 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 		out.Steps = r.Steps
 	}
 	return json.Marshal(out)
+}
+
+// ContinuityTrace records the durable turn protocol around one execution
+// attempt. It deliberately contains only identity checks, counters, versions
+// and closed-set outcomes: no user text, model text, tool payload or persisted
+// session JSON is allowed across this observability boundary.
+type ContinuityTrace struct {
+	SessionIdentityMatch   bool   `json:"session_identity_match"`
+	TurnSequence           int64  `json:"turn_sequence"`
+	LeaseEpoch             int64  `json:"lease_epoch"`
+	SnapshotContextVersion int    `json:"snapshot_context_version"`
+	EnvelopeParseOutcome   string `json:"envelope_parse_outcome"`
+	ContextParseOutcome    string `json:"context_parse_outcome"`
+	RetryCount             int    `json:"retry_count"`
+	RecoveryAttempt        bool   `json:"recovery_attempt"`
+	CommitOutcome          string `json:"commit_outcome"`
+	CommitReason           string `json:"commit_reason,omitempty"`
+}
+
+func traceContinuityObserved(trace ContinuityTrace) bool {
+	return trace.TurnSequence != 0 || trace.LeaseEpoch != 0 ||
+		trace.SnapshotContextVersion != 0 || trace.EnvelopeParseOutcome != "" ||
+		trace.ContextParseOutcome != "" || trace.RetryCount != 0 ||
+		trace.RecoveryAttempt || trace.CommitOutcome != "" || trace.CommitReason != ""
 }
 
 // TWO SEPARATE AXES describe how a turn ran. They are NOT interchangeable and
@@ -302,7 +336,7 @@ func (r TraceRecord) DeriveActualExecutionTier() string {
 	switch r.IntentRouter.RouteStatus {
 	case "dispatched_retrieval", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop is a knowledge_qa turn forced through the
-		// agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP): the realized work is still
+		// knowledge agent loop: the realized work is still
 		// knowledge retrieval, so the realized-tier attribution stays comparable
 		// across the terminal→agent-loop migration even though the runtime FORM
 		// becomes agent (see DeriveActualExecutionPath).
@@ -331,7 +365,7 @@ func (r TraceRecord) DeriveActualExecutionPath() string {
 	switch r.IntentRouter.RouteStatus {
 	case "dispatched_agent", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop: a knowledge_qa turn forced through the
-		// shared ReAct loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). It runs the agent
+		// shared ReAct loop. It runs the agent
 		// loop (a SearchKnowledge tool call fires), so the runtime FORM is agent —
 		// the migration's whole point (terminal_rag → agent). The engine projects
 		// PlannedExecutionPath=agent for the same turn so planned==actual.
@@ -620,7 +654,7 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 }
 
 // MergeRetrievalTrace folds a new per-turn retrieval into the recorded one. A turn
-// can retrieve more than once (e.g. the COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced
+// can retrieve more than once (e.g. the knowledge agent loop's forced
 // SearchKnowledge first hop, then a voluntary re-query later in the same ReAct loop).
 // The recorders historically kept only the LAST retrieval, so a trailing no-hit
 // re-query would clobber the forced hop's substantive retrieval and make it look like
@@ -892,6 +926,13 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 }
 
 type OutcomeTrace struct {
+	// Continuity contract metadata is bounded and content-free. It proves which
+	// inputs and answer path were used without persisting prompts or user text.
+	ContextSources     []string `json:"context_sources,omitempty"`
+	ResponseContract   string   `json:"response_contract,omitempty"`
+	PromptSectionIDs   []string `json:"prompt_section_ids,omitempty"`
+	MemoryUpdateSource string   `json:"memory_update_source,omitempty"`
+	GroundingOutcome   string   `json:"grounding_outcome,omitempty"`
 	// TerminatedBy / AbortCause / ErrorClass / Resolution are the four
 	// outcome-attribution axes derived at Finish (see outcome.go). They close the
 	// "no attribution on ~25% of turns" dark hole. TerminatedBy is always set for a
@@ -1176,7 +1217,12 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		trace.ErrorClass != "" ||
 		trace.Resolution != "" ||
 		trace.ReactRounds != 0 ||
-		trace.BudgetHit
+		trace.BudgetHit ||
+		len(trace.ContextSources) > 0 ||
+		trace.ResponseContract != "" ||
+		len(trace.PromptSectionIDs) > 0 ||
+		trace.MemoryUpdateSource != "" ||
+		trace.GroundingOutcome != ""
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {

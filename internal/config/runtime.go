@@ -20,33 +20,27 @@ import (
 //
 //   - nil            → field omitted in YAML; fall back to the env var, then to
 //     the built-in default for that flag (NOT all default off — e.g.
-//     agentic_search_knowledge / knowledge_qa_* / external_knowledge default ON).
+//     knowledge verification / external_knowledge default ON).
 //   - &true / &false → explicit value; it WINS over any env var.
 //
 // SkillExecutorDiagnosisPilots is a list (joined to the CSV the env parser
 // expects) and only overrides when non-empty.
 type FeaturesConfig struct {
-	MutatingTools                   *bool    `yaml:"mutating_tools"`                     // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
-	ConfirmForm                     *bool    `yaml:"confirm_form"`                       // COMPSHARE_CONFIRM_FORM (server-only, default off)
-	GuidedCreate                    *bool    `yaml:"guided_create"`                      // COMPSHARE_GUIDED_CREATE (server-only, default off)
-	AgenticSearchKnowledge          *bool    `yaml:"agentic_search_knowledge"`           // COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE (default ON)
-	KnowledgeQAAgentLoop            *bool    `yaml:"knowledge_qa_agent_loop"`            // COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP (default ON)
-	KnowledgeQADisciplinedSynthesis *bool    `yaml:"knowledge_qa_disciplined_synthesis"` // COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS (default ON)
-	KnowledgeQASelfRevision         *bool    `yaml:"knowledge_qa_self_revision"`         // COMPSHARE_KQA_SELF_REVISION (default ON)
-	ExternalKnowledge               *bool    `yaml:"external_knowledge"`                 // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
-	GroundedValidator               *bool    `yaml:"grounded_validator"`                 // COMPSHARE_RAG_GROUNDED_VALIDATOR (default off)
-	DomainMatchGuard                *bool    `yaml:"domain_match_guard"`                 // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
-	FlashKnowledgeRouteGuard        *bool    `yaml:"flash_knowledge_route_guard"`        // COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD (default off)
-	SessionFactContext              *bool    `yaml:"session_fact_context"`               // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
-	ReactResultProjection           *bool    `yaml:"react_result_projection"`            // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
-	ReactHistoryCompaction          *bool    `yaml:"react_history_compaction"`           // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
-	IntentScopedReactPrompt         *bool    `yaml:"intent_scoped_react_prompt"`         // USE_INTENT_SCOPED_REACT_PROMPT (default off)
-	CreatePreferenceExtractor       *bool    `yaml:"create_preference_extractor"`        // COMPSHARE_CREATE_PREF_EXTRACTOR (default on; false disables)
-	UnifiedCreate                   *bool    `yaml:"unified_create"`                     // COMPSHARE_UNIFIED_CREATE (default on; false disables)
-	ContextContinuation             *bool    `yaml:"context_continuation"`               // COMPSHARE_CONTEXT_CONTINUATION (default on; false disables)
-	AgentDeterministicRender        *bool    `yaml:"agent_deterministic_render"`         // COMPSHARE_AGENT_DETERMINISTIC_RENDER (default on; false disables)
-	SkillExecutor                   *bool    `yaml:"skill_executor"`                     // USE_SKILL_EXECUTOR (default off)
-	SkillExecutorDiagnosisPilots    []string `yaml:"skill_executor_diagnosis_pilots"`    // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (CSV)
+	MutatingTools                *bool    `yaml:"mutating_tools"`                  // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
+	DurableTurns                 *bool    `yaml:"durable_turns"`                   // COMPSHARE_DURABLE_TURNS (server-only, default off)
+	ConfirmForm                  *bool    `yaml:"confirm_form"`                    // COMPSHARE_CONFIRM_FORM (server-only, default off)
+	GuidedCreate                 *bool    `yaml:"guided_create"`                   // COMPSHARE_GUIDED_CREATE (server-only, default off)
+	ExternalKnowledge            *bool    `yaml:"external_knowledge"`              // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
+	DomainMatchGuard             *bool    `yaml:"domain_match_guard"`              // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
+	SessionFactContext           *bool    `yaml:"session_fact_context"`            // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
+	ReactResultProjection        *bool    `yaml:"react_result_projection"`         // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
+	ReactHistoryCompaction       *bool    `yaml:"react_history_compaction"`        // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
+	IntentScopedReactPrompt      *bool    `yaml:"intent_scoped_react_prompt"`      // USE_INTENT_SCOPED_REACT_PROMPT (default off)
+	CreatePreferenceExtractor    *bool    `yaml:"create_preference_extractor"`     // COMPSHARE_CREATE_PREF_EXTRACTOR (default on; false disables)
+	UnifiedCreate                *bool    `yaml:"unified_create"`                  // COMPSHARE_UNIFIED_CREATE (default on; false disables)
+	AgentDeterministicRender     *bool    `yaml:"agent_deterministic_render"`      // COMPSHARE_AGENT_DETERMINISTIC_RENDER (default on; false disables)
+	SkillExecutor                *bool    `yaml:"skill_executor"`                  // USE_SKILL_EXECUTOR (default off)
+	SkillExecutorDiagnosisPilots []string `yaml:"skill_executor_diagnosis_pilots"` // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (CSV)
 }
 
 // RetrievalConfig holds the RAG / knowledge retrieval + grounded-renderer knobs.
@@ -106,6 +100,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	// on for those), so they must not use the empty-string off form.
 	putBoolEnv(overrides, "COMPSHARE_ENABLE_MUTATING_TOOLS", f.MutatingTools, "1", "")
 	putBoolEnv(overrides, "USE_SKILL_EXECUTOR", f.SkillExecutor, "1", "")
+	putBoolEnv(overrides, "COMPSHARE_DURABLE_TURNS", f.DurableTurns, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CONFIRM_FORM", f.ConfirmForm, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_GUIDED_CREATE", f.GuidedCreate, "1", "0")
 	putBoolEnv(overrides, "USE_SESSION_FACT_CONTEXT", f.SessionFactContext, "1", "0")
@@ -114,15 +109,8 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "USE_INTENT_SCOPED_REACT_PROMPT", f.IntentScopedReactPrompt, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CREATE_PREF_EXTRACTOR", f.CreatePreferenceExtractor, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_UNIFIED_CREATE", f.UnifiedCreate, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_CONTEXT_CONTINUATION", f.ContextContinuation, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_AGENT_DETERMINISTIC_RENDER", f.AgentDeterministicRender, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE", f.AgenticSearchKnowledge, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_RAG_GROUNDED_VALIDATOR", f.GroundedValidator, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD", f.FlashKnowledgeRouteGuard, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP", f.KnowledgeQAAgentLoop, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS", f.KnowledgeQADisciplinedSynthesis, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_KQA_SELF_REVISION", f.KnowledgeQASelfRevision, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE", f.ExternalKnowledge, "1", "0")
 	if len(f.SkillExecutorDiagnosisPilots) > 0 {
 		overrides["USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"] = strings.Join(f.SkillExecutorDiagnosisPilots, ",")

@@ -147,7 +147,7 @@ func parsePlannerExampleFrontmatter(data []byte) (routerPromptExampleGroup, erro
 	}
 	group := routerPromptExampleGroup{
 		Intent:  Intent(file.Intent),
-		Source:   file.Source,
+		Source:  file.Source,
 		compact: file.Compact,
 	}
 	for i, ex := range file.Examples {

@@ -170,7 +170,7 @@ func TestPlannerAccountBillingUnsupportedReturnsFixedReplyWithoutTools(t *testin
 	}
 }
 
-func TestPlannerAccountBillingUnsupportedClearsPendingResourceSelection(t *testing.T) {
+func TestPlannerAccountBillingUnsupportedPreservesPendingResourceSelection(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{
 		{Plan: phase1MonitorPlanWithoutTarget()},
 		{Plan: accountBillingUnsupportedPlan()},
@@ -199,7 +199,7 @@ func TestPlannerAccountBillingUnsupportedClearsPendingResourceSelection(t *testi
 	require.NoError(t, err)
 
 	assert.Equal(t, refusal.AccountBillingUnsupported, secondReply)
-	assert.Nil(t, eng.pendingResourceSelection)
+	require.NotNil(t, eng.pendingResourceSelection, "能力边界回复不能删除之前等待中的选择上下文")
 	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
 	assert.Empty(t, mock.calls)
 	require.Len(t, hardBlocks, 1)
@@ -207,7 +207,7 @@ func TestPlannerAccountBillingUnsupportedClearsPendingResourceSelection(t *testi
 	assert.Equal(t, observability.HardBlockTriggerPlannerIntent, hardBlocks[0].TriggeredBy)
 }
 
-func TestPlannerAccountBillingUnsupportedWithUHostPrefixClearsPendingResourceSelection(t *testing.T) {
+func TestPlannerAccountBillingUnsupportedWithUHostPrefixPreservesPendingResourceSelection(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: accountBillingUnsupportedPlan()}}}
 	executor := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
@@ -232,7 +232,7 @@ func TestPlannerAccountBillingUnsupportedWithUHostPrefixClearsPendingResourceSel
 
 	require.NoError(t, err)
 	assert.Equal(t, refusal.AccountBillingUnsupported, reply)
-	assert.Nil(t, eng.pendingResourceSelection)
+	require.NotNil(t, eng.pendingResourceSelection, "能力边界回复不能删除之前等待中的选择上下文")
 	assert.Empty(t, executor.calls)
 	assert.Len(t, planner.calls, 1)
 }

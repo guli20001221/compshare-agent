@@ -900,7 +900,6 @@ func buildGPUSpecsEnvelope(raw map[string]any, slots Slots, userText string) env
 	}
 	env.Computed = append(env.Computed,
 		envelope.Fact{Key: "answer_mode", Label: "Answer mode", Value: answerMode, Source: envelope.FactSourceComputed},
-		envelope.Fact{Key: "requested_gpu_specs", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
 	)
 
 	seenSubjects := map[string]struct{}{}
@@ -965,7 +964,6 @@ func buildStockEnvelope(raw map[string]any, userText string) envelope.Envelope {
 		Constraints:   envelope.Constraints{DoNotInventInstances: true},
 	}
 	env.Computed = append(env.Computed,
-		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "disclaimer", Label: "Disclaimer", Value: soldOutDisclaimer, Source: envelope.FactSourceComputed},
 	)
 
@@ -1055,7 +1053,6 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 	env.Computed = append(env.Computed,
 		envelope.Fact{Key: "image_category", Label: "Image category", Value: category, Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
-		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
 	)
 	shown := 0
 	for i, entry := range filtered {
@@ -1131,7 +1128,6 @@ func buildCommunityImageEnvelope(raw map[string]any, slots Slots, userText strin
 	env.Computed = append(env.Computed,
 		envelope.Fact{Key: "image_category", Label: "Image category", Value: "community", Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
-		envelope.Fact{Key: "user_question", Label: "User question", Value: userText, Source: envelope.FactSourceComputed},
 	)
 	lineBudget := communityImageGroupLimit
 	for _, entry := range filtered {

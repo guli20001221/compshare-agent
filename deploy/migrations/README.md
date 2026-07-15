@@ -7,10 +7,25 @@ Backend is **PostgreSQL** (migrated from MySQL/TiDB). These are PG-dialect DDL
 (JSONB / TIMESTAMPTZ / `plpgsql` triggers) — apply with `psql`, **not** the mysql
 client. The mysql client will error on this SQL.
 
-**Deploy order is mandatory: migration first, binary second.** A new binary
-started against an un-migrated database will fail `VerifySchema` at boot —
-do not flip the order during rolling deploys. Old binaries running against
-a newer schema are compatible (they ignore unknown columns).
+**Deploy order is mandatory, and this is a two-stage cluster cutover.** Schema
+compatibility does not make the old in-process executor compatible with the new
+database-fenced executor. Never let both execute chat traffic for the same
+conversation.
+
+1. Apply every migration through `0010` while the existing backend keeps serving.
+2. Deploy the new backend to every replica with `durable_turns: false`.
+3. Verify no old backend replica remains, then drain chat traffic and stop all
+   backend replicas.
+4. Enable `durable_turns`, start all backend replicas, and release the matching
+   durable-protocol frontend before restoring traffic.
+
+Before step 4, set `COMPSHARE_TURN_SECRET_KEY` on every backend replica to the
+same base64-encoded 32 random bytes. It encrypts short-lived workflow secrets
+needed for crash recovery; never commit this value to YAML. Rotate it only after
+all recoverable turns have finished.
+
+Do not roll the flag one replica at a time. If a zero-downtime cutover is
+required, isolate old and new traffic by protocol and conversation identity.
 
 ```bash
 # DSN is the same libpq URL as the server's MYSQL_DSN (the env var name is kept
@@ -22,6 +37,12 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0001_init.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0002_create_agent_traces.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0003_add_session_context_version.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0004_add_agent_traces_outcome_columns.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0005_create_turn_execution.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0006_create_turn_protocol.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0007_add_turn_recovery_context.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0008_add_turn_retry_policy.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0009_add_interaction_supersession.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.sql
 ```
 
 For a throwaway local Docker PostgreSQL (no host `psql` needed), see README §3 —

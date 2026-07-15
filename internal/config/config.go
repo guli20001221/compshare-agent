@@ -81,11 +81,10 @@ type HTTPConfig struct {
 	MaxInputLength       int           `yaml:"max_input_length"`
 	PoolCapacity         int           `yaml:"pool_capacity"`
 	PoolIdleTTL          time.Duration `yaml:"pool_idle_ttl"`
-	// MaxSessionTurns caps how many user-assistant question-answer pairs a
-	// single session may produce. Zero or unset falls back to
-	// DefaultMaxSessionTurns. Enforced in handleChat: once a session has
-	// reached the cap, further Chat requests return SessionTurnLimitExceeded
-	// and the caller must open a new session.
+	// MaxSessionTurns caps the compatibility chat path only. Durable WebSocket
+	// turns deliberately have no conversation-length wall: committed history is
+	// paged and rebuilt per turn instead of forcing a context-breaking session
+	// rollover. Zero or unset uses DefaultMaxSessionTurns in compatibility mode.
 	MaxSessionTurns int `yaml:"max_session_turns"`
 	// DisableCORS turns off the permissive CORS middleware. Default false =
 	// CORS headers are added (needed for local front-end debug per the
@@ -97,8 +96,9 @@ type HTTPConfig struct {
 	DisableCORS bool `yaml:"disable_cors"`
 }
 
-// DefaultMaxSessionTurns is the fallback cap when agent.http.max_session_turns
-// is zero or unset. 10 question-answer pairs per session = 20 stored messages.
+// DefaultMaxSessionTurns is the compatibility-path fallback when
+// agent.http.max_session_turns is zero or unset. The durable turn coordinator
+// never consults it.
 const DefaultMaxSessionTurns = 10
 
 // MySQLConfig holds connection settings for the MySQL backing store.

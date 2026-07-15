@@ -9,6 +9,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -16,6 +17,16 @@ func writeConfig(t *testing.T, body string) string {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
+}
+
+func TestDeployConfigStagesDurableExecutionOffForSafeClusterCutover(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "conf", "config.yaml"))
+	require.NoError(t, err)
+	var cfg Config
+	require.NoError(t, yaml.Unmarshal(raw, &cfg))
+	require.NotNil(t, cfg.Agent.Features.DurableTurns)
+	assert.False(t, *cfg.Agent.Features.DurableTurns,
+		"the tracked deploy config must not activate durable execution during a rolling binary deploy")
 }
 
 func setRequiredSecretEnv(t *testing.T) {
@@ -906,17 +917,12 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     mutating_tools: true
     confirm_form: true
     guided_create: true
-    agentic_search_knowledge: true
-    knowledge_qa_agent_loop: true
-    knowledge_qa_disciplined_synthesis: true
     external_knowledge: true
     session_fact_context: true
     react_result_projection: true
     react_history_compaction: true
     create_preference_extractor: true
     unified_create: true
-    context_continuation: true
-    grounded_validator: false
     skill_executor_diagnosis_pilots:
       - diagnose-ssh
       - diagnose-billing
@@ -939,14 +945,10 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	f := cfg.Agent.Features
 	require.NotNil(t, f.MutatingTools)
 	assert.True(t, *f.MutatingTools)
-	require.NotNil(t, f.GroundedValidator)
-	assert.False(t, *f.GroundedValidator)
 	require.NotNil(t, f.CreatePreferenceExtractor)
 	assert.True(t, *f.CreatePreferenceExtractor)
 	require.NotNil(t, f.UnifiedCreate)
 	assert.True(t, *f.UnifiedCreate)
-	require.NotNil(t, f.ContextContinuation)
-	assert.True(t, *f.ContextContinuation)
 	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
 	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
@@ -962,12 +964,10 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	cfg := &Config{Agent: AgentConfig{
 		LLM: LLMConfig{APIKey: "resolved-llm-key"},
 		Features: FeaturesConfig{
-			MutatingTools:             boolPtr(true),  // YAML true → "1"
-			AgenticSearchKnowledge:    boolPtr(false), // YAML false → "0" (off; this flag defaults ON)
-			FlashKnowledgeRouteGuard:  boolPtr(true),
+			MutatingTools:             boolPtr(true), // YAML true → "1"
+			DurableTurns:              boolPtr(true),
 			CreatePreferenceExtractor: boolPtr(false),
 			UnifiedCreate:             boolPtr(false),
-			ContextContinuation:       boolPtr(true),
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
@@ -987,8 +987,6 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			return "1"
 		case "COMPSHARE_UNIFIED_CREATE":
 			return "1"
-		case "COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD":
-			return "0"
 		case "SOME_UNMAPPED_VAR":
 			return "passthrough"
 		}
@@ -997,11 +995,9 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	getenv := cfg.RuntimeGetenv(base)
 
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
-	assert.Equal(t, "0", getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"), "YAML false → explicit off, wins over default-on")
-	assert.Equal(t, "1", getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"), "YAML true wins over env off")
+	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "0", getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"), "YAML false wins over env on")
 	assert.Equal(t, "0", getenv("COMPSHARE_UNIFIED_CREATE"), "YAML false wins over env on")
-	assert.Equal(t, "1", getenv("COMPSHARE_CONTEXT_CONTINUATION"), "YAML true wins")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")

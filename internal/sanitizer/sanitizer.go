@@ -1,19 +1,11 @@
 package sanitizer
 
-import "strings"
+import "github.com/compshare-agent/internal/guardrails"
 
 // sensitiveActions maps specific API actions to their known sensitive field names.
 var sensitiveActions = map[string][]string{
 	"ResetCompShareInstancePassword": {"Password"},
 	"ResetPasswordWorkflow":          {"Password"},
-}
-
-// genericSensitivePatterns are substrings that, when found in a key name,
-// indicate the value should be redacted.
-var genericSensitivePatterns = []string{
-	"Password", "PrivateKey", "SecretKey", "AccessKey",
-	"AccessToken", "AuthToken", "SessionToken", "ApiToken",
-	"JupyterToken", // explicit rather than broad "Token" to avoid false positives
 }
 
 // Sanitize returns a deep copy of result with sensitive fields replaced.
@@ -108,23 +100,8 @@ func redactByPattern(m map[string]any) {
 	}
 }
 
-// normalizeKey strips underscores/hyphens and lowercases for case- and
-// separator-insensitive matching (e.g. "access_token" → "accesstoken").
-func normalizeKey(s string) string {
-	s = strings.ToLower(s)
-	s = strings.ReplaceAll(s, "_", "")
-	s = strings.ReplaceAll(s, "-", "")
-	return s
-}
-
 func matchesSensitivePattern(key string) bool {
-	norm := normalizeKey(key)
-	for _, pattern := range genericSensitivePatterns {
-		if strings.Contains(norm, normalizeKey(pattern)) {
-			return true
-		}
-	}
-	return false
+	return guardrails.IsCredentialKey(key)
 }
 
 // deepCopyMap returns a deep copy of a map[string]any.

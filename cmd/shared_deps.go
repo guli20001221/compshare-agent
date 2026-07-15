@@ -10,7 +10,6 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/store"
-	"github.com/compshare-agent/internal/tools"
 )
 
 func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, getenv getenvFunc) (*agentpool.Pool, error) {
@@ -42,15 +41,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if unifiedCreate {
 		log.Printf("runtime: HTTP unified create-family route enabled (default-on; set COMPSHARE_UNIFIED_CREATE=0 to disable; create_instance prompt/schema active)")
 	}
-	contextContinuation, unknownContextContinuation := contextContinuationEnabledFromEnv(getenv)
-	if unknownContextContinuation != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_CONTEXT_CONTINUATION value %q", unknownContextContinuation)
-	}
-	engine.SetContextContinuationEnabled(contextContinuation)
-	if contextContinuation {
-		log.Printf("runtime: HTTP context continuation enabled (COMPSHARE_CONTEXT_CONTINUATION default-on; disable with =0)")
-	}
-
 	deps, err := engine.NewSharedDeps(cfg)
 	if err != nil {
 		return nil, false, fmt.Errorf("shared deps: %w", err)
@@ -75,24 +65,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if useSkillExecutor {
 		log.Printf("runtime: HTTP skill executor enabled (USE_SKILL_EXECUTOR=1, diagnosis_pilots=%v)", diagnosisPilots)
 	}
-	agenticSearch, unknownAgenticSearch := agenticSearchKnowledgeEnabledFromEnv(getenv)
-	if unknownAgenticSearch != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE value %q", unknownAgenticSearch)
-	}
-	tools.SetAgenticSearchKnowledgeEnabled(agenticSearch)
-	if agenticSearch {
-		log.Printf("runtime: HTTP agentic SearchKnowledge enabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE default-on; disable with =0)")
-	} else {
-		log.Printf("runtime: HTTP agentic SearchKnowledge disabled (COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=0)")
-	}
-	groundedValidator, unknownGroundedValidator := groundedAnswerValidatorEnabledFromEnv(getenv)
-	if unknownGroundedValidator != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_RAG_GROUNDED_VALIDATOR value %q", unknownGroundedValidator)
-	}
-	engine.SetGroundedAnswerValidatorEnabled(groundedValidator)
-	if groundedValidator {
-		log.Printf("runtime: HTTP grounded-answer validator enabled (COMPSHARE_RAG_GROUNDED_VALIDATOR=1; cite-or-refuse on agentic SearchKnowledge)")
-	}
+	log.Printf("runtime: HTTP agentic SearchKnowledge enabled (single production knowledge path)")
 	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
 	if unknownDomainMatchGuard != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q", unknownDomainMatchGuard)
@@ -100,14 +73,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
 	if domainMatchGuard {
 		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
-	}
-	flashKnowledgeRouteGuard, unknownFlashKnowledgeRouteGuard := flashKnowledgeRouteGuardEnabledFromEnv(getenv)
-	if unknownFlashKnowledgeRouteGuard != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD value %q", unknownFlashKnowledgeRouteGuard)
-	}
-	engine.SetFlashKnowledgeRouteGuardEnabled(flashKnowledgeRouteGuard)
-	if flashKnowledgeRouteGuard {
-		log.Printf("runtime: HTTP flash knowledge route guard enabled (COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD=1; default-off fallback)")
 	}
 	createPrefExtractor, unknownCreatePrefExtractor := createPreferenceExtractorEnabledFromEnv(getenv)
 	if unknownCreatePrefExtractor != "" {
@@ -124,36 +89,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	engine.SetAgentDeterministicRenderEnabled(deterministicRender)
 	if deterministicRender {
 		log.Printf("runtime: agent-loop deterministic instance rendering enabled (COMPSHARE_AGENT_DETERMINISTIC_RENDER default-on; disable with =0; instance tables are rendered from the payload, not retyped by the model)")
-	}
-	knowledgeQAAgentLoop, unknownKnowledgeQAAgentLoop := knowledgeQAAgentLoopEnabledFromEnv(getenv)
-	if unknownKnowledgeQAAgentLoop != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP value %q", unknownKnowledgeQAAgentLoop)
-	}
-	engine.SetKnowledgeQAAgentLoopEnabled(knowledgeQAAgentLoop)
-	if knowledgeQAAgentLoop {
-		log.Printf("runtime: HTTP knowledge_qa agent-loop route enabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP default-on; forced SearchKnowledge first hop, terminal RAG bypassed; disable with =0)")
-	} else {
-		log.Printf("runtime: HTTP knowledge_qa agent-loop route disabled (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0; deterministic terminal RAG route)")
-	}
-	disciplinedKnowledgeQASynthesis, unknownDisciplinedKnowledgeQASynthesis := disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv)
-	if unknownDisciplinedKnowledgeQASynthesis != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS value %q", unknownDisciplinedKnowledgeQASynthesis)
-	}
-	engine.SetDisciplinedKnowledgeQASynthesisEnabled(disciplinedKnowledgeQASynthesis)
-	if disciplinedKnowledgeQASynthesis {
-		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis enabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS default-on; terminal-style cited synthesis writes the final answer; disable with =0)")
-	} else {
-		log.Printf("runtime: HTTP disciplined knowledge_qa synthesis disabled (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS=0; free ReAct write + cite-retry)")
-	}
-	kqaSelfRevision, unknownKQASelfRevision := kqaSelfRevisionEnabledFromEnv(getenv)
-	if unknownKQASelfRevision != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_KQA_SELF_REVISION value %q", unknownKQASelfRevision)
-	}
-	engine.SetKQASelfRevisionEnabled(kqaSelfRevision)
-	if kqaSelfRevision {
-		log.Printf("runtime: HTTP knowledge_qa over-conservatism self-revision enabled (COMPSHARE_KQA_SELF_REVISION default-on; re-read grounded draft + commit, add no new facts, re-validated; disable with =0)")
-	} else {
-		log.Printf("runtime: HTTP knowledge_qa over-conservatism self-revision disabled (COMPSHARE_KQA_SELF_REVISION=0; disciplined draft delivered as-is)")
 	}
 	return deps, mutating, nil
 }

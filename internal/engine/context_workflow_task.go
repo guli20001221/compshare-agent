@@ -16,7 +16,7 @@ import (
 )
 
 func (e *Engine) tryResumeWorkflowContextFrame(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	if !ContextContinuationEnabled() {
+	if e.deferTaskCarryThisTurn {
 		return "", false
 	}
 	frame, ok := e.activeContextFrame(time.Now())
@@ -67,7 +67,15 @@ func (e *Engine) resumeWorkflowContextFrameWithSlotUpdates(ctx context.Context, 
 		return e.deployReply(dispatch.result, dispatch.latency, next.FailureReason)
 	}
 
-	e.clearContextFrame()
+	// Keep the fully resolved task until the workflow actually succeeds. Optional
+	// confirmation, rate limiting, disabled writes, upstream errors and disconnects
+	// must not turn "all parameters collected" into "task forgotten".
+	next := frame
+	next.Slots = slots
+	next.MissingSlots = nil
+	next.FailureReason = ""
+	next.ProducedAtUnix = time.Now().Unix()
+	e.setContextFrame(next)
 	action := frame.Workflow
 	if workflowRequiresInstanceTarget(action) {
 		if target := trustedWorkflowFrameTarget(frame, slots, userMsg); target != "" {
@@ -85,6 +93,14 @@ func (e *Engine) resumeWorkflowContextFrameWithSlotUpdates(ctx context.Context, 
 	})
 	raw := e.executeWorkflow(ctx, action, args, onStep)
 	reply := workflowDirectReply(action, raw)
+	if e.lastWorkflowSucceededThisCall {
+		e.clearContextFrame()
+	} else if current, ok := e.activeContextFrame(time.Now()); ok && current.Kind == ContextFrameKindWorkflowTask {
+		current.Status = ContextFrameStatusFailedRecoverable
+		current.FailureReason = truncateRunes(strings.TrimSpace(reply), 600)
+		current.ProducedAtUnix = time.Now().Unix()
+		e.setContextFrame(current)
+	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
 	return reply, true
 }
@@ -174,7 +190,7 @@ func (e *Engine) bindSelectedInstanceToWaitingWorkflowFrame(inst entity.Instance
 }
 
 func (e *Engine) recordWorkflowMissingSlotsFrame(workflowName string, args map[string]any, missing []string, message string) bool {
-	if e == nil || !ContextContinuationEnabled() || !e.sessionStateHydrated || workflowName == "" || len(missing) == 0 {
+	if e == nil || !e.sessionStateHydrated || workflowName == "" || len(missing) == 0 {
 		return false
 	}
 	slots := safeWorkflowContextSlots(args)

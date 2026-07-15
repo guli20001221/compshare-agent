@@ -71,7 +71,6 @@ func findUniqueInstanceNameInText(userText string, snapshot entity.RegistrySnaps
 	if text == "" || len(snapshot.Instances) == 0 {
 		return entity.InstanceSnapshot{}, false
 	}
-	compactText := normalizeResourceText(text)
 	type candidate struct {
 		inst  entity.InstanceSnapshot
 		score int
@@ -83,13 +82,8 @@ func findUniqueInstanceNameInText(userText string, snapshot entity.RegistrySnaps
 			continue
 		}
 		score := 0
-		if strings.Contains(text, name) {
+		if entity.TextExplicitlyMentionsName(text, name) {
 			score = len([]rune(name)) * 10
-		} else {
-			normalizedName := normalizeResourceText(name)
-			if len([]rune(normalizedName)) >= 4 && strings.Contains(compactText, normalizedName) {
-				score = len([]rune(normalizedName))*10 - 1
-			}
 		}
 		if score > 0 {
 			candidates = append(candidates, candidate{inst: inst, score: score})
@@ -316,21 +310,13 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 	case intent.LifecycleActionRename:
 		newName := renameWorkflowNameFromUserText(userMsg)
 		if newName == "" {
-			if ContextContinuationEnabled() {
-				e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
-				reply := e.executeWorkflow(ctx, workflowName, args, onStep)
-				if final, ok := isFinalReply(reply); ok {
-					reply = final
-				} else if msg, ok := workflowFailureMessage(reply); ok {
-					reply = msg
-				}
-				e.recordSelectedInstanceID(inst.UHostId, inst.Name)
-				e.recordLastIntentFromPlan(result.Plan)
-				e.messages = append(e.messages, assistantMessage(reply))
-				return reply, true
-			}
-			reply := "请告诉我要把实例改成什么名称。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
+			reply := e.executeWorkflow(ctx, workflowName, args, onStep)
+			if final, ok := isFinalReply(reply); ok {
+				reply = final
+			} else if msg, ok := workflowFailureMessage(reply); ok {
+				reply = msg
+			}
 			e.recordSelectedInstanceID(inst.UHostId, inst.Name)
 			e.recordLastIntentFromPlan(result.Plan)
 			e.messages = append(e.messages, assistantMessage(reply))
@@ -338,7 +324,7 @@ func (e *Engine) tryOperationLifecycleDispatch(ctx context.Context, dispatch rou
 		}
 		args["Name"] = newName
 	case intent.LifecycleActionResetPwd:
-		password := resetPasswordFromUserText(userMsg)
+		password := e.resetPasswordForTurn(userMsg)
 		if password == "" {
 			reply := "请提供要设置的新密码。"
 			e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
@@ -421,12 +407,9 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 	// Deterministic, parsed from the user's literal text and matched against the
 	// persisted candidate list via the same matcher the trust guard uses, so a
 	// resolved target always passes workflowTargetIsTrusted (no poisoning).
-	// Gated on the continuation flag for rollback parity.
-	if ContextContinuationEnabled() {
-		if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
-			plan := lifecyclePlanForSelectedInstance(action, inst)
-			return e.tryLifecycleActionForSelectedInstance(ctx, inst, action, userMsg, plan, onStep)
-		}
+	if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
+		plan := lifecyclePlanForSelectedInstance(action, inst)
+		return e.tryLifecycleActionForSelectedInstance(ctx, inst, action, userMsg, plan, onStep)
 	}
 	if selectedID := strings.TrimSpace(e.sessionState.SelectedInstanceID); selectedID != "" &&
 		selectedInstanceSourceTrustedForWorkflow(e.sessionState.SelectedInstanceSource) &&
@@ -449,9 +432,8 @@ func (e *Engine) tryDirectLifecycleFromUserText(ctx context.Context, userMsg str
 			Retrieval:     intent.Retrieval{Enabled: false},
 			Confidence:    1,
 		}
-		if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
-			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk ||
-				(action == intent.LifecycleActionRename && ContextContinuationEnabled()) {
+		if reply, ok := populateLifecycleActionArgs(args, action, userMsg, e.resetPasswordForTurn(userMsg)); !ok {
+			if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk || action == intent.LifecycleActionRename {
 				reply = e.executeWorkflow(ctx, workflowName, args, onStep)
 				if final, ok := isFinalReply(reply); ok {
 					reply = final
@@ -588,9 +570,8 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 	}
 	args := map[string]any{"UHostId": inst.UHostId}
 	e.clearContextFrameForNewDirectWorkflow()
-	if reply, ok := populateLifecycleActionArgs(args, action, userMsg); !ok {
-		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk ||
-			(action == intent.LifecycleActionRename && ContextContinuationEnabled()) {
+	if reply, ok := populateLifecycleActionArgs(args, action, userMsg, e.resetPasswordForTurn(userMsg)); !ok {
+		if action == intent.LifecycleActionResize || action == intent.LifecycleActionCreateDisk || action == intent.LifecycleActionRename {
 			reply = e.executeWorkflow(ctx, workflowName, args, onStep)
 			if final, ok := isFinalReply(reply); ok {
 				reply = final
@@ -621,7 +602,7 @@ func (e *Engine) tryLifecycleActionForSelectedInstance(ctx context.Context, inst
 	return reply, true
 }
 
-func populateLifecycleActionArgs(args map[string]any, action intent.LifecycleAction, userMsg string) (string, bool) {
+func populateLifecycleActionArgs(args map[string]any, action intent.LifecycleAction, userMsg, secretPassword string) (string, bool) {
 	switch action {
 	case intent.LifecycleActionResize:
 		resizeArgs := resizeWorkflowArgsFromUserText(userMsg)
@@ -638,7 +619,11 @@ func populateLifecycleActionArgs(args map[string]any, action intent.LifecycleAct
 		}
 		args["Name"] = newName
 	case intent.LifecycleActionResetPwd:
-		password := resetPasswordFromUserText(userMsg)
+		password := secretPassword
+		if password == "" {
+			value := resetPasswordFromUserText(userMsg)
+			password = value
+		}
 		if password == "" {
 			return "请提供要设置的新密码。", false
 		}
@@ -670,12 +655,9 @@ func (e *Engine) tryDirectStopSchedulerFromUserText(ctx context.Context, userMsg
 		return "", false
 	}
 	// Ordinal/name reference to a displayed candidate list, e.g. "第2台定时关机".
-	// Deterministic and guard-consistent (see ordinalTargetFromPending); gated on
-	// the continuation flag for rollback parity.
-	if ContextContinuationEnabled() {
-		if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
-			return e.dispatchStopSchedulerForInstance(ctx, inst, userMsg, compact, onStep)
-		}
+	// Deterministic and guard-consistent (see ordinalTargetFromPending).
+	if inst, ok := e.ordinalTargetFromPending(userMsg); ok {
+		return e.dispatchStopSchedulerForInstance(ctx, inst, userMsg, compact, onStep)
 	}
 	if _, ok := findUniqueInstanceNameInText(userMsg, snapshot); !ok {
 		return "", false
@@ -743,7 +725,7 @@ func hasLikelyExplicitInstanceTargetText(userText string, snapshot entity.Regist
 func lifecycleActionAllowsExplicitIDPreDispatch(action intent.LifecycleAction) bool {
 	return action == intent.LifecycleActionCreateDisk ||
 		action == intent.LifecycleActionResize ||
-		(action == intent.LifecycleActionRename && ContextContinuationEnabled())
+		action == intent.LifecycleActionRename
 }
 
 var legacyUHostIDInTextRE = regexp.MustCompile(`uhost-[0-9a-zA-Z]+`)
@@ -1383,7 +1365,10 @@ func looksLikeScheduledShutdownText(compact string) bool {
 }
 
 var (
-	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(?:为|成|是|:|：)?\s*([^\s，。；;]+)`)
+	// A password value is extracted only from an explicit assignment. Keeping
+	// the separator mandatory prevents help questions such as “密码怎么改？” or
+	// “重置密码需要停机吗” from being mistaken for secrets and erased.
+	resetPasswordSpecRE = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(为|成|是|:|：)\s*([^\s，。；;]+)`)
 	diskSizeSpecRE      = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:g|gb|gib)`)
 	cfsNameSpecRE       = regexp.MustCompile(`(?i)(?:名字|名称|name)\s*(?:叫|为|是|:|：)?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,62})`)
 	cfsIDSpecRE         = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
@@ -1552,11 +1537,101 @@ func renameWorkflowNameFromUserText(userText string) string {
 }
 
 func resetPasswordFromUserText(userText string) string {
-	m := resetPasswordSpecRE.FindStringSubmatch(strings.TrimSpace(userText))
-	if len(m) != 2 {
-		return ""
+	secret, _, _ := ExtractResetPasswordSecret(userText)
+	return secret
+}
+
+// ExtractResetPasswordSecret is the single parser for password values embedded
+// in legacy free-text requests. Byte offsets let the durable boundary remove
+// the exact value before persistence without maintaining a second regex.
+func ExtractResetPasswordSecret(userText string) (secret string, start, end int) {
+	secret, start, end, executable := ClassifyResetPasswordValue(userText)
+	if !executable {
+		return "", 0, 0
 	}
-	return strings.TrimSpace(m[1])
+	return secret, start, end
+}
+
+// ClassifyResetPasswordValue separates three cases without a vocabulary list:
+// a plain help question, a question containing a sample secret, and an explicit
+// assignment. Sample secrets are redacted but never executed; assignments are
+// routed through the durable secret channel.
+func ClassifyResetPasswordValue(userText string) (value string, start, end int, executable bool) {
+	match := resetPasswordSpecRE.FindStringSubmatchIndex(userText)
+	if len(match) < 6 || match[2] < 0 || match[3] < 0 || match[4] < 0 || match[5] < 0 {
+		return "", 0, 0, false
+	}
+	value = strings.TrimSpace(userText[match[4]:match[5]])
+	if endsWithQuestionMark(userText) {
+		questionValue := strings.TrimSuffix(strings.TrimSuffix(value, "?"), "？")
+		if allHanQuestion(questionValue) {
+			return "", 0, 0, false
+		}
+		if prefixBytes := leadingASCIIPasswordBytes(questionValue); prefixBytes > 0 {
+			if prefixBytes == len(questionValue) && explicitResetPasswordAction(userText, match[0], match[2]) {
+				return value, match[4], match[5], true
+			}
+			return value[:prefixBytes], match[4], match[4] + prefixBytes, false
+		}
+		return value, match[4], match[5], false
+	}
+	if prefixBytes := leadingASCIIPasswordBytes(value); prefixBytes > 0 && prefixBytes < len(value) {
+		// Without an explicit question boundary, an ASCII-to-Han transition is
+		// ambiguous: it may be prose after a sample or part of the password.
+		// Protect the complete candidate and refuse execution instead of either
+		// leaking the suffix or guessing a destructive password value.
+		return value, match[4], match[5], false
+	}
+	return value, match[4], match[5], true
+}
+
+func explicitResetPasswordAction(userText string, matchStart, connectorStart int) bool {
+	prefix := strings.ToLower(strings.TrimSpace(userText[:matchStart]))
+	head := strings.ToLower(strings.TrimSpace(userText[matchStart:connectorStart]))
+	if strings.HasPrefix(head, "改密") {
+		return true
+	}
+	return strings.HasPrefix(head, "密码") && strings.HasSuffix(prefix, "重置") ||
+		strings.HasPrefix(head, "password") && strings.HasSuffix(prefix, "reset")
+}
+
+func leadingASCIIPasswordBytes(value string) int {
+	for index, r := range value {
+		if r > unicode.MaxASCII {
+			if !unicode.Is(unicode.Han, r) {
+				return 0
+			}
+			return index
+		}
+	}
+	return len(value)
+}
+
+func endsWithQuestionMark(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasSuffix(value, "?") || strings.HasSuffix(value, "？") || strings.HasSuffix(value, "吗")
+}
+
+func allHanQuestion(value string) bool {
+	value = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(value), "?"), "？")
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !unicode.Is(unicode.Han, r) {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) resetPasswordForTurn(userText string) string {
+	if e != nil && e.secretInputsThisTurn != nil {
+		if password := strings.TrimSpace(e.secretInputsThisTurn["Password"]); password != "" {
+			return password
+		}
+	}
+	return resetPasswordFromUserText(userText)
 }
 
 func stopSchedulerAfterMinutesFromUserText(userText string) (int, bool) {

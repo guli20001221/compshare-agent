@@ -139,11 +139,9 @@ func RenderIntentScopedReActCard(intentName intent.Intent, mutatingToolsEnabled 
 			"- " + sharedCompleteListingRule,
 		}, "\n")
 	case intent.IntentKnowledgeQA:
-		return strings.Join([]string{
-			"## 本轮 ReAct 知识卡片",
-			"- 平台知识类问题必须通过知识库/RAG资料、工具事实或诊断结果回答。",
-			"- 当前轮次没有资料或事实时，不要凭模型记忆直接回答。",
-		}, "\n")
+		// Knowledge behavior is injected exactly once by knowledge_turn_policy in
+		// the base prompt. A per-intent card would create a second policy source.
+		return ""
 	default:
 		// IntentUnknown, empty intent (planner not run / failed), and any
 		// intent value without a dedicated card all land here. A conservative

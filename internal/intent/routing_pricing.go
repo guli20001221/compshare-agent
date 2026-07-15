@@ -67,7 +67,7 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 	if len(matched) == 0 {
 		// No actionable GPU in the user's text — fall back to a clarify
 		// prompt listing available models so the user can pick one.
-		result := HandledResult(pricingClarifyReply(items, ""))
+		result := ClarificationResult(pricingClarifyReply(items, ""))
 		result.ToolAction = action
 		result.ToolArgs = copyArgs(map[string]any{})
 		return result

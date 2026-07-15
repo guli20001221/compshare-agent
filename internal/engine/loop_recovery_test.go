@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
@@ -86,11 +87,21 @@ func keptVLLMHit() knowledge.RetrievalHit {
 	}}
 }
 
+func vllmGroundedRepairResponse() llm.ChatResponse {
+	return llm.ChatResponse{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用。","supported":true,"claims":[{"answer_quote":"可以把 max-model-len 调小来降低显存占用","chunk_id":"ext-vllm-oom-001","evidence_quote":"把 max-model-len 设小一点即可显著降低显存占用"}],"unsupported":[]}`}
+}
+
 func vllmRetriever() *scriptedKnowledgeRetriever {
 	return &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:  true,
 		HitItems: []knowledge.RetrievalHit{keptVLLMHit()},
 	}}}
+}
+
+func prepareKnowledgeRecoveryLane(t *testing.T, eng *Engine) {
+	t.Helper()
+	eng.InitWithContext("test user")
+	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 }
 
 // TestChat_RoundCeiling_RecoversFromGatheredEvidence: round 0 calls
@@ -107,13 +118,13 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 			toolCall("tc", "GetGPUSpecs", `{"GpuType":"4090"}`),
 		}}
 	}
-	// Index maxReActRounds is consumed by the recovery synthesis call
-	// (answerWithRetrievedEvidence), NOT the loop — it must be a positionally
-	// cited answer so disciplined synthesis accepts it.
-	responses[maxReActRounds] = llm.ChatResponse{Content: "可以把 max-model-len 调小来降低显存占用 [1]。"}
+	// Index maxReActRounds is consumed by the one-call grounded recovery, NOT
+	// the loop. It returns the answer together with an evidence proof.
+	responses[maxReActRounds] = vllmGroundedRepairResponse()
 
 	mock := &mockLLM{responses: responses}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
@@ -356,10 +367,11 @@ func TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive(t *testing.T) {
 		{resp: &llm.ChatResponse{ToolCalls: []openai.ToolCall{
 			toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`),
 		}}},
-		{err: fmt.Errorf("connection reset by peer")},                          // round 1 errors → recovery
-		{resp: &llm.ChatResponse{Content: "可以把 max-model-len 调小来降低显存占用 [1]。"}}, // synthesis call
+		{err: fmt.Errorf("connection reset by peer")}, // round 1 errors → recovery
+		{resp: func() *llm.ChatResponse { r := vllmGroundedRepairResponse(); return &r }()},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
@@ -387,6 +399,7 @@ func TestChat_LLMError_CtxCancelledSkipsRecovery(t *testing.T) {
 		{resp: &llm.ChatResponse{Content: "这条不应被消费 [1]。"}},   // synthesis step — must NOT run
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},

@@ -2,17 +2,17 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRecentFactFollowupPriceRequeriesWithContextDecisionSlot(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var priceArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -77,8 +77,6 @@ func TestRecentFactFollowupPriceRequeriesWithContextDecisionSlot(t *testing.T) {
 }
 
 func TestRecentFactFollowupStockRequeriesWithContextDecisionSlot(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var capacityArgs map[string]any
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -145,8 +143,6 @@ func TestRecentFactFollowupStockRequeriesWithContextDecisionSlot(t *testing.T) {
 }
 
 func TestRecentFactFollowupRefundRevalidatesSelectedInstance(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var refundCalled bool
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -212,8 +208,6 @@ func TestRecentFactFollowupRefundRevalidatesSelectedInstance(t *testing.T) {
 }
 
 func TestRecentFactFollowupBillingRerunsDiagnosis(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var describeCalls int
 	var billingArgs map[string]any
@@ -293,9 +287,55 @@ func TestRecentFactFollowupBillingRerunsDiagnosis(t *testing.T) {
 	require.NotContains(t, reply, "99.99", "reply must not reuse stale billing fact amount")
 }
 
+func TestRecentFactBillingReadFailureFallsBackToContextAwareReadOnlyAgent(t *testing.T) {
+
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action != "DescribeCompShareInstance" {
+			return map[string]any{"RetCode": 0}, nil
+		}
+		if _, targeted := args["UHostIds"]; targeted {
+			return nil, fmt.Errorf("billing read unavailable")
+		}
+		return map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{
+			"UHostId": "uhost-selected", "Name": "selected-host", "State": "Running",
+			"ChargeType": "Dynamic", "GpuType": "4090", "GPU": float64(1),
+			"CPU": float64(16), "Memory": float64(65536), "Zone": "cn-wlcb-01",
+		}}}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.Init(context.Background())
+	now := time.Now()
+	eng.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaCurrent,
+		SelectedInstanceID:   "uhost-selected",
+		SelectedInstanceName: "selected-host",
+		RecentFacts: []ToolFact{{
+			Kind: FactKindBillingQuote, SubjectID: "billing:DiagnoseBilling:uhost-selected",
+			Payload:        map[string]any{"action": "DiagnoseBilling", "resource_id": "uhost-selected", "amount": float64(99.99)},
+			ProducedAtTurn: 1, ProducedAtUnix: now.Unix(), TTLSeconds: factTTLSecondsBillingQuote,
+		}},
+	}, 2)
+	eng.SetSessionFactContextEnabled(true)
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "selected-host 上轮费用是多少"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "上轮记录是 99.99 元。"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "那现在呢"},
+	)
+	reply, handled := eng.tryRecentFactBillingFollowup(context.Background(), routerDispatchResult{
+		result:   intent.IntentRouterResult{Plan: intent.IntentRoute{Intent: intent.IntentBillingInstance}},
+		snapshot: eng.RegistrySnapshot(),
+	}, ContextDecision{Target: ContextDecisionTargetBilling, BillingTopic: "cost"}, noopStep)
+
+	require.False(t, handled)
+	require.Empty(t, reply)
+	require.True(t, eng.routeReadFailureThisTurn, "diagnosis read failure must mark fallback; executor calls=%v", exec.calls)
+	requestText := renderTestMessages(eng.buildMessagesForLLM())
+	require.Contains(t, requestText, "selected-host 上轮费用是多少")
+	require.Contains(t, requestText, "上轮记录是 99.99 元")
+	require.Contains(t, requestText, routeReadFailureNote)
+}
+
 func TestRecentFactFollowupRequiresSessionFactContextFlag(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var priceCalled bool
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {

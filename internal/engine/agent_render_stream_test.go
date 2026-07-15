@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
@@ -18,6 +20,38 @@ import (
 type streamingSeqMockLLM struct {
 	responses []llm.ChatResponse
 	idx       int
+}
+
+func TestKnowledgeFollowupIsVerifiedBeforeAnyTokenReachesTheClient(t *testing.T) {
+	const chunkID = "prior-refund-policy"
+	mock := &streamingSeqMockLLM{responses: []llm.ChatResponse{
+		{Content: "所有订单都可以全额退款。"},
+		{Content: `{"supported":false,"claims":[],"unsupported":["所有订单都可以全额退款"]}`},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test")
+	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}, IntentPlannerOptions{Model: "test"})
+	eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{})
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent,
+		VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+			Question: "订单是否支持退款",
+			Answer:   "该订单不支持退款。",
+			Evidence: knowledge.EvidenceLedger{Query: "订单是否支持退款", Items: []knowledge.EvidenceItem{{
+				ChunkID: chunkID, Title: "退款规则", Snippet: "该订单不支持退款。",
+			}}},
+		}},
+	}, 0)
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "那这个呢？", noopStep, ChatOptions{
+		OnTextDelta: func(delta string) { deltas = append(deltas, delta) },
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ragUngroundableReply, reply)
+	assert.Equal(t, ragUngroundableReply, strings.Join(deltas, ""),
+		"unsupported model prose must be replaced before, not after, streaming")
+	assert.NotContains(t, strings.Join(deltas, ""), "全额退款")
 }
 
 func (m *streamingSeqMockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {

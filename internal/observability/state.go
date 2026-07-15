@@ -52,6 +52,15 @@ type StateTrace struct {
 	ContextDecisionReason     string `json:"context_decision_reason,omitempty"`
 	ContextDecisionError      string `json:"context_decision_error,omitempty"`
 	ContextDecisionActiveTask string `json:"context_decision_active_task,omitempty"`
+	// ContextDecisionReadSet and ContextDecisionStateDelta expose whether the
+	// resolver actually consumed the carried state and what it planned to do
+	// with it. ToolScope/ToolNames record the dispatch authority selected from
+	// the same route signal. All values are bounded enum/field names, never raw
+	// user text or tool arguments.
+	ContextDecisionReadSet    []string `json:"context_decision_read_set,omitempty"`
+	ContextDecisionStateDelta []string `json:"context_decision_state_delta,omitempty"`
+	ContextDecisionToolScope  string   `json:"context_decision_tool_scope,omitempty"`
+	ContextDecisionToolNames  []string `json:"context_decision_tool_names,omitempty"`
 }
 
 // ResolutionSource* are the StateTrace.ResolutionSource values — how the turn's
@@ -103,5 +112,9 @@ func traceStateObserved(t StateTrace) bool {
 		t.ContextDecisionReason != "" ||
 		t.ContextDecisionError != "" ||
 		t.ContextDecisionActiveTask != "" ||
+		len(t.ContextDecisionReadSet) > 0 ||
+		len(t.ContextDecisionStateDelta) > 0 ||
+		t.ContextDecisionToolScope != "" ||
+		len(t.ContextDecisionToolNames) > 0 ||
 		t.SessionStateHydrated
 }

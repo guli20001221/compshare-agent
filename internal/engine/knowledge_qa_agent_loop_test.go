@@ -2,13 +2,13 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,25 +28,19 @@ func knowledgeQAAgentLoopBillingChunk() knowledge.KBChunk {
 	}
 }
 
-// TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop is the Phase-1
-// hinge test: with COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP on (and agentic SearchKnowledge
-// on + a retriever wired), a knowledge_qa turn is routed into the shared ReAct loop
-// with a FORCED SearchKnowledge first hop instead of the terminal-RAG route. It
+func knowledgeQAAgentLoopBillingVerdict() llm.ChatResponse {
+	return llm.ChatResponse{Content: `{"supported":true,"claims":[{"answer_quote":"停止的按量实例的磁盘仍会计费","chunk_id":"faq-billing-001","evidence_quote":"Stopped on-demand instances still charge for disks"}],"unsupported":[]}`}
+}
+
+// TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop proves that a
+// knowledge_qa turn with no sufficient prior answer enters the shared ReAct loop
+// with a forced SearchKnowledge first hop. It
 // proves (a) the forced object tool_choice on the first LLM call, (b) the agent loop
 // actually retrieves (SearchKnowledge ran on the engine retriever), (c) the distinct
 // dispatched_knowledge_agent_loop route status with PlannedExecutionPath=agent (so the
-// runtime-form mismatch gate does not false-flag), and (d) turn-scoped cite-or-refuse
-// parity (a properly [[chunk_id]]-cited synthesis is kept with markers stripped, NOT
-// refused) — all WITHOUT the global grounded-validator flag.
+// runtime-form mismatch gate does not false-flag), and (d) the shared semantic
+// verifier keeps a supported synthesis.
 func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing.T) {
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	// Deliberately leave the global grounded-validator OFF to prove the agent-loop
-	// route enforces cite-or-refuse turn-scoped on its own.
-	SetGroundedAnswerValidatorEnabled(false)
-
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
@@ -64,6 +58,7 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"why do stopped instances still bill"}`},
 		}}},
 		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"},
+		knowledgeQAAgentLoopBillingVerdict(),
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -112,138 +107,131 @@ func TestKnowledgeQAAgentLoop_RouteGate_ForcesSearchKnowledgeFirstHop(t *testing
 	assert.Equal(t, "faq-billing-001", finalRetrieval.References[0].ChunkID)
 }
 
-// TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged proves the default-off
-// byte-identity of the ROUTE: with the flag off (even with agentic on), a knowledge_qa
-// turn still takes the deterministic terminal-RAG route (dispatched_retrieval, no tools
-// exposed, no forced tool_choice) and is never marked as agent-loop routed.
-func TestKnowledgeQAAgentLoop_FlagOff_TerminalRouteUnchanged(t *testing.T) {
-	// Flag OFF (default). Agentic ON to prove the FLAG, not agentic, gates the route.
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-
-	chunk := knowledgeQAAgentLoopBillingChunk()
+// A context-dependent follow-up does not need another retrieval when the prior
+// completed answer already contains everything needed. This pins the real
+// "粘贴呢" shape: the agent sees the previous answer, gives the correct direct
+// continuation, and does not pay for or risk a lossy query rewrite.
+func TestKnowledgeQAAgentLoop_ShortFollowupReusesSufficientConversationWithoutRAG(t *testing.T) {
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-		Enabled:   true,
-		KBVersion: "kb.v1",
-		Hits:      []knowledge.KBChunk{chunk},
-		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	var plannerTraces []observability.RouterTrace
-	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-	eng.SetKnowledgeRetriever(retriever)
-
-	_, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
-	require.NoError(t, err)
-
-	assert.False(t, eng.knowledgeQAAgentLoopThisTurn, "flag off: turn must NOT be agent-loop routed")
-	require.Len(t, mock.calls, 1)
-	assert.Empty(t, mock.calls[0].Tools, "flag off: terminal RAG must not expose API tools")
-	assert.Nil(t, mock.calls[0].ToolChoice, "flag off: terminal RAG must not force a tool")
-	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus)
-}
-
-// TestKnowledgeQAAgentLoop_InertWhenAgenticOff proves the 400-trap guard: with the
-// flag ON but agentic SearchKnowledge OFF, the route gate is inert (the tool is not in
-// the registry, so forcing it would 400) — the turn stays on the terminal route.
-func TestKnowledgeQAAgentLoop_InertWhenAgenticOff(t *testing.T) {
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	// Agentic OFF (default) => SearchKnowledge not visible => flag must be inert.
-
-	chunk := knowledgeQAAgentLoopBillingChunk()
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-		Enabled:   true,
-		KBVersion: "kb.v1",
-		Hits:      []knowledge.KBChunk{chunk},
-		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "Stopped on-demand instances still charge for disks. [1]"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	var plannerTraces []observability.RouterTrace
-	eng.SetPlannerTraceObserver(func(tr observability.RouterTrace) { plannerTraces = append(plannerTraces, tr) })
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
-	eng.SetKnowledgeRetriever(retriever)
-
-	_, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
-	require.NoError(t, err)
-
-	assert.False(t, eng.knowledgeQAAgentLoopThisTurn, "agentic off: flag must be inert (stay on terminal route)")
-	require.Len(t, mock.calls, 1)
-	assert.Nil(t, mock.calls[0].ToolChoice, "agentic off: never force an absent tool")
-	require.Len(t, plannerTraces, 1)
-	assert.Equal(t, string(intent.RouteStatusDispatchedRetrieval), plannerTraces[0].RouteStatus)
-}
-
-// TestKnowledgeQAAgentLoop_CiteOrRefuseParity_WithoutGlobalValidator proves the
-// turn-scoped cite-or-refuse coupling directly on guardSearchKnowledgeSynthesis: with
-// the GLOBAL grounded-validator OFF but the turn marked as agent-loop routed, an
-// uncited substantive answer is refused (search_knowledge_uncited) and a properly
-// cited one is kept with markers stripped — exactly the terminal route's guarantee,
-// preserved without flipping the global validator.
-func TestKnowledgeQAAgentLoop_CiteOrRefuseParity_WithoutGlobalValidator(t *testing.T) {
-	SetGroundedAnswerValidatorEnabled(false) // global validator OFF on purpose
-
-	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
-		ChunkID: "ext-vllm-oom-001",
-		Content: "把 max-model-len 设小一点即可显著降低显存占用，过长的上下文会占用更多 KV cache。",
+	retriever := &scriptedKnowledgeRetriever{}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "在 Windows Terminal 中直接按 Ctrl+Shift+V 粘贴，然后回车执行。"},
+		{Content: `{"supported":true,"claims":[{"answer_quote":"在 Windows Terminal 中直接按 Ctrl+Shift+V 粘贴","chunk_id":"terminal-paste-001","evidence_quote":"使用 Ctrl+Shift+V 粘贴"},{"answer_quote":"然后回车执行","chunk_id":"terminal-paste-001","evidence_quote":"再按回车执行"}],"unsupported":[]}`},
 	}}
-	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "ext-vllm-oom-001", Title: "vLLM OOM"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+		Question: "Windows 终端里复制命令后怎么操作？",
+		Answer:   "复制后回到 Windows Terminal，使用 Ctrl+Shift+V 粘贴，再按回车执行。",
+		Evidence: knowledge.EvidenceLedger{Query: "Windows 终端里复制命令后怎么操作？", Items: []knowledge.EvidenceItem{{
+			ChunkID: "terminal-paste-001", Title: "Windows Terminal 粘贴", Snippet: "使用 Ctrl+Shift+V 粘贴，再按回车执行。",
+		}}},
+	}}}, 1)
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Windows 终端里复制命令后怎么操作？"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "复制后回到 Windows Terminal，使用 Ctrl+Shift+V 粘贴，再按回车执行。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
 
-	newEng := func() (*Engine, *[]observability.EngineHardBlockTrace) {
-		eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
-		var traces []observability.EngineHardBlockTrace
-		eng.SetHardBlockObserver(func(tr observability.EngineHardBlockTrace) { traces = append(traces, tr) })
-		eng.searchKnowledgeRanThisTurn = true
-		eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
-		eng.searchKnowledgeLedgerThisTurn = ledger
-		eng.knowledgeQAAgentLoopThisTurn = true // the only thing turning the cite arm on
-		return eng, &traces
+	reply, err := eng.Chat(context.Background(), "粘贴呢", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "Ctrl+Shift+V")
+	assert.Contains(t, reply, "回车")
+	assert.Empty(t, retriever.calls, "sufficient committed context must not trigger redundant RAG")
+	assert.False(t, eng.searchKnowledgeRanThisTurn)
+
+	require.Len(t, mock.calls, 2, "direct continuation uses one bounded provenance check and no retrieval")
+	first := mock.calls[0]
+	assert.Nil(t, first.ToolChoice, "a complete prior turn lets the agent decide whether retrieval is needed")
+	joined := make([]string, 0, len(first.Messages))
+	for _, message := range first.Messages {
+		joined = append(joined, message.Content)
 	}
-
-	t.Run("uncited substantive answer refused (parity with terminal cite-or-refuse)", func(t *testing.T) {
-		eng, traces := newEng()
-		ans := "可以把 max-model-len 调小来省显存。"
-		assert.Equal(t, ragNoEvidenceReply, eng.guardSearchKnowledgeSynthesis(ans))
-		require.Len(t, *traces, 1)
-		assert.Equal(t, "search_knowledge_uncited", (*traces)[0].Category)
-	})
-
-	t.Run("cited answer kept with markers stripped", func(t *testing.T) {
-		eng, traces := newEng()
-		got := eng.guardSearchKnowledgeSynthesis("可以把 max-model-len 调小来省显存 [[ext-vllm-oom-001]]。")
-		assert.NotContains(t, got, "[[")
-		assert.NotEqual(t, ragNoEvidenceReply, got)
-		assert.Empty(t, *traces)
-	})
-
-	t.Run("inert when neither global validator nor agent-loop flag set", func(t *testing.T) {
-		eng, traces := newEng()
-		eng.knowledgeQAAgentLoopThisTurn = false // both off now
-		ans := "可以把 max-model-len 调小来省显存。"
-		assert.Equal(t, ans, eng.guardSearchKnowledgeSynthesis(ans), "neither gate on => uncited answer passes (byte-identical)")
-		assert.Empty(t, *traces)
-	})
+	visible := strings.Join(joined, "\n")
+	assert.Contains(t, visible, "Windows 终端里复制命令后怎么操作？")
+	assert.Contains(t, visible, "使用 Ctrl+Shift+V 粘贴")
+	assert.Contains(t, visible, "粘贴呢")
+	assert.Contains(t, visible, "完整对话")
+	assert.Contains(t, visible, "可以直接回答")
+	assert.Contains(t, visible, "需要新事实")
+	assert.Contains(t, visible, "脱离上文")
+	assert.NotEqual(t, ragNoEvidenceReply, reply)
 }
 
-// TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis proves the cite-retry
-// parity: when the agent-loop synthesis would be refused for lack of a valid
-// [[chunk_id]] (flash omitted it), the engine re-prompts once and, if the retry cites,
-// keeps the substantive answer instead of refusing — exactly what the terminal route's
-// answerWithRetrievedEvidence retry does. Active turn-scoped with the global validator off.
-func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
+// When prior conversation does not contain the missing fact, the same agent
+// elects to search and owns the standalone query. The previous answer can
+// resolve the query, but it never becomes retrieval evidence.
+func TestKnowledgeQAAgentLoop_AgentFormulatesQueryWhenConversationIsInsufficient(t *testing.T) {
+	chunk := knowledge.KBChunk{
+		ChunkID:    "terminal-paste-001",
+		KBVersion:  "kb.v1",
+		SourceType: "runbook",
+		Title:      "Windows 终端粘贴",
+		Content:    "在 Windows Terminal 中可以使用 Ctrl+Shift+V 粘贴。",
+	}
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:   true,
+		KBVersion: "kb.v1",
+		Hits:      []knowledge.KBChunk{chunk},
+		HitItems:  []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	resolved := "Windows Terminal 中如何粘贴文本"
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{{
+			ID:       "call-sk",
+			Type:     openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"` + resolved + `"}`},
+		}}},
+		{Content: "在 Windows Terminal 中可使用 Ctrl+Shift+V 粘贴 [[terminal-paste-001]]。"},
+		{Content: `{"supported":true,"claims":[{"answer_quote":"在 Windows Terminal 中可使用 Ctrl+Shift+V 粘贴","chunk_id":"terminal-paste-001","evidence_quote":"在 Windows Terminal 中可以使用 Ctrl+Shift+V 粘贴"}],"unsupported":[]}`},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Windows 终端里复制命令后怎么操作？"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "请回到终端继续操作。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "粘贴呢", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "Ctrl+Shift+V")
+	require.Len(t, retriever.calls, 1)
+	assert.Equal(t, resolved, retriever.calls[0].question)
+	assert.Equal(t, resolved, eng.resolvedKnowledgeQuestionThisTurn)
+	assert.Equal(t, resolved, eng.searchKnowledgeLedgerThisTurn.Query)
+	require.NotEmpty(t, mock.calls)
+	assert.NotNil(t, mock.calls[0].ToolChoice, "without verified prior provenance the first search remains mandatory")
+
+	var searchTool *openai.FunctionDefinition
+	for _, tool := range mock.calls[0].Tools {
+		if tool.Function != nil && tool.Function.Name == "SearchKnowledge" {
+			searchTool = tool.Function
+			break
+		}
+	}
+	require.NotNil(t, searchTool)
+	assert.Equal(t, "检索平台与第三方工具运维知识，返回带 chunk_id 的证据条目。", searchTool.Description)
+	parameters, ok := searchTool.Parameters.(map[string]any)
+	require.True(t, ok)
+	properties, ok := parameters["properties"].(map[string]any)
+	require.True(t, ok)
+	querySchema, ok := properties["query"].(map[string]any)
+	require.True(t, ok)
+	assert.Contains(t, querySchema["description"], "独立理解")
+	require.GreaterOrEqual(t, len(mock.calls), 3)
+	verifierPayload := mock.calls[2].Messages[1].Content
+	assert.NotContains(t, verifierPayload, "请回到终端继续操作",
+		"the previous assistant answer may resolve the query but must never become retrieval evidence")
+	assert.Contains(t, verifierPayload, `"resolved_question":"`+resolved+`"`)
+}
+
+// An uncited answer is accepted when the semantic verifier proves every claim.
+// Citation punctuation is no longer the recovery target.
+func TestKnowledgeQAAgentLoop_SemanticGateAcceptsUncitedGroundedSynthesis(t *testing.T) {
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
@@ -255,8 +243,8 @@ func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction,
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
-		{Content: "停止的按量实例的磁盘仍会计费。"},                     // uncited -> guard would refuse
-		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"}, // retry cites -> recovered
+		{Content: "停止的按量实例的磁盘仍会计费。"},         // uncited, but semantically grounded
+		knowledgeQAAgentLoopBillingVerdict(), // the unified semantic gate accepts it
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -265,21 +253,15 @@ func TestKnowledgeQAAgentLoop_CiteRetryRecoversUncitedSynthesis(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 	require.NoError(t, err)
-	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费", "cite-retry must recover the substantive answer")
-	assert.NotContains(t, reply, "[[", "recovered answer must have markers stripped")
-	assert.NotEqual(t, ragNoEvidenceReply, reply, "a retry that cites must NOT leave a refusal")
-	assert.GreaterOrEqual(t, len(mock.calls), 3, "expected tool-call + uncited synthesis + cite-retry")
+	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费")
+	assert.NotContains(t, reply, "[[", "display answer must have markers stripped")
+	assert.NotEqual(t, ragNoEvidenceReply, reply)
+	assert.GreaterOrEqual(t, len(mock.calls), 3, "expected tool-call + uncited synthesis + semantic verification")
 }
 
-// TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal proves the retry is
-// bounded to ONE attempt: if the re-prompt still fails to cite, the refusal stands
-// (no infinite retry, fail-safe).
-func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
+// A failed semantic verdict gets at most one proof-carrying repair. If repair
+// also fails, the reply states the real failure instead of claiming no evidence.
+func TestKnowledgeQAAgentLoop_FailedSemanticRepairKeepsHonestRefusal(t *testing.T) {
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
@@ -291,8 +273,9 @@ func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction,
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
-		{Content: "停止的按量实例的磁盘仍会计费。"}, // uncited
-		{Content: "停止的按量实例的磁盘仍会计费。"}, // retry STILL uncited -> refusal stands
+		{Content: "停止的按量实例的磁盘仍会计费。"},
+		{Content: `{"supported":false,"claims":[],"unsupported":["无法确认"]}`},
+		{Content: `{"answer":"","supported":false,"claims":[],"unsupported":["证据不足"]}`},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -301,7 +284,7 @@ func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "why do stopped instances still bill", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, ragNoEvidenceReply, reply, "a retry that still won't cite keeps the refusal")
+	assert.Equal(t, ragUngroundableReply, reply, "evidence existed, so the refusal must not falsely claim no coverage")
 }
 
 // TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire proves the forced-hop retry:
@@ -310,11 +293,6 @@ func TestKnowledgeQAAgentLoop_CiteRetryStillUncited_KeepsRefusal(t *testing.T) {
 // fires SearchKnowledge and the turn proceeds to a grounded answer instead of the
 // round-0 cited-gate refusal.
 func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
 
 	chunk := knowledgeQAAgentLoopBillingChunk()
 	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
@@ -328,6 +306,7 @@ func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
 		{ToolCalls: []openai.ToolCall{{ID: "c1", Type: openai.ToolTypeFunction, // forced-hop retry fires
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"billing"}`}}}},
 		{Content: "停止的按量实例的磁盘仍会计费 [[faq-billing-001]]。"}, // round1 cited
+		knowledgeQAAgentLoopBillingVerdict(),
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
@@ -341,6 +320,51 @@ func TestKnowledgeQAAgentLoop_ForcedHopRetryRecoversMisfire(t *testing.T) {
 	assert.Contains(t, reply, "停止的按量实例的磁盘仍会计费")
 	assert.NotEqual(t, ragNoEvidenceReply, reply)
 	assert.GreaterOrEqual(t, len(mock.calls), 3, "round0 misfire + forced-hop retry + final synthesis")
+}
+
+// A prior turn makes retrieval optional, but it does not let the model claim
+// that the KB has no answer without checking. That negative claim triggers one
+// forced search; a substantive context answer would have been returned directly.
+func TestKnowledgeQAAgentLoop_ContextAwareUnsearchedRefusalTriggersOneSearch(t *testing.T) {
+	chunk := knowledgeQAAgentLoopBillingChunk()
+	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true, KBVersion: "kb.v1",
+		Hits:     []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{Content: ragNoEvidenceReply},
+		{ToolCalls: []openai.ToolCall{{ID: "search", Type: openai.ToolTypeFunction,
+			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"stopped instance disk billing"}`}}}},
+		{Content: "停止的按量实例的磁盘仍会计费。"},
+		knowledgeQAAgentLoopBillingVerdict(),
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.InitWithContext("test user")
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+		Question: "按量实例关机后还收费吗？",
+		Answer:   "CPU 和 GPU 会停止计费；其他保留资源需另行确认。",
+		Evidence: knowledge.EvidenceLedger{Query: "按量实例关机后还收费吗？", Items: []knowledge.EvidenceItem{{
+			ChunkID: "prior-billing-001", Title: "关机计费", Snippet: "关机后 CPU 和 GPU 停止计费，保留资源另行计费。",
+		}}},
+	}}}, 1)
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "按量实例关机后还收费吗？"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "CPU 和 GPU 会停止计费；其他保留资源需另行确认。"},
+	)
+	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "磁盘呢？", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "磁盘仍会计费")
+	require.Len(t, retriever.calls, 1)
+	require.GreaterOrEqual(t, len(mock.calls), 4)
+	assert.Nil(t, mock.calls[0].ToolChoice, "prior conversation makes the initial decision agentic")
+	forced, ok := mock.calls[1].ToolChoice.(openai.ToolChoice)
+	require.True(t, ok, "an unsearched no-coverage claim must trigger a forced check")
+	assert.Equal(t, "SearchKnowledge", forced.Function.Name)
 }
 
 // TestToolListContainsFunction unit-tests the 400-trap helper: present, absent, and
@@ -381,11 +405,6 @@ func TestToolListWithoutFunction(t *testing.T) {
 // "请简化问题"). WHY it matters: an uncovered question must yield a fast honest
 // "no specific docs", never an opaque token-exhaustion message.
 func TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers(t *testing.T) {
-	SetKnowledgeQAAgentLoopEnabled(true)
-	defer SetKnowledgeQAAgentLoopEnabled(false)
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-	SetGroundedAnswerValidatorEnabled(false)
 
 	// Weak hit (score 0.1 < weakEvidenceSemanticThreshold 0.5 on qwen3_rrf) → dropped
 	// to an empty ledger, exactly like a corpus-gap query. One scripted result; the
@@ -436,7 +455,8 @@ func TestKnowledgeQAAgentLoop_SearchCapWithdrawsToolAndAnswers(t *testing.T) {
 	}
 	assert.True(t, foundNote, "the honest-answer nudge must be injected when the tool is withdrawn")
 
-	// The turn settles on the final answer, NOT the token-budget refusal.
-	assert.Equal(t, finalAnswer, reply)
+	// With an empty evidence ledger the final answer cannot be certified, even if
+	// the model writes a plausible general fallback.
+	assert.Equal(t, ragNoEvidenceReply, reply)
 	assert.NotEqual(t, tokenBudgetExceededMessage, reply, "capped thrash must not exhaust the token budget")
 }

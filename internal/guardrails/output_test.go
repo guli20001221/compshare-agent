@@ -209,3 +209,56 @@ func TestRedactOutputLeak_Idempotent(t *testing.T) {
 func TestRedactOutputLeak_Empty(t *testing.T) {
 	assert.Equal(t, "", RedactOutputLeak(""))
 }
+
+func TestRedactCredentials_CoversDurableEnvelopeFormatsWithoutRemovingContext(t *testing.T) {
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb250ZXh0LXVzZXIifQ.signaturevalue123456"
+	pem := "-----BEGIN PRIVATE KEY-----\nabc123secret\n-----END PRIVATE KEY-----"
+	cases := []struct {
+		name   string
+		input  string
+		secret string
+	}{
+		{"json access key", `{"access_key":"AKIAIOSFODNN7EXAMPLE"}`, "AKIAIOSFODNN7EXAMPLE"},
+		{"yaml secret", "secret_key: wJalrXUtnFEMI/K7MDENGbPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI"},
+		{"env api key", "API_KEY=" + "sk-envelope-" + "secret-123456", "sk-envelope-" + "secret-123456"},
+		{"http bearer", "Authorization: Bearer " + "bearer-" + "secret-1234567890", "bearer-" + "secret-1234567890"},
+		{"generic token", "token=token-secret-1234567890", "token-secret-1234567890"},
+		{"security token", "SecurityToken: security-secret-123", "security-secret-123"},
+		{"refresh token", "refresh_token=refresh-secret-123", "refresh-secret-123"},
+		{"password", "password: " + "short-" + "password", "short-" + "password"},
+		{"raw jwt", "凭据 " + jwt, jwt},
+		{"pem", pem, "abc123secret"},
+		{"known aws prefix", "AKIA1234567890ABCDEF", "AKIA1234567890ABCDEF"},
+		{"known github prefix", "ghp_1234567890abcdefghijklmnop", "ghp_1234567890abcdefghijklmnop"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RedactCredentials(tc.input)
+			assert.NotContains(t, got, tc.secret)
+			assert.Contains(t, got, "[已脱敏:")
+			assert.Equal(t, got, RedactCredentials(got), "credential redaction must be idempotent")
+		})
+	}
+
+	semantic := "联系 operator@example.com，排查 10.0.0.8，项目 project-live，实例 uhost-1，地域 cn-bj2"
+	assert.Equal(t, semantic, RedactCredentials(semantic))
+}
+
+func TestContainsCredentialUsesTheSameRulesWithoutFalseContextMatches(t *testing.T) {
+	for _, input := range []string{
+		"Authorization: " + "Bearer " + "bearer-" + "secret-1234567890",
+		"pass" + "word: short-" + "password",
+		"AKIA1234567890ABCDEF",
+		"-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
+	} {
+		assert.Truef(t, ContainsCredential(input), "credential should be detected: %q", input)
+	}
+	for _, input := range []string{
+		"实例 uhost-abc123 在 cn-wlcb-01",
+		"project-live 的 4090 价格是多少",
+		"联系 user@example.com，来源 10.0.0.8",
+		"如果 token 过期请重新登录",
+	} {
+		assert.Falsef(t, ContainsCredential(input), "ordinary context must survive: %q", input)
+	}
+}

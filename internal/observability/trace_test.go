@@ -137,13 +137,13 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV05(t *testing.T) {
+func TestSchemaVersionIsV07(t *testing.T) {
 	// Bumped v0.4 → v0.5 when the outcome-attribution axes (terminated_by /
 	// abort_cause / error_class / resolution + react_rounds / budget_hit) were
 	// added (omitempty, so the bump is the only byte change for a record that
 	// carries none of them).
-	if SchemaVersion != "trace.v0.5" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.5", SchemaVersion)
+	if SchemaVersion != "trace.v0.7" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.7", SchemaVersion)
 	}
 }
 

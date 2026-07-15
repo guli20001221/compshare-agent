@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -177,14 +178,55 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 				}
 			}
 			for _, text := range []string{
-				"平台知识类问题必须通过知识库/RAG资料回答",
-				"不要凭内置 FAQ 或模型记忆补全平台规则",
+				"先阅读当前可见的完整对话和已验证记忆",
+				"不得添加对话、知识证据或工具结果中不存在的条件和平台规则",
 			} {
 				if !strings.Contains(system, text) {
 					t.Fatalf("system prompt should contain knowledge-source boundary %q:\n%s", text, system)
 				}
 			}
 		})
+	}
+}
+
+func TestRenderPromptSectionsRejectsDuplicatePolicyID(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("duplicate section id must fail prompt construction")
+		}
+	}()
+	renderPromptSections([]PromptSection{
+		{ID: "knowledge_turn_policy", Text: "first"},
+		{ID: "knowledge_turn_policy", Text: "second"},
+	})
+}
+
+func TestKnowledgeTurnPolicyAppearsExactlyOnce(t *testing.T) {
+	for _, mutating := range []bool{true, false} {
+		got := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: mutating})
+		if count := strings.Count(got, "## 知识来源与检索规则"); count != 1 {
+			t.Fatalf("mutating=%v: knowledge policy count=%d, want 1", mutating, count)
+		}
+	}
+}
+
+func TestBuildSystemWithOptionsAndTraceReportsExactUniqueSectionIDs(t *testing.T) {
+	text, ids := BuildSystemWithOptionsAndTrace("sensitive user context", BuildOptions{MutatingToolsEnabled: false})
+	if !strings.Contains(text, "sensitive user context") {
+		t.Fatal("rendered prompt lost user context")
+	}
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		if strings.Contains(id, "sensitive") {
+			t.Fatalf("section metadata leaked prompt content: %q", id)
+		}
+		if _, ok := seen[id]; ok {
+			t.Fatalf("duplicate section id in trace metadata: %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if _, ok := seen["knowledge_turn_policy"]; !ok {
+		t.Fatalf("knowledge policy section absent from metadata: %v", ids)
 	}
 }
 
@@ -255,6 +297,11 @@ func TestFormatToolResult_SmallResult(t *testing.T) {
 	}
 }
 
+// TestFormatToolResult_ValidJSON was an empty gate: it is named for parseability
+// and its comment says "should produce parseable output", but it only asserted
+// the ABSENCE of the string "...(truncated)" — it never called json.Unmarshal.
+// A byte-cut fragment satisfied it, which is why the hard-cut branch could ship.
+// It now asserts the property it is named for.
 func TestFormatToolResult_ValidJSON(t *testing.T) {
 	// Even large results should produce parseable output
 	items := make([]any, 50)
@@ -264,6 +311,11 @@ func TestFormatToolResult_ValidJSON(t *testing.T) {
 	large := map[string]any{"list": items, "count": 50}
 	result := FormatToolResult(large)
 
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("FormatToolResult must return parseable JSON, got %v\n%s", err, result)
+	}
+
 	// Verify it doesn't cut mid-string
 	if strings.Contains(result, "...(truncated)") {
 		t.Error("should not use old-style truncation")
@@ -271,11 +323,14 @@ func TestFormatToolResult_ValidJSON(t *testing.T) {
 }
 
 // TestFormatToolResult_GiantScalarStaysBounded guards the rune cap for inputs
-// that array-shrink cannot help: a single huge scalar field. truncateMapArrays
-// only trims top-level []any, so without the post-shrink length re-check the
-// result would be returned unbounded — and an oversized tool result silently
-// masquerades as the per-turn token-budget refusal, which is why the cap must
-// hold here, not just for array-heavy results.
+// that array-shrink cannot help: a single huge scalar field. An oversized tool
+// result silently masquerades as the per-turn token-budget refusal, which is why
+// the cap must hold here, not just for array-heavy results.
+//
+// Bounded is necessary but was never sufficient — the old code met this bound by
+// cutting bytes, which is what produced the invalid JSON in the first place.
+// TestFormatToolResult_GiantScalarStaysParseable (tool_result_truncation_test.go)
+// is the gate that says what the model actually needs.
 func TestFormatToolResult_GiantScalarStaysBounded(t *testing.T) {
 	large := map[string]any{"log": strings.Repeat("x", 10000)}
 	result := FormatToolResult(large)
@@ -285,9 +340,10 @@ func TestFormatToolResult_GiantScalarStaysBounded(t *testing.T) {
 }
 
 // TestFormatToolResult_DeepNestedArrayStaysBounded guards the same cap for an
-// array buried one level below the top, which truncateMapArrays (one level
-// deep) does not reach. Without the length re-check the re-marshaled result
-// exceeds the cap unbounded.
+// array buried one level below the top. The shrink used to be one level deep and
+// could not reach this at all, so the result fell straight through to the
+// byte-cut; truncateArrays now recurses, so the elements are dropped and the
+// document stays whole.
 func TestFormatToolResult_DeepNestedArrayStaysBounded(t *testing.T) {
 	items := make([]any, 100)
 	for i := range items {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -129,6 +130,14 @@ func TestParsePersistedContext_MalformedJSON_ReturnsError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestParsePersistedContext_KnownEnvelopeWithCorruptAgentStateStillReturnsClientContext(t *testing.T) {
+	raw := json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","recent_facts":"not-an-array"},"client_context":{"page":"/gpu","filters":["running"]}}`)
+	pc, err := ParsePersistedContext(raw)
+	require.Error(t, err)
+	assert.JSONEq(t, `{"page":"/gpu","filters":["running"]}`, string(pc.ClientContext),
+		"a corrupt agent-owned field must not erase the independently owned client context")
+}
+
 // TestParsePersistedContext_LegacyShapesShareAgentKey guards against an
 // over-loose probe: a legacy client_context that happens to contain an
 // agent_session_state key — but without a recognized envelope shape —
@@ -216,9 +225,48 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","selected_instance_id":"uhost-1","selected_instance_source":"user","context_frame":{"version":1,"kind":"workflow_task","workflow":"CreateDiskWorkflow","slots":{"instance_id":"uhost-1"},"slot_sources":{"instance_id":"user"},"missing_slots":["size_gb"]}}}`)
 	pc, err = ParsePersistedContext(raw)
 	require.NoError(t, err)
-	assert.Equal(t, SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, SessionStateSchemaV4, pc.AgentSessionState.SchemaVersion)
 	assert.Equal(t, SelectedInstanceSourceUser, pc.AgentSessionState.SelectedInstanceSource)
 	assert.Equal(t, SelectedInstanceSourceUser, pc.AgentSessionState.ContextFrame.SlotSources["instance_id"])
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"5.0","task_snapshot":{"goal":"给训练机扩容","status":"active","missing_slots":["target_size_gb"]},"conversation_digest":{"narrative":"目标：给训练机扩容"}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV5, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, "给训练机扩容", pc.AgentSessionState.TaskSnapshot.Goal)
+	assert.Equal(t, []string{"target_size_gb"}, pc.AgentSessionState.TaskSnapshot.MissingSlots)
+	assert.Equal(t, "目标：给训练机扩容", pc.AgentSessionState.ConversationDigest.Narrative)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"6.0","verified_knowledge":[{"question":"终端怎么粘贴","answer":"使用 Ctrl+Shift+V","evidence":{"query":"终端怎么粘贴","items":[{"chunk_id":"terminal-paste-001","snippet":"使用 Ctrl+Shift+V 粘贴"}]},"verified_at_unix":1716530100}]}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV6, pc.AgentSessionState.SchemaVersion)
+	require.Len(t, pc.AgentSessionState.VerifiedKnowledge, 1)
+	assert.Equal(t, "terminal-paste-001", pc.AgentSessionState.VerifiedKnowledge[0].Evidence.Items[0].ChunkID)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"7.0","conversation_digest":{"decisions":["采用第二种方案"],"sources":{"decisions":[{"value":"采用第二种方案","pair_index":1,"quote":"第二种"}]},"excerpts":[{"user":"继续","assistant":"请确认实例"}],"summary_frontier":8}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV7, pc.AgentSessionState.SchemaVersion)
+	require.Len(t, pc.AgentSessionState.ConversationDigest.Sources.Decisions, 1)
+	assert.Equal(t, "第二种", pc.AgentSessionState.ConversationDigest.Sources.Decisions[0].Quote)
+	assert.Equal(t, int64(8), pc.AgentSessionState.ConversationDigest.SummaryFrontier)
+}
+
+func TestSessionState_VerifiedKnowledgeRoundTrip(t *testing.T) {
+	state := SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+		Question: "终端怎么粘贴",
+		Answer:   "使用 Ctrl+Shift+V",
+		Evidence: knowledge.EvidenceLedger{Query: "终端怎么粘贴", Items: []knowledge.EvidenceItem{{
+			ChunkID: "terminal-paste-001", Title: "终端粘贴", Snippet: "使用 Ctrl+Shift+V 粘贴",
+		}}},
+		VerifiedAtUnix: 1716530100,
+	}}}
+	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
+	require.NoError(t, err)
+	parsed, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, state, parsed.AgentSessionState)
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +482,7 @@ func TestSetSessionState_HigherVersionOverwrites(t *testing.T) {
 	assert.Equal(t, 4, ver)
 }
 
-func TestRecordLastIntentFromPlan_UnknownClearsPendingDeployModel(t *testing.T) {
+func TestRecordLastIntentFromPlan_UnknownPreservesPendingTask(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
@@ -446,10 +494,11 @@ func TestRecordLastIntentFromPlan_UnknownClearsPendingDeployModel(t *testing.T) 
 
 	state, _, _ := e.SessionStateSnapshot()
 	assert.Equal(t, string(intent.IntentDeployModel), state.LastIntent, "unknown must not replace LastIntent")
-	assert.Empty(t, state.PendingDeployModel, "unknown turns should break stale deploy clarification carry")
+	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel,
+		"an unknown route is a router failure, not evidence that the user abandoned the task")
 }
 
-func TestRecordLastIntentFromPlan_NonCreateTurnClearsContextFrame(t *testing.T) {
+func TestRecordLastIntentFromPlan_NonCreateTurnDoesNotOwnContextLifetime(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
@@ -467,10 +516,11 @@ func TestRecordLastIntentFromPlan_NonCreateTurnClearsContextFrame(t *testing.T) 
 	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentKnowledgeQA})
 
 	state, _, _ := e.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind, "unrelated turns must clear stale create/deploy carry")
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind,
+		"recording a topic must not silently double as a task-lifetime decision")
 }
 
-func TestRecordLastIntentFromPlan_StockTurnClearsContextFrameWhenNotContinued(t *testing.T) {
+func TestRecordLastIntentFromPlan_StockTurnDoesNotClearWithoutDecision(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
@@ -488,7 +538,8 @@ func TestRecordLastIntentFromPlan_StockTurnClearsContextFrameWhenNotContinued(t 
 	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentStockAvailability})
 
 	state, _, _ := e.SessionStateSnapshot()
-	assert.Empty(t, state.ContextFrame.Kind, "stock questions clear stale create frames unless the continuation resolver handled them first")
+	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind,
+		"only the shared resolver's New/Clear decision may retire the task")
 }
 
 // TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the

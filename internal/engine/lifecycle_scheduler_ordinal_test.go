@@ -15,8 +15,6 @@ import (
 // candidate list — a capability the pre-existing deterministic path (explicit
 // ID / unique name / pronoun-via-SelectedInstanceID) lacked. No model call.
 func TestDirectLifecycleResolvesOrdinalFromDisplayedList(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var stoppedID string
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -52,8 +50,6 @@ func TestDirectLifecycleResolvesOrdinalFromDisplayedList(t *testing.T) {
 // TestDirectStopSchedulerResolvesOrdinalFromDisplayedList verifies scheduler
 // gains the same deterministic ordinal resolution.
 func TestDirectStopSchedulerResolvesOrdinalFromDisplayedList(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	var scheduledID string
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -95,8 +91,6 @@ func TestDirectStopSchedulerResolvesOrdinalFromDisplayedList(t *testing.T) {
 // user text — never a free-registry name — so a bare "关机" cannot bind any
 // instance and SelectedInstanceID stays clean.
 func TestDirectLifecycleOrdinalNeverPoisonsTrustGuard(t *testing.T) {
-	SetContextContinuationEnabled(true)
-	t.Cleanup(func() { SetContextContinuationEnabled(false) })
 
 	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		return map[string]any{"UHostSet": []any{
@@ -120,31 +114,4 @@ func TestDirectLifecycleOrdinalNeverPoisonsTrustGuard(t *testing.T) {
 	assert.False(t, handled, "bare 关机 with a pending list must not deterministically dispatch a stop")
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Empty(t, state.SelectedInstanceID, "no instance may be recorded from an unresolved bare 关机")
-}
-
-// TestDirectLifecycleFlagOffSkipsOrdinalPath verifies flag-off rollback parity:
-// with the continuation flag off, the ordinal path is skipped entirely and only
-// the pre-existing deterministic paths run.
-func TestDirectLifecycleFlagOffSkipsOrdinalPath(t *testing.T) {
-	require.False(t, ContextContinuationEnabled())
-
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		return map[string]any{"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01"},
-			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running", "Zone": "cn-wlcb-01"},
-		}}, nil
-	}}
-	eng := NewWithDeps(&mockLLM{}, exec, okConfirm)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.userTurn = 3
-	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
-		testInstance("uhost-a", "alpha", "Running"),
-		testInstance("uhost-b", "beta", "Running"),
-	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
-	eng.lastUserMsg = "关机第2台"
-
-	// Flag off: "关机第2台" is not resolvable by the pre-existing deterministic
-	// paths (no explicit ID / unique name), so it must fall through unhandled.
-	_, handled := eng.tryDirectLifecycleFromUserText(context.Background(), "关机第2台", noopStep)
-	assert.False(t, handled, "flag-off must not resolve ordinals (rollback parity)")
 }

@@ -17,6 +17,7 @@ func TestHandlerResultStatesAreDistinct(t *testing.T) {
 	assert.Equal(t, HandlerStatusHandled, handled.Status)
 	assert.Equal(t, HandlerStatusFallbackBeforeTool, fallback.Status)
 	assert.Equal(t, HandlerStatusFailureAfterTool, failure.Status)
+	assert.Equal(t, HandlerFailureGenericRead, failure.FailureClass)
 	assert.Equal(t, FallbackUnresolvedTarget, fallback.FallbackReason)
 	assert.Equal(t, RouteStatusFailureAfterTool, failure.RouteStatus)
 	assert.Contains(t, failure.Reply, FriendlyToolFailureReply)

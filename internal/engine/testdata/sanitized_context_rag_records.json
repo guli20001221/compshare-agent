@@ -1,0 +1,52 @@
+[
+  {
+    "name": "short_followup_paste",
+    "user_message": "粘贴呢",
+    "resolved_question": "在终端复制内容后应该如何粘贴",
+    "chunk_id": "sanitized-terminal-paste-001",
+    "evidence": "在常见 Linux 终端中，粘贴通常使用 Ctrl+Shift+V，也可以使用鼠标右键粘贴。",
+    "answer": "在常见 Linux 终端里，可以按 Ctrl+Shift+V 粘贴。",
+    "answer_quote": "在常见 Linux 终端里，可以按 Ctrl+Shift+V 粘贴",
+    "evidence_quote": "粘贴通常使用 Ctrl+Shift+V"
+  },
+  {
+    "name": "ubuntu_image_difference",
+    "user_message": "你们提供的镜像，Ubuntu和Ubuntu-NVIDIA，有什么区别吗",
+    "resolved_question": "平台 Ubuntu 与 Ubuntu-NVIDIA 镜像有什么区别",
+    "chunk_id": "sanitized-image-ubuntu-nvidia-001",
+    "evidence": "Ubuntu-NVIDIA 镜像预装了 NVIDIA 驱动和 CUDA 环境；普通 Ubuntu 镜像不预装这些 GPU 组件。",
+    "answer": "Ubuntu-NVIDIA 预装 NVIDIA 驱动和 CUDA，普通 Ubuntu 不预装这些 GPU 组件。",
+    "answer_quote": "Ubuntu-NVIDIA 预装 NVIDIA 驱动和 CUDA，普通 Ubuntu 不预装这些 GPU 组件",
+    "evidence_quote": "Ubuntu-NVIDIA 镜像预装了 NVIDIA 驱动和 CUDA 环境；普通 Ubuntu 镜像不预装这些 GPU 组件"
+  },
+  {
+    "name": "vscode_remote_ssh",
+    "user_message": "我现在是使用的vscoderomote-ssh连接的服务器",
+    "resolved_question": "VS Code Remote-SSH 连接异常应该如何排查",
+    "chunk_id": "ext-vscode-remote-server-001",
+    "evidence": "先确认普通 ssh 能登录，再排查 VS Code Server。Remote Server 状态异常时，可执行 Kill VS Code Server；下载 Server 很慢时，先确认网络、代理和磁盘空间。",
+    "answer": "先确认普通 ssh 能登录；如果 Server 下载很慢，再检查网络、代理和磁盘空间。",
+    "answer_quote": "先确认普通 ssh 能登录；如果 Server 下载很慢，再检查网络、代理和磁盘空间",
+    "evidence_quote": "先确认普通 ssh 能登录，再排查 VS Code Server。Remote Server 状态异常时，可执行 Kill VS Code Server；下载 Server 很慢时，先确认网络、代理和磁盘空间"
+  },
+  {
+    "name": "refund_rules",
+    "user_message": "可以退款吗",
+    "resolved_question": "平台资源是否支持退款以及在哪里查看",
+    "chunk_id": "faq-billing-refund-001",
+    "evidence": "退款是否支持、可退金额和处理周期取决于订单类型、资源状态和平台规则。请在控制台财务中心或订单页面查看可退款项。",
+    "answer": "是否支持退款取决于订单类型和资源状态，请到财务中心或订单页面查看可退款项。",
+    "answer_quote": "是否支持退款取决于订单类型和资源状态，请到财务中心或订单页面查看可退款项",
+    "evidence_quote": "退款是否支持、可退金额和处理周期取决于订单类型、资源状态和平台规则。请在控制台财务中心或订单页面查看可退款项"
+  },
+  {
+    "name": "git_download_slow",
+    "user_message": "git 拉取项目很慢，十分钟都没拉下来",
+    "resolved_question": "实例访问 GitHub 拉取项目很慢如何处理",
+    "chunk_id": "sanitized-network-accelerator-001",
+    "evidence": "网络加速用于改善代码仓库下载缓慢和 GitHub 访问卡顿；容器实例自动开启，虚机实例需要按说明配置 DNS。",
+    "answer": "可以使用网络加速改善 GitHub 拉取缓慢；如果是虚机，还需要按说明配置 DNS。",
+    "answer_quote": "可以使用网络加速改善 GitHub 拉取缓慢；如果是虚机，还需要按说明配置 DNS",
+    "evidence_quote": "网络加速用于改善代码仓库下载缓慢和 GitHub 访问卡顿；容器实例自动开启，虚机实例需要按说明配置 DNS"
+  }
+]

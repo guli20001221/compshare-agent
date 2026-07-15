@@ -196,6 +196,19 @@ func TestParseContextDecisionAnswerFollowupKeepsOnlySafeSlotUpdates(t *testing.T
 	assert.NotContains(t, decision.SlotUpdates, "password")
 }
 
+func TestParseContextDecisionUnknownOrEmptyPreservesTask(t *testing.T) {
+	for _, raw := range []string{
+		`{"decision":""}`,
+		`{"decision":"unexpected_schema_value"}`,
+	} {
+		decision, err := parseContextDecision(raw)
+		require.NoError(t, err)
+		require.NotNil(t, decision)
+		assert.Equal(t, ContextDecisionClarify, decision.Decision)
+		assert.Equal(t, []string{"task:preserve", "reply:clarify"}, contextDecisionStateDelta(decision))
+	}
+}
+
 func TestContextDecisionToCreateContinuationUsesOnlyContinueTask(t *testing.T) {
 	cont := contextDecisionToContinuation(ContextDecision{
 		Decision:    ContextDecisionContinueTask,
@@ -236,8 +249,8 @@ func TestBuildContextDecisionPromptHasImperativeSafetyRules(t *testing.T) {
 		"不要生成最终 API 参数",
 		"写操作必须交给后端确认卡",
 		"不确定时输出 clarify",
-		"普通费用续问 target=billing，billing_topic=cost",
-		"明确询问退费/退款/退订估算时才填写 billing_topic=refund",
+		"普通费用追问使用 billing_topic=cost",
+		"只有明确要求退费估算才使用 billing_topic=refund",
 	} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Fatalf("system prompt missing %q:\n%s", want, systemPrompt)

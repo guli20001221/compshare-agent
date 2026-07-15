@@ -1,17 +1,69 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+func TestConversationMemoryCompactorAcceptsOnlySourcedSemanticDelta(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{
+  "goals":[],
+  "constraints":[{"value":"区域保持上海","pair_index":1,"quote":"区域还是上海"}],
+  "decisions":[{"value":"采用第二种方案","pair_index":1,"quote":"第二种"}],
+  "unresolved_tasks":[]
+}`}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	messages := []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "比较一下两个方案"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "第一种省钱，第二种更稳定"},
+		{Role: openai.ChatMessageRoleUser, Content: "第二种，区域还是上海"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "好的，后续按这个配置继续"},
+	}
+
+	eng.compactEvictedConversation(context.Background(), messages, time.Unix(3_000, 0))
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Contains(t, state.ConversationDigest.Decisions, "采用第二种方案")
+	assert.Contains(t, state.ConversationDigest.Constraints, "区域保持上海")
+	require.Len(t, state.ConversationDigest.Sources.Decisions, 1)
+	assert.Equal(t, "第二种", state.ConversationDigest.Sources.Decisions[0].Quote)
+	assert.Empty(t, state.ConversationDigest.Excerpts)
+	assert.Equal(t, int64(2), state.ConversationDigest.SummaryFrontier)
+	require.Len(t, mock.calls, 1)
+}
+
+func TestConversationMemoryCompactorInvalidSourceFallsBackToVerbatimExcerpt(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{
+  "goals":[],"constraints":[],
+  "decisions":[{"value":"擅自猜出的决定","pair_index":0,"quote":"原文中不存在"}],
+  "unresolved_tasks":[]
+}`}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	messages := []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "同配置再看上海"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "我会继续比较"},
+	}
+
+	eng.compactEvictedConversation(context.Background(), messages, time.Unix(3_001, 0))
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.ConversationDigest.Decisions)
+	require.Len(t, state.ConversationDigest.Excerpts, 1)
+	assert.Equal(t, "同配置再看上海", state.ConversationDigest.Excerpts[0].User)
+	assert.Equal(t, int64(1), state.ConversationDigest.SummaryFrontier)
+}
 
 func TestBuildReActHistorySummary_KeepsStructuredSignalsNotFactPayload(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
@@ -46,7 +98,9 @@ func TestBuildReActHistorySummary_KeepsStructuredSignalsNotFactPayload(t *testin
 	assert.Contains(t, got, "近期事实引用：uhost-123 monitor_sample")
 	assert.NotContains(t, got, "88")
 	assert.NotContains(t, got, "gpu_usage")
-	assert.NotContains(t, got, "uhost-expired")
+	assert.Contains(t, got, "历史事实主题：uhost-expired instance_state")
+	assert.NotContains(t, got, "Running",
+		"expired observations may retain topic and time, never their old value")
 }
 
 func TestTrimHistoryCompaction_OffKeepsCountTrimBehavior(t *testing.T) {

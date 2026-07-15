@@ -29,10 +29,10 @@ func TestIsImageUnavailableMessage(t *testing.T) {
 // different kind of image. The already-failed image is excluded.
 func TestRankCreateImageCandidates(t *testing.T) {
 	imageSet := []any{
-		map[string]any{"CompShareImageId": "img-bad", "Name": "PyTorch:24.04-py3"},  // the failed one
+		map[string]any{"CompShareImageId": "img-bad", "Name": "PyTorch:24.04-py3"},       // the failed one
 		map[string]any{"CompShareImageId": "img-cuda", "Name": "cuda128_torch291_py312"}, // shares "torch"
-		map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},     // unrelated → dropped
-		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.1 CUDA 12.1"}, // contains keyword
+		map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},         // unrelated → dropped
+		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.1 CUDA 12.1"},    // contains keyword
 	}
 	got := rankCreateImageCandidates(imageSet, "PyTorch", "img-bad")
 

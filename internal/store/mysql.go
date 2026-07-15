@@ -51,15 +51,36 @@ func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 // deploy contract).
 func VerifySchema(ctx context.Context, db *sql.DB) error {
 	queries := map[string]string{
-		"sessions":                 "SELECT 1 FROM sessions LIMIT 1",
-		"sessions.context_version": "SELECT context_version FROM sessions LIMIT 1",
-		"messages":                 "SELECT 1 FROM messages LIMIT 1",
-		"message_feedback":         "SELECT 1 FROM message_feedback LIMIT 1",
+		"sessions":                 "SELECT 1 FROM sessions LIMIT 0",
+		"sessions.context_version": "SELECT context_version FROM sessions LIMIT 0",
+		"messages":                 "SELECT 1 FROM messages LIMIT 0",
+		"messages.turn_protocol":   "SELECT turn_id, turn_role FROM messages LIMIT 0",
+		"message_feedback":         "SELECT 1 FROM message_feedback LIMIT 0",
+		"chat_turns.contract": `SELECT id, session_id, top_organization_id, organization_id,
+client_turn_id, turn_seq, request_hash, status, user_message_id, assistant_message_id,
+base_context_version, committed_context_version, committed_lease_epoch, commit_hash,
+error_code, executor_id, lease_epoch, has_external_action, execution_envelope,
+retry_count, next_retry_at, next_event_seq, created_at,
+updated_at, started_at, finished_at, committed_at FROM chat_turns LIMIT 0`,
+		"conversation_leases.contract": `SELECT session_id, top_organization_id, organization_id,
+active_turn_id, holder_id, lease_epoch, lease_until, created_at, updated_at
+FROM conversation_leases LIMIT 0`,
+		"turn_actions.contract": `SELECT turn_id, action_index, lease_epoch, action_name, args_hash,
+execution_token, in_flight, upstream_request_id, status, result, error_code, context_hint, created_at, updated_at
+FROM turn_actions LIMIT 0`,
+		"chat_turn_events.contract": `SELECT turn_id, seq, lease_epoch, event_type, payload,
+provisional, created_at FROM chat_turn_events LIMIT 0`,
+		"turn_interactions.contract": `SELECT id, turn_id, interaction_key, kind, request_hash,
+request_payload, lease_epoch, expires_at, status, resolution_hash, response_payload,
+created_at, resolved_at, interaction_generation FROM turn_interactions LIMIT 0`,
 	}
 	for target, q := range queries {
-		var v int
-		if err := db.QueryRowContext(ctx, q).Scan(&v); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
 			return fmt.Errorf("verify schema %s: %w", target, err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("verify schema %s close: %w", target, err)
 		}
 	}
 	return nil

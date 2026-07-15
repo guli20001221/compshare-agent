@@ -7,13 +7,10 @@ func IntentToolSubset(i Intent) []string {
 	switch i {
 	case IntentDiagnosis, IntentVagueFailure:
 		return []string{
-			// SearchKnowledge (agentic-RAG, P3/P4a) is a CANDIDATE diagnosis tool
-			// so the agent can retrieve prior tool/ops evidence BEFORE any
-			// Diagnose* tool. It is emit-gated at the visibility layer
-			// (tools.VisibleRegistry drops it unless COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE
-			// is on), so the EMITTED diagnosis subset is byte-identical to before
-			// when the flag is off. Listing it here is inert until the flag is on.
-			"SearchKnowledge",
+			// Generic diagnosis ReAct does not receive SearchKnowledge: its final
+			// prose mixes API results with KB facts and has no unified proof for
+			// both. Diagnosis skills that require KB evidence use the orchestrator's
+			// virtual SearchKnowledge path and validate structured diagnosis_claims.
 			"DiagnoseSSH",
 			"DiagnoseBilling",
 			"DescribeCompShareInstance",

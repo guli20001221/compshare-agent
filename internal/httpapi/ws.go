@@ -76,6 +76,13 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 	defer cancel()
 
 	writer := wsx.New(ctx, conn)
+	if h.turnCoordinator != nil {
+		// Durable mode has its own detachable subscription loop. Closing this
+		// socket only drops the observer; the coordinator owns execution and
+		// continues until it records a terminal result.
+		h.handleDurableWS(ctx, cancel, connBase, conn, writer)
+		return
+	}
 
 	// One chat turn per socket. The frontend opens a fresh WebSocket per
 	// chatStream call and closes it on done/error (service.js), and the gateway

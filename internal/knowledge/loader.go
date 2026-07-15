@@ -13,15 +13,15 @@ import (
 )
 
 const (
-	MaxQuestionPatterns        = 20
-	MaxQuestionPatternRunes    = 200
-	MaxKnowledgeContentRunes   = 4000
-	customerSafeACL            = "customer_safe"
-	confidenceHigh             = "high"
-	confidenceMedium           = "medium"
-	confidenceLow              = "low"
-	sourceTypeFAQ              = "faq"
-	sourceTypeRunbook          = "runbook"
+	MaxQuestionPatterns           = 20
+	MaxQuestionPatternRunes       = 200
+	MaxKnowledgeContentRunes      = 4000
+	customerSafeACL               = "customer_safe"
+	confidenceHigh                = "high"
+	confidenceMedium              = "medium"
+	confidenceLow                 = "low"
+	sourceTypeFAQ                 = "faq"
+	sourceTypeRunbook             = "runbook"
 	sourceOriginOfficial          = "official"
 	sourceOriginSupportCurated    = "support_curated"
 	sourceOriginExternalOfficial  = "external_official"
