@@ -177,7 +177,9 @@ func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKe
 
 func TestExecutionEnvelope_ShiAssignmentIsSealedButQuestionsRemainPlain(t *testing.T) {
 	key := bytes.Repeat([]byte{0x71}, 32)
-	for _, secret := range []string{"Aa12" + "3456!", "123" + "456", "!!!!!!!!", "中文秘密"} {
+	for _, secret := range []string{
+		"Aa12" + "3456!", "123" + "456", "!!!!!!!!", "中文秘密", "Abc?" + "1234", "Abc？" + "1234",
+	} {
 		t.Run(secret, func(t *testing.T) {
 			message := "重置密码是 " + secret
 			envelope, raw, err := freezeSubmitInputWithSecretKey(SubmitInput{
@@ -188,6 +190,12 @@ func TestExecutionEnvelope_ShiAssignmentIsSealedButQuestionsRemainPlain(t *testi
 			assert.NotContains(t, envelope.Message, secret)
 			assert.NotContains(t, string(raw), secret)
 			assert.NotEmpty(t, envelope.SealedSecrets)
+			restored, err := thawSubmitInputWithSecretKey(store.Turn{
+				Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+				SessionID: "session", ClientTurnID: "shi-assignment-" + secret, ExecutionEnvelope: raw,
+			}, key)
+			require.NoError(t, err)
+			assert.Equal(t, secret, restored.SecretInputs["Password"])
 			_, _, err = freezeSubmitInput(SubmitInput{
 				Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
 				SessionID: "session", ClientTurnID: "shi-without-key-" + secret, Message: message,
