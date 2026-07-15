@@ -1,0 +1,258 @@
+{
+  "version": 1,
+  "baseline_commit": "15f2cc38fb6b63a0affbf9197b7bab1e51b13e3c",
+  "pre_agent_exits": [
+    {
+      "id": "pre-security-block",
+      "path": "internal/engine/engine.go",
+      "symbol": "ChatWithOptions",
+      "needle": "enginePreBlock.Decide",
+      "category": "security",
+      "current_role": "模型前安全与支持策略阻断",
+      "target": "只保留真正安全和协议规则；支持类请求迁入 Agent capability",
+      "phase": "P6a"
+    },
+    {
+      "id": "pre-account-billing",
+      "path": "internal/engine/engine.go",
+      "symbol": "ChatWithOptions",
+      "needle": "tryBillingAccountUnsupportedBeforeResourceSelection",
+      "category": "business_direct",
+      "current_role": "资源选择前账号财务终止",
+      "target": "Agent 选择零写权限的支持能力",
+      "phase": "P6a"
+    },
+    {
+      "id": "pre-resource-selection",
+      "path": "internal/engine/engine.go",
+      "symbol": "ChatWithOptions",
+      "needle": "tryResumeResourceSelection",
+      "category": "confirmation",
+      "current_role": "候选资源选择状态机",
+      "target": "保留确定性选择协议并作为 Agent observation",
+      "phase": "P6a"
+    },
+    {
+      "id": "pre-direct-scheduler",
+      "path": "internal/engine/engine.go",
+      "symbol": "ChatWithOptions",
+      "needle": "tryDirectStopSchedulerFromUserText",
+      "category": "business_direct",
+      "current_role": "模型前定时关机识别与执行",
+      "target": "Agent ActionProposal -> Resolver -> Gate",
+      "phase": "P6b"
+    },
+    {
+      "id": "pre-direct-lifecycle",
+      "path": "internal/engine/engine.go",
+      "symbol": "ChatWithOptions",
+      "needle": "tryDirectLifecycleFromUserText",
+      "category": "business_direct",
+      "current_role": "模型前生命周期动作识别与执行",
+      "target": "Agent ActionProposal -> Resolver -> Gate",
+      "phase": "P6b"
+    },
+    {
+      "id": "pre-planner-dispatch",
+      "path": "internal/engine/engine.go",
+      "symbol": "ChatWithOptions",
+      "needle": "tryPlannerDispatch",
+      "category": "business_direct",
+      "current_role": "主 Agent 前的语义规划和业务分派",
+      "target": "中心 Agent Runtime",
+      "phase": "P6a"
+    },
+    {
+      "id": "planner-budget-terminal",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tokenBudgetExceeded",
+      "category": "quota",
+      "current_role": "Planner 消耗预算后直接终止",
+      "target": "统一 Runtime 预算策略",
+      "phase": "P1"
+    },
+    {
+      "id": "planner-diagnosis-clarify",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tryPlannerDiagnosisClarification",
+      "category": "parse_failure",
+      "current_role": "Planner 直接生成诊断澄清",
+      "target": "Agent 结合 AgentContext 澄清",
+      "phase": "P6a"
+    },
+    {
+      "id": "planner-account-billing",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tryBillingAccountUnsupportedDispatch",
+      "category": "business_direct",
+      "current_role": "Planner 账号财务硬终止",
+      "target": "Agent 支持能力",
+      "phase": "P6a"
+    },
+    {
+      "id": "planner-workflow-resume",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tryResumeWorkflowContextFrame",
+      "category": "business_direct",
+      "current_role": "旧工作流补参和续接",
+      "target": "Agent ActionProposal + Action Resolver",
+      "phase": "P6b"
+    },
+    {
+      "id": "planner-cfs-workflow",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tryCFSWorkflowDispatch",
+      "category": "business_direct",
+      "current_role": "CFS 专用自然语言工作流分支",
+      "target": "OperationSpec + Action Resolver",
+      "phase": "P6b"
+    },
+    {
+      "id": "planner-create-resume",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tryResumeCreateContextFrame",
+      "category": "business_direct",
+      "current_role": "创建任务专用续接",
+      "target": "Agent task delta + Action Resolver",
+      "phase": "P6b"
+    },
+    {
+      "id": "planner-fact-followup",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tryRecentFactFollowup",
+      "category": "business_direct",
+      "current_role": "近期事实专用追问旁路",
+      "target": "AgentContext + 只读 capability",
+      "phase": "P6a"
+    },
+    {
+      "id": "planner-lifecycle",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tryOperationLifecycleDispatch",
+      "category": "business_direct",
+      "current_role": "Planner 生命周期写操作分支",
+      "target": "Agent ActionProposal -> Resolver -> Gate",
+      "phase": "P6b"
+    },
+    {
+      "id": "planner-route-handler",
+      "path": "internal/engine/engine.go",
+      "symbol": "tryPlannerDispatch",
+      "needle": "tryRouteDispatch",
+      "category": "business_direct",
+      "current_role": "确定性路由 handler 直接终止",
+      "target": "Agent 可调用只读 capability",
+      "phase": "P6a"
+    }
+  ],
+  "semantic_owners": [
+    {
+      "id": "owner-intent-router",
+      "path": "internal/intent/router.go",
+      "symbol": "Plan",
+      "needle": "IntentRouterInput",
+      "category": "semantic_owner",
+      "current_role": "本轮意图与槽位规划",
+      "target": "主 Agent 首步",
+      "phase": "P6a"
+    },
+    {
+      "id": "owner-context-decision",
+      "path": "internal/engine/context_decision_layer.go",
+      "symbol": "resolveContextDecision",
+      "needle": "ResolveContextDecision",
+      "category": "semantic_owner",
+      "current_role": "第二次 LLM 上下文关系判断",
+      "target": "主 Agent task delta",
+      "phase": "P6a"
+    },
+    {
+      "id": "owner-lifecycle-action",
+      "path": "internal/engine/deterministic_targets.go",
+      "symbol": "inferLifecycleAction",
+      "needle": "strings.Contains",
+      "category": "semantic_owner",
+      "current_role": "关键词动作推断",
+      "target": "Agent ActionProposal",
+      "phase": "P7"
+    },
+    {
+      "id": "owner-disk-size",
+      "path": "internal/engine/deterministic_targets.go",
+      "symbol": "createDiskSizeFromUserText",
+      "needle": "diskSizeSpecRE",
+      "category": "semantic_owner",
+      "current_role": "整句第一个容量提取",
+      "target": "SlotCandidate + 容量 Codec",
+      "phase": "P7"
+    },
+    {
+      "id": "owner-task-slot-update",
+      "path": "internal/workflow/missing_slots.go",
+      "symbol": "TaskSlotUpdatesFromUserText",
+      "needle": "taskSlotSpecs",
+      "category": "semantic_owner",
+      "current_role": "10 个工作流专属补参入口",
+      "target": "Action Resolver",
+      "phase": "P7"
+    },
+    {
+      "id": "owner-task-args",
+      "path": "internal/workflow/missing_slots.go",
+      "symbol": "TaskArgsFromSlots",
+      "needle": "buildArgs",
+      "category": "semantic_owner",
+      "current_role": "工作流专属槽位到参数映射",
+      "target": "OperationSpec + ExecutionContract",
+      "phase": "P7"
+    },
+    {
+      "id": "owner-dispatch-spec",
+      "path": "internal/engine/dispatch_spec.go",
+      "symbol": "specForIntent",
+      "needle": "PlannedExecutionPathForIntent",
+      "category": "semantic_owner",
+      "current_role": "意图执行与回答合同投影",
+      "target": "Capability Registry",
+      "phase": "P3"
+    },
+    {
+      "id": "owner-tool-scope",
+      "path": "internal/engine/dispatch_spec.go",
+      "symbol": "dispatchToolScope",
+      "needle": "IntentToolSubset",
+      "category": "semantic_owner",
+      "current_role": "按意图选择工具范围",
+      "target": "权限和环境驱动的 Capability Registry",
+      "phase": "P3"
+    },
+    {
+      "id": "owner-execution-path",
+      "path": "internal/intent/execution_path.go",
+      "symbol": "PlannedExecutionPathForIntent",
+      "needle": "ExecutionPath",
+      "category": "semantic_owner",
+      "current_role": "意图到执行路径映射",
+      "target": "中心 Agent Runtime",
+      "phase": "P7"
+    },
+    {
+      "id": "owner-intent-tools",
+      "path": "internal/intent/tool_subset.go",
+      "symbol": "IntentToolSubset",
+      "needle": "switch",
+      "category": "semantic_owner",
+      "current_role": "意图工具白名单",
+      "target": "Capability Registry",
+      "phase": "P3"
+    }
+  ]
+}
