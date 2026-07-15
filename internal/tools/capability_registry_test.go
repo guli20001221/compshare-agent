@@ -14,7 +14,7 @@ func TestDefaultCapabilityRegistryOwnsEveryAgentToolAndPolicy(t *testing.T) {
 
 	exposed := 0
 	for _, capability := range registry.All() {
-		if !capability.ExposedToAgent {
+		if !capability.ExposedToAgent || capability.Stage != CapabilityStageActive {
 			continue
 		}
 		exposed++
@@ -24,6 +24,12 @@ func TestDefaultCapabilityRegistryOwnsEveryAgentToolAndPolicy(t *testing.T) {
 		require.Equal(t, capability.Name, capability.Policy.Action)
 	}
 	require.Equal(t, len(Registry), exposed)
+	shadow, ok := registry.Lookup(ReadPlatformCapabilityName)
+	require.True(t, ok)
+	require.Equal(t, CapabilityStageShadow, shadow.Stage)
+	for _, tool := range registry.VisibleTools(ToolScope{Mode: ToolScopeReadOnlyFull}, true) {
+		require.NotEqual(t, ReadPlatformCapabilityName, tool.Function.Name)
+	}
 
 	for name, policy := range buildToolExecutionPolicies() {
 		capability, ok := registry.Lookup(name)

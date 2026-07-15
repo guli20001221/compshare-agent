@@ -127,6 +127,9 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 	if _, ok := policies["GetProjectList"]; !ok {
 		policies["GetProjectList"] = policyForAction("GetProjectList")
 	}
+	readCapabilityPolicy := policyForAction(ReadPlatformCapabilityName)
+	readCapabilityPolicy.AllowedParams = []string{"capability", "slots"}
+	policies[ReadPlatformCapabilityName] = readCapabilityPolicy
 
 	return policies
 }
