@@ -1568,16 +1568,35 @@ func ClassifyResetPasswordValue(userText string) (value string, start, end int, 
 			return "", 0, 0, false
 		}
 		if prefixBytes := leadingASCIIPasswordBytes(questionValue); prefixBytes > 0 {
+			if prefixBytes == len(questionValue) && explicitResetPasswordAction(userText, match[0], match[2]) {
+				return value, match[4], match[5], true
+			}
 			return value[:prefixBytes], match[4], match[4] + prefixBytes, false
 		}
 		return value, match[4], match[5], false
 	}
+	if prefixBytes := leadingASCIIPasswordBytes(value); prefixBytes > 0 && prefixBytes < len(value) {
+		return value[:prefixBytes], match[4], match[4] + prefixBytes, false
+	}
 	return value, match[4], match[5], true
+}
+
+func explicitResetPasswordAction(userText string, matchStart, connectorStart int) bool {
+	prefix := strings.ToLower(strings.TrimSpace(userText[:matchStart]))
+	head := strings.ToLower(strings.TrimSpace(userText[matchStart:connectorStart]))
+	if strings.HasPrefix(head, "改密") {
+		return true
+	}
+	return strings.HasPrefix(head, "密码") && strings.HasSuffix(prefix, "重置") ||
+		strings.HasPrefix(head, "password") && strings.HasSuffix(prefix, "reset")
 }
 
 func leadingASCIIPasswordBytes(value string) int {
 	for index, r := range value {
 		if r > unicode.MaxASCII {
+			if !unicode.Is(unicode.Han, r) {
+				return 0
+			}
 			return index
 		}
 	}

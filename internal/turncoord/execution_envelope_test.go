@@ -156,7 +156,8 @@ func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKe
 	assert.Empty(t, envelope.SealedSecrets)
 	for _, question := range []string{
 		"密码是abcdefgh安全吗？", "密码是123456安全吗？", "密码是 abcdefgh？", "密码为 abcdefgh？",
-		"密码是123456吗", "给 test 重置密码是abcdefgh安全吗？",
+		"密码是123456吗", "密码是abcdefgh怎么样", "给 test 重置密码是abcdefgh安全吗？",
+		"给 test 重置密码是abcdefgh怎么样",
 	} {
 		t.Run(question, func(t *testing.T) {
 			envelope, raw, err := freezeSubmitInput(SubmitInput{
@@ -166,7 +167,8 @@ func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKe
 			require.NoError(t, err)
 			assert.NotContains(t, envelope.Message, "abcdefgh")
 			assert.NotContains(t, envelope.Message, "123456")
-			assert.True(t, strings.Contains(envelope.Message, "？") || strings.HasSuffix(envelope.Message, "吗"),
+			assert.True(t, strings.Contains(envelope.Message, "？") || strings.HasSuffix(envelope.Message, "吗") ||
+				strings.HasSuffix(envelope.Message, "怎么样"),
 				"the question signal must survive secret redaction: %q", envelope.Message)
 			assert.NotContains(t, string(raw), "abcdefgh")
 			assert.NotContains(t, string(raw), "123456")
@@ -179,6 +181,7 @@ func TestExecutionEnvelope_ShiAssignmentIsSealedButQuestionsRemainPlain(t *testi
 	key := bytes.Repeat([]byte{0x71}, 32)
 	for _, secret := range []string{
 		"Aa12" + "3456!", "123" + "456", "!!!!!!!!", "中文秘密", "Abc?" + "1234", "Abc？" + "1234",
+		"Abc1234" + "?", "Abc1234" + "？",
 	} {
 		t.Run(secret, func(t *testing.T) {
 			message := "重置密码是 " + secret
