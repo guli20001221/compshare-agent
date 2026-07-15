@@ -3720,6 +3720,10 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeReadPlatformCapability(ctx, args, onStep)
 	}
+	if action == tools.ProposeActionName {
+		args = e.safeExecutor.FilterArgs(action, args)
+		return e.executeActionProposalShadow(args, onStep)
+	}
 
 	// Workflow meta-tools → delegate to workflow engine.
 	// Security: LLM-provided args are filtered here before entering the workflow.
@@ -4842,6 +4846,7 @@ func uniqueStrings(values []string) []string {
 // for the LLM to narrate.
 func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
 	e.lastWorkflowSucceededThisCall = false
+	e.observeLegacyWorkflowArguments(action, args, onStep)
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
