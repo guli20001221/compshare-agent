@@ -231,7 +231,6 @@ type Engine struct {
 	// zones.Default(); tests inject a fresh catalog for isolation.
 	zoneCatalog                *zones.Catalog
 	registry                   *entity.EntityRegistry
-	intentRouteIntents         map[intent.Intent]struct{}
 	knowledgeRetriever         KnowledgeRetriever
 	createPreferenceExtractor  CreatePreferenceExtractor
 	agentRuntimeEventsThisTurn []agentruntime.Event
@@ -245,7 +244,6 @@ type Engine struct {
 	// flag), copied into every session.
 	fastTemplate                  bool
 	rendererTraceObserver         func(observability.RendererTrace)
-	plannerTraceObserver          func(observability.RouterTrace)
 	contextTraceObserver          func(observability.ContextTrace)
 	historyTrimmedThisSession     bool
 	retrievalTraceObserver        func(observability.RetrievalTrace)
@@ -314,14 +312,12 @@ type Engine struct {
 	// answer (that path emits no hard-block, so the trace's budget terminus is
 	// otherwise underivable). Both reset at the top of Chat; read post-turn by the
 	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
-	reactRoundsThisTurn                    int
-	reactCeilingHitThisTurn                bool
-	turnModelCallsThisTurn                 int
-	turnCompletionClassHint                string
-	turnCompletionReasonHint               string
-	turnCompletionEmittedThisTurn          bool
-	lastPlannerRouteStatusThisTurn         intent.RouteStatus
-	lastPlannerIntentForCompletionThisTurn intent.Intent
+	reactRoundsThisTurn           int
+	reactCeilingHitThisTurn       bool
+	turnModelCallsThisTurn        int
+	turnCompletionClassHint       string
+	turnCompletionReasonHint      string
+	turnCompletionEmittedThisTurn bool
 	// A post-LLM or token-budget block can be recovered later in the same turn.
 	// Keep the standing bit so a successfully validated answer can overwrite the
 	// earlier failure attribution instead of being stored as "blocked".
@@ -466,7 +462,6 @@ type SharedDeps struct {
 	// router that yields LLMClient = For(TierFast)). Copied into every
 	// NewSession as Engine.agentLLMClient. Empty on the test path.
 	AgentLLMClient         LLMClient
-	IntentRouteIntents     map[intent.Intent]struct{}
 	KnowledgeRetriever     KnowledgeRetriever
 	GroundedGenerator      grounded.Renderer
 	GroundedGeneratorModel string
@@ -584,7 +579,6 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		// ── shared (pointer-equal across sessions) ──
 		llmClient:                  deps.LLMClient,
 		agentLLMClient:             deps.AgentLLMClient,
-		intentRouteIntents:         deps.IntentRouteIntents,
 		knowledgeRetriever:         deps.KnowledgeRetriever,
 		groundedRenderer:           deps.GroundedGenerator,
 		groundedRendererModel:      deps.GroundedGeneratorModel,
@@ -738,10 +732,6 @@ func (e *Engine) RunAgentSaga(ctx context.Context, def *workflow.Definition, par
 		SkillID:      skillID,
 	})
 	return runner.Run(ctx, def, params)
-}
-
-func (e *Engine) SetPlannerTraceObserver(observer func(observability.RouterTrace)) {
-	e.plannerTraceObserver = observer
 }
 
 // SetContextTraceObserver wires the per-turn record of what the router and the loop
@@ -1710,12 +1700,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	return reactCeilingRefusal, nil
 }
 
-type routerDispatchResult struct {
-	result   intent.IntentRouterResult
-	latency  time.Duration
-	snapshot entity.RegistrySnapshot
-}
-
 // lastAssistantContent returns the most recent assistant message's text from
 // the in-memory Agent history, or "" if none.
 func (e *Engine) lastAssistantContent() string {
@@ -1729,378 +1713,6 @@ func (e *Engine) lastAssistantContent() string {
 		}
 	}
 	return ""
-}
-
-type monitorHistoryTargetStatus string
-
-const (
-	monitorHistoryTargetNone     monitorHistoryTargetStatus = "none"
-	monitorHistoryTargetOK       monitorHistoryTargetStatus = "ok"
-	monitorHistoryTargetMultiple monitorHistoryTargetStatus = "multiple"
-)
-
-func (e *Engine) monitorHistoryTargetID(userMsg string, snapshot entity.RegistrySnapshot) (string, monitorHistoryTargetStatus) {
-	if ids := monitorHistoryExplicitIDs(userMsg, snapshot); len(ids) > 1 {
-		return "", monitorHistoryTargetMultiple
-	} else if len(ids) == 1 {
-		return ids[0], monitorHistoryTargetOK
-	}
-	if ids := monitorHistoryNameIDs(userMsg, snapshot); len(ids) > 1 {
-		return "", monitorHistoryTargetMultiple
-	} else if len(ids) == 1 {
-		return ids[0], monitorHistoryTargetOK
-	}
-	if e != nil {
-		if selected := strings.TrimSpace(e.sessionState.SelectedInstanceID); selected != "" {
-			return selected, monitorHistoryTargetOK
-		}
-	}
-	return "", monitorHistoryTargetNone
-}
-
-func monitorHistoryExplicitIDs(userMsg string, snapshot entity.RegistrySnapshot) []string {
-	return uniqueStrings(snapshot.InstanceIDTokensInText(userMsg))
-}
-
-func monitorHistoryNameIDs(userMsg string, snapshot entity.RegistrySnapshot) []string {
-	ids := make([]string, 0, 2)
-	for _, inst := range snapshot.Instances {
-		name := strings.TrimSpace(inst.Name)
-		if name == "" || inst.UHostId == "" {
-			continue
-		}
-		if monitorHistoryNameMentioned(userMsg, name) {
-			ids = append(ids, inst.UHostId)
-		}
-	}
-	return uniqueStrings(ids)
-}
-
-func monitorHistoryNameMentioned(userMsg, name string) bool {
-	return entity.TextExplicitlyMentionsName(userMsg, name)
-}
-
-func workflowDirectReply(action, raw string) string {
-	if finalMsg, ok := isFinalReply(raw); ok {
-		return finalMsg
-	}
-	var result workflow.Result
-	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return raw
-	}
-	if !result.Success {
-		if action != "CreateInstanceWorkflow" {
-			return workflowFailureReply(action, result.Message)
-		}
-		return createWorkflowFailureReply(result.Message)
-	}
-	if action != "CreateInstanceWorkflow" {
-		return raw
-	}
-	ids, _ := result.Data["UHostIds"].([]any)
-	var parts []string
-	for _, id := range ids {
-		if s, ok := id.(string); ok && strings.TrimSpace(s) != "" {
-			parts = append(parts, s)
-		}
-	}
-	if len(parts) == 0 {
-		return fmt.Sprintf("创建实例请求已提交。你可以在实例列表查看进度：%s", deployConsoleInstancesURL)
-	}
-	return fmt.Sprintf("创建实例请求已提交，实例 ID：%s。你可以在实例列表查看进度：%s", strings.Join(parts, "、"), deployConsoleInstancesURL)
-}
-
-func workflowFailureReply(action, message string) string {
-	msg := workflowStepPrefixRE.ReplaceAllString(strings.TrimSpace(message), "")
-	msg = strings.TrimSpace(msg)
-	if friendly, ok := friendlyMessageFromText(msg); ok {
-		msg = friendly
-	}
-	if msg == "" {
-		msg = "上游没有返回明确原因，请稍后重试或到控制台确认。"
-	}
-	return fmt.Sprintf("%s没有成功：%s", workflowFriendlyActionName(action), msg)
-}
-
-func workflowFriendlyActionName(action string) string {
-	switch action {
-	case "CreateDiskWorkflow":
-		return "创建数据盘"
-	case "ResizeDiskWorkflow":
-		return "扩容磁盘"
-	case "ResizeInstanceWorkflow":
-		return "改配实例"
-	case "CreateCustomImageWorkflow":
-		return "创建自制镜像"
-	case "ReinstallInstanceWorkflow":
-		return "重装实例"
-	case "CreateCFSWorkflow":
-		return "创建 CFS"
-	case "ResizeCFSWorkflow":
-		return "扩容 CFS"
-	default:
-		return "操作"
-	}
-}
-
-func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	result := dispatch.result
-	result.Plan = planWithUserTextMonitorMetrics(result.Plan, userMsg)
-	result.Plan = augmentPlanTargetRefsFromUserText(result.Plan, userMsg, dispatch.snapshot)
-	if !isReadHandlerIntent(result.Plan.Intent) {
-		return "", false
-	}
-	if status, ok := e.phase1RouteCandidateStatus(result); !ok {
-		e.emitPlannerTrace(result, status, dispatch.latency)
-		return "", false
-	}
-
-	routeSnapshot := dispatch.snapshot
-	fallbackInstanceID := ""
-	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
-		fallbackInstanceID = e.sessionState.SelectedInstanceID
-	}
-	if fallbackInstanceID != "" && result.Plan.Intent == intent.IntentRefundEstimate {
-		if _, err := e.refreshRegistry(ctx, entity.RefreshReasonManual); err != nil {
-			e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
-			if reply, actionable := friendlyToolErrorMessage(err); actionable {
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: reply,
-				})
-				return reply, true
-			}
-			e.routeReadFailureThisTurn = true
-			return "", false
-		}
-		routeSnapshot = e.RegistrySnapshot()
-	}
-	handled := e.invokeReadHandler(ctx, result.Plan, userMsg, routeSnapshot, onStep)
-	if e.shouldResolveContextDependentDirectReplyInAgent(handled, userMsg) {
-		// The direct path has no evidence envelope through which to carry task
-		// context (or explicitly asked for clarification), but a complete recent
-		// turn exists. Do not terminate with context-free plain text: the scoped
-		// read-only Agent already has that conversation and may resolve the referent
-		// or ask a better question.
-		e.emitPlannerTrace(result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
-		return "", false
-	}
-
-	if handled.Status == intent.HandlerStatusFallbackBeforeTool {
-		if isResourceSelectionFallbackReason(handled.FallbackReason) {
-			if selection, ok, err := e.buildResourceSelectionForPlan(ctx, result, dispatch.snapshot, onStep); err != nil {
-				if msg, friendly := friendlyToolErrorMessage(err); friendly {
-					e.pendingResourceSelection = nil
-					e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
-					e.messages = append(e.messages, openai.ChatCompletionMessage{
-						Role:    openai.ChatMessageRoleAssistant,
-						Content: msg,
-					})
-					return msg, true
-				}
-				// The route had enough information to try a read, but the read did
-				// not produce any facts. A generic canned failure would terminate
-				// the turn without letting the existing conversation participate at
-				// all. Keep the failed-read trace, clear the incomplete selection,
-				// and continue into the intent-scoped read-only ReAct lane. That lane
-				// sees the full history and may explain, clarify, or retry the read;
-				// it cannot acquire lifecycle/write tools for a monitor intent.
-				e.pendingResourceSelection = nil
-				e.emitPlannerTrace(result, intent.RouteStatusFailureAfterTool, dispatch.latency)
-				e.routeReadFailureThisTurn = true
-				return "", false
-			} else if ok {
-				if len(selection.candidates) == 1 {
-					resumed := result
-					resumed.Plan = planWithSelectedResource(result.Plan, selection.candidates[0].UHostId)
-					handled = e.invokeReadHandler(ctx, resumed.Plan, userMsg, selection.snapshot, onStep)
-					e.emitPlannerTrace(resumed, handled.RouteStatus, dispatch.latency)
-					if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
-						e.routeReadFailureThisTurn = true
-						return "", false
-					}
-					if handled.Status == intent.HandlerStatusFallbackBeforeTool && handled.FallbackReason == intent.FallbackTimeWindow {
-						if e.hasReusableCompleteConversation() {
-							e.emitPlannerTrace(resumed, handled.RouteStatus, dispatch.latency)
-							return "", false
-						}
-						reply := monitorHistoryNeedTimeWindowMessage
-						e.messages = append(e.messages, openai.ChatCompletionMessage{
-							Role:    openai.ChatMessageRoleAssistant,
-							Content: reply,
-						})
-						return reply, true
-					}
-					e.annotateHandlerResultForUserQuestion(&handled, resumed.Plan, e.lastUserMsg)
-					reply := handled.Reply
-					if handled.Status == intent.HandlerStatusHandled {
-						handled = e.contextEnvelopeForPlainDirectReply(handled, resumed.Plan, userMsg)
-						reply = e.renderGroundedHandlerResult(ctx, handled, resumed.Plan, userMsg)
-						e.recordSelectedInstanceFromEnvelope(handled.Envelope)
-						e.recordLastIntentFromPlan(resumed.Plan)
-						e.recordPendingSelectionFromHandlerResult(handled, resumed.Plan, userMsg)
-					}
-					e.messages = append(e.messages, openai.ChatCompletionMessage{
-						Role:    openai.ChatMessageRoleAssistant,
-						Content: reply,
-					})
-					return reply, true
-				}
-				e.pendingResourceSelection = selection
-				e.recordPendingInstanceSelection(selection.candidates, result.Plan.Intent, userMsg, len(selection.candidates), selection.truncated)
-				reply := renderResourceSelectionPrompt(*selection)
-				e.emitPlannerTrace(result, intent.RouteStatusSelectionRequired, dispatch.latency)
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: reply,
-				})
-				return reply, true
-			}
-		}
-		if handled.FallbackReason == intent.FallbackTimeWindow {
-			e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
-			if e.hasReusableCompleteConversation() {
-				// The handler only knows the current slots. A preceding turn may
-				// already contain the missing interval, so let the scoped read-only
-				// Agent resolve it before asking the user to repeat themselves.
-				return "", false
-			}
-			reply := monitorHistoryNeedTimeWindowMessage
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: reply,
-			})
-			return reply, true
-		}
-		e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
-		return "", false
-	}
-
-	e.emitPlannerTrace(result, handled.RouteStatus, dispatch.latency)
-	if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
-		// A handler's generic failure sentence contains no answer and no useful
-		// clarification. Returning it here used to skip the model even though the
-		// model already has the conversation and an intent-scoped read-only tool
-		// set. Preserve specific upstream recovery hints as deterministic answers;
-		// only the generic no-information fallback continues into ReAct.
-		e.routeReadFailureThisTurn = true
-		return "", false
-	}
-	e.annotateHandlerResultForUserQuestion(&handled, result.Plan, e.lastUserMsg)
-	reply := handled.Reply
-	if handled.Status == intent.HandlerStatusHandled {
-		handled = e.contextEnvelopeForPlainDirectReply(handled, result.Plan, userMsg)
-		reply = e.renderGroundedHandlerResult(ctx, handled, result.Plan, userMsg)
-		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
-		e.recordLastIntentFromPlan(result.Plan)
-		e.recordLastStockGpuModel(handled.ResolvedStockGpuModel)
-		e.recordResolvedStockGpuFact(handled.ResolvedStockGpuModel)
-		e.recordPendingSelectionFromHandlerResult(handled, result.Plan, userMsg)
-	}
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: reply,
-	})
-	return reply, true
-}
-
-func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string, onStep func(StepEvent)) (string, bool) {
-	pending := e.pendingResourceSelection
-	restoredFromSession := false
-	if pending == nil {
-		if restored, ok := e.pendingResourceSelectionFromSession(); ok {
-			pending = restored
-			e.pendingResourceSelection = restored
-			restoredFromSession = true
-		} else {
-			return "", false
-		}
-	}
-	if isResourceSelectionExpired(e.userTurn, *pending) {
-		e.pendingResourceSelection = nil
-		e.clearPendingSelection()
-		return "", false
-	}
-
-	match := matchResourceSelection(userMsg, *pending)
-	if !match.ok {
-		if embedded, exact := matchResourceSelectionReference(userMsg, *pending); embedded.ok && !exact {
-			if action := inferLifecycleAction(userMsg); action != "" {
-				e.pendingResourceSelection = nil
-				plan := lifecyclePlanForSelectedInstance(action, embedded.instance)
-				return e.tryLifecycleActionForSelectedInstance(ctx, embedded.instance, action, userMsg, plan, onStep)
-			}
-			e.recordSelectedInstanceID(embedded.instance.UHostId, embedded.instance.Name)
-			e.pendingResourceSelection = nil
-			e.deferTaskCarryThisTurn = true
-			e.refreshSystemPrompt()
-			return "", false
-		}
-		if restoredFromSession || pending.plan.Intent == intent.IntentResourceInfo {
-			return "", false
-		}
-		if e.userTurn >= pending.createdTurn+2 {
-			e.pendingResourceSelection = nil
-			e.clearPendingSelection()
-			return "", false
-		}
-		pending.invalidAttempts++
-		reply := renderResourceSelectionPrompt(*pending)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: reply,
-		})
-		return reply, true
-	}
-
-	e.pendingResourceSelection = nil
-	if pending.plan.Intent == intent.IntentMonitorQuery || pending.plan.Intent == intent.IntentMonitorHistory {
-		return e.handleResourceSelectionMonitor(ctx, pending.plan, pending.snapshot, match.instance, pending.originalUserMsg, onStep)
-	}
-	e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
-	// Bind only when the waiting workflow explicitly needs an instance. An
-	// unrelated active task is preserved for the unified context decision layer;
-	// a selection shortcut has no authority to silently delete it.
-	if !e.bindSelectedInstanceToWaitingWorkflowFrame(match.instance) {
-		// The selection belongs to another read task. Keep the old task durable,
-		// but do not let this same utterance accidentally resume it.
-		e.deferTaskCarryThisTurn = true
-	}
-	e.refreshSystemPrompt()
-	return "", false
-}
-
-func (e *Engine) handleResourceSelectionMonitor(ctx context.Context, plan intent.IntentRoute, snapshot entity.RegistrySnapshot, inst entity.InstanceSnapshot, userMsg string, onStep func(StepEvent)) (string, bool) {
-	resumedPlan := planWithSelectedResource(plan, inst.UHostId)
-	resumedPlan = planWithUserTextMonitorMetrics(resumedPlan, userMsg)
-	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
-	handled := handler.HandleMonitorQuery(ctx, intent.HandlerRequest{
-		Plan:     resumedPlan,
-		Resolver: snapshot,
-		UserText: userMsg,
-	})
-	e.emitPlannerTrace(intent.IntentRouterResult{Plan: resumedPlan}, handled.RouteStatus, 0)
-	if handled.Status == intent.HandlerStatusFailureAfterTool && handled.FailureClass == intent.HandlerFailureGenericRead {
-		e.routeReadFailureThisTurn = true
-		return "", false
-	}
-	e.annotateHandlerResultForUserQuestion(&handled, resumedPlan, userMsg)
-
-	reply := handled.Reply
-	if handled.Status == intent.HandlerStatusHandled {
-		handled = e.contextEnvelopeForPlainDirectReply(handled, resumedPlan, userMsg)
-		reply = e.renderGroundedHandlerResult(ctx, handled, resumedPlan, userMsg)
-		e.recordSelectedInstanceFromEnvelope(handled.Envelope)
-		e.recordLastIntentFromPlan(resumedPlan)
-	}
-	if reply == "" {
-		reply = intent.FriendlyToolFailureReply
-	}
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: reply,
-	})
-	return reply, true
 }
 
 // isFastTierEnvelope reports whether an envelope kind is fast-tier catalog
@@ -2480,65 +2092,10 @@ func clipKnowledgeHistoryContent(content string) string {
 	return string(runes[:maxKnowledgeHistoryRunes]) + knowledgeHistoryClipMarker
 }
 
-func (e *Engine) commonPlannerCandidateStatus(result intent.IntentRouterResult) (intent.RouteStatus, bool) {
-	if result.Fallback || result.LastValidationCode != "" ||
-		result.Plan.SchemaVersion != intent.SchemaVersion || result.Plan.Intent == "" {
-		return intent.RouteStatusFallbackInvalid, false
-	}
-	// PR #61 (2026-05-21): planner's HardBlockHint is advisory only and no
-	// longer participates in route dispatch — it ships to trace via
-	// RouterTrace.HardBlockHint for downstream join with engine_hard_block
-	// (observability). Deterministic refusal comes from actual executed
-	// stages after this check: keyword PreBlock for static safety policies
-	// and planner-classified unsupported intents such as monitor_history or
-	// account-level billing.
-	if result.Plan.Confidence < 0.60 {
-		return intent.RouteStatusFallbackLowConfidence, false
-	}
-	return intent.RouteStatusDispatched, true
-}
-
-func (e *Engine) phase1RouteCandidateStatus(result intent.IntentRouterResult) (intent.RouteStatus, bool) {
-	if result.Plan.Intent != intent.IntentResourceInfo && result.Plan.Intent != intent.IntentMonitorQuery && result.Plan.Intent != intent.IntentMonitorHistory && !intent.IsRoutingIntent(result.Plan.Intent) {
-		return intent.RouteStatusFallbackIneligible, false
-	}
-	if _, ok := e.intentRouteIntents[result.Plan.Intent]; !ok {
-		return intent.RouteStatusFallbackIneligible, false
-	}
-	return intent.RouteStatusDispatched, true
-}
-
 const (
 	diagnosisMissingTargetClarificationReply = "请问是哪台实例出了问题？请提供实例 ID 或实例名称后我再继续排查。"
 	diagnosisVagueFailureClarificationReply  = "请问是哪台实例出了问题？也请描述一下具体是什么现象，例如 SSH 断了、GPU 报错、服务崩了或初始化卡住。"
 )
-
-func countPlannerSnapshotInstances(snapshot entity.RegistrySnapshot) int {
-	if snapshot.TotalCount > 0 {
-		return snapshot.TotalCount
-	}
-	return len(snapshot.Instances)
-}
-
-func (e *Engine) emitPlannerTrace(result intent.IntentRouterResult, status intent.RouteStatus, latency time.Duration) {
-	e.lastPlannerRouteStatusThisTurn = status
-	if result.Plan.Intent != "" {
-		e.lastPlannerIntentForCompletionThisTurn = result.Plan.Intent
-	}
-	if e.plannerTraceObserver == nil {
-		return
-	}
-	trace := intent.ProjectPlannerTrace(result, intent.PlannerTraceOptions{
-		Enabled: true,
-		Latency: latency,
-	})
-	trace.RouteStatus = string(status)
-	// Keep planned and actual execution forms aligned for knowledge turns.
-	if e.knowledgeQAAgentLoopThisTurn && trace.Intent == string(intent.IntentKnowledgeQA) {
-		trace.PlannedExecutionPath = observability.ExecutionPathAgent
-	}
-	e.plannerTraceObserver(trace)
-}
 
 func (e *Engine) emitRetrievalTrace(trace observability.RetrievalTrace) {
 	if e.retrievalTraceObserver == nil {
@@ -2591,18 +2148,6 @@ func (e *Engine) emitTokenUsage(usage llm.TokenUsage) {
 	e.tokenUsageObserver(usage)
 }
 
-// accumulateTokenUsage adds usage to the per-turn budget counter without
-// going through the observer. Used for LLM calls (notably the planner)
-// whose usage is surfaced via a different trace path but still needs to
-// count against maxTokensPerTurn — otherwise a planner-handled turn
-// could bypass the cap entirely.
-func (e *Engine) accumulateTokenUsage(usage llm.TokenUsage) {
-	total := tokenUsageTotal(usage)
-	if total > 0 {
-		e.turnTokensConsumed += total
-	}
-}
-
 // tokenBudgetExceeded reports whether this turn has already consumed
 // maxTokensPerTurn or more LLM tokens. Read-only — call emitTokenBudget
 // ExceededHardBlock + append the canned assistant reply when this trips.
@@ -2634,17 +2179,6 @@ func (e *Engine) emitRendererTrace(trace observability.RendererTrace) {
 		return
 	}
 	e.rendererTraceObserver(trace)
-}
-
-func engineFallbackPlannerResult() intent.IntentRouterResult {
-	return intent.IntentRouterResult{
-		Fallback: true,
-		Plan: intent.IntentRoute{
-			SchemaVersion: intent.SchemaVersion,
-			Intent:        intent.IntentUnknown,
-			Retrieval:     intent.Retrieval{Enabled: false},
-		},
-	}
 }
 
 type plannerHandlerExecutor struct {

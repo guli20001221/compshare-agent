@@ -55,26 +55,6 @@
       "phase": "P7"
     },
     {
-      "id": "owner-dispatch-spec",
-      "path": "internal/engine/dispatch_spec.go",
-      "symbol": "specForIntent",
-      "needle": "PlannedExecutionPathForIntent",
-      "category": "semantic_owner",
-      "current_role": "意图执行与回答合同投影",
-      "target": "Capability Registry",
-      "phase": "P3"
-    },
-    {
-      "id": "owner-tool-scope",
-      "path": "internal/engine/dispatch_spec.go",
-      "symbol": "dispatchToolScope",
-      "needle": "IntentToolSubset",
-      "category": "semantic_owner",
-      "current_role": "按意图选择工具范围",
-      "target": "权限和环境驱动的 Capability Registry",
-      "phase": "P3"
-    },
-    {
       "id": "owner-execution-path",
       "path": "internal/intent/execution_path.go",
       "symbol": "PlannedExecutionPathForIntent",
@@ -83,16 +63,6 @@
       "current_role": "意图到执行路径映射",
       "target": "中心 Agent Runtime",
       "phase": "P7"
-    },
-    {
-      "id": "owner-intent-tools",
-      "path": "internal/intent/tool_subset.go",
-      "symbol": "IntentToolSubset",
-      "needle": "switch",
-      "category": "semantic_owner",
-      "current_role": "意图工具白名单",
-      "target": "Capability Registry",
-      "phase": "P3"
-    }
+	}
   ]
 }

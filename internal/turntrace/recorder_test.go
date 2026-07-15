@@ -27,7 +27,6 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	writer := &captureWriter{}
 	recorder := New(Config{Writer: writer, TraceID: "turn:e1", TurnID: "turn", TurnIndex: 2, Start: time.Now()})
 	hooks := recorder.Hooks()
-	require.NotNil(t, hooks.Planner)
 	require.NotNil(t, hooks.Context)
 	require.NotNil(t, hooks.Retrieval)
 	require.NotNil(t, hooks.Freshness)
@@ -40,7 +39,6 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	require.NotNil(t, hooks.TokenUsage)
 	require.NotNil(t, hooks.StepSink)
 
-	hooks.Planner(observability.RouterTrace{RouteStatus: "dispatched_agent", InputTokens: 2, OutputTokens: 1})
 	hooks.Context(observability.ContextTrace{LoopMessages: 3})
 	hooks.Retrieval(observability.RetrievalTrace{Enabled: true, Hits: 1})
 	hooks.Freshness(observability.FreshnessTrace{MonitorCallInCurrentTurn: true})

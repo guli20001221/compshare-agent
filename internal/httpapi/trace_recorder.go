@@ -67,7 +67,6 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 	if agent == nil || recorder == nil {
 		return
 	}
-	agent.SetPlannerTraceObserver(recorder.SetPlannerTrace)
 	agent.SetContextTraceObserver(recorder.SetContextTrace)
 	agent.SetRetrievalTraceObserver(recorder.SetRetrievalTrace)
 	agent.SetFreshnessTraceObserver(recorder.SetFreshnessTrace)
@@ -84,7 +83,6 @@ func clearChatTraceObservers(agent *engine.Engine) {
 	if agent == nil {
 		return
 	}
-	agent.SetPlannerTraceObserver(nil)
 	agent.SetRetrievalTraceObserver(nil)
 	agent.SetFreshnessTraceObserver(nil)
 	agent.SetDiagnosisTraceObserver(nil)

@@ -1,6 +1,13 @@
 package engine
 
-import openai "github.com/sashabaranov/go-openai"
+import (
+	"github.com/compshare-agent/internal/entity"
+	openai "github.com/sashabaranov/go-openai"
+)
+
+func testInstance(id, name, state string) entity.InstanceSnapshot {
+	return entity.InstanceSnapshot{UHostId: id, Name: name, State: state}
+}
 
 func stringSliceArg(value any) []string {
 	switch v := value.(type) {

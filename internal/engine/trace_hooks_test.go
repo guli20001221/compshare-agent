@@ -19,14 +19,13 @@ func TestAttachTraceHooksWiresEveryEngineObserver(t *testing.T) {
 	eng := &Engine{}
 	sink := traceHookStepSink{}
 	eng.AttachTraceHooks(TraceHooks{
-		Planner: func(observability.RouterTrace) {}, Context: func(observability.ContextTrace) {},
+		Context:   func(observability.ContextTrace) {},
 		Retrieval: func(observability.RetrievalTrace) {}, Freshness: func(observability.FreshnessTrace) {},
 		Diagnosis: func(observability.DiagnosisTrace) {}, Outcome: func(observability.OutcomeTrace) {},
 		Renderer: func(observability.RendererTrace) {}, HardBlock: func(observability.EngineHardBlockTrace) {},
 		Completion: func(observability.TurnCompletionTrace) {},
 		RateLimit:  func(governance.Decision) {}, TokenUsage: func(llm.TokenUsage) {}, StepSink: sink,
 	})
-	require.NotNil(t, eng.plannerTraceObserver)
 	require.NotNil(t, eng.contextTraceObserver)
 	require.NotNil(t, eng.retrievalTraceObserver)
 	require.NotNil(t, eng.freshnessTraceObserver)
@@ -50,14 +49,13 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 			VerifiedKnowledge:  []VerifiedKnowledgeTurn{{Question: "secret knowledge"}},
 			ContinuityNotices:  []string{"secret notice"},
 		},
-		lastPlannerIntentThisTurn:  intent.IntentKnowledgeQA,
 		promptSectionIDsThisTurn:   []string{"identity", "knowledge_turn_policy", "user_state"},
 		memoryUpdateSourceThisTurn: memoryUpdateCompactor,
 		groundingOutcomeThisTurn:   groundingSupported,
 	}
 	snapshot := eng.TraceSnapshot(time.Now())
 	require.Equal(t, []string{"recent_pairs", "digest", "active_task", "verified_knowledge", "notices"}, snapshot.ContextSources)
-	require.Equal(t, string(ResponseGrounded), snapshot.ResponseContract)
+	require.Equal(t, string(ResponseAgent), snapshot.ResponseContract)
 	require.Equal(t, []string{"identity", "knowledge_turn_policy", "user_state"}, snapshot.PromptSectionIDs)
 	require.Equal(t, memoryUpdateCompactor, snapshot.MemoryUpdateSource)
 	require.Equal(t, groundingSupported, snapshot.GroundingOutcome)
