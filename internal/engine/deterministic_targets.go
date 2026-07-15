@@ -1549,9 +1549,8 @@ func ExtractResetPasswordSecret(userText string) (secret string, start, end int)
 	if len(match) < 6 || match[2] < 0 || match[3] < 0 || match[4] < 0 || match[5] < 0 {
 		return "", 0, 0
 	}
-	connector := userText[match[2]:match[3]]
 	value := strings.TrimSpace(userText[match[4]:match[5]])
-	if connector == "是" && !looksLikePasswordValue(value) {
+	if !looksLikePasswordValue(value) {
 		return "", 0, 0
 	}
 	return value, match[4], match[5]
@@ -1562,12 +1561,14 @@ func looksLikePasswordValue(value string) bool {
 	if len(runes) < 8 || len(runes) > 64 || strings.ContainsAny(value, "?？") {
 		return false
 	}
+	hasLetterOrDigit := false
 	for _, r := range runes {
-		if r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
-			return true
+		if r > unicode.MaxASCII {
+			return false
 		}
+		hasLetterOrDigit = hasLetterOrDigit || unicode.IsLetter(r) || unicode.IsDigit(r)
 	}
-	return false
+	return hasLetterOrDigit
 }
 
 func (e *Engine) resetPasswordForTurn(userText string) string {

@@ -129,7 +129,10 @@ func TestExecutionEnvelope_PasswordRequiresTheClusterSecretKey(t *testing.T) {
 }
 
 func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKey(t *testing.T) {
-	for _, question := range []string{"密码怎么改？", "重置密码需要停机吗", "密码是怎么改的？", "密码是不是需要定期修改？"} {
+	for _, question := range []string{
+		"密码怎么改？", "重置密码需要停机吗", "密码是怎么改的？", "密码是不是需要定期修改？",
+		"密码为什么需要复杂？",
+	} {
 		t.Run(question, func(t *testing.T) {
 			envelope, raw, err := freezeSubmitInput(SubmitInput{
 				Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
