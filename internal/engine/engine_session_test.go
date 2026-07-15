@@ -265,7 +265,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 16 shared + 88 per-session = 104 fields. Any drift
+// Whitelist totals: 13 shared + 87 per-session = 100 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -273,19 +273,16 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// agentLLMClient is the TierAgent (strong-model) client — shared like
 		// llmClient (a stateless client wrapper, pointer-equal across sessions).
 		// Used by the B8 deploy_model image-matching handler.
-		"agentLLMClient":              true,
-		"intentPlanner":               true,
-		"intentPlannerModel":          true,
-		"intentPlannerEnabledIntents": true,
-		"intentRouteIntents":          true,
-		"knowledgeRetriever":          true,
-		"groundedRenderer":            true,
-		"groundedRendererModel":       true,
-		"fastTemplate":                true,
-		"rateLimiter":                 true,
-		"supportsObjectToolChoice":    true,
-		"supportsRequiredToolChoice":  true,
-		"maxTokensPerTurn":            true,
+		"agentLLMClient":             true,
+		"intentRouteIntents":         true,
+		"knowledgeRetriever":         true,
+		"groundedRenderer":           true,
+		"groundedRendererModel":      true,
+		"fastTemplate":               true,
+		"rateLimiter":                true,
+		"supportsObjectToolChoice":   true,
+		"supportsRequiredToolChoice": true,
+		"maxTokensPerTurn":           true,
 		// externalExecutor is the RAW shared tool executor (same instance as the
 		// one safeExecutor wraps) — pointer-equal across sessions, used only for
 		// read-only L0 catalog calls. Shared like llmClient.
@@ -358,18 +355,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Kept per-session so test doubles / future stateful wrappers cannot
 		// leak calls or extracted preferences across users.
 		"createPreferenceExtractor": true,
-		"contextDecisionLayer":      true,
 		// One cached context judgment per turn. These are reset at the start
 		// of ChatWithOptions and must remain session-local: sharing them would
 		// apply one user's continue/clear decision to another user's task.
-		"contextDecisionAttemptedThisTurn": true,
-		"contextDecisionUserTextThisTurn":  true,
-		"contextDecisionThisTurn":          true,
-		"contextDecisionErrThisTurn":       true,
-		"contextDecisionTraceThisTurn":     true,
-		"contextDecisionTraceSeenThisTurn": true,
-		"createPreferenceThisTurn":         true,
-		"turnTokensConsumed":               true,
+		"createPreferenceThisTurn": true,
+		"turnTokensConsumed":       true,
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
@@ -403,7 +393,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"tokenUsageObserver":        true,
 		"rateLimitObserver":         true,
 		"hardBlockObserver":         true,
-		"contextDecisionObserver":   true,
 		"turnCompletionObserver":    true,
 		// Runtime lifecycle evidence is turn/session-local. Sharing either the
 		// event buffer or its observer would mix two tenants' reasoning traces.
@@ -435,7 +424,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"reactResultProjectionEnabled":   true,
 		"reactHistoryCompactionEnabled":  true,
 		"intentScopedReActPromptEnabled": true,
-		"centralAgentRuntimeEnabled":     true,
 		"readCapabilitySubjectsThisTurn": true,
 		"readResponseEvidenceThisTurn":   true,
 		"lastPlannerIntentThisTurn":      true,
@@ -457,15 +445,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"trustedWorkflowFrameTargetThisTurn": true,
 	}
 
-	if want, got := 16, len(sharedFields); want != got {
+	if want, got := 13, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 96, len(perSessionFields); want != got {
+	if want, got := 87, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 112, typ.NumField(); want != got {
+	if want, got := 100, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

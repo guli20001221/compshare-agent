@@ -209,40 +209,6 @@ func renderResourceSelectionSelectedReply(inst entity.InstanceSnapshot) string {
 	return reply
 }
 
-func (e *Engine) tryContextDecisionResourceSelection(ctx context.Context, userMsg string, pending *pendingResourceSelection) (string, bool, bool) {
-	if e == nil || pending == nil {
-		return "", false, false
-	}
-	decision, err := e.resolveContextDecision(ctx, userMsg, intent.IntentUnknown, e.sessionState.ContextFrame)
-	if err != nil || decision == nil {
-		return "", false, false
-	}
-	if decision.Decision != ContextDecisionSelectEntity || decision.Target != ContextDecisionTargetInstance {
-		return "", false, false
-	}
-	ref := strings.TrimSpace(decision.InstanceRef)
-	if ref == "" {
-		ref = strings.TrimSpace(userMsg)
-	}
-	match := matchResourceSelection(ref, *pending)
-	if !match.ok {
-		if embedded, _ := matchResourceSelectionReference(ref, *pending); embedded.ok {
-			match = embedded
-		}
-	}
-	if !match.ok || match.ambiguous {
-		return "", false, false
-	}
-	e.recordSelectedInstanceID(match.instance.UHostId, match.instance.Name)
-	e.pendingResourceSelection = nil
-	// Selection updates understanding state, but does not itself answer any
-	// additional question in the same utterance. Keep an unrelated old workflow
-	// from consuming the turn and let the context-aware Agent decide the reply.
-	e.deferTaskCarryThisTurn = true
-	e.refreshSystemPrompt()
-	return "", true, false
-}
-
 func isResourceSelectionExpired(currentTurn int, p pendingResourceSelection) bool {
 	return currentTurn > p.createdTurn+2
 }

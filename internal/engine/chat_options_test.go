@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
@@ -120,36 +119,6 @@ func TestRehydrateHistorySkipsNonUserNonAssistantRoles(t *testing.T) {
 // Low router confidence says nothing about answer validity. It must not turn a
 // normal context-aware fallback into a fake KB refusal merely because the answer
 // lacks citation punctuation.
-func TestOnTextDeltaLowConfidenceKnowledgeFallbackPreservesAnswer(t *testing.T) {
-	client := &deltaMockLLM{}
-	eng := NewWithDeps(client, &mockExecutor{}, func(string, map[string]any) bool { return false })
-	eng.InitWithContext("用户当前没有实例。")
-
-	// Low-confidence KnowledgeQA falls back to the shared read-only agent.
-	lowConfPlan := intent.IntentRoute{
-		SchemaVersion: intent.SchemaVersion,
-		Intent:        intent.IntentKnowledgeQA,
-		Confidence:    0.3,
-	}
-	eng.intentPlanner = &scriptedIntentPlanner{
-		results: []intent.IntentRouterResult{{Plan: lowConfPlan}},
-	}
-	// A non-nil retriever keeps planner dispatch enabled, but retrieval never ran.
-	eng.knowledgeRetriever = &scriptedKnowledgeRetriever{}
-
-	var deltas []string
-	reply, err := eng.ChatWithOptions(context.Background(), "你好", nil, ChatOptions{
-		OnTextDelta: func(s string) { deltas = append(deltas, s) },
-	})
-
-	require.NoError(t, err)
-	assert.Equal(t, "你好", reply)
-	assert.Equal(t, []string{"你", "好"}, deltas)
-}
-
-// TestOnTextDeltaReplaysRawDeltasWhenNoOverride verifies that when no engine
-// guard rewrites the content, OnTextDelta still receives the original streamed
-// chunks in order (regression guard for the unchanged path).
 func TestOnTextDeltaReplaysRawDeltasWhenNoOverride(t *testing.T) {
 	client := &deltaMockLLM{}
 	eng := NewWithDeps(client, &mockExecutor{}, func(string, map[string]any) bool { return false })

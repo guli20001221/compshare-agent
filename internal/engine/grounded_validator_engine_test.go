@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
@@ -15,7 +14,6 @@ import (
 // zeroed at the top of every turn, so one turn's accumulated evidence cannot leak
 // into the next (the cross-tenant/cross-turn concern engine_session_test.go guards).
 func TestChatResetsSearchKnowledgeLedgerEachTurn(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
@@ -25,11 +23,6 @@ func TestChatResetsSearchKnowledgeLedgerEachTurn(t *testing.T) {
 			map[string]any{"UHostId": "uhost-b", "Name": "b", "State": "Running"},
 		},
 	}, "test"))
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-		Model:          "deepseek-v4-flash",
-	})
-
 	// Simulate a prior turn that accumulated agentic evidence into the per-turn ledger.
 	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "stale-1"}}}
 	_, err := eng.Chat(context.Background(), "我的机器有问题", noopStep)

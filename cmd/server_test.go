@@ -284,28 +284,7 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 
 	eng, err := pool.Get(context.Background(), store.Owner{TopOrganizationID: 1, OrganizationID: 2}, "sess")
 	require.NoError(t, err)
-	require.True(t, eng.CentralAgentRuntimeEnabled(), "HTTP sessions must use the complete central Agent architecture")
-	require.Nil(t, eng.IntentPlannerPointer(), "the server must not put a second semantic model before the Agent")
-}
-
-func TestConfigureSharedDepsDoesNotConstructServerIntentPlanner(t *testing.T) {
-	engine.SetUnifiedCreateEnabled(false)
-	t.Cleanup(func() { engine.SetUnifiedCreateEnabled(true) })
-
-	cfg := &config.Config{Agent: config.AgentConfig{
-		LLM: config.LLMConfig{BaseURL: "http://localhost:1/v1", APIKey: "test-key", Model: "deepseek-v4-flash"},
-	}}
-	deps, _, err := configureSharedDepsFromEnv(cfg, func(key string) string {
-		switch key {
-		case "USE_KNOWLEDGE_RETRIEVAL", "USE_GROUNDED_RENDERER":
-			return "off"
-		}
-		return ""
-	})
-	require.NoError(t, err)
-	require.Nil(t, deps.IntentPlanner)
-	require.Empty(t, deps.IntentPlannerEnabledIntents)
-	require.Empty(t, deps.IntentRouteIntents)
+	require.Nil(t, eng.KnowledgeRetrieverPointer(), "disabled retrieval must stay disabled in pooled sessions")
 }
 
 func TestApplySharedDepsSessionFactContextFromEnv(t *testing.T) {
@@ -400,11 +379,8 @@ func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, deps.KnowledgeRetriever, "default runtime should enable qwen3_rrf retrieval")
-	require.Nil(t, deps.IntentPlanner, "knowledge retrieval is selected by the central Agent, not a preceding router")
 	require.NotNil(t, deps.GroundedGenerator, "default runtime should enable LLM grounded renderer")
 	require.Equal(t, "deepseek-v4-flash", deps.GroundedGeneratorModel)
-	require.Empty(t, deps.IntentPlannerModel)
-	require.Empty(t, deps.IntentRouteIntents)
 }
 
 func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {

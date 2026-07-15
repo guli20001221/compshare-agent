@@ -51,29 +51,7 @@ func (e *Engine) emitTurnCompletion() {
 		ModelCalls:      e.turnModelCallsThisTurn,
 		ContextDecision: observability.CompletionDecisionNotInvoked,
 		ToolScope:       string(tools.ToolScopeNamed),
-	}
-	if e.contextDecisionTraceSeenThisTurn {
-		ctxTrace := e.contextDecisionTraceThisTurn
-		trace.ContextDecision = ctxTrace.Decision
-		if trace.ContextDecision == "" {
-			if ctxTrace.Error != "" {
-				trace.ContextDecision = observability.CompletionDecisionError
-			} else {
-				trace.ContextDecision = observability.CompletionDecisionNotInvoked
-			}
-		}
-		trace.ReadSet = append([]string(nil), ctxTrace.ReadSet...)
-		trace.StateDelta = append([]string(nil), ctxTrace.StateDelta...)
-		trace.ToolScope = ctxTrace.ToolScope
-		trace.ToolNames = append([]string(nil), ctxTrace.ToolNames...)
-	} else if e.reactRoundsThisTurn > 0 || e.lastPlannerRouteStatusThisTurn != intent.RouteStatusNone {
-		route := e.lastPlannerIntentForCompletionThisTurn
-		if route == "" {
-			route = e.lastPlannerIntentThisTurn
-		}
-		scope := toolScopeForIntent(route)
-		trace.ToolScope = string(scope.Mode)
-		trace.ToolNames = append([]string(nil), scope.Names...)
+		ToolNames:       centralAgentToolNames(e.mutatingToolsEnabled),
 	}
 
 	trace.Class, trace.Reason = e.classifyTurnCompletion()
@@ -91,9 +69,6 @@ func (e *Engine) classifyTurnCompletion() (string, string) {
 	}
 	if e.turnCompletionClassHint != "" {
 		return e.turnCompletionClassHint, e.turnCompletionReasonHint
-	}
-	if e.contextDecisionTraceSeenThisTurn && e.contextDecisionTraceThisTurn.Decision == ContextDecisionClarify {
-		return observability.CompletionClassStructuredClarify, observability.CompletionReasonContextClarification
 	}
 	if e.reactRoundsThisTurn > 0 {
 		return observability.CompletionClassAgent, observability.CompletionReasonAgentLoop

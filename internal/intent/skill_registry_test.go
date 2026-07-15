@@ -2,8 +2,6 @@ package intent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"reflect"
 	"sort"
 	"testing"
@@ -16,23 +14,6 @@ import (
 // prompt must hash to systemPromptSHA256Baseline. Any drift in a route's
 // directive, example question, or confidence (or the fragment order) changes this
 // SHA and fails here. (Replaces the deleted flag-gated SHA test from P3a-3.)
-func TestSystemPrompt_MatchesBaselineSHA(t *testing.T) {
-	sum := sha256.Sum256([]byte(buildSystemPrompt()))
-	got := hex.EncodeToString(sum[:])
-	if got != systemPromptSHA256Baseline {
-		t.Errorf("system prompt drifted from baseline.\n"+
-			"  baseline: %s\n"+
-			"  got:      %s\n"+
-			"The route registry is the sole deterministic route source; a directive/example/order"+
-			" change broke the pinned SHA.",
-			systemPromptSHA256Baseline, got)
-	}
-}
-
-// TestRouteSource_SkillRegistryRoutesIdenticalDispatch asserts every
-// route intent dispatches to a handler that returns Handled with
-// ToolAction == requiredTool (func-pointer identity is separately pinned by
-// TestRouteHandlerByKey_MatchesRegistry).
 func TestRouteSource_SkillRegistryRoutesIdenticalDispatch(t *testing.T) {
 	h := NewDemoHandler(stubFailingExecutor{})
 	for i := range routingIntentSet() {

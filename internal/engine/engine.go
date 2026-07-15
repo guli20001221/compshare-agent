@@ -156,10 +156,6 @@ type LLMClient interface {
 	Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error)
 }
 
-type IntentPlanner interface {
-	Plan(ctx context.Context, input intent.IntentRouterInput) (intent.IntentRouterResult, error)
-}
-
 type KnowledgeRetriever interface {
 	Retrieve(question, productArea string) knowledge.RetrievalResult
 }
@@ -214,11 +210,6 @@ type ChatOptions struct {
 	SecretInputs map[string]string
 }
 
-type IntentPlannerOptions struct {
-	EnabledIntents []intent.Intent
-	Model          string
-}
-
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
 	llmClient LLMClient
@@ -238,29 +229,15 @@ type Engine struct {
 	// zoneCatalog resolves availability zones (incl. Chinese display names) from
 	// the live support-zone catalog. nil → falls back to the process-wide
 	// zones.Default(); tests inject a fresh catalog for isolation.
-	zoneCatalog                 *zones.Catalog
-	registry                    *entity.EntityRegistry
-	intentPlanner               IntentPlanner
-	intentPlannerModel          string
-	intentPlannerEnabledIntents map[intent.Intent]struct{}
-	intentRouteIntents          map[intent.Intent]struct{}
-	knowledgeRetriever          KnowledgeRetriever
-	createPreferenceExtractor   CreatePreferenceExtractor
-	contextDecisionLayer        ContextDecisionLayer
-	// contextDecision* is turn-local. A turn may pass through resource selection,
-	// workflow continuation, fact follow-up and create continuation, but all of
-	// them must consume one shared judgment over the same user message instead of
-	// independently asking the model and getting contradictory answers.
-	contextDecisionAttemptedThisTurn bool
-	contextDecisionUserTextThisTurn  string
-	contextDecisionThisTurn          *ContextDecision
-	contextDecisionErrThisTurn       error
-	contextDecisionTraceThisTurn     ContextDecisionTrace
-	contextDecisionTraceSeenThisTurn bool
-	agentRuntimeEventsThisTurn       []agentruntime.Event
-	agentRuntimeObserver             func(agentruntime.Event)
-	groundedRenderer                 grounded.Renderer
-	groundedRendererModel            string
+	zoneCatalog                *zones.Catalog
+	registry                   *entity.EntityRegistry
+	intentRouteIntents         map[intent.Intent]struct{}
+	knowledgeRetriever         KnowledgeRetriever
+	createPreferenceExtractor  CreatePreferenceExtractor
+	agentRuntimeEventsThisTurn []agentruntime.Event
+	agentRuntimeObserver       func(agentruntime.Event)
+	groundedRenderer           grounded.Renderer
+	groundedRendererModel      string
 	// fastTemplate, when true, makes fast-tier catalog envelopes
 	// (gpu_specs / stock / image_list) render via the handler's
 	// deterministic Reply instead of the LLM grounded renderer (B3). The
@@ -274,7 +251,6 @@ type Engine struct {
 	retrievalTraceObserver        func(observability.RetrievalTrace)
 	freshnessTraceObserver        func(observability.FreshnessTrace)
 	diagnosisTraceObserver        func(observability.DiagnosisTrace)
-	contextDecisionObserver       func(ContextDecisionTrace)
 	turnCompletionObserver        func(observability.TurnCompletionTrace)
 	outcomeTraceObserver          func(observability.OutcomeTrace)
 	tokenUsageObserver            func(llm.TokenUsage)
@@ -389,11 +365,6 @@ type Engine struct {
 	// intentScopedReActPromptEnabled keeps the persisted system prompt slim
 	// and injects intent cards only into the per-call message copy.
 	intentScopedReActPromptEnabled bool
-	// centralAgentRuntimeEnabled cuts model-preceding semantic dispatch out of
-	// the turn. It remains opt-in until the write proposal and response gateway
-	// are both promoted, so a deployment never mixes half of the new runtime with
-	// half of the old semantic stack.
-	centralAgentRuntimeEnabled bool
 	// readCapabilitySubjectsThisTurn is current-turn server evidence for the
 	// ActionProposal target verifier. It never persists and never carries values
 	// other than exact resource IDs returned by a read capability.
@@ -486,32 +457,19 @@ type Engine struct {
 // (RateLimiter has its own mutex). See plan §3.1 / §5 for the full
 // classification rationale.
 //
-// IntentPlanner / KnowledgeRetriever / GroundedGenerator are exported so the
-// server bootstrap (A3) can assign them directly on a SharedDeps assembled
-// by NewSharedDeps. CLI keeps populating them via Engine.SetIntentPlanner /
-// SetKnowledgeRetriever / SetGroundedGenerator on the per-process Engine
-// returned by engine.New; that path stays valid because NewSession copies
-// these fields into the Engine and the setters then overwrite them with
-// the same instance. ApplySharedDepsFromEnv (planned for A3, see plan §5.6)
-// will unify CLI/server env-driven setup; for A2 it is deferred.
-//
-// Do NOT add a builder pattern (`WithIntentPlanner(...)`). SharedDeps is
-// frozen as soon as the first NewSession is called; later runtime mutation
-// would race against in-flight sessions reading these fields.
+// KnowledgeRetriever and GroundedGenerator are exported so server bootstrap
+// can assign them on immutable process-wide dependencies before sessions start.
 type SharedDeps struct {
 	LLMClient LLMClient
 	// AgentLLMClient is the TierAgent (strong-model) client. NewSharedDeps
 	// keeps the router's TierAgent client instead of discarding it (the same
 	// router that yields LLMClient = For(TierFast)). Copied into every
 	// NewSession as Engine.agentLLMClient. Empty on the test path.
-	AgentLLMClient              LLMClient
-	IntentPlanner               IntentPlanner
-	IntentPlannerModel          string
-	IntentPlannerEnabledIntents map[intent.Intent]struct{}
-	IntentRouteIntents          map[intent.Intent]struct{}
-	KnowledgeRetriever          KnowledgeRetriever
-	GroundedGenerator           grounded.Renderer
-	GroundedGeneratorModel      string
+	AgentLLMClient         LLMClient
+	IntentRouteIntents     map[intent.Intent]struct{}
+	KnowledgeRetriever     KnowledgeRetriever
+	GroundedGenerator      grounded.Renderer
+	GroundedGeneratorModel string
 	// FastTemplateRenderer enables B3: fast-tier catalog envelopes render
 	// via the handler's deterministic Reply instead of the LLM grounded
 	// renderer. Default false (LLM renderer for all tiers, unchanged).
@@ -624,27 +582,23 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	}
 	eng := &Engine{
 		// ── shared (pointer-equal across sessions) ──
-		llmClient:                   deps.LLMClient,
-		agentLLMClient:              deps.AgentLLMClient,
-		intentPlanner:               deps.IntentPlanner,
-		intentPlannerModel:          deps.IntentPlannerModel,
-		intentPlannerEnabledIntents: deps.IntentPlannerEnabledIntents,
-		intentRouteIntents:          deps.IntentRouteIntents,
-		knowledgeRetriever:          deps.KnowledgeRetriever,
-		groundedRenderer:            deps.GroundedGenerator,
-		groundedRendererModel:       deps.GroundedGeneratorModel,
-		fastTemplate:                deps.FastTemplateRenderer,
-		rateLimiter:                 deps.RateLimiter,
-		supportsObjectToolChoice:    deps.SupportsObjectToolChoice,
-		supportsRequiredToolChoice:  deps.SupportsRequiredToolChoice,
-		maxTokensPerTurn:            deps.MaxTokensPerTurn,
+		llmClient:                  deps.LLMClient,
+		agentLLMClient:             deps.AgentLLMClient,
+		intentRouteIntents:         deps.IntentRouteIntents,
+		knowledgeRetriever:         deps.KnowledgeRetriever,
+		groundedRenderer:           deps.GroundedGenerator,
+		groundedRendererModel:      deps.GroundedGeneratorModel,
+		fastTemplate:               deps.FastTemplateRenderer,
+		rateLimiter:                deps.RateLimiter,
+		supportsObjectToolChoice:   deps.SupportsObjectToolChoice,
+		supportsRequiredToolChoice: deps.SupportsRequiredToolChoice,
+		maxTokensPerTurn:           deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
 		confirmFn:                      opts.ConfirmFn,
 		registry:                       entity.NewRegistry(),
 		rateLimitSubject:               opts.Subject,
 		mutatingToolsEnabled:           opts.MutatingToolsEnabled,
-		centralAgentRuntimeEnabled:     true,
 		userTurn:                       max(opts.InitialCommittedTurns, 0),
 		sessionFactContextEnabled:      deps.SessionFactContextEnabled,
 		reactResultProjectionEnabled:   deps.ReactResultProjectionEnabled,
@@ -743,15 +697,11 @@ func (e *Engine) SetIntentScopedReActPromptEnabled(v bool) {
 	e.intentScopedReActPromptEnabled = v
 }
 
-// CentralAgentRuntimeEnabled reports the grouped architecture selected when
-// the session was constructed. It exists for boot-wiring and acceptance tests.
-func (e *Engine) CentralAgentRuntimeEnabled() bool { return e.centralAgentRuntimeEnabled }
-
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	return prompt.BuildOptions{
 		MutatingToolsEnabled:    e.mutatingToolsEnabled,
 		IntentScopedReActPrompt: e.intentScopedReActPromptEnabled,
-		CentralAgentRuntime:     e.centralAgentRuntimeEnabled,
+		CentralAgentRuntime:     true,
 	}
 }
 
@@ -788,44 +738,6 @@ func (e *Engine) RunAgentSaga(ctx context.Context, def *workflow.Definition, par
 		SkillID:      skillID,
 	})
 	return runner.Run(ctx, def, params)
-}
-
-func (e *Engine) SetIntentPlanner(planner IntentPlanner, opts IntentPlannerOptions) {
-	e.intentPlanner = planner
-	e.intentPlannerModel = opts.Model
-	e.intentPlannerEnabledIntents, e.intentRouteIntents = BuildIntentPlannerMaps(opts.EnabledIntents)
-}
-
-// BuildIntentPlannerMaps converts the configured EnabledIntents slice into the
-// two derived sets the engine consults during planning. Extracted so both
-// Engine.SetIntentPlanner (CLI path) and a future ApplySharedDepsFromEnv
-// helper (A3, server path) build the same maps.
-func BuildIntentPlannerMaps(enabled []intent.Intent) (enabledMap, routeMap map[intent.Intent]struct{}) {
-	enabledMap = map[intent.Intent]struct{}{}
-	routeMap = map[intent.Intent]struct{}{}
-	for _, e := range enabled {
-		if e == intent.IntentResourceInfo ||
-			e == intent.IntentMonitorQuery ||
-			e == intent.IntentMonitorHistory ||
-			e == intent.IntentBillingAccountUnsupported ||
-			e == intent.IntentDiagnosis ||
-			e == intent.IntentVagueFailure ||
-			e == intent.IntentOperationLifecycle ||
-			intent.IsRoutingIntent(e) {
-			enabledMap[e] = struct{}{}
-		}
-		switch e {
-		case intent.IntentResourceInfo, intent.IntentMonitorQuery, intent.IntentMonitorHistory:
-			routeMap[e] = struct{}{}
-		default:
-			// Routing Registry v1: any registered route intent is
-			// admissible to the route set without per-case wiring here.
-			if intent.IsRoutingIntent(e) {
-				routeMap[e] = struct{}{}
-			}
-		}
-	}
-	return enabledMap, routeMap
 }
 
 func (e *Engine) SetPlannerTraceObserver(observer func(observability.RouterTrace)) {
@@ -1045,10 +957,6 @@ func (e *Engine) LLMClientPointer() LLMClient { return e.llmClient }
 // session-isolation tests. Test-only.
 func (e *Engine) KnowledgeRetrieverPointer() KnowledgeRetriever { return e.knowledgeRetriever }
 
-// IntentPlannerPointer returns the underlying IntentPlanner for
-// session-isolation tests. Test-only.
-func (e *Engine) IntentPlannerPointer() IntentPlanner { return e.intentPlanner }
-
 // RateLimiterPointer returns the underlying RateLimiter for
 // session-isolation tests. Test-only.
 func (e *Engine) RateLimiterPointer() governance.RateLimiter { return e.rateLimiter }
@@ -1156,60 +1064,6 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 		return entity.RegistrySnapshot{SyncEvent: string(entity.SyncEventUnavailable)}
 	}
 	return e.registry.Snapshot()
-}
-
-// PlannerLastAssistantSnippet returns the most recent assistant message's
-// content from the in-memory ReAct history. Used by callers that build
-// IntentRouterInput externally (e.g. the CLI shadow runner) to supply the
-// PR1 hotfix Bug 2 structured "Last assistant snippet" signal.
-func (e *Engine) PlannerLastAssistantSnippet() string {
-	return e.lastAssistantContent()
-}
-
-// PlannerPriorTextSnapshot returns a bounded, read-only text projection of
-// prior user/assistant turns for shadow-planner provenance checks. It excludes
-// system prompts and tool-result JSON so shadow mode does not expand the data
-// surface beyond conversational text.
-func (e *Engine) PlannerPriorTextSnapshot() string {
-	if e == nil || len(e.messages) == 0 {
-		return ""
-	}
-	lines := make([]string, 0, maxPlannerPriorMessages)
-	for i := len(e.messages) - 1; i >= 0 && len(lines) < maxPlannerPriorMessages; i-- {
-		msg := e.messages[i]
-		role := ""
-		switch msg.Role {
-		case openai.ChatMessageRoleUser:
-			role = "user"
-		case openai.ChatMessageRoleAssistant:
-			role = "assistant"
-		default:
-			continue
-		}
-		content := strings.TrimSpace(msg.Content)
-		if content == "" {
-			continue
-		}
-		lines = append(lines, role+": "+content+"\n")
-	}
-	var b strings.Builder
-	included := make([]string, 0, len(lines))
-	budget := maxPlannerPriorTextRunes
-	for _, line := range lines {
-		runes := []rune(line)
-		if len(runes) > budget {
-			if len(included) == 0 && budget > 0 {
-				included = append(included, string(runes[:budget]))
-			}
-			break
-		}
-		included = append(included, line)
-		budget -= len(runes)
-	}
-	for i := len(included) - 1; i >= 0; i-- {
-		b.WriteString(included[i])
-	}
-	return strings.TrimSpace(b.String())
 }
 
 // InitWithContext performs context injection with a pre-built user context string,
@@ -1375,7 +1229,6 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
 	e.resetTurnCompletion()
-	e.resetContextDecisionTurn()
 	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
 		e.turnModelCallsThisTurn++
 	})
@@ -1481,7 +1334,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistoryWithContext(ctx)
-	priorText := e.PlannerPriorTextSnapshot()
 
 	// Pre-LLM hard-block chain — runs on raw userMsg only, BEFORE OCR
 	// image context is prepended. This prevents screenshot UI labels
@@ -1527,34 +1379,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorWindow = false
 	e.displayedResourceSelectionThisTurn = nil
 
-	if !e.centralAgentRuntimeEnabled {
-		if reply, handled := e.tryBillingAccountUnsupportedBeforeResourceSelection(ctx, userMsg, priorText); handled {
-			return reply, nil
-		}
-		if reply, handled := e.tryResumeResourceSelection(ctx, userMsg, onStep); handled {
-			if e.displayedResourceSelectionThisTurn != nil {
-				e.markTurnCompletion(observability.CompletionClassStructuredClarify, observability.CompletionReasonSelectionRequired)
-			} else {
-				e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
-			}
-			return reply, nil
-		}
-		// Legacy write shortcuts remain together behind the legacy semantic stack.
-		if !e.hasContextDecisionContext() {
-			if reply, handled := e.tryDirectStopSchedulerFromUserText(ctx, userMsg, onStep); handled {
-				e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
-				return reply, nil
-			}
-			if reply, handled := e.tryDirectLifecycleFromUserText(ctx, userMsg, onStep); handled {
-				e.markTurnCompletion(observability.CompletionClassDeterministicAnswer, observability.CompletionReasonDirectStateMachine)
-				return reply, nil
-			}
-		}
-		if reply, handled := e.tryPlannerDispatch(ctx, userMsg, priorText, onStep, opts.OnTextDelta); handled {
-			return reply, nil
-		}
-	}
-
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
 		round := runtimeRound.Index()
@@ -1594,10 +1418,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
 		messages := e.buildMessagesForLLM()
-		toolWindow := visibleRegistryForIntentRoute(intent.IntentRoute{Intent: e.lastPlannerIntentThisTurn}, e.mutatingToolsEnabled)
-		if e.centralAgentRuntimeEnabled {
-			toolWindow = centralAgentToolWindow(e.mutatingToolsEnabled)
-		}
+		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled)
 		req := llm.ChatRequest{
 			Messages: messages,
 			// The dispatch tool window is derived solely from the planner intent
@@ -1896,8 +1717,7 @@ type routerDispatchResult struct {
 }
 
 // lastAssistantContent returns the most recent assistant message's text from
-// the in-memory ReAct history, or "" if none. Used as a low-token topic
-// continuity hint for the planner (see IntentRouterInput.LastAssistantSnippet).
+// the in-memory Agent history, or "" if none.
 func (e *Engine) lastAssistantContent() string {
 	if e == nil {
 		return ""
@@ -1909,255 +1729,6 @@ func (e *Engine) lastAssistantContent() string {
 		}
 	}
 	return ""
-}
-
-func (e *Engine) tryPlannerDispatch(ctx context.Context, userMsg, priorText string, onStep func(StepEvent), onTextDelta func(string)) (string, bool) {
-	if !e.plannerDispatchEnabled() {
-		return "", false
-	}
-
-	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
-	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
-		// The router is UNSURE, or it broke. That is not evidence the user abandoned
-		// their task, and it must not be treated as permission to delete it.
-		//
-		// Every condition that lands here (commonPlannerCandidateStatus) says something
-		// about the ROUTER, never about the user: the planner call errored or was
-		// rate-limited (Fallback), its JSON failed validation, its schema version drifted,
-		// or its confidence came in under 0.60. This branch used to open with
-		// clearDeployClarificationCarry(), which wipes PendingDeployModel and the deploy
-		// ContextFrame — the whole in-progress task, GPU / zone / image / why it failed —
-		// and only THEN fall through to ReAct. The continuation resolver that would have
-		// adjudicated the frame sits ~90 lines below and never got the turn.
-		//
-		// So a bare 「嗯」 mid-deploy, or one 5xx from the router, silently destroyed the
-		// deployment. And the correlation runs the wrong way: a short, vague follow-up is
-		// exactly the input flash is least confident on, so the gate tripped hardest on
-		// precisely the turns where continuation mattered most. The failure path was more
-		// destructive than the success path — a CONFIDENT non-create turn leaves the frame
-		// standing for resolveContextContinuation to judge (continue / new / clear /
-		// clarify), while a router wobble deleted it with no adjudication at all.
-		//
-		// The authors named this hazard themselves, ~40 lines below, and routed the SUCCESS
-		// path around it ("would run BEFORE the deploy/create resume logic and tear down the
-		// frame it is about to need"). The failure path was left doing exactly the forbidden
-		// thing.
-		//
-		// The route signal is untrusted here, but the already-persisted workflow frame is
-		// still trusted state. Resolve it with router_intent=unknown: a Continue may resume
-		// only through the existing trusted-slot + confirmation path, a Clarify may answer,
-		// and New/Clear may retire the task. Resolver failure preserves the task and falls
-		// into a read-only ReAct window.
-		e.lastPlannerIntentThisTurn = intent.IntentUnknown
-		e.lastPlannerActionThisTurn = ""
-		decision, hasContext, err := e.resolveTurnContextDecision(ctx, userMsg, intent.IntentUnknown)
-		if err != nil {
-			e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
-			return "", false
-		}
-		if hasContext && decision != nil {
-			if decision.Decision == ContextDecisionClarify && strings.TrimSpace(decision.Clarify) != "" {
-				reply := strings.TrimSpace(decision.Clarify)
-				e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
-				e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
-				return reply, true
-			}
-			if e.tokenBudgetExceeded() {
-				e.emitTokenBudgetExceededHardBlock()
-				e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
-				e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: tokenBudgetExceededMessage})
-				return tokenBudgetExceededMessage, true
-			}
-			// Strip the guessed route before any continuation consumer sees it. The
-			// workflow/action comes from the server-created frame, never from this plan.
-			safeDispatch := dispatch
-			safeDispatch.result.Plan = intent.IntentRoute{
-				SchemaVersion: intent.SchemaVersion,
-				Intent:        intent.IntentUnknown,
-				Confidence:    0,
-			}
-			if decision.Decision == ContextDecisionContinueTask {
-				if reply, handled := e.tryResumeWorkflowContextFrame(ctx, safeDispatch, userMsg, onStep); handled {
-					return reply, true
-				}
-				if reply, handled := e.tryResumeCreateContextFrame(ctx, safeDispatch, userMsg, onStep); handled {
-					return reply, true
-				}
-			}
-			if decision.Decision == ContextDecisionAnswerFollowup {
-				if reply, handled := e.tryRecentFactFollowup(ctx, safeDispatch, userMsg, onStep); handled {
-					return reply, true
-				}
-			}
-		}
-		e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
-		return "", false
-	}
-
-	// Record the planner intent for all subsequent branches. If any branch
-	// falls back to ReAct (return "", false), the ReAct loop uses this to
-	// scope the tool list via intent.IntentToolSubset.
-	e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
-	// ...and remember it for the NEXT turn's router, which is a different question.
-	//
-	// lastPlannerIntentThisTurn is TURN-scoped. SessionState.LastIntent is what the
-	// router actually reads next turn (callPlannerOnce -> IntentRouterInput.LastIntent),
-	// and until now it was only ever written on the direct-dispatch path
-	// (recordLastIntentFromPlan, inside `if handled.Status == HandlerStatusHandled`).
-	//
-	// diagnosis and knowledge_qa have no direct-dispatch handler. They fall through to
-	// ReAct as fallback_ineligible, so they could NEVER be "confirmed by a fully-dispatched
-	// handler reply" and were therefore never recorded — no matter how confidently the
-	// router classified them, or how many turns the conversation spent there. A live replay
-	// of real traffic shows a session running FIVE consecutive diagnosis turns with
-	// router_has_last_intent=false on every one.
-	//
-	// Those are the two biggest intents in real traffic (659 knowledge_qa + 260 diagnosis of
-	// 1280 follow-up turns), and a user mid-diagnosis pasting terminal output is the single
-	// largest amnesia class. So the router's one piece of conversation state was structurally
-	// unable to represent the two conversations users actually have.
-	//
-	// This is the right place: the plan is past commonPlannerCandidateStatus (schema-valid,
-	// confidence >= 0.60), and the code already decided here that the intent is good enough
-	// to scope the whole turn's tool list by. If it is good enough for that, it is good
-	// enough to remember.
-	//
-	// Deliberately NOT recordLastIntentFromPlan: that one also fires
-	// clearPendingDeployModel / clearDeployClarificationCarry, which at this point in the
-	// turn would run BEFORE the deploy/create resume logic and tear down the frame it is
-	// about to need. Persisting the intent must not mutate the create flow.
-	e.rememberLastIntentForRouter(dispatch.result.Plan)
-	// PR1 hotfix Bug 4 (2026-05-28): capture slots.action so executeTool can
-	// deterministically pre-filter DescribeCompShareInstance rows by State.
-	e.lastPlannerActionThisTurn = dispatch.result.Plan.Slots.Action
-	if dispatch.result.Plan.Intent == intent.IntentDiagnosis {
-		// ...and remember WHICH MACHINE, which is the other half of the same hole. The
-		// scan below already derives the referent from the user's own words; until now
-		// the turn used it and then threw it away, because diagnosis has no
-		// direct-dispatch handler to record it (see rememberUserNamedInstance).
-		snapshot := e.diagnosisResolutionSnapshot(ctx, dispatch.snapshot)
-		dispatch.result.Plan = augmentPlanTargetRefsFromUserText(dispatch.result.Plan, userMsg, snapshot)
-		e.rememberUserNamedInstance(userMsg, snapshot)
-	}
-
-	turnContextDecision, hasTurnContext, contextDecisionErr := e.resolveTurnContextDecision(ctx, userMsg, dispatch.result.Plan.Intent)
-	if contextDecisionErr != nil {
-		// A confident route does not become permission to mutate when the one
-		// component responsible for deciding context lifetime is unavailable.
-		// Preserve the task and let ReAct explain/re-query with read-only tools.
-		e.lastPlannerIntentThisTurn = intent.IntentUnknown
-		e.lastPlannerActionThisTurn = ""
-		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackInvalid, dispatch.latency)
-		return "", false
-	}
-
-	// A context decision has already paid for and produced this clarification.
-	// Deliver it before applying the budget to any next operation.
-	if hasTurnContext && turnContextDecision != nil && turnContextDecision.Decision == ContextDecisionClarify && strings.TrimSpace(turnContextDecision.Clarify) != "" {
-		reply := strings.TrimSpace(turnContextDecision.Clarify)
-		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
-		return reply, true
-	}
-
-	// Token budget gate. callPlannerOnce already added planner usage to
-	// the per-turn counter; if that alone blew the cap, return the
-	// canned reply BEFORE any further LLM call (route handler or grounded
-	// renderer). Without this
-	// every planner-handled path could spend an extra answerer call's
-	// worth of tokens past the cap — the C1 finding from 2026-05-21
-	// review. Returning handled=true short-circuits Chat() so it does
-	// NOT fall through to the ReAct loop (which would re-trip the gate
-	// but waste a frame). No tool_call/tool_result pair is in flight
-	// here (planner-handled paths don't emit ReAct tool events), so
-	// the (c) protocol invariant is naturally satisfied.
-	if e.tokenBudgetExceeded() {
-		e.emitTokenBudgetExceededHardBlock()
-		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: tokenBudgetExceededMessage,
-		})
-		return tokenBudgetExceededMessage, true
-	}
-	if reply, handled := e.tryPlannerDiagnosisClarification(dispatch); handled {
-		return reply, true
-	}
-	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
-		return reply, true
-	}
-	if reply, handled := e.tryResumeWorkflowContextFrame(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
-	}
-	if reply, handled := e.tryCFSWorkflowDispatch(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
-	}
-	if reply, handled := e.tryResumeCreateContextFrame(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
-	}
-	if reply, handled := e.tryRecentFactFollowup(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
-	}
-	if reply, handled := e.tryOperationLifecycleDispatch(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
-	}
-	// Agent-tier skills (deploy_model today) dispatch through dispatchAgentSkill —
-	// the uniform seam — not as routes: a route handler reaches only the
-	// ToolExecutor and cannot drive the orchestrator saga. The seam maps the intent
-	// to its handler (DispatchSpec.AgentSkillName) and delegates; deploy_model's handler does
-	// TierAgent image-matching + RunAgentSaga(CreateInstanceDef) + poll-to-Running
-	// (see deploy_model.go). This is byte-stable wiring: the handler body is unchanged.
-	if reply, handled := e.dispatchAgentSkill(ctx, dispatch, userMsg, onStep); handled {
-		return reply, true
-	}
-	if specForIntent(dispatch.result.Plan.Intent).ExecutionMode == intent.ExecutionPathRouting {
-		reply, handled := e.tryRouteDispatch(ctx, dispatch, userMsg, onStep)
-		return reply, handled
-	}
-	// Knowledge Q&A has one production execution path: the shared Agent loop.
-	// SearchKnowledge is a tool in that loop, and verified prior conversation may
-	// be reused when it already answers the follow-up. There is no terminal-RAG
-	// rollback path.
-	if dispatch.result.Plan.Intent == intent.IntentKnowledgeQA {
-		e.knowledgeQAAgentLoopThisTurn = true
-		e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatchedKnowledgeAgentLoop, dispatch.latency)
-		return "", false
-	}
-
-	e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackIneligible, dispatch.latency)
-	return "", false
-}
-
-func (e *Engine) tryBillingAccountUnsupportedDispatch(dispatch routerDispatchResult) (string, bool) {
-	if dispatch.result.Plan.Intent != intent.IntentBillingAccountUnsupported {
-		return "", false
-	}
-	e.emitPlannerTrace(dispatch.result, intent.RouteStatusDispatched, dispatch.latency)
-	return e.emitAccountBillingHardBlock(), true
-}
-
-func (e *Engine) tryBillingAccountUnsupportedBeforeResourceSelection(ctx context.Context, userMsg, priorText string) (string, bool) {
-	pending := e.pendingResourceSelection
-	if pending == nil || isResourceSelectionExpired(e.userTurn, *pending) {
-		return "", false
-	}
-	if resourceSelectionLooksLikeReply(userMsg, *pending) {
-		return "", false
-	}
-	if !e.plannerDispatchEnabled() || !e.plannerIntentEnabled(intent.IntentBillingAccountUnsupported) {
-		return "", false
-	}
-	dispatch := e.callPlannerOnce(ctx, userMsg, priorText)
-	if status, ok := e.commonPlannerCandidateStatus(dispatch.result); !ok {
-		e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
-		e.emitPlannerTrace(dispatch.result, status, dispatch.latency)
-		return "", false
-	}
-	e.lastPlannerIntentThisTurn = dispatch.result.Plan.Intent
-	if reply, handled := e.tryBillingAccountUnsupportedDispatch(dispatch); handled {
-		return reply, true
-	}
-	return "", false
 }
 
 type monitorHistoryTargetStatus string
@@ -2270,129 +1841,6 @@ func workflowFriendlyActionName(action string) string {
 	default:
 		return "操作"
 	}
-}
-
-// dispatchAgentSkill is the uniform agent-tier dispatch seam: it routes an
-// agent-skill intent to its handler and returns (reply, true) exactly when an handler owns
-// the turn. An unmapped intent returns ("", false) so the caller falls through to
-// the Phase-1/RAG chain unchanged — identical to the per-intent branch it replaced.
-// It deliberately does NOT look the skill up in the registry at runtime: deploy_model
-// hardcodes its own saga skillID (deploy_model.go) and never consumes the *Skill, so
-// a lookup would be dead work plus a non-byte-stable fallthrough on (CI-caught)
-// registry drift. A future body-loop handler does its own findGeneratedSkill + Body()
-// inside its case, like runDiagnosisSkill, where the lookup is load-bearing.
-func (e *Engine) dispatchAgentSkill(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
-	skillName := specForIntent(dispatch.result.Plan.Intent).AgentSkillName
-	if skillName == "" {
-		return "", false
-	}
-	switch skillName {
-	case "deploy_model":
-		return e.tryDeployModel(ctx, dispatch, userMsg, onStep)
-	case "create_instance":
-		if !unifiedCreateOn {
-			return "", false
-		}
-		return e.tryCreateInstance(ctx, dispatch, userMsg, onStep)
-	}
-	return "", false
-}
-
-func (e *Engine) tryPlannerDiagnosisClarification(dispatch routerDispatchResult) (string, bool) {
-	switch dispatch.result.Plan.Intent {
-	case intent.IntentVagueFailure:
-		if !e.plannerIntentEnabled(dispatch.result.Plan.Intent) {
-			return "", false
-		}
-		if e.hasReusableCompleteConversation() {
-			// A vague opening turn needs a deterministic clarification. A vague
-			// follow-up does not: the shared Agent can read the preceding exchange
-			// and decide what "还是不行" or "那个又坏了" refers to. Ending here
-			// would turn a router loss of confidence into an artificial memory wall.
-			e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
-			return "", false
-		}
-		reply := diagnosisVagueFailureClarificationReply
-		e.emitPlannerTrace(dispatch.result, intent.RouteStatusFallbackUnresolvedTarget, dispatch.latency)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: reply,
-		})
-		return reply, true
-	case intent.IntentDiagnosis:
-		if len(dispatch.result.Plan.Slots.TargetRefs) > 0 || countPlannerSnapshotInstances(dispatch.snapshot) <= 1 {
-			return "", false
-		}
-		// The scoped diagnosis Agent owns clarification because it can inspect the
-		// complete conversation. Router confidence and registry cardinality are not
-		// sufficient evidence that the turn has no usable context.
-		return "", false
-	default:
-		return "", false
-	}
-}
-
-func (e *Engine) plannerDispatchEnabled() bool {
-	return e != nil && e.intentPlanner != nil &&
-		(len(e.intentPlannerEnabledIntents) > 0 || e.knowledgeRetriever != nil)
-}
-
-func (e *Engine) plannerIntentEnabled(intentValue intent.Intent) bool {
-	if e == nil || e.intentPlannerEnabledIntents == nil {
-		return false
-	}
-	_, ok := e.intentPlannerEnabledIntents[intentValue]
-	return ok
-}
-
-func (e *Engine) callPlannerOnce(ctx context.Context, userMsg, priorText string) routerDispatchResult {
-	start := time.Now()
-	result := engineFallbackPlannerResult()
-	snapshot := e.RegistrySnapshot()
-	if _, ok := e.allowRateLimited(governance.ClassLLM, "intent_planner"); ok {
-		// Pass both structured continuity signals and the hard-bounded recent
-		// conversation. buildUserPrompt reapplies its own 2k-rune cap, so complete
-		// follow-ups reach the router without reviving unbounded prompt growth.
-		var selectedID string
-		if e.sessionStateHydrated {
-			selectedID = e.sessionState.SelectedInstanceID
-		}
-		// Record what the ROUTER can see, at the moment it sees it. This is the turn's
-		// first and most consequential decision — it picks the path — and per the comment
-		// above it makes that decision with the conversation transcript withheld from its
-		// prompt entirely. Recording it is how "the agent forgot" stops being confusable
-		// with "the agent was never told".
-		e.emitContextTrace(priorText, e.sessionState.LastIntent, selectedID)
-
-		planned, err := e.intentPlanner.Plan(ctx, intent.IntentRouterInput{
-			UserText:               userMsg,
-			ImageContext:           e.imageContextThisTurn,
-			LastIntent:             e.sessionState.LastIntent,
-			PriorText:              priorText,
-			LastSelectedInstanceID: selectedID,
-			LastAssistantSnippet:   e.lastAssistantContent(),
-			Resolver:               snapshot,
-		})
-		if err == nil {
-			result = planned
-		}
-	} else {
-		// Planner quota denial is observable through trace.rate_limit. The
-		// route status intentionally collapses this into fallback_invalid
-		// because trace currently has no dedicated planner-denied enum.
-	}
-	latency := time.Since(start)
-
-	// Add planner LLM tokens to the per-turn budget. Planner usage is
-	// surfaced via RouterTrace (not emitTokenUsage), so without this
-	// accumulation a knowledge-QA turn that resolves entirely through
-	// the planner-handled path would never count its planner cost
-	// against maxTokensPerTurn — defeating the "total tokens per turn"
-	// promise of the cap. Tests:
-	// TestChat_TokenBudget_PlannerHandledPath_GateFires.
-	e.accumulateTokenUsage(result.Usage)
-
-	return routerDispatchResult{result: result, latency: latency, snapshot: snapshot}
 }
 
 func (e *Engine) tryRouteDispatch(ctx context.Context, dispatch routerDispatchResult, userMsg string, onStep func(StepEvent)) (string, bool) {
@@ -2586,11 +2034,6 @@ func (e *Engine) tryResumeResourceSelection(ctx context.Context, userMsg string,
 			e.pendingResourceSelection = nil
 			e.deferTaskCarryThisTurn = true
 			e.refreshSystemPrompt()
-			return "", false
-		}
-		if reply, selected, handled := e.tryContextDecisionResourceSelection(ctx, userMsg, pending); handled {
-			return reply, true
-		} else if selected {
 			return "", false
 		}
 		if restoredFromSession || pending.plan.Intent == intent.IntentResourceInfo {
@@ -3087,7 +2530,6 @@ func (e *Engine) emitPlannerTrace(result intent.IntentRouterResult, status inten
 	}
 	trace := intent.ProjectPlannerTrace(result, intent.PlannerTraceOptions{
 		Enabled: true,
-		Model:   e.intentPlannerModel,
 		Latency: latency,
 	})
 	trace.RouteStatus = string(status)
@@ -3671,17 +3113,6 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return errClass + "。工具参数必须是合法的 JSON 对象，请按该工具的参数结构仅输出 JSON 后重新调用。"
 	}
 
-	// SearchKnowledge is released only inside the knowledge_qa agent-loop lane,
-	// whose final answer is checked against the turn's evidence ledger. Hiding the
-	// tool from req.Tools is not an authorization boundary by itself: a model can
-	// still hallucinate a de-advertised function name. Reject that name here before
-	// retrieval so generic ReAct cannot create an unverified mixed-evidence answer.
-	if action == "SearchKnowledge" && !e.knowledgeQAAgentLoopThisTurn && !e.centralAgentRuntimeEnabled {
-		msg := "SearchKnowledge is unavailable for this route"
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg
-	}
-
 	// Knowledge tools execute locally — no API call, no security check needed
 	if knowledge.IsKnowledgeTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
@@ -3700,9 +3131,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// SafeToolExecutor. The knowledge-route check above is the authorization
 	// boundary and rejects calls invented outside that lane.
 	if action == "SearchKnowledge" {
-		if e.centralAgentRuntimeEnabled {
-			e.knowledgeQAAgentLoopThisTurn = true
-		}
+		e.knowledgeQAAgentLoopThisTurn = true
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
 	}
@@ -3729,20 +3158,9 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	// (not LLM-controlled) and each workflow has its own Confirm step for user approval.
 	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
-		if e.centralAgentRuntimeEnabled {
-			msg := "write workflows are unavailable until a verified ActionProposal is accepted"
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-			return friendlyToolResultJSON(msg)
-		}
-		if !e.mutatingToolsEnabled {
-			args = e.safeExecutor.FilterArgs(action, args)
-			msg := mutatingToolsDisabledMessage
-			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
-			return friendlyToolResultJSON(msg)
-		}
-		args = e.safeExecutor.FilterArgs(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args)})
-		return e.executeWorkflow(ctx, action, args, onStep)
+		msg := "write workflows are unavailable until a verified ActionProposal is accepted"
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+		return friendlyToolResultJSON(msg)
 	}
 
 	// Diagnosis meta-tools → delegate to diagnosis engine. Keys on chainRegistry

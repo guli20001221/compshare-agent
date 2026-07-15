@@ -74,10 +74,6 @@ func TestDirectClarificationFromRealPricingFollowupContinuesWithContextAwareAgen
 		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "假如不开机，是不是不收费"},
 		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "按量关机后 CPU、GPU 和内存停止收费，但云盘和镜像仍可能收费。"},
 	)
-	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{
-		Plan: intent.IntentRoute{SchemaVersion: intent.SchemaVersion, Intent: intent.IntentPricingQuery, Confidence: 0.9},
-	}}}, IntentPlannerOptions{EnabledIntents: []intent.Intent{intent.IntentPricingQuery}})
-
 	reply, err := eng.Chat(context.Background(), "是多少钱？", noopStep)
 
 	require.NoError(t, err)

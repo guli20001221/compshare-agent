@@ -74,16 +74,6 @@ func (e *Engine) clearContextFrame() {
 }
 
 func (e *Engine) clearContextFrameForNewDirectWorkflow() {
-	// When this turn already had context, the shared decision owns its
-	// lifetime. A direct workflow parser must not overturn Continue/Clarify just
-	// because it recognized another route. With no context/decision this keeps
-	// the legacy replacement behavior.
-	if e.contextDecisionAttemptedThisTurn {
-		decision := e.contextDecisionThisTurn
-		if decision == nil || (decision.Decision != ContextDecisionNewTask && decision.Decision != ContextDecisionClearContext) {
-			return
-		}
-	}
 	e.clearContextFrame()
 }
 

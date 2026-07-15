@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -160,56 +159,3 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	// SearchKnowledge still ran (the raw retrieval is traced as weak for observability).
 	assert.True(t, eng.searchKnowledgeRanThisTurn)
 }
-
-func TestExecuteTool_SearchKnowledgeRejectsNonKnowledgeRoute(t *testing.T) {
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{Enabled: true}}}
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetKnowledgeRetriever(retriever)
-	var steps []StepEvent
-
-	out := eng.executeTool(context.Background(), openai.ToolCall{
-		ID: "hallucinated", Type: openai.ToolTypeFunction,
-		Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"should not run"}`},
-	}, func(ev StepEvent) { steps = append(steps, ev) })
-
-	assert.Contains(t, out, "unavailable")
-	assert.Empty(t, retriever.calls, "a hidden hallucinated tool name must not execute retrieval")
-	require.Len(t, steps, 1)
-	assert.Equal(t, StepError, steps[0].Type)
-}
-
-// TestPlannerDiagnosisUsesContextAwareAgent pins that an empty-target
-// diagnosis turn (>1 instance) does not short-circuit with a canned which-instance
-// reply — it falls through to the scoped diagnosis agent lane, which can use
-// conversation history or clarify in-loop. SearchKnowledge itself remains
-// restricted to knowledge_qa.
-func TestPlannerDiagnosisUsesContextAwareAgent(t *testing.T) {
-
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
-			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
-		},
-	}, "test"))
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-		Model:          "deepseek-v4-flash",
-	})
-
-	// "我的机器 SSH 连不上了" = "my machine can't SSH"
-	reply, err := eng.Chat(context.Background(), "我的机器 SSH 连不上了", noopStep)
-	require.NoError(t, err)
-	// "哪台实例" = "which instance" — the canned dead-end phrase.
-	assert.NotContains(t, reply, "哪台实例", "flag on: must NOT fire the canned which-instance dead-end")
-	assert.NotEmpty(t, mock.calls, "flag on: empty-target diagnosis falls through to the agent lane (ReAct)")
-}
-
-// TestGuardSearchKnowledgeSynthesis closes the engine-level coverage gap on the
-// P3 no-raw-leak synthesis guard (review TQ-1). It exercises the engine wiring
-// directly: the condition (SearchKnowledge ran this turn), the >=32-rune
-// verbatim-content replacement, and the hardblock trace category.

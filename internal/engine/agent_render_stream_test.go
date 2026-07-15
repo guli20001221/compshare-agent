@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
@@ -24,14 +23,18 @@ type streamingSeqMockLLM struct {
 
 func TestKnowledgeFollowupIsVerifiedBeforeAnyTokenReachesTheClient(t *testing.T) {
 	const chunkID = "prior-refund-policy"
+	chunk := knowledge.KBChunk{ChunkID: chunkID, KBVersion: "kb.v1", Title: "退款规则", Content: "该订单不支持退款。"}
 	mock := &streamingSeqMockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("search", "SearchKnowledge", `{"query":"该订单是否支持退款"}`)}},
 		{Content: "所有订单都可以全额退款。"},
 		{Content: `{"supported":false,"claims":[],"unsupported":["所有订单都可以全额退款"]}`},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test")
-	eng.SetIntentPlanner(&scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}, IntentPlannerOptions{Model: "test"})
-	eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{})
+	eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true, KBVersion: "kb.v1", Hits: []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}})
 	eng.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
 		VerifiedKnowledge: []VerifiedKnowledgeTurn{{

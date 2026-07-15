@@ -90,8 +90,8 @@ func (r *Recorder) Hooks() engine.TraceHooks {
 		Retrieval: r.SetRetrievalTrace, Freshness: r.SetFreshnessTrace,
 		Diagnosis: r.SetDiagnosisTrace, Outcome: r.SetOutcomeTrace,
 		Renderer: r.SetRendererTrace, HardBlock: r.SetEngineHardBlock,
-		ContextDecision: r.SetContextDecisionTrace, Completion: r.SetTurnCompletionTrace,
-		RateLimit: r.SetRateLimitDecision, TokenUsage: r.AddTokenUsage,
+		Completion: r.SetTurnCompletionTrace,
+		RateLimit:  r.SetRateLimitDecision, TokenUsage: r.AddTokenUsage,
 		StepSink: r,
 	}
 }
@@ -194,23 +194,6 @@ func (r *Recorder) SetEngineHardBlock(trace observability.EngineHardBlockTrace) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.record.EngineHardBlock = trace
-}
-
-func (r *Recorder) SetContextDecisionTrace(trace engine.ContextDecisionTrace) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.stateTrace.ContextDecision = trace.Decision
-	r.stateTrace.ContextDecisionTarget = trace.Target
-	r.stateTrace.ContextDecisionReason = trace.Reason
-	r.stateTrace.ContextDecisionError = trace.Error
-	r.stateTrace.ContextDecisionActiveTask = trace.ActiveTaskKind
-	r.stateTrace.ContextDecisionReadSet = append([]string(nil), trace.ReadSet...)
-	r.stateTrace.ContextDecisionStateDelta = append([]string(nil), trace.StateDelta...)
-	r.stateTrace.ContextDecisionToolScope = trace.ToolScope
-	r.stateTrace.ContextDecisionToolNames = append([]string(nil), trace.ToolNames...)
 }
 
 func (r *Recorder) SetTurnCompletionTrace(trace observability.TurnCompletionTrace) {

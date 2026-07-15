@@ -27,7 +27,7 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	// turn searched, platform read output may be supporting evidence for a
 	// diagnosis, so it must not replace the verified knowledge answer.
 	content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
-	if e.centralAgentRuntimeEnabled && len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
+	if len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
 		if canonical := canonicalReadResponse(e.readResponseEvidenceThisTurn); canonical != "" {
 			content = canonical
 		}

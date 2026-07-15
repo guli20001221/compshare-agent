@@ -43,7 +43,6 @@ func TestTaskStateReducerOwnsReplaceContinueCompleteAndClear(t *testing.T) {
 func TestUpdateTaskStatePersistsIntoNextAgentContextWithoutExecutor(t *testing.T) {
 	executor := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
-	eng.enableCentralAgentRuntimeForTest()
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
 	out := eng.executeTool(context.Background(), toolCall("task", tools.UpdateTaskStateName,
@@ -71,14 +70,15 @@ func TestCentralToolWindowSeparatesUnderstandingFromWriteAuthority(t *testing.T)
 	require.NotContains(t, mutating, "StopInstanceWorkflow")
 }
 
-func TestUpdateTaskStateRejectsUnstructuredAndLegacyExecution(t *testing.T) {
+func TestUpdateTaskStateRejectsUnstructuredInputAndRunsOnTheOnlyRuntime(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.enableCentralAgentRuntimeForTest()
 	out := eng.executeTaskStateDelta(map[string]any{"relation": "continue", "raw_user_text": "就用之前那个"}, noopStep)
 	require.Contains(t, out, "unknown field")
 
-	legacy := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	out = legacy.executeTool(context.Background(), toolCall("task", tools.UpdateTaskStateName,
+	eng = NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	out = eng.executeTool(context.Background(), toolCall("task", tools.UpdateTaskStateName,
 		`{"relation":"clear"}`), noopStep)
-	require.Contains(t, out, "not enabled")
+	var result TaskStateResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	require.True(t, result.Applied)
 }

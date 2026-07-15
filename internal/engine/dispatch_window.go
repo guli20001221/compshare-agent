@@ -37,6 +37,17 @@ func centralAgentToolWindow(mutatingEnabled bool) []openai.Tool {
 	return out
 }
 
+func centralAgentToolNames(mutatingEnabled bool) []string {
+	window := centralAgentToolWindow(mutatingEnabled)
+	names := make([]string, 0, len(window))
+	for _, tool := range window {
+		if tool.Function != nil && tool.Function.Name != "" {
+			names = append(names, tool.Function.Name)
+		}
+	}
+	return names
+}
+
 // visibleRegistryForIntentRoute is the single production seam that builds the
 // ReAct dispatch tool window for a planner route. The window is derived SOLELY
 // from the route's intent (intent.IntentToolSubset → tools.VisibleRegistryForScope).

@@ -414,3 +414,14 @@ func validSlotPosition(value string) bool {
 func validationErr(code ErrorCode, field, msg string) *ValidationError {
 	return &ValidationError{Code: code, Field: field, Msg: msg}
 }
+
+func errorAsValidation(err error, target **ValidationError) bool {
+	if err == nil {
+		return false
+	}
+	if validation, ok := err.(*ValidationError); ok {
+		*target = validation
+		return true
+	}
+	return false
+}

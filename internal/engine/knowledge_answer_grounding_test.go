@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -279,7 +278,6 @@ func TestKnowledgeAnswerGrounding_RepairSuccessRetractsFailureAttribution(t *tes
 func TestKnowledgeAnswerGrounding_ProductionAgentLoopWiresUnifiedFinalGate(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[3]
 	chunk := knowledge.KBChunk{ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence}
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: knowledgeQAPlan(false)}}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled: true, KBVersion: chunk.KBVersion, Hits: []knowledge.KBChunk{chunk},
 		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
@@ -293,7 +291,6 @@ func TestKnowledgeAnswerGrounding_ProductionAgentLoopWiresUnifiedFinalGate(t *te
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{Model: "deepseek-v4-flash"})
 	eng.SetKnowledgeRetriever(retriever)
 
 	got, err := eng.Chat(context.Background(), record.UserMessage, noopStep)

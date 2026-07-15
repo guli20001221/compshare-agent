@@ -155,9 +155,6 @@ func (e *Engine) executeActionProposalShadow(args map[string]any, onStep func(St
 }
 
 func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
-	if !e.centralAgentRuntimeEnabled {
-		return e.executeActionProposalShadow(args, onStep)
-	}
 	resolved, err := e.resolveActionProposalShadow(args)
 	if err != nil {
 		onStep(StepEvent{Type: StepError, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: err.Error()})
