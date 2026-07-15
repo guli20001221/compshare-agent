@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/agentruntime"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/diagnosis"
@@ -253,6 +254,8 @@ type Engine struct {
 	contextDecisionErrThisTurn       error
 	contextDecisionTraceThisTurn     ContextDecisionTrace
 	contextDecisionTraceSeenThisTurn bool
+	agentRuntimeEventsThisTurn       []agentruntime.Event
+	agentRuntimeObserver             func(agentruntime.Event)
 	groundedRenderer                 grounded.Renderer
 	groundedRendererModel            string
 	// fastTemplate, when true, makes fast-tier catalog envelopes
@@ -899,6 +902,28 @@ func (e *Engine) ReactRoundsThisTurn() int { return e.reactRoundsThisTurn }
 // hard-block, so this is the only signal for terminated_by=budget on it.
 func (e *Engine) ReactCeilingHitThisTurn() bool { return e.reactCeilingHitThisTurn }
 
+// AgentRuntimeEventsThisTurn returns a bounded copy of the central runtime's
+// lifecycle events. It records only round counts, tool names and terminal
+// reasons; no user text, model content or tool payload enters this trace.
+func (e *Engine) AgentRuntimeEventsThisTurn() []agentruntime.Event {
+	return append([]agentruntime.Event(nil), e.agentRuntimeEventsThisTurn...)
+}
+
+func (e *Engine) SetAgentRuntimeObserver(observer func(agentruntime.Event)) {
+	e.agentRuntimeObserver = observer
+}
+
+const maxAgentRuntimeEventsPerTurn = 256
+
+func (e *Engine) recordAgentRuntimeEvent(event agentruntime.Event) {
+	if len(e.agentRuntimeEventsThisTurn) < maxAgentRuntimeEventsPerTurn {
+		e.agentRuntimeEventsThisTurn = append(e.agentRuntimeEventsThisTurn, event)
+	}
+	if e.agentRuntimeObserver != nil {
+		e.agentRuntimeObserver(event)
+	}
+}
+
 // SelectedInstanceIDAtTurnStart returns the carried SelectedInstanceID captured
 // at the start of the most recent turn, before any mid-turn re-bind. Read
 // post-turn by the trace recorder for the #3 StateTrace.
@@ -1421,6 +1446,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.turnTokensConsumed = 0
 	e.reactRoundsThisTurn = 0
 	e.reactCeilingHitThisTurn = false
+	e.agentRuntimeEventsThisTurn = nil
 	e.hardBlockStandingThisTurn = false
 	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
 	e.lastPlannerIntentThisTurn = ""
@@ -1537,7 +1563,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		return reply, nil
 	}
 
-	for round := 0; round < maxReActRounds; round++ {
+	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
+	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
+		round := runtimeRound.Index()
 		e.reactRoundsThisTurn = round + 1
 		// Per-turn token budget gate. Placed at the TOP of the loop so
 		// any tool_call → tool_result pair emitted in the previous
@@ -1564,14 +1592,14 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				if opts.OnTextDelta != nil {
 					opts.OnTextDelta(synth)
 				}
-				return synth, nil
+				return agentruntime.Final(synth, agentruntime.FinishBudgetRecovery), nil
 			}
 			e.emitTokenBudgetExceededHardBlock()
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: tokenBudgetExceededMessage,
 			})
-			return tokenBudgetExceededMessage, nil
+			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
 		messages := e.buildMessagesForLLM()
 		req := llm.ChatRequest{
@@ -1620,7 +1648,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: content,
 			})
-			return content, nil
+			return agentruntime.Final(content, agentruntime.FinishRateLimit), nil
 		}
 		// Stream text deltas live to opts.OnTextDelta unless a downstream
 		// guard might rewrite the final content this round. When a guard could
@@ -1672,10 +1700,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 					if opts.OnTextDelta != nil {
 						opts.OnTextDelta(synth)
 					}
-					return synth, nil
+					return agentruntime.Final(synth, agentruntime.FinishBudgetRecovery), nil
 				}
 			}
-			return "", fmt.Errorf("LLM 调用失败: %w", err)
+			return agentruntime.Result{}, fmt.Errorf("LLM 调用失败: %w", err)
 		}
 
 		e.emitTokenUsage(resp.Usage)
@@ -1717,6 +1745,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// The call has already been paid for. A budget can prevent another model
 		// call, but it must not erase a complete answer that is already in hand.
 		// The next loop iteration still enforces the cap before any further call.
+		runtimeRound.ModelStep(len(resp.ToolCalls), len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "")
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
@@ -1781,7 +1810,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: content,
 			})
-			return content, nil
+			return agentruntime.Final(content, agentruntime.FinishFinalAnswer), nil
 		}
 
 		// Has tool calls → execute each and feed results back
@@ -1794,6 +1823,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 
 		for idx, tc := range resp.ToolCalls {
 			toolResult := e.executeTool(ctx, tc, onStep)
+			runtimeRound.Observation(tc.Function.Name)
 
 			// Deterministic final reply — return directly without LLM narration
 			if finalMsg, ok := isFinalReply(toolResult); ok {
@@ -1818,7 +1848,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: finalMsg,
 				})
-				return finalMsg, nil
+				return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
 			}
 
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -1827,6 +1857,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				ToolCallID: tc.ID,
 			})
 		}
+		return agentruntime.Continue(), nil
+	})
+	if runtimeErr == nil {
+		return runtimeResult.Reply, nil
+	}
+	if !errors.Is(runtimeErr, agentruntime.ErrRoundLimit) {
+		return "", runtimeErr
 	}
 
 	// The loop exhausted maxReActRounds without returning a final answer. Mark the
