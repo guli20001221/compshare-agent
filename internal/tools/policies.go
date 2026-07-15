@@ -130,6 +130,9 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 	readCapabilityPolicy := policyForAction(ReadPlatformCapabilityName)
 	readCapabilityPolicy.AllowedParams = []string{"capability", "slots"}
 	policies[ReadPlatformCapabilityName] = readCapabilityPolicy
+	proposalPolicy := policyForAction(ProposeActionName)
+	proposalPolicy.AllowedParams = []string{"turn_id", "operation", "slots"}
+	policies[ProposeActionName] = proposalPolicy
 
 	return policies
 }
