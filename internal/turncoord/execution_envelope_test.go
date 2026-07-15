@@ -144,24 +144,38 @@ func TestExecutionEnvelope_PasswordQuestionsRemainIntactAndDoNotRequireASecretKe
 			assert.Empty(t, envelope.SealedSecrets)
 		})
 	}
+	questionWithSample := "密码是 abcdefgh 安全吗？"
+	envelope, raw, err := freezeSubmitInput(SubmitInput{
+		Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+		SessionID: "session", ClientTurnID: "sample-question", Message: questionWithSample,
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, envelope.Message, "abcdefgh")
+	assert.Contains(t, envelope.Message, "安全吗？")
+	assert.NotContains(t, string(raw), "abcdefgh")
+	assert.Empty(t, envelope.SealedSecrets)
 }
 
 func TestExecutionEnvelope_ShiAssignmentIsSealedButQuestionsRemainPlain(t *testing.T) {
 	key := bytes.Repeat([]byte{0x71}, 32)
-	message := "重置密码是 Aa12" + "3456!"
-	envelope, raw, err := freezeSubmitInputWithSecretKey(SubmitInput{
-		Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
-		SessionID: "session", ClientTurnID: "shi-assignment", Message: message,
-	}, key)
-	require.NoError(t, err)
-	assert.NotContains(t, envelope.Message, "Aa123456!")
-	assert.NotContains(t, string(raw), "Aa123456!")
-	assert.NotEmpty(t, envelope.SealedSecrets)
-	_, _, err = freezeSubmitInput(SubmitInput{
-		Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
-		SessionID: "session", ClientTurnID: "shi-without-key", Message: message,
-	})
-	require.ErrorIs(t, err, store.ErrInvalidArgument)
+	for _, secret := range []string{"Aa12" + "3456!", "123" + "456", "!!!!!!!!", "中文秘密"} {
+		t.Run(secret, func(t *testing.T) {
+			message := "重置密码是 " + secret
+			envelope, raw, err := freezeSubmitInputWithSecretKey(SubmitInput{
+				Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+				SessionID: "session", ClientTurnID: "shi-assignment-" + secret, Message: message,
+			}, key)
+			require.NoError(t, err)
+			assert.NotContains(t, envelope.Message, secret)
+			assert.NotContains(t, string(raw), secret)
+			assert.NotEmpty(t, envelope.SealedSecrets)
+			_, _, err = freezeSubmitInput(SubmitInput{
+				Owner:     store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+				SessionID: "session", ClientTurnID: "shi-without-key-" + secret, Message: message,
+			})
+			require.ErrorIs(t, err, store.ErrInvalidArgument)
+		})
+	}
 }
 
 func TestExecutionEnvelope_V1IsRejectedInsteadOfSendingLegacyPlaintextToTheModel(t *testing.T) {

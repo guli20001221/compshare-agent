@@ -1004,13 +1004,15 @@ func freezeSubmitInputWithSecretKey(in SubmitInput, secretKey []byte) (execution
 	}
 	message := strings.TrimSpace(in.Message)
 	secretInputs := map[string]string{}
-	if password, start, end := engine.ExtractResetPasswordSecret(message); password != "" {
-		secretInputs["Password"] = password
+	if password, start, end, executable := engine.ClassifyResetPasswordValue(message); password != "" {
+		if executable {
+			secretInputs["Password"] = password
+		}
 		message = message[:start] + guardrails.CredentialRedactedOutput + message[end:]
 	}
 	message = strings.TrimSpace(guardrails.RedactCredentials(message))
 	ocrText := strings.TrimSpace(in.ImageContext)
-	if password, start, end := engine.ExtractResetPasswordSecret(ocrText); password != "" {
+	if password, start, end, _ := engine.ClassifyResetPasswordValue(ocrText); password != "" {
 		ocrText = ocrText[:start] + guardrails.CredentialRedactedOutput + ocrText[end:]
 	}
 	ocrText = strings.TrimSpace(guardrails.RedactCredentials(ocrText))

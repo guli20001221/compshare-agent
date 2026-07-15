@@ -1545,30 +1545,51 @@ func resetPasswordFromUserText(userText string) string {
 // in legacy free-text requests. Byte offsets let the durable boundary remove
 // the exact value before persistence without maintaining a second regex.
 func ExtractResetPasswordSecret(userText string) (secret string, start, end int) {
-	match := resetPasswordSpecRE.FindStringSubmatchIndex(userText)
-	if len(match) < 6 || match[2] < 0 || match[3] < 0 || match[4] < 0 || match[5] < 0 {
+	secret, start, end, executable := ClassifyResetPasswordValue(userText)
+	if !executable {
 		return "", 0, 0
 	}
-	value := strings.TrimSpace(userText[match[4]:match[5]])
-	if !looksLikePasswordValue(value) {
-		return "", 0, 0
-	}
-	return value, match[4], match[5]
+	return secret, start, end
 }
 
-func looksLikePasswordValue(value string) bool {
-	runes := []rune(value)
-	if len(runes) < 8 || len(runes) > 64 || strings.ContainsAny(value, "?？") {
+// ClassifyResetPasswordValue separates three cases without a vocabulary list:
+// a plain help question, a question containing a sample secret, and an explicit
+// assignment. Sample secrets are redacted but never executed; assignments are
+// routed through the durable secret channel.
+func ClassifyResetPasswordValue(userText string) (value string, start, end int, executable bool) {
+	match := resetPasswordSpecRE.FindStringSubmatchIndex(userText)
+	if len(match) < 6 || match[2] < 0 || match[3] < 0 || match[4] < 0 || match[5] < 0 {
+		return "", 0, 0, false
+	}
+	value = strings.TrimSpace(userText[match[4]:match[5]])
+	tail := strings.TrimSpace(userText[match[1]:])
+	if endsWithQuestionMark(userText) {
+		if tail != "" {
+			return value, match[4], match[5], false
+		}
+		if allHanQuestion(value) {
+			return "", 0, 0, false
+		}
+	}
+	return value, match[4], match[5], true
+}
+
+func endsWithQuestionMark(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasSuffix(value, "?") || strings.HasSuffix(value, "？")
+}
+
+func allHanQuestion(value string) bool {
+	value = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(value), "?"), "？")
+	if value == "" {
 		return false
 	}
-	hasLetterOrDigit := false
-	for _, r := range runes {
-		if r > unicode.MaxASCII {
+	for _, r := range value {
+		if !unicode.Is(unicode.Han, r) {
 			return false
 		}
-		hasLetterOrDigit = hasLetterOrDigit || unicode.IsLetter(r) || unicode.IsDigit(r)
 	}
-	return hasLetterOrDigit
+	return true
 }
 
 func (e *Engine) resetPasswordForTurn(userText string) string {
