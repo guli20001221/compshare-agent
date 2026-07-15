@@ -86,7 +86,6 @@ func TestBuildReActHistorySummary_KeepsStructuredSignalsNotFactPayload(t *testin
 			TTLSeconds:     30,
 		}},
 	}, 1)
-	eng.lastPlannerActionThisTurn = intent.LifecycleActionStart
 
 	got := eng.buildReActHistorySummary(now)
 
@@ -94,7 +93,6 @@ func TestBuildReActHistorySummary_KeepsStructuredSignalsNotFactPayload(t *testin
 	assert.Contains(t, got, "train-box")
 	assert.Contains(t, got, "uhost-123")
 	assert.Contains(t, got, string(intent.IntentMonitorQuery))
-	assert.Contains(t, got, string(intent.LifecycleActionStart))
 	assert.Contains(t, got, "近期事实引用：uhost-123 monitor_sample")
 	assert.NotContains(t, got, "88")
 	assert.NotContains(t, got, "gpu_usage")

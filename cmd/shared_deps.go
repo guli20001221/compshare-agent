@@ -74,14 +74,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if domainMatchGuard {
 		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
 	}
-	createPrefExtractor, unknownCreatePrefExtractor := createPreferenceExtractorEnabledFromEnv(getenv)
-	if unknownCreatePrefExtractor != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_CREATE_PREF_EXTRACTOR value %q", unknownCreatePrefExtractor)
-	}
-	engine.SetCreatePreferenceExtractionEnabled(createPrefExtractor)
-	if createPrefExtractor {
-		log.Printf("runtime: HTTP create/deploy preference extractor enabled (COMPSHARE_CREATE_PREF_EXTRACTOR default-on; disable with =0)")
-	}
 	deterministicRender, unknownDeterministicRender := agentDeterministicRenderEnabledFromEnv(getenv)
 	if unknownDeterministicRender != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_AGENT_DETERMINISTIC_RENDER value %q", unknownDeterministicRender)
@@ -130,15 +122,6 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	if reactHistoryCompaction {
 		log.Printf("runtime: HTTP ReAct history compaction enabled (USE_REACT_HISTORY_COMPACTION=1)")
 	}
-	intentScopedReActPrompt, unknownIntentScopedReActPrompt := intentScopedReActPromptEnabledFromEnv(getenv)
-	if unknownIntentScopedReActPrompt != "" {
-		log.Printf("warning: ignoring unknown USE_INTENT_SCOPED_REACT_PROMPT value %q", unknownIntentScopedReActPrompt)
-	}
-	deps.IntentScopedReActPromptEnabled = intentScopedReActPrompt
-	if intentScopedReActPrompt {
-		log.Printf("runtime: HTTP intent-scoped ReAct prompt enabled (USE_INTENT_SCOPED_REACT_PROMPT=1)")
-	}
-
 	knowledgeRetrievalRequested, unknownKnowledge := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledge != "" {
 		log.Printf("warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q", unknownKnowledge)

@@ -921,7 +921,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     session_fact_context: true
     react_result_projection: true
     react_history_compaction: true
-    create_preference_extractor: true
     unified_create: true
     skill_executor_diagnosis_pilots:
       - diagnose-ssh
@@ -942,8 +941,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	f := cfg.Agent.Features
 	require.NotNil(t, f.MutatingTools)
 	assert.True(t, *f.MutatingTools)
-	require.NotNil(t, f.CreatePreferenceExtractor)
-	assert.True(t, *f.CreatePreferenceExtractor)
 	require.NotNil(t, f.UnifiedCreate)
 	assert.True(t, *f.UnifiedCreate)
 	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
@@ -960,10 +957,9 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	cfg := &Config{Agent: AgentConfig{
 		LLM: LLMConfig{APIKey: "resolved-llm-key"},
 		Features: FeaturesConfig{
-			MutatingTools:             boolPtr(true), // YAML true → "1"
-			DurableTurns:              boolPtr(true),
-			CreatePreferenceExtractor: boolPtr(false),
-			UnifiedCreate:             boolPtr(false),
+			MutatingTools: boolPtr(true), // YAML true → "1"
+			DurableTurns:  boolPtr(true),
+			UnifiedCreate: boolPtr(false),
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
@@ -979,8 +975,6 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			return "1" // env fallback (YAML omitted this field)
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
-		case "COMPSHARE_CREATE_PREF_EXTRACTOR":
-			return "1"
 		case "COMPSHARE_UNIFIED_CREATE":
 			return "1"
 		case "SOME_UNMAPPED_VAR":
@@ -992,7 +986,6 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
 	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
-	assert.Equal(t, "0", getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"), "YAML false wins over env on")
 	assert.Equal(t, "0", getenv("COMPSHARE_UNIFIED_CREATE"), "YAML false wins over env on")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")

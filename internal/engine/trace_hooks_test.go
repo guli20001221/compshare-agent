@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/stretchr/testify/require"
@@ -64,9 +63,8 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 	}
 }
 
-func TestTraceSnapshotPolicyTerminalTakesPrecedenceOverPlannedIntent(t *testing.T) {
+func TestTraceSnapshotReportsPolicyTerminal(t *testing.T) {
 	eng := &Engine{
-		lastPlannerIntentThisTurn: intent.IntentKnowledgeQA,
 		hardBlockStandingThisTurn: true,
 	}
 

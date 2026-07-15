@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -133,7 +132,31 @@ func (e *Engine) resolveActionProposalShadow(args map[string]any) (actionresolve
 	if view.TurnID != "" && proposal.TurnID != view.TurnID {
 		return actionresolver.ResolvedAction{}, fmt.Errorf("proposal turn_id does not match the active turn")
 	}
+	if spec, ok := catalog.Lookup(proposal.Operation); ok {
+		proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
+	}
 	return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}).Resolve(proposal), nil
+}
+
+func addSealedSecretCandidates(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec, secrets map[string]string) actionresolver.ActionProposal {
+	present := make(map[string]struct{}, len(proposal.Slots))
+	for _, candidate := range proposal.Slots {
+		present[candidate.Name] = struct{}{}
+	}
+	for name, field := range spec.Fields {
+		if field.Codec != actionresolver.CodecSensitiveText {
+			continue
+		}
+		if _, exists := present[name]; exists {
+			continue
+		}
+		if value := strings.TrimSpace(secrets[name]); value != "" {
+			proposal.Slots = append(proposal.Slots, actionresolver.SlotCandidate{
+				Name: name, Value: value, Source: actionresolver.SourceUserConfirmation,
+			})
+		}
+	}
+	return proposal
 }
 
 func (e *Engine) executeActionProposalShadow(args map[string]any, onStep func(StepEvent)) string {
@@ -174,27 +197,4 @@ func resolvedActionForModel(resolved actionresolver.ResolvedAction) string {
 	_ = json.Unmarshal(raw, &wire)
 	payload, _ := json.Marshal(security.RedactForLLM(wire))
 	return string(payload)
-}
-
-// observeLegacyWorkflowArguments compares the old workflow argument surface to
-// the new resolver without granting the resolver an executor or authority.
-func (e *Engine) observeLegacyWorkflowArguments(action string, args map[string]any, onStep func(StepEvent)) {
-	catalog, err := defaultActionCatalog()
-	if err != nil {
-		return
-	}
-	names := make([]string, 0, len(args))
-	for name := range args {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	proposal := actionresolver.ActionProposal{Operation: action}
-	for _, name := range names {
-		proposal.Slots = append(proposal.Slots, actionresolver.SlotCandidate{Name: name, Value: args[name], Source: actionresolver.SourceLegacyArguments})
-	}
-	resolved := actionresolver.New(catalog, nil).Resolve(proposal)
-	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceShadowOnly, Message: "旧写路径影子比对完成，未改变执行", TraceResult: map[string]any{
-		"operation": action, "legacy_slot_count": len(args), "resolved_slot_count": len(resolved.Arguments),
-		"missing_count": len(resolved.Missing), "conflict_count": len(resolved.Conflicts), "rejected_count": len(resolved.Rejected),
-	}})
 }

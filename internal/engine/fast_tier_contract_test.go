@@ -51,7 +51,7 @@ func (fastTierContractExecutor) Execute(_ context.Context, action string, _ map[
 // (pricing_query / stock capacity-precheck branch) OR a fast-tier Kind (gpu_specs /
 // stock / image_list). All THREE bypass situations are covered by the single
 // `nil || isFastTierEnvelope(Kind)` predicate, which is exactly the bypass logic in
-// renderGroundedHandlerResult (engine.go:1603 nil-envelope, :1611 fast-tier-kind).
+// central read-capability response contract.
 // A new fast skill wired to a handler that emits a non-fast typed envelope (which
 // would silently reach the LLM renderer) fails here.
 func TestFastTierSkills_HandlerEnvelopeBypassesRenderer(t *testing.T) {

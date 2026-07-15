@@ -353,12 +353,10 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Optional deploy preference extractor injection + its per-turn result.
 		// Kept per-session so test doubles / future stateful wrappers cannot
 		// leak calls or extracted preferences across users.
-		"createPreferenceExtractor": true,
 		// One cached context judgment per turn. These are reset at the start
 		// of ChatWithOptions and must remain session-local: sharing them would
 		// apply one user's continue/clear decision to another user's task.
-		"createPreferenceThisTurn": true,
-		"turnTokensConsumed":       true,
+		"turnTokensConsumed": true,
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
@@ -407,32 +405,20 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the JSON-serializable per-session dialog state envelope; mixing
 		// it across sessions would be exactly the cross-user leak this
 		// test was created to prevent.
-		"sessionState":                   true,
-		"sessionStateVersion":            true,
-		"sessionStateHydrated":           true,
-		"continuityAdvisories":           true,
-		"turnContextViewThisTurn":        true,
-		"turnContextViewReady":           true,
-		"promptSectionIDsThisTurn":       true,
-		"memoryUpdateSourceThisTurn":     true,
-		"groundingOutcomeThisTurn":       true,
-		"sessionFactContextEnabled":      true,
-		"reactResultProjectionEnabled":   true,
-		"reactHistoryCompactionEnabled":  true,
-		"intentScopedReActPromptEnabled": true,
-		"readCapabilitySubjectsThisTurn": true,
-		"readResponseEvidenceThisTurn":   true,
-		"lastPlannerIntentThisTurn":      true,
-		// PR1 hotfix Bug 4 (2026-05-28): per-turn lifecycle action captured
-		// from planner output, consumed by executeTool to filter the
-		// candidate instance list by State. Per-session by definition —
-		// sharing across sessions would let one user's "stop" verb mask
-		// another's "start" subset.
-		"lastPlannerActionThisTurn": true,
-		// Per-turn marker for a failed deterministic read. It only controls an
-		// ephemeral ReAct warning; sharing it would make one user's upstream
-		// failure alter another user's prompt.
-		"routeReadFailureThisTurn":           true,
+		"sessionState":                       true,
+		"sessionStateVersion":                true,
+		"sessionStateHydrated":               true,
+		"continuityAdvisories":               true,
+		"turnContextViewThisTurn":            true,
+		"turnContextViewReady":               true,
+		"promptSectionIDsThisTurn":           true,
+		"memoryUpdateSourceThisTurn":         true,
+		"groundingOutcomeThisTurn":           true,
+		"sessionFactContextEnabled":          true,
+		"reactResultProjectionEnabled":       true,
+		"reactHistoryCompactionEnabled":      true,
+		"readCapabilitySubjectsThisTurn":     true,
+		"readResponseEvidenceThisTurn":       true,
 		"imageContextThisTurn":               true,
 		"secretInputsThisTurn":               true,
 		"baseUserContext":                    true,
@@ -444,12 +430,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 12, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 84, len(perSessionFields); want != got {
+	if want, got := 78, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 96, typ.NumField(); want != got {
+	if want, got := 90, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

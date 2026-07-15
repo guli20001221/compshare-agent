@@ -138,7 +138,7 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	require.Len(t, eng.searchKnowledgeHitsThisTurn, 1, "the gathered hit is what recovery grounds on")
 }
 
-func TestChat_RoundCeiling_SummarizesResolvedInstanceFromRegistry(t *testing.T) {
+func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -179,13 +179,10 @@ func TestChat_RoundCeiling_SummarizesResolvedInstanceFromRegistry(t *testing.T) 
 
 	reply, err := eng.Chat(context.Background(), "claude-write-test 这台状态怎么样", noopStep)
 	require.NoError(t, err)
-	assert.NotContains(t, reply, "轮次超限", "resolved instance evidence was available, so the user should not see a bare loop failure")
-	assert.Contains(t, reply, "claude-write-test")
-	assert.Contains(t, reply, "Stopped")
-	assert.Contains(t, reply, "uhost-zzzz-hidden")
+	assert.Equal(t, reactCeilingRefusal, reply)
 }
 
-func TestChat_RoundCeiling_SummarizesRecentInstanceListForAmbiguousFollowup(t *testing.T) {
+func TestChat_RoundCeiling_DoesNotClassifyPunctuationFollowup(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -209,13 +206,10 @@ func TestChat_RoundCeiling_SummarizesRecentInstanceListForAmbiguousFollowup(t *t
 
 	reply, err := eng.Chat(context.Background(), "？", noopStep)
 	require.NoError(t, err)
-	assert.NotContains(t, reply, "轮次超限")
-	assert.Contains(t, reply, "host-a")
-	assert.Contains(t, reply, "host-b")
-	assert.Contains(t, reply, "具体")
+	assert.Equal(t, reactCeilingRefusal, reply)
 }
 
-func TestChat_RoundCeiling_ExplainsMissingInstanceTarget(t *testing.T) {
+func TestChat_RoundCeiling_DoesNotParseTargetFromFreeText(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -243,117 +237,7 @@ func TestChat_RoundCeiling_ExplainsMissingInstanceTarget(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "将autotest这台实例用无卡模式开启", noopStep)
 	require.NoError(t, err)
-	assert.NotContains(t, reply, "轮次超限")
-	assert.Contains(t, reply, "autotest")
-	assert.Contains(t, reply, "没有找到")
-	assert.Contains(t, reply, "实例 ID")
-}
-
-func TestChat_CorrectsFalseInstanceNotFoundWhenRegistryResolvesTarget(t *testing.T) {
-	target := map[string]any{
-		"UHostId": "uhost-zzzz-hidden",
-		"Name":    "claude-write-test",
-		"State":   "Stopped",
-		"GpuType": "4090",
-		"GPU":     float64(1),
-		"CPU":     float64(16),
-		"Memory":  float64(65536),
-		"Zone":    "cn-wlcb-01",
-	}
-	hosts := make([]any, 0, 25)
-	for i := 0; i < 24; i++ {
-		hosts = append(hosts, map[string]any{
-			"UHostId": fmt.Sprintf("uhost-visible-%02d", i),
-			"Name":    fmt.Sprintf("visible-%02d", i),
-			"State":   "Running",
-			"GpuType": "4090",
-			"GPU":     float64(1),
-			"CPU":     float64(16),
-			"Memory":  float64(65536),
-			"Zone":    "cn-wlcb-01",
-		})
-	}
-	hosts = append(hosts, target)
-	describe := map[string]any{"UHostSet": hosts, "TotalCount": float64(len(hosts))}
-	exec := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": describe,
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("list", "DescribeCompShareInstance", `{}`)}},
-		{Content: "抱歉，我查遍了您的实例，没有找到 claude-write-test。"},
-	}}
-	eng := NewWithDeps(mock, exec, nil)
-	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
-	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
-
-	reply, err := eng.Chat(context.Background(), "claude-write-test 这台状态怎么样", noopStep)
-	require.NoError(t, err)
-	assert.NotContains(t, reply, "没有找到", "a registry-resolved instance must override a false not-found final answer")
-	assert.Contains(t, reply, "claude-write-test")
-	assert.Contains(t, reply, "uhost-zzzz-hidden")
-	assert.Contains(t, reply, "Stopped")
-}
-
-func TestCorrectFalseInstanceNotFoundReplyDoesNotOverrideNestedFileMiss(t *testing.T) {
-	describe := map[string]any{"UHostSet": []any{
-		map[string]any{
-			"UHostId": "uhost-zzzz-hidden",
-			"Name":    "claude-write-test",
-			"State":   "Running",
-			"GpuType": "4090",
-		},
-	}, "TotalCount": float64(1)}
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
-
-	_, ok := eng.correctFalseInstanceNotFoundReply(
-		"claude-write-test 里的模型文件找不到",
-		"实例中没有找到模型文件，请检查路径。",
-	)
-	assert.False(t, ok, "missing files inside a real instance must not be rewritten as a false missing-instance correction")
-
-	_, ok = eng.correctFalseInstanceNotFoundReply(
-		"claude-write-test 里的模型文件找不到",
-		"在 claude-write-test 中没有找到模型文件，请检查路径。",
-	)
-	assert.False(t, ok, "target-name mentions in nested file misses must not be rewritten as missing-instance corrections")
-
-	_, ok = eng.correctFalseInstanceNotFoundReply(
-		"claude-write-test 里的模型文件找不到",
-		"没有找到该实例上的模型文件，请检查路径。",
-	)
-	assert.False(t, ok, "generic '该实例' nested misses must not be rewritten as missing-instance corrections")
-}
-
-func TestChat_CorrectedFalseNotFoundBuffersStreamingDeltas(t *testing.T) {
-	describe := map[string]any{"UHostSet": []any{
-		map[string]any{
-			"UHostId": "uhost-zzzz-hidden",
-			"Name":    "claude-write-test",
-			"State":   "Stopped",
-			"GpuType": "4090",
-			"GPU":     float64(1),
-			"CPU":     float64(16),
-			"Memory":  float64(65536),
-			"Zone":    "cn-wlcb-01",
-		},
-	}, "TotalCount": float64(1)}
-	eng := NewWithDeps(deltaScriptLLM{
-		content: "抱歉，没有找到 claude-write-test。",
-		deltas:  []string{"抱歉，", "没有找到 claude-write-test。"},
-	}, &mockExecutor{}, nil)
-	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
-	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
-
-	var deltas []string
-	reply, err := eng.ChatWithOptions(context.Background(), "claude-write-test 这台状态怎么样", noopStep, ChatOptions{
-		OnTextDelta: func(delta string) { deltas = append(deltas, delta) },
-	})
-	require.NoError(t, err)
-	assert.NotContains(t, reply, "没有找到")
-	assert.Contains(t, reply, "claude-write-test")
-	assert.Len(t, deltas, 1, "raw wrong deltas must be buffered and replaced by the corrected final reply")
-	assert.Equal(t, reply, deltas[0])
+	assert.Equal(t, reactCeilingRefusal, reply)
 }
 
 // TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive: round 0 gathers

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/actionresolver"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -136,4 +137,59 @@ func TestProposalRejectsDifferentTurnEvidence(t *testing.T) {
 	eng.turnContextViewReady = true
 	_, err := eng.resolveActionProposalShadow(map[string]any{"turn_id": "old-turn", "operation": "StopInstanceWorkflow", "slots": []any{}})
 	require.ErrorContains(t, err, "does not match")
+}
+
+func TestCentralAgentProposalSchemaComesFromWorkflowCatalog(t *testing.T) {
+	window := centralAgentToolWindow(true)
+	var proposalTool map[string]any
+	for _, tool := range window {
+		if tool.Function != nil && tool.Function.Name == tools.ProposeActionName {
+			proposalTool, _ = tool.Function.Parameters.(map[string]any)
+			break
+		}
+	}
+	require.NotNil(t, proposalTool)
+	properties := proposalTool["properties"].(map[string]any)
+	operations := properties["operation"].(map[string]any)["enum"].([]string)
+	require.Contains(t, operations, "StopInstanceWorkflow")
+	require.Contains(t, operations, "CreateCFSWorkflow")
+	slots := properties["slots"].(map[string]any)
+	items := slots["items"].(map[string]any)
+	fields := items["properties"].(map[string]any)["name"].(map[string]any)["enum"].([]string)
+	require.Contains(t, fields, "UHostId")
+	require.Contains(t, fields, "Size")
+}
+
+func TestCentralAgentReadSchemaComesFromCapabilityRegistry(t *testing.T) {
+	window := centralAgentToolWindow(false)
+	var readTool map[string]any
+	for _, tool := range window {
+		if tool.Function != nil && tool.Function.Name == tools.ReadPlatformCapabilityName {
+			readTool, _ = tool.Function.Parameters.(map[string]any)
+			break
+		}
+	}
+	require.NotNil(t, readTool)
+	properties := readTool["properties"].(map[string]any)
+	capabilities := properties["capability"].(map[string]any)["enum"].([]string)
+	require.Contains(t, capabilities, string(intent.IntentResourceInfo))
+	require.Contains(t, capabilities, string(intent.IntentPricingQuery))
+	slots := properties["slots"].(map[string]any)["properties"].(map[string]any)
+	require.Contains(t, slots, "target_refs")
+	require.Contains(t, slots, "search_query")
+}
+
+func TestSealedPasswordIsInjectedWithoutEnteringModelArguments(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.secretInputsThisTurn = map[string]string{"Password": "SecurePass123!"}
+	eng.readCapabilitySubjectsThisTurn = map[string]struct{}{"uhost-1": {}}
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "重置密码为[已脱敏:凭据]", "turn-secret", time.Now())
+	eng.turnContextViewReady = true
+	resolved, err := eng.resolveActionProposalShadow(map[string]any{
+		"turn_id": "turn-secret", "operation": "ResetPasswordWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "tool_observation", "evidence": map[string]any{"context_field": "current_turn_read"}}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "SecurePass123!", resolved.Arguments["Password"])
+	require.Equal(t, "[REDACTED]", resolved.Confirmation.Arguments["Password"])
 }

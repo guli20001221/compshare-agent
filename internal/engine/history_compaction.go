@@ -368,9 +368,6 @@ func (e *Engine) buildReActHistorySummary(now time.Time) string {
 		lines = append(lines, recentFactBreadcrumbs(e.sessionState.RecentFacts, now)...)
 		lines = append(lines, expiredFactBreadcrumbs(e.sessionState.RecentFacts, now)...)
 	}
-	if e.lastPlannerActionThisTurn != "" {
-		lines = append(lines, "最近生命周期动作："+string(e.lastPlannerActionThisTurn))
-	}
 	if len(lines) == 0 {
 		lines = append(lines, "暂无稳定结构化信号。")
 	}

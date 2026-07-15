@@ -8,36 +8,10 @@ import (
 )
 
 const (
-	// 2026-06-05: workflow and diagnosis catalogs are generated from registries.
-	// 2026-06-05 (remediation): operation boundary / state-refresh / no-pretext /
-	// vague-failure rules now single-sourced from cards.go (shared with the
-	// flag-on cards), so the rule text lives in one place. SHA updated to match.
-	// 2026-06-18: narrow deploy/create boundary to hardware-first creation only.
-	// 2026-06-20: remove duplicate CreateInstanceWorkflow routing sentence from the shared card.
-	// 2026-06-22 (阶段1A KV-cache): move the volatile "## 用户当前状态" block to the
-	// tail so the static prefix is cacheable; also drop the now-wrong "上方"
-	// (above) directional word from the real-time-query rule, since the block is
-	// no longer above that rule.
-	// 2026-06-23: clarify network acceleration close is not exposed by the agent.
-	// 2026-06-25: route price questions through the user-price API so list/original
-	// prices and discounted prices share one live upstream path.
-	// 2026-06-26: remove the dead "recommendation" intent label from the default
-	// ReAct taxonomy; GPU recommendation tools remain available as read-only facts.
-	// 2026-06-29: remove CreateInstanceWorkflow from ReAct operation guidance;
-	// new-instance creation is owned by create_instance / deploy_model handlers.
-	// 2026-07-08: init-failure diagnosis removed and GPU/image/port diagnoses
-	// unadvertised (migrating to the in-instance SSH-ops harness); diagnosis
-	// selection card + trigger boundaries now render only SSH + billing.
-	// 2026-07-10: G4-⑤ prompt softening removes vague-failure phrase enumerations
-	// while keeping the semantic rule and Diagnose* prohibition.
-	// 2026-07-15: knowledge policy is a single named prompt section; duplicate
-	// behavior copies were removed from mode-specific rules.
-	mutatingReActPromptSHA256 = "b5f0d0a914e4407e8cc35751bea1aab4f46087942b3d0fb3d7899aaba34bb3b8"
-	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
-	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
-	// 2026-07-08: diagnosis catalog trimmed to SSH + billing (see mutating note).
-	// 2026-07-10: G4-⑤ prompt softening removes vague-failure phrase enumerations.
-	readOnlyReActPromptSHA256 = "2b431a80db94ce5871bbd4836641fc4c813a5452078f10c555c19ceac965d2b6"
+	// 2026-07-15: the central Agent is the only semantic runtime. Per-intent
+	// routing tables and temporary prompt cards were removed.
+	mutatingReActPromptSHA256 = "03cabfe7cf1648e441fafb2c5290c4a3d46fe0fed50f90f8cce766ba0632fe38"
+	readOnlyReActPromptSHA256 = "a3445a7766583fde8e4f3cf33128fab956ed72b49ccccc46b0f28ddabb3e8bf8"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {
