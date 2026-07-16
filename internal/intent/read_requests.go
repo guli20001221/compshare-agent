@@ -20,14 +20,6 @@ type StockAvailabilityRequest struct {
 
 func (StockAvailabilityRequest) MissingFields() []MissingField { return nil }
 
-type ImageListRequest struct {
-	Source ImageSource `json:"source,omitempty"`
-	Query  string      `json:"query,omitempty"`
-	Mode   ListMode    `json:"mode,omitempty"`
-}
-
-func (ImageListRequest) MissingFields() []MissingField { return nil }
-
 type CFSListRequest struct {
 	CFS *CFSRef `json:"cfs,omitempty"`
 }

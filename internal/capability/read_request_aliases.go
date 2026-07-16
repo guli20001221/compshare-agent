@@ -7,7 +7,6 @@ import "github.com/compshare-agent/internal/intent"
 type ReadRequest = intent.ReadRequest
 type MissingField = intent.MissingField
 type StockAvailabilityRequest = intent.StockAvailabilityRequest
-type ImageListRequest = intent.ImageListRequest
 type CFSListRequest = intent.CFSListRequest
 type CFSCreatePriceRequest = intent.CFSCreatePriceRequest
 type CFSUpgradePriceRequest = intent.CFSUpgradePriceRequest

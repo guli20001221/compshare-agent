@@ -46,7 +46,7 @@ func ReadDefinitions() []ReadDefinition {
 		migratedReadDefinition(intent.IntentMonitorHistory, NewReadCapability(monitorHistoryReadSpec())),
 		migratedReadDefinition(intent.IntentGPUSpecsQuery, NewReadCapability(gpuSpecsReadSpec())),
 		newReadDefinition[StockAvailabilityRequest](string(intent.IntentStockAvailability), intent.IntentStockAvailability, "查询 GPU 机型的实时可售性。", objectSchema(map[string]any{"gpu_type": stringSchema(), "zone": stringSchema()}, nil)),
-		newReadDefinition[ImageListRequest](string(intent.IntentImageList), intent.IntentImageList, "查询平台、自制、社区或共享镜像。", objectSchema(map[string]any{"source": enumSchema("platform", "custom", "community", "shared"), "query": stringSchema(), "mode": enumSchema("all", "filtered")}, nil)),
+		migratedReadDefinition(intent.IntentImageList, NewReadCapability(imageListReadSpec())),
 		migratedReadDefinition(intent.IntentImageTagCatalog, NewReadCapability(imageTagCatalogReadSpec())),
 		migratedReadDefinition(intent.IntentModelRepositoryBrowse, NewReadCapability(modelRepositoryReadSpec())),
 		migratedReadDefinition(intent.IntentNetAcceleratorStatus, NewReadCapability(netAcceleratorReadSpec())),
