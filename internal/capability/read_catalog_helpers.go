@@ -13,7 +13,46 @@ import (
 // the ones that have a platform-leaf equivalent forward to it. Under the P3.3
 // migration (option B) the legacy intent copies stay as dead code until P6.
 
+// imageModelBrowseDisplayCap bounds how many image/model candidates the
+// catalog renderers list. Byte-identical to the legacy intent const.
+const imageModelBrowseDisplayCap = 10
+
 func safeValue(v any) string { return platform.SafeValue(v) }
+
+func mapSliceAt(m map[string]any, key string) []any { return platform.MapSliceAt(m, key) }
+
+func safeString(m map[string]any, key string) string { return platform.SafeString(m, key) }
+
+func uniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		clean := strings.TrimSpace(safeValue(value))
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+func entryMatchesSlotQuery(entry map[string]any, query string, fields []string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return true
+	}
+	for _, field := range fields {
+		if strings.Contains(strings.ToLower(safeString(entry, field)), query) {
+			return true
+		}
+	}
+	return false
+}
 
 func stringSliceAt(m map[string]any, key string) []string {
 	if m == nil {

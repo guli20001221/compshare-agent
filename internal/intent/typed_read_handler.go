@@ -22,8 +22,6 @@ func (h *DemoHandler) HandleReadRequest(ctx context.Context, request ReadRequest
 		return h.HandleStockAvailabilityRequest(ctx, typed, meta)
 	case ImageListRequest:
 		return h.HandleImageListRequest(ctx, typed, meta)
-	case ModelRepositoryRequest:
-		return h.HandleModelRepositoryRequest(ctx, typed, meta)
 	case CFSListRequest:
 		return h.HandleCFSListRequest(ctx, typed, meta)
 	case CFSCreatePriceRequest:
@@ -54,9 +52,6 @@ func (h *DemoHandler) HandleStockAvailabilityRequest(ctx context.Context, reques
 }
 func (h *DemoHandler) HandleImageListRequest(ctx context.Context, request ImageListRequest, meta ReadHandlerContext) HandlerResult {
 	return h.DispatchRoute(ctx, typedHandlerRequest(IntentImageList, Slots{ImageSource: request.Source, SearchQuery: request.Query, ListMode: request.Mode}, meta))
-}
-func (h *DemoHandler) HandleModelRepositoryRequest(ctx context.Context, request ModelRepositoryRequest, meta ReadHandlerContext) HandlerResult {
-	return h.DispatchRoute(ctx, typedHandlerRequest(IntentModelRepositoryBrowse, Slots{SearchQuery: request.Query, ListMode: request.Mode}, meta))
 }
 func (h *DemoHandler) HandleCFSListRequest(ctx context.Context, request CFSListRequest, meta ReadHandlerContext) HandlerResult {
 	refs := []TargetRef(nil)

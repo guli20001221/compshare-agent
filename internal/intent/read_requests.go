@@ -35,13 +35,6 @@ type ImageListRequest struct {
 
 func (ImageListRequest) MissingFields() []MissingField { return nil }
 
-type ModelRepositoryRequest struct {
-	Query string   `json:"query,omitempty"`
-	Mode  ListMode `json:"mode,omitempty"`
-}
-
-func (ModelRepositoryRequest) MissingFields() []MissingField { return nil }
-
 type CFSListRequest struct {
 	CFS *CFSRef `json:"cfs,omitempty"`
 }
