@@ -16,8 +16,6 @@ type ReadHandlerContext struct {
 // parameter is the concrete capability request type.
 func (h *DemoHandler) HandleReadRequest(ctx context.Context, request ReadRequest, meta ReadHandlerContext) HandlerResult {
 	switch typed := request.(type) {
-	case MonitorCurrentRequest:
-		return h.HandleMonitorCurrentRequest(ctx, typed, meta)
 	case MonitorHistoryRequest:
 		return h.HandleMonitorHistoryRequest(ctx, typed, meta)
 	case GPUSpecsRequest:
@@ -52,9 +50,6 @@ func typedHandlerRequest(readIntent Intent, slots Slots, meta ReadHandlerContext
 	}
 }
 
-func (h *DemoHandler) HandleMonitorCurrentRequest(ctx context.Context, request MonitorCurrentRequest, meta ReadHandlerContext) HandlerResult {
-	return h.HandleMonitorQuery(ctx, typedHandlerRequest(IntentMonitorQuery, Slots{TargetRefs: request.Targets, Metrics: request.Metrics}, meta))
-}
 func (h *DemoHandler) HandleMonitorHistoryRequest(ctx context.Context, request MonitorHistoryRequest, meta ReadHandlerContext) HandlerResult {
 	return h.HandleMonitorQuery(ctx, typedHandlerRequest(IntentMonitorHistory, Slots{TargetRefs: request.Targets, Metrics: request.Metrics, TimeWindow: request.TimeWindow}, meta))
 }

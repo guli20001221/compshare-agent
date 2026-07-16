@@ -42,7 +42,7 @@ func namedReadToolName(name string) string { return ReadToolPrefix + name }
 func ReadDefinitions() []ReadDefinition {
 	definitions := []ReadDefinition{
 		migratedReadDefinition(intent.IntentResourceInfo, NewReadCapability(resourceReadSpec())),
-		newReadDefinition[MonitorCurrentRequest](string(intent.IntentMonitorQuery), intent.IntentMonitorQuery, "查询实例当前 CPU、内存、GPU 或显存监控数据。", objectSchema(map[string]any{"targets": targetRefsSchema(), "metrics": metricsSchema()}, nil)),
+		migratedReadDefinition(intent.IntentMonitorQuery, NewReadCapability(monitorCurrentReadSpec())),
 		newReadDefinition[MonitorHistoryRequest](string(intent.IntentMonitorHistory), intent.IntentMonitorHistory, "查询实例在明确时间范围内的历史监控数据。", objectSchema(map[string]any{"targets": targetRefsSchema(), "metrics": metricsSchema(), "time_window": timeWindowSchema()}, []string{"time_window"})),
 		newReadDefinition[GPUSpecsRequest](string(intent.IntentGPUSpecsQuery), intent.IntentGPUSpecsQuery, "查询 GPU 机型的静态规格。", objectSchema(map[string]any{"gpu_type": stringSchema(), "detail_level": enumSchema("summary", "full")}, nil)),
 		newReadDefinition[StockAvailabilityRequest](string(intent.IntentStockAvailability), intent.IntentStockAvailability, "查询 GPU 机型的实时可售性。", objectSchema(map[string]any{"gpu_type": stringSchema(), "zone": stringSchema()}, nil)),

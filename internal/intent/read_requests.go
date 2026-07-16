@@ -13,13 +13,6 @@ type MissingField = platform.MissingField
 
 func missing(name string) MissingField { return platform.Missing(name) }
 
-type MonitorCurrentRequest struct {
-	Targets []TargetRef `json:"targets,omitempty"`
-	Metrics []Metric    `json:"metrics,omitempty"`
-}
-
-func (MonitorCurrentRequest) MissingFields() []MissingField { return nil }
-
 type MonitorHistoryRequest struct {
 	Targets    []TargetRef `json:"targets,omitempty"`
 	Metrics    []Metric    `json:"metrics,omitempty"`
