@@ -393,15 +393,6 @@ func validFilterRef(value string) bool {
 	return err == nil
 }
 
-func containsFilterRef(refs []TargetRef) bool {
-	for _, ref := range refs {
-		if ref.Type == TargetRefFilter {
-			return true
-		}
-	}
-	return false
-}
-
 func validSlotPosition(value string) bool {
 	switch value {
 	case "first_running", "last_mentioned":

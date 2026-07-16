@@ -676,43 +676,6 @@ func startOfDay(t time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, monitorHistoryLoc)
 }
 
-func describeResourceArgs(ids []string) map[string]any {
-	if len(ids) == 0 {
-		return map[string]any{"Limit": 100}
-	}
-	return map[string]any{"UHostIds": append([]string(nil), ids...)}
-}
-
-type resourceDescribeData struct {
-	Instances  []entity.InstanceSnapshot
-	TotalCount int
-	Truncated  bool
-}
-
-func instancesFromDescribeResult(raw map[string]any) (resourceDescribeData, error) {
-	reg := entity.NewRegistry()
-	if err := reg.SyncFromDescribe(raw, "handler_resource"); err != nil {
-		return resourceDescribeData{}, err
-	}
-	snap := reg.Snapshot()
-	instances := make([]entity.InstanceSnapshot, 0, len(snap.Instances))
-	for _, inst := range snap.Instances {
-		instances = append(instances, inst)
-	}
-	sort.Slice(instances, func(i, j int) bool {
-		return instances[i].UHostId < instances[j].UHostId
-	})
-	totalCount := snap.TotalCount
-	if totalCount == 0 && len(instances) > 0 {
-		totalCount = len(instances)
-	}
-	return resourceDescribeData{
-		Instances:  instances,
-		TotalCount: totalCount,
-		Truncated:  snap.Truncated,
-	}, nil
-}
-
 func copyArgs(args map[string]any) map[string]any {
 	return platform.CopyArgs(args)
 }

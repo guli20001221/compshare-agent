@@ -5,6 +5,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/readprojection"
 )
 
 // truncateDescribeResultForReAct caps the UHostSet length of a raw
@@ -34,7 +35,7 @@ func truncateDescribeResultForReAct(args, result map[string]any) (shown, total i
 		return 0, 0, false
 	}
 	total = len(rawHosts)
-	if total <= intent.DefaultMaxInstancesPerDisplay {
+	if total <= readprojection.DefaultMaxInstancesPerDisplay {
 		return total, total, false
 	}
 
@@ -51,10 +52,10 @@ func truncateDescribeResultForReAct(args, result map[string]any) (shown, total i
 		ranked = append(ranked, rankedRow{row: raw, snap: entity.InstanceFromMap(row)})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
-		return intent.InstanceDisplayLess(ranked[i].snap, ranked[j].snap)
+		return readprojection.InstanceDisplayLess(ranked[i].snap, ranked[j].snap)
 	})
 
-	limit := intent.DefaultMaxInstancesPerDisplay
+	limit := readprojection.DefaultMaxInstancesPerDisplay
 	kept := make([]any, 0, limit)
 	for i := 0; i < len(ranked) && i < limit; i++ {
 		kept = append(kept, ranked[i].row)

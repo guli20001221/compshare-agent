@@ -625,9 +625,9 @@
       "value": "(?:^|\\D)(\\d{1,2})(?:\\s*(?::|点|时)\\s*(\\d{1,2})?)?"
     },
     {
-      "id": "f868ab4ff2e2b6ae",
+      "id": "499c4e569749d9e4",
       "kind": "regex",
-      "path": "internal/intent/resource_filter.go",
+      "path": "internal/readprojection/resource_filter.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "^[A-Za-z0-9_.-]+$"
@@ -1813,10 +1813,10 @@
       "value": "vram"
     },
     {
-      "id": "ac7968282570840a",
+      "id": "780f2645b195ca68",
       "kind": "string_heuristic",
-      "path": "internal/intent/resource_filter.go",
-      "symbol": "matchesGPUTypeFilter",
+      "path": "internal/readprojection/resource_filter.go",
+      "symbol": "MatchesGPUTypeFilter",
       "callee": "strings.Contains"
     },
     {

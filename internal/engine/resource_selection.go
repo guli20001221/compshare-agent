@@ -11,6 +11,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/readprojection"
 )
 
 const maxResourceSelectionCandidates = 20
@@ -241,8 +242,8 @@ func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnaps
 		return
 	}
 	candidates := append([]entity.InstanceSnapshot(nil), instances...)
-	if sourceIntent == intent.IntentResourceInfo && len(candidates) > intent.DefaultMaxInstancesPerDisplay {
-		candidates = candidates[:intent.DefaultMaxInstancesPerDisplay]
+	if sourceIntent == intent.IntentResourceInfo && len(candidates) > readprojection.DefaultMaxInstancesPerDisplay {
+		candidates = candidates[:readprojection.DefaultMaxInstancesPerDisplay]
 		truncated = true
 	}
 	limited := false
@@ -357,8 +358,8 @@ func (e *Engine) pendingResourceSelectionFromSession() (*pendingResourceSelectio
 		return nil, false
 	}
 	truncated := e.sessionState.PendingSelectionTruncated
-	if len(candidates) > intent.DefaultMaxInstancesPerDisplay {
-		candidates = candidates[:intent.DefaultMaxInstancesPerDisplay]
+	if len(candidates) > readprojection.DefaultMaxInstancesPerDisplay {
+		candidates = candidates[:readprojection.DefaultMaxInstancesPerDisplay]
 		truncated = true
 	}
 	planIntent := intent.Intent(e.sessionState.PendingSelectionIntent)

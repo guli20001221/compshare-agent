@@ -1,4 +1,4 @@
-package intent
+package readprojection
 
 import (
 	"fmt"
@@ -108,7 +108,7 @@ func (f ResourceFilterSet) String() string {
 	return strings.Join(f.Expressions(), ",")
 }
 
-func applyResourceFilters(instances []entity.InstanceSnapshot, filters ResourceFilterSet) []entity.InstanceSnapshot {
+func ApplyResourceFilters(instances []entity.InstanceSnapshot, filters ResourceFilterSet) []entity.InstanceSnapshot {
 	if filters.IsZero() {
 		return append([]entity.InstanceSnapshot(nil), instances...)
 	}
@@ -117,7 +117,7 @@ func applyResourceFilters(instances []entity.InstanceSnapshot, filters ResourceF
 		if filters.State != "" && !strings.EqualFold(inst.State, filters.State) {
 			continue
 		}
-		if filters.GPUType != "" && !matchesGPUTypeFilter(inst.GpuType, filters.GPUType) {
+		if filters.GPUType != "" && !MatchesGPUTypeFilter(inst.GpuType, filters.GPUType) {
 			continue
 		}
 		out = append(out, inst)
@@ -125,7 +125,7 @@ func applyResourceFilters(instances []entity.InstanceSnapshot, filters ResourceF
 	return out
 }
 
-func matchesGPUTypeFilter(actual, filter string) bool {
+func MatchesGPUTypeFilter(actual, filter string) bool {
 	actual = normalizeGPUType(actual)
 	filter = normalizeGPUType(filter)
 	if filter == "" {

@@ -25,6 +25,12 @@ const (
 	MetricVRAM   = platform.MetricVRAM
 )
 
+// TargetRef / TargetRefFilter mirror the platform value-object vocabulary so the
+// relocated resource-filter code references TargetRef / TargetRefFilter unchanged.
+type TargetRef = platform.TargetRef
+
+const TargetRefFilter = platform.TargetRefFilter
+
 // Exported views of the projection's canonical labels / empty-result replies so
 // the intent compatibility layer (and its tests) resolve to a single source.
 const (
