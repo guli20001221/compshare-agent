@@ -70,6 +70,20 @@ func (c SealedActionContract) verifyDigest(params map[string]any) bool {
 	return paramsDigest(params) == c.Digest
 }
 
+// seal freezes the confirmed draft (the current business Params + Runtime) into
+// an immutable contract stored on the context. sealDraft deep-copies the params,
+// so the frozen record is independent of the live Params: a later write to
+// Params diverges from the digest and is caught by verifyDigest — the structural
+// guarantee that the mutating step executes exactly what the user confirmed.
+func (c *Context) seal(operation string) {
+	sealed := sealDraft(ExecutionDraft{
+		Operation:      operation,
+		BusinessParams: c.Params,
+		Runtime:        c.Runtime,
+	})
+	c.sealed = &sealed
+}
+
 // paramsDigest is a deterministic content hash of a business-param map. json
 // marshalling sorts map keys, so the digest is stable across runs for equal
 // content; it is used only for tamper detection, never for security.

@@ -118,6 +118,12 @@ type Result struct {
 	MissingSlots []string       `json:"missing_slots,omitempty"`
 	Data         map[string]any `json:"data,omitempty"`
 	Steps        []StepSummary  `json:"steps"`
+	// Contract is the sealed contract that gated this workflow's mutating step,
+	// or nil if the workflow never reached its confirmation gate. It is
+	// server-internal (json:"-": never serialised to the model — it may carry
+	// secret-bearing confirmed params); the engine reads it to narrate results
+	// and recover from the exact confirmed params instead of stale input.
+	Contract *SealedActionContract `json:"-"`
 }
 
 // StepSummary records one step's outcome.

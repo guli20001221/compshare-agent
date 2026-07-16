@@ -39,6 +39,9 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 	wfCtx := NewContext(params)
 	total := len(def.Steps)
 	result := &Result{Steps: make([]StepSummary, 0, total)}
+	// The sealed contract (set once the confirmation gate passes) is surfaced to
+	// the engine so it narrates and recovers from the exact confirmed params.
+	defer func() { result.Contract = wfCtx.sealed }()
 
 	for i, step := range def.Steps {
 		if err := ctx.Err(); err != nil {
@@ -63,6 +66,12 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 
 		switch step.Type {
 		case StepToolCall:
+			// Once the user has confirmed, a mutating step must run on exactly the
+			// sealed params. A digest mismatch means a confirmed field was rewritten
+			// after the gate — fail-stop rather than act on unconfirmed params.
+			if !e.verifySealedContract(step, i, total, wfCtx, result) {
+				return result, nil
+			}
 			if e.runToolStep(ctx, step, i, total, wfCtx, result) == toolStepFailed {
 				return result, nil
 			}
@@ -71,6 +80,9 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 			if !e.runConfirmStep(ctx, def, step, i, total, wfCtx, result) {
 				return result, nil
 			}
+			// Seal the confirmed draft: from here the business params are frozen
+			// and every subsequent mutating step is checked against them.
+			wfCtx.seal(def.Name)
 		}
 	}
 
@@ -80,6 +92,24 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 	}
 	result.Message = "工作流执行完成"
 	return result, nil
+}
+
+// verifySealedContract enforces the seal before a post-confirmation tool step.
+// Before the confirmation gate (no seal yet) it is a no-op. After the gate, the
+// live business params must still hash to the sealed digest; a mismatch means
+// something rewrote a confirmed field after the user approved it, so the
+// workflow fail-stops rather than executing on unconfirmed params. Returns true
+// to proceed.
+func (e *Engine) verifySealedContract(step Step, i, total int, wfCtx *Context, result *Result) bool {
+	if wfCtx.sealed == nil || wfCtx.sealed.verifyDigest(wfCtx.Params) {
+		return true
+	}
+	msg := "执行合同校验失败：确认后的参数被改动，请重新发起操作。"
+	e.emit(step.Name, i, total, StepToolCall, "failed", step.Tool, nil, msg)
+	result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
+	result.StoppedAt = step.Name
+	result.Message = msg
+	return false
 }
 
 // toolStepOutcome reports how a StepToolCall ended for the Run loop.
