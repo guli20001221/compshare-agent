@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -147,7 +146,7 @@ func TestChat_ExpiredToolFactKeepsTopicAndTimeButDropsValue(t *testing.T) {
 	assert.NotContains(t, modelInput, "SECRET_OLD_99")
 }
 
-func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSummary(t *testing.T) {
+func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSignalsInCard(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaV5,
@@ -177,12 +176,18 @@ func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSummary(t *testing.
 	}
 	assert.Equal(t, "查到了，接下来要扩盘。", eng.messages[len(eng.messages)-1].Content)
 
-	summary := eng.buildReActHistorySummary(time.Now())
-	assert.Contains(t, summary, "把训练机的数据盘扩到 200G")
-	assert.Contains(t, summary, "instance=uhost-a")
-	assert.Contains(t, summary, "target_size_gb=200")
-	assert.Contains(t, summary, "disk_id")
-	assert.False(t, strings.Contains(summary, "MUST_NOT_SURVIVE"))
+	// The structured task signals cross the turn boundary through the single
+	// context card, not a second summary block; raw tool JSON never does.
+	// refreshConversationDigest (turn entry) merges the task's constraints and
+	// decisions into the digest, which the card then surfaces.
+	now := time.Now()
+	eng.refreshConversationDigest(now)
+	card := renderAgentContextCard((ContextCompiler{}).Compile(eng, "继续扩盘", now))
+	assert.Contains(t, card, "把训练机的数据盘扩到 200G")
+	assert.Contains(t, card, "instance=uhost-a")
+	assert.Contains(t, card, "target_size_gb=200")
+	assert.Contains(t, card, "disk_id")
+	assert.NotContains(t, card, "MUST_NOT_SURVIVE")
 }
 
 func TestTrimHistory_PreservesDiscardedTurnsWithoutGuessingTheirMeaning(t *testing.T) {

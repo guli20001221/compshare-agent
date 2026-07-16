@@ -39,6 +39,11 @@ type AgentContext struct {
 	RecentConversation []ConversationPair
 	ConversationDigest ConversationDigest
 	ActiveTask         *TaskSnapshot
+	// LastIntent carries the session's most recent routed intent label. It is
+	// understanding-only context (never dispatch authority) and exists so the
+	// single context card remains a strict superset of the retired
+	// buildReActHistorySummary block, which surfaced it as "上次意图".
+	LastIntent         string
 	SelectedEntities   []SemanticEntityHint
 	RecentObservations []ToolObservationView
 	VerifiedKnowledge  []VerifiedKnowledgeTurn
@@ -84,6 +89,7 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		return cloneAgentContext(view)
 	}
 	view.ConversationDigest = cloneConversationDigest(e.sessionState.ConversationDigest)
+	view.LastIntent = safeContextText(e.sessionState.LastIntent)
 	view.VerifiedKnowledge = cloneVerifiedKnowledge(e.sessionState.VerifiedKnowledge, maxAgentContextVerifiedKnowledge)
 	view.ContinuityNotices = compactSemanticItems(append([]string(nil), e.continuityAdvisories.Notices...))
 	if e.continuityAdvisories.ReadOnly {

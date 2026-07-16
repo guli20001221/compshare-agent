@@ -392,7 +392,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// event buffer or its observer would mix two tenants' reasoning traces.
 		"agentRuntimeEventsThisTurn": true,
 		"agentRuntimeObserver":       true,
-		"currentCtx": true,
+		"currentCtx":                 true,
 		// guidedCreate is a per-turn HTTP capability gate; sharing it would let
 		// one client's opt-in change another client's create workflow shape.
 		"guidedCreate": true,
@@ -400,39 +400,42 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the JSON-serializable per-session dialog state envelope; mixing
 		// it across sessions would be exactly the cross-user leak this
 		// test was created to prevent.
-		"sessionState":                       true,
-		"sessionStateVersion":                true,
-		"sessionStateHydrated":               true,
-		"continuityAdvisories":               true,
-		"turnContextViewThisTurn":            true,
-		"turnContextViewReady":               true,
-		"promptSectionIDsThisTurn":           true,
-		"memoryUpdateSourceThisTurn":         true,
-		"groundingOutcomeThisTurn":           true,
-		"sessionFactContextEnabled":          true,
-		"reactResultProjectionEnabled":       true,
-		"reactHistoryCompactionEnabled":      true,
-		"readCapabilitySubjectsThisTurn":     true,
-		"readResponseEvidenceThisTurn":       true,
-		"toolResultsByCallThisTurn":          true,
-		"actionProposalRanThisTurn":          true,
-		"imageContextThisTurn":               true,
-		"secretInputsThisTurn":               true,
-		"baseUserContext":                    true,
-		"displayedResourceSelectionThisTurn": true,
-		"trustedWorkflowFrameActionThisTurn": true,
-		"trustedWorkflowFrameTargetThisTurn": true,
+		"sessionState":                        true,
+		"sessionStateVersion":                 true,
+		"sessionStateHydrated":                true,
+		"continuityAdvisories":                true,
+		"turnContextViewThisTurn":             true,
+		"turnContextViewReady":                true,
+		"promptSectionIDsThisTurn":            true,
+		"memoryUpdateSourceThisTurn":          true,
+		"groundingOutcomeThisTurn":            true,
+		"promptMessagesRawPeakThisTurn":       true,
+		"promptMessagesAssembledPeakThisTurn": true,
+		"promptMessagesCapAppliedThisTurn":    true,
+		"sessionFactContextEnabled":           true,
+		"reactResultProjectionEnabled":        true,
+		"reactHistoryCompactionEnabled":       true,
+		"readCapabilitySubjectsThisTurn":      true,
+		"readResponseEvidenceThisTurn":        true,
+		"toolResultsByCallThisTurn":           true,
+		"actionProposalRanThisTurn":           true,
+		"imageContextThisTurn":                true,
+		"secretInputsThisTurn":                true,
+		"baseUserContext":                     true,
+		"displayedResourceSelectionThisTurn":  true,
+		"trustedWorkflowFrameActionThisTurn":  true,
+		"trustedWorkflowFrameTargetThisTurn":  true,
 	}
 
 	if want, got := 12, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 79, len(perSessionFields); want != got {
+	if want, got := 82, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 91, typ.NumField(); want != got {
+	if want, got := 94, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

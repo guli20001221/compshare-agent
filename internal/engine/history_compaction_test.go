@@ -65,20 +65,28 @@ func TestConversationMemoryCompactorInvalidSourceFallsBackToVerbatimExcerpt(t *t
 	assert.Equal(t, int64(1), state.ConversationDigest.SummaryFrontier)
 }
 
-func TestBuildReActHistorySummary_KeepsStructuredSignalsNotFactPayload(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+// The single context card must be a strict superset of the retired
+// buildReActHistorySummary block: every structured signal that block surfaced —
+// last intent, task-level constraints/decisions, the task-expired notice, the
+// selected instance, and the expired-observation "re-query" caution — must still
+// reach the model through renderAgentContextCard, and an expired fact's stale
+// value must never leak.
+func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 	now := time.Unix(1_000, 0)
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
+		SchemaVersion:        SessionStateSchemaCurrent,
 		SelectedInstanceID:   "uhost-123",
 		SelectedInstanceName: "train-box",
 		LastIntent:           string(intent.IntentMonitorQuery),
+		TaskSnapshot: TaskSnapshot{
+			Goal:        "把训练机监控看板恢复",
+			Constraints: []string{"只看最近五分钟"},
+			Decisions:   []string{"先重启监控 agent"},
+			Status:      TaskSnapshotStatusExpired,
+			Freshness:   ContinuityFreshnessExpired,
+		},
 		RecentFacts: []ToolFact{{
-			Kind:           FactKindMonitorSample,
-			SubjectID:      "uhost-123",
-			Payload:        map[string]any{"cpu_usage": float64(88), "gpu_usage": float64(77)},
-			ProducedAtUnix: now.Unix() - 5,
-			TTLSeconds:     30,
-		}, {
 			Kind:           FactKindInstanceState,
 			SubjectID:      "uhost-expired",
 			Payload:        map[string]any{"state": "Running"},
@@ -87,17 +95,22 @@ func TestBuildReActHistorySummary_KeepsStructuredSignalsNotFactPayload(t *testin
 		}},
 	}, 1)
 
-	got := eng.buildReActHistorySummary(now)
+	// Mirror turn entry: refreshConversationDigest merges the task's
+	// constraints/decisions into the digest before the view is compiled, which is
+	// how those signals reach the card (as 既有约束 / 已作决定) without being
+	// re-rendered task-side.
+	eng.refreshConversationDigest(now)
+	card := renderAgentContextCard((ContextCompiler{}).CompileForTurn(eng, "现在怎么样", "", now))
 
-	assert.Contains(t, got, reactHistorySummaryPrefix)
-	assert.Contains(t, got, "train-box")
-	assert.Contains(t, got, "uhost-123")
-	assert.Contains(t, got, string(intent.IntentMonitorQuery))
-	assert.Contains(t, got, "近期事实引用：uhost-123 monitor_sample")
-	assert.NotContains(t, got, "88")
-	assert.NotContains(t, got, "gpu_usage")
-	assert.Contains(t, got, "历史事实主题：uhost-expired instance_state")
-	assert.NotContains(t, got, "Running",
+	assert.Contains(t, card, "上次意图："+string(intent.IntentMonitorQuery))
+	assert.Contains(t, card, "train-box")
+	assert.Contains(t, card, "uhost-123")
+	assert.Contains(t, card, "把训练机监控看板恢复")
+	assert.Contains(t, card, "只看最近五分钟", "task-level constraints must survive in the card")
+	assert.Contains(t, card, "先重启监控 agent", "task-level decisions must survive in the card")
+	assert.Contains(t, card, "该任务已过期", "the task-expired notice must survive in the card")
+	assert.Contains(t, card, "必须重新查询")
+	assert.NotContains(t, card, "Running",
 		"expired observations may retain topic and time, never their old value")
 }
 
@@ -114,11 +127,11 @@ func TestTrimHistoryCompaction_OffKeepsCountTrimBehavior(t *testing.T) {
 
 	require.Len(t, eng.messages, 1+maxHistoryMessages)
 	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[0].Role)
-	assert.False(t, hasReactHistorySummary(eng.messages))
+	assert.Equal(t, 1, countSystemMessages(eng.messages), "trim never injects a second system block")
 	assert.Equal(t, fmt.Sprintf("a%d", pairs-1), eng.messages[len(eng.messages)-1].Content)
 }
 
-func TestTrimHistoryCompaction_KeepsSummaryToolPairsAndShrinksOldToolResults(t *testing.T) {
+func TestTrimHistoryCompaction_TrimsToolPairsAndShrinksOldToolResultsWithoutSummaryBlock(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetReactHistoryCompactionEnabled(true)
 	eng.SetSessionState(SessionState{
@@ -157,10 +170,10 @@ func TestTrimHistoryCompaction_KeepsSummaryToolPairsAndShrinksOldToolResults(t *
 
 	require.Greater(t, len(eng.messages), 2)
 	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[0].Role)
-	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[1].Role)
-	assert.Contains(t, eng.messages[1].Content, reactHistorySummaryPrefix)
-	assert.Contains(t, eng.messages[1].Content, "selected-box")
-	assert.Equal(t, 1, countHistorySummaryMessages(eng.messages))
+	assert.Equal(t, 1, countSystemMessages(eng.messages),
+		"compaction trims and shrinks but never injects a second system/summary block")
+	assert.NotEqual(t, openai.ChatMessageRoleSystem, eng.messages[1].Role,
+		"the first kept message after the base prompt is real history, not a summary")
 	assertToolCallPairsValid(t, eng.messages)
 
 	compacted := 0
@@ -181,7 +194,7 @@ func TestTrimHistoryCompaction_KeepsSummaryToolPairsAndShrinksOldToolResults(t *
 	assert.Equal(t, "tail-a", eng.messages[len(eng.messages)-1].Content)
 
 	eng.trimHistoryByCompaction(time.Unix(2_001, 0))
-	assert.Equal(t, 1, countHistorySummaryMessages(eng.messages), "repeated compaction must not duplicate the summary")
+	assert.Equal(t, 1, countSystemMessages(eng.messages), "repeated compaction must not add a system block")
 	assertToolCallPairsValid(t, eng.messages)
 }
 
@@ -216,10 +229,10 @@ func makePlainHistory(pairs int) []openai.ChatCompletionMessage {
 	return msgs
 }
 
-func countHistorySummaryMessages(messages []openai.ChatCompletionMessage) int {
+func countSystemMessages(messages []openai.ChatCompletionMessage) int {
 	count := 0
 	for _, msg := range messages {
-		if msg.Role == openai.ChatMessageRoleSystem && strings.HasPrefix(msg.Content, reactHistorySummaryPrefix) {
+		if msg.Role == openai.ChatMessageRoleSystem {
 			count++
 		}
 	}

@@ -193,6 +193,17 @@ func renderAgentContextCard(view AgentContext) string {
 			parts = append(parts, "新鲜度="+safeContextText(task.Freshness))
 		}
 		lines = append(lines, "活动任务："+strings.Join(parts, "；"))
+		// task-level constraints/decisions are not re-rendered here: refreshConversationDigest
+		// merges them into ConversationDigest.Constraints/Decisions at turn entry, which the
+		// card already surfaces below as 既有约束 / 已作决定. The task-expired caution and the
+		// last routed intent, however, have no digest home, so they are restored here — this
+		// is what keeps the card a strict superset of the retired history-summary block.
+		if task.Status == TaskSnapshotStatusExpired {
+			lines = append(lines, "该任务已过期；仅供理解，不得直接继续执行")
+		}
+	}
+	if view.LastIntent != "" {
+		lines = append(lines, "上次意图："+view.LastIntent)
 	}
 	if narrative := safeContextNarrative(view.ConversationDigest.Narrative); narrative != "" {
 		lines = append(lines, "较早对话摘要："+narrative)

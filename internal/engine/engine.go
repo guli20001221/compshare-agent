@@ -309,12 +309,19 @@ type Engine struct {
 	// answer (that path emits no hard-block, so the trace's budget terminus is
 	// otherwise underivable). Both reset at the top of Chat; read post-turn by the
 	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
-	reactRoundsThisTurn           int
-	reactCeilingHitThisTurn       bool
-	turnModelCallsThisTurn        int
-	turnCompletionClassHint       string
-	turnCompletionReasonHint      string
-	turnCompletionEmittedThisTurn bool
+	reactRoundsThisTurn     int
+	reactCeilingHitThisTurn bool
+	// Context-assembler observability (P2). Peak raw history size and peak
+	// assembled request size across this turn's rounds, plus whether the
+	// conservative message cap ever shed anything. Content-free; reset at the top
+	// of Chat, read post-turn via the Prompt* accessors.
+	promptMessagesRawPeakThisTurn       int
+	promptMessagesAssembledPeakThisTurn int
+	promptMessagesCapAppliedThisTurn    bool
+	turnModelCallsThisTurn              int
+	turnCompletionClassHint             string
+	turnCompletionReasonHint            string
+	turnCompletionEmittedThisTurn       bool
 	// A post-LLM or token-budget block can be recovered later in the same turn.
 	// Keep the standing bit so a successfully validated answer can overwrite the
 	// earlier failure attribution instead of being stored as "blocked".
@@ -762,6 +769,15 @@ func (e *Engine) ReactRoundsThisTurn() int { return e.reactRoundsThisTurn }
 // ReAct round ceiling without producing a final answer. That path emits no
 // hard-block, so this is the only signal for terminated_by=budget on it.
 func (e *Engine) ReactCeilingHitThisTurn() bool { return e.reactCeilingHitThisTurn }
+
+// PromptMessagesRawPeak / PromptMessagesAssembledPeak return the peak raw
+// history size and peak assembled-request size observed while assembling LLM
+// requests this turn; PromptMessagesCapApplied reports whether the conservative
+// message cap shed anything. These make the context assembler's before/after
+// effect observable; prompt tokens are recorded separately (Outcome.PromptTokens).
+func (e *Engine) PromptMessagesRawPeak() int       { return e.promptMessagesRawPeakThisTurn }
+func (e *Engine) PromptMessagesAssembledPeak() int { return e.promptMessagesAssembledPeakThisTurn }
+func (e *Engine) PromptMessagesCapApplied() bool   { return e.promptMessagesCapAppliedThisTurn }
 
 // AgentRuntimeEventsThisTurn returns a bounded copy of the central runtime's
 // lifecycle events. It records only round counts, tool names and terminal
@@ -1219,6 +1235,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.turnTokensConsumed = 0
 	e.reactRoundsThisTurn = 0
 	e.reactCeilingHitThisTurn = false
+	e.promptMessagesRawPeakThisTurn = 0
+	e.promptMessagesAssembledPeakThisTurn = 0
+	e.promptMessagesCapAppliedThisTurn = false
 	e.agentRuntimeEventsThisTurn = nil
 	e.hardBlockStandingThisTurn = false
 	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
@@ -4211,7 +4230,93 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 // Freshness and refresh requirements are part of the single compiled
 // AgentContext; this function does not add turn-local policy prompts.
 func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
-	return messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
+	assembled := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
+	capped := capAssembledRequestMessages(assembled, maxAssembledRequestMessages)
+	e.recordPromptAssembly(len(e.messages), len(assembled), len(capped))
+	return capped
+}
+
+// maxAssembledRequestMessages is a conservative hard ceiling on the number of
+// messages in a single assembled LLM request. The legitimate maximum is ~69
+// (2 system/card + 16 restored recent pairs + a ≤51-message in-turn tool
+// transcript bounded by maxReadExpensiveCallsPerTurn / maxReActRounds), so this
+// only sheds a pathological within-turn runaway and never truncates a valid
+// turn. Cross-turn history is already bounded separately by maxHistoryMessages.
+const maxAssembledRequestMessages = 100
+
+// capAssembledRequestMessages bounds an already-assembled request to at most
+// `cap` messages without ever producing an API-invalid transcript. It sheds the
+// oldest restored RecentConversation exchanges first (complete plain-text pairs
+// already distilled into the context card), then, only if still over, the oldest
+// complete in-turn tool groups after the current question. An assistant message
+// carrying tool_calls is always dropped together with its tool results, so no
+// tool result is ever orphaned and the current question is always retained.
+func capAssembledRequestMessages(msgs []openai.ChatCompletionMessage, cap int) []openai.ChatCompletionMessage {
+	if cap <= 0 || len(msgs) <= cap {
+		return msgs
+	}
+	headEnd := 0
+	for headEnd < len(msgs) && msgs[headEnd].Role == openai.ChatMessageRoleSystem {
+		headEnd++
+	}
+	currentUserIdx := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == openai.ChatMessageRoleUser {
+			currentUserIdx = i
+			break
+		}
+	}
+	// Structure not recognizable (no leading system block, or no user message):
+	// leave the request untouched rather than risk an API-invalid drop.
+	if currentUserIdx < headEnd {
+		return msgs
+	}
+	excess := len(msgs) - cap
+
+	// Phase 1: drop whole restored RecentConversation pairs from the oldest end.
+	pairRegion := currentUserIdx - headEnd
+	pairsToDrop := (excess + 1) / 2
+	if maxPairs := pairRegion / 2; pairsToDrop > maxPairs {
+		pairsToDrop = maxPairs
+	}
+	dropFromPairs := pairsToDrop * 2
+
+	// Phase 2: if still over, drop oldest complete in-turn tool groups after the
+	// current question. A group = one assistant message plus the tool results
+	// that answer it; both go together so nothing is orphaned.
+	remaining := excess - dropFromPairs
+	cut := currentUserIdx + 1
+	for remaining > 0 && cut < len(msgs) {
+		cut++ // drop the message that starts this group
+		remaining--
+		for cut < len(msgs) && msgs[cut].Role == openai.ChatMessageRoleTool {
+			cut++
+			remaining--
+		}
+	}
+
+	out := make([]openai.ChatCompletionMessage, 0, len(msgs)-dropFromPairs)
+	out = append(out, msgs[:headEnd]...)
+	out = append(out, msgs[headEnd+dropFromPairs:currentUserIdx]...)
+	out = append(out, msgs[currentUserIdx])
+	out = append(out, msgs[cut:]...)
+	return out
+}
+
+// recordPromptAssembly captures per-turn, content-free observability for the
+// context assembler: the peak raw history size, the peak assembled request size,
+// and whether the conservative message cap ever shed anything this turn. Prompt
+// tokens are already recorded by the trace recorders (Outcome.PromptTokens).
+func (e *Engine) recordPromptAssembly(raw, assembled, final int) {
+	if raw > e.promptMessagesRawPeakThisTurn {
+		e.promptMessagesRawPeakThisTurn = raw
+	}
+	if assembled > e.promptMessagesAssembledPeakThisTurn {
+		e.promptMessagesAssembledPeakThisTurn = assembled
+	}
+	if final < assembled {
+		e.promptMessagesCapAppliedThisTurn = true
+	}
 }
 
 // messagesFromAgentContext is the sole history entrance for the main model.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 )
 
 const (
-	reactHistorySummaryPrefix        = "【会话摘要，自动生成】"
 	reactHistoryCompactedToolPrefix  = "【工具结果已压缩："
 	recentRetrievableToolResultsKeep = 3
 	conversationExcerptKeep          = 6
@@ -67,35 +65,28 @@ func (e *Engine) trimHistoryByCompaction(now time.Time) {
 	e.trimHistoryByCompactionContext(context.Background(), now)
 }
 
+// trimHistoryByCompactionContext bounds the raw transcript. Memory of evicted
+// turns is preserved structurally (compactEvictedConversation distills it into
+// the durable ConversationDigest), which the single context card surfaces on the
+// next assembly. It no longer injects a second "会话摘要" system block: that block
+// duplicated renderAgentContextCard — both derive from SessionState — so the
+// model received two overlapping memory blocks. The card is now the sole memory
+// block (see messagesFromAgentContext); this path only trims and shrinks.
 func (e *Engine) trimHistoryByCompactionContext(ctx context.Context, now time.Time) {
 	if len(e.messages) <= 1+maxHistoryMessages {
-		if hasReactHistorySummary(e.messages) {
-			e.messages = replaceReactHistorySummary(e.messages, e.buildReActHistorySummary(now))
-		}
 		return
 	}
-
-	hadSummary := hasReactHistorySummary(e.messages)
-	msgs := replaceReactHistorySummary(e.messages, "")
-	if hadSummary && len(msgs) <= 1+maxHistoryMessages {
-		e.messages = replaceReactHistorySummary(msgs, e.buildReActHistorySummary(now))
-		return
-	}
-	safeStart := safeHistoryStart(msgs, len(msgs)-maxHistoryMessages)
+	safeStart := safeHistoryStart(e.messages, len(e.messages)-maxHistoryMessages)
 	if safeStart < 0 {
 		return
 	}
 
-	e.compactEvictedConversation(ctx, msgs[1:safeStart], now)
-	keep := append([]openai.ChatCompletionMessage(nil), msgs[safeStart:]...)
+	e.compactEvictedConversation(ctx, e.messages[1:safeStart], now)
+	keep := append([]openai.ChatCompletionMessage(nil), e.messages[safeStart:]...)
 	compactOldRetrievableToolResults(keep, recentRetrievableToolResultsKeep)
 
-	out := make([]openai.ChatCompletionMessage, 0, 2+len(keep))
-	out = append(out, msgs[0])
-	out = append(out, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleSystem,
-		Content: e.buildReActHistorySummary(now),
-	})
+	out := make([]openai.ChatCompletionMessage, 0, 1+len(keep))
+	out = append(out, e.messages[0])
 	out = append(out, keep...)
 	e.messages = out
 	e.historyTrimmedThisSession = true
@@ -282,15 +273,6 @@ func mergeSourcedMemory(existing, incoming []SourcedMemory) []SourcedMemory {
 	return out
 }
 
-func hasReactHistorySummary(messages []openai.ChatCompletionMessage) bool {
-	for _, msg := range messages[1:] {
-		if msg.Role == openai.ChatMessageRoleSystem && strings.HasPrefix(msg.Content, reactHistorySummaryPrefix) {
-			return true
-		}
-	}
-	return false
-}
-
 func safeHistoryStart(messages []openai.ChatCompletionMessage, candidateStart int) int {
 	if candidateStart <= 1 {
 		return -1
@@ -307,86 +289,6 @@ func safeHistoryStart(messages []openai.ChatCompletionMessage, candidateStart in
 	return -1
 }
 
-func replaceReactHistorySummary(messages []openai.ChatCompletionMessage, summary string) []openai.ChatCompletionMessage {
-	if len(messages) == 0 {
-		return messages
-	}
-	out := make([]openai.ChatCompletionMessage, 0, len(messages)+1)
-	out = append(out, messages[0])
-	if summary != "" {
-		out = append(out, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: summary,
-		})
-	}
-	for _, msg := range messages[1:] {
-		if msg.Role == openai.ChatMessageRoleSystem && strings.HasPrefix(msg.Content, reactHistorySummaryPrefix) {
-			continue
-		}
-		out = append(out, msg)
-	}
-	return out
-}
-
-func (e *Engine) buildReActHistorySummary(now time.Time) string {
-	var lines []string
-	if e.sessionStateHydrated {
-		if e.sessionState.SelectedInstanceID != "" {
-			prefix := "已选实例："
-			if e.sessionState.SelectedInstanceFreshness == ContinuityFreshnessExpired ||
-				(e.sessionState.SelectedInstanceAtUnix <= 0 && e.sessionState.SelectedInstanceSource == "") {
-				prefix = "历史实例提示（不可授权写操作）："
-			}
-			if e.sessionState.SelectedInstanceName != "" {
-				lines = append(lines, fmt.Sprintf("%s%s（%s）", prefix, e.sessionState.SelectedInstanceName, e.sessionState.SelectedInstanceID))
-			} else {
-				lines = append(lines, prefix+e.sessionState.SelectedInstanceID)
-			}
-		}
-		if e.sessionState.LastIntent != "" {
-			lines = append(lines, "上次意图："+e.sessionState.LastIntent)
-		}
-		task := e.sessionState.TaskSnapshot
-		if task.Goal != "" {
-			lines = append(lines, "任务目标："+task.Goal)
-		}
-		if len(task.Constraints) > 0 {
-			lines = append(lines, "任务限制："+strings.Join(task.Constraints, "；"))
-		}
-		if len(task.Decisions) > 0 {
-			lines = append(lines, "已作决定："+strings.Join(task.Decisions, "；"))
-		}
-		if len(task.MissingSlots) > 0 && task.Status != TaskSnapshotStatusResolved {
-			lines = append(lines, "未完成任务待补充："+strings.Join(task.MissingSlots, "、"))
-		}
-		if task.Status == TaskSnapshotStatusExpired {
-			lines = append(lines, "该任务已过期；仅供理解，不得直接继续执行")
-		}
-		if digest := compactSemanticNarrative(e.sessionState.ConversationDigest.Narrative); digest != "" {
-			lines = append(lines, "早期对话摘要（只作参考）："+digest)
-		}
-		for _, excerpt := range recentConversationExcerpts(e.sessionState.ConversationDigest.Excerpts, 3) {
-			lines = append(lines, "早期原文摘录（未分类）：用户："+
-				truncateRunes(excerpt.User, 180)+"；助手："+truncateRunes(excerpt.Assistant, 240))
-		}
-		for i := len(e.sessionState.VerifiedKnowledge) - 1; i >= 0 && len(e.sessionState.VerifiedKnowledge)-i <= 3; i-- {
-			memory := e.sessionState.VerifiedKnowledge[i]
-			if strings.TrimSpace(memory.Question) == "" || strings.TrimSpace(memory.Answer) == "" {
-				continue
-			}
-			lines = append(lines, "已验证知识结论（非实时状态）："+
-				truncateRunes(strings.TrimSpace(memory.Question), 180)+" → "+
-				truncateRunes(strings.TrimSpace(memory.Answer), 360))
-		}
-		lines = append(lines, recentFactBreadcrumbs(e.sessionState.RecentFacts, now)...)
-		lines = append(lines, expiredFactBreadcrumbs(e.sessionState.RecentFacts, now)...)
-	}
-	if len(lines) == 0 {
-		lines = append(lines, "暂无稳定结构化信号。")
-	}
-	return reactHistorySummaryPrefix + "\n" + strings.Join(lines, "\n")
-}
-
 func recentConversationExcerpts(excerpts []ConversationExcerpt, limit int) []ConversationExcerpt {
 	if limit <= 0 || len(excerpts) == 0 {
 		return nil
@@ -395,66 +297,6 @@ func recentConversationExcerpts(excerpts []ConversationExcerpt, limit int) []Con
 		excerpts = excerpts[len(excerpts)-limit:]
 	}
 	return excerpts
-}
-
-func expiredFactBreadcrumbs(facts []ToolFact, now time.Time) []string {
-	var out []string
-	for _, fact := range facts {
-		freshness := fact.Freshness
-		if freshness == "" {
-			freshness = continuityFreshness(fact.ProducedAtUnix, fact.TTLSeconds, now)
-		}
-		if freshness != ContinuityFreshnessExpired || fact.SubjectID == "" || fact.Kind == "" {
-			continue
-		}
-		out = append(out, fmt.Sprintf(
-			"历史事实主题：%s %s @%d（当前值必须重新查询）",
-			fact.SubjectID, fact.Kind, fact.ProducedAtUnix,
-		))
-		if len(out) >= 8 {
-			break
-		}
-	}
-	return out
-}
-
-func recentFactBreadcrumbs(facts []ToolFact, now time.Time) []string {
-	type breadcrumb struct {
-		subjectID string
-		kind      string
-		produced  int64
-	}
-	var items []breadcrumb
-	for _, fact := range facts {
-		if fact.SubjectID == "" || fact.Kind == "" || fact.ProducedAtUnix <= 0 || fact.TTLSeconds <= 0 {
-			continue
-		}
-		if now.Unix()-fact.ProducedAtUnix > int64(fact.TTLSeconds) {
-			continue
-		}
-		items = append(items, breadcrumb{
-			subjectID: fact.SubjectID,
-			kind:      fact.Kind,
-			produced:  fact.ProducedAtUnix,
-		})
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].produced != items[j].produced {
-			return items[i].produced > items[j].produced
-		}
-		if items[i].subjectID != items[j].subjectID {
-			return items[i].subjectID < items[j].subjectID
-		}
-		return items[i].kind < items[j].kind
-	})
-	if len(items) > 8 {
-		items = items[:8]
-	}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		out = append(out, fmt.Sprintf("近期事实引用：%s %s @%d", item.subjectID, item.kind, item.produced))
-	}
-	return out
 }
 
 func compactOldRetrievableToolResults(messages []openai.ChatCompletionMessage, keepRecent int) {
