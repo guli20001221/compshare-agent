@@ -69,7 +69,7 @@ func stepQuerySupportZonesForCreateCFS() Step {
 		Tool: "DescribeCompShareSupportZone",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
@@ -100,7 +100,7 @@ func stepQueryCreateCFSPrice() Step {
 				"ChargeType": cfsChargeType(wfCtx.Params),
 				"Quantity":   wfCtx.Params["Quantity"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -147,7 +147,7 @@ func stepCreateCFS() Step {
 				"ChargeType": cfsChargeType(wfCtx.Params),
 				"Quantity":   wfCtx.Params["Quantity"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -166,7 +166,7 @@ func stepDescribeCreatedCFS() Step {
 			args := map[string]any{
 				"CfsId": cfsIDFromCreateResult(wfCtx.Result("创建 CFS")),
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -192,7 +192,7 @@ func stepQueryCFSForResize() Step {
 			wfCtx.Params["CfsId"] = cfsID
 			wfCtx.Params["Size"] = targetSize
 			args := map[string]any{"CfsId": cfsID}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
@@ -231,7 +231,7 @@ func stepQueryResizeCFSPrice() Step {
 				"Size":    wfCtx.Params["Size"],
 				"zone_id": wfCtx.Params["CFSZoneId"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -274,7 +274,7 @@ func stepResizeCFS() Step {
 				"Size":    wfCtx.Params["Size"],
 				"zone_id": wfCtx.Params["CFSZoneId"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -407,12 +407,15 @@ func boolFieldAny(v any) bool {
 	return false
 }
 
-func addWorkflowIdentityArgs(args map[string]any, params map[string]any) {
-	if v, ok := params["top_organization_id"]; ok {
-		args["top_organization_id"] = v
+// addWorkflowIdentityArgs forwards server-injected identity (org ids) from the
+// context's RuntimeMetadata into an upstream call's args. Identity is not a
+// business param, so it is sourced from Runtime, never from Params.
+func addWorkflowIdentityArgs(args map[string]any, rt RuntimeMetadata) {
+	if rt.TopOrganizationID != 0 {
+		args["top_organization_id"] = rt.TopOrganizationID
 	}
-	if v, ok := params["organization_id"]; ok {
-		args["organization_id"] = v
+	if rt.OrganizationID != 0 {
+		args["organization_id"] = rt.OrganizationID
 	}
 }
 

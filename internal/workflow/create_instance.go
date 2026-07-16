@@ -405,12 +405,7 @@ func stepQueryGPUInventory() Step {
 		Optional: true,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{}
-			if v, ok := wfCtx.Params["top_organization_id"]; ok {
-				args["top_organization_id"] = v
-			}
-			if v, ok := wfCtx.Params["organization_id"]; ok {
-				args["organization_id"] = v
-			}
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}

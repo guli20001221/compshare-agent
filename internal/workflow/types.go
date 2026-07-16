@@ -69,26 +69,41 @@ type Definition struct {
 
 // Context accumulates state during workflow execution.
 type Context struct {
+	// Params holds the mutable business parameters (the pre-seal draft). It is an
+	// independent deep copy of the caller's map — a step mutating Params can never
+	// reach the ResolvedAction.Arguments the engine still owns.
 	Params        map[string]any
 	InitialParams map[string]any
 	StepResults   map[string]map[string]any
+	// Runtime carries server-injected identity/trace lifted out of Params, so
+	// business params (and the confirm form / sealed digest) never mix them in.
+	Runtime RuntimeMetadata
+	// sealed is set once the user confirms: the immutable snapshot the mutating
+	// step consumes. nil before confirmation.
+	sealed *SealedActionContract
 }
 
-// NewContext creates a workflow context with the given initial parameters.
+// NewContext creates a workflow context with the given initial parameters. The
+// caller's map is never shared or mutated: params are deep-copied (nested maps
+// and slices included) and the identity/trace keys are split into Runtime so the
+// business Params are exactly what the user will confirm.
 func NewContext(params map[string]any) *Context {
-	if params == nil {
-		params = make(map[string]any)
-	}
-	initial := make(map[string]any, len(params))
-	for k, v := range params {
-		initial[k] = v
+	business, runtime := splitRuntimeMetadata(deepCopyParams(params))
+	if business == nil {
+		business = make(map[string]any)
 	}
 	return &Context{
-		Params:        params,
-		InitialParams: initial,
+		Params:        business,
+		InitialParams: deepCopyParams(business),
 		StepResults:   make(map[string]map[string]any),
+		Runtime:       runtime,
 	}
 }
+
+// Sealed returns the sealed contract if the workflow has passed its confirmation
+// gate, or nil. The engine reads this after Run to narrate results from the
+// exact confirmed params rather than re-deriving them from stale input.
+func (c *Context) Sealed() *SealedActionContract { return c.sealed }
 
 // Result returns the API result from a previous step, or nil.
 func (c *Context) Result(stepName string) map[string]any {

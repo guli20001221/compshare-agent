@@ -39,7 +39,7 @@ func stepQueryNetOptimizerStatus() Step {
 				"Region":   wfCtx.Params["Region"],
 				"az_group": wfCtx.Params["NetOptimizerAzGroup"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -79,7 +79,7 @@ func stepSyncNetOptimizer() Step {
 				"Region":   wfCtx.Params["Region"],
 				"az_group": wfCtx.Params["NetOptimizerAzGroup"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -97,7 +97,7 @@ func stepRecheckNetOptimizerStatus() Step {
 				"Region":   wfCtx.Params["Region"],
 				"az_group": wfCtx.Params["NetOptimizerAzGroup"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
