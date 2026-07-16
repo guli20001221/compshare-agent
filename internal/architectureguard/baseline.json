@@ -1758,9 +1758,9 @@
       "value": "["
     },
     {
-      "id": "e201b062c1225919",
+      "id": "13acf66d4f5db286",
       "kind": "string_heuristic",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/render.go",
       "symbol": "matchesRequestedMetric",
       "callee": "strings.Contains"
     },
@@ -1781,33 +1781,33 @@
       "value": "昨天"
     },
     {
-      "id": "f538cb87714e65db",
+      "id": "8b70d246a11668ff",
       "kind": "string_heuristic",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/render.go",
       "symbol": "presentMonitorMetrics",
       "callee": "strings.Contains",
       "value": "cpu"
     },
     {
-      "id": "9406c43a7f37b125",
+      "id": "fff4d9284c3838b8",
       "kind": "string_heuristic",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/render.go",
       "symbol": "presentMonitorMetrics",
       "callee": "strings.Contains",
       "value": "gpu"
     },
     {
-      "id": "30a3d91871529095",
+      "id": "2f381152542ad799",
       "kind": "string_heuristic",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/render.go",
       "symbol": "presentMonitorMetrics",
       "callee": "strings.Contains",
       "value": "memory"
     },
     {
-      "id": "6e418bce440c7a53",
+      "id": "e10d95fca33ccf1d",
       "kind": "string_heuristic",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/render.go",
       "symbol": "presentMonitorMetrics",
       "callee": "strings.Contains",
       "value": "vram"

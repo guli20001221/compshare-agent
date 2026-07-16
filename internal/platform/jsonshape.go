@@ -58,6 +58,16 @@ func SafeValue(v any) string {
 	return fmt.Sprint(security.RedactForLLM(v))
 }
 
+// SafeValueMap redacts a whole map for LLM consumption, returning an empty map
+// when redaction does not preserve the map shape. It is the map-level companion
+// to SafeValue, used by the read-projection monitor path's raw-payload fallback.
+func SafeValueMap(v map[string]any) map[string]any {
+	if redacted, ok := security.RedactForLLM(v).(map[string]any); ok {
+		return redacted
+	}
+	return map[string]any{}
+}
+
 func CopyArgs(args map[string]any) map[string]any {
 	if args == nil {
 		return nil

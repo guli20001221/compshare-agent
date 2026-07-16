@@ -25,6 +25,7 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
+	"github.com/compshare-agent/internal/readprojection"
 	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/security"
@@ -3130,7 +3131,7 @@ func resourceSelectionNameVisibleInNumberedLine(line, name string) bool {
 // not just what the user requested. This matters for follow-up Qs
 // like "GPU 怎么样" after a CPU-only monitor query.
 func (e *Engine) recordMonitorSampleFacts(raw map[string]any) {
-	scalars := intent.ExtractMonitorScalars(raw, nil)
+	scalars := readprojection.ExtractMonitorScalars(raw, nil)
 	if len(scalars) == 0 {
 		return
 	}
