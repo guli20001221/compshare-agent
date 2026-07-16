@@ -61,6 +61,16 @@ type ReadResult struct {
 	// them (resource selection candidates, resolved stock GPU model).
 	ResourceSelectionCandidates []entity.InstanceSnapshot
 	ResolvedStockGPUModel       string
+	// Alternatives is populated only by an Unavailable capability: the supported
+	// capabilities the model should redirect the user to.
+	Alternatives []string
+}
+
+// ReadUnavailable marks a deliberately-unsupported capability: a deterministic
+// "not available in real time" answer plus the supported alternatives, produced
+// without any upstream call.
+func ReadUnavailable(reply string, alternatives []string) ReadResult {
+	return ReadResult{Status: platform.ReadStatusUnavailable, Reply: reply, Alternatives: alternatives}
 }
 
 // ReadHandled marks a completed factual answer.

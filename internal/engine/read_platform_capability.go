@@ -74,7 +74,41 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		rt.FallbackInstanceID = e.sessionState.SelectedInstanceID
 	}
 	readResult := reg.Run(ctx, request, rt)
+	if readResult.Status == platform.ReadStatusUnavailable {
+		return e.buildUnavailableObservation(action, capabilityLabel, readResult, onStep)
+	}
 	return e.buildReadObservation(action, capabilityLabel, handlerResultFromReadResult(readResult), snapshot.CanAssertAbsence(), onStep)
+}
+
+// UnavailableCapabilityObservation is the structured result of an Unavailable
+// capability: a deliberately-unsupported real-time capability answered with a
+// deterministic explanation + supported alternatives, never a fabricated number.
+type UnavailableCapabilityObservation struct {
+	Capability   string   `json:"capability"`
+	Status       string   `json:"status"`
+	Reason       string   `json:"reason"`
+	Alternatives []string `json:"alternatives,omitempty"`
+}
+
+// buildUnavailableObservation serialises an Unavailable read outcome. It stays
+// off the read-observation evidence path: there is no envelope and no render_ref
+// (nothing was retrieved), just the deterministic reason the model relays and the
+// alternatives it can offer.
+func (e *Engine) buildUnavailableObservation(action, capabilityLabel string, r capability.ReadResult, onStep func(StepEvent)) string {
+	observation := UnavailableCapabilityObservation{
+		Capability:   capabilityLabel,
+		Status:       string(platform.ReadStatusUnavailable),
+		Reason:       r.Reply,
+		Alternatives: r.Alternatives,
+	}
+	payload, err := json.Marshal(observation)
+	if err != nil {
+		return marshalReadCapabilityError(err)
+	}
+	var traceResult map[string]any
+	_ = json.Unmarshal(payload, &traceResult)
+	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "能力当前不可用", TraceResult: traceResult})
+	return string(payload)
 }
 
 // buildReadObservation serialises a read outcome into the single read-tool

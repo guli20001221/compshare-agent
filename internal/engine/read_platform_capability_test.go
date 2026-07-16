@@ -47,3 +47,24 @@ func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
 	require.Equal(t, []capability.MissingField{{Name: "gpu_type", Reason: "required"}}, observation.MissingFields)
 	require.Empty(t, executor.calls, "缺失字段必须在能力边界返回，不能进入 handler 或上游 API")
 }
+
+// TestAccountFinanceUnavailableReturnsStructuredUnavailable: the model-visible
+// account-finance tool returns a structured Unavailable observation (status +
+// reason + alternatives) without ever calling an upstream API, so a balance /
+// invoice question gets a deterministic non-fabricated answer.
+func TestAccountFinanceUnavailableReturnsStructuredUnavailable(t *testing.T) {
+	executor := &mockExecutor{}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	out := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.Intent("account_finance_status")), `{}`), noopStep)
+
+	if _, ok := isFinalReply(out); ok {
+		t.Fatal("an unavailable capability is an observation and must never end the turn")
+	}
+	var observation UnavailableCapabilityObservation
+	require.NoError(t, json.Unmarshal([]byte(out), &observation))
+	require.Equal(t, "unavailable", observation.Status)
+	require.Equal(t, "account_finance_status", observation.Capability)
+	require.Contains(t, observation.Reason, "不支持直接查询账号余额")
+	require.NotEmpty(t, observation.Alternatives)
+	require.Empty(t, executor.calls, "an unavailable capability must not call any upstream API")
+}

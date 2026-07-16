@@ -28,6 +28,10 @@ const (
 	ReadStatusNeedsInput         ReadStatus = "needs_input"
 	ReadStatusFallbackBeforeTool ReadStatus = "fallback_before_tool"
 	ReadStatusFailureAfterTool   ReadStatus = "failure_after_tool"
+	// ReadStatusUnavailable is reported by an UnavailableCapabilitySpec: the
+	// capability is deliberately not backed by a real-time upstream call and
+	// returns a deterministic "not available + alternatives" answer instead.
+	ReadStatusUnavailable ReadStatus = "unavailable"
 )
 
 // ReadFailureClass classifies a post-tool failure. It is control-flow metadata:

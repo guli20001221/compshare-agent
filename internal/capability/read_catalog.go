@@ -56,6 +56,10 @@ func ReadDefinitions() []ReadDefinition {
 		migratedReadDefinition(intent.IntentCFSInfo, NewReadCapability(cfsCreatePriceReadSpec())),
 		migratedReadDefinition(intent.IntentCFSInfo, NewReadCapability(cfsUpgradePriceReadSpec())),
 		migratedReadDefinition(intent.IntentCFSInfo, NewReadCapability(cfsRefundEstimateReadSpec())),
+		// Unavailable capability: account-level real-time financial data is not
+		// queryable; the tool is model-visible so a balance/invoice question gets a
+		// deterministic non-fabricated answer + supported alternatives (P3.5).
+		migratedReadDefinition(intent.Intent(accountFinanceStatusCapability), NewUnavailableCapability(accountFinanceUnavailableSpec())),
 	}
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	return definitions
