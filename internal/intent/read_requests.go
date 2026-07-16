@@ -13,13 +13,6 @@ type MissingField = platform.MissingField
 
 func missing(name string) MissingField { return platform.Missing(name) }
 
-type StockAvailabilityRequest struct {
-	GPUType string `json:"gpu_type,omitempty"`
-	Zone    string `json:"zone,omitempty"`
-}
-
-func (StockAvailabilityRequest) MissingFields() []MissingField { return nil }
-
 type CFSListRequest struct {
 	CFS *CFSRef `json:"cfs,omitempty"`
 }

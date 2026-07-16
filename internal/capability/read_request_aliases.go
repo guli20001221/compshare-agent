@@ -6,7 +6,6 @@ import "github.com/compshare-agent/internal/intent"
 // the concrete request contracts live beside the handlers that consume them.
 type ReadRequest = intent.ReadRequest
 type MissingField = intent.MissingField
-type StockAvailabilityRequest = intent.StockAvailabilityRequest
 type CFSListRequest = intent.CFSListRequest
 type CFSCreatePriceRequest = intent.CFSCreatePriceRequest
 type CFSUpgradePriceRequest = intent.CFSUpgradePriceRequest

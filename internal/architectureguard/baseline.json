@@ -2,6 +2,30 @@
   "version": 1,
   "findings": [
     {
+      "id": "26314cc657e4cb3c",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_stock.go",
+      "symbol": "selectCapacityPrecheckImageID",
+      "callee": "strings.Contains",
+      "value": "cuda"
+    },
+    {
+      "id": "0bea534907cf0db6",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_stock.go",
+      "symbol": "selectCapacityPrecheckImageID",
+      "callee": "strings.Contains",
+      "value": "nvidia"
+    },
+    {
+      "id": "35cc58f764c82143",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_stock.go",
+      "symbol": "selectCapacityPrecheckImageID",
+      "callee": "strings.Contains",
+      "value": "ubuntu"
+    },
+    {
       "id": "57159e23460ed400",
       "kind": "string_heuristic",
       "path": "internal/capability/read_catalog_helpers.go",

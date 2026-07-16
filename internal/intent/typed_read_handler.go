@@ -16,8 +16,6 @@ type ReadHandlerContext struct {
 // parameter is the concrete capability request type.
 func (h *DemoHandler) HandleReadRequest(ctx context.Context, request ReadRequest, meta ReadHandlerContext) HandlerResult {
 	switch typed := request.(type) {
-	case StockAvailabilityRequest:
-		return h.HandleStockAvailabilityRequest(ctx, typed, meta)
 	case CFSListRequest:
 		return h.HandleCFSListRequest(ctx, typed, meta)
 	case CFSCreatePriceRequest:
@@ -40,9 +38,6 @@ func typedHandlerRequest(readIntent Intent, slots Slots, meta ReadHandlerContext
 	}
 }
 
-func (h *DemoHandler) HandleStockAvailabilityRequest(ctx context.Context, request StockAvailabilityRequest, meta ReadHandlerContext) HandlerResult {
-	return h.DispatchRoute(ctx, typedHandlerRequest(IntentStockAvailability, Slots{SearchQuery: request.GPUType, Zone: request.Zone}, meta))
-}
 func (h *DemoHandler) HandleCFSListRequest(ctx context.Context, request CFSListRequest, meta ReadHandlerContext) HandlerResult {
 	refs := []TargetRef(nil)
 	if request.CFS != nil {
