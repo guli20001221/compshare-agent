@@ -6,7 +6,6 @@ import "github.com/compshare-agent/internal/intent"
 // the concrete request contracts live beside the handlers that consume them.
 type ReadRequest = intent.ReadRequest
 type MissingField = intent.MissingField
-type ResourceInfoRequest = intent.ResourceInfoRequest
 type MonitorCurrentRequest = intent.MonitorCurrentRequest
 type MonitorHistoryRequest = intent.MonitorHistoryRequest
 type GPUSpecsRequest = intent.GPUSpecsRequest
