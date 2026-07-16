@@ -72,23 +72,6 @@ type ModelRepositoryRequest struct {
 
 func (ModelRepositoryRequest) MissingFields() []MissingField { return nil }
 
-type NetworkAcceleratorStatusRequest struct {
-	Targets []TargetRef `json:"targets,omitempty"`
-}
-
-func (NetworkAcceleratorStatusRequest) MissingFields() []MissingField { return nil }
-
-type RefundEstimateRequest struct {
-	Targets []TargetRef `json:"targets"`
-}
-
-func (r RefundEstimateRequest) MissingFields() []MissingField {
-	if len(r.Targets) == 0 {
-		return []MissingField{missing("targets")}
-	}
-	return nil
-}
-
 type CFSListRequest struct {
 	CFS *CFSRef `json:"cfs,omitempty"`
 }

@@ -32,10 +32,6 @@ func (h *DemoHandler) HandleReadRequest(ctx context.Context, request ReadRequest
 		return h.HandleImageTagCatalogRequest(ctx, typed, meta)
 	case ModelRepositoryRequest:
 		return h.HandleModelRepositoryRequest(ctx, typed, meta)
-	case NetworkAcceleratorStatusRequest:
-		return h.HandleNetworkAcceleratorStatusRequest(ctx, typed, meta)
-	case RefundEstimateRequest:
-		return h.HandleRefundEstimateRequest(ctx, typed, meta)
 	case CFSListRequest:
 		return h.HandleCFSListRequest(ctx, typed, meta)
 	case CFSCreatePriceRequest:
@@ -81,12 +77,6 @@ func (h *DemoHandler) HandleImageTagCatalogRequest(ctx context.Context, request 
 }
 func (h *DemoHandler) HandleModelRepositoryRequest(ctx context.Context, request ModelRepositoryRequest, meta ReadHandlerContext) HandlerResult {
 	return h.DispatchRoute(ctx, typedHandlerRequest(IntentModelRepositoryBrowse, Slots{SearchQuery: request.Query, ListMode: request.Mode}, meta))
-}
-func (h *DemoHandler) HandleNetworkAcceleratorStatusRequest(ctx context.Context, request NetworkAcceleratorStatusRequest, meta ReadHandlerContext) HandlerResult {
-	return h.DispatchRoute(ctx, typedHandlerRequest(IntentNetAcceleratorStatus, Slots{TargetRefs: request.Targets}, meta))
-}
-func (h *DemoHandler) HandleRefundEstimateRequest(ctx context.Context, request RefundEstimateRequest, meta ReadHandlerContext) HandlerResult {
-	return h.DispatchRoute(ctx, typedHandlerRequest(IntentRefundEstimate, Slots{TargetRefs: request.Targets}, meta))
 }
 func (h *DemoHandler) HandleCFSListRequest(ctx context.Context, request CFSListRequest, meta ReadHandlerContext) HandlerResult {
 	refs := []TargetRef(nil)
