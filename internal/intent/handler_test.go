@@ -9,22 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHandlerResultStatesAreDistinct(t *testing.T) {
-	handled := HandledResult("ok")
-	fallback := FallbackBeforeTool(FallbackUnresolvedTarget)
-	failure := FailureAfterTool("monitor")
-
-	assert.Equal(t, HandlerStatusHandled, handled.Status)
-	assert.Equal(t, HandlerStatusFallbackBeforeTool, fallback.Status)
-	assert.Equal(t, HandlerStatusFailureAfterTool, failure.Status)
-	assert.Equal(t, HandlerFailureGenericRead, failure.FailureClass)
-	assert.Equal(t, FallbackUnresolvedTarget, fallback.FallbackReason)
-	assert.Equal(t, RouteStatusFailureAfterTool, failure.RouteStatus)
-	assert.Contains(t, failure.Reply, FriendlyToolFailureReply)
-	assert.NotContains(t, failure.Reply, assert.AnError.Error())
-	assert.Equal(t, RouteStatusFallbackTimeWindow, FallbackBeforeTool(FallbackTimeWindow).RouteStatus)
-}
-
 func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *testing.T) {
 	instances := []entity.InstanceSnapshot{
 		{
@@ -105,18 +89,4 @@ func TestMonitorSummaryRendererFiltersRequestedMetrics(t *testing.T) {
 	assert.NotContains(t, summary, "Memory")
 	assert.Contains(t, summary, "GPU")
 	assert.Contains(t, summary, "VRAM")
-}
-
-func TestHandlerActionWhitelist(t *testing.T) {
-	assert.True(t, IsAllowedHandlerAction(IntentResourceInfo, "DescribeCompShareInstance"))
-	assert.False(t, IsAllowedHandlerAction(IntentResourceInfo, "GetCompShareInstanceMonitor"))
-	assert.True(t, IsAllowedHandlerAction(IntentMonitorQuery, "GetCompShareInstanceMonitor"))
-	assert.False(t, IsAllowedHandlerAction(IntentMonitorQuery, "StopCompShareInstance"))
-	assert.Nil(t, RequireAllowedHandlerAction(IntentMonitorQuery, "GetCompShareInstanceMonitor"))
-
-	result := RequireAllowedHandlerAction(IntentMonitorQuery, "StopCompShareInstance")
-	require.NotNil(t, result)
-	assert.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
-	assert.Equal(t, FallbackActionNotAllowed, result.FallbackReason)
-	assert.Equal(t, RouteStatusFallbackIneligible, result.RouteStatus)
 }

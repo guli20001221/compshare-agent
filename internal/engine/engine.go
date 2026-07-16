@@ -2606,8 +2606,8 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		return errMsg
 	}
 
-	// ReAct fallback truncation for full-account list dumps. Handler-route
-	// path already sorts+truncates earlier (intent.HandleResourceInfo); this
+	// ReAct fallback truncation for full-account list dumps. The legacy
+	// handler route path already sorted+truncated earlier; this
 	// catches the planner-misclassified turns that reach ReAct directly,
 	// keeping the LLM-visible list bounded regardless of routing.
 	if action == "DescribeCompShareInstance" {
