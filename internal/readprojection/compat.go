@@ -9,8 +9,6 @@
 package readprojection
 
 import (
-	"time"
-
 	"github.com/compshare-agent/internal/platform"
 )
 
@@ -31,6 +29,16 @@ type TargetRef = platform.TargetRef
 
 const TargetRefFilter = platform.TargetRefFilter
 
+// TimeWindow mirrors the platform monitor-window value object so the relocated
+// time-window interpreter references TimeWindow / TimeWindowPreset / … unchanged.
+type TimeWindow = platform.TimeWindow
+
+const (
+	TimeWindowPreset   = platform.TimeWindowPreset
+	TimeWindowRelative = platform.TimeWindowRelative
+	TimeWindowAbsolute = platform.TimeWindowAbsolute
+)
+
 // Exported views of the projection's canonical labels / empty-result replies so
 // the intent compatibility layer (and its tests) resolve to a single source.
 const (
@@ -46,14 +54,3 @@ func safeValue(v any) string { return platform.SafeValue(v) }
 func safeValueMap(v map[string]any) map[string]any { return platform.SafeValueMap(v) }
 
 func mapSliceAt(m map[string]any, key string) []any { return platform.MapSliceAt(m, key) }
-
-// monitorHistoryLoc is the timezone the historical-monitor renderer formats peak
-// timestamps in. Defined locally (the intent window parser keeps its own copy);
-// both resolve Asia/Shanghai identically.
-var monitorHistoryLoc = func() *time.Location {
-	loc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		return time.FixedZone("CST", 8*3600)
-	}
-	return loc
-}()

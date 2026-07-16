@@ -593,33 +593,33 @@
       "value": "(评价|你觉得|怎么看|看法|意见|支持|反对|拥护|批评)"
     },
     {
-      "id": "7d7889c92cbf53f6",
+      "id": "9ca65d600aadca13",
       "kind": "regex",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/timewindow.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "(?i)(?:过去|最近|近|past|last|previous)\\s*(\\d+)\\s*([a-z]+|分钟|分|小时|时)"
     },
     {
-      "id": "f8f5a803290613ab",
+      "id": "0957daf96bfe94ea",
       "kind": "regex",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/timewindow.go",
       "symbol": "parseMonitorTime",
       "callee": "regexp.MustCompile",
       "value": "(\\d{4}-\\d{2}-\\d{2})T(\\d{1,2}:\\d{2}(?::\\d{2})?(?:Z|[+-]\\d{2}:\\d{2}))"
     },
     {
-      "id": "37d7e2ff6a2147fc",
+      "id": "932ac1403f56c51b",
       "kind": "regex",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/timewindow.go",
       "symbol": "parseMonitorTime",
       "callee": "regexp.MustCompile",
       "value": "(\\d{4}-\\d{2}-\\d{2})\\s+(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?"
     },
     {
-      "id": "3d9c08c0cf547dc4",
+      "id": "23f82eb3f63f6b82",
       "kind": "regex",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/timewindow.go",
       "symbol": "parseMonitorTimeWithDefaultDate",
       "callee": "regexp.MustCompile",
       "value": "(?:^|\\D)(\\d{1,2})(?:\\s*(?::|点|时)\\s*(\\d{1,2})?)?"
@@ -1765,17 +1765,17 @@
       "callee": "strings.Contains"
     },
     {
-      "id": "46f8ae14596c0d29",
+      "id": "e9aa5ae3a5b3d7f8",
       "kind": "string_heuristic",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/timewindow.go",
       "symbol": "parseRelativeMonitorWindow",
       "callee": "strings.Contains",
       "value": "yesterday"
     },
     {
-      "id": "23c3ba519da45e35",
+      "id": "05146c2d077f44a0",
       "kind": "string_heuristic",
-      "path": "internal/intent/handler.go",
+      "path": "internal/readprojection/timewindow.go",
       "symbol": "parseRelativeMonitorWindow",
       "callee": "strings.Contains",
       "value": "昨天"
