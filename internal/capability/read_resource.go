@@ -31,9 +31,8 @@ func (ResourceInfoRequest) MissingFields() []platform.MissingField { return nil 
 // ResourceInfoResponse carries the display-ready instance list, its envelope
 // metadata and the selection candidates (populated only on a "list all" turn).
 type ResourceInfoResponse struct {
-	Instances  []entity.InstanceSnapshot
-	Meta       readprojection.ResourceEnvelopeMeta
-	Candidates []entity.InstanceSnapshot
+	Instances []entity.InstanceSnapshot
+	Meta      readprojection.ResourceEnvelopeMeta
 }
 
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
@@ -88,16 +87,16 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 	}
 	// Display truncation only when the caller did not pin a specific id set
 	// ("list my instances" / "list before a write op"); explicit ids are never
-	// truncated. The kept list becomes the selection candidates.
-	var candidates []entity.InstanceSnapshot
+	// truncated. Multi-turn instance selection is populated by the engine from the
+	// raw DescribeCompShareInstance observation, not from this read result, so the
+	// response no longer carries a selection-candidate copy.
 	if len(ids) == 0 {
 		truncated, shown, isTruncated := readprojection.TruncateInstancesForDisplay(instances, 0)
 		instances = truncated
-		candidates = append([]entity.InstanceSnapshot(nil), instances...)
 		envMeta.Shown = shown
 		envMeta.Truncated = isTruncated
 	}
-	return ResourceInfoResponse{Instances: instances, Meta: envMeta, Candidates: candidates}, ReadResult{}
+	return ResourceInfoResponse{Instances: instances, Meta: envMeta}, ReadResult{}
 }
 
 func resourceRender(resp ResourceInfoResponse) ReadResult {
@@ -105,8 +104,5 @@ func resourceRender(resp ResourceInfoResponse) ReadResult {
 	r.ToolAction = resourceInfoAction
 	env := readprojection.BuildResourceEnvelopeWithMeta(resp.Instances, resp.Meta)
 	r.Envelope = &env
-	if len(resp.Candidates) > 0 {
-		r.ResourceSelectionCandidates = resp.Candidates
-	}
 	return r
 }

@@ -78,7 +78,6 @@ func TestResourceHandle_ListsAllInstances(t *testing.T) {
 	assert.Contains(t, result.Reply, "uhost-b")
 	require.NotNil(t, result.Envelope)
 	assert.Equal(t, envelope.KindResourceInfo, result.Envelope.Kind)
-	assert.Len(t, result.ResourceSelectionCandidates, 2)
 }
 
 // TestResourceHandle_AppliesStateFilter: a filter ref describes everything then
@@ -106,8 +105,8 @@ func TestResourceHandle_AppliesStateFilter(t *testing.T) {
 }
 
 // TestResourceHandle_ExplicitIDPinsTargetAndDoesNotTruncate: an explicit id
-// reference resolves to a UHostId, the describe call pins exactly that id, and
-// no selection candidates are produced (the user already chose the target).
+// reference resolves to a UHostId and the describe call pins exactly that id
+// (the user already chose the target, so nothing is truncated).
 func TestResourceHandle_ExplicitIDPinsTargetAndDoesNotTruncate(t *testing.T) {
 	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-a", "train-a", "Running"))}
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"}, [2]string{"uhost-b", "train-b"})
@@ -119,7 +118,6 @@ func TestResourceHandle_ExplicitIDPinsTargetAndDoesNotTruncate(t *testing.T) {
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
-	assert.Empty(t, result.ResourceSelectionCandidates, "explicit id targets are not selection candidates")
 }
 
 func TestResourceHandle_UnresolvedTargetFallsBack(t *testing.T) {

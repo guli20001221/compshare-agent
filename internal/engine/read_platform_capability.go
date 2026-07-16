@@ -74,6 +74,7 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		rt.FallbackInstanceID = e.sessionState.SelectedInstanceID
 	}
 	readResult := reg.Run(ctx, request, rt)
+	e.applyReadEffects(readResult.Effects)
 	if readResult.Status == platform.ReadStatusUnavailable {
 		return e.buildUnavailableObservation(action, capabilityLabel, readResult, onStep)
 	}
@@ -165,16 +166,30 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result int
 // constructors did, so the emitted observation is byte-identical.
 func handlerResultFromReadResult(r capability.ReadResult) intent.HandlerResult {
 	return intent.HandlerResult{
-		Status:                      intent.HandlerStatus(r.Status),
-		Reply:                       r.Reply,
-		NeedsClarification:          r.NeedsClarification,
-		FailureClass:                intent.HandlerFailureClass(r.FailureClass),
-		FallbackReason:              intent.FallbackReason(r.FallbackReason),
-		RouteStatus:                 routeStatusForReadResult(r),
-		ToolAction:                  r.ToolAction,
-		Envelope:                    r.Envelope,
-		ResourceSelectionCandidates: r.ResourceSelectionCandidates,
-		ResolvedStockGpuModel:       r.ResolvedStockGPUModel,
+		Status:             intent.HandlerStatus(r.Status),
+		Reply:              r.Reply,
+		NeedsClarification: r.NeedsClarification,
+		FailureClass:       intent.HandlerFailureClass(r.FailureClass),
+		FallbackReason:     intent.FallbackReason(r.FallbackReason),
+		RouteStatus:        routeStatusForReadResult(r),
+		ToolAction:         r.ToolAction,
+		Envelope:           r.Envelope,
+	}
+}
+
+// applyReadEffects applies the typed context side-effects a read capability
+// declared. The engine consumes only the effect types it recognizes; an
+// unrecognized effect is ignored rather than silently reinterpreted.
+func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
+	for _, effect := range effects {
+		switch eff := effect.(type) {
+		case capability.RememberStockReferent:
+			// RC017: feed the resolved stock referent to both the structured-fact
+			// path (session-fact context on) and the legacy scalar (off); each is
+			// mode-gated internally, so a subject-eliding stock follow-up resolves.
+			e.recordResolvedStockGpuFact(eff.GPUModel)
+			e.recordLastStockGpuModel(eff.GPUModel)
+		}
 	}
 }
 

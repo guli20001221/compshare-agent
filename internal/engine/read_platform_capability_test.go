@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,4 +69,28 @@ func TestAccountFinanceUnavailableReturnsStructuredUnavailable(t *testing.T) {
 	require.Contains(t, observation.Reason, "不支持直接查询账号余额")
 	require.NotEmpty(t, observation.Alternatives)
 	require.Empty(t, executor.calls, "an unavailable capability must not call any upstream API")
+}
+
+// TestStockReadAppliesRememberStockReferentEffect proves the typed-effect
+// mechanism closes the RC017 loop that was dead: the stock read's resolved model
+// is carried as a RememberStockReferent effect the engine applies, so a later
+// subject-eliding follow-up ("现在还有吗") resolves to it. Before the effect
+// wiring the referent recorders had no caller in the typed path.
+func TestStockReadAppliesRememberStockReferentEffect(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Status": "SoldOut", "Zone": "cn-wlcb-01"},
+			},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+
+	out := eng.executeTool(context.Background(),
+		toolCall("read", capability.ReadToolName(intent.IntentStockAvailability), `{"gpu_type":"4090"}`), noopStep)
+
+	_, ok := isFinalReply(out)
+	require.False(t, ok, "a read capability is an observation and must never end the turn")
+	assert.Equal(t, "4090", eng.fallbackStockGpuModel(time.Now()),
+		"the stock read must remember the resolved model so a subject-eliding follow-up resolves to it")
 }

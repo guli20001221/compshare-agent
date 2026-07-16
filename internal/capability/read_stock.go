@@ -71,7 +71,19 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 		Schema:      objectSchema(map[string]any{"gpu_type": stringSchema(), "zone": stringSchema()}, nil),
 		Handle:      stockHandle,
 		Render:      stockRender,
+		Observe:     stockObserve,
 	}
+}
+
+// stockObserve declares the RC017 context side-effect: when the turn resolved to
+// a single GPU model, remember it so a later subject-eliding follow-up resolves
+// to that model. The referent is carried as a typed effect, not a field on the
+// shared read result.
+func stockObserve(resp StockAvailabilityResponse) []ReadEffect {
+	if strings.TrimSpace(resp.ResolvedGPUModel) == "" {
+		return nil
+	}
+	return []ReadEffect{RememberStockReferent{GPUModel: resp.ResolvedGPUModel}}
 }
 
 func stockHandle(ctx context.Context, req StockAvailabilityRequest, rt ReadRuntime) (StockAvailabilityResponse, ReadResult) {
@@ -106,7 +118,6 @@ func stockRender(resp StockAvailabilityResponse) ReadResult {
 	r := ReadHandled(resp.Reply)
 	r.ToolAction = stockAction
 	r.Envelope = resp.Envelope
-	r.ResolvedStockGPUModel = resp.ResolvedGPUModel
 	return r
 }
 

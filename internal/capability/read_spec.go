@@ -57,14 +57,28 @@ type ReadResult struct {
 	ToolAction         string
 	Envelope           *envelope.Envelope
 	MissingFields      []platform.MissingField
-	// Resource-shaped extras, populated only by the capabilities that produce
-	// them (resource selection candidates, resolved stock GPU model).
-	ResourceSelectionCandidates []entity.InstanceSnapshot
-	ResolvedStockGPUModel       string
-	// Alternatives is populated only by an Unavailable capability: the supported
-	// capabilities the model should redirect the user to.
+	// Alternatives is the payload of the unavailable status only: the supported
+	// capabilities the model should redirect the user to. Read solely by the
+	// engine's Unavailable observation branch, never by the general read path.
 	Alternatives []string
+	// Effects are typed context side-effects the capability declares. The engine
+	// applies only the effect types it recognizes — capability-specific data
+	// reaches the engine as a declared typed effect, never as an untyped field
+	// bag growing on this result.
+	Effects []ReadEffect
 }
+
+// ReadEffect is a typed context side-effect a read capability declares in its
+// result. A new side-effect is a new named type the engine can choose to apply,
+// not a new field on ReadResult.
+type ReadEffect interface{ readEffect() }
+
+// RememberStockReferent records the single GPU model a stock turn resolved to,
+// so a later subject-eliding follow-up ("现在还有吗") resolves to it (RC017)
+// instead of re-expanding to every model.
+type RememberStockReferent struct{ GPUModel string }
+
+func (RememberStockReferent) readEffect() {}
 
 // ReadUnavailable marks a deliberately-unsupported capability: a deterministic
 // "not available in real time" answer plus the supported alternatives, produced
@@ -151,6 +165,10 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 	// Render is a pure function of the typed Response — never of the request or
 	// user text — producing the reply and evidence envelope.
 	Render func(Response) ReadResult
+	// Observe optionally derives typed context side-effects from the response
+	// (nil = none). It runs only on the success path — a rendered response, never
+	// a terminal short-circuit — and the engine applies the effects it returns.
+	Observe func(Response) []ReadEffect
 }
 
 // RegisteredRead is the type-erased catalog entry. Type erasure happens exactly
@@ -209,7 +227,11 @@ func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapa
 			if terminal.Status != "" {
 				return terminal
 			}
-			return spec.Render(resp)
+			result := spec.Render(resp)
+			if spec.Observe != nil {
+				result.Effects = spec.Observe(resp)
+			}
+			return result
 		},
 	}
 }

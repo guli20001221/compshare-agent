@@ -136,7 +136,8 @@ func TestStockHandle_CapacityPrecheckForMatchedNormalGPU(t *testing.T) {
 	assert.Contains(t, result.Reply, "默认创建配置暂未通过容量预检")
 	assert.Contains(t, result.Reply, "机型状态：开售")
 	assert.NotContains(t, result.Reply, "ResourceEnough", "no implementation details leak")
-	assert.Equal(t, "4090", result.ResolvedStockGPUModel, "single matched model is recorded (RC017)")
+	require.Equal(t, []ReadEffect{RememberStockReferent{GPUModel: "4090"}}, result.Effects,
+		"single matched model is remembered as a typed RC017 effect, not a shared-result field")
 	assert.Nil(t, result.Envelope, "the capacity-precheck path carries no envelope (legacy parity)")
 
 	// Full deterministic 5-call sequence.
