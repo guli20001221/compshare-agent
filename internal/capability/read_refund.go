@@ -23,6 +23,10 @@ const (
 	// handleRefundEstimate special case: this is a HANDLED answer, not a
 	// fallback, so the agent explains rather than silently retrying.
 	refundStaleSelectionReply = "未找到刚才选中的实例，可能已被删除或当前账号不可见。请重新指定实例名称或实例 ID 后再估算退费。"
+
+	// noRefundEstimateReply — the upstream returned no refund rows at all. A
+	// successful query with no data is a structured Empty read.
+	noRefundEstimateReply = "未获取到退费估算结果。这个查询只做估算，不会释放实例。"
 )
 
 // RefundEstimateRequest is the capability's own request contract. targets is
@@ -82,6 +86,10 @@ func refundHandle(ctx context.Context, req RefundEstimateRequest, rt ReadRuntime
 	if raw == nil {
 		raw = map[string]any{}
 	}
+	if len(platform.MapSliceAt(raw, "RefundPriceSet")) == 0 {
+		// Query succeeded but the upstream returned no refund rows — Empty.
+		return RefundEstimateResponse{}, ReadEmpty(noRefundEstimateReply)
+	}
 	return RefundEstimateResponse{Raw: raw, Instances: instances}, ReadResult{}
 }
 
@@ -96,7 +104,7 @@ func refundRender(resp RefundEstimateResponse) ReadResult {
 func renderRefundEstimateReply(raw map[string]any, instances []entity.InstanceSnapshot) string {
 	rows := platform.MapSliceAt(raw, "RefundPriceSet")
 	if len(rows) == 0 {
-		return "未获取到退费估算结果。这个查询只做估算，不会释放实例。"
+		return noRefundEstimateReply
 	}
 	nameByID := map[string]string{}
 	for _, inst := range instances {

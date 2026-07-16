@@ -23,6 +23,25 @@ func TestImageListRequestHasNoRequiredFields(t *testing.T) {
 	require.Nil(t, ImageListRequest{}.MissingFields())
 }
 
+// TestImageListHandle_PlatformEmpty: an empty platform image catalog is a
+// structured Empty read (issue 1) — no subjects populated, so no envelope.
+func TestImageListHandle_PlatformEmpty(t *testing.T) {
+	result := runImageList(t, &fakeReadExec{result: map[string]any{"ImageSet": []any{}}}, ImageListRequest{})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Nil(t, result.Envelope)
+}
+
+// TestImageListHandle_SharedEmpty: shared images carry no envelope, so the shared
+// handler reports its own emptiness as a structured Empty read.
+func TestImageListHandle_SharedEmpty(t *testing.T) {
+	result := runImageList(t, &fakeReadExec{result: map[string]any{"ImageSet": []any{}}},
+		ImageListRequest{Source: platform.ImageSourceShared})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Contains(t, result.Reply, "未获取到共享给你的镜像")
+}
+
 // --- platform render parity -----------------------------------------------------
 
 func TestImageListRender_PlatformFilterAndCleanDisplay(t *testing.T) {
@@ -87,16 +106,20 @@ func TestImageListRender_Shared(t *testing.T) {
 			"Owner": map[string]any{"AccountName": "team-a", "AccountId": float64(123)},
 		}},
 	}
-	all := renderSharedImageListReply(raw, "", platform.ListModeAll)
+	all, allEmpty := renderSharedImageListReply(raw, "", platform.ListModeAll)
+	assert.False(t, allEmpty, "a populated shared list is not empty")
 	for _, want := range []string{"共享给你的镜像", "名称=shared-env", "所有者=team-a"} {
 		assert.Contains(t, all, want)
 	}
 	assert.NotContains(t, all, "img-shared-1")
 
-	noMatch := renderSharedImageListReply(raw, "llama", platform.ListModeFiltered)
+	noMatch, noMatchEmpty := renderSharedImageListReply(raw, "llama", platform.ListModeFiltered)
+	assert.True(t, noMatchEmpty, "a no-match shared list is a structured Empty read")
 	assert.Contains(t, noMatch, "未找到匹配的共享镜像")
 
-	assert.Contains(t, renderSharedImageListReply(map[string]any{}, "", platform.ListModeAll), "未获取到共享给你的镜像")
+	emptyReply, empty := renderSharedImageListReply(map[string]any{}, "", platform.ListModeAll)
+	assert.True(t, empty)
+	assert.Contains(t, emptyReply, "未获取到共享给你的镜像")
 }
 
 // --- envelope parity ------------------------------------------------------------

@@ -76,16 +76,29 @@ func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse]
 }
 
 func imageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
-	switch req.Source {
-	case platform.ImageSourceShared:
+	// Shared images carry no envelope, so that handler reports its own emptiness.
+	if req.Source == platform.ImageSourceShared {
 		return sharedImageListHandle(ctx, req, rt)
-	case platform.ImageSourceCustom:
-		return customImageListHandle(ctx, req, rt)
-	case platform.ImageSourceCommunity:
-		return communityImageListHandle(ctx, req, rt)
-	default:
-		return platformImageListHandle(ctx, req, rt)
 	}
+	var resp ImageListResponse
+	var terminal ReadResult
+	switch req.Source {
+	case platform.ImageSourceCustom:
+		resp, terminal = customImageListHandle(ctx, req, rt)
+	case platform.ImageSourceCommunity:
+		resp, terminal = communityImageListHandle(ctx, req, rt)
+	default:
+		resp, terminal = platformImageListHandle(ctx, req, rt)
+	}
+	if terminal.Status != "" {
+		return resp, terminal
+	}
+	if resp.Envelope == nil {
+		// populatedEnvelope returns nil only when no image subjects were listed —
+		// the query found nothing (empty catalog or no match): a structured Empty.
+		return ImageListResponse{}, ReadEmpty(resp.Reply)
+	}
+	return resp, ReadResult{}
 }
 
 func imageListRender(resp ImageListResponse) ReadResult {
@@ -146,8 +159,12 @@ func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRun
 		return ImageListResponse{}, ReadFailureAfterTool(sharedImageAction, imageListCapabilityLabel, err)
 	}
 	// Shared images carry no evidence envelope (legacy parity).
+	reply, empty := renderSharedImageListReply(raw, req.Query, req.Mode)
+	if empty {
+		return ImageListResponse{}, ReadEmpty(reply)
+	}
 	return ImageListResponse{
-		Reply:  renderSharedImageListReply(raw, req.Query, req.Mode),
+		Reply:  reply,
 		Action: sharedImageAction,
 	}, ReadResult{}
 }
@@ -520,10 +537,13 @@ func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode pl
 	return env
 }
 
-func renderSharedImageListReply(raw map[string]any, searchQuery string, mode platform.ListMode) string {
+// renderSharedImageListReply returns the reply and whether the shared-image list
+// is empty (no images or none matching). Shared images carry no evidence
+// envelope, so this bool is how the handler reports a structured Empty read.
+func renderSharedImageListReply(raw map[string]any, searchQuery string, mode platform.ListMode) (string, bool) {
 	items := mapSliceAt(raw, "ImageSet")
 	if len(items) == 0 {
-		return "未获取到共享给你的镜像。"
+		return "未获取到共享给你的镜像。", true
 	}
 	query := imageFilterQuery(searchQuery, mode)
 	filtered := make([]map[string]any, 0, len(items))
@@ -538,7 +558,7 @@ func renderSharedImageListReply(raw map[string]any, searchQuery string, mode pla
 		filtered = append(filtered, entry)
 	}
 	if query != "" && len(filtered) == 0 {
-		return "未找到匹配的共享镜像。"
+		return "未找到匹配的共享镜像。", true
 	}
 	lines := []string{}
 	for _, entry := range filtered {
@@ -552,13 +572,13 @@ func renderSharedImageListReply(raw map[string]any, searchQuery string, mode pla
 		}
 	}
 	if len(lines) == 0 {
-		return "未获取到共享给你的镜像。"
+		return "未获取到共享给你的镜像。", true
 	}
 	prefix := "共享给你的镜像"
 	if total := strings.TrimSpace(safeString(raw, "TotalCount")); total != "" && total != "0" {
 		prefix += "（共 " + total + " 个）"
 	}
-	return prefix + ":\n" + strings.Join(lines, "\n")
+	return prefix + ":\n" + strings.Join(lines, "\n"), false
 }
 
 func buildSharedImageLine(entry map[string]any) string {

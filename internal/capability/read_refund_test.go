@@ -43,6 +43,20 @@ func runRefund(t *testing.T, exec ReadExecutor, resolver EntityResolver, req Ref
 	return reg.Run(context.Background(), req, ReadRuntime{Executor: exec, Resolver: resolver})
 }
 
+// TestRefundHandle_EmptyEstimate: the upstream returned no refund rows — a
+// structured Empty read (issue 1), not a Handled answer that says "no data".
+func TestRefundHandle_EmptyEstimate(t *testing.T) {
+	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
+	exec := &fakeReadExec{result: map[string]any{"RefundPriceSet": []any{}}}
+
+	result := runRefund(t, exec, resolver, RefundEstimateRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a", Source: platform.SourceUserText}},
+	})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Contains(t, result.Reply, "未获取到退费估算结果")
+}
+
 func refundPriceFixture(id string, code, price float64) map[string]any {
 	return map[string]any{"RefundPriceSet": []any{
 		map[string]any{"UHostId": id, "Code": code, "RefundPrice": price},
