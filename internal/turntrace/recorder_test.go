@@ -37,7 +37,6 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	require.NotNil(t, hooks.Completion)
 	require.NotNil(t, hooks.RateLimit)
 	require.NotNil(t, hooks.TokenUsage)
-	require.NotNil(t, hooks.StepSink)
 
 	hooks.Context(observability.ContextTrace{LoopMessages: 3})
 	hooks.Retrieval(observability.RetrievalTrace{Enabled: true, Hits: 1})
@@ -51,7 +50,6 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	hooks.TokenUsage(llm.TokenUsage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7})
 	recorder.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "ReadOnly", Args: map[string]any{"UHostId": "uhost-1"}})
 	recorder.OnStep(engine.StepEvent{Type: engine.StepToolResult, Action: "ReadOnly", TraceResult: map[string]any{"ok": true}})
-	require.NoError(t, hooks.StepSink.EmitStep(observability.StepTrace{StepID: "s1", State: observability.StepStateSuccess}))
 	require.NoError(t, recorder.Finish(nil, nil, "answer", engine.TraceSnapshot{SessionStateHydrated: true}, time.Now()))
 	require.Len(t, writer.records, 1)
 	got := writer.records[0]
@@ -64,7 +62,6 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	assert.True(t, got.RateLimit.Checked)
 	require.Len(t, got.ToolCalls, 1)
 	assert.Equal(t, observability.ToolStatusSuccess, got.ToolCalls[0].Status)
-	require.Len(t, got.Steps, 1)
 }
 
 func TestRecorderDoesNotPersistFreeTextErrorsOrContinuityReasons(t *testing.T) {

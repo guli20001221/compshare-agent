@@ -324,63 +324,6 @@ func TestReactHistoryCompactionEnabledFromEnv(t *testing.T) {
 	require.Equal(t, "yes", unknown)
 }
 
-func TestUseSkillExecutorFromEnv(t *testing.T) {
-	enabled, unknown := useSkillExecutorFromEnv(func(string) string { return "" })
-	require.False(t, enabled, "default off")
-	require.Empty(t, unknown)
-
-	enabled, unknown = useSkillExecutorFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR" {
-			return "1"
-		}
-		return ""
-	})
-	require.True(t, enabled)
-	require.Empty(t, unknown)
-
-	enabled, unknown = useSkillExecutorFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR" {
-			return "true"
-		}
-		return ""
-	})
-	require.False(t, enabled, "unknown value treated as off")
-	require.Equal(t, "true", unknown)
-}
-
-func TestSkillExecutorDiagnosisPilotsFromEnv(t *testing.T) {
-	pilots, unknown := skillExecutorDiagnosisPilotsFromEnv(func(string) string { return "" })
-	require.Empty(t, pilots)
-	require.Empty(t, unknown)
-
-	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return " diagnose-port-firewall,diagnose-ssh "
-		}
-		return ""
-	})
-	require.Equal(t, []string{"diagnose-port-firewall", "diagnose-ssh"}, pilots)
-	require.Empty(t, unknown)
-
-	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return "diagnose-port-firewall,typo"
-		}
-		return ""
-	})
-	require.Equal(t, []string{"diagnose-port-firewall"}, pilots)
-	require.Equal(t, []string{"typo"}, unknown)
-
-	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return "diagnose_port_firewall,diagnose_gpu_not_detected"
-		}
-		return ""
-	})
-	require.Equal(t, []string{"diagnose-port-firewall", "diagnose-gpu-not-detected"}, pilots)
-	require.Empty(t, unknown)
-}
-
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
 	if !enabled || unknown != "" {

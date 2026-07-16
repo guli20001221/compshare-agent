@@ -31,12 +31,6 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		assert.True(t, enabled)
 		assert.Empty(t, unknown)
 	})
-	t.Run("skill executor off encodes to empty string, no warn", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{SkillExecutor: boolPtr(false)}}}
-		enabled, unknown := useSkillExecutorFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.False(t, enabled)
-		assert.Empty(t, unknown)
-	})
 	// The flag it replaces was opt-in, so "omitted → ON" is the whole change: a
 	// deploy that says nothing must now get the deterministic table. Without this
 	// assertion the flip is invisible — config.yaml carries no such key today.

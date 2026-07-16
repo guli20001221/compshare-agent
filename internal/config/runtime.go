@@ -37,8 +37,13 @@ type FeaturesConfig struct {
 	ReactHistoryCompaction       *bool    `yaml:"react_history_compaction"`        // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
 	UnifiedCreate                *bool    `yaml:"unified_create"`                  // COMPSHARE_UNIFIED_CREATE (default on; false disables)
 	AgentDeterministicRender     *bool    `yaml:"agent_deterministic_render"`      // COMPSHARE_AGENT_DETERMINISTIC_RENDER (default on; false disables)
-	SkillExecutor                *bool    `yaml:"skill_executor"`                  // USE_SKILL_EXECUTOR (default off)
-	SkillExecutorDiagnosisPilots []string `yaml:"skill_executor_diagnosis_pilots"` // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (CSV)
+	// DEPRECATED (convergence plan P5): the body-driven skill executor mechanism
+	// was removed. These two fields are now INERT — nothing consumes the
+	// USE_SKILL_EXECUTOR / USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS overrides they emit.
+	// Kept only so an existing deploy config.yaml carrying these keys still loads
+	// (yaml.Unmarshal is lenient); pending product sign-off to drop the config keys.
+	SkillExecutor                *bool    `yaml:"skill_executor"`                  // USE_SKILL_EXECUTOR (inert)
+	SkillExecutorDiagnosisPilots []string `yaml:"skill_executor_diagnosis_pilots"` // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (inert)
 }
 
 // RetrievalConfig holds the RAG / knowledge retrieval + grounded-renderer knobs.

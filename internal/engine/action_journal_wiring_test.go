@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/tools"
-	"github.com/compshare-agent/internal/workflow"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +18,15 @@ func (j *pathJournal) Execute(ctx context.Context, action string, args map[strin
 }
 
 func (j *pathJournal) Err() error { return nil }
+
+// sagaFakeExecutor is a recording tool executor: it captures every action name
+// and returns a benign success payload.
+type sagaFakeExecutor struct{ calls []string }
+
+func (f *sagaFakeExecutor) Execute(_ context.Context, action string, _ map[string]any) (map[string]any, error) {
+	f.calls = append(f.calls, action)
+	return map[string]any{"RetCode": float64(0)}, nil
+}
 
 func newJournaledPathEngine(journal tools.ActionJournal, inner tools.ToolExecutor) *Engine {
 	return NewSession(&SharedDeps{ExternalExecutor: inner}, SessionOptions{
@@ -53,17 +61,6 @@ func TestProductionMutationPathsShareSafeExecutorJournalBoundary(t *testing.T) {
 			name: "workflow internal executor",
 			run: func(eng *Engine) error {
 				_, err := eng.toolExecutorFor(tools.OriginWorkflowInternal).Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-1"})
-				return err
-			},
-		},
-		{
-			name: "deploy saga executor",
-			run: func(eng *Engine) error {
-				def := &workflow.Definition{Name: "deploy", Steps: []workflow.Step{{
-					Name: "stop", Type: workflow.StepToolCall, Tool: "StopCompShareInstance",
-					BuildArgs: func(*workflow.Context) (map[string]any, error) { return map[string]any{"UHostId": "uhost-1"}, nil },
-				}}}
-				_, err := eng.RunAgentSaga(context.Background(), def, nil, "deploy_model")
 				return err
 			},
 		},

@@ -24,12 +24,10 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/orchestrator"
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/refusal"
 	grounded "github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/security"
-	"github.com/compshare-agent/internal/skills"
 	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
@@ -323,11 +321,7 @@ type Engine struct {
 	hardBlockStandingThisTurn bool
 	hardBlockTraceThisTurn    observability.EngineHardBlockTrace
 	hardBlockObserver         func(observability.EngineHardBlockTrace)
-	// stepSink receives agent-tier saga StepTraces (B8). Set per-turn via
-	// SetStepSink to the trace recorder, which folds them into the turn's
-	// trace_json.steps[]. nil = no step observability. Consumed by RunAgentSaga.
-	stepSink  orchestrator.StepSink
-	confirmFn ConfirmFunc
+	confirmFn                 ConfirmFunc
 	// confirmEditsFn is the editable-form HITL gate (create-flow 表单化).
 	// Set per-turn via ChatOptions.ConfirmEditsFunc by the HTTP path only when
 	// COMPSHARE_CONFIRM_FORM is on AND the client opted in; nil everywhere
@@ -675,41 +669,6 @@ func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	return prompt.BuildOptions{
 		MutatingToolsEnabled: e.mutatingToolsEnabled,
 	}
-}
-
-// SetStepSink sets the agent-tier saga step sink for the current turn (B8). The
-// CLI/HTTP recorder is passed here so RunAgentSaga's StepTraces fold into the
-// turn's trace_json.steps[]. nil disables step observability.
-func (e *Engine) SetStepSink(sink orchestrator.StepSink) {
-	e.stepSink = sink
-}
-
-// RunAgentSaga drives a workflow.Definition through the agent-tier orchestrator
-// saga (B6.2) rather than the synchronous workflow.Engine.Run. It is the engine
-// seam the B8 deploy_model dispatch handler calls: the saga emits a StepTrace per
-// transition (to e.stepSink), enforces per-step timeouts, runs the StepConfirm
-// gate through e.confirmFn (HTTP: ConfirmBroker / CLI: cliConfirm), and
-// hard-refuses any L2/destructive step. The executor is wired with
-// OriginWorkflowInternal (NewWithSafeExecutor) so the saga's StepConfirm is the
-// sole HITL gate — no double-confirm. workflow.Engine.Run is untouched; this is
-// a SEPARATE path the agent tier uses.
-func (e *Engine) RunAgentSaga(ctx context.Context, def *workflow.Definition, params map[string]any, skillID string) (*workflow.Result, error) {
-	var confirm workflow.ConfirmFunc
-	if e.confirmFn != nil {
-		confirm = workflow.ConfirmFunc(e.confirmFn)
-	}
-	runner := orchestrator.NewWithSafeExecutor(e.safeExecutor, orchestrator.Options{
-		Confirm: confirm,
-		// Editable confirm form (create-flow 表单化): nil except on HTTP turns with
-		// COMPSHARE_CONFIRM_FORM on + client opt-in. Wiring it here gives the
-		// deploy_model saga the SAME editable form as the internal CreateInstanceWorkflow
-		// path — without it, deploy confirmations were boolean-only.
-		ConfirmEdits: e.confirmEditsFn,
-		Sink:         e.stepSink,
-		TurnID:       fmt.Sprintf("turn-%d", e.userTurn),
-		SkillID:      skillID,
-	})
-	return runner.Run(ctx, def, params)
 }
 
 // SetContextTraceObserver wires the per-turn record of what the router and the loop
@@ -4115,17 +4074,6 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg, intent.HandlerFailureGenericRead
 	}
-	// P2/P3b pilot (USE_SKILL_EXECUTOR, default off): route an explicitly
-	// allowlisted diagnosis skill through the body-driven orchestrator loop
-	// instead of the Go chain. runDiagnosisSkill returns handled=false when the
-	// skill cannot load or cannot complete, so we degrade to the shipped chain
-	// rather than failing the turn.
-	if skillName, piloted := diagnosisSkillExecutorPilotForAction(action); piloted {
-		if reply, handled := e.runDiagnosisSkill(ctx, skillName, action, args, onStep); handled {
-			return reply, intent.HandlerFailureNone
-		}
-	}
-
 	diagEngine := diagnosis.NewEngine(e.toolExecutorFor(tools.OriginDiagnosisInternal), func(ev diagnosis.DiagEvent) {
 		var eventType StepType
 		message := fmt.Sprintf("[诊断 %d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status)
@@ -4176,292 +4124,6 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 
 	b, _ := json.Marshal(result)
 	return string(b), intent.HandlerFailureNone
-}
-
-// skillExecutorEnabled is the process-global, boot-only USE_SKILL_EXECUTOR gate.
-// Default off: agent-lane diagnosis runs the shipped Go chain. When on, only
-// explicitly allowlisted diagnosis skills route through the body-driven
-// orchestrator.RunReadOnlySkill loop. Boot-only: flips need a restart.
-var skillExecutorEnabled bool
-var skillExecutorDiagnosisPilots = map[string]struct{}{}
-
-var knownDiagnosisSkillExecutorPilots = []string{
-	"diagnose-ssh",
-	"diagnose-gpu-not-detected",
-	"diagnose-image-issue",
-	"diagnose-port-firewall",
-}
-
-// SetSkillExecutorEnabled flips the USE_SKILL_EXECUTOR gate at boot.
-func SetSkillExecutorEnabled(enabled bool) { skillExecutorEnabled = enabled }
-
-// SkillExecutorEnabled reports the current gate (runtime trace lines / tests).
-func SkillExecutorEnabled() bool { return skillExecutorEnabled }
-
-// SetSkillExecutorDiagnosisPilots sets the boot-only per-skill gray list for
-// diagnosis skill execution. Unknown names are ignored; cmd env parsing reports
-// them before calling this setter.
-func SetSkillExecutorDiagnosisPilots(skillNames []string) {
-	next := map[string]struct{}{}
-	for _, name := range skillNames {
-		canonical := canonicalDiagnosisSkillName(name)
-		if isKnownDiagnosisSkillExecutorPilot(canonical) {
-			next[canonical] = struct{}{}
-		}
-	}
-	skillExecutorDiagnosisPilots = next
-}
-
-// SkillExecutorDiagnosisPilots reports the active diagnosis skill gray list in a
-// stable order.
-func SkillExecutorDiagnosisPilots() []string {
-	out := make([]string, 0, len(skillExecutorDiagnosisPilots))
-	for _, name := range knownDiagnosisSkillExecutorPilots {
-		if _, ok := skillExecutorDiagnosisPilots[name]; ok {
-			out = append(out, name)
-		}
-	}
-	return out
-}
-
-// KnownDiagnosisSkillExecutorPilots returns every diagnosis skill that can be
-// allowlisted for the body-driven diagnosis executor.
-func KnownDiagnosisSkillExecutorPilots() []string {
-	return append([]string(nil), knownDiagnosisSkillExecutorPilots...)
-}
-
-func isKnownDiagnosisSkillExecutorPilot(name string) bool {
-	name = canonicalDiagnosisSkillName(name)
-	for _, known := range knownDiagnosisSkillExecutorPilots {
-		if name == known {
-			return true
-		}
-	}
-	return false
-}
-
-// CanonicalDiagnosisSkillName maps the pre-standardization underscore spelling
-// to the Anthropic-style hyphenated skill name. This is deliberately limited to
-// the diagnosis executor allowlist surface so old deployment env vars continue
-// to work while the generated skill registry uses portable SKILL.md names.
-func CanonicalDiagnosisSkillName(name string) string {
-	return canonicalDiagnosisSkillName(name)
-}
-
-func canonicalDiagnosisSkillName(name string) string {
-	return strings.ReplaceAll(strings.TrimSpace(name), "_", "-")
-}
-
-func diagnosisSkillExecutorPilotForAction(action string) (string, bool) {
-	if !skillExecutorEnabled {
-		return "", false
-	}
-	skillName, piloted := pilotSkillForDiagnosis(action)
-	if !piloted {
-		return "", false
-	}
-	if _, ok := skillExecutorDiagnosisPilots[skillName]; !ok {
-		return "", false
-	}
-	return skillName, true
-}
-
-// pilotSkillForDiagnosis maps a diagnosis tool action to the agent-tier skill the
-// body-driven executor may run in its place. Runtime activation is separately
-// gated by USE_SKILL_EXECUTOR plus the per-skill allowlist above. The action
-// names are registered tool names (DiagnoseGPU, not the skill's
-// diagnose-gpu-not-detected). DiagnoseBilling is deliberately excluded — it has no
-// skill and stays on the shipped Go chain. The map is pinned by
-// TestPilotSkillForDiagnosis_* so it cannot silently widen to a mutating or
-// unmapped action.
-func pilotSkillForDiagnosis(action string) (string, bool) {
-	switch action {
-	case "DiagnoseSSH":
-		return "diagnose-ssh", true
-	case "DiagnoseGPU":
-		return "diagnose-gpu-not-detected", true
-	case "DiagnoseImageIssue":
-		return "diagnose-image-issue", true
-	case "DiagnosePortOrFirewall":
-		return "diagnose-port-firewall", true
-	}
-	return "", false
-}
-
-// runDiagnosisSkill executes a piloted diagnosis skill through the body-driven
-// orchestrator loop: it loads the skill's Body() and lets the strong model drive
-// read-only tool calls over a private working-set. Returns (reply, true) only
-// when the executor produced a final answer; returns ("", false) when the skill
-// cannot load or cannot complete, so the caller falls back to the shipped Go
-// chain.
-func (e *Engine) runDiagnosisSkill(ctx context.Context, skillName, action string, args map[string]any, onStep func(StepEvent)) (string, bool) {
-	skill, ok := findGeneratedSkill(skillName)
-	if !ok {
-		return "", false
-	}
-	body, err := skill.Body()
-	if err != nil {
-		// Cap overflow / load failure is a skill-authoring bug; degrade to the
-		// shipped chain rather than failing the user's turn.
-		return "", false
-	}
-
-	client := e.agentLLMClient
-	if client == nil {
-		client = e.llmClient // NewWithDeps test path / no agent tier configured
-	}
-
-	progress := func(toolName, msg string, isResult bool) {
-		typ := StepToolCall
-		if isResult {
-			typ = StepToolResult
-		}
-		onStep(StepEvent{Type: typ, Action: toolName, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-	}
-
-	var evidenceHits []knowledge.RetrievalHit
-	var evidenceLedger knowledge.EvidenceLedger
-	var rawDiagnosisClaims []knowledge.DiagnosisClaim
-	var knowledgeSearch orchestrator.KnowledgeSearchFunc
-	maxKnowledgeSearches := 0
-	if diagnosisSkillUsesKnowledgeEvidence(skillName) && e.knowledgeRetriever != nil {
-		maxKnowledgeSearches = 1
-		knowledgeSearch = func(_ context.Context, query string) (knowledge.EvidenceLedger, []knowledge.RetrievalHit, error) {
-			ledger, hits := e.recordDiagnosisKnowledgeProbe(skillName, query, onStep)
-			evidenceLedger = knowledge.MergeEvidenceLedgers(evidenceLedger, ledger, maxKnowledgeSearches*knowledge.DefaultEvidenceLedgerMaxItems)
-			evidenceHits = append(evidenceHits, hits...)
-			return ledger, hits, nil
-		}
-	}
-	seed := buildDiagnosisSkillSeed(skillName, args, knowledge.EvidenceLedger{})
-
-	reply, rerr := orchestrator.RunReadOnlySkill(ctx, e.lastUserMsg, seed, orchestrator.SkillExecOptions{
-		Body:                 body,
-		Tools:                tools.VisibleRegistryForSubset(skill.RequiredTools, false),
-		Exec:                 e.toolExecutorFor(tools.OriginDiagnosisInternal),
-		Client:               client,
-		Progress:             progress,
-		OnUsage:              e.emitTokenUsage,
-		KnowledgeSearch:      knowledgeSearch,
-		MaxKnowledgeSearches: maxKnowledgeSearches,
-		OnDiagnosisClaims: func(claims []knowledge.DiagnosisClaim) {
-			rawDiagnosisClaims = append([]knowledge.DiagnosisClaim(nil), claims...)
-		},
-		MaxRounds: 6,
-	})
-	if rerr != nil {
-		// Safe fallback: the loop never mutates and never falls through to ReAct;
-		// the shipped read-only Go chain gets the turn instead.
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: rerr.Error()})
-		return "", false
-	}
-	if lerr := knowledge.ValidateNoRawEvidenceLeak(reply, evidenceHits); lerr != nil {
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: lerr.Error()})
-		return "", false
-	}
-	diagnosisClaims, cerr := knowledge.ValidateDiagnosisClaims(rawDiagnosisClaims, evidenceLedger)
-	if cerr != nil {
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: cerr.Error()})
-		return "", false
-	}
-	if len(diagnosisClaims) > 0 {
-		e.emitDiagnosisTrace(diagnosisClaimsTrace(diagnosisClaims))
-	}
-	return reply, true
-}
-
-// recordDiagnosisKnowledgeProbe probes the KB for a piloted diagnosis skill and
-// returns only a safe evidence ledger for the skill seed. Raw KBChunk.Content is
-// never injected into the body-read loop; the returned hits are kept only so the
-// final answer can be checked for route-independent raw evidence leakage before
-// the skill answer is accepted.
-func (e *Engine) recordDiagnosisKnowledgeProbe(skillName, userMsg string, onStep func(StepEvent)) (knowledge.EvidenceLedger, []knowledge.RetrievalHit) {
-	if !diagnosisSkillUsesKnowledgeEvidence(skillName) || e.knowledgeRetriever == nil {
-		return knowledge.EvidenceLedger{}, nil
-	}
-	query := strings.TrimSpace(userMsg)
-	if query == "" {
-		return knowledge.EvidenceLedger{}, nil
-	}
-	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: "retrieval", Message: "正在搜索知识库"})
-	retrieved := e.knowledgeRetriever.Retrieve(query, "")
-	hitItems := retrieved.HitItems
-	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
-		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
-		for _, chunk := range retrieved.Hits {
-			hitItems = append(hitItems, knowledge.RetrievalHit{Chunk: chunk, Kept: true})
-		}
-	}
-
-	trace := observability.RetrievalTrace{
-		Enabled:                retrieved.Enabled,
-		KBVersion:              retrieved.KBVersion,
-		QueryRaw:               query,
-		QueryNormalized:        retrieved.QueryNormalized,
-		QueryExpansions:        []string{},
-		Hits:                   len(retrieved.Hits),
-		HybridMode:             retrieved.HybridMode,
-		HybridFallbackReason:   retrieved.HybridFallbackReason,
-		EmbeddingLatencyMS:     retrieved.EmbeddingLatencyMS,
-		EmbeddingModel:         retrieved.EmbeddingModel,
-		RerankerMode:           retrieved.RerankerMode,
-		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
-		RerankerFallbackReason: retrieved.RerankerFallbackReason,
-	}
-	if trace.QueryNormalized == "" {
-		trace.QueryNormalized = knowledge.NormalizeQuery(query)
-	}
-	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
-	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
-	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: "retrieval", Message: "搜索完成"})
-	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
-		trace.RefusedReason = "no_evidence"
-		trace.RankingErrorCandidate = true
-		e.emitRetrievalTrace(trace)
-		return knowledge.EvidenceLedger{}, hitItems
-	}
-	if isWeakEvidence(hitItems, retrieved.HybridMode) {
-		trace.WeakEvidence = true
-	}
-	if isRankingAmbiguous(hitItems, retrieved.HybridMode) {
-		trace.RankingErrorCandidate = true
-	}
-	e.emitRetrievalTrace(trace)
-	return knowledge.BuildEvidenceLedger(query, hitItems, knowledge.DefaultEvidenceLedgerMaxItems), hitItems
-}
-
-func diagnosisSkillUsesKnowledgeEvidence(skillName string) bool {
-	switch skillName {
-	case "diagnose-port-firewall", "diagnose-gpu-not-detected":
-		return true
-	default:
-		return false
-	}
-}
-
-func diagnosisClaimsTrace(claims []knowledge.DiagnosisClaim) observability.DiagnosisTrace {
-	out := observability.DiagnosisTrace{
-		Claims: make([]observability.DiagnosisClaimTrace, 0, len(claims)),
-	}
-	for _, claim := range claims {
-		out.Claims = append(out.Claims, observability.DiagnosisClaimTrace{
-			Claim:    claim.Claim,
-			Status:   claim.Status,
-			ChunkIDs: append([]string(nil), claim.ChunkIDs...),
-			Reason:   claim.Reason,
-		})
-	}
-	return out
-}
-
-// findGeneratedSkill looks up a skill from the embedded generated registry by name.
-func findGeneratedSkill(name string) (*skills.Skill, bool) {
-	for _, s := range skills.GeneratedSkills() {
-		if s.Name == name {
-			return s, true
-		}
-	}
-	return nil, false
 }
 
 // StepType identifies what kind of intermediate event occurred.

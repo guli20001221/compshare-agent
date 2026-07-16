@@ -6,7 +6,6 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/orchestrator"
 )
 
 // TraceHooks is the complete, transport-neutral observability surface for one
@@ -23,7 +22,6 @@ type TraceHooks struct {
 	Completion func(observability.TurnCompletionTrace)
 	RateLimit  func(governance.Decision)
 	TokenUsage func(llm.TokenUsage)
-	StepSink   orchestrator.StepSink
 }
 
 // TraceSnapshot is the final, content-free engine state needed to finish a
@@ -62,7 +60,6 @@ func (e *Engine) AttachTraceHooks(h TraceHooks) {
 	e.SetTurnCompletionObserver(h.Completion)
 	e.SetRateLimitObserver(h.RateLimit)
 	e.SetTokenUsageObserver(h.TokenUsage)
-	e.SetStepSink(h.StepSink)
 }
 
 func (e *Engine) TraceSnapshot(now time.Time) TraceSnapshot {

@@ -92,7 +92,6 @@ func (r *Recorder) Hooks() engine.TraceHooks {
 		Renderer: r.SetRendererTrace, HardBlock: r.SetEngineHardBlock,
 		Completion: r.SetTurnCompletionTrace,
 		RateLimit:  r.SetRateLimitDecision, TokenUsage: r.AddTokenUsage,
-		StepSink: r,
 	}
 }
 

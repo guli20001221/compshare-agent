@@ -392,11 +392,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// event buffer or its observer would mix two tenants' reasoning traces.
 		"agentRuntimeEventsThisTurn": true,
 		"agentRuntimeObserver":       true,
-		// stepSink is the agent-tier saga StepTrace sink (B8), set per-turn via
-		// SetStepSink to THIS session's trace recorder. Per-session by design:
-		// sharing it would route one tenant's step traces into another tenant's
-		// recorder — exactly the cross-session leak this test guards.
-		"stepSink":   true,
 		"currentCtx": true,
 		// guidedCreate is a per-turn HTTP capability gate; sharing it would let
 		// one client's opt-in change another client's create workflow shape.
@@ -432,12 +427,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 12, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 80, len(perSessionFields); want != got {
+	if want, got := 79, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 92, typ.NumField(); want != got {
+	if want, got := 91, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

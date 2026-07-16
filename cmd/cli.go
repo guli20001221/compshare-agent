@@ -149,11 +149,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_HISTORY_COMPACTION value %q\n", unknownReactHistoryCompaction)
 	}
 	eng.SetReactHistoryCompactionEnabled(reactHistoryCompaction)
-	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(getenv)
-	if unknownSkillExecutor != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR value %q\n", unknownSkillExecutor)
-	}
-	engine.SetSkillExecutorEnabled(useSkillExecutor)
 	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
 	if unknownDomainMatchGuard != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
@@ -164,11 +159,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q\n", unknownUnifiedCreate)
 	}
 	engine.SetUnifiedCreateEnabled(unifiedCreate)
-	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(getenv)
-	for _, value := range unknownDiagnosisPilots {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q\n", value)
-	}
-	engine.SetSkillExecutorDiagnosisPilots(diagnosisPilots)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)

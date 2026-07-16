@@ -206,23 +206,6 @@ func reactHistoryCompactionEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). "1"
-// enables the body-driven skill executor gate. Diagnosis still requires the
-// USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS allowlist. "" is off; any other value is
-// unknown and treated as off (caller warns). Default off; boot-only, flips need a
-// restart.
-func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
-	value := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR"))
-	switch value {
-	case "":
-		return false, ""
-	case "1":
-		return true, ""
-	default:
-		return false, value
-	}
-}
-
 // domainMatchGuardEnabledFromEnv gates the #5 wrong-domain REFUSE arm
 // (COMPSHARE_RAG_DOMAIN_MATCH_GUARD). DEFAULT OFF — the domain verdict is always
 // recorded in the trace (all_cited_off_domain / domain_inference_empty), but the
@@ -280,40 +263,6 @@ func agentDeterministicRenderEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	default:
 		return false, raw
 	}
-}
-
-func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string) {
-	raw := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"))
-	if raw == "" {
-		return nil, nil
-	}
-	known := map[string]struct{}{}
-	for _, name := range engine.KnownDiagnosisSkillExecutorPilots() {
-		known[name] = struct{}{}
-	}
-	seenKnown := map[string]struct{}{}
-	seenUnknown := map[string]struct{}{}
-	var pilots []string
-	var unknown []string
-	for _, part := range strings.Split(raw, ",") {
-		rawName := strings.TrimSpace(part)
-		if rawName == "" {
-			continue
-		}
-		name := engine.CanonicalDiagnosisSkillName(rawName)
-		if _, ok := known[name]; ok {
-			if _, seen := seenKnown[name]; !seen {
-				pilots = append(pilots, name)
-				seenKnown[name] = struct{}{}
-			}
-			continue
-		}
-		if _, seen := seenUnknown[rawName]; !seen {
-			unknown = append(unknown, rawName)
-			seenUnknown[rawName] = struct{}{}
-		}
-	}
-	return pilots, unknown
 }
 
 const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"

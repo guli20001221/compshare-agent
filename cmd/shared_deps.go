@@ -52,19 +52,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if mutating {
 		log.Printf("runtime: HTTP mutating tools enabled (COMPSHARE_ENABLE_MUTATING_TOOLS=1)")
 	}
-	useSkillExecutor, unknownSkillExecutor := useSkillExecutorFromEnv(getenv)
-	if unknownSkillExecutor != "" {
-		log.Printf("warning: ignoring unknown USE_SKILL_EXECUTOR value %q", unknownSkillExecutor)
-	}
-	engine.SetSkillExecutorEnabled(useSkillExecutor)
-	diagnosisPilots, unknownDiagnosisPilots := skillExecutorDiagnosisPilotsFromEnv(getenv)
-	for _, value := range unknownDiagnosisPilots {
-		log.Printf("warning: ignoring unknown USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS value %q", value)
-	}
-	engine.SetSkillExecutorDiagnosisPilots(diagnosisPilots)
-	if useSkillExecutor {
-		log.Printf("runtime: HTTP skill executor enabled (USE_SKILL_EXECUTOR=1, diagnosis_pilots=%v)", diagnosisPilots)
-	}
 	log.Printf("runtime: HTTP agentic SearchKnowledge enabled (single production knowledge path)")
 	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
 	if unknownDomainMatchGuard != "" {
