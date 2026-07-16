@@ -13,19 +13,6 @@ type MissingField = platform.MissingField
 
 func missing(name string) MissingField { return platform.Missing(name) }
 
-type MonitorHistoryRequest struct {
-	Targets    []TargetRef `json:"targets,omitempty"`
-	Metrics    []Metric    `json:"metrics,omitempty"`
-	TimeWindow *TimeWindow `json:"time_window,omitempty"`
-}
-
-func (r MonitorHistoryRequest) MissingFields() []MissingField {
-	if r.TimeWindow == nil {
-		return []MissingField{missing("time_window")}
-	}
-	return nil
-}
-
 type GPUSpecsRequest struct {
 	GPUType     string      `json:"gpu_type,omitempty"`
 	DetailLevel DetailLevel `json:"detail_level,omitempty"`

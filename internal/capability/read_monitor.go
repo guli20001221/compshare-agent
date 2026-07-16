@@ -20,6 +20,9 @@ const (
 	// legacy handler hardcoded "monitor_query" as the failure label regardless of
 	// which monitor intent ran.
 	monitorCurrentCapabilityLabel = string(intent.IntentMonitorQuery)
+	// monitorHistoryCapabilityLabel is the historical-monitor tool + observation
+	// label; the failure reply still uses monitorCurrentCapabilityLabel.
+	monitorHistoryCapabilityLabel = string(intent.IntentMonitorHistory)
 	monitorAction                 = "GetCompShareInstanceMonitor"
 )
 
@@ -64,6 +67,58 @@ func monitorCurrentHandle(ctx context.Context, req MonitorCurrentRequest, rt Rea
 		return MonitorResponse{}, ReadFailureAfterTool(monitorAction, monitorCurrentCapabilityLabel, err)
 	}
 	return MonitorResponse{Instances: instances, Metrics: req.Metrics, Raw: raw}, ReadResult{}
+}
+
+// MonitorHistoryRequest is the historical-monitor request contract. A time
+// window is required (schema required + MissingFields), so an empty one is
+// needs_input before the handler.
+type MonitorHistoryRequest struct {
+	Targets    []platform.TargetRef `json:"targets,omitempty"`
+	Metrics    []platform.Metric    `json:"metrics,omitempty"`
+	TimeWindow *platform.TimeWindow `json:"time_window,omitempty"`
+}
+
+func (r MonitorHistoryRequest) MissingFields() []platform.MissingField {
+	if r.TimeWindow == nil {
+		return []platform.MissingField{platform.Missing("time_window")}
+	}
+	return nil
+}
+
+func monitorHistoryReadSpec() ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse] {
+	return ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse]{
+		Label:       monitorHistoryCapabilityLabel,
+		Description: "查询实例在明确时间范围内的历史监控数据。",
+		Schema: objectSchema(map[string]any{
+			"targets":     targetRefsSchema(),
+			"metrics":     metricsSchema(),
+			"time_window": timeWindowSchema(),
+		}, []string{"time_window"}),
+		Handle: monitorHistoryHandle,
+		Render: monitorRender,
+	}
+}
+
+func monitorHistoryHandle(ctx context.Context, req MonitorHistoryRequest, rt ReadRuntime) (MonitorResponse, ReadResult) {
+	instances, ids, terminal := resolveMonitorTargets(req.Targets, rt)
+	if terminal.Status != "" {
+		return MonitorResponse{}, terminal
+	}
+	// Historical monitoring is single-instance (the upstream API returns one
+	// series set per call, and the renderer aggregates one host).
+	if len(ids) != 1 {
+		return MonitorResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
+	}
+	start, end, ok := readprojection.ResolveMonitorHistoryWindow(req.TimeWindow)
+	if !ok {
+		return MonitorResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackTimeWindow)
+	}
+	args := map[string]any{"UHostIds": ids, "StartTime": start, "EndTime": end}
+	raw, err := rt.Executor.Execute(ctx, monitorAction, args)
+	if err != nil {
+		return MonitorResponse{}, ReadFailureAfterTool(monitorAction, monitorCurrentCapabilityLabel, err)
+	}
+	return MonitorResponse{Instances: instances, Metrics: req.Metrics, Raw: raw, Historical: true}, ReadResult{}
 }
 
 // resolveMonitorTargets applies the instance-scoped monitor target contract: an

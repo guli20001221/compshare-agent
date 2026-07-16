@@ -113,3 +113,96 @@ func TestMonitorCurrentHandle_UpstreamError(t *testing.T) {
 	assert.Equal(t, platform.ReadFailureGenericRead, result.FailureClass)
 	assert.Equal(t, "monitor_query"+": "+FriendlyReadFailureReply, result.Reply)
 }
+
+// monitorHistoryFixture is a recognized monitor payload with a multi-point CPU
+// series for the historical (aggregated) renderer.
+func monitorHistoryFixture(uhostID string) map[string]any {
+	return map[string]any{
+		"Data": map[string]any{
+			"List": []any{
+				map[string]any{
+					"UHostId": uhostID,
+					"Metrics": []any{
+						map[string]any{
+							"MetricKey": "uhost_cpu_used",
+							"Results": []any{map[string]any{
+								"Values": []any{
+									map[string]any{"Timestamp": float64(1778173200), "Value": float64(10)},
+									map[string]any{"Timestamp": float64(1778176800), "Value": float64(30)},
+								},
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func runMonitorHistory(t *testing.T, exec ReadExecutor, resolver EntityResolver, req MonitorHistoryRequest) ReadResult {
+	t.Helper()
+	reg := NewReadCapability(monitorHistoryReadSpec())
+	return reg.Run(context.Background(), req, ReadRuntime{Executor: exec, Resolver: resolver})
+}
+
+func TestMonitorHistoryRequestRequiresTimeWindow(t *testing.T) {
+	require.Equal(t, []platform.MissingField{{Name: "time_window", Reason: "required"}}, MonitorHistoryRequest{}.MissingFields())
+	require.Nil(t, MonitorHistoryRequest{TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Value: "x"}}.MissingFields())
+}
+
+// TestMonitorHistoryHandle_ResolvesWindowAndCallsMonitor: a single resolved
+// target plus an absolute window drives a monitor call carrying StartTime +
+// EndTime, and the reply uses the aggregated (latest/avg/peak) render.
+func TestMonitorHistoryHandle_ResolvesWindowAndCallsMonitor(t *testing.T) {
+	exec := &fakeReadExec{result: monitorHistoryFixture("uhost-a")}
+	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
+
+	result := runMonitorHistory(t, exec, resolver, MonitorHistoryRequest{
+		Targets:    []platform.TargetRef{{Type: platform.TargetRefName, Value: "train-a"}},
+		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Value: "2026-05-08 01:00 到 02:00"},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
+	assert.Equal(t, int64(1778173200), exec.calls[0].args["StartTime"])
+	assert.Equal(t, int64(1778176800), exec.calls[0].args["EndTime"])
+	assert.Contains(t, result.Reply, "最新")
+	assert.Contains(t, result.Reply, "平均")
+	assert.Contains(t, result.Reply, "峰值")
+}
+
+// TestMonitorHistoryHandle_MultiTargetRejected: historical monitoring is single
+// instance; two resolved targets is a validation fallback before any tool call.
+func TestMonitorHistoryHandle_MultiTargetRejected(t *testing.T) {
+	exec := &fakeReadExec{result: monitorHistoryFixture("uhost-a")}
+	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"}, [2]string{"uhost-b", "train-b"})
+
+	result := runMonitorHistory(t, exec, resolver, MonitorHistoryRequest{
+		Targets: []platform.TargetRef{
+			{Type: platform.TargetRefName, Value: "train-a"},
+			{Type: platform.TargetRefName, Value: "train-b"},
+		},
+		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Value: "2026-05-08 01:00 到 02:00"},
+	})
+
+	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, platform.ReadFallbackValidation, result.FallbackReason)
+	assert.Empty(t, exec.calls)
+}
+
+// TestMonitorHistoryHandle_InvalidWindowRejected: an unparseable window is a
+// time-window fallback before any tool call.
+func TestMonitorHistoryHandle_InvalidWindowRejected(t *testing.T) {
+	exec := &fakeReadExec{result: monitorHistoryFixture("uhost-a")}
+	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
+
+	result := runMonitorHistory(t, exec, resolver, MonitorHistoryRequest{
+		Targets:    []platform.TargetRef{{Type: platform.TargetRefName, Value: "train-a"}},
+		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Value: "2026-06-21 10:00 到 09:00"},
+	})
+
+	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, platform.ReadFallbackTimeWindow, result.FallbackReason)
+	assert.Empty(t, exec.calls)
+}

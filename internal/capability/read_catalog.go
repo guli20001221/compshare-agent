@@ -43,7 +43,7 @@ func ReadDefinitions() []ReadDefinition {
 	definitions := []ReadDefinition{
 		migratedReadDefinition(intent.IntentResourceInfo, NewReadCapability(resourceReadSpec())),
 		migratedReadDefinition(intent.IntentMonitorQuery, NewReadCapability(monitorCurrentReadSpec())),
-		newReadDefinition[MonitorHistoryRequest](string(intent.IntentMonitorHistory), intent.IntentMonitorHistory, "查询实例在明确时间范围内的历史监控数据。", objectSchema(map[string]any{"targets": targetRefsSchema(), "metrics": metricsSchema(), "time_window": timeWindowSchema()}, []string{"time_window"})),
+		migratedReadDefinition(intent.IntentMonitorHistory, NewReadCapability(monitorHistoryReadSpec())),
 		newReadDefinition[GPUSpecsRequest](string(intent.IntentGPUSpecsQuery), intent.IntentGPUSpecsQuery, "查询 GPU 机型的静态规格。", objectSchema(map[string]any{"gpu_type": stringSchema(), "detail_level": enumSchema("summary", "full")}, nil)),
 		newReadDefinition[StockAvailabilityRequest](string(intent.IntentStockAvailability), intent.IntentStockAvailability, "查询 GPU 机型的实时可售性。", objectSchema(map[string]any{"gpu_type": stringSchema(), "zone": stringSchema()}, nil)),
 		newReadDefinition[ImageListRequest](string(intent.IntentImageList), intent.IntentImageList, "查询平台、自制、社区或共享镜像。", objectSchema(map[string]any{"source": enumSchema("platform", "custom", "community", "shared"), "query": stringSchema(), "mode": enumSchema("all", "filtered")}, nil)),
