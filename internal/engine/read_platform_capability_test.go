@@ -8,6 +8,7 @@ import (
 
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,8 +35,13 @@ func TestConcreteReadAlwaysReturnsObservationAndNeverEndsTurn(t *testing.T) {
 	require.False(t, ok, "a read capability is an observation and must never end the turn")
 	var observation ReadCapabilityObservation
 	require.NoError(t, json.Unmarshal([]byte(out), &observation))
-	require.Equal(t, intent.HandlerStatusHandled, observation.Status)
+	require.Equal(t, platform.ReadStatusHandled, observation.Status)
 	require.NotNil(t, observation.Envelope)
+	// Byte-identity guard for the engine-bridge migration (intent -> platform
+	// status/route types): the wire strings are unchanged from the pre-migration
+	// intent-typed observation, so the model sees the same JSON.
+	assert.Contains(t, out, `"status":"handled"`)
+	assert.Contains(t, out, `"route_status":"dispatched"`)
 }
 
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
@@ -45,7 +51,7 @@ func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
 
 	var observation ReadCapabilityObservation
 	require.NoError(t, json.Unmarshal([]byte(out), &observation))
-	require.Equal(t, intent.HandlerStatusNeedsInput, observation.Status)
+	require.Equal(t, platform.ReadStatusNeedsInput, observation.Status)
 	require.Equal(t, []capability.MissingField{{Name: "gpu_type", Reason: "required"}}, observation.MissingFields)
 	require.Empty(t, executor.calls, "缺失字段必须在能力边界返回，不能进入 handler 或上游 API")
 }

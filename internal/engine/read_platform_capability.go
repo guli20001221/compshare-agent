@@ -9,27 +9,29 @@ import (
 
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/envelope"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
 )
 
 // ReadCapabilityObservation is the only result shape exposed by the read
 // capability adapter. Control-flow states stay distinct and factual answers
-// must cross an evidence envelope before the Agent can consume them.
+// must cross an evidence envelope before the Agent can consume them. Its status /
+// failure / fallback / route types are the platform read vocabulary — the read
+// adapter builds the observation directly off capability.ReadResult and no
+// longer bridges through the legacy intent.HandlerResult carrier.
 type ReadCapabilityObservation struct {
-	Capability       string                     `json:"capability"`
-	Status           intent.HandlerStatus       `json:"status"`
-	FailureClass     intent.HandlerFailureClass `json:"failure_class,omitempty"`
-	FallbackReason   intent.FallbackReason      `json:"fallback_reason,omitempty"`
-	RouteStatus      intent.RouteStatus         `json:"route_status,omitempty"`
-	ToolAction       string                     `json:"tool_action,omitempty"`
-	Envelope         *envelope.Envelope         `json:"evidence,omitempty"`
-	Guidance         string                     `json:"guidance,omitempty"`
-	RenderRef        string                     `json:"render_ref,omitempty"`
-	RenderContract   string                     `json:"render_contract,omitempty"`
-	CanAssertAbsence bool                       `json:"can_assert_absence"`
-	MissingFields    []capability.MissingField  `json:"missing_fields,omitempty"`
+	Capability       string                      `json:"capability"`
+	Status           platform.ReadStatus         `json:"status"`
+	FailureClass     platform.ReadFailureClass   `json:"failure_class,omitempty"`
+	FallbackReason   platform.ReadFallbackReason `json:"fallback_reason,omitempty"`
+	RouteStatus      platform.RouteStatus        `json:"route_status,omitempty"`
+	ToolAction       string                      `json:"tool_action,omitempty"`
+	Envelope         *envelope.Envelope          `json:"evidence,omitempty"`
+	Guidance         string                      `json:"guidance,omitempty"`
+	RenderRef        string                      `json:"render_ref,omitempty"`
+	RenderContract   string                      `json:"render_contract,omitempty"`
+	CanAssertAbsence bool                        `json:"can_assert_absence"`
+	MissingFields    []capability.MissingField   `json:"missing_fields,omitempty"`
 }
 
 func (e *Engine) executeConcreteReadCapability(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
@@ -39,9 +41,9 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		return marshalReadCapabilityError(fmt.Errorf("invalid capability request: %w", err))
 	}
 	if missing := request.MissingFields(); len(missing) > 0 {
-		observation := ReadCapabilityObservation{Capability: string(readIntent), Status: intent.HandlerStatusNeedsInput, MissingFields: missing}
+		observation := ReadCapabilityObservation{Capability: string(readIntent), Status: platform.ReadStatusNeedsInput, MissingFields: missing}
 		payload, _ := json.Marshal(observation)
-		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询参数不完整", TraceResult: map[string]any{"status": string(intent.HandlerStatusNeedsInput), "missing_fields": missing}})
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询参数不完整", TraceResult: map[string]any{"status": string(platform.ReadStatusNeedsInput), "missing_fields": missing}})
 		return string(payload)
 	}
 	reg, ok := capability.MigratedRead(action)
@@ -59,7 +61,7 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 // vertical. The capability produces a capability.ReadResult (never intent.Slots
 // / HandlerResult / DispatchRoute); the engine bridges it to a HandlerResult
 // only to serialise the observation identically to the legacy path.
-func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabilityLabel string, reg capability.RegisteredRead, request intent.ReadRequest, args map[string]any, onStep func(StepEvent)) string {
+func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabilityLabel string, reg capability.RegisteredRead, request platform.ReadRequest, args map[string]any, onStep func(StepEvent)) string {
 	onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
 
 	snapshot := e.RegistrySnapshot()
@@ -76,7 +78,7 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 	if readResult.Status == platform.ReadStatusUnavailable {
 		return e.buildUnavailableObservation(action, capabilityLabel, readResult, onStep)
 	}
-	return e.buildReadObservation(action, capabilityLabel, handlerResultFromReadResult(readResult), snapshot.CanAssertAbsence(), onStep)
+	return e.buildReadObservation(action, capabilityLabel, readResult, snapshot.CanAssertAbsence(), onStep)
 }
 
 // UnavailableCapabilityObservation is the structured result of an Unavailable
@@ -111,8 +113,9 @@ func (e *Engine) buildUnavailableObservation(action, capabilityLabel string, r c
 }
 
 // buildReadObservation serialises a read outcome into the single read-tool
-// observation shape shared by the legacy and typed dispatch paths.
-func (e *Engine) buildReadObservation(action, capabilityLabel string, result intent.HandlerResult, canAssertAbsence bool, onStep func(StepEvent)) string {
+// observation shape. It builds directly off the typed capability.ReadResult and
+// the platform status vocabulary; RouteStatus is the one derived field.
+func (e *Engine) buildReadObservation(action, capabilityLabel string, result capability.ReadResult, canAssertAbsence bool, onStep func(StepEvent)) string {
 	result = e.contextEnvelopeForPlainDirectReply(result)
 	if result.Envelope != nil {
 		if e.readCapabilitySubjectsThisTurn == nil {
@@ -129,12 +132,12 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result int
 		Status:           result.Status,
 		FailureClass:     result.FailureClass,
 		FallbackReason:   result.FallbackReason,
-		RouteStatus:      result.RouteStatus,
+		RouteStatus:      routeStatusForReadResult(result),
 		ToolAction:       result.ToolAction,
 		Envelope:         result.Envelope,
 		CanAssertAbsence: canAssertAbsence,
 	}
-	if result.Status == intent.HandlerStatusHandled && !result.NeedsClarification && result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
+	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification && result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
 		placeholder := fmt.Sprintf("{{READ_OBSERVATION_%d}}", len(e.readResponseEvidenceThisTurn)+1)
 		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
 			Capability:  capabilityLabel,
@@ -145,7 +148,7 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result int
 		observation.RenderRef = placeholder
 		observation.RenderContract = "需要展示这份观察中的精确标识、数量、价格、库存、规格或状态时，在最终自然回答中原样插入 render_ref；服务端会替换为确定性结果。其他文字可自然解释，不要自行誊写精确字段。"
 	}
-	if result.Status != intent.HandlerStatusHandled || result.NeedsClarification {
+	if result.Status != platform.ReadStatusHandled || result.NeedsClarification {
 		observation.Guidance = result.Reply
 	}
 	payload, err := json.Marshal(observation)
@@ -156,23 +159,6 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result int
 	_ = json.Unmarshal(payload, &traceResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
-}
-
-// handlerResultFromReadResult bridges a typed capability.ReadResult into the
-// legacy HandlerResult shape used only for observation serialisation. RouteStatus
-// is derived from the read status/fallback the same way the legacy result
-// constructors did, so the emitted observation is byte-identical.
-func handlerResultFromReadResult(r capability.ReadResult) intent.HandlerResult {
-	return intent.HandlerResult{
-		Status:             intent.HandlerStatus(r.Status),
-		Reply:              r.Reply,
-		NeedsClarification: r.NeedsClarification,
-		FailureClass:       intent.HandlerFailureClass(r.FailureClass),
-		FallbackReason:     intent.FallbackReason(r.FallbackReason),
-		RouteStatus:        routeStatusForReadResult(r),
-		ToolAction:         r.ToolAction,
-		Envelope:           r.Envelope,
-	}
 }
 
 // applyReadEffects applies the typed context side-effects a read capability
@@ -191,35 +177,35 @@ func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
 	}
 }
 
-func routeStatusForReadResult(r capability.ReadResult) intent.RouteStatus {
+func routeStatusForReadResult(r capability.ReadResult) platform.RouteStatus {
 	switch r.Status {
 	case platform.ReadStatusHandled, platform.ReadStatusEmpty:
 		// Empty is a successful dispatch that found no data — it ran, so it shares
 		// the dispatched route status; the distinct read status carries the emptiness.
-		return intent.RouteStatusDispatched
+		return platform.RouteStatusDispatched
 	case platform.ReadStatusConflict:
 		// Ambiguous request resolving to multiple candidates — mirror the legacy
 		// ambiguous-target fallback route status.
-		return intent.RouteStatusFallbackUnresolvedTarget
+		return platform.RouteStatusFallbackUnresolvedTarget
 	case platform.ReadStatusFailureAfterTool:
-		return intent.RouteStatusFailureAfterTool
+		return platform.RouteStatusFailureAfterTool
 	case platform.ReadStatusFallbackBeforeTool:
 		switch r.FallbackReason {
 		case platform.ReadFallbackMissingTarget, platform.ReadFallbackUnresolvedTarget, platform.ReadFallbackAmbiguousTarget:
-			return intent.RouteStatusFallbackUnresolvedTarget
+			return platform.RouteStatusFallbackUnresolvedTarget
 		case platform.ReadFallbackTimeWindow:
-			return intent.RouteStatusFallbackTimeWindow
+			return platform.RouteStatusFallbackTimeWindow
 		case platform.ReadFallbackActionNotAllowed:
-			return intent.RouteStatusFallbackIneligible
+			return platform.RouteStatusFallbackIneligible
 		default:
-			return intent.RouteStatusFallbackInvalid
+			return platform.RouteStatusFallbackInvalid
 		}
 	default:
-		return intent.RouteStatusNone
+		return platform.RouteStatusNone
 	}
 }
 
 func marshalReadCapabilityError(err error) string {
-	payload, _ := json.Marshal(map[string]any{"status": intent.HandlerStatusFallbackBeforeTool, "fallback_reason": intent.FallbackValidation, "error": err.Error()})
+	payload, _ := json.Marshal(map[string]any{"status": platform.ReadStatusFallbackBeforeTool, "fallback_reason": platform.ReadFallbackValidation, "error": err.Error()})
 	return string(payload)
 }

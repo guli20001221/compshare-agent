@@ -66,3 +66,20 @@ const (
 	ReadFallbackValidation       ReadFallbackReason = "validation"
 	ReadFallbackActionNotAllowed ReadFallbackReason = "action_not_allowed"
 )
+
+// RouteStatus is the read observation's route_status projection: the
+// dispatch-outcome label the engine emits alongside a read result. Its wire
+// values match the legacy intent.RouteStatus strings the observation carried
+// before the read adapter dropped its intent dependency, so the emitted JSON is
+// unchanged. Only the values routeStatusForReadResult can produce live here.
+type RouteStatus string
+
+const (
+	RouteStatusNone                     RouteStatus = ""
+	RouteStatusDispatched               RouteStatus = "dispatched"
+	RouteStatusFallbackUnresolvedTarget RouteStatus = "fallback_unresolved_target"
+	RouteStatusFallbackTimeWindow       RouteStatus = "fallback_time_window"
+	RouteStatusFallbackIneligible       RouteStatus = "fallback_ineligible"
+	RouteStatusFallbackInvalid          RouteStatus = "fallback_invalid"
+	RouteStatusFailureAfterTool         RouteStatus = "failure_after_tool"
+)

@@ -4,8 +4,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/envelope"
-	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/platform"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -168,8 +169,8 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 // contextEnvelopeForPlainDirectReply gives every deterministic handled reply an
 // evidence boundary. Conversation remains TaskSpec understanding context and
 // can never launder a user's false premise into a fact.
-func (e *Engine) contextEnvelopeForPlainDirectReply(result intent.HandlerResult) intent.HandlerResult {
-	if result.Envelope != nil || result.Status != intent.HandlerStatusHandled || result.NeedsClarification ||
+func (e *Engine) contextEnvelopeForPlainDirectReply(result capability.ReadResult) capability.ReadResult {
+	if result.Envelope != nil || result.Status != platform.ReadStatusHandled || result.NeedsClarification ||
 		strings.TrimSpace(result.Reply) == "" {
 		return result
 	}
@@ -189,8 +190,5 @@ func (e *Engine) contextEnvelopeForPlainDirectReply(result intent.HandlerResult)
 		Constraints: envelope.Constraints{DoNotInventInstances: true, DoNotInventMetrics: true},
 	}
 	result.Envelope = &env
-	if hash, err := envelope.Hash(env); err == nil && hash != "" {
-		result.RendererInputEnvelopeHashes = []string{hash}
-	}
 	return result
 }
