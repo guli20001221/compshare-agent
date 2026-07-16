@@ -284,39 +284,6 @@ func (e *Engine) applyCreateZoneResolution(ctx context.Context, args map[string]
 	return ""
 }
 
-// deployGPUAliases maps a GPU the user names in the request to its canonical
-// CreateInstance GpuType (the gpuSpecs / catalog key). Each pattern is
-// boundary-anchored — (?:^|[^0-9a-z]) … (?:[^0-9a-z]|$) — so a card token only
-// matches when it is a standalone word, NOT a digit-run inside a model name
-// ("Llama100" must NOT match A100; "4090" inside "4090Pro" must NOT match the bare
-// 4090). CJK characters count as non-[0-9a-z], so "用A100部署" matches A100 while a
-// model like "Qwen2.5-72B" matches nothing. More specific variants (4090_48G /
-// 4090Pro / 5090D) precede the bare token so an equal-start tie resolves to the
-// specific card. "V100" canonicalizes to the only V100-class card the platform
-// sells, V100S (same as knowledge.CanonicalGPUType).
-//
-// STOP-GROW: keep this to the cards the platform actually offers (gpuSpecs keys).
-// A broader table belongs in config, not a hand-grown literal.
-var deployGPUAliases = []struct {
-	pattern *regexp.Regexp
-	gpu     string
-}{
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])4090[\s_-]*48g(?:[^0-9a-z]|$)`), "4090_48G"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])4090\s*pro(?:[^0-9a-z]|$)`), "4090Pro"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])4090(?:[^0-9a-z]|$)`), "4090"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])5090d(?:[^0-9a-z]|$)`), "5090D"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])5090(?:[^0-9a-z]|$)`), "5090"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])3090(?:[^0-9a-z]|$)`), "3090"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])3080\s*ti(?:[^0-9a-z]|$)`), "3080Ti"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])2080\s*ti(?:[^0-9a-z]|$)`), "2080Ti"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])2080(?:[^0-9a-z]|$)`), "2080"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])v100s?(?:[^0-9a-z]|$)`), "V100S"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])a100(?:[^0-9a-z]|$)`), "A100"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])a800(?:[^0-9a-z]|$)`), "A800"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])h20(?:[^0-9a-z]|$)`), "H20"},
-	{regexp.MustCompile(`(?i)(?:^|[^0-9a-z])p40(?:[^0-9a-z]|$)`), "P40"},
-}
-
 type zoneStock int
 
 const (

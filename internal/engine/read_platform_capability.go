@@ -47,10 +47,8 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 	reg, ok := capability.MigratedRead(action)
 	if !ok {
 		// Every model-visible read owns a typed vertical (P3.3/P3.4). A decoded read
-		// tool with no migrated capability is a wiring bug, not a runtime state — the
-		// legacy intent.Slots read dispatch (invokeReadHandler → HandleReadRequest →
-		// DispatchRoute) has been cut from the live path. The intent-side dead code is
-		// deleted in P6.
+		// tool with no migrated capability is a wiring bug, not a runtime state; the
+		// legacy intent.Slots read dispatch was deleted in P6.
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: "unmigrated read capability"})
 		return marshalReadCapabilityError(fmt.Errorf("read capability %q has no typed vertical", action))
 	}
