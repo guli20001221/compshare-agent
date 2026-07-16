@@ -3811,6 +3811,10 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// 230-image signature, so success / sold-out / balance paths are unchanged.
 	if action == "CreateInstanceWorkflow" && createImageUnavailable(result) && capacityZone != "" {
 		if newID, newName, ok := e.resolveAvailableCreateImage(ctx, args, capacityZone, attemptedImageID); ok {
+			// Build a NEW draft with the substituted image and re-run: the re-run
+			// re-enters the confirmation gate, so the user confirms the available
+			// image (a fresh seal) — never the unavailable one. The image swap is a
+			// new confirmed contract, not a silent edit of the first attempt.
 			args["CompShareImageId"] = newID
 			args["ImageName"] = newName
 			args["FallbackNote"] = fmt.Sprintf("原指定镜像在可用区 %s 暂不可用，已自动为你选择可用镜像「%s」。", capacityZone, newName)
@@ -3818,8 +3822,19 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		}
 	}
 
+	// After Run (and any image-recovery re-run), narrate and recover from the
+	// exact contract the user confirmed. A confirm-form edit or the image swap
+	// lives only in the sealed params — the pre-confirmation args are stale — so
+	// once a contract exists it, not args, is the source for failure alternatives,
+	// secret redaction and the deterministic reply. Before the confirm gate
+	// (Contract nil) there is nothing confirmed yet, so args remain the source.
+	finalParams := args
+	if result.Contract != nil {
+		finalParams = result.Contract.BusinessParams
+	}
+
 	if !result.Success {
-		result.Message = security.RedactKnownSecretsInText(result.Message, workflowSecretValues(args))
+		result.Message = security.RedactKnownSecretsInText(result.Message, workflowSecretValues(finalParams))
 		missing := result.MissingSlots
 		if len(missing) > 0 {
 			payload, _ := json.Marshal(security.RedactForLLM(map[string]any{
@@ -3852,7 +3867,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// grounded — on a no-match it lists the REAL available types, and on sold-out it
 	// names the exact spec — so return it deterministically and skip narration.
 	if !result.Success && action == "CreateInstanceWorkflow" {
-		reply := e.createFailureReplyWithAlternatives(ctx, result.Message, args)
+		reply := e.createFailureReplyWithAlternatives(ctx, result.Message, finalParams)
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
 		return finalReplyPrefix + reply
 	}
@@ -3871,7 +3886,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		// reset/reinstall it also must not be allowed to restate user secrets.
 		// Data-bearing non-secret workflows still narrate so their IDs and next
 		// steps surface.
-		if reply, ok := deterministicWorkflowReply(action, args); ok {
+		if reply, ok := deterministicWorkflowReply(action, finalParams); ok {
 			return finalReplyPrefix + reply
 		}
 	}

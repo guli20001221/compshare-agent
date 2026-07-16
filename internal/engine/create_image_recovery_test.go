@@ -97,8 +97,53 @@ func (m *recoveryMockExecutor) Execute(_ context.Context, action string, args ma
 	return map[string]any{"Action": action, "RetCode": float64(0)}, nil
 }
 
+func countCalls(calls []string, action string) int {
+	n := 0
+	for _, c := range calls {
+		if c == action {
+			n++
+		}
+	}
+	return n
+}
+
 // TestCreateZoneRecovery_SwapsToAvailableImage is the end-to-end proof of the
-// fix: a named platform image that 230s in the resolved zone is transparently
-// recovered to an available same-intent image, and the user reaches a confirm
-// card for the WORKING image (with a FallbackNote) instead of a cryptic
-// RetCode=230. The confirm is declined so no instance is actually created.
+// fix and the P4 image-replacement contract (#6): a named platform image that
+// 230s in the resolved zone is transparently recovered to an available
+// same-intent image, and the user reaches a fresh confirm card for the WORKING
+// image (with a FallbackNote) — a new confirmed contract — instead of a cryptic
+// RetCode=230. The confirm is declined, so no instance is created: image
+// replacement never bypasses the confirmation gate.
+func TestCreateZoneRecovery_SwapsToAvailableImage(t *testing.T) {
+	exec := &recoveryMockExecutor{}
+
+	var confirmImage, confirmFallback any
+	confirmFn := func(_ string, args map[string]any) bool {
+		confirmImage = args["image"]
+		confirmFallback = args["FallbackNote"]
+		return false // decline — assert the recovered card without creating
+	}
+
+	eng := NewWithDeps(&mockLLM{}, exec, confirmFn)
+	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow",
+		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep)
+
+	// The cryptic upstream error must never reach the user.
+	assert.NotContains(t, reply, "RetCode=230")
+	assert.NotContains(t, reply, "not available")
+	// Declined → honest not-executed, never a false cancel.
+	assert.Contains(t, reply, "未执行")
+	assert.NotContains(t, reply, "已取消")
+
+	// The confirm card shows the RECOVERED available image, with a disclosure note.
+	assert.Equal(t, "cuda128_torch291_py312", confirmImage,
+		"recovery must re-confirm the available image, not the unavailable one")
+	note, _ := confirmFallback.(string)
+	assert.Contains(t, note, "已自动为你选择可用镜像", "the card must disclose the auto image swap")
+
+	// The recovery path actually ran (a broad image re-query), and the declined
+	// confirm created nothing.
+	assert.GreaterOrEqual(t, countCalls(exec.calls, "DescribeCompShareImages"), 2)
+	assert.Equal(t, 0, countCalls(exec.calls, "CreateCompShareInstance"),
+		"declined confirm must not create")
+}
