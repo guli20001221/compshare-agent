@@ -13,11 +13,13 @@ func TestBuildSystem_WithContext(t *testing.T) {
 	if !strings.Contains(result, ctx) {
 		t.Error("BuildSystem should inject user context into prompt")
 	}
-	if !strings.Contains(result, "优云算力共享平台") {
-		t.Error("BuildSystem should contain platform identity")
-	}
 	if !strings.Contains(result, "Compshare Copilot") {
 		t.Error("BuildSystem should contain product brand (Compshare Copilot)")
+	}
+	for _, legacy := range []string{"拒答模板", "创作：", "天气、翻译"} {
+		if strings.Contains(result, legacy) {
+			t.Errorf("BuildSystem should not retain patch-like refusal inventory %q", legacy)
+		}
 	}
 }
 
@@ -105,8 +107,8 @@ func TestBuildSystem_ContainsCentralAgentContract(t *testing.T) {
 	for _, text := range []string{
 		"本轮唯一的业务判断者",
 		"先阅读完整对话",
-		"写操作只能通过动作建议工具提交结构化候选",
-		"不要从关键词自行清除旧任务",
+		"用户要求写操作时调用对应的动作建议能力",
+		"相同条件没有新信息时不要重复调用",
 	} {
 		if !strings.Contains(prompt, text) {
 			t.Fatalf("system prompt should contain central-agent contract %q", text)
@@ -138,11 +140,8 @@ func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing
 		}
 	}
 	for _, text := range []string{
-		"当前阶段不直接执行开机、关机、重启",
-		"可以提供控制台操作步骤",
-		"诊断工具本身仅做云侧只读检查",
-		"不能 SSH 登录实例",
-		"删除或销毁类操作始终拒绝执行",
+		"当前工具只允许查询和诊断",
+		"不要声称已经代为执行",
 	} {
 		if !strings.Contains(prompt, text) {
 			t.Fatalf("read-only prompt should contain %q", text)
@@ -169,14 +168,30 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 				}
 			}
 			for _, text := range []string{
-				"先阅读当前可见的完整对话和已验证记忆",
-				"不得添加对话、知识证据或工具结果中不存在的条件和平台规则",
+				"完整对话、统一上下文或稳定通用知识足以回答时直接回答",
+				"无关或空结果不能推翻已有上下文",
 			} {
 				if !strings.Contains(system, text) {
 					t.Fatalf("system prompt should contain knowledge-source boundary %q:\n%s", text, system)
 				}
 			}
 		})
+	}
+}
+
+func TestKnowledgePolicyDoesNotCompeteWithScopeOrToolDescriptions(t *testing.T) {
+	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
+	if strings.Contains(prompt, "优先用知识库") {
+		t.Fatal("范围说明不得另行决定是否检索")
+	}
+	for _, required := range []string{
+		"稳定通用知识足以回答时直接回答",
+		"检索结果只是补充观察",
+		"可能的使用场景和排查方向",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("统一检索契约缺少 %q", required)
+		}
 	}
 }
 

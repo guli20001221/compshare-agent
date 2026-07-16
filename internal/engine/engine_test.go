@@ -14,9 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -191,16 +193,6 @@ func (m *mockExecutorFn) Execute(_ context.Context, action string, args map[stri
 // --- Helpers ---
 
 func noopStep(StepEvent) {}
-
-// hasStaleNote checks if the messages in a ChatRequest contain the stale-state system note.
-func hasStaleNote(req llm.ChatRequest) bool {
-	for _, m := range req.Messages {
-		if m.Role == openai.ChatMessageRoleSystem && strings.Contains(m.Content, "实例状态信息可能已过时") {
-			return true
-		}
-	}
-	return false
-}
 
 func collectSteps() (func(StepEvent), *[]StepEvent) {
 	var events []StepEvent
@@ -856,8 +848,8 @@ func TestInit_InjectsContextAndKnowledgeBoundary(t *testing.T) {
 	systemMsg := eng.messages[0]
 	assert.Equal(t, openai.ChatMessageRoleSystem, systemMsg.Role)
 	assert.Contains(t, systemMsg.Content, "uhost-abc")
-	assert.Contains(t, systemMsg.Content, "先阅读当前可见的完整对话和已验证记忆")
-	assert.Contains(t, systemMsg.Content, "不得添加对话、知识证据或工具结果中不存在的条件和平台规则")
+	assert.Contains(t, systemMsg.Content, "完整对话、统一上下文或稳定通用知识足以回答时直接回答")
+	assert.Contains(t, systemMsg.Content, "无关或空结果不能推翻已有上下文")
 	assert.NotContains(t, systemMsg.Content, "平台常见问题")
 	assert.NotContains(t, systemMsg.Content, "计费/回收规则")
 }
@@ -871,7 +863,7 @@ func TestInit_FailedContextInjection(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, suggestions)
 	// Should still have system prompt with knowledge-source boundaries.
-	assert.Contains(t, eng.messages[0].Content, "先阅读当前可见的完整对话和已验证记忆")
+	assert.Contains(t, eng.messages[0].Content, "完整对话、统一上下文或稳定通用知识足以回答时直接回答")
 	assert.NotContains(t, eng.messages[0].Content, "平台常见问题")
 }
 
@@ -1619,7 +1611,7 @@ func TestNewDefaultsToReadOnlyMutatingToolsDisabled(t *testing.T) {
 	require.NotEmpty(t, eng.messages)
 	system := eng.messages[0].Content
 	assert.NotContains(t, system, "StopInstanceWorkflow")
-	assert.Contains(t, system, "当前阶段不直接执行")
+	assert.Contains(t, system, "当前工具只允许查询和诊断")
 }
 
 func TestChatReadOnlyHidesWorkflowToolsFromLLM(t *testing.T) {
@@ -1636,7 +1628,8 @@ func TestChatReadOnlyHidesWorkflowToolsFromLLM(t *testing.T) {
 	names := toolNames(mock.calls[0].Tools)
 	assert.NotContains(t, names, "StopInstanceWorkflow")
 	assert.NotContains(t, names, "CreateInstanceWorkflow")
-	assert.Contains(t, names, tools.ReadPlatformCapabilityName)
+	assert.Contains(t, names, capability.ReadToolName(intent.IntentResourceInfo))
+	assert.NotContains(t, names, "ReadPlatformCapability")
 	assert.Contains(t, names, "DiagnoseSSH")
 }
 
@@ -1928,11 +1921,10 @@ func TestChat_DiagnosisTool_ArgsFiltered(t *testing.T) {
 	}
 }
 
-// ==========================================================================
-// Stale-state freshness tests
-// ==========================================================================
-
-func TestStaleState_NotePositionIsBeforeLastUserMessage(t *testing.T) {
+// Freshness is compiled into AgentContext instead of being injected as a
+// turn-local system-message patch. The compiler contract is covered by
+// agent_context_compiler_test.go.
+func TestFreshness_DoesNotInjectEphemeralSystemMessage(t *testing.T) {
 	// Structural check: when stale, the note must appear immediately before
 	// the latest user message, not at index 1. This maximizes model attention
 	// in long conversations where the user's ask is far from the system prompt.
@@ -1960,247 +1952,9 @@ func TestStaleState_NotePositionIsBeforeLastUserMessage(t *testing.T) {
 	// Inspect the LLM call for turn 2 (index 2 overall: turn1-round0, turn1-round1, turn2-round0).
 	turn2Msgs := mock.calls[2].Messages
 
-	// Find the stale note and the last user message.
-	noteIdx := -1
-	lastUserIdx := -1
-	for i, m := range turn2Msgs {
-		if m.Role == openai.ChatMessageRoleSystem && strings.Contains(m.Content, "实例状态信息可能已过时") {
-			noteIdx = i
-		}
-		if m.Role == openai.ChatMessageRoleUser {
-			lastUserIdx = i // keep overwriting → ends on the last user message
-		}
+	for _, msg := range turn2Msgs {
+		assert.NotContains(t, msg.Content, "实例状态信息可能已过时")
 	}
-	assert.GreaterOrEqual(t, noteIdx, 0, "stale note must be present")
-	assert.GreaterOrEqual(t, lastUserIdx, 0, "last user message must exist")
-	assert.Equal(t, lastUserIdx-1, noteIdx,
-		"stale note must be the message immediately before the last user message; note at %d, last user at %d",
-		noteIdx, lastUserIdx)
-
-	// Extra: last user message must contain the current-turn ask.
-	assert.Equal(t, "帮我关掉 xxx", turn2Msgs[lastUserIdx].Content)
-}
-
-func TestStaleState_StaleTriggersNote(t *testing.T) {
-	// Turn 1: LLM calls DescribeCompShareInstance → freshness updated.
-	// Turn 2: LLM gets the stale note because lastInstanceQueryTurn < userTurn.
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0},
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		// Turn 1, round 0: tool call
-		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DescribeCompShareInstance", `{}`)}},
-		// Turn 1, round 1: text reply
-		{Content: "没有实例"},
-		// Turn 2, round 0: text reply (model sees stale note but responds directly)
-		{Content: "可以创建一个"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	// Turn 1
-	_, err := eng.Chat(context.Background(), "查看实例", noopStep)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, eng.userTurn)
-	assert.Equal(t, 1, eng.lastInstanceQueryTurn)
-
-	// Turn 2: stale note should appear
-	_, err = eng.Chat(context.Background(), "帮我关掉 xxx", noopStep)
-	assert.NoError(t, err)
-	assert.Equal(t, 2, eng.userTurn)
-
-	// The LLM call for turn 2 (index 2 in mock.calls) should contain stale note
-	assert.True(t, hasStaleNote(mock.calls[2]),
-		"turn 2 LLM call should contain stale-state note")
-}
-
-func TestStaleState_FreshNoNote(t *testing.T) {
-	// Single turn: LLM calls DescribeCompShareInstance in round 0, then
-	// the round 1 LLM call should NOT have a stale note.
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0},
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		// Round 0: tool call
-		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DescribeCompShareInstance", `{}`)}},
-		// Round 1: text reply
-		{Content: "没有实例"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	_, err := eng.Chat(context.Background(), "查看实例", noopStep)
-	assert.NoError(t, err)
-	assert.Equal(t, eng.userTurn, eng.lastInstanceQueryTurn, "freshness should equal current turn")
-
-	// Round 1 LLM call (index 1) should NOT have stale note
-	assert.False(t, hasStaleNote(mock.calls[1]),
-		"same-turn LLM call after fresh query should NOT have stale note")
-}
-
-func TestStaleState_InitSnapshotStaleOnFirstTurn(t *testing.T) {
-	// After Init(), the instance snapshot is from turn 0. On the first
-	// Chat() call (turn 1), the init snapshot IS stale and the stale
-	// note should be injected — the user may have changed state via
-	// the console between startup and their first write request.
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {
-			"UHostSet": []any{
-				map[string]any{
-					"UHostId": "uhost-init", "State": "Running",
-					"GpuType": "4090", "GPU": float64(1), "ChargeType": "Postpay",
-					"Name": "init-test",
-				},
-			},
-		},
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{Content: "您好"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	_, err := eng.Init(context.Background())
-	assert.NoError(t, err)
-
-	// After Init: tracker fired at userTurn=0
-	assert.Equal(t, 0, eng.lastInstanceQueryTurn)
-
-	// First Chat
-	_, err = eng.Chat(context.Background(), "帮我关掉 uhost-init", noopStep)
-	assert.NoError(t, err)
-
-	// Init snapshot is stale → note should be present
-	assert.True(t, hasStaleNote(mock.calls[0]),
-		"first turn after Init should have stale note (init snapshot is stale)")
-}
-
-func TestStaleState_NeverQueriedNoNote(t *testing.T) {
-	// When no instance query has ever been made (InitWithContext or
-	// no Init at all), there is no stale state to warn about.
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{Content: "您好"},
-	}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("暂无用户信息")
-
-	_, err := eng.Chat(context.Background(), "你好", noopStep)
-	assert.NoError(t, err)
-
-	// lastInstanceQueryTurn is -1 (never queried) → no note
-	assert.Equal(t, -1, eng.lastInstanceQueryTurn)
-	assert.False(t, hasStaleNote(mock.calls[0]),
-		"no prior instance query → no stale note")
-}
-
-func TestStaleState_KnowledgeQuestionDoesNotForceInstanceRefresh(t *testing.T) {
-	// Turn 1: DescribeCompShareInstance queried → freshness set.
-	// Turn 2: User asks a knowledge question. Stale note IS injected, but it
-	// should not force an unrelated DescribeCompShareInstance refresh.
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0},
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		// Turn 1: tool call + text
-		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DescribeCompShareInstance", `{}`)}},
-		{Content: "没有实例"},
-		// Turn 2: knowledge answer → text only, no instance refresh
-		{Content: "关机后按量模式下，GPU/CPU/内存停止计费，但额外磁盘继续收费。"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	// Turn 1
-	eng.Chat(context.Background(), "查看实例", noopStep)
-
-	// Turn 2: knowledge question
-	reply, err := eng.Chat(context.Background(), "关机后还收费吗", noopStep)
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "磁盘")
-
-	// Stale note was injected (mechanical check)
-	assert.True(t, hasStaleNote(mock.calls[2]),
-		"stale note should be present in turn 2 messages")
-
-	// But model returned text directly — no forced tool call.
-	// Executor should have been called only once (turn 1), not in turn 2.
-	descCalls := 0
-	for _, c := range executor.calls {
-		if c == "DescribeCompShareInstance" {
-			descCalls++
-		}
-	}
-	assert.Equal(t, 1, descCalls,
-		"knowledge turn should not force an extra DescribeCompShareInstance call")
-}
-
-func TestStaleState_ExternalStateChangeRegression(t *testing.T) {
-	// This is the exact reproduction of the real-account shadow QA bug:
-	// Turn 1: Instance is Stopped → agent says "已关机"
-	// External change: instance becomes Running
-	// Turn 2: Same question → agent MUST re-query, not reuse stale state.
-
-	describeCallCount := 0
-	executor := &mockExecutorFn{
-		fn: func(action string, args map[string]any) (map[string]any, error) {
-			if action == "DescribeCompShareInstance" {
-				describeCallCount++
-				if describeCallCount == 1 {
-					// Turn 1: Stopped
-					return map[string]any{
-						"UHostSet": []any{
-							map[string]any{"UHostId": "uhost-shadow", "State": "Stopped", "Name": "qa-test", "GpuType": "4090"},
-						},
-					}, nil
-				}
-				// Turn 2+: Running (external state change happened)
-				return map[string]any{
-					"UHostSet": []any{
-						map[string]any{"UHostId": "uhost-shadow", "State": "Running", "Name": "qa-test", "GpuType": "4090"},
-					},
-				}, nil
-			}
-			return map[string]any{"RetCode": 0}, nil
-		},
-	}
-
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		// Turn 1, round 0: LLM queries instance state
-		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DescribeCompShareInstance", `{"UHostIds":["uhost-shadow"]}`)}},
-		// Turn 1, round 1: LLM replies based on Stopped state
-		{Content: "实例 uhost-shadow 已经是关机状态，无需操作。"},
-		// Turn 2, round 0: LLM sees stale note → re-queries (correct behavior)
-		{ToolCalls: []openai.ToolCall{toolCall("tc2", "DescribeCompShareInstance", `{"UHostIds":["uhost-shadow"]}`)}},
-		// Turn 2, round 1: LLM sees Running state → proceeds with stop workflow
-		{Content: "实例当前是运行状态，我来帮您关机。"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	// Turn 1: "帮我关掉 xxx" → Stopped → "已关机"
-	reply1, err := eng.Chat(context.Background(), "帮我关掉 uhost-shadow", noopStep)
-	assert.NoError(t, err)
-	assert.Contains(t, reply1, "关机")
-	assert.Equal(t, 1, describeCallCount, "turn 1 should query instance once")
-
-	// Turn 2: same question, but external state changed to Running
-	reply2, err := eng.Chat(context.Background(), "帮我关掉 uhost-shadow", noopStep)
-	assert.NoError(t, err)
-	assert.Contains(t, reply2, "运行")
-
-	// Key assertion: turn 2 MUST have called DescribeCompShareInstance again
-	assert.Equal(t, 2, describeCallCount,
-		"turn 2 must re-query instance state, not reuse stale 'Stopped' from turn 1")
-
-	// Verify stale note was injected in turn 2's first LLM call
-	assert.True(t, hasStaleNote(mock.calls[2]),
-		"turn 2 first LLM call should have stale-state note")
 }
 
 // ==========================================================================

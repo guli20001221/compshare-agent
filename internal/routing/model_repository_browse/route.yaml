@@ -10,6 +10,7 @@ tool_subset:
   - DescribeModelRepositoryTags
 required_citation: false
 handler_key: handleModelRepositoryBrowse
+agent_slots: [search_query, list_mode]
 planner_directives:
   - 'Classify public model repository model, LLM model, and model-tag browse questions as model_repository_browse.'
   - 'Set slots.list_mode to all for broad model/tag browsing. Set slots.list_mode to filtered and fill slots.search_query for a model name or tag such as LLM, Qwen, or llama.'

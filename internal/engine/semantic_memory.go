@@ -192,16 +192,29 @@ func contextFrameDecisions(frame ContextFrame) []string {
 }
 
 func contextFrameEntities(frame ContextFrame, freshness string) []SemanticEntityHint {
+	if catalog, err := defaultActionCatalog(); err == nil {
+		if spec, ok := catalog.Lookup(frame.Workflow); ok {
+			var out []SemanticEntityHint
+			for name, field := range spec.Fields {
+				if !field.Target {
+					continue
+				}
+				if id := strings.TrimSpace(frame.Slots[name]); id != "" {
+					out = append(out, SemanticEntityHint{Kind: field.TargetKind, ID: compactSemanticText(id), Source: compactSemanticText(frame.SlotSources[name]), Freshness: freshness})
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	// Compatibility for frames written before workflow fields became the
+	// canonical task projection.
 	id := strings.TrimSpace(frame.Slots["instance_id"])
 	if id == "" {
 		return nil
 	}
-	return []SemanticEntityHint{{
-		Kind:      "instance",
-		ID:        compactSemanticText(id),
-		Source:    compactSemanticText(frame.SlotSources["instance_id"]),
-		Freshness: freshness,
-	}}
+	return []SemanticEntityHint{{Kind: "instance", ID: compactSemanticText(id), Source: compactSemanticText(frame.SlotSources["instance_id"]), Freshness: freshness}}
 }
 
 func effectiveContextFrameTTL(frame ContextFrame) int {

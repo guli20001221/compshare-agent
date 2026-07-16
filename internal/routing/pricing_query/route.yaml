@@ -10,6 +10,7 @@ tool_subset:
   - DescribeAvailableCompShareInstanceTypes
 required_citation: false
 handler_key: handlePricingQuery
+agent_slots: [search_query, gpu_count, price_kind]
 planner_directives:
   - 'Classify GPU purchase-price questions about price, cost, billing rate, hourly price, daily price, or monthly price as pricing_query.'
   - 'Use pricing_query when the user names a GPU. Render current-account prices by default; render original price fields when the user explicitly asks for catalog, list, or standard price.'

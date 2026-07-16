@@ -8,6 +8,7 @@ tool_subset:
   - CheckCompShareNetOptimizer
 required_citation: false
 handler_key: handleNetAcceleratorStatus
+agent_slots: [target_refs]
 planner_directives:
   - 'Classify network accelerator status questions like "网络加速开了吗", "网速慢帮我看看是不是没开网络加速", or "网络加速状态" as network_accelerator_status.'
   - 'Use this route only for accelerator status lookup. Route explicit enable/open accelerator commands to operation_lifecycle confirmation flow.'

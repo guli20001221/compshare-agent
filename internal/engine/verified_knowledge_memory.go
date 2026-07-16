@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -97,11 +99,44 @@ func (e *Engine) verifiedKnowledgeLedgerForQuestion(question string) knowledge.E
 
 func (e *Engine) knowledgeLedgerForVerification(question string) knowledge.EvidenceLedger {
 	question = strings.TrimSpace(question)
+	tools := e.currentReadEvidenceLedger(question)
 	current := e.searchKnowledgeLedgerThisTurn
 	current.Query = question
 	prior := e.verifiedKnowledgeLedgerForQuestion(question)
-	out := knowledge.MergeEvidenceLedgers(current, prior, verifiedKnowledgeMaxItems)
+	// The Agent has already seen every current-turn tool and retrieval item. The
+	// verifier must judge against that same evidence set; the small durable-memory
+	// cap must not truncate later searches and create false negatives.
+	currentMax := len(tools.Items) + len(current.Items)
+	var out knowledge.EvidenceLedger
+	if currentMax > 0 {
+		out = knowledge.MergeEvidenceLedgers(tools, current, currentMax)
+	}
+	// Prior verified memory remains separately bounded. It is supplementary and
+	// never displaces evidence gathered for the current answer.
+	out = knowledge.MergeEvidenceLedgers(out, prior, len(out.Items)+verifiedKnowledgeMaxItems)
 	out.Query = question
+	return out
+}
+
+// currentReadEvidenceLedger projects server-produced platform facts into the
+// same per-response proof ledger as RAG evidence. It is deliberately turn-local:
+// current image lists, prices, stock and instance state must never be promoted
+// into durable knowledge memory.
+func (e *Engine) currentReadEvidenceLedger(question string) knowledge.EvidenceLedger {
+	out := knowledge.EvidenceLedger{Query: strings.TrimSpace(question), Items: []knowledge.EvidenceItem{}}
+	for index, evidence := range e.readResponseEvidenceThisTurn {
+		raw, err := json.Marshal(evidence.Envelope)
+		if err != nil {
+			continue
+		}
+		out.Items = append(out.Items, knowledge.EvidenceItem{
+			ChunkID:    fmt.Sprintf("turn-read-%d", index+1),
+			Title:      truncateRunes("本轮平台查询："+evidence.Capability, 80),
+			SourceType: "platform_tool",
+			Summary:    truncateRunes(strings.TrimSpace(evidence.Reply), 600),
+			Snippet:    truncateRunes(string(raw), 2000),
+		})
+	}
 	return out
 }
 

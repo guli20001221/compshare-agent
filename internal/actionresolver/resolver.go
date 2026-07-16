@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -38,6 +39,10 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		field, exists := spec.Fields[name]
 		if !exists {
 			result.Rejected = append(result.Rejected, fmt.Sprintf("unknown slot %s", name))
+			continue
+		}
+		if candidate.Source == SourceUserExplicit && (candidate.Evidence == nil || r.verifier == nil || !r.verifier.VerifyCandidate(candidate)) {
+			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: user-explicit source is not verified", name))
 			continue
 		}
 		value, err := normalizeValue(field, candidate.Value)
@@ -187,10 +192,16 @@ func normalizeValue(field FieldSpec, value any) (any, error) {
 			}
 		}
 		return nil, fmt.Errorf("value is outside the declared enum")
-	case CodecInteger, CodecCapacity:
+	case CodecInteger:
 		number, ok := asNumber(value)
 		if !ok || number <= 0 || math.Trunc(number) != number {
 			return nil, fmt.Errorf("must be a positive integer")
+		}
+		return number, nil
+	case CodecCapacity:
+		number, ok := asCapacityGB(value)
+		if !ok || number <= 0 || math.Trunc(number) != number {
+			return nil, fmt.Errorf("must be a positive integer capacity in GB")
 		}
 		return number, nil
 	case CodecNumber:
@@ -230,9 +241,33 @@ func asNumber(value any) (float64, bool) {
 	case json.Number:
 		v, err := n.Float64()
 		return v, err == nil
+	case string:
+		v, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return v, err == nil
 	default:
 		return 0, false
 	}
+}
+
+// asCapacityGB is the shared capacity codec. It parses a value, not a user
+// sentence: the Agent must pass the exact sourced span (for example "200G")
+// and the resolver performs the unit conversion at this boundary.
+func asCapacityGB(value any) (float64, bool) {
+	if number, ok := asNumber(value); ok {
+		return number, true
+	}
+	text, ok := value.(string)
+	if !ok {
+		return 0, false
+	}
+	text = strings.TrimSpace(strings.ToUpper(text))
+	for _, suffix := range []string{"GIB", "GB", "G"} {
+		if numberText, ok := strings.CutSuffix(text, suffix); ok {
+			number, err := strconv.ParseFloat(strings.TrimSpace(numberText), 64)
+			return number, err == nil
+		}
+	}
+	return 0, false
 }
 
 func sameValue(left, right any) bool {

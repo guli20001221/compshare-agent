@@ -1,104 +1,66 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 )
 
 // ReadCapabilityObservation is the only result shape exposed by the read
 // capability adapter. Control-flow states stay distinct and factual answers
 // must cross an evidence envelope before the Agent can consume them.
 type ReadCapabilityObservation struct {
-	Capability           string                     `json:"capability"`
-	Status               intent.HandlerStatus       `json:"status"`
-	FailureClass         intent.HandlerFailureClass `json:"failure_class,omitempty"`
-	FallbackReason       intent.FallbackReason      `json:"fallback_reason,omitempty"`
-	RouteStatus          intent.RouteStatus         `json:"route_status,omitempty"`
-	ToolAction           string                     `json:"tool_action,omitempty"`
-	Envelope             *envelope.Envelope         `json:"evidence,omitempty"`
-	Guidance             string                     `json:"guidance,omitempty"`
-	DirectSubmitEligible bool                       `json:"direct_submit_eligible"`
-	CanAssertAbsence     bool                       `json:"can_assert_absence"`
+	Capability       string                     `json:"capability"`
+	Status           intent.HandlerStatus       `json:"status"`
+	FailureClass     intent.HandlerFailureClass `json:"failure_class,omitempty"`
+	FallbackReason   intent.FallbackReason      `json:"fallback_reason,omitempty"`
+	RouteStatus      intent.RouteStatus         `json:"route_status,omitempty"`
+	ToolAction       string                     `json:"tool_action,omitempty"`
+	Envelope         *envelope.Envelope         `json:"evidence,omitempty"`
+	Guidance         string                     `json:"guidance,omitempty"`
+	RenderRef        string                     `json:"render_ref,omitempty"`
+	RenderContract   string                     `json:"render_contract,omitempty"`
+	CanAssertAbsence bool                       `json:"can_assert_absence"`
+	MissingFields    []capability.MissingField  `json:"missing_fields,omitempty"`
 }
 
-func isReadHandlerIntent(value intent.Intent) bool {
-	return value == intent.IntentResourceInfo || value == intent.IntentMonitorQuery ||
-		value == intent.IntentMonitorHistory || intent.IsRoutingIntent(value)
-}
-
-func (e *Engine) invokeReadHandler(ctx context.Context, plan intent.IntentRoute, userMsg string, snapshot entity.RegistrySnapshot, onStep func(StepEvent)) intent.HandlerResult {
+func (e *Engine) invokeReadHandler(ctx context.Context, request intent.ReadRequest, snapshot entity.RegistrySnapshot, onStep func(StepEvent)) intent.HandlerResult {
 	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
-	req := intent.HandlerRequest{Plan: plan, Resolver: snapshot, UserText: userMsg}
+	meta := intent.ReadHandlerContext{Resolver: snapshot, FallbackGPUModel: e.fallbackStockGpuModel(time.Now())}
 	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
-		req.FallbackInstanceID = e.sessionState.SelectedInstanceID
+		meta.FallbackInstanceID = e.sessionState.SelectedInstanceID
 	}
-	req.FallbackGpuModel = e.fallbackStockGpuModel(time.Now())
-	switch plan.Intent {
-	case intent.IntentResourceInfo:
-		return handler.HandleResourceInfo(ctx, req)
-	case intent.IntentMonitorQuery, intent.IntentMonitorHistory:
-		return handler.HandleMonitorQuery(ctx, req)
-	default:
-		if intent.IsRoutingIntent(plan.Intent) {
-			return handler.DispatchRoute(ctx, req)
-		}
-		result := intent.FallbackBeforeTool(intent.FallbackValidation)
-		result.Reply = "unsupported read capability"
-		return result
-	}
+	return handler.HandleReadRequest(ctx, request, meta)
 }
 
-func decodeReadCapabilityArgs(args map[string]any) (intent.Intent, intent.Slots, error) {
-	name, ok := args["capability"].(string)
-	if !ok || strings.TrimSpace(name) == "" {
-		return "", intent.Slots{}, fmt.Errorf("capability is required")
-	}
-	capability := intent.Intent(strings.TrimSpace(name))
-	if !isReadHandlerIntent(capability) {
-		return "", intent.Slots{}, fmt.Errorf("capability %q is not a registered read capability", capability)
-	}
-	var slots intent.Slots
-	raw, exists := args["slots"]
-	if !exists || raw == nil {
-		return capability, slots, nil
-	}
-	payload, err := json.Marshal(raw)
+func (e *Engine) executeConcreteReadCapability(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	readIntent, request, err := capability.DecodeReadRequest(action, args)
 	if err != nil {
-		return "", intent.Slots{}, fmt.Errorf("encode slots: %w", err)
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
+		return marshalReadCapabilityError(fmt.Errorf("invalid capability request: %w", err))
 	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&slots); err != nil {
-		return "", intent.Slots{}, fmt.Errorf("invalid slots: %w", err)
+	if missing := request.MissingFields(); len(missing) > 0 {
+		observation := ReadCapabilityObservation{Capability: string(readIntent), Status: intent.HandlerStatusNeedsInput, MissingFields: missing}
+		payload, _ := json.Marshal(observation)
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询参数不完整", TraceResult: map[string]any{"status": string(intent.HandlerStatusNeedsInput), "missing_fields": missing}})
+		return string(payload)
 	}
-	return capability, slots, nil
+	return e.executeReadCapability(ctx, action, readIntent, request, args, onStep)
 }
 
-func (e *Engine) executeReadPlatformCapability(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
-	capability, slots, err := decodeReadCapabilityArgs(args)
-	if err != nil {
-		onStep(StepEvent{Type: StepError, Action: tools.ReadPlatformCapabilityName, Source: observability.ToolSourceMainReAct, Message: err.Error()})
-		return marshalReadCapabilityError(err)
-	}
-	filtered := map[string]any{"capability": string(capability), "slots": args["slots"]}
-	onStep(StepEvent{Type: StepToolCall, Action: tools.ReadPlatformCapabilityName, Source: observability.ToolSourceMainReAct, Args: filtered})
+func (e *Engine) executeReadCapability(ctx context.Context, action string, readIntent intent.Intent, request intent.ReadRequest, args map[string]any, onStep func(StepEvent)) string {
+	onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
 
-	plan := intent.IntentRoute{SchemaVersion: intent.SchemaVersion, Intent: capability, Slots: slots, Confidence: 1}
-	// Legacy handlers receive only the Agent's structured capability arguments.
-	// They must not independently reinterpret the raw current question.
-	handlerInput := structuredReadHandlerInput(slots)
 	snapshot := e.RegistrySnapshot()
-	result := e.invokeReadHandler(ctx, plan, handlerInput, snapshot, onStep)
+	result := e.invokeReadHandler(ctx, request, snapshot, onStep)
 	result = e.contextEnvelopeForPlainDirectReply(result)
 	if result.Envelope != nil {
 		if e.readCapabilitySubjectsThisTurn == nil {
@@ -110,24 +72,26 @@ func (e *Engine) executeReadPlatformCapability(ctx context.Context, args map[str
 			}
 		}
 	}
-	if result.Status == intent.HandlerStatusHandled && !result.NeedsClarification && result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
-		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
-			Capability: string(capability),
-			Reply:      strings.TrimSpace(result.Reply),
-			Envelope:   *result.Envelope,
-		})
-	}
-
 	observation := ReadCapabilityObservation{
-		Capability:           string(capability),
-		Status:               result.Status,
-		FailureClass:         result.FailureClass,
-		FallbackReason:       result.FallbackReason,
-		RouteStatus:          result.RouteStatus,
-		ToolAction:           result.ToolAction,
-		Envelope:             result.Envelope,
-		DirectSubmitEligible: result.Status == intent.HandlerStatusHandled && !result.NeedsClarification && result.Envelope != nil,
-		CanAssertAbsence:     snapshot.CanAssertAbsence(),
+		Capability:       string(readIntent),
+		Status:           result.Status,
+		FailureClass:     result.FailureClass,
+		FallbackReason:   result.FallbackReason,
+		RouteStatus:      result.RouteStatus,
+		ToolAction:       result.ToolAction,
+		Envelope:         result.Envelope,
+		CanAssertAbsence: snapshot.CanAssertAbsence(),
+	}
+	if result.Status == intent.HandlerStatusHandled && !result.NeedsClarification && result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
+		placeholder := fmt.Sprintf("{{READ_OBSERVATION_%d}}", len(e.readResponseEvidenceThisTurn)+1)
+		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
+			Capability:  string(readIntent),
+			Reply:       strings.TrimSpace(result.Reply),
+			Envelope:    *result.Envelope,
+			Placeholder: placeholder,
+		})
+		observation.RenderRef = placeholder
+		observation.RenderContract = "需要展示这份观察中的精确标识、数量、价格、库存、规格或状态时，在最终自然回答中原样插入 render_ref；服务端会替换为确定性结果。其他文字可自然解释，不要自行誊写精确字段。"
 	}
 	if result.Status != intent.HandlerStatusHandled || result.NeedsClarification {
 		observation.Guidance = result.Reply
@@ -138,24 +102,8 @@ func (e *Engine) executeReadPlatformCapability(ctx context.Context, args map[str
 	}
 	var traceResult map[string]any
 	_ = json.Unmarshal(payload, &traceResult)
-	onStep(StepEvent{Type: StepToolResult, Action: tools.ReadPlatformCapabilityName, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
+	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
-}
-
-func structuredReadHandlerInput(slots intent.Slots) string {
-	parts := make([]string, 0, len(slots.TargetRefs)+2)
-	if query := strings.TrimSpace(slots.SearchQuery); query != "" {
-		parts = append(parts, query)
-	}
-	for _, ref := range slots.TargetRefs {
-		if value := strings.TrimSpace(ref.Value); value != "" {
-			parts = append(parts, value)
-		}
-	}
-	if zone := strings.TrimSpace(slots.Zone); zone != "" {
-		parts = append(parts, zone)
-	}
-	return strings.Join(parts, " ")
 }
 
 func marshalReadCapabilityError(err error) string {

@@ -277,11 +277,11 @@ func handleGPUSpecsQuery(ctx context.Context, h *DemoHandler, req HandlerRequest
 	if fb != nil {
 		return *fb
 	}
-	reply := renderGPUSpecsReply(raw, req.Plan.Slots, req.UserText)
+	reply := renderGPUSpecsReply(raw, req.Plan.Slots)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
-	env := buildGPUSpecsEnvelope(raw, req.Plan.Slots, req.UserText)
+	env := buildGPUSpecsEnvelope(raw, req.Plan.Slots)
 	result.Envelope = &env
 	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 	return result
@@ -300,11 +300,10 @@ func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerReq
 	// filter off the user text, so substituting one effective text keeps them
 	// consistent. resolved is recorded back into SessionState by the engine.
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
-	effReq := req
-	effReq.UserText = stockReferentText(req, items)
-	resolved := singleStockModel(effReq.UserText, items)
+	referent := stockReferentText(req, items)
+	resolved := singleStockModel(referent, items)
 
-	if reply, ok, fb := renderStockWithCapacityPrecheck(ctx, h, effReq, raw); fb != nil {
+	if reply, ok, fb := renderStockWithCapacityPrecheck(ctx, h, req, raw); fb != nil {
 		return *fb
 	} else if ok {
 		result := HandledResult(reply)
@@ -313,12 +312,12 @@ func handleStockAvailability(ctx context.Context, h *DemoHandler, req HandlerReq
 		result.ResolvedStockGpuModel = resolved
 		return result
 	}
-	reply := renderStockReply(raw, effReq.UserText)
+	reply := renderStockReply(raw, referent)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
 	result.ResolvedStockGpuModel = resolved
-	setEnvelopeIfPopulated(&result, buildStockEnvelope(raw, effReq.UserText))
+	setEnvelopeIfPopulated(&result, buildStockEnvelope(raw, referent))
 	return result
 }
 
@@ -368,7 +367,7 @@ func handlePlatformImageList(ctx context.Context, h *DemoHandler, req HandlerReq
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
-	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Plan.Slots, req.UserText, action, "platform"))
+	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Plan.Slots, action, "platform"))
 	return result
 }
 
@@ -428,7 +427,7 @@ func handleCustomImageList(ctx context.Context, h *DemoHandler, req HandlerReque
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
-	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Plan.Slots, req.UserText, action, "custom"))
+	setEnvelopeIfPopulated(&result, buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Plan.Slots, action, "custom"))
 	return result
 }
 
@@ -446,7 +445,7 @@ func handleCommunityImageList(ctx context.Context, h *DemoHandler, req HandlerRe
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(args)
-	setEnvelopeIfPopulated(&result, buildCommunityImageEnvelope(raw, req.Plan.Slots, req.UserText))
+	setEnvelopeIfPopulated(&result, buildCommunityImageEnvelope(raw, req.Plan.Slots))
 	return result
 }
 
@@ -783,7 +782,7 @@ func collectAPINamesFromInstanceTypes(items []any) []string {
 
 var gpuLikeTokenRegex = regexp.MustCompile(`(?i)\b([a-z]{1,3}\d{2,4}[a-z0-9_]*|\d{4}(?:_\d+g)?)\b`)
 
-func renderGPUSpecsReply(raw map[string]any, slots Slots, userText string) string {
+func renderGPUSpecsReply(raw map[string]any, slots Slots) string {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
 	if len(items) == 0 {
 		return noGPUSpecsReply
@@ -873,7 +872,7 @@ func buildGPUSpecLines(items []any, filterTo map[string]struct{}, detailed bool)
 	return lines
 }
 
-func buildGPUSpecsEnvelope(raw map[string]any, slots Slots, userText string) envelope.Envelope {
+func buildGPUSpecsEnvelope(raw map[string]any, slots Slots) envelope.Envelope {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
 	matched := matchUserTextToInstanceTypeNames(slotSearchQuery(slots), items, true)
 	filterTo := map[string]struct{}{}
@@ -1018,7 +1017,7 @@ func setEnvelopeIfPopulated(result *HandlerResult, env envelope.Envelope) {
 	result.RendererInputEnvelopeHashes = hashEnvelopeForRenderer(env)
 }
 
-func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, slots Slots, userText string, action string, category string) envelope.Envelope {
+func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, slots Slots, action string, category string) envelope.Envelope {
 	items := mapSliceAt(raw, listKey)
 	query := slotFilterQuery(slots)
 	matchFields := []string{}
@@ -1095,11 +1094,11 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 	return env
 }
 
-func buildCommunityImageEnvelope(raw map[string]any, slots Slots, userText string) envelope.Envelope {
+func buildCommunityImageEnvelope(raw map[string]any, slots Slots) envelope.Envelope {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
 		return buildImageListEnvelope(raw, "ImageSet",
-			[]string{"Name", "Author", "CompShareImageId"}, slots, userText,
+			[]string{"Name", "Author", "CompShareImageId"}, slots,
 			"DescribeCommunityImages", "community")
 	}
 	filtered := make([]map[string]any, 0, len(groups))

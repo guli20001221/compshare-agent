@@ -260,7 +260,7 @@ func TestRenderPricingReply_AllRowsBillEmpty(t *testing.T) {
 	rows := []gpuPriceRow{
 		{Name: "4090", Zone: "cn-wlcb-01", Cpu: 16, Memory: 64, RawData: map[string]any{}},
 	}
-	reply := renderPricingReply(rows, "4090 多少钱")
+	reply := renderPricingReply(rows)
 	// Even with empty bill, header is still emitted, so "价格数据缺失" appears.
 	assert.Contains(t, reply, "价格数据缺失")
 	assert.Contains(t, reply, "4090")
@@ -277,11 +277,35 @@ func TestRenderPricingReply_HeaderUsesGB(t *testing.T) {
 			RawData: map[string]any{"Postpay": float64(1.69)},
 		},
 	}
-	reply := renderPricingReply(rows, "")
+	reply := renderPricingReply(rows)
 	assert.Contains(t, reply, "1卡 / 16vCPU / 64GB",
 		"header must use GB (Describe units), not MB")
 	assert.NotContains(t, reply, "64MB",
 		"stale MB label must not reappear (P3 fix from PR #151 review)")
+}
+
+func TestPricingUsesRequestedGPUCountFromStructuredSlot(t *testing.T) {
+	items := []any{map[string]any{
+		"Name": "4090_48G", "Zone": "cn-wlcb-01",
+		"MachineSizes": []any{
+			map[string]any{"Gpu": float64(1), "Collection": []any{map[string]any{"Cpu": float64(16), "Memory": []any{float64(96)}}}},
+			map[string]any{"Gpu": float64(8), "Collection": []any{map[string]any{"Cpu": float64(128), "Memory": []any{float64(768)}}}},
+		},
+	}}
+
+	spec := pickDefaultPricingSpec("4090_48G", items, 8)
+	assert.Equal(t, pricingDefaultSpec{Zone: "cn-wlcb-01", GPU: 8, Cpu: 128, Memory: 768}, spec)
+	args := pricingPriceArgs("4090_48G", spec)
+	assert.Equal(t, 8, args["GPU"])
+	assert.Equal(t, 128, args["CPU"])
+	assert.Equal(t, 768*1024, args["Memory"])
+
+	reply := renderPricingReply([]gpuPriceRow{{
+		Name: "4090_48G", Zone: spec.Zone, GPU: spec.GPU, Cpu: spec.Cpu, Memory: spec.Memory,
+		RawData: map[string]any{"Month": float64(12345)}, Kind: "当前账号价格（含折扣）",
+	}})
+	assert.Contains(t, reply, "8卡 / 128vCPU / 768GB")
+	assert.Contains(t, reply, "¥12345.00")
 }
 
 // TestHandlePricingQuery_PassesMemoryAsMBToAPI is the args-side regression
@@ -320,8 +344,7 @@ func TestHandlePricingQuery_PassesMemoryAsMBToAPI(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
-		UserText: "4090 多少钱一小时",
+		Plan: IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
 	})
 
 	// Sanity: the handler completed (not a FallbackBeforeTool).
@@ -390,8 +413,7 @@ func TestHandlePricingQuery_UserPriceUsesUserPriceTool(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
-		UserText: "4090 折后价是多少",
+		Plan: IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
 	})
 
 	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
@@ -443,8 +465,7 @@ func TestHandlePricingQuery_GenericPriceUsesUserPriceToolAndLabelsIt(t *testing.
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
-		UserText: "4090 多少钱",
+		Plan: IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindAccount}},
 	})
 
 	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
@@ -487,8 +508,7 @@ func TestHandlePricingQuery_CatalogPriceUsesUserPriceListFields(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindCatalog}},
-		UserText: "4090 目录价是多少",
+		Plan: IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "4090", PriceKind: PriceKindCatalog}},
 	})
 
 	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
@@ -548,7 +568,6 @@ func TestHandlePricingQuery_PodZonePassesConsolePlacementToPrice(t *testing.T) {
 			Zone:        "华北一C",
 			PriceKind:   PriceKindAccount,
 		}},
-		UserText: "华北一C 4090 多少钱",
 	})
 
 	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
@@ -600,7 +619,6 @@ func TestHandlePricingQuery_CatalogKindComesFromSlot(t *testing.T) {
 			Intent: IntentPricingQuery,
 			Slots:  Slots{SearchQuery: "4090", PriceKind: PriceKindCatalog},
 		},
-		UserText: "4090 多少钱",
 	})
 
 	assert.Equal(t, "GetCompShareInstanceUserPrice", result.ToolAction)
@@ -637,8 +655,7 @@ func TestHandlePricingQuery_OmitsZoneForNonWlcbCatalogZone(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handlePricingQuery(context.Background(), handler, HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "5090", PriceKind: PriceKindCatalog}},
-		UserText: "5090 目录价包月多少钱",
+		Plan: IntentRoute{Intent: IntentPricingQuery, Slots: Slots{SearchQuery: "5090", PriceKind: PriceKindCatalog}},
 	})
 
 	// The route handled it (did not fall back) and priced the 5090.

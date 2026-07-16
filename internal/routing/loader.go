@@ -50,16 +50,21 @@ type PlannerExample struct {
 }
 
 type Route struct {
-	Name               string
-	Description        string
-	IntentLabel        string
-	RouteGroup         string
-	RequiredTools      []string
-	ToolSubset         []string
-	RequiredCitation   bool
-	HandlerKey         string
-	PlannerDirectives  []string
-	PlannerExamples    []PlannerExample
+	Name              string
+	Description       string
+	IntentLabel       string
+	RouteGroup        string
+	RequiredTools     []string
+	ToolSubset        []string
+	RequiredCitation  bool
+	HandlerKey        string
+	PlannerDirectives []string
+	PlannerExamples   []PlannerExample
+	// AgentSlots declares the structured arguments accepted by the high-level
+	// read capability generated from this route. It is a capability schema, not
+	// a natural-language parser: adding a route-specific sentence matcher here is
+	// intentionally impossible.
+	AgentSlots         []string
 	VerificationStatus string
 	FieldRefsVerified  bool
 	Provenance         string
@@ -77,6 +82,7 @@ type routeYAML struct {
 	HandlerKey         string           `yaml:"handler_key"`
 	PlannerDirectives  []string         `yaml:"planner_directives"`
 	PlannerExamples    []PlannerExample `yaml:"planner_examples"`
+	AgentSlots         []string         `yaml:"agent_slots"`
 	VerificationStatus string           `yaml:"verification_status"`
 	FieldRefsVerified  *bool            `yaml:"field_refs_verified"`
 	Provenance         string           `yaml:"provenance"`
@@ -150,6 +156,21 @@ func ParseRouteFile(path string) (*Route, error) {
 	if raw.HandlerKey == "" {
 		return nil, fmt.Errorf("route %q: handler_key must be non-empty", raw.Name)
 	}
+	knownAgentSlots := map[string]struct{}{
+		"target_refs": {}, "metrics": {}, "time_window": {}, "image_source": {},
+		"search_query": {}, "list_mode": {}, "price_kind": {}, "gpu_count": {}, "cfs_kind": {},
+		"size_gb": {}, "zone": {}, "charge_type": {}, "detail_level": {},
+	}
+	seenAgentSlots := make(map[string]struct{}, len(raw.AgentSlots))
+	for _, slot := range raw.AgentSlots {
+		if _, ok := knownAgentSlots[slot]; !ok {
+			return nil, fmt.Errorf("route %q: unknown agent slot %q", raw.Name, slot)
+		}
+		if _, duplicate := seenAgentSlots[slot]; duplicate {
+			return nil, fmt.Errorf("route %q: duplicate agent slot %q", raw.Name, slot)
+		}
+		seenAgentSlots[slot] = struct{}{}
+	}
 	switch raw.VerificationStatus {
 	case VerificationProductionValidated, VerificationSpikeValidated, VerificationUnverified:
 	default:
@@ -177,6 +198,7 @@ func ParseRouteFile(path string) (*Route, error) {
 		HandlerKey:         raw.HandlerKey,
 		PlannerDirectives:  raw.PlannerDirectives,
 		PlannerExamples:    raw.PlannerExamples,
+		AgentSlots:         append([]string(nil), raw.AgentSlots...),
 		VerificationStatus: raw.VerificationStatus,
 		FieldRefsVerified:  *raw.FieldRefsVerified,
 		Provenance:         raw.Provenance,

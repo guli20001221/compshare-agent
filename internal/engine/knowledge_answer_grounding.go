@@ -15,24 +15,25 @@ import (
 // for: whether every substantive claim in the answer is supported by the exact
 // EvidenceLedger shown to the agent. The answer/evidence quote pairs are checked
 // again by Go, so "supported":true on its own is never sufficient.
-const knowledgeAnswerVerifierPrompt = `你是严格的知识答案事实核查员。只判断答案是否完全由给定证据支持，不补充常识，也不重新回答。
+const knowledgeAnswerVerifierPrompt = `你是严格的答案依据事实核查员。判断答案中的每条实质主张属于“给定证据支持”还是“稳定通用知识”，不重新回答。
 
 输入中的 resolved_question 与 evidence.query 必须完全一致。对答案中的每一条实质主张：
 1. answer_quote 必须逐字摘自答案，并覆盖该主张所在的完整短句或分句。
-2. evidence_quote 必须逐字摘自对应 chunk_id 的 snippet、summary 或 title，并明确支持该主张。
-3. 找不到明确证据、只能推断、或不确定时，supported=false，并把原主张放入 unsupported。
-4. 一个无据主张就使整篇 supported=false。引用标记 [1] 或 [[chunk_id]] 不能证明内容真实。
-5. 礼貌语可以忽略；操作步骤、数字、条件、因果、产品规则都属于实质主张。
+2. 平台当前目录、价格、库存、实例状态、产品规则和账号事实必须使用 basis="evidence"；evidence_quote 必须逐字摘自对应 chunk_id 的 snippet、summary 或 title并明确支持。
+3. 与平台当前状态无关、长期稳定且广泛成立的通用技术知识可以使用 basis="stable_general"，此时 chunk_id 和 evidence_quote 必须留空。例如标准终端快捷键可以是通用知识；“平台当前存在某镜像”绝不是通用知识。
+4. 无法确定是否稳定通用、证据只能推断、或主张可能随平台/时间/账号变化时，supported=false，并把原主张放入 unsupported。
+5. 一个无据主张就使整篇 supported=false。引用标记 [1] 或 [[chunk_id]] 不能证明内容真实。
+6. 礼貌语可以忽略；操作步骤、数字、条件、因果、产品规则都属于实质主张。
 
 只输出 JSON：
-{"supported":true|false,"claims":[{"answer_quote":"答案原句","chunk_id":"证据ID","evidence_quote":"证据原句"}],"unsupported":["无据主张"]}`
+{"supported":true|false,"claims":[{"answer_quote":"答案原句","basis":"evidence|stable_general","chunk_id":"证据ID或空","evidence_quote":"证据原句或空"}],"unsupported":["无据主张"]}`
 
 const knowledgeAnswerRepairPrompt = `你是知识答案修复器。只依据输入的 EvidenceLedger 回答 resolved_question，不得使用外部常识。
 
 要求：
 1. answer 直接回答问题；没有明确依据的内容不要写。
 2. claims 必须覆盖 answer 的每一条实质主张。answer_quote 逐字摘自 answer，evidence_quote 逐字摘自对应证据。
-3. 证据不足以回答时 supported=false，answer 留空。
+3. 证据只能回答一部分时，保留有明确依据的部分，并直接说明其余部分缺少当前证据；只要 answer 中的事实主张都有证据，supported=true。完全没有可回答内容时才 supported=false、answer 留空。
 4. 不要大段复制证据原文。引用标记可写可不写，服务端不靠标点判断真实性。
 5. 证据明确支持的结论要直接说清，不要在结尾改口为资料未覆盖或添加无依据的免责话。
 
@@ -41,6 +42,7 @@ const knowledgeAnswerRepairPrompt = `你是知识答案修复器。只依据输�
 
 type knowledgeGroundingClaim struct {
 	AnswerQuote   string `json:"answer_quote"`
+	Basis         string `json:"basis,omitempty"`
 	ChunkID       string `json:"chunk_id"`
 	EvidenceQuote string `json:"evidence_quote"`
 }
@@ -86,7 +88,7 @@ func (e *Engine) verifyKnowledgeAnswer(ctx context.Context, fallbackQuestion, an
 func (e *Engine) verifyKnowledgeAnswerAgainstLedger(ctx context.Context, resolved, answer string, ledger knowledge.EvidenceLedger) (string, knowledge.GroundedAnswerReport, bool) {
 	answer = strings.TrimSpace(answer)
 	resolved = strings.TrimSpace(resolved)
-	if e.llmClient == nil || resolved == "" || answer == "" || isKnowledgeRefusal(answer) || len(ledger.Items) == 0 {
+	if e.llmClient == nil || resolved == "" || answer == "" || isKnowledgeRefusal(answer) {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	ledger.Query = resolved
@@ -119,17 +121,18 @@ func (e *Engine) verifyKnowledgeAnswerAgainstLedger(ctx context.Context, resolve
 // and its evidence proof are returned together, which avoids paying for a repair
 // and then discarding it because a second validation call would cross the budget.
 func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQuestion string, allowOverBudget bool) (string, knowledge.GroundedAnswerReport, bool) {
-	if e.llmClient == nil || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
+	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
+	ledger := e.knowledgeLedgerForVerification(resolved)
+	if e.llmClient == nil || len(ledger.Items) == 0 {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
 	if !allowOverBudget && e.tokenBudgetExceeded() {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
-	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
 	payload, err := json.Marshal(struct {
 		ResolvedQuestion string                   `json:"resolved_question"`
 		Evidence         knowledge.EvidenceLedger `json:"evidence"`
-	}{resolved, e.searchKnowledgeLedgerThisTurn})
+	}{resolved, ledger})
 	if err != nil {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
@@ -145,7 +148,7 @@ func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQue
 	if !parseKnowledgeGroundingJSON(resp.Content, &repaired) {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
-	answer, report, ok := validateKnowledgeGroundingProof(repaired.Answer, repaired.knowledgeGroundingVerdict, e.searchKnowledgeLedgerThisTurn)
+	answer, report, ok := validateKnowledgeGroundingProof(repaired.Answer, repaired.knowledgeGroundingVerdict, ledger)
 	if !ok || knowledgeAnswerHasRawLeak(repaired.Answer, e.searchKnowledgeHitsThisTurn) {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
@@ -164,6 +167,16 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 	if !e.searchKnowledgeRanThisTurn {
 		resolved := strings.TrimSpace(fallbackQuestion)
 		ledger := e.verifiedKnowledgeLedgerForQuestion(resolved)
+		if len(ledger.Items) == 0 {
+			// The central Agent owns the decision to answer stable general
+			// technical knowledge directly. A verifier with no evidence cannot
+			// distinguish a correct direct answer from a fabrication; forcing RAG
+			// here would undo the Agent's tool decision and made ordinary terminal
+			// shortcuts impossible to answer. Platform-current facts remain covered
+			// by the read-tool contract and searched answers remain fail-closed.
+			e.groundingOutcomeThisTurn = groundingUnavailable
+			return candidate
+		}
 		if answer, report, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
 			e.emitSearchKnowledgeCitationTrace(report)
 			e.groundingOutcomeThisTurn = groundingSupported
@@ -180,7 +193,8 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 		// against durable prior provenance before releasing it.
 		resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
 		ledger := e.verifiedKnowledgeLedgerForQuestion(resolved)
-		if answer, _, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
+		if answer, report, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
+			e.emitSearchKnowledgeCitationTrace(report)
 			e.groundingOutcomeThisTurn = groundingSupported
 			return answer
 		}
@@ -205,7 +219,9 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 			e.emitSearchKnowledgeCitationTrace(report)
 			e.retractKnowledgeHardBlock()
 			resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
-			e.rememberVerifiedKnowledge(resolved, answer, e.knowledgeLedgerForVerification(resolved))
+			if len(e.readResponseEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
+				e.rememberVerifiedKnowledge(resolved, answer, e.knowledgeLedgerForVerification(resolved))
+			}
 			e.groundingOutcomeThisTurn = groundingSupported
 			return answer
 		}
@@ -213,7 +229,9 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQ
 	}
 
 	if repaired, ok := e.synthesizeKnowledgeQAFromLedger(ctx, fallbackQuestion); ok {
-		e.rememberVerifiedKnowledge(e.resolvedKnowledgeQuestion(fallbackQuestion), repaired, e.searchKnowledgeLedgerThisTurn)
+		if len(e.readResponseEvidenceThisTurn) == 0 {
+			e.rememberVerifiedKnowledge(e.resolvedKnowledgeQuestion(fallbackQuestion), repaired, e.searchKnowledgeLedgerThisTurn)
+		}
 		e.groundingOutcomeThisTurn = groundingRepaired
 		return repaired
 	}
@@ -279,8 +297,24 @@ func validateKnowledgeGroundingProof(answer string, verdict knowledgeGroundingVe
 	for _, claim := range verdict.Claims {
 		answerQuote := normalizeGroundingText(knowledge.StripCiteMarkers(claim.AnswerQuote))
 		evidenceQuote := normalizeGroundingText(claim.EvidenceQuote)
+		if answerQuote == "" || !strings.Contains(normalizeGroundingText(display), answerQuote) {
+			return "", knowledge.GroundedAnswerReport{}, false
+		}
+		basis := strings.TrimSpace(claim.Basis)
+		if basis == "stable_general" {
+			if strings.TrimSpace(claim.ChunkID) != "" || evidenceQuote != "" {
+				return "", knowledge.GroundedAnswerReport{}, false
+			}
+			validQuotes = append(validQuotes, answerQuote)
+			continue
+		}
+		// Empty basis preserves the existing evidence-verdict wire contract during
+		// rollout; new verifier responses name basis="evidence" explicitly.
+		if basis != "" && basis != "evidence" {
+			return "", knowledge.GroundedAnswerReport{}, false
+		}
 		item, exists := items[strings.TrimSpace(claim.ChunkID)]
-		if !exists || answerQuote == "" || evidenceQuote == "" || !strings.Contains(normalizeGroundingText(display), answerQuote) {
+		if !exists || evidenceQuote == "" {
 			return "", knowledge.GroundedAnswerReport{}, false
 		}
 		evidenceText := normalizeGroundingText(strings.Join([]string{item.Title, item.Summary, item.Snippet}, " "))
@@ -294,10 +328,10 @@ func validateKnowledgeGroundingProof(answer string, verdict knowledgeGroundingVe
 			used = append(used, id)
 		}
 	}
-	if len(used) == 0 || len(validQuotes) == 0 {
+	if len(validQuotes) == 0 {
 		return "", knowledge.GroundedAnswerReport{}, false
 	}
-	return display, knowledge.GroundedAnswerReport{HasCitation: true, CitedChunkIDs: used}, true
+	return display, knowledge.GroundedAnswerReport{HasCitation: len(used) > 0, CitedChunkIDs: used}, true
 }
 
 func normalizeGroundingText(s string) string {

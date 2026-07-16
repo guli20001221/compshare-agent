@@ -11,7 +11,7 @@ import (
 
 type turnSequenceLLM struct{}
 
-func (turnSequenceLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (turnSequenceLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	return &llm.ChatResponse{Content: "ok"}, nil
 }
 

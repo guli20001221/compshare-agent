@@ -12,6 +12,7 @@ tool_subset:
   - DescribeCompShareImages
 required_citation: false
 handler_key: handleStockAvailability
+agent_slots: [search_query, zone]
 planner_directives:
   - 'Classify GPU stock availability questions like "4090 有没有货" or "H100 库存" as stock_availability. Do not route them to resource_info or unknown.'
   - 'Fill slots.search_query with the GPU model or family when the user names one. Fill slots.zone only when the user explicitly names a zone or exact zone label.'

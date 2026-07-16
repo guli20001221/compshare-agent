@@ -68,7 +68,8 @@ func TestGeneratedRegistry_SemanticParityWithLoader(t *testing.T) {
 		}
 		if !equalStrings(route.RequiredTools, loaded.RequiredTools) ||
 			!equalStrings(route.ToolSubset, loaded.ToolSubset) ||
-			!equalStrings(route.PlannerDirectives, loaded.PlannerDirectives) {
+			!equalStrings(route.PlannerDirectives, loaded.PlannerDirectives) ||
+			!equalStrings(route.AgentSlots, loaded.AgentSlots) {
 			t.Errorf("route %q list drift: gen=%+v disk=%+v", route.Name, route, loaded)
 		}
 		if len(route.PlannerExamples) != len(loaded.PlannerExamples) {

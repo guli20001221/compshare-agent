@@ -117,6 +117,33 @@ func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(
 	assert.Equal(t, []string{"chunk-a", "chunk-b"}, final.CitedChunkIDs)
 }
 
+func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testing.T) {
+	chunkA := knowledge.KBChunk{ChunkID: "chunk-a", KBVersion: "kb.v1", Title: "A", Content: "evidence a"}
+	chunkB := knowledge.KBChunk{ChunkID: "chunk-b", KBVersion: "kb.v1", Title: "B", Content: "evidence b"}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true, KBVersion: "kb.v1", HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 90, Chunk: chunkA}}},
+		{Enabled: true, KBVersion: "kb.v1", HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 91, Chunk: chunkB}}},
+	}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	var traces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) { traces = append(traces, trace) })
+
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "q1"}, noopStep)
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "q2"}, noopStep)
+	eng.emitSearchKnowledgeHardBlock("search_knowledge_ungrounded")
+
+	require.NotEmpty(t, traces)
+	final := traces[len(traces)-1]
+	assert.True(t, final.TurnAggregate)
+	assert.Equal(t, 2, final.Hits)
+	require.Len(t, final.Activities, 2)
+	require.Len(t, final.References, 2)
+	require.Len(t, final.HitItems, 2)
+	assert.Empty(t, final.CitedChunkIDs)
+}
+
 // TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits proves the relevance floor:
 // when the retriever returns only topically-IRRELEVANT top-K (qwen3-reranker score
 // below weakEvidenceSemanticThreshold=0.5 — what a tool-ops symptom retrieves when

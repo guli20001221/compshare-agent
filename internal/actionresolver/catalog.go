@@ -32,7 +32,7 @@ func BuildCatalog() (*Catalog, error) {
 		}
 		catalog.ordered = append(catalog.ordered, operation)
 		catalog.specs[operation] = OperationSpec{
-			Operation: operation, Fields: fields,
+			Operation: operation, Description: definition.Description, Fields: fields,
 			NeedsConfirm:     capability.Policy.NeedsConfirm,
 			Risk:             capability.Policy.SecurityLevel,
 			Execution:        workflow.ExecutionContract(definition),
@@ -78,7 +78,7 @@ func fieldsFromParameters(raw any, sensitive []string) (map[string]FieldSpec, er
 			return nil, fmt.Errorf("field %q schema is invalid", name)
 		}
 		_, isSecret := secret[name]
-		field := FieldSpec{Name: name, Required: required[name], Codec: codecFromSchema(name, schema, isSecret), Target: isTargetField(name)}
+		field := FieldSpec{Name: name, Required: required[name], Codec: codecFromSchema(name, schema, isSecret), Target: isTargetField(name), TargetKind: targetKindFromField(name)}
 		field.Enum = stringSlice(schema["enum"])
 		fields[name] = field
 	}
@@ -120,11 +120,19 @@ func codecFromSchema(name string, schema map[string]any, sensitive bool) SlotCod
 // These are protocol field identities, not natural-language aliases. They
 // identify the upstream object whose mutation requires server-verified origin.
 func isTargetField(name string) bool {
+	return targetKindFromField(name) != ""
+}
+
+func targetKindFromField(name string) string {
 	switch name {
-	case "UHostId", "UDiskId", "CfsId":
-		return true
+	case "UHostId":
+		return "instance"
+	case "UDiskId", "DiskId":
+		return "disk"
+	case "CfsId":
+		return "cfs"
 	default:
-		return false
+		return ""
 	}
 }
 

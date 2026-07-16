@@ -24,11 +24,10 @@ func TestDefaultCapabilityRegistryOwnsEveryAgentToolAndPolicy(t *testing.T) {
 		require.Equal(t, capability.Name, capability.Policy.Action)
 	}
 	require.Equal(t, len(Registry), exposed)
-	shadow, ok := registry.Lookup(ReadPlatformCapabilityName)
-	require.True(t, ok)
-	require.Equal(t, CapabilityStageShadow, shadow.Stage)
+	_, ok := registry.Lookup("ReadPlatformCapability")
+	require.False(t, ok, "the generic capability+slots adapter must not remain executable")
 	for _, tool := range registry.VisibleTools(ToolScope{Mode: ToolScopeReadOnlyFull}, true) {
-		require.NotEqual(t, ReadPlatformCapabilityName, tool.Function.Name)
+		require.NotEqual(t, "ReadPlatformCapability", tool.Function.Name)
 	}
 
 	for name, policy := range buildToolExecutionPolicies() {

@@ -9,7 +9,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SearchKnowledge",
-			Description: "检索平台与第三方工具运维知识，返回带 chunk_id 的证据条目。",
+			Description: "按明确问题检索平台文档与技术证据，返回带 chunk_id 的证据条目。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1002,7 +1002,7 @@ var Registry = []openai.Tool{
 						"description": "磁盘大小（GB），如 100",
 					},
 				},
-				"required": []string{"UHostId"},
+				"required": []string{"UHostId", "Size"},
 			},
 		},
 	},
@@ -1032,7 +1032,7 @@ var Registry = []openai.Tool{
 						"description": "目标容量（GB），必须大于当前容量；不是新增容量",
 					},
 				},
-				"required": []string{"UHostId"},
+				"required": []string{"UHostId", "Size"},
 			},
 		},
 	},

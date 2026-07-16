@@ -310,12 +310,12 @@ func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {
 		}
 	}}
 	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
-	eng.lastUserMsg = "帮我在华北一C创建一个 50GB 的 CFS"
+	eng.lastUserMsg = "原始文本中的可用区不得参与执行"
 
 	_ = eng.executeWorkflow(zoneUserCtx(), "CreateCFSWorkflow", map[string]any{
 		"Name": "shared-train",
 		"Size": float64(50),
-		"Zone": "cn-wlcb-01",
+		"Zone": "华北一C",
 	}, noopStep)
 
 	require.NotNil(t, priceArgs)

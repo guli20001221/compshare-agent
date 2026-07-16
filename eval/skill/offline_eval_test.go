@@ -33,6 +33,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/routing"
 	"github.com/compshare-agent/internal/tools"
@@ -72,6 +73,7 @@ type SkillCase struct {
 	Zone                string                    `json:"zone,omitempty"`
 	ChargeType          string                    `json:"charge_type,omitempty"`
 	DetailLevel         string                    `json:"detail_level,omitempty"`
+	TargetIDs           []string                  `json:"target_ids,omitempty"`
 	OverlappingGroup    string                    `json:"overlapping_group,omitempty"`
 	Tags                []string                  `json:"tags,omitempty"`
 }
@@ -206,6 +208,11 @@ func TestOfflineSkillEval(t *testing.T) {
 			plan.Slots.Zone = c.Zone
 			plan.Slots.ChargeType = c.ChargeType
 			plan.Slots.DetailLevel = intent.DetailLevel(c.DetailLevel)
+			for _, id := range c.TargetIDs {
+				plan.Slots.TargetRefs = append(plan.Slots.TargetRefs, intent.TargetRef{
+					Type: intent.TargetRefUHostIDUserInput, Value: id, Source: intent.SourceUserText,
+				})
+			}
 
 			// (1) routing pin: the intent derives exactly the expected skill.
 			derived := intent.DeriveSelectedSkills(plan)
@@ -218,8 +225,11 @@ func TestOfflineSkillEval(t *testing.T) {
 			// (2)+(3) drive the deterministic handler over a recording executor.
 			exec := &recordingExecutor{}
 			h := intent.NewDemoHandler(exec)
-			res := h.DispatchRoute(context.Background(),
-				intent.HandlerRequest{Plan: plan, UserText: c.Question})
+			registry := entity.NewRegistry()
+			for _, id := range c.TargetIDs {
+				registry.Instances[id] = entity.InstanceSnapshot{UHostId: id, Name: id}
+			}
+			res := h.DispatchRoute(context.Background(), intent.HandlerRequest{Plan: plan, Resolver: registry})
 
 			called := exec.actions()
 			for _, tool := range c.ExpectedTools {

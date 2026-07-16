@@ -94,7 +94,7 @@ func TestExecuteWorkflow_GuidedCreateCanonicalizesSpaced409048G(t *testing.T) {
 	}
 }
 
-func TestExecuteWorkflow_GuidedCreateUsesExplicit409048GFromUserText(t *testing.T) {
+func TestExecuteWorkflow_GuidedCreateDoesNotOverrideResolvedGPUFromUserText(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareImages": {"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-001", "Name": "PyTorch"},
@@ -125,6 +125,6 @@ func TestExecuteWorkflow_GuidedCreateUsesExplicit409048GFromUserText(t *testing.
 	_ = eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, noopStep)
 
 	assert.NotEmpty(t, seenGpuArgs)
-	assert.Equal(t, "4090_48G", seenGpuArgs[0])
-	assert.NotContains(t, seenGpuArgs, "4090")
+	assert.Equal(t, "4090", seenGpuArgs[0])
+	assert.NotContains(t, seenGpuArgs, "4090_48G")
 }

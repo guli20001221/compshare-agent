@@ -9,6 +9,7 @@ tool_subset:
   - GetCompShareRefundPrice
 required_citation: false
 handler_key: handleRefundEstimate
+agent_slots: [target_refs]
 planner_directives:
   - 'Classify instance refund-estimate questions like "这台现在释放能退多少钱", "退订大概退多少", or "实例现在退款多少" as refund_estimate and include the target instance.'
   - 'Use this route only for read-only refund estimation. Do not release instances. Ask the user to select a target when no instance target is present.'

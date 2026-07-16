@@ -58,8 +58,8 @@ func TestResolverNeverSilentlyChoosesConflictingCurrentValues(t *testing.T) {
 	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }))
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateDiskWorkflow", Slots: []SlotCandidate{
 		{Name: "UHostId", Value: "uhost-8g", Source: SourceVerifiedContext, Evidence: &SourceEvidence{ContextField: "selected_entities"}},
-		{Name: "Size", Value: 30, Source: SourceUserExplicit},
-		{Name: "Size", Value: 50, Source: SourceUserExplicit},
+		{Name: "Size", Value: 30, Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "30"}},
+		{Name: "Size", Value: 50, Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "50"}},
 	}})
 	require.False(t, resolved.ReadyForConfirmation)
 	require.Len(t, resolved.Conflicts, 1)
@@ -87,8 +87,8 @@ func TestOperationSpecificStructuredValidatorRejectsAmbiguity(t *testing.T) {
 	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }))
 	resolved := resolver.Resolve(ActionProposal{Operation: "SetStopSchedulerWorkflow", Slots: []SlotCandidate{
 		{Name: "UHostId", Value: "uhost-1", Source: SourceToolObservation, Evidence: &SourceEvidence{ContextField: "recent_observations"}},
-		{Name: "AfterMinutes", Value: 30, Source: SourceUserExplicit},
-		{Name: "ShutdownAt", Value: "2026-07-15 18:00", Source: SourceUserExplicit},
+		{Name: "AfterMinutes", Value: 30, Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "30"}},
+		{Name: "ShutdownAt", Value: "2026-07-15 18:00", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "2026-07-15 18:00"}},
 	}})
 	require.False(t, resolved.ReadyForConfirmation)
 	require.Contains(t, resolved.Rejected, "exactly one of AfterMinutes or ShutdownAt is required")
@@ -110,14 +110,14 @@ func TestCorrectionOverridesInheritedValueButTwoCorrectionsConflict(t *testing.T
 	base := []SlotCandidate{{Name: "UHostId", Value: "uhost-1", Source: SourceVerifiedContext, Evidence: &SourceEvidence{ContextField: "selected_entities"}}}
 	resolved := resolver.Resolve(ActionProposal{Operation: "RenameInstanceWorkflow", Slots: append(base,
 		SlotCandidate{Name: "Name", Value: "old", Source: SourceVerifiedContext},
-		SlotCandidate{Name: "Name", Value: "new", Source: SourceUserExplicit},
+		SlotCandidate{Name: "Name", Value: "new", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "new"}},
 	)})
 	require.True(t, resolved.ReadyForConfirmation)
 	require.Equal(t, "new", resolved.Arguments["Name"])
 
 	conflicted := resolver.Resolve(ActionProposal{Operation: "RenameInstanceWorkflow", Slots: append(base,
-		SlotCandidate{Name: "Name", Value: "new-a", Source: SourceUserExplicit},
-		SlotCandidate{Name: "Name", Value: "new-b", Source: SourceUserExplicit},
+		SlotCandidate{Name: "Name", Value: "new-a", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "new-a"}},
+		SlotCandidate{Name: "Name", Value: "new-b", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "new-b"}},
 	)})
 	require.False(t, conflicted.ReadyForConfirmation)
 	require.Len(t, conflicted.Conflicts, 1)
@@ -129,7 +129,7 @@ func TestConfirmationPreviewRedactsSensitiveValues(t *testing.T) {
 	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }))
 	resolved := resolver.Resolve(ActionProposal{Operation: "ResetPasswordWorkflow", Slots: []SlotCandidate{
 		{Name: "UHostId", Value: "uhost-1", Source: SourceToolObservation, Evidence: &SourceEvidence{ContextField: "recent_observations"}},
-		{Name: "Password", Value: "SecurePass123!", Source: SourceUserExplicit},
+		{Name: "Password", Value: "SecurePass123!", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "SecurePass123!"}},
 	}})
 	require.True(t, resolved.ReadyForConfirmation)
 	require.Equal(t, "[REDACTED]", resolved.Confirmation.Arguments["Password"])

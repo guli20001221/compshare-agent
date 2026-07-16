@@ -80,7 +80,7 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 	// stamp ToolAction for trace consistency.)
 	priced := []gpuPriceRow{}
 	for _, name := range matched {
-		spec := pickDefaultPricingSpec(name, items)
+		spec := pickDefaultPricingSpec(name, items, req.Plan.Slots.GPUCount)
 		if spec.Zone == "" || spec.Cpu == 0 || spec.Memory == 0 {
 			// Spec extraction failed — skip this GPU instead of sending
 			// an invalid price call.
@@ -105,6 +105,7 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 		priced = append(priced, gpuPriceRow{
 			Name:    name,
 			Zone:    spec.Zone,
+			GPU:     spec.GPU,
 			Cpu:     spec.Cpu,
 			Memory:  spec.Memory,
 			RawData: priceRaw,
@@ -116,7 +117,7 @@ func handlePricingQuery(ctx context.Context, h *DemoHandler, req HandlerRequest)
 		return FallbackBeforeTool(FallbackValidation)
 	}
 
-	reply := renderPricingReply(priced, req.UserText)
+	reply := renderPricingReply(priced)
 	result := HandledResult(reply)
 	result.ToolAction = action
 	result.ToolArgs = copyArgs(map[string]any{})
@@ -127,7 +128,7 @@ func pricingPriceArgs(name string, spec pricingDefaultSpec) map[string]any {
 	memMB := spec.Memory * 1024
 	return map[string]any{
 		"GpuType": name,
-		"GPU":     1,
+		"GPU":     spec.GPU,
 		"CPU":     spec.Cpu,
 		"Memory":  memMB,
 	}
@@ -168,9 +169,12 @@ func addPricingPlacementArgs(args map[string]any, zone string, supportZones []zo
 	}
 }
 
-// pricingDefaultSpec captures the 1-GPU default we use for price calls.
+// pricingDefaultSpec captures the requested GPU-count machine size selected
+// from the live catalog. GPU defaults to one only when the Agent did not
+// provide a structured count.
 type pricingDefaultSpec struct {
 	Zone   string
+	GPU    int
 	Cpu    int
 	Memory int
 }
@@ -180,6 +184,7 @@ type pricingDefaultSpec struct {
 type gpuPriceRow struct {
 	Name    string
 	Zone    string
+	GPU     int
 	Cpu     int
 	Memory  int
 	RawData map[string]any
@@ -188,9 +193,13 @@ type gpuPriceRow struct {
 
 // pickDefaultPricingSpec scans the Describe items for the first entry
 // whose Name matches gpuName, then drills MachineSizes.Collection[].Memory
-// for the smallest (CPU + Memory) 1-GPU combo. Returns zero-valued spec
+// for the smallest (CPU + Memory) combo at the requested GPU count. Returns zero-valued spec
 // if extraction fails — caller skips.
-func pickDefaultPricingSpec(gpuName string, items []any) pricingDefaultSpec {
+func pickDefaultPricingSpec(gpuName string, items []any, requestedCounts ...int) pricingDefaultSpec {
+	requestedGPU := 1
+	if len(requestedCounts) > 0 && requestedCounts[0] > 0 {
+		requestedGPU = requestedCounts[0]
+	}
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
@@ -211,7 +220,7 @@ func pickDefaultPricingSpec(gpuName string, items []any) pricingDefaultSpec {
 				continue
 			}
 			gpuCount := pricingNumericInt(size["Gpu"])
-			if gpuCount != 1 {
+			if gpuCount != requestedGPU {
 				continue
 			}
 			collection := mapSliceAt(size, "Collection")
@@ -235,7 +244,7 @@ func pickDefaultPricingSpec(gpuName string, items []any) pricingDefaultSpec {
 						memory = parsed
 					}
 				}
-				candidate := pricingDefaultSpec{Zone: zone, Cpu: cpu, Memory: memory}
+				candidate := pricingDefaultSpec{Zone: zone, GPU: requestedGPU, Cpu: cpu, Memory: memory}
 				if best.Cpu == 0 || candidate.Cpu < best.Cpu ||
 					(candidate.Cpu == best.Cpu && candidate.Memory < best.Memory) {
 					best = candidate
@@ -301,7 +310,7 @@ func pricingClarifyReply(items []any, prefix string) string {
 // API returns nested {InstancePrice: {Postpay/Day/Month/Spot: ...}}
 // blocks; we drill conservatively and emit "未提供" when a billing
 // variant is missing rather than failing the whole reply.
-func renderPricingReply(rows []gpuPriceRow, userText string) string {
+func renderPricingReply(rows []gpuPriceRow) string {
 	lines := []string{}
 	for _, row := range rows {
 		// row.Memory is in GB (sourced from Describe Collection[].Memory[],
@@ -310,8 +319,12 @@ func renderPricingReply(rows []gpuPriceRow, userText string) string {
 		if kind == "" {
 			kind = "标准价/目录价"
 		}
-		header := fmt.Sprintf("### %s · %s · 1卡 / %dvCPU / %dGB · %s",
-			row.Name, row.Zone, row.Cpu, row.Memory, kind)
+		gpuCount := row.GPU
+		if gpuCount <= 0 {
+			gpuCount = 1
+		}
+		header := fmt.Sprintf("### %s · %s · %d卡 / %dvCPU / %dGB · %s",
+			row.Name, row.Zone, gpuCount, row.Cpu, row.Memory, kind)
 		lines = append(lines, header)
 
 		// Extract Postpay/Day/Month/Spot price strings if present.

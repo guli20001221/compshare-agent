@@ -62,11 +62,14 @@ func TestCentralToolWindowSeparatesUnderstandingFromWriteAuthority(t *testing.T)
 	readOnly := toolNames(centralAgentToolWindow(false))
 	require.Contains(t, readOnly, tools.UpdateTaskStateName)
 	require.NotContains(t, readOnly, tools.ProposeActionName)
+	require.NotContains(t, readOnly, proposalToolName("StopInstanceWorkflow"))
 	require.NotContains(t, readOnly, "StopInstanceWorkflow")
 
 	mutating := toolNames(centralAgentToolWindow(true))
 	require.Contains(t, mutating, tools.UpdateTaskStateName)
-	require.Contains(t, mutating, tools.ProposeActionName)
+	require.NotContains(t, mutating, tools.ProposeActionName)
+	require.Contains(t, mutating, proposalToolName("StopInstanceWorkflow"))
+	require.Contains(t, mutating, proposalToolName("CreateDiskWorkflow"))
 	require.NotContains(t, mutating, "StopInstanceWorkflow")
 }
 

@@ -95,6 +95,19 @@ func assertResolvedQuestionContract(t *testing.T, calls []llm.ChatRequest, resol
 	}
 }
 
+func TestActionProposalDoesNotBypassKnowledgeGrounding(t *testing.T) {
+	record := loadSanitizedContextRAGRecords(t)[0]
+	eng, mock := groundedEngineForRecord(t, record,
+		groundingVerdictResponse(record, false, 10),
+		repairResponse(record, 10),
+	)
+	eng.actionProposalRanThisTurn = true
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.ResolvedQuestion, "未经证据支持的平台结论")
+	require.Equal(t, record.Answer, got)
+	require.Len(t, mock.calls, 2, "写操作提案不得让夹带的知识结论绕过核验和修复")
+}
+
 // Five sanitized real-record shapes, including the two-character follow-up
 // "粘贴呢". The fallback utterance must never replace the history-aware retrieval
 // query during validation.
@@ -144,15 +157,68 @@ func TestKnowledgeAnswerGrounding_UncitedGroundedAnswerIsNotFalseRefused(t *test
 	require.Len(t, mock.calls, 1, "verify the answer in hand; do not re-roll merely to chase brackets")
 }
 
-func TestKnowledgeAnswerGrounding_NoEvidenceCannotPass(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "不应调用"}}}, &mockExecutor{}, nil)
+func TestKnowledgeAnswerGrounding_NoEvidenceAllowsOnlyVerifiedStableGeneralKnowledge(t *testing.T) {
+	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴","basis":"stable_general","chunk_id":"","evidence_quote":""}],"unsupported":[]}`}}}, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
 
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "没有资料的问题", "凭常识猜一个答案")
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "Linux 终端怎么粘贴", answer)
+
+	assert.Equal(t, answer, got)
+	require.Len(t, eng.llmClient.(*mockLLM).calls, 1)
+	assert.Contains(t, eng.llmClient.(*mockLLM).calls[0].Messages[1].Content, `"items":[]`, "verifier payload must not invent evidence")
+}
+
+func TestKnowledgeAnswerGrounding_NoEvidenceStillRejectsPlatformCurrentClaim(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":false,"claims":[],"unsupported":["平台当前镜像目录"]}`}}}, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "平台现在有哪些镜像", "平台当前提供 Ubuntu-NVIDIA 镜像。")
 
 	assert.Equal(t, ragNoEvidenceReply, got)
-	assert.Empty(t, eng.llmClient.(*mockLLM).calls, "empty evidence must fail before another model call")
+}
+
+func TestKnowledgeAnswerGrounding_AgentMayAnswerStableKnowledgeWithoutSearching(t *testing.T) {
+	mock := &mockLLM{}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = false
+
+	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "粘贴呢", answer)
+
+	require.Equal(t, answer, got)
+	require.Empty(t, mock.calls, "runtime must not force a retrieval or verifier call when the Agent chose a direct stable answer")
+}
+
+func TestKnowledgeAnswerGrounding_IrrelevantSearchDoesNotEraseStableGeneralAnswer(t *testing.T) {
+	hit := knowledge.RetrievalHit{Kept: true, Chunk: knowledge.KBChunk{
+		ChunkID: "irrelevant-platform-doc", Title: "实例计费说明", Content: "实例按量计费。",
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴","basis":"stable_general","chunk_id":"","evidence_quote":""}],"unsupported":[]}`}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
+	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger("Linux 终端怎么粘贴", []knowledge.RetrievalHit{hit}, 3, 0)
+
+	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "粘贴呢", answer)
+
+	require.Equal(t, answer, got)
+	require.Len(t, mock.calls, 1)
+	require.Empty(t, eng.sessionState.VerifiedKnowledge, "general knowledge must not be persisted against unrelated retrieval evidence")
+}
+
+func TestKnowledgeGroundingStableGeneralCannotSmuggleEvidenceFields(t *testing.T) {
+	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "image", Snippet: "Ubuntu 基础镜像"}}}
+	verdict := knowledgeGroundingVerdict{Supported: true, Claims: []knowledgeGroundingClaim{{
+		AnswerQuote: "平台当前提供 Ubuntu-NVIDIA", Basis: "stable_general", ChunkID: "image", EvidenceQuote: "Ubuntu 基础镜像",
+	}}}
+	_, _, ok := validateKnowledgeGroundingProof("平台当前提供 Ubuntu-NVIDIA。", verdict, ledger)
+	require.False(t, ok)
 }
 
 func TestKnowledgeAnswerGrounding_EmptyCurrentSearchDoesNotErasePriorAnswer(t *testing.T) {

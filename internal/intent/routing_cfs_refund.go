@@ -3,35 +3,15 @@ package intent
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/zones"
 )
 
-var (
-	cfsIDPattern = regexp.MustCompile(`(?i)cfs-[a-z0-9-]+`)
-	// Legacy no-snapshot fallback for refund estimates. This is intentionally
-	// narrower than the generic recognizer so product/model names with dashes
-	// do not short-circuit normal target resolution.
-	refundLegacyUHostIDPattern = regexp.MustCompile(`(?i)\bu(?:host|h)-[a-z0-9-]+\b`)
-)
-
 func handleRefundEstimate(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "GetCompShareRefundPrice"
 	if len(req.Plan.Slots.TargetRefs) == 0 {
-		if id := extractUHostIDFromText(req.UserText, req.Resolver); id != "" {
-			args := map[string]any{"UHostIds": []string{id}}
-			raw, routeFallback := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
-			if routeFallback != nil {
-				return *routeFallback
-			}
-			result := HandledResult(renderRefundEstimateReply(raw, nil))
-			result.ToolAction = action
-			result.ToolArgs = copyArgs(args)
-			return result
-		}
 		if id := strings.TrimSpace(req.FallbackInstanceID); id != "" {
 			req.Plan.Slots.TargetRefs = []TargetRef{{
 				Type:       TargetRefUHostIDUserInput,
@@ -122,7 +102,7 @@ func handleCFSInfo(ctx context.Context, h *DemoHandler, req HandlerRequest) Hand
 	}
 	const action = "DescribeCFS"
 	args := map[string]any{}
-	if cfsID := extractCFSIDFromText(req.UserText); cfsID != "" {
+	if cfsID := cfsIDFromTargetRefs(req.Plan.Slots.TargetRefs); cfsID != "" {
 		args["CfsId"] = cfsID
 	}
 	raw, fb := executeRouteAction(ctx, h, req.Plan.Intent, action, args)
@@ -178,7 +158,7 @@ func handleCFSCreatePrice(ctx context.Context, h *DemoHandler, req HandlerReques
 
 func handleCFSUpgradePrice(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "GetCompShareCFSUpgradePrice"
-	cfsID := extractCFSIDFromText(req.UserText)
+	cfsID := cfsIDFromTargetRefs(req.Plan.Slots.TargetRefs)
 	if cfsID == "" {
 		result := ClarificationResult("请补充要扩容的 CFS ID。CFS 扩容询价只读，不会直接扩容。")
 		result.ToolAction = action
@@ -209,7 +189,7 @@ func handleCFSUpgradePrice(ctx context.Context, h *DemoHandler, req HandlerReque
 
 func handleCFSRefundEstimate(ctx context.Context, h *DemoHandler, req HandlerRequest) HandlerResult {
 	const action = "GetCompShareCFSRefundPrice"
-	cfsID := extractCFSIDFromText(req.UserText)
+	cfsID := cfsIDFromTargetRefs(req.Plan.Slots.TargetRefs)
 	if cfsID == "" {
 		result := ClarificationResult("请补充要估算退费的 CFS ID。这个查询只做估算，不会删除或释放 CFS。")
 		result.ToolAction = action
@@ -387,24 +367,12 @@ func cfsPriceFromDetails(raw map[string]any) string {
 	return ""
 }
 
-func extractCFSIDFromText(text string) string {
-	return strings.ToLower(strings.TrimSpace(cfsIDPattern.FindString(text)))
-}
-
-func extractUHostIDFromText(text string, resolver EntityResolver) string {
-	if resolver != nil {
-		tokens := resolver.InstanceIDTokensInText(text)
-		for _, token := range tokens {
-			if inst, res := resolver.ResolveByID(token); res.Status == entity.ResolveHit && inst != nil {
-				return strings.TrimSpace(inst.UHostId)
-			}
+func cfsIDFromTargetRefs(refs []TargetRef) string {
+	for _, ref := range refs {
+		value := strings.TrimSpace(ref.Value)
+		if suffix, ok := strings.CutPrefix(strings.ToLower(value), "cfs-"); ok && suffix != "" {
+			return value
 		}
-		if len(tokens) > 0 {
-			return strings.TrimSpace(tokens[0])
-		}
-	}
-	if token := strings.TrimSpace(refundLegacyUHostIDPattern.FindString(text)); token != "" {
-		return strings.ToLower(token)
 	}
 	return ""
 }

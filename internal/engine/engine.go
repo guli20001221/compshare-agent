@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/agentruntime"
+	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/diagnosis"
@@ -360,10 +361,18 @@ type Engine struct {
 	// ActionProposal target verifier. It never persists and never carries values
 	// other than exact resource IDs returned by a read capability.
 	readCapabilitySubjectsThisTurn map[string]struct{}
+	// actionProposalRanThisTurn distinguishes a mixed write turn from a pure
+	// knowledge answer. Knowledge evidence may support an action, but must not
+	// claim ownership of the final clarification or confirmation text.
+	actionProposalRanThisTurn bool
 	// readResponseEvidenceThisTurn keeps server-rendered replies for successful
 	// central read capabilities. The Response Gateway can submit these facts
 	// without asking the model to retype identifiers, counts or measurements.
 	readResponseEvidenceThisTurn []readResponseEvidence
+	// Tool progress is turn-local. Replaying an identical read cannot create new
+	// evidence, so the runtime returns the prior observation and withdraws that
+	// concrete capability on the next round instead of spending ten rounds on it.
+	toolResultsByCallThisTurn map[string]string
 	// Raw user message for the current turn. Set at the start of Chat().
 	// Read by executeDiagnosis guards for signal matching. Never mutated
 	// mid-turn.
@@ -1268,6 +1277,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.readCapabilitySubjectsThisTurn = map[string]struct{}{}
 	e.readResponseEvidenceThisTurn = nil
+	e.toolResultsByCallThisTurn = map[string]string{}
+	e.actionProposalRanThisTurn = false
 	e.knowledgeQAAgentLoopThisTurn = false
 	continuityNow := time.Now()
 	e.expireContextFrame(continuityNow)
@@ -1382,36 +1393,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// visibleRegistryForIntentRoute + TestPlannerRequiredToolsDoNotAuthorizeDispatch).
 			Tools: toolWindow,
 		}
-		// Per-turn SearchKnowledge cap: once the agent loop has searched
-		// maxSearchKnowledgeCallsPerTurn times, withdraw the tool so a corpus-gap
-		// query stops re-searching (which balloons context to the token budget) and
-		// instead answers from what it has — or honestly declines. Paired with an
-		// ephemeral nudge so it states "no specific docs" rather than fabricating
-		// (the round-0 cited-contract gate no longer applies on these later rounds).
+		// Once the bounded search budget is exhausted, remove the capability. The
+		// observations already in the conversation are sufficient for the Agent's
+		// next decision; injecting another policy prompt here would create a second
+		// and potentially conflicting knowledge contract.
 		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") {
 			req.Tools = toolListWithoutFunction(req.Tools, "SearchKnowledge")
-			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQASearchCapNote)
-		}
-		// A knowledge_qa turn always sees the complete conversation and decides
-		// whether it needs retrieval. Reusing an already sufficient prior answer is
-		// valid; forcing another search would discard useful context and add jitter.
-		// With no complete prior turn there is nothing to reuse, so preserve the
-		// strong first-hop retrieval guarantee. Never force a tool absent from the
-		// active scope (the object tool_choice 400 trap).
-		if round == 0 && e.knowledgeQAAgentLoopThisTurn &&
-			toolListContainsFunction(req.Tools, "SearchKnowledge") {
-			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
-			if !e.hasReusableVerifiedKnowledge() {
-				if e.supportsObjectToolChoice {
-					req.ToolChoice = openai.ToolChoice{
-						Type:     openai.ToolTypeFunction,
-						Function: openai.ToolFunction{Name: "SearchKnowledge"},
-					}
-				} else if e.supportsRequiredToolChoice {
-					req.ToolChoice = "required"
-				}
-			}
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
@@ -1422,26 +1410,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			})
 			return agentruntime.Final(content, agentruntime.FinishRateLimit), nil
 		}
-		// Stream text deltas live to opts.OnTextDelta unless a downstream
-		// guard might rewrite the final content this round. When a guard could
-		// fire, buffer per-round so we can either replay the raw deltas (when
-		// content == rawContent) or emit the override as a single chunk.
-		// Intermediate tool-call rounds emit no content deltas in practice, so
-		// live mode does not leak partial tool args.
-		guardMayRewrite := e.currentMonitorWindow ||
-			len(e.readResponseEvidenceThisTurn) > 0 ||
-			// Every knowledge-agent answer is semantically checked before release,
-			// including a follow-up answered from durable prior evidence without a
-			// new SearchKnowledge call. Buffer the model's tokens until that check
-			// succeeds; otherwise an unsupported draft can reach the browser even
-			// though the final frame is correctly replaced by a refusal.
-			e.knowledgeQAAgentLoopThisTurn ||
-			// An instance table is waiting to be substituted into this reply, so the
-			// text WILL be rewritten before the user sees it. Streaming raw tokens
-			// would spell the literal "{{INSTANCE_TABLE}}" out into the browser and
-			// then contradict it in the final frame. Every other post-hoc rewrite in
-			// this function is declared here for exactly that reason.
-			e.instanceTableThisTurn != ""
+		// A no-tool model response is an internal AgentStep JSON object, never
+		// user-facing text. Buffer every round so the browser only receives its
+		// validated content and deterministic observation blocks. Tool-call rounds
+		// normally contain no text, so this does not delay observations.
+		guardMayRewrite := true
 		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
 		var streamedDeltas []string
 		if liveStream {
@@ -1482,37 +1455,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			opts.OnUsage(resp.Usage)
 		}
 
-		// Retry SearchKnowledge once only when retrieval was mandatory (no prior
-		// complete turn) or when a context-aware first answer tried to claim that the
-		// KB had no answer without actually checking it. A substantive direct answer
-		// based on prior conversation is allowed through to the normal final exit.
-		if round == 0 && e.knowledgeQAAgentLoopThisTurn &&
-			toolListContainsFunction(req.Tools, "SearchKnowledge") &&
-			!toolCallsContain(resp.ToolCalls, "SearchKnowledge") &&
-			(!e.hasReusableVerifiedKnowledge() || isKnowledgeRefusal(resp.Content)) &&
-			!e.tokenBudgetExceeded() {
-			retryReq := req
-			retryReq.OnTextDelta = nil
-			retryReq.Messages = withEphemeralSystemBeforeLastUser(req.Messages, knowledgeQAAgentLoopSearchNote)
-			if e.supportsObjectToolChoice {
-				retryReq.ToolChoice = openai.ToolChoice{
-					Type:     openai.ToolTypeFunction,
-					Function: openai.ToolFunction{Name: "SearchKnowledge"},
-				}
-			} else if e.supportsRequiredToolChoice {
-				retryReq.ToolChoice = "required"
-			}
-			if retryResp, retryErr := e.llmClient.Chat(ctx, retryReq); retryErr == nil {
-				e.emitTokenUsage(retryResp.Usage)
-				if opts.OnUsage != nil {
-					opts.OnUsage(retryResp.Usage)
-				}
-				if toolCallsContain(retryResp.ToolCalls, "SearchKnowledge") {
-					resp = retryResp
-				}
-			}
-		}
-
 		// The call has already been paid for. A budget can prevent another model
 		// call, but it must not erase a complete answer that is already in hand.
 		// The next loop iteration still enforces the cap before any further call.
@@ -1521,7 +1463,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
 			rawContent := resp.Content
-			content := e.finalizeResponse(ctx, userMsg, rawContent)
+			draft := rawContent
+			content := e.finalizeResponse(ctx, userMsg, draft)
 			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
@@ -2288,6 +2231,14 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		resolvedQuestion = query
 	}
 	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Args: map[string]any{"query": query}})
+	// One model response may contain several parallel SearchKnowledge calls. The
+	// tool-window cap is evaluated before that response, so enforce the same
+	// bound again at the execution boundary instead of allowing the batch to
+	// overshoot it.
+	if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
+		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "本轮检索次数已达上限"})
+		return `{"EvidenceLedger":{"items":[]},"empty":true,"search_limit_reached":true}`
+	}
 	// Count every invocation (incl. the degenerate no-retriever/empty-query path)
 	// so the ReAct loop can withdraw the tool once the per-turn cap is hit.
 	e.searchKnowledgeCallsThisTurn++
@@ -2410,8 +2361,8 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 	e.emitRetrievalTrace(trace)
 }
 
-func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswerReport) {
-	if !report.Grounded() || len(e.searchKnowledgeHitsThisTurn) == 0 {
+func (e *Engine) emitSearchKnowledgeTurnTrace(citedChunkIDs []string) {
+	if len(e.searchKnowledgeHitsThisTurn) == 0 {
 		return
 	}
 	query := strings.TrimSpace(e.searchKnowledgeLedgerThisTurn.Query)
@@ -2419,30 +2370,66 @@ func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswe
 		query = strings.TrimSpace(e.lastUserMsg)
 	}
 	queryNormalized := knowledge.NormalizeQuery(query)
-	evidences, _ := evidencesFromRetrievalHits(e.searchKnowledgeHitsThisTurn, queryNormalized)
-	refs := retrievalReferencesFromLedgerActivities(e.searchKnowledgeLedgerThisTurn, e.searchKnowledgeHitsThisTurn, e.searchKnowledgeActivityIDsByChunkID, "")
+	turnHits := retrievalHitsFromLedger(e.searchKnowledgeLedgerThisTurn, e.searchKnowledgeHitsThisTurn)
+	evidences, _ := evidencesFromRetrievalHits(turnHits, queryNormalized)
+	refs := retrievalReferencesFromLedgerActivities(e.searchKnowledgeLedgerThisTurn, turnHits, e.searchKnowledgeActivityIDsByChunkID, "")
 	kbVersion := ""
 	if len(e.searchKnowledgeHitsThisTurn) > 0 {
 		kbVersion = strings.TrimSpace(e.searchKnowledgeHitsThisTurn[0].Chunk.KBVersion)
 	}
 	trace := observability.RetrievalTrace{
 		Enabled:         true,
+		TurnAggregate:   true,
 		KBVersion:       kbVersion,
 		QueryRaw:        query,
 		QueryNormalized: queryNormalized,
-		Hits:            len(e.searchKnowledgeHitsThisTurn),
+		Hits:            len(turnHits),
 		Activities:      append([]observability.RetrievalActivity(nil), e.searchKnowledgeActivitiesThisTurn...),
-		HitItems:        projectEvidenceTraceHits(evidences, e.searchKnowledgeHitsThisTurn),
+		HitItems:        projectEvidenceTraceHits(evidences, turnHits),
 		References:      refs,
-		CitedChunkIDs:   append([]string(nil), report.CitedChunkIDs...),
-		CitedRefs:       citedRefsFromChunkIDs(report.CitedChunkIDs, refs),
+		CitedChunkIDs:   append([]string(nil), citedChunkIDs...),
+		CitedRefs:       citedRefsFromChunkIDs(citedChunkIDs, refs),
 	}
 	e.emitRetrievalTrace(trace)
+}
+
+func (e *Engine) emitSearchKnowledgeCitationTrace(report knowledge.GroundedAnswerReport) {
+	if !report.Grounded() {
+		return
+	}
+	e.emitSearchKnowledgeTurnTrace(report.CitedChunkIDs)
+}
+
+// retrievalHitsFromLedger projects the exact de-duplicated evidence set that was
+// available to the answer verifier. A chunk may be returned by several searches;
+// the reference records retain every activity ID without duplicating the chunk.
+func retrievalHitsFromLedger(ledger knowledge.EvidenceLedger, hits []knowledge.RetrievalHit) []knowledge.RetrievalHit {
+	if len(ledger.Items) == 0 {
+		return nil
+	}
+	byChunkID := make(map[string]knowledge.RetrievalHit, len(hits))
+	for _, hit := range hits {
+		chunkID := strings.TrimSpace(hit.Chunk.ChunkID)
+		if chunkID != "" {
+			byChunkID[chunkID] = hit
+		}
+	}
+	out := make([]knowledge.RetrievalHit, 0, len(ledger.Items))
+	for _, item := range ledger.Items {
+		if hit, ok := byChunkID[strings.TrimSpace(item.ChunkID)]; ok {
+			out = append(out, hit)
+		}
+	}
+	return out
 }
 
 // emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic
 // SearchKnowledge synthesis guard (raw-leak or uncited). Shared by both guard arms.
 func (e *Engine) emitSearchKnowledgeHardBlock(category string) {
+	// A failed grounding decision is exactly where the old trace path lost all
+	// but the final SearchKnowledge call. Persist the full verifier-visible set
+	// before recording the block so production failures remain auditable.
+	e.emitSearchKnowledgeTurnTrace(nil)
 	e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
 		Hit:         true,
 		Category:    category,
@@ -2472,6 +2459,29 @@ func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool) stri
 }
 
 func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
+	action := tc.Function.Name
+	if repeatableAgentTool(action) {
+		if e.toolResultsByCallThisTurn == nil {
+			e.toolResultsByCallThisTurn = map[string]string{}
+		}
+		if args, ok := decodeToolArgsForProgress(tc.Function.Arguments); ok {
+			key := toolProgressCallKey(action, args)
+			if previous, exists := e.toolResultsByCallThisTurn[key]; exists {
+				result := repeatedToolObservation(action, previous)
+				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "相同参数复用已有观察", TraceResult: map[string]any{"status": "reused_observation", "same_call_blocked": true}})
+				return result
+			}
+			result := e.executeToolOnce(ctx, tc, onStep)
+			if _, final := isFinalReply(result); !final {
+				e.toolResultsByCallThisTurn[key] = result
+			}
+			return result
+		}
+	}
+	return e.executeToolOnce(ctx, tc, onStep)
+}
+
+func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
 	action := tc.Function.Name
 
 	// Parse args first (needed for all paths)
@@ -2512,12 +2522,16 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		return e.executeSearchKnowledge(ctx, args, onStep)
 	}
 
-	// Shadow read-capability adapter. The capability registry deliberately keeps
-	// this tool out of production model windows until P6; direct execution here
-	// lets parity and safety gates prove the contract before that cutover.
-	if action == tools.ReadPlatformCapabilityName {
-		args = e.safeExecutor.FilterArgs(action, args)
-		return e.executeReadPlatformCapability(ctx, args, onStep)
+	if _, ok := capability.ReadIntentForTool(action); ok {
+		// High-level read tools share one policy and one execution adapter. The
+		// concrete tool name selects the capability; it is never accepted from an
+		// arbitrary model-authored string inside the arguments.
+		return e.executeConcreteReadCapability(ctx, action, args, onStep)
+	}
+	if operation, ok := proposalOperationForTool(action); ok {
+		args["operation"] = operation
+		args = e.safeExecutor.FilterArgs(tools.ProposeActionName, args)
+		return e.executeActionProposal(ctx, args, onStep)
 	}
 	if action == tools.ProposeActionName {
 		args = e.safeExecutor.FilterArgs(action, args)
@@ -3750,15 +3764,10 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		wfEngine.SetConfirmEditsFn(e.confirmEditsFn)
 	}
 
-	// Normalize the GPU type to the platform's canonical catalog name before the
-	// create workflow queries availability. The planner echoes the user's literal
-	// text (e.g. "V100"), but the catalog only knows "V100S" — without this the
-	// availability query returns nothing and the failure gets narrated into a
-	// fabricated "V100 下架" reply.
+	// Normalize the GPU candidate already accepted by Action Resolver. The sealed
+	// execution contract is the only write source; never re-read lastUserMsg here.
 	if action == "CreateInstanceWorkflow" {
-		if explicit := knowledge.ExplicitGPUTypeFromText(e.lastUserMsg); explicit != "" {
-			args["GpuType"] = explicit
-		} else if gt, ok := args["GpuType"].(string); ok && gt != "" {
+		if gt, ok := args["GpuType"].(string); ok && gt != "" {
 			args["GpuType"] = knowledge.CanonicalGPUType(gt)
 		}
 		if gt, _ := args["GpuType"].(string); gt != "" {
@@ -4536,25 +4545,11 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 	e.historyTrimmedThisSession = true
 }
 
-// staleStateNote is a temporary system message injected when prior instance
-// state may be outdated. It nudges the model to re-query before acting.
-const staleStateNote = "注意：本轮之前的对话中获取的实例状态信息可能已过时，用户可能已在控制台侧手动操作实例。\n如果本轮需要基于实例当前状态作出判断，或执行实例变更操作，必须先调用 DescribeCompShareInstance 获取最新状态后再决策。"
-
-const monitorRecallRequiredToolNote = "The previous user turn queried instance monitoring. For this follow-up, call GetCompShareInstanceMonitor again before answering and do not reuse prior monitor values."
-
 // buildMessagesForLLM returns the message slice to send to the LLM.
-// If instance state from a prior turn may be stale, a temporary system note
-// is appended. The note is NOT persisted in e.messages.
+// Freshness and refresh requirements are part of the single compiled
+// AgentContext; this function does not add turn-local policy prompts.
 func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
-	messages := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
-	if e.lastInstanceQueryTurn >= 0 && e.lastInstanceQueryTurn < e.userTurn {
-		// Insert stale note immediately before the latest user message, so the
-		// model sees the warning right next to the ask it's about to answer.
-		// This is much higher attention than burying the note at index 1
-		// (after the main system prompt) in a long conversation.
-		messages = withEphemeralSystemBeforeLastUser(messages, staleStateNote)
-	}
-	return messages
+	return messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
 }
 
 // messagesFromAgentContext is the sole history entrance for the main model.

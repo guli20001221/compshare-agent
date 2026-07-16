@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "short_followup_paste",
+      "source_ref": "prod_export_2026-06-30/terminal-copy-followup",
+      "turns": [
+        { "message": "为什么不能在终端复制" },
+        {
+          "message": "粘贴呢",
+          "expect": {
+            "reply_any": ["Ctrl\\s*\\+\\s*Shift\\s*\\+\\s*V", "Shift\\s*\\+\\s*Insert", "右键.{0,12}粘贴"],
+            "reply_none": ["没太理解.{0,20}粘贴", "粘贴.{0,20}指的是什么"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "grounded_answer_not_false_refused",
+      "source_ref": "sanitized_context_rag_records/ubuntu-image-difference",
+      "turns": [
+        {
+          "message": "你们提供的镜像，Ubuntu和Ubuntu-NVIDIA，有什么区别吗",
+          "expect": {
+            "reply_any": ["NVIDIA", "CUDA", "驱动"],
+            "reply_none": ["知识库未覆盖", "无法回答"],
+            "action_any": ["DescribeCompShareImages"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "explicit_instance_continues_diagnosis",
+      "source_ref": "prod_export_2026-07/explicit-instance-then-diagnosis",
+      "requires_instance": true,
+      "turns": [
+        { "message": "我的 $INSTANCE 最近登录不上" },
+        {
+          "message": "这台一直启动中，帮我继续看",
+          "expect": {
+            "reply_any": ["启动", "状态", "$INSTANCE"],
+            "reply_none": ["哪台实例", "告诉我.{0,12}实例.{0,8}(ID|名称)"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ordinal_selection_continues",
+      "source_ref": "prod_export_2026-07/instance-list-select-second",
+      "turns": [
+        { "message": "我有哪些实例" },
+        {
+          "message": "第二台呢，它现在什么状态",
+          "expect": {
+            "reply_any": ["状态", "运行", "停止", "实例"],
+            "reply_none": ["哪台实例", "告诉我.{0,12}实例.{0,8}(ID|名称)"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unfinished_write_fills_one_parameter",
+      "source_ref": "prod_export_2026-07/data-disk-size-followup",
+      "requires_instance": true,
+      "turns": [
+        { "message": "给 $INSTANCE 加一个数据盘" },
+        {
+          "message": "200G",
+          "expect": {
+            "reply_any": ["200", "数据盘", "取消", "未执行"],
+            "reply_none": ["200G.{0,20}指的是什么"],
+            "confirmation": "decline_if_requested"
+          }
+        }
+      ]
+    },
+    {
+      "name": "correct_previous_parameter",
+      "source_ref": "prod_export_2026-07/eight-card-price-correction",
+      "turns": [
+        { "message": "4090 48G 单卡一个月多少钱" },
+        {
+          "message": "8卡，不是单卡，一个月多少钱",
+          "expect": {
+            "reply_any": ["8.{0,3}卡", "八.{0,3}卡", "8\\s*[×x*]"],
+            "reply_none": ["请告诉我.{0,12}GPU.{0,8}型号", "哪种卡"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "abandon_old_task_for_new_pricing_question",
+      "source_ref": "prod_export_2026-07/abandon-then-4090-price",
+      "requires_instance": true,
+      "turns": [
+        { "message": "给 $INSTANCE 加一个数据盘" },
+        {
+          "message": "算了，4090多少钱",
+          "expect": {
+            "reply_any": ["4090", "价格", "元", "库存"],
+            "reply_none": ["数据盘.{0,20}(大小|容量)", "确认.{0,12}数据盘"],
+            "confirmation": "forbidden"
+          }
+        }
+      ]
+    },
+    {
+      "name": "deploy_task_does_not_hijack_plain_hardware_create",
+      "source_ref": "prod_export_2026-07/deploy-task-then-plain-create",
+      "turns": [
+        { "message": "给我新开符合 LongCat-Video 的资源实例" },
+        {
+          "message": "创建一台1卡4090 Ubuntu虚机",
+          "expect": {
+            "reply_any": ["4090", "Ubuntu", "虚机", "创建", "确认", "补充"],
+            "reply_none": ["LongCat-Video", "Ollama"],
+            "confirmation": "decline_if_requested"
+          }
+        }
+      ]
+    },
+    {
+      "name": "incomplete_registry_cannot_assert_absence",
+      "source_ref": "prod_export_2026-07/registry-unavailable-false-absence",
+      "identity_mode": "unbound",
+      "turns": [
+        {
+          "message": "查询实例 uhost-sanitized-missing",
+          "expect": {
+            "reply_any": ["查询", "暂时", "失败", "无法", "权限", "同步"],
+            "reply_none": ["实例不存在", "没有这个实例", "账号下没有实例"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "first_turn_without_context_may_clarify",
+      "source_ref": "prod_export_2026-07/first-turn-login-failure",
+      "turns": [
+        {
+          "message": "连不上",
+          "expect": {
+            "reply_any": ["哪台", "实例.{0,12}(ID|名称)", "具体.{0,12}(报错|现象)"],
+            "confirmation": "forbidden"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -11,9 +11,10 @@ import (
 // readResponseEvidence is server-produced factual output, not model prose.
 // It is turn-local and is never persisted as a second context representation.
 type readResponseEvidence struct {
-	Capability string
-	Reply      string
-	Envelope   envelope.Envelope
+	Capability  string
+	Reply       string
+	Envelope    envelope.Envelope
+	Placeholder string
 }
 
 // finalizeResponse is the single final-text gateway for the central Agent.
@@ -23,14 +24,14 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	content := e.guardMonitorTemporalFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
 
-	// SearchKnowledge owns its semantic claim verifier and repair path. When a
-	// turn searched, platform read output may be supporting evidence for a
-	// diagnosis, so it must not replace the verified knowledge answer.
-	content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
-	if len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
-		if canonical := canonicalReadResponse(e.readResponseEvidenceThisTurn); canonical != "" {
-			content = canonical
-		}
+	// SearchKnowledge owns its semantic claim verifier and repair path. Read
+	// capabilities only provide observations to the Agent; they never replace
+	// the Agent's final response or end the turn on their own.
+	content = substituteReadObservationBlocks(content, e.readResponseEvidenceThisTurn)
+	if e.searchKnowledgeRanThisTurn {
+		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
+	} else {
+		e.groundingOutcomeThisTurn = groundingUnavailable
 	}
 
 	if strings.TrimSpace(content) == "" {
@@ -42,19 +43,12 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	return content
 }
 
-func canonicalReadResponse(evidence []readResponseEvidence) string {
-	seen := map[string]struct{}{}
-	parts := make([]string, 0, len(evidence))
+func substituteReadObservationBlocks(reply string, evidence []readResponseEvidence) string {
 	for _, item := range evidence {
-		reply := strings.TrimSpace(item.Reply)
-		if reply == "" {
+		if item.Placeholder == "" || item.Reply == "" {
 			continue
 		}
-		if _, ok := seen[reply]; ok {
-			continue
-		}
-		seen[reply] = struct{}{}
-		parts = append(parts, reply)
+		reply = strings.ReplaceAll(reply, item.Placeholder, item.Reply)
 	}
-	return strings.Join(parts, "\n\n")
+	return reply
 }

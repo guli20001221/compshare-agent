@@ -662,11 +662,21 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 // retrieval when the incoming one has no hits; otherwise the latest (substantive or
 // first-ever) wins. Terminal RAG retrieves once, so its trace is unchanged.
 func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
-	if len(next.CitedChunkIDs) > 0 || len(next.CitedRefs) > 0 {
+	if next.TurnAggregate || len(next.CitedChunkIDs) > 0 || len(next.CitedRefs) > 0 {
 		if !traceRetrievalObserved(current) {
 			return next
 		}
 		merged := current
+		if next.TurnAggregate {
+			merged.TurnAggregate = true
+			merged.Hits = next.Hits
+			if next.QueryRaw != "" {
+				merged.QueryRaw = next.QueryRaw
+			}
+			if next.QueryNormalized != "" {
+				merged.QueryNormalized = next.QueryNormalized
+			}
+		}
 		if len(next.References) > 0 {
 			merged.References = next.References
 		}
@@ -686,11 +696,15 @@ func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 		if len(next.HitItems) > 0 {
 			merged.HitItems = next.HitItems
 		}
-		if next.Hits > merged.Hits {
+		if !next.TurnAggregate && next.Hits > merged.Hits {
 			merged.Hits = next.Hits
 		}
 		if len(next.Activities) > 0 {
-			merged.Activities = mergeRetrievalActivities(merged.Activities, next.Activities)
+			if next.TurnAggregate {
+				merged.Activities = append([]RetrievalActivity(nil), next.Activities...)
+			} else {
+				merged.Activities = mergeRetrievalActivities(merged.Activities, next.Activities)
+			}
 		}
 		return merged
 	}
@@ -735,7 +749,11 @@ type RateLimitTrace struct {
 }
 
 type RetrievalTrace struct {
-	Enabled         bool                 `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// TurnAggregate marks the final de-duplicated evidence snapshot for the
+	// entire turn. It is emitted for both grounded answers and grounding
+	// failures so a multi-search failure does not retain only its last call.
+	TurnAggregate   bool                 `json:"turn_aggregate,omitempty"`
 	KBVersion       string               `json:"kb_version"`
 	QueryRaw        string               `json:"query_raw,omitempty"`
 	QueryNormalized string               `json:"query_normalized,omitempty"`

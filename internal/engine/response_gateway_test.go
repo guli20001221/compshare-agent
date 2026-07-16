@@ -5,16 +5,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
 
-func TestCentralResponseGatewaySubmitsServerReadReplyInsteadOfModelRetyping(t *testing.T) {
+func TestCentralAgentDecidesTheReplyAfterReadingAnObservation(t *testing.T) {
 	model := &streamingSeqMockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("read", tools.ReadPlatformCapabilityName, `{"capability":"resource_info","slots":{}}`)}},
-		{Content: "你有 15 台实例，其中 uhost-invented 正在运行。"},
+		{ToolCalls: []openai.ToolCall{toolCall("read", capability.ReadToolName(intent.IntentResourceInfo), `{}`)}},
+		{Content: "你有一台名为 train-a 的实例（uhost-1），当前正在运行。"},
 	}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"TotalCount": float64(1), "UHostSet": []any{map[string]any{
@@ -28,12 +29,9 @@ func TestCentralResponseGatewaySubmitsServerReadReplyInsteadOfModelRetyping(t *t
 		OnTextDelta: func(delta string) { deltas = append(deltas, delta) },
 	})
 	require.NoError(t, err)
-	require.Contains(t, reply, "uhost-1")
-	require.NotContains(t, reply, "uhost-invented")
-	require.NotContains(t, reply, "15 台")
+	require.Equal(t, "你有一台名为 train-a 的实例（uhost-1），当前正在运行。", reply)
 	streamed := strings.Join(deltas, "")
 	require.Equal(t, reply, streamed)
-	require.NotContains(t, streamed, "uhost-invented")
 }
 
 func TestResponseGatewayDoesNotOverrideConversationOnlyAnswer(t *testing.T) {
@@ -41,7 +39,11 @@ func TestResponseGatewayDoesNotOverrideConversationOnlyAnswer(t *testing.T) {
 	require.Equal(t, "结合上一轮的回答继续即可。", eng.finalizeResponse(context.Background(), "那继续呢", "结合上一轮的回答继续即可。"))
 }
 
-func TestCanonicalReadResponseIsCompleteAndStableForMultipleCapabilities(t *testing.T) {
-	got := canonicalReadResponse([]readResponseEvidence{{Reply: "规格事实"}, {Reply: "库存事实"}, {Reply: "规格事实"}})
-	require.Equal(t, "规格事实\n\n库存事实", got)
+func TestResponseGatewaySubstitutesOnlyAgentSelectedObservationBlocks(t *testing.T) {
+	evidence := []readResponseEvidence{
+		{Reply: "精确实例表", Placeholder: "{{READ_OBSERVATION_1}}"},
+		{Reply: "精确价格表", Placeholder: "{{READ_OBSERVATION_2}}"},
+	}
+	require.Equal(t, "结论如下：\n精确价格表", substituteReadObservationBlocks("结论如下：\n{{READ_OBSERVATION_2}}", evidence))
+	require.Equal(t, "只做解释，不展示精确表格。", substituteReadObservationBlocks("只做解释，不展示精确表格。", evidence))
 }

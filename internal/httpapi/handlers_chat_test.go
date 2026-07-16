@@ -402,7 +402,7 @@ func TestDispatchChatRedactsUserPIIOnlyWhenPersisting(t *testing.T) {
 	assert.True(t, rawUserSeen, "agent routing/model input must still see raw user text")
 }
 
-func TestDispatchChatRedactsAssistantLeakOnlyWhenPersisting(t *testing.T) {
+func TestDispatchChatRedactsAssistantCredentialsBeforeSendingAndPersistsSanitizedCopy(t *testing.T) {
 	reply := `Instance uhost-abc123 is ready on 4090.
 Public IP: 1.2.3.4
 Project: 12345678-1234-1234-1234-1234567890ab
@@ -441,11 +441,13 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	assert.True(t, sink.has("token"))
 	assert.Contains(t, body, "1.2.3.4")
 	assert.Contains(t, body, "12345678-1234-1234-1234-1234567890ab")
-	assert.Contains(t, body, "AKIAIOSFODNN7EXAMPLE")
+	assert.NotContains(t, body, "AKIAIOSFODNN7EXAMPLE")
 	assert.NotContains(t, body, guardrails.IPRedacted)
 	assert.NotContains(t, body, guardrails.ProjectIDRedacted)
-	assert.NotContains(t, body, guardrails.CredentialRedactedOutput)
-	assert.NotContains(t, body, guardrails.TokenRedactedOutput)
+	assert.True(t,
+		strings.Contains(body, guardrails.CredentialRedactedOutput) || strings.Contains(body, "[REDACTED]"),
+		"assistant output must redact credential bodies before transport, got: %s", body,
+	)
 
 	persisted := messages.patch.Content
 	assert.Contains(t, persisted, guardrails.IPRedacted)
@@ -495,7 +497,8 @@ func TestDispatchChatDoesNotPersistPartialAssistantContentOnError(t *testing.T) 
 
 	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-error","Message":"hi","request_uuid":"req-error","top_organization_id":1,"organization_id":2}`)
 
-	assert.Contains(t, sink.body(), leakedDelta)
+	assert.NotContains(t, sink.body(), leakedDelta)
+	assert.NotContains(t, sink.body(), "AKIAIOSFODNN7EXAMPLE")
 	assert.True(t, sink.has("error"))
 
 	assert.Equal(t, "error", messages.patch.Status)

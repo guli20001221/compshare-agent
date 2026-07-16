@@ -2,7 +2,6 @@ package tools
 
 import openai "github.com/sashabaranov/go-openai"
 
-const ReadPlatformCapabilityName = "ReadPlatformCapability"
 const ProposeActionName = "ProposeAction"
 const UpdateTaskStateName = "UpdateTaskState"
 
@@ -14,27 +13,11 @@ var ShadowCapabilityDefinitions = []CapabilityDefinition{
 	{
 		Stage: CapabilityStageShadow,
 		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
-			Name:        ReadPlatformCapabilityName,
-			Description: "执行平台只读业务能力，复用现有组合查询、过滤与确定性事实包。capability 使用平台能力名称；slots 只放本轮明确参数。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"capability": map[string]any{"type": "string", "description": "平台只读能力名称。"},
-					"slots":      map[string]any{"type": "object", "description": "该能力的结构化参数；未知字段会被拒绝。"},
-				},
-				"required": []string{"capability"},
-			},
-		}},
-	},
-	{
-		Stage: CapabilityStageShadow,
-		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
 			Name:        ProposeActionName,
-			Description: "提出结构化写操作候选。每个候选值必须声明来源；参数归并和安全条件检查通过后，操作仍必须经过服务端权限、确认、日志和执行门。",
+			Description: "用户要求写操作时直接提出结构化候选；不要先检索文档来猜必填参数。服务端会返回缺失项。user_explicit 候选的 value 和 quote 必须是用户原文中的同一段文字，类型和单位由 Resolver 转换；内部轮次标识和原文位置由运行时补齐。参数归并通过后仍必须经过权限、确认、日志和执行门。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"turn_id":   map[string]any{"type": "string"},
 					"operation": map[string]any{"type": "string"},
 					"slots": map[string]any{
 						"type": "array",
@@ -53,7 +36,7 @@ var ShadowCapabilityDefinitions = []CapabilityDefinition{
 						},
 					},
 				},
-				"required": []string{"turn_id", "operation", "slots"},
+				"required": []string{"operation", "slots"},
 			},
 		}},
 	},

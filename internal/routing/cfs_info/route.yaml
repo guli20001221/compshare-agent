@@ -11,6 +11,7 @@ tool_subset:
   - GetCompShareCFSRefundPrice
 required_citation: false
 handler_key: handleCFSInfo
+agent_slots: [target_refs, cfs_kind, size_gb, zone, charge_type]
 planner_directives:
   - 'Classify CFS list, capacity, mount status, cfs-xxx status, create-price, resize-price, and refund-estimate questions as cfs_info.'
   - 'Set slots.cfs_kind to list, create_price, upgrade_price, or refund. Default to list for broad CFS list/status questions.'

@@ -309,8 +309,7 @@ func TestDispatchRoute_ImageListResolvesSourceFacet(t *testing.T) {
 			exec := &routeSequenceExecutor{}
 			h := NewDemoHandler(exec)
 			req := HandlerRequest{
-				UserText: tc.userText,
-				Plan:     IntentRoute{Intent: IntentImageList, Slots: Slots{ImageSource: tc.source}},
+				Plan: IntentRoute{Intent: IntentImageList, Slots: Slots{ImageSource: tc.source}},
 			}
 			result := h.DispatchRoute(context.Background(), req)
 			if result.Status != HandlerStatusHandled {
@@ -338,7 +337,6 @@ func TestDispatchRoute_CommunityImageUsesSlotFuzzySearch(t *testing.T) {
 	}}
 	h := NewDemoHandler(exec)
 	result := h.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "推荐数字人镜像",
 		Plan: IntentRoute{
 			Intent: IntentImageList,
 			Slots: Slots{
@@ -535,7 +533,7 @@ func TestRenderGPUSpecs_FilterToMentionedModel(t *testing.T) {
 			},
 		},
 	}
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "A100", DetailLevel: DetailLevelSummary}, "A100 支持几张卡")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "A100", DetailLevel: DetailLevelSummary})
 	if strings.Contains(reply, "机型=4090") {
 		t.Errorf("filter should exclude 4090 when user asked A100; got: %s", reply)
 	}
@@ -571,7 +569,7 @@ func TestRenderGPUSpecs_OverviewDoesNotExpandEveryMachineSize(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelSummary}, "4090 显存多大")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelSummary})
 
 	if !strings.Contains(reply, "机型=4090") || !strings.Contains(reply, "显存=24GB") {
 		t.Fatalf("overview should include basic GPU facts, got: %s", reply)
@@ -624,7 +622,7 @@ func TestRenderGPUSpecs_FullModelRequestExpandsEveryMachineSize(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull}, "4090 的所有规格")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull})
 
 	for _, want := range []string{"16C/64G", "16C/94G", "24C/96G", "32C/128G", "32C/192G"} {
 		if !strings.Contains(reply, want) {
@@ -655,7 +653,6 @@ func TestHandleGPUSpecsQuery_DetailLevelComesFromSlot(t *testing.T) {
 		},
 	}}
 	result := handleGPUSpecsQuery(context.Background(), NewDemoHandler(exec), HandlerRequest{
-		UserText: "4090 显存多大",
 		Plan: IntentRoute{
 			Intent: IntentGPUSpecsQuery,
 			Slots:  Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull},
@@ -686,7 +683,7 @@ func TestRenderGPUSpecs_CPUAndMemoryQuestionExpandsEveryMachineSize(t *testing.T
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull}, "4090 支持哪些 CPU 和内存")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull})
 
 	for _, want := range []string{"16C/64G", "16C/94G", "24C/96G"} {
 		if !strings.Contains(reply, want) {
@@ -727,7 +724,7 @@ func TestRenderGPUSpecs_FullAllRequestExpandsAllModels(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, Slots{DetailLevel: DetailLevelFull}, "列出所有 GPU 规格")
+	reply := renderGPUSpecsReply(raw, Slots{DetailLevel: DetailLevelFull})
 
 	for _, want := range []string{"机型=4090", "16C/64G", "16C/94G", "机型=A100", "20C/160G"} {
 		if !strings.Contains(reply, want) {
@@ -758,8 +755,7 @@ func TestGPUSpecsRouteUsesDescribeAvailableAndExpandsFullRequest(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentGPUSpecsQuery, Slots: Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull}},
-		UserText: "4090 的所有规格",
+		Plan: IntentRoute{Intent: IntentGPUSpecsQuery, Slots: Slots{SearchQuery: "4090", DetailLevel: DetailLevelFull}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -796,7 +792,7 @@ func TestRenderGPUSpecs_IncludesMemoryVariantForFamilyQuestion(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelSummary}, "4090有哪些规格")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090", DetailLevel: DetailLevelSummary})
 
 	if !strings.Contains(reply, "机型=4090,") {
 		t.Errorf("family question should include base 4090; got: %s", reply)
@@ -817,7 +813,7 @@ func TestRenderGPUSpecs_MemoryHintMatchesMemoryVariant(t *testing.T) {
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090 48G", DetailLevel: DetailLevelSummary}, "是否有48G的4090")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090 48G", DetailLevel: DetailLevelSummary})
 
 	if strings.Contains(reply, "机型=4090,") {
 		t.Errorf("48G question should not answer with plain 4090; got: %s", reply)
@@ -834,7 +830,7 @@ func TestRenderGPUSpecs_MemoryHintWithoutMatchDoesNotFallBackToBase(t *testing.T
 		},
 	}
 
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090 128G", DetailLevel: DetailLevelSummary}, "有没有128G的4090")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "4090 128G", DetailLevel: DetailLevelSummary})
 
 	if !strings.Contains(reply, "未在当前可售机型里找到") {
 		t.Errorf("unavailable memory variant should be reported as not found; got: %s", reply)
@@ -847,7 +843,7 @@ func TestRenderGPUSpecs_SearchQueryNoMatchFallback(t *testing.T) {
 			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}},
 		},
 	}
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "H100", DetailLevel: DetailLevelSummary}, "上海机房 H100 库存")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "H100", DetailLevel: DetailLevelSummary})
 	if !strings.Contains(reply, "未在当前可售机型里找到") {
 		t.Errorf("no-match reply should explain; got: %s", reply)
 	}
@@ -859,7 +855,7 @@ func TestRenderGPUSpecs_GPULikeButNoMatchFallback(t *testing.T) {
 			map[string]any{"Name": "4090", "GraphicsMemory": map[string]any{"Value": 24}},
 		},
 	}
-	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "5070", DetailLevel: DetailLevelSummary}, "5070 显存多大")
+	reply := renderGPUSpecsReply(raw, Slots{SearchQuery: "5070", DetailLevel: DetailLevelSummary})
 	if !strings.Contains(reply, "未在当前可售机型里找到") {
 		t.Errorf("not-found fallback should explain; got: %s", reply)
 	}
@@ -950,8 +946,7 @@ func TestStockAvailabilityUsesCapacityPrecheckForMentionedNormalGPU(t *testing.T
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
-		UserText: "4090 现在有没有货",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1035,7 +1030,6 @@ func TestStockAvailabilityPodCapacityPrecheckUsesZoneIDOnly(t *testing.T) {
 		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{
 			SearchQuery: "4090",
 		}},
-		UserText: "4090 现在有没有货",
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1083,8 +1077,7 @@ func TestStockAvailabilityReportsRawGPUInventoryAndCapacitySeparately(t *testing
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "2080ti"}},
-		UserText: "2080ti有库存吗",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "2080ti"}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1139,8 +1132,7 @@ func TestStockAvailabilityFiltersByLiveZoneDescribe(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090", Zone: "上海二B"}},
-		UserText: "上海有4090库存吗",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090", Zone: "上海二B"}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1196,8 +1188,7 @@ func TestStockAvailabilityMissingInventoryKeyIsUnknownNotZero(t *testing.T) {
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "v100"}},
-		UserText: "v100有库存吗",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "v100"}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1231,8 +1222,7 @@ func TestStockAvailabilityKeepsZoneInventoryWhenCapacityImageMissing(t *testing.
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
-		UserText: "4090 现在有库存吗",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1283,8 +1273,7 @@ func TestStockAvailabilityMissingSupportZoneMappingIsUnknownNotZero(t *testing.T
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "2080ti"}},
-		UserText: "2080ti有库存吗",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "2080ti"}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1346,8 +1335,7 @@ func TestStockAvailabilityUsesFirstMatchedZoneForCapacityPrecheck(t *testing.T) 
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
-		UserText: "4090 现在有没有货",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1369,8 +1357,7 @@ func TestStockAvailabilityFallsBackToNextZoneWhenCapacityCheckFails(t *testing.T
 	handler := NewDemoHandler(exec)
 
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
-		UserText: "4090 鐜板湪鏈夋病鏈夎揣",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 	})
 
 	if result.Status != HandlerStatusHandled {
@@ -1791,7 +1778,7 @@ func TestBuildCommunityImageEnvelope_PopularityFactsAndOrder(t *testing.T) {
 	raw := map[string]any{"CompshareImageGroup": []any{
 		mk("low", 100), mk("high", 9000), mk("mid", 3000), noCount,
 	}}
-	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll}, "查询社区镜像")
+	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll})
 
 	// Subjects sorted by deploy count desc; the unsized group sorts last.
 	got := make([]string, 0, len(env.Subjects))
@@ -1846,7 +1833,7 @@ func TestBuildCommunityImageEnvelope_CapsDefaultSubjectsAtTen(t *testing.T) {
 	}
 	raw := map[string]any{"CompshareImageGroup": groups}
 
-	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll}, "查询社区镜像")
+	env := buildCommunityImageEnvelope(raw, Slots{ListMode: ListModeAll})
 
 	if got := len(env.Subjects); got != communityImageGroupLimit {
 		t.Fatalf("expected %d community image subjects, got %d: %#v", communityImageGroupLimit, got, env.Subjects)
@@ -1946,7 +1933,7 @@ func TestBuildImageListEnvelope_NoRawIDFacts(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.9", "ImageType": "App"},
 	}}
 	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, Slots{ListMode: ListModeAll}, "有哪些镜像", "DescribeCompShareImages", "platform")
+	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, Slots{ListMode: ListModeAll}, "DescribeCompShareImages", "platform")
 	for _, f := range env.Facts {
 		if f.Key == "CompShareImageId" || f.Key == "Name" {
 			t.Errorf("display Fact %q should be dropped (id→Subject.ID, name→Subject.Name); facts=%v", f.Key, env.Facts)
@@ -1964,7 +1951,7 @@ func TestBuildImageListEnvelope_PyTorchMatchesTorchNamedImages(t *testing.T) {
 	}}
 
 	env := buildImageListEnvelope(raw, "ImageSet", []string{"CompShareImageId", "Name", "ImageType"},
-		Slots{SearchQuery: "torch", ListMode: ListModeFiltered}, "有哪些 PyTorch 镜像", "DescribeCompShareImages", "platform")
+		Slots{SearchQuery: "torch", ListMode: ListModeFiltered}, "DescribeCompShareImages", "platform")
 
 	if len(env.Subjects) != 1 || env.Subjects[0].Name != "cuda128_torch291_py312" {
 		t.Fatalf("PyTorch envelope should keep only torch-compatible image, got %#v", env.Subjects)
@@ -1978,7 +1965,7 @@ func TestBuildCommunityImageEnvelope_DigitalHumanQueryMatchesRelevantGroups(t *t
 		}},
 	}}
 
-	env := buildCommunityImageEnvelope(raw, Slots{SearchQuery: "数字人", ListMode: ListModeFiltered}, "有哪些社区镜像适合数字人")
+	env := buildCommunityImageEnvelope(raw, Slots{SearchQuery: "数字人", ListMode: ListModeFiltered})
 
 	if len(env.Subjects) != 1 || env.Subjects[0].Name != "LiveTalking" {
 		t.Fatalf("digital-human envelope should keep relevant community group only, got %#v", env.Subjects)

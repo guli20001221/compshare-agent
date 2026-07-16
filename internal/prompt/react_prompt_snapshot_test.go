@@ -10,8 +10,8 @@ import (
 const (
 	// 2026-07-15: the central Agent is the only semantic runtime. Per-intent
 	// routing tables and temporary prompt cards were removed.
-	mutatingReActPromptSHA256 = "03cabfe7cf1648e441fafb2c5290c4a3d46fe0fed50f90f8cce766ba0632fe38"
-	readOnlyReActPromptSHA256 = "a3445a7766583fde8e4f3cf33128fab956ed72b49ccccc46b0f28ddabb3e8bf8"
+	mutatingReActPromptSHA256 = "6b38297a8b55fd931fd9beead5e91d5e20a56ddd94a98df224ff7966d6a9edd1"
+	readOnlyReActPromptSHA256 = "a3be78ebc6cb1cd805b44025b97782fb68781f6161b8085f3b4e15342ed11f00"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

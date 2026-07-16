@@ -14,13 +14,13 @@ func TestDirectRouteEnvelopesNeverPromoteUserTextToEvidence(t *testing.T) {
 	const falsePremise = "UNTRUSTED_USER_PREMISE_4090_IS_10_CARDS"
 	imageFields := []string{"CompShareImageId", "Name", "ImageType"}
 	tests := map[string]envelope.Envelope{
-		"gpu_specs_query":    buildGPUSpecsEnvelope(map[string]any{}, Slots{}, falsePremise),
+		"gpu_specs_query":    buildGPUSpecsEnvelope(map[string]any{}, Slots{}),
 		"stock_availability": buildStockEnvelope(map[string]any{}, falsePremise),
 		"platform_image_list": buildImageListEnvelope(
-			map[string]any{}, "ImageSet", imageFields, Slots{}, falsePremise,
+			map[string]any{}, "ImageSet", imageFields, Slots{},
 			"DescribeCompShareImages", "platform",
 		),
-		"community_image_list": buildCommunityImageEnvelope(map[string]any{}, Slots{}, falsePremise),
+		"community_image_list": buildCommunityImageEnvelope(map[string]any{}, Slots{}),
 	}
 
 	for name, env := range tests {
@@ -41,8 +41,7 @@ func TestAllProductionDirectIntentResultsKeepUserTextOutOfEvidence(t *testing.T)
 	handler := NewDemoHandler(stubFailingExecutor{})
 	request := func(value Intent) HandlerRequest {
 		return HandlerRequest{
-			Plan:     IntentRoute{SchemaVersion: SchemaVersion, Intent: value},
-			UserText: falsePremise,
+			Plan: IntentRoute{SchemaVersion: SchemaVersion, Intent: value},
 		}
 	}
 	tests := map[Intent]func() HandlerResult{

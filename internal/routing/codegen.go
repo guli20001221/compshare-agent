@@ -95,6 +95,9 @@ func writeRouteLiteral(b *strings.Builder, route *Route) {
 	if len(route.PlannerExamples) > 0 {
 		field("PlannerExamples", plannerExamplesLit(route.PlannerExamples))
 	}
+	if len(route.AgentSlots) > 0 {
+		field("AgentSlots", quoteSlice(route.AgentSlots))
+	}
 	field("VerificationStatus", strconv.Quote(route.VerificationStatus))
 	if route.FieldRefsVerified {
 		field("FieldRefsVerified", "true")

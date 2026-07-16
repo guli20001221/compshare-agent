@@ -33,7 +33,7 @@ func TestCreatePathToolsAllowRegion(t *testing.T) {
 	}
 }
 
-func TestWorkflowSchemasLetBackendClarifyMissingSizes(t *testing.T) {
+func TestWorkflowSchemasDeclareRequiredSizesForResolver(t *testing.T) {
 	for _, action := range []string{"CreateDiskWorkflow", "ResizeDiskWorkflow"} {
 		var required []string
 		for _, tool := range Registry {
@@ -50,8 +50,8 @@ func TestWorkflowSchemasLetBackendClarifyMissingSizes(t *testing.T) {
 		if !containsString(required, "UHostId") {
 			t.Fatalf("%s must still require UHostId", action)
 		}
-		if containsString(required, "Size") {
-			t.Fatalf("%s must not require Size; workflow missing-slot handling should ask for it", action)
+		if !containsString(required, "Size") {
+			t.Fatalf("%s must require Size so the Resolver returns a structured missing slot before Workflow", action)
 		}
 	}
 }

@@ -137,6 +137,7 @@ type Slots struct {
 	SearchQuery string      `json:"search_query,omitempty"`
 	ListMode    ListMode    `json:"list_mode,omitempty"`
 	PriceKind   PriceKind   `json:"price_kind,omitempty"`
+	GPUCount    int         `json:"gpu_count,omitempty"`
 	CFSKind     CFSKind     `json:"cfs_kind,omitempty"`
 	SizeGB      int         `json:"size_gb,omitempty"`
 	Zone        string      `json:"zone,omitempty"`

@@ -24,6 +24,7 @@ type HandlerStatus string
 
 const (
 	HandlerStatusHandled            HandlerStatus = "handled"
+	HandlerStatusNeedsInput         HandlerStatus = "needs_input"
 	HandlerStatusFallbackBeforeTool HandlerStatus = "fallback_before_tool"
 	HandlerStatusFailureAfterTool   HandlerStatus = "failure_after_tool"
 )
@@ -136,12 +137,6 @@ type internalHandlerExecutor interface {
 type HandlerRequest struct {
 	Plan     IntentRoute
 	Resolver EntityResolver
-	// UserText is the raw user question. Used by route handlers'
-	// deterministic NL filter (e.g. "4090 显存多大" -> filter Name=="4090" out
-	// of the API response). Set by engine.go when dispatching to handlers via
-	// tryRouteDispatch / tryResumeResourceSelection. Legacy handlers
-	// (HandleResourceInfo / HandleMonitorQuery) ignore this field.
-	UserText string
 	// FallbackInstanceID is the SelectedInstanceID from SessionState. When
 	// TargetRefs is empty and this is non-empty, instance-scoped follow-up
 	// handlers such as monitor_query and refund_estimate may use it as the

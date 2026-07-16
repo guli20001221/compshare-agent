@@ -1297,8 +1297,8 @@ func (e *Engine) zoneIsPod(ctx context.Context, zone string) (bool, bool) {
 	return false, false
 }
 
-// applyCreateZoneResolution resolves a user-named zone for the internal
-// CreateInstanceWorkflow path, mutating args in place. It overrides args["Zone"]
+// applyCreateZoneResolution resolves the structured Zone already accepted by
+// Action Resolver, mutating args in place. It overrides args["Zone"]
 // with the resolved zone id (e.g. "华北一C" → cn-bj2-03) and injects
 // args["ZoneDescribes"] (zone-id → 显示名) so the confirm form labels each zone
 // with the console's Chinese name. It returns a non-empty clarify question when
@@ -1308,7 +1308,8 @@ func (e *Engine) zoneIsPod(ctx context.Context, zone string) (bool, bool) {
 // to no-op (LLM Zone untouched, no ZoneDescribes) when the live catalog is
 // unavailable — e.g. on the CLI path with no tenant identity.
 func (e *Engine) applyCreateZoneResolution(ctx context.Context, args map[string]any) (clarify string) {
-	userZone, clarify := e.resolveRequestedZone(ctx, e.lastUserMsg)
+	requestedZone, _ := args["Zone"].(string)
+	userZone, clarify := e.resolveRequestedZone(ctx, requestedZone)
 	if clarify != "" {
 		return clarify
 	}

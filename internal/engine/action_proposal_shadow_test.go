@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/actionresolver"
+	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/require"
@@ -131,6 +132,25 @@ func TestCurrentTurnReadBecomesProposalEvidenceOnlyAfterItWasObserved(t *testing
 	require.True(t, after.ReadyForConfirmation)
 }
 
+func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.lastUserMsg = "给 uhost-1 加200G数据盘"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1"}}}, "test"))
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-capacity", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(map[string]any{
+		"operation": "CreateDiskWorkflow",
+		"slots": []any{
+			map[string]any{"name": "UHostId", "value": "uhost-1", "source": "user_explicit", "evidence": map[string]any{"quote": "uhost-1"}},
+			map[string]any{"name": "Size", "value": "200G", "source": "user_explicit", "evidence": map[string]any{"quote": "200G"}},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, resolved.ReadyForConfirmation, resolved.Rejected)
+	require.Equal(t, float64(200), resolved.Arguments["Size"])
+}
+
 func TestProposalRejectsDifferentTurnEvidence(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "停止 uhost-1", "active-turn", time.Now())
@@ -141,42 +161,57 @@ func TestProposalRejectsDifferentTurnEvidence(t *testing.T) {
 
 func TestCentralAgentProposalSchemaComesFromWorkflowCatalog(t *testing.T) {
 	window := centralAgentToolWindow(true)
-	var proposalTool map[string]any
+	var stopTool, cfsTool map[string]any
 	for _, tool := range window {
-		if tool.Function != nil && tool.Function.Name == tools.ProposeActionName {
-			proposalTool, _ = tool.Function.Parameters.(map[string]any)
-			break
+		if tool.Function == nil {
+			continue
+		}
+		switch tool.Function.Name {
+		case proposalToolName("StopInstanceWorkflow"):
+			stopTool, _ = tool.Function.Parameters.(map[string]any)
+		case proposalToolName("CreateCFSWorkflow"):
+			cfsTool, _ = tool.Function.Parameters.(map[string]any)
 		}
 	}
-	require.NotNil(t, proposalTool)
-	properties := proposalTool["properties"].(map[string]any)
-	operations := properties["operation"].(map[string]any)["enum"].([]string)
-	require.Contains(t, operations, "StopInstanceWorkflow")
-	require.Contains(t, operations, "CreateCFSWorkflow")
+	require.NotNil(t, stopTool)
+	require.NotNil(t, cfsTool)
+	properties := stopTool["properties"].(map[string]any)
+	require.NotContains(t, properties, "operation", "the selected proposal tool fixes the operation server-side")
 	slots := properties["slots"].(map[string]any)
 	items := slots["items"].(map[string]any)
 	fields := items["properties"].(map[string]any)["name"].(map[string]any)["enum"].([]string)
 	require.Contains(t, fields, "UHostId")
-	require.Contains(t, fields, "Size")
+	require.NotContains(t, fields, "Size")
+	cfsFields := cfsTool["properties"].(map[string]any)["slots"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["name"].(map[string]any)["enum"].([]string)
+	require.Contains(t, cfsFields, "Size")
 }
 
 func TestCentralAgentReadSchemaComesFromCapabilityRegistry(t *testing.T) {
 	window := centralAgentToolWindow(false)
-	var readTool map[string]any
+	var priceTool, imageTool map[string]any
 	for _, tool := range window {
-		if tool.Function != nil && tool.Function.Name == tools.ReadPlatformCapabilityName {
-			readTool, _ = tool.Function.Parameters.(map[string]any)
-			break
+		if tool.Function == nil {
+			continue
+		}
+		switch tool.Function.Name {
+		case capability.ReadToolName(intent.IntentPricingQuery):
+			priceTool, _ = tool.Function.Parameters.(map[string]any)
+		case capability.ReadToolName(intent.IntentImageList):
+			imageTool, _ = tool.Function.Parameters.(map[string]any)
 		}
 	}
-	require.NotNil(t, readTool)
-	properties := readTool["properties"].(map[string]any)
-	capabilities := properties["capability"].(map[string]any)["enum"].([]string)
-	require.Contains(t, capabilities, string(intent.IntentResourceInfo))
-	require.Contains(t, capabilities, string(intent.IntentPricingQuery))
-	slots := properties["slots"].(map[string]any)["properties"].(map[string]any)
-	require.Contains(t, slots, "target_refs")
-	require.Contains(t, slots, "search_query")
+	require.NotNil(t, priceTool)
+	require.NotNil(t, imageTool)
+	priceFields := priceTool["properties"].(map[string]any)
+	require.Contains(t, priceFields, "gpu_type")
+	require.Contains(t, priceFields, "price_kind")
+	require.Contains(t, priceFields, "gpu_count")
+	require.NotContains(t, priceFields, "source")
+	require.NotContains(t, priceFields, "slots")
+	imageFields := imageTool["properties"].(map[string]any)
+	require.Contains(t, imageFields, "source")
+	require.NotContains(t, imageFields, "price_kind")
+	require.NotContains(t, imageFields, "slots")
 }
 
 func TestSealedPasswordIsInjectedWithoutEnteringModelArguments(t *testing.T) {

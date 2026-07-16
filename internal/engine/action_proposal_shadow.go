@@ -30,6 +30,7 @@ func defaultActionCatalog() (*actionresolver.Catalog, error) {
 type agentContextEvidenceVerifier struct {
 	context AgentContext
 	engine  *Engine
+	spec    actionresolver.OperationSpec
 }
 
 func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.SlotCandidate) bool {
@@ -38,8 +39,12 @@ func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.S
 	}
 	switch candidate.Source {
 	case actionresolver.SourceUserExplicit:
-		if !verifyCurrentQuestionEvidence(v.context, candidate) {
+		field, known := v.spec.Fields[candidate.Name]
+		if !known || !verifyCurrentQuestionEvidence(v.context, candidate, field.Codec) {
 			return false
+		}
+		if !known || !field.Target {
+			return known
 		}
 		value, _ := candidate.Value.(string)
 		if v.engine != nil {
@@ -75,7 +80,7 @@ func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.S
 	return false
 }
 
-func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolver.SlotCandidate) bool {
+func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolver.SlotCandidate, codec actionresolver.SlotCodecKind) bool {
 	evidence := candidate.Evidence
 	if evidence.MessageID == "" || evidence.MessageID != context.TurnID || evidence.Start < 0 || evidence.End <= evidence.Start {
 		return false
@@ -88,7 +93,23 @@ func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolve
 	if !ok || value != evidence.Quote {
 		return false
 	}
-	return standaloneSpan(question, evidence.Start, evidence.End)
+	return evidenceSpanForCodec(question, evidence.Start, evidence.End, codec)
+}
+
+func evidenceSpanForCodec(text []rune, start, end int, codec actionresolver.SlotCodecKind) bool {
+	if codec != actionresolver.CodecCapacity {
+		return standaloneSpan(text, start, end)
+	}
+	// Capacities are normally embedded in Chinese prose ("加200G数据盘").
+	// Only ASCII token neighbours can make the quote a substring of another
+	// number/unit; surrounding CJK characters are grammatical separators here.
+	isASCIIValuePart := func(r rune) bool {
+		return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.')
+	}
+	if start > 0 && isASCIIValuePart(text[start-1]) {
+		return false
+	}
+	return end >= len(text) || !isASCIIValuePart(text[end])
 }
 
 func standaloneSpan(text []rune, start, end int) bool {
@@ -110,8 +131,8 @@ func decodeActionProposal(args map[string]any) (actionresolver.ActionProposal, e
 	if err := decoder.Decode(&proposal); err != nil {
 		return actionresolver.ActionProposal{}, err
 	}
-	if strings.TrimSpace(proposal.TurnID) == "" || strings.TrimSpace(proposal.Operation) == "" {
-		return actionresolver.ActionProposal{}, fmt.Errorf("turn_id and operation are required")
+	if strings.TrimSpace(proposal.Operation) == "" {
+		return actionresolver.ActionProposal{}, fmt.Errorf("operation is required")
 	}
 	return proposal, nil
 }
@@ -129,13 +150,103 @@ func (e *Engine) resolveActionProposalShadow(args map[string]any) (actionresolve
 	if !e.turnContextViewReady {
 		view = (ContextCompiler{}).CompileForTurn(e, e.lastUserMsg, proposal.TurnID, time.Now())
 	}
+	if proposal.TurnID == "" {
+		proposal.TurnID = view.TurnID
+	}
 	if view.TurnID != "" && proposal.TurnID != view.TurnID {
 		return actionresolver.ResolvedAction{}, fmt.Errorf("proposal turn_id does not match the active turn")
 	}
-	if spec, ok := catalog.Lookup(proposal.Operation); ok {
+	spec, ok := catalog.Lookup(proposal.Operation)
+	if ok {
+		proposal = completeCurrentTurnEvidence(proposal, view, spec)
 		proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
 	}
-	return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}).Resolve(proposal), nil
+	if !ok {
+		return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}).Resolve(proposal), nil
+	}
+	return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec}).Resolve(proposal), nil
+}
+
+// completeCurrentTurnEvidence fills protocol metadata that the runtime already
+// owns. The model identifies the quoted value; it does not need to copy an
+// opaque turn id or count Unicode offsets. Ambiguous or non-standalone quotes
+// remain unresolved and therefore cannot become trusted write targets.
+func completeCurrentTurnEvidence(proposal actionresolver.ActionProposal, view AgentContext, spec actionresolver.OperationSpec) actionresolver.ActionProposal {
+	question := []rune(view.CurrentQuestion)
+	for index := range proposal.Slots {
+		candidate := &proposal.Slots[index]
+		if candidate.Source != actionresolver.SourceUserExplicit {
+			continue
+		}
+		value, ok := candidate.Value.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		if candidate.Evidence == nil {
+			candidate.Evidence = &actionresolver.SourceEvidence{Quote: value}
+		}
+		if candidate.Evidence.Quote == "" {
+			candidate.Evidence.Quote = value
+		}
+		if candidate.Evidence.Quote != value {
+			continue
+		}
+		field, known := spec.Fields[candidate.Name]
+		if !known {
+			continue
+		}
+		start, end, ok := uniqueQuoteForCodec(question, []rune(candidate.Evidence.Quote), field.Codec)
+		if !ok {
+			continue
+		}
+		candidate.Evidence.MessageID = view.TurnID
+		candidate.Evidence.Start = start
+		candidate.Evidence.End = end
+	}
+	return proposal
+}
+
+func uniqueQuoteForCodec(text, quote []rune, codec actionresolver.SlotCodecKind) (int, int, bool) {
+	if codec != actionresolver.CodecCapacity {
+		return uniqueStandaloneQuote(text, quote)
+	}
+	if len(quote) == 0 || len(quote) > len(text) {
+		return 0, 0, false
+	}
+	start := -1
+	for offset := 0; offset+len(quote) <= len(text); offset++ {
+		if string(text[offset:offset+len(quote)]) != string(quote) || !evidenceSpanForCodec(text, offset, offset+len(quote), codec) {
+			continue
+		}
+		if start >= 0 {
+			return 0, 0, false
+		}
+		start = offset
+	}
+	if start < 0 {
+		return 0, 0, false
+	}
+	return start, start + len(quote), true
+}
+
+func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {
+	if len(quote) == 0 || len(quote) > len(text) {
+		return 0, 0, false
+	}
+	start := -1
+	for offset := 0; offset+len(quote) <= len(text); offset++ {
+		if string(text[offset:offset+len(quote)]) != string(quote) || !standaloneSpan(text, offset, offset+len(quote)) {
+			continue
+		}
+		if start >= 0 {
+			return 0, 0, false
+		}
+		start = offset
+	}
+	if start < 0 {
+		return 0, 0, false
+	}
+	return start, start + len(quote), true
 }
 
 func addSealedSecretCandidates(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec, secrets map[string]string) actionresolver.ActionProposal {
@@ -178,6 +289,7 @@ func (e *Engine) executeActionProposalShadow(args map[string]any, onStep func(St
 }
 
 func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
+	e.actionProposalRanThisTurn = true
 	resolved, err := e.resolveActionProposalShadow(args)
 	if err != nil {
 		onStep(StepEvent{Type: StepError, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: err.Error()})
@@ -185,10 +297,40 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 		return string(payload)
 	}
 	if !resolved.ReadyForConfirmation {
+		e.rememberPendingResolvedAction(resolved)
 		return resolvedActionForModel(resolved)
 	}
 	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案已验证，进入统一确认与执行门"})
 	return e.executeWorkflow(ctx, resolved.Operation, resolved.Arguments, onStep)
+}
+
+func (e *Engine) rememberPendingResolvedAction(resolved actionresolver.ResolvedAction) {
+	if len(resolved.Missing) == 0 || len(resolved.Conflicts) != 0 || len(resolved.Rejected) != 0 {
+		return
+	}
+	now := time.Now()
+	frame := ContextFrame{
+		Version:         1,
+		Kind:            ContextFrameKindWorkflowTask,
+		Status:          ContextFrameStatusPending,
+		Intent:          "write_action",
+		Workflow:        resolved.Operation,
+		OriginalUserMsg: e.lastUserMsg,
+		Slots:           map[string]string{},
+		SlotSources:     map[string]string{},
+		MissingSlots:    append([]string(nil), resolved.Missing...),
+		Stage:           "collecting_parameters",
+		ProducedAtUnix:  now.Unix(),
+		TTLSeconds:      ContextFrameTTLSeconds,
+	}
+	for name, slot := range resolved.Provenance {
+		if slot.Codec == actionresolver.CodecSensitiveText {
+			continue
+		}
+		frame.Slots[name] = fmt.Sprint(slot.Value)
+		frame.SlotSources[name] = string(slot.Source)
+	}
+	e.setContextFrame(frame)
 }
 
 func resolvedActionForModel(resolved actionresolver.ResolvedAction) string {

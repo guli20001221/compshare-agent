@@ -9,6 +9,7 @@ tool_subset:
   - GetGPUSpecs
 required_citation: false
 handler_key: handleGPUSpecsQuery
+agent_slots: [search_query, detail_level]
 planner_directives:
   - 'Classify GPU memory, performance, max-card-count, and static specification questions as gpu_specs_query; render a summary first.'
   - 'Classify requests for all specs, complete specs, one GPU model''s full specs, CPU/memory combinations, CPU and memory, or optional configurations as gpu_specs_query.'

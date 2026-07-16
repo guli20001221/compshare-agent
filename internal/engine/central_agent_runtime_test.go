@@ -6,16 +6,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCentralAgentReadTurnHasOneSemanticChainAndStructuredCapability(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("read", tools.ReadPlatformCapabilityName, `{"capability":"resource_info","slots":{}}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("read", capability.ReadToolName(intent.IntentResourceInfo), `{}`)}},
 		{Content: "你有一台名为 train-a 的实例。"},
 	}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -31,7 +32,8 @@ func TestCentralAgentReadTurnHasOneSemanticChainAndStructuredCapability(t *testi
 	require.Len(t, model.calls, 2)
 	require.Contains(t, executor.calls, "DescribeCompShareInstance")
 	firstTools := toolNames(model.calls[0].Tools)
-	require.Contains(t, firstTools, tools.ReadPlatformCapabilityName)
+	require.Contains(t, firstTools, capability.ReadToolName(intent.IntentResourceInfo))
+	require.NotContains(t, firstTools, "ReadPlatformCapability")
 	require.Contains(t, firstTools, "SearchKnowledge")
 	require.NotContains(t, firstTools, "DescribeCompShareInstance", "underlying handler APIs must stay behind the evidence adapter")
 	require.NotContains(t, firstTools, "StopInstanceWorkflow")

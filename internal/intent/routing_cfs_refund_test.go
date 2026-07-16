@@ -21,7 +21,6 @@ func TestRefundEstimateRouteResolvesInstanceAndCallsRefundPrice(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "train-a 现在释放能退多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentRefundEstimate,
@@ -48,7 +47,6 @@ func TestRefundEstimateRouteRequiresTarget(t *testing.T) {
 	exec := &mockHandlerExecutor{}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "现在释放大概退多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentRefundEstimate,
@@ -63,11 +61,11 @@ func TestRefundEstimateRouteRequiresTarget(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
-func TestRefundEstimateRouteUsesExplicitInstanceIDTokenFromText(t *testing.T) {
+func TestRefundEstimateRouteUsesStructuredInstanceReference(t *testing.T) {
 	exec := &mockHandlerExecutor{result: map[string]any{
 		"RefundPriceSet": []any{
 			map[string]any{
-				"UHostId":     "cpod-not-in-snapshot",
+				"UHostId":     "cpod-known",
 				"Code":        float64(0),
 				"RefundPrice": float64(6.66),
 			},
@@ -76,10 +74,10 @@ func TestRefundEstimateRouteUsesExplicitInstanceIDTokenFromText(t *testing.T) {
 	resolver := refundSnapshotWithCPODPrefix(t)
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "cpod-not-in-snapshot 现在释放能退多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentRefundEstimate,
+			Slots:         Slots{TargetRefs: []TargetRef{{Type: TargetRefUHostIDUserInput, Value: "cpod-known", Source: SourceUserText}}},
 			Retrieval:     Retrieval{Enabled: false},
 			Confidence:    0.8,
 		},
@@ -89,11 +87,11 @@ func TestRefundEstimateRouteUsesExplicitInstanceIDTokenFromText(t *testing.T) {
 	require.Equal(t, HandlerStatusHandled, result.Status)
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, "GetCompShareRefundPrice", exec.calls[0].action)
-	assert.Equal(t, []string{"cpod-not-in-snapshot"}, exec.calls[0].args["UHostIds"])
+	assert.Equal(t, []string{"cpod-known"}, exec.calls[0].args["UHostIds"])
 	assert.Contains(t, result.Reply, "6.66")
 }
 
-func TestRefundEstimateRouteUsesIDTokenWithoutResolver(t *testing.T) {
+func TestRefundEstimateRouteDoesNotTrustStructuredIDWithoutResolver(t *testing.T) {
 	exec := &mockHandlerExecutor{result: map[string]any{
 		"RefundPriceSet": []any{
 			map[string]any{
@@ -105,27 +103,23 @@ func TestRefundEstimateRouteUsesIDTokenWithoutResolver(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "uhost-a 现在释放能退多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentRefundEstimate,
+			Slots:         Slots{TargetRefs: []TargetRef{{Type: TargetRefUHostIDUserInput, Value: "uhost-a", Source: SourceUserText}}},
 			Retrieval:     Retrieval{Enabled: false},
 			Confidence:    0.8,
 		},
 	})
 
-	require.Equal(t, HandlerStatusHandled, result.Status)
-	require.Len(t, exec.calls, 1)
-	assert.Equal(t, "GetCompShareRefundPrice", exec.calls[0].action)
-	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
-	assert.Contains(t, result.Reply, "7.77")
+	require.Equal(t, HandlerStatusFallbackBeforeTool, result.Status)
+	require.Empty(t, exec.calls)
 }
 
 func TestRefundEstimateRouteDoesNotTreatGenericHyphenTokenAsInstanceID(t *testing.T) {
 	exec := &mockHandlerExecutor{}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "deepseek-r1 这个环境现在释放能退多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentRefundEstimate,
@@ -163,7 +157,6 @@ func TestRefundEstimateRouteUsesFallbackInstanceID(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText:           "那现在退费多少",
 		FallbackInstanceID: "uhost-b",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
@@ -186,7 +179,6 @@ func TestRefundEstimateRouteStaleFallbackDoesNotCallTool(t *testing.T) {
 	exec := &mockHandlerExecutor{}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText:           "那现在退费多少",
 		FallbackInstanceID: "uhost-deleted-long-ago",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
@@ -216,7 +208,6 @@ func TestCFSInfoRouteListsCFSReadOnly(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "我的 CFS 共享文件存储有哪些",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
@@ -249,7 +240,6 @@ func TestCFSInfoRouteCreatePriceCallsCFSPrice(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "cn-bj2-03 创建 50GB CFS 多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
@@ -290,7 +280,6 @@ func TestCFSInfoRouteCreatePriceUsesSlots(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "CFS 创建费用",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
@@ -324,7 +313,6 @@ func TestCFSInfoRouteCreatePriceRejectsNonPodZone(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "cn-wlcb-01 创建 50GB CFS 多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
@@ -357,13 +345,14 @@ func TestCFSInfoRouteUpgradePriceCallsCFSUpgradePrice(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "cfs-test 扩容到 200GB 多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
-			Slots:         Slots{CFSKind: CFSKindUpgradePrice, SizeGB: 200},
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
+			Slots: Slots{CFSKind: CFSKindUpgradePrice, SizeGB: 200, TargetRefs: []TargetRef{{
+				Type: TargetRefName, Value: "cfs-test", Source: SourceUserText,
+			}}},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
 		},
 	})
 
@@ -390,13 +379,14 @@ func TestCFSInfoRouteRefundCallsCFSRefundPrice(t *testing.T) {
 	}}
 	handler := NewDemoHandler(exec)
 	result := handler.DispatchRoute(context.Background(), HandlerRequest{
-		UserText: "cfs-test 现在退费多少钱",
 		Plan: IntentRoute{
 			SchemaVersion: SchemaVersion,
 			Intent:        IntentCFSInfo,
-			Slots:         Slots{CFSKind: CFSKindRefund},
-			Retrieval:     Retrieval{Enabled: false},
-			Confidence:    0.8,
+			Slots: Slots{CFSKind: CFSKindRefund, TargetRefs: []TargetRef{{
+				Type: TargetRefName, Value: "cfs-test", Source: SourceUserText,
+			}}},
+			Retrieval:  Retrieval{Enabled: false},
+			Confidence: 0.8,
 		},
 	})
 

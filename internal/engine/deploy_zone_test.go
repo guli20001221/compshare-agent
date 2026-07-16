@@ -157,8 +157,8 @@ func TestResolveRequestedZone_NonexistentZone_ChallengesViaClarify(t *testing.T)
 
 func TestApplyCreateZoneResolution_ExactChineseName_OverridesZoneAndInjectsDescribes(t *testing.T) {
 	eng := newZoneEngine(zoneCatalogExec(), "SHOULD-NOT-BE-USED")
-	eng.lastUserMsg = "创建一台华北一C的4090实例"
-	args := map[string]any{"Zone": "cn-wlcb-01", "GpuType": "4090"} // LLM echoed the documented default
+	eng.lastUserMsg = "这里故意写上海二B，不能覆盖结构化参数"
+	args := map[string]any{"Zone": "华北一C", "GpuType": "4090"}
 	if clarify := eng.applyCreateZoneResolution(zoneUserCtx(), args); clarify != "" {
 		t.Fatalf("an exact display name must not clarify, got %q", clarify)
 	}
@@ -179,13 +179,13 @@ func TestApplyCreateZoneResolution_ExactChineseName_OverridesZoneAndInjectsDescr
 
 func TestApplyCreateZoneResolution_FuzzyMention_ReturnsClarify_ZoneUntouched(t *testing.T) {
 	eng := newZoneEngine(zoneCatalogExec(), `{"decision":"clarify","clarify":"您是指 华北一C 吗？"}`)
-	eng.lastUserMsg = "创建一台华北一区的4090"
-	args := map[string]any{"Zone": "cn-wlcb-01"}
+	eng.lastUserMsg = "这里没有可信的可用区参数"
+	args := map[string]any{"Zone": "华北一区"}
 	clarify := eng.applyCreateZoneResolution(zoneUserCtx(), args)
 	if clarify == "" {
 		t.Fatalf("a partial zone mention must return a clarify question instead of guessing")
 	}
-	if args["Zone"] != "cn-wlcb-01" {
+	if args["Zone"] != "华北一区" {
 		t.Errorf("Zone must stay untouched while clarifying, got %v", args["Zone"])
 	}
 	if _, ok := args["ZoneDescribes"]; ok {
@@ -220,12 +220,12 @@ func TestApplyCreateZoneResolution_CatalogUnavailable_NoOverrideNoDescribes(t *t
 		return nil, errors.New("support-zone API down")
 	}}
 	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
-	eng.lastUserMsg = "创建一台华北一C的4090" // names a zone, but the catalog can't resolve it
-	args := map[string]any{"Zone": "cn-wlcb-01"}
+	eng.lastUserMsg = "原文不得参与执行"
+	args := map[string]any{"Zone": "华北一C"}
 	if clarify := eng.applyCreateZoneResolution(zoneUserCtx(), args); clarify != "" {
 		t.Fatalf("catalog-down must degrade silently, not clarify, got %q", clarify)
 	}
-	if args["Zone"] != "cn-wlcb-01" {
+	if args["Zone"] != "华北一C" {
 		t.Errorf("Zone must be untouched when the catalog is unavailable, got %v", args["Zone"])
 	}
 	if _, ok := args["ZoneDescribes"]; ok {

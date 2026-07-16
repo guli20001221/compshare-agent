@@ -59,7 +59,6 @@ func TestStockReferentText(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			req := HandlerRequest{
 				Plan:             IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: c.search}},
-				UserText:         c.userText,
 				FallbackGpuModel: c.fallback,
 			}
 			if got := stockReferentText(req, items); got != c.want {
@@ -94,7 +93,6 @@ func TestHandleStockAvailability_EllipsisReusesFallbackReferent(t *testing.T) {
 	h := NewDemoHandler(multiModelStockExecutor{})
 	req := HandlerRequest{
 		Plan:             IntentRoute{Intent: IntentStockAvailability},
-		UserText:         "现在还有库存吗",
 		FallbackGpuModel: "4090",
 	}
 	res := handleStockAvailability(context.Background(), h, req)
@@ -122,8 +120,7 @@ func TestHandleStockAvailability_EllipsisReusesFallbackReferent(t *testing.T) {
 func TestHandleStockAvailability_EllipsisWithoutFallbackListsAll(t *testing.T) {
 	h := NewDemoHandler(multiModelStockExecutor{})
 	req := HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability},
-		UserText: "现在还有库存吗",
+		Plan: IntentRoute{Intent: IntentStockAvailability},
 	}
 	res := handleStockAvailability(context.Background(), h, req)
 
@@ -141,8 +138,7 @@ func TestHandleStockAvailability_EllipsisWithoutFallbackListsAll(t *testing.T) {
 func TestHandleStockAvailability_NamedModelRecordsReferent(t *testing.T) {
 	h := NewDemoHandler(multiModelStockExecutor{})
 	req := HandlerRequest{
-		Plan:     IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
-		UserText: "4090现在有货吗",
+		Plan: IntentRoute{Intent: IntentStockAvailability, Slots: Slots{SearchQuery: "4090"}},
 	}
 	res := handleStockAvailability(context.Background(), h, req)
 

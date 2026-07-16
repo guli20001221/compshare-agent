@@ -8,6 +8,7 @@ tool_subset:
   - DescribeCompShareImageTags
 required_citation: false
 handler_key: handleImageTagCatalog
+agent_slots: []
 planner_directives:
   - 'Classify image tag, category, and filter questions like "镜像有哪些标签" or "可以按哪些分类筛选镜像" as image_tag_catalog.'
   - 'Route concrete image list/search questions like "有哪些 PyTorch 镜像" to image_list. Do not route them to image_tag_catalog.'

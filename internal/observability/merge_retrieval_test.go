@@ -122,3 +122,34 @@ func TestMergeRetrievalTraceMultiHopCarriesFullHitItems(t *testing.T) {
 		t.Fatalf("merge did not union both search activities: %#v", got.Activities)
 	}
 }
+
+func TestMergeRetrievalTraceMultiHopFailureCarriesFullTurnEvidence(t *testing.T) {
+	current := RetrievalTrace{
+		Enabled: true, QueryRaw: "q2", Hits: 1,
+		HitItems:   []RetrievalHit{{ChunkID: "chunk-b", Kept: true}},
+		Activities: []RetrievalActivity{{ID: "search_2", Query: "q2", Hits: 1}},
+	}
+	next := RetrievalTrace{
+		Enabled: true, TurnAggregate: true, Hits: 2,
+		HitItems: []RetrievalHit{
+			{ChunkID: "chunk-a", Kept: true},
+			{ChunkID: "chunk-b", Kept: true},
+		},
+		Activities: []RetrievalActivity{
+			{ID: "search_1", Query: "q1", Hits: 1},
+			{ID: "search_2", Query: "q2", Hits: 1},
+		},
+		References: []RetrievalReference{
+			{RefID: "1", ChunkID: "chunk-a", ActivityIDs: []string{"search_1"}},
+			{RefID: "2", ChunkID: "chunk-b", ActivityIDs: []string{"search_2"}},
+		},
+	}
+
+	got := MergeRetrievalTrace(current, next)
+	if !got.TurnAggregate || got.Hits != 2 || len(got.HitItems) != 2 || len(got.Activities) != 2 {
+		t.Fatalf("failed grounding lost full-turn retrieval evidence: %#v", got)
+	}
+	if len(got.CitedChunkIDs) != 0 {
+		t.Fatalf("failed grounding must not invent citations: %#v", got.CitedChunkIDs)
+	}
+}

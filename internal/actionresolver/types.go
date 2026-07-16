@@ -52,15 +52,17 @@ const (
 )
 
 type FieldSpec struct {
-	Name     string
-	Required bool
-	Codec    SlotCodecKind
-	Enum     []string
-	Target   bool
+	Name       string
+	Required   bool
+	Codec      SlotCodecKind
+	Enum       []string
+	Target     bool
+	TargetKind string
 }
 
 type OperationSpec struct {
 	Operation        string
+	Description      string
 	Fields           map[string]FieldSpec
 	NeedsConfirm     bool
 	Risk             security.Level
