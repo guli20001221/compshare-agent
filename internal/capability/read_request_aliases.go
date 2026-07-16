@@ -9,7 +9,6 @@ type MissingField = intent.MissingField
 type GPUSpecsRequest = intent.GPUSpecsRequest
 type StockAvailabilityRequest = intent.StockAvailabilityRequest
 type ImageListRequest = intent.ImageListRequest
-type ImageTagCatalogRequest = intent.ImageTagCatalogRequest
 type ModelRepositoryRequest = intent.ModelRepositoryRequest
 type CFSListRequest = intent.CFSListRequest
 type CFSCreatePriceRequest = intent.CFSCreatePriceRequest
