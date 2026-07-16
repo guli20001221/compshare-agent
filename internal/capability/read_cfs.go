@@ -64,7 +64,7 @@ func cfsListReadSpec() ReadCapabilitySpec[CFSListRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSListRequest, CFSResponse]{
 		Label:       readCFSList,
 		Description: "查询 CFS 列表或指定 CFS 状态。",
-		Schema:      objectSchema(map[string]any{"cfs": cfsRefSchema()}, nil),
+		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}),
 		Handle:      cfsListHandle,
 		Render:      cfsRender,
 	}
@@ -110,7 +110,7 @@ func cfsCreatePriceReadSpec() ReadCapabilitySpec[CFSCreatePriceRequest, CFSRespo
 	return ReadCapabilitySpec[CFSCreatePriceRequest, CFSResponse]{
 		Label:       readCFSCreatePrice,
 		Description: "估算创建 CFS 的价格。",
-		Schema:      objectSchema(map[string]any{"zone": stringSchema(), "target_size_gb": positiveIntegerSchema(), "charge_type": stringSchema()}, []string{"zone", "target_size_gb"}),
+		Params:      objectParam(map[string]schemaNode{"zone": stringParam(), "target_size_gb": integerParam(1), "charge_type": stringParam()}, "zone", "target_size_gb"),
 		Handle:      cfsCreatePriceHandle,
 		Render:      cfsRender,
 	}
@@ -170,7 +170,7 @@ func cfsUpgradePriceReadSpec() ReadCapabilitySpec[CFSUpgradePriceRequest, CFSRes
 	return ReadCapabilitySpec[CFSUpgradePriceRequest, CFSResponse]{
 		Label:       readCFSUpgradePrice,
 		Description: "估算指定 CFS 扩容到目标容量的价格。",
-		Schema:      objectSchema(map[string]any{"cfs": cfsRefSchema(), "target_size_gb": positiveIntegerSchema()}, []string{"cfs", "target_size_gb"}),
+		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam(), "target_size_gb": integerParam(1)}, "cfs", "target_size_gb"),
 		Handle:      cfsUpgradePriceHandle,
 		Render:      cfsRender,
 	}
@@ -217,7 +217,7 @@ func cfsRefundEstimateReadSpec() ReadCapabilitySpec[CFSRefundEstimateRequest, CF
 	return ReadCapabilitySpec[CFSRefundEstimateRequest, CFSResponse]{
 		Label:       readCFSRefundEstimate,
 		Description: "估算指定 CFS 当前可退金额。",
-		Schema:      objectSchema(map[string]any{"cfs": cfsRefSchema()}, []string{"cfs"}),
+		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}, "cfs"),
 		Handle:      cfsRefundEstimateHandle,
 		Render:      cfsRender,
 	}

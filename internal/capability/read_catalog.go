@@ -120,45 +120,6 @@ func MigratedRead(toolName string) (RegisteredRead, bool) {
 	return RegisteredRead{}, false
 }
 
-func objectSchema(properties map[string]any, required []string) map[string]any {
-	if properties == nil {
-		properties = map[string]any{}
-	}
-	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": properties}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
-}
-
-func stringSchema() map[string]any { return map[string]any{"type": "string"} }
-func enumSchema(values ...string) map[string]any {
-	return map[string]any{"type": "string", "enum": values}
-}
-func positiveIntegerSchema() map[string]any { return map[string]any{"type": "integer", "minimum": 1} }
-
-func targetRefSchema() map[string]any {
-	return map[string]any{
-		"type": "object", "additionalProperties": false,
-		"properties": map[string]any{
-			"type":        map[string]any{"type": "string", "enum": []string{"filter", "name", "uhost_id_user_input", "slot_position"}},
-			"value":       map[string]any{"type": "string"},
-			"source":      map[string]any{"type": "string", "enum": []string{"user_text", "prior_turn"}},
-			"source_span": map[string]any{"type": "string"},
-		},
-		"required": []string{"type", "value", "source"},
-	}
-}
-
-func targetRefsSchema() map[string]any {
-	return map[string]any{"type": "array", "items": targetRefSchema()}
-}
-func cfsRefSchema() map[string]any {
-	return objectSchema(map[string]any{"id": stringSchema()}, []string{"id"})
-}
-func metricsSchema() map[string]any {
-	return map[string]any{"type": "array", "items": enumSchema("cpu", "memory", "gpu", "vram")}
-}
-func timeWindowSchema() map[string]any {
-	return objectSchema(map[string]any{"type": enumSchema("preset", "relative", "absolute"), "value": stringSchema()}, []string{"type", "value"})
-}
+// Parameter schemas are no longer hand-written here: each capability declares a
+// schemaNode field contract (field_contract.go) that is the single source for
+// its tool schema, runtime validation and consistency-test expectation.

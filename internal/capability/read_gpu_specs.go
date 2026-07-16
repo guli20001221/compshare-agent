@@ -46,7 +46,7 @@ func gpuSpecsReadSpec() ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse] {
 	return ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse]{
 		Label:       gpuSpecsCapabilityLabel,
 		Description: "查询 GPU 机型的静态规格。",
-		Schema:      objectSchema(map[string]any{"gpu_type": stringSchema(), "detail_level": enumSchema("summary", "full")}, nil),
+		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "detail_level": enumParam(platform.DetailLevelValues()...)}),
 		Handle:      gpuSpecsHandle,
 		Render:      gpuSpecsRender,
 	}

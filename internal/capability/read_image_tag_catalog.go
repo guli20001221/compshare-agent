@@ -35,7 +35,7 @@ func imageTagCatalogReadSpec() ReadCapabilitySpec[ImageTagCatalogRequest, ImageT
 	return ReadCapabilitySpec[ImageTagCatalogRequest, ImageTagCatalogResponse]{
 		Label:       imageTagCatalogCapabilityLabel,
 		Description: "查询平台镜像标签和分类。",
-		Schema:      objectSchema(nil, nil),
+		Params:      objectParam(nil),
 		Handle:      imageTagCatalogHandle,
 		Render:      imageTagCatalogRender,
 	}

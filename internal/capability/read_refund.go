@@ -59,7 +59,7 @@ func refundReadSpec() ReadCapabilitySpec[RefundEstimateRequest, RefundEstimateRe
 	return ReadCapabilitySpec[RefundEstimateRequest, RefundEstimateResponse]{
 		Label:       refundCapabilityLabel,
 		Description: "估算指定实例当前可退金额，不执行释放。",
-		Schema:      objectSchema(map[string]any{"targets": targetRefsSchema()}, []string{"targets"}),
+		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}, "targets"),
 		Handle:      refundHandle,
 		Render:      refundRender,
 	}

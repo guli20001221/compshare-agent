@@ -40,7 +40,7 @@ func NewUnavailableCapability(spec UnavailableCapabilitySpec) RegisteredRead {
 	return NewReadCapability(ReadCapabilitySpec[unavailableRequest, struct{}]{
 		Label:       spec.Name,
 		Description: spec.Description,
-		Schema:      objectSchema(nil, nil),
+		Params:      objectParam(nil),
 		Handle: func(context.Context, unavailableRequest, ReadRuntime) (struct{}, ReadResult) {
 			return struct{}{}, ReadUnavailable(spec.Reply, spec.Alternatives)
 		},

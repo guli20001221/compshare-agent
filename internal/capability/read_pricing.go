@@ -58,11 +58,11 @@ func pricingReadSpec() ReadCapabilitySpec[PricingRequest, PricingResponse] {
 	return ReadCapabilitySpec[PricingRequest, PricingResponse]{
 		Label:       pricingCapabilityLabel,
 		Description: "查询指定 GPU 机型的账号价或目录价。",
-		Schema: objectSchema(map[string]any{
-			"gpu_type":   stringSchema(),
-			"gpu_count":  map[string]any{"type": "integer", "minimum": 1},
-			"price_kind": enumSchema("account", "catalog"),
-		}, []string{"gpu_type"}),
+		Params: objectParam(map[string]schemaNode{
+			"gpu_type":   stringParam(),
+			"gpu_count":  integerParam(1),
+			"price_kind": enumParam(platform.PriceKindValues()...),
+		}, "gpu_type"),
 		Handle: pricingHandle,
 		Render: pricingRender,
 	}

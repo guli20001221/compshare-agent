@@ -51,7 +51,7 @@ func monitorCurrentReadSpec() ReadCapabilitySpec[MonitorCurrentRequest, MonitorR
 	return ReadCapabilitySpec[MonitorCurrentRequest, MonitorResponse]{
 		Label:       monitorCurrentCapabilityLabel,
 		Description: "查询实例当前 CPU、内存、GPU 或显存监控数据。",
-		Schema:      objectSchema(map[string]any{"targets": targetRefsSchema(), "metrics": metricsSchema()}, nil),
+		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam(), "metrics": metricsParam()}),
 		Handle:      monitorCurrentHandle,
 		Render:      monitorRender,
 	}
@@ -89,11 +89,11 @@ func monitorHistoryReadSpec() ReadCapabilitySpec[MonitorHistoryRequest, MonitorR
 	return ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse]{
 		Label:       monitorHistoryCapabilityLabel,
 		Description: "查询实例在明确时间范围内的历史监控数据。",
-		Schema: objectSchema(map[string]any{
-			"targets":     targetRefsSchema(),
-			"metrics":     metricsSchema(),
-			"time_window": timeWindowSchema(),
-		}, []string{"time_window"}),
+		Params: objectParam(map[string]schemaNode{
+			"targets":     targetRefsParam(),
+			"metrics":     metricsParam(),
+			"time_window": timeWindowParam(),
+		}, "time_window"),
 		Handle: monitorHistoryHandle,
 		Render: monitorRender,
 	}

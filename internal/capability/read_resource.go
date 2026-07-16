@@ -39,7 +39,7 @@ func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResp
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
 		Label:       resourceCapabilityLabel,
 		Description: "查询当前账号的实例列表、实例状态和实例配置。",
-		Schema:      objectSchema(map[string]any{"targets": targetRefsSchema()}, nil),
+		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
 		Handle:      resourceHandle,
 		Render:      resourceRender,
 	}

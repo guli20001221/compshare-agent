@@ -167,9 +167,13 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 	Label string
 	// Description is the model-facing tool description.
 	Description string
-	// Schema is the model-facing JSON parameter schema. Its property set must
-	// equal Request's JSON field set (enforced by the catalog consistency test).
-	Schema map[string]any
+	// Params is the capability's parameter field contract — the single source
+	// for the model-facing JSON schema (Params.jsonSchema()), the runtime
+	// argument validator (Params.validate, which enforces the enum/minimum the
+	// decoder does not) and the consistency-test expectation. Its property set
+	// must equal Request's JSON field set (enforced by the catalog consistency
+	// test).
+	Params schemaNode
 	// Handle runs the upstream calls and produces a typed Response. When it needs
 	// to short-circuit (missing data, clarification, fallback, failure) it returns
 	// a terminal ReadResult (non-empty Status); otherwise it returns the Response
@@ -192,6 +196,7 @@ type RegisteredRead struct {
 	Description string
 	Tool        openai.Tool
 	schema      map[string]any
+	params      schemaNode
 	requestType reflect.Type
 	decode      func(map[string]any) (platform.ReadRequest, error)
 	run         func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult
@@ -210,6 +215,10 @@ func (r RegisteredRead) Run(ctx context.Context, req platform.ReadRequest, rt Re
 // Schema returns the model-facing parameter schema (for the consistency test).
 func (r RegisteredRead) Schema() map[string]any { return r.schema }
 
+// Params returns the capability's parameter field contract (for the recursive
+// schema/struct consistency test).
+func (r RegisteredRead) Params() schemaNode { return r.params }
+
 // RequestType returns the reflect.Type of the concrete request (for the
 // consistency test).
 func (r RegisteredRead) RequestType() reflect.Type { return r.requestType }
@@ -219,15 +228,23 @@ func (r RegisteredRead) RequestType() reflect.Type { return r.requestType }
 // together: a mismatch is a compile error, not a runtime surprise.
 func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapabilitySpec[Request, Response]) RegisteredRead {
 	toolName := ReadToolPrefix + spec.Label
+	schema := spec.Params.jsonSchema()
 	return RegisteredRead{
 		Label:       spec.Label,
 		Description: spec.Description,
 		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
-			Name: toolName, Description: strings.TrimSpace(spec.Description), Parameters: spec.Schema,
+			Name: toolName, Description: strings.TrimSpace(spec.Description), Parameters: schema,
 		}},
-		schema:      spec.Schema,
+		schema:      schema,
+		params:      spec.Params,
 		requestType: reflect.TypeOf(*new(Request)),
 		decode: func(args map[string]any) (platform.ReadRequest, error) {
+			// Enforce the enum/minimum the strict JSON decoder cannot: an
+			// out-of-contract value is a validation fallback, not a silent
+			// default. Runs before decode so a bogus enum never reaches a handler.
+			if err := spec.Params.validate(args, ""); err != nil {
+				return nil, err
+			}
 			return decodeStrictRead[Request](args)
 		},
 		run: func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult {

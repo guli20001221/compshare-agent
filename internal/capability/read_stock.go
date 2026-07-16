@@ -68,7 +68,7 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
 		Label:       stockCapabilityLabel,
 		Description: "查询 GPU 机型的实时可售性。",
-		Schema:      objectSchema(map[string]any{"gpu_type": stringSchema(), "zone": stringSchema()}, nil),
+		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "zone": stringParam()}),
 		Handle:      stockHandle,
 		Render:      stockRender,
 		Observe:     stockObserve,

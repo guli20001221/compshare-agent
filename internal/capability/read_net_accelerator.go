@@ -40,7 +40,7 @@ func netAcceleratorReadSpec() ReadCapabilitySpec[NetworkAcceleratorStatusRequest
 	return ReadCapabilitySpec[NetworkAcceleratorStatusRequest, NetworkAcceleratorStatusResponse]{
 		Label:       netAcceleratorCapabilityLabel,
 		Description: "查询网络加速状态。",
-		Schema:      objectSchema(map[string]any{"targets": targetRefsSchema()}, nil),
+		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
 		Handle:      netAcceleratorHandle,
 		Render:      netAcceleratorRender,
 	}

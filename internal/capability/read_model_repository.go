@@ -40,7 +40,7 @@ func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelR
 	return ReadCapabilitySpec[ModelRepositoryRequest, ModelRepositoryResponse]{
 		Label:       modelRepositoryCapabilityLabel,
 		Description: "浏览公共模型仓库。",
-		Schema:      objectSchema(map[string]any{"query": stringSchema(), "mode": enumSchema("all", "filtered")}, nil),
+		Params:      objectParam(map[string]schemaNode{"query": stringParam(), "mode": enumParam(platform.ListModeValues()...)}),
 		Handle:      modelRepositoryHandle,
 		Render:      modelRepositoryRender,
 	}

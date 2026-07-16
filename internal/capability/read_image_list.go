@@ -69,7 +69,7 @@ func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse]
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
 		Description: "查询平台、自制、社区或共享镜像。",
-		Schema:      objectSchema(map[string]any{"source": enumSchema("platform", "custom", "community", "shared"), "query": stringSchema(), "mode": enumSchema("all", "filtered")}, nil),
+		Params:      objectParam(map[string]schemaNode{"source": enumParam(platform.ImageSourceValues()...), "query": stringParam(), "mode": enumParam(platform.ListModeValues()...)}),
 		Handle:      imageListHandle,
 		Render:      imageListRender,
 	}
