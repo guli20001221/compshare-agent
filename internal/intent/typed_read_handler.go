@@ -16,8 +16,6 @@ type ReadHandlerContext struct {
 // parameter is the concrete capability request type.
 func (h *DemoHandler) HandleReadRequest(ctx context.Context, request ReadRequest, meta ReadHandlerContext) HandlerResult {
 	switch typed := request.(type) {
-	case GPUSpecsRequest:
-		return h.HandleGPUSpecsRequest(ctx, typed, meta)
 	case StockAvailabilityRequest:
 		return h.HandleStockAvailabilityRequest(ctx, typed, meta)
 	case ImageListRequest:
@@ -44,9 +42,6 @@ func typedHandlerRequest(readIntent Intent, slots Slots, meta ReadHandlerContext
 	}
 }
 
-func (h *DemoHandler) HandleGPUSpecsRequest(ctx context.Context, request GPUSpecsRequest, meta ReadHandlerContext) HandlerResult {
-	return h.DispatchRoute(ctx, typedHandlerRequest(IntentGPUSpecsQuery, Slots{SearchQuery: request.GPUType, DetailLevel: request.DetailLevel}, meta))
-}
 func (h *DemoHandler) HandleStockAvailabilityRequest(ctx context.Context, request StockAvailabilityRequest, meta ReadHandlerContext) HandlerResult {
 	return h.DispatchRoute(ctx, typedHandlerRequest(IntentStockAvailability, Slots{SearchQuery: request.GPUType, Zone: request.Zone}, meta))
 }

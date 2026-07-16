@@ -1,6 +1,7 @@
 package capability
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/compshare-agent/internal/platform"
@@ -22,6 +23,54 @@ func safeValue(v any) string { return platform.SafeValue(v) }
 func mapSliceAt(m map[string]any, key string) []any { return platform.MapSliceAt(m, key) }
 
 func safeString(m map[string]any, key string) string { return platform.SafeString(m, key) }
+
+func nestedValue(m map[string]any, key string) string { return platform.NestedValue(m, key) }
+
+func matchUserTextToInstanceTypeNames(userText string, items []any, includeFamilyMemoryVariants bool) []string {
+	return platform.MatchUserTextToInstanceTypeNames(userText, items, includeFamilyMemoryVariants)
+}
+
+func safeNumeric(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	return fmt.Sprint(v)
+}
+
+func numericValue(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case float32:
+		return float64(n), true
+	case float64:
+		return n, true
+	default:
+		return 0, false
+	}
+}
 
 func uniqueStrings(values []string) []string {
 	out := make([]string, 0, len(values))

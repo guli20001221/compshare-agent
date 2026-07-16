@@ -13,13 +13,6 @@ type MissingField = platform.MissingField
 
 func missing(name string) MissingField { return platform.Missing(name) }
 
-type GPUSpecsRequest struct {
-	GPUType     string      `json:"gpu_type,omitempty"`
-	DetailLevel DetailLevel `json:"detail_level,omitempty"`
-}
-
-func (GPUSpecsRequest) MissingFields() []MissingField { return nil }
-
 type StockAvailabilityRequest struct {
 	GPUType string `json:"gpu_type,omitempty"`
 	Zone    string `json:"zone,omitempty"`
