@@ -195,8 +195,14 @@ func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
 
 func routeStatusForReadResult(r capability.ReadResult) intent.RouteStatus {
 	switch r.Status {
-	case platform.ReadStatusHandled:
+	case platform.ReadStatusHandled, platform.ReadStatusEmpty:
+		// Empty is a successful dispatch that found no data — it ran, so it shares
+		// the dispatched route status; the distinct read status carries the emptiness.
 		return intent.RouteStatusDispatched
+	case platform.ReadStatusConflict:
+		// Ambiguous request resolving to multiple candidates — mirror the legacy
+		// ambiguous-target fallback route status.
+		return intent.RouteStatusFallbackUnresolvedTarget
 	case platform.ReadStatusFailureAfterTool:
 		return intent.RouteStatusFailureAfterTool
 	case platform.ReadStatusFallbackBeforeTool:

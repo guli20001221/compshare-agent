@@ -49,7 +49,11 @@ func imageTagCatalogHandle(ctx context.Context, _ ImageTagCatalogRequest, rt Rea
 	if raw == nil {
 		raw = map[string]any{}
 	}
-	return ImageTagCatalogResponse{Reply: renderImageTagCatalogReply(raw)}, ReadResult{}
+	reply, empty := renderImageTagCatalogReply(raw)
+	if empty {
+		return ImageTagCatalogResponse{}, ReadEmpty(reply)
+	}
+	return ImageTagCatalogResponse{Reply: reply}, ReadResult{}
 }
 
 func imageTagCatalogRender(resp ImageTagCatalogResponse) ReadResult {
@@ -60,7 +64,10 @@ func imageTagCatalogRender(resp ImageTagCatalogResponse) ReadResult {
 
 // --- Relocated verbatim from intent/routing_registry.go -------------------------
 
-func renderImageTagCatalogReply(raw map[string]any) string {
+// renderImageTagCatalogReply returns the catalog reply and whether the payload
+// was empty (no categorized tags and no flat Tags) — an empty catalog is a
+// structured Empty read, not a Handled answer.
+func renderImageTagCatalogReply(raw map[string]any) (string, bool) {
 	tagIndex := stringSliceAt(raw, "TagIndex")
 	tagsMap := stringSliceMapAt(raw, "TagsMap")
 	lines := []string{}
@@ -74,9 +81,9 @@ func renderImageTagCatalogReply(raw map[string]any) string {
 	if len(lines) == 0 {
 		tags := stringSliceAt(raw, "Tags")
 		if len(tags) == 0 {
-			return "未获取到镜像标签。"
+			return "未获取到镜像标签。", true
 		}
-		return "镜像标签: " + strings.Join(limitStrings(tags, 30), "、")
+		return "镜像标签: " + strings.Join(limitStrings(tags, 30), "、"), false
 	}
-	return "镜像标签分类:\n" + strings.Join(lines, "\n")
+	return "镜像标签分类:\n" + strings.Join(lines, "\n"), false
 }

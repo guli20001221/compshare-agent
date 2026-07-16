@@ -60,6 +60,11 @@ func gpuSpecsHandle(ctx context.Context, req GPUSpecsRequest, rt ReadRuntime) (G
 	if raw == nil {
 		raw = map[string]any{}
 	}
+	if len(mapSliceAt(raw, "AvailableInstanceTypes")) == 0 {
+		// Query succeeded but the catalog is empty — a structured Empty read, not
+		// a Handled answer that happens to say "no data".
+		return GPUSpecsResponse{}, ReadEmpty(noGPUSpecsReply)
+	}
 	return GPUSpecsResponse{Raw: raw, GPUType: req.GPUType, Detail: req.DetailLevel}, ReadResult{}
 }
 

@@ -67,6 +67,18 @@ func fallbackReason(reason platform.ReadFallbackReason) *platform.ReadFallbackRe
 	return &reason
 }
 
+// readTargetFallbackResult maps a target-resolution fallback reason to a read
+// result. An ambiguous reference — the request resolves to more than one
+// instance — is a structured Conflict so the Agent asks which one, asserted as a
+// status rather than only a fallback reason plus follow-up prose. Every other
+// reason stays a pre-tool fallback.
+func readTargetFallbackResult(reason platform.ReadFallbackReason) ReadResult {
+	if reason == platform.ReadFallbackAmbiguousTarget {
+		return ReadConflict("你指定的名称匹配到多个实例，请用实例 ID 或更精确的名称重新指定要操作的实例。")
+	}
+	return ReadFallbackBeforeTool(reason)
+}
+
 // dedupeInstanceSnapshots removes duplicate snapshots by UHostId, preserving
 // first-seen order. Relocated verbatim from intent.dedupeInstanceSnapshots so a
 // migrated capability resolves targets without the intent package.

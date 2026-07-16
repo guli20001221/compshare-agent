@@ -58,14 +58,15 @@ func TestImageTagCatalogHandle_FlatFallback(t *testing.T) {
 	}
 }
 
-// TestImageTagCatalogHandle_Empty: an empty payload is an explicit not-found reply
-// (parity with TestRenderImageTagCatalog_Empty), still a Handled status.
+// TestImageTagCatalogHandle_Empty: an empty payload is a structured Empty read —
+// the Agent can tell "queried and found no tags" from "queried and answered",
+// asserted as a status, not a Chinese substring.
 func TestImageTagCatalogHandle_Empty(t *testing.T) {
 	exec := &fakeReadExec{result: map[string]any{}}
 
 	result := runImageTagCatalog(t, exec, ImageTagCatalogRequest{})
 
-	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
 	assert.Contains(t, result.Reply, "未获取到镜像标签")
 }
 

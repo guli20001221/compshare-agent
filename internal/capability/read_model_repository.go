@@ -62,7 +62,11 @@ func modelRepositoryHandle(ctx context.Context, req ModelRepositoryRequest, rt R
 	if modelRaw == nil {
 		modelRaw = map[string]any{}
 	}
-	return ModelRepositoryResponse{Reply: renderModelRepositoryReply(modelRaw, tagRaw, req.Query, req.Mode)}, ReadResult{}
+	reply, empty := renderModelRepositoryReply(modelRaw, tagRaw, req.Query, req.Mode)
+	if empty {
+		return ModelRepositoryResponse{}, ReadEmpty(reply)
+	}
+	return ModelRepositoryResponse{Reply: reply}, ReadResult{}
 }
 
 func modelRepositoryRender(resp ModelRepositoryResponse) ReadResult {
@@ -112,7 +116,10 @@ func matchModelRepositoryTags(userText string, tags []string) []string {
 	return matched
 }
 
-func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, query string, mode platform.ListMode) string {
+// renderModelRepositoryReply returns the reply and whether the repository is
+// wholly empty (no tags and no models at all). A no-match that still shows the
+// tag vocabulary is a Handled partial answer, not Empty.
+func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, query string, mode platform.ListMode) (string, bool) {
 	tags := uniqueStrings(stringSliceAt(tagRaw, "Tags"))
 	models := mapSliceAt(modelRaw, "Models")
 	filtered := filterModelRepositoryModels(models, query, mode)
@@ -123,9 +130,9 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, query string, m
 	if len(filtered) == 0 {
 		if len(tags) > 0 {
 			sections = append(sections, "未找到匹配的模型。", modelRepositoryGuidanceFooter(false))
-			return strings.Join(sections, "\n")
+			return strings.Join(sections, "\n"), false
 		}
-		return "未获取到模型仓库数据。"
+		return "未获取到模型仓库数据。", true
 	}
 	allLines := []string{}
 	for _, entry := range filtered {
@@ -138,9 +145,9 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, query string, m
 	if len(allLines) == 0 {
 		if len(tags) > 0 {
 			sections = append(sections, "未找到匹配的模型。", modelRepositoryGuidanceFooter(false))
-			return strings.Join(sections, "\n")
+			return strings.Join(sections, "\n"), false
 		}
-		return "未获取到模型仓库数据。"
+		return "未获取到模型仓库数据。", true
 	}
 	lines := allLines
 	if len(lines) > imageModelBrowseDisplayCap {
@@ -151,7 +158,7 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, query string, m
 		sections = append(sections, fmt.Sprintf("（共 %d 个模型，已显示前 %d 个；可补充关键词进一步筛选）", len(allLines), len(lines)))
 	}
 	sections = append(sections, modelRepositoryGuidanceFooter(true))
-	return strings.Join(sections, "\n")
+	return strings.Join(sections, "\n"), false
 }
 
 // modelRepositoryGuidanceFooter bridges a model-repository browse reply to the

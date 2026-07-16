@@ -140,7 +140,7 @@ func resolveMonitorTargets(targets []platform.TargetRef, rt ReadRuntime) ([]enti
 	}
 	instances, ids, reason := resolveReadTargetSnapshots(targets, rt.Resolver)
 	if reason != nil {
-		return nil, nil, ReadFallbackBeforeTool(*reason)
+		return nil, nil, readTargetFallbackResult(*reason)
 	}
 	return instances, ids, ReadResult{}
 }

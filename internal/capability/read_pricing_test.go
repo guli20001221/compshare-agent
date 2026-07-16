@@ -138,6 +138,6 @@ func TestPricingHandle_NoInventory(t *testing.T) {
 
 	result := runPricing(t, exec, PricingRequest{GPUType: "4090"})
 
-	assert.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, platform.ReadStatusEmpty, result.Status, "an empty inventory is a structured Empty read")
 	assert.Equal(t, noInstanceTypesReply, result.Reply)
 }

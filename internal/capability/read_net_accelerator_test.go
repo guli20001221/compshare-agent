@@ -80,7 +80,7 @@ func TestNetAcceleratorHandle_EmptyPayload(t *testing.T) {
 
 	result := runNetAccelerator(t, exec, NetworkAcceleratorStatusRequest{})
 
-	assert.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, platform.ReadStatusEmpty, result.Status, "no status data is a structured Empty read")
 	assert.Contains(t, result.Reply, "未获取到网络加速状态")
 }
 

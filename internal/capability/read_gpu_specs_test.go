@@ -78,6 +78,17 @@ func TestGPUSpecsRender_NoMatchFallback(t *testing.T) {
 	assert.Contains(t, reply, "机型=4090")
 }
 
+// TestGPUSpecsHandle_Empty: an empty catalog is a structured Empty read, not a
+// Handled answer whose reply happens to say "no data".
+func TestGPUSpecsHandle_Empty(t *testing.T) {
+	exec := &fakeReadExec{result: map[string]any{"AvailableInstanceTypes": []any{}}}
+
+	result := runGPUSpecs(t, exec, GPUSpecsRequest{GPUType: "4090"})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Equal(t, noGPUSpecsReply, result.Reply)
+}
+
 func TestGPUSpecsRender_EmptyPayload(t *testing.T) {
 	assert.Equal(t, noGPUSpecsReply, renderGPUSpecsReply(map[string]any{}, "", platform.DetailLevelSummary))
 }

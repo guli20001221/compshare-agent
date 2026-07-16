@@ -120,6 +120,30 @@ func TestResourceHandle_ExplicitIDPinsTargetAndDoesNotTruncate(t *testing.T) {
 	assert.Equal(t, []string{"uhost-a"}, exec.calls[0].args["UHostIds"])
 }
 
+// TestResourceHandle_EmptyListIsStructuredEmpty: an account with no instances is
+// a structured Empty read (issue 1) — the Agent tells it apart from a Handled
+// answer and pairs it with CanAssertAbsence to state "you have none".
+func TestResourceHandle_EmptyListIsStructuredEmpty(t *testing.T) {
+	result := runResource(t, &fakeReadExec{result: describeFixture()}, nil, ResourceInfoRequest{})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+}
+
+// TestResourceHandle_AmbiguousNameIsConflict: a name matching multiple instances
+// is a structured Conflict (issue 1) asserted as a status, not only a fallback
+// reason plus follow-up prose.
+func TestResourceHandle_AmbiguousNameIsConflict(t *testing.T) {
+	resolver := refundResolver(t, [2]string{"uhost-a", "dup"}, [2]string{"uhost-b", "dup"})
+
+	result := runResource(t, &fakeReadExec{result: describeFixture()}, resolver, ResourceInfoRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefName, Value: "dup", Source: platform.SourceUserText}},
+	})
+
+	require.Equal(t, platform.ReadStatusConflict, result.Status)
+	assert.True(t, result.NeedsClarification, "a conflict drives the Agent to ask which one")
+	assert.Contains(t, result.Reply, "多个实例")
+}
+
 func TestResourceHandle_UnresolvedTargetFallsBack(t *testing.T) {
 	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-a", "train-a", "Running"))}
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})

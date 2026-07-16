@@ -99,6 +99,19 @@ func ReadClarification(reply string) ReadResult {
 	return r
 }
 
+// ReadEmpty marks a successful query that returned no data. The reply explains
+// the emptiness; the Agent asserts the status, not the wording.
+func ReadEmpty(reply string) ReadResult {
+	return ReadResult{Status: platform.ReadStatusEmpty, Reply: reply}
+}
+
+// ReadConflict marks an ambiguous request that resolved to multiple candidates.
+// The reply is the disambiguation prompt; NeedsClarification drives the Agent to
+// ask which one, rather than guessing.
+func ReadConflict(reply string) ReadResult {
+	return ReadResult{Status: platform.ReadStatusConflict, Reply: reply, NeedsClarification: true}
+}
+
 // ReadFallbackBeforeTool marks a pre-tool fallback with a structured reason.
 func ReadFallbackBeforeTool(reason platform.ReadFallbackReason) ReadResult {
 	return ReadResult{Status: platform.ReadStatusFallbackBeforeTool, FallbackReason: reason}

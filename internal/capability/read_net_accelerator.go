@@ -54,7 +54,11 @@ func netAcceleratorHandle(ctx context.Context, _ NetworkAcceleratorStatusRequest
 	if raw == nil {
 		raw = map[string]any{}
 	}
-	return NetworkAcceleratorStatusResponse{Reply: renderNetAcceleratorStatusReply(raw)}, ReadResult{}
+	reply, empty := renderNetAcceleratorStatusReply(raw)
+	if empty {
+		return NetworkAcceleratorStatusResponse{}, ReadEmpty(reply)
+	}
+	return NetworkAcceleratorStatusResponse{Reply: reply}, ReadResult{}
 }
 
 func netAcceleratorRender(resp NetworkAcceleratorStatusResponse) ReadResult {
@@ -65,7 +69,10 @@ func netAcceleratorRender(resp NetworkAcceleratorStatusResponse) ReadResult {
 
 // --- Relocated verbatim from intent/routing_net_accelerator.go -----------------
 
-func renderNetAcceleratorStatusReply(raw map[string]any) string {
+// renderNetAcceleratorStatusReply returns the status reply and whether the query
+// yielded no status at all (no rows and no Optimized field) — an empty status is
+// a structured Empty read, not a Handled answer.
+func renderNetAcceleratorStatusReply(raw map[string]any) (string, bool) {
 	rows := netAcceleratorRows(raw)
 	if len(rows) > 0 {
 		parts := make([]string, 0, len(rows))
@@ -80,16 +87,16 @@ func renderNetAcceleratorStatusReply(raw map[string]any) string {
 				parts = append(parts, fmt.Sprintf("%s %s", row.region, status))
 			}
 		}
-		return "网络加速状态：" + strings.Join(parts, "；") + "。这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。"
+		return "网络加速状态：" + strings.Join(parts, "；") + "。这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。", false
 	}
 	if optimized, ok := boolField(raw, "Optimized"); ok {
 		status := "未开通"
 		if optimized {
 			status = "已开通"
 		}
-		return "网络加速" + status + "。这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。"
+		return "网络加速" + status + "。这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。", false
 	}
-	return "未获取到网络加速状态。这是只读状态查询，不会直接修改配置。"
+	return "未获取到网络加速状态。这是只读状态查询，不会直接修改配置。", true
 }
 
 type netAcceleratorRow struct {

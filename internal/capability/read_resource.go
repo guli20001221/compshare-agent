@@ -58,7 +58,7 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 	} else {
 		_, resolvedIDs, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver)
 		if reason != nil {
-			return ResourceInfoResponse{}, ReadFallbackBeforeTool(*reason)
+			return ResourceInfoResponse{}, readTargetFallbackResult(*reason)
 		}
 		ids = resolvedIDs
 	}
@@ -95,6 +95,11 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 		instances = truncated
 		envMeta.Shown = shown
 		envMeta.Truncated = isTruncated
+	}
+	if len(instances) == 0 {
+		// Query succeeded but nothing is present/matched — a structured Empty read.
+		// The Agent pairs this with CanAssertAbsence to state "you have none".
+		return ResourceInfoResponse{}, ReadEmpty(readprojection.RenderResourceSummary(nil, envMeta))
 	}
 	return ResourceInfoResponse{Instances: instances, Meta: envMeta}, ReadResult{}
 }

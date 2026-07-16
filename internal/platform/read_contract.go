@@ -28,6 +28,15 @@ const (
 	ReadStatusNeedsInput         ReadStatus = "needs_input"
 	ReadStatusFallbackBeforeTool ReadStatus = "fallback_before_tool"
 	ReadStatusFailureAfterTool   ReadStatus = "failure_after_tool"
+	// ReadStatusEmpty is reported when the upstream query succeeded but returned
+	// no data (an empty catalog / list / no matching subject). It is distinct from
+	// Handled so the Agent can tell "queried and found nothing" from "queried and
+	// answered", and it is asserted as a status, never as a Chinese substring.
+	ReadStatusEmpty ReadStatus = "empty"
+	// ReadStatusConflict is reported when the request is ambiguous — it resolves
+	// to more than one candidate subject and the read cannot pick one. It replaces
+	// expressing ambiguity only through a fallback reason plus follow-up prose.
+	ReadStatusConflict ReadStatus = "conflict"
 	// ReadStatusUnavailable is reported by an UnavailableCapabilitySpec: the
 	// capability is deliberately not backed by a real-time upstream call and
 	// returns a deterministic "not available + alternatives" answer instead.

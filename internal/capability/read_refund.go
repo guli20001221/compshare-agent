@@ -72,7 +72,7 @@ func refundHandle(ctx context.Context, req RefundEstimateRequest, rt ReadRuntime
 			r.ToolAction = refundAction
 			return RefundEstimateResponse{}, r
 		}
-		return RefundEstimateResponse{}, ReadFallbackBeforeTool(*reason)
+		return RefundEstimateResponse{}, readTargetFallbackResult(*reason)
 	}
 	args := map[string]any{"UHostIds": ids}
 	raw, err := rt.Executor.Execute(ctx, refundAction, args)

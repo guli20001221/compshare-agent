@@ -79,7 +79,7 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 	}
 	items := platform.MapSliceAt(describe, "AvailableInstanceTypes")
 	if len(items) == 0 {
-		r := ReadHandled(noInstanceTypesReply)
+		r := ReadEmpty(noInstanceTypesReply)
 		r.ToolAction = pricingPriceAction
 		return PricingResponse{}, r
 	}

@@ -99,6 +99,10 @@ func stockHandle(ctx context.Context, req StockAvailabilityRequest, rt ReadRunti
 	// to every model. All three stock renderers filter off the same referent, so
 	// substituting one effective text keeps them consistent.
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
+	if len(items) == 0 {
+		// Query succeeded but no machine-type stock data — a structured Empty read.
+		return StockAvailabilityResponse{}, ReadEmpty(noStockReply)
+	}
 	referent := stockReferentText(req, rt.FallbackGPUModel, items)
 	resolved := singleStockModel(referent, items)
 

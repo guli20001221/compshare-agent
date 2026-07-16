@@ -44,6 +44,17 @@ func TestStockRender_FilterDedupeAndStatus(t *testing.T) {
 	assert.Contains(t, reply, soldOutDisclaimer)
 }
 
+// TestStockHandle_EmptyCatalog: no machine-type stock data is a structured Empty
+// read (issue 1), short-circuited before the capacity precheck.
+func TestStockHandle_EmptyCatalog(t *testing.T) {
+	exec := &fakeReadExec{result: map[string]any{"AvailableInstanceTypes": []any{}}}
+
+	result := runStock(t, exec, "", StockAvailabilityRequest{})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Equal(t, noStockReply, result.Reply)
+}
+
 func TestStockRender_NoMatchAndEmpty(t *testing.T) {
 	raw := map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090", "Status": "Normal"}}}
 	assert.Contains(t, renderStockReply(raw, "H100"), "未在当前可售机型里找到您提到的型号")
