@@ -86,8 +86,11 @@ func keptVLLMHit() knowledge.RetrievalHit {
 	}}
 }
 
+// vllmGroundedRepairResponse is the single-model budget/ceiling recovery reply:
+// plain text with a positional [1] citation that resolves to the gathered ledger
+// item (ext-vllm-oom-001). The runtime strips the marker for display.
 func vllmGroundedRepairResponse() llm.ChatResponse {
-	return llm.ChatResponse{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用。","supported":true,"claims":[{"answer_quote":"可以把 max-model-len 调小来降低显存占用","chunk_id":"ext-vllm-oom-001","evidence_quote":"把 max-model-len 设小一点即可显著降低显存占用"}],"unsupported":[]}`}
+	return llm.ChatResponse{Content: `可以把 max-model-len 调小来降低显存占用[1]。`}
 }
 
 func vllmRetriever() *scriptedKnowledgeRetriever {

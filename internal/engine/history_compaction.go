@@ -165,7 +165,7 @@ func (e *Engine) generateMemoryDelta(ctx context.Context, pairs []ConversationEx
 	}
 	e.emitTokenUsage(resp.Usage)
 	var delta MemoryDelta
-	if !parseKnowledgeGroundingJSON(resp.Content, &delta) {
+	if !parseFirstJSONObject(resp.Content, &delta) {
 		return MemoryDelta{}, false
 	}
 	validated, validCount, claimedCount := validateMemoryDelta(delta, pairs)
@@ -173,6 +173,19 @@ func (e *Engine) generateMemoryDelta(ctx context.Context, pairs []ConversationEx
 		return MemoryDelta{}, false
 	}
 	return validated, true
+}
+
+// parseFirstJSONObject extracts the first balanced {...} object from an LLM
+// response (tolerating code fences / prose around it) and unmarshals it into dst.
+// Returns false when no object is found or it does not unmarshal — fail-closed.
+func parseFirstJSONObject(raw string, dst any) bool {
+	text := strings.TrimSpace(raw)
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return false
+	}
+	return json.Unmarshal([]byte(text[start:end+1]), dst) == nil
 }
 
 func completeConversationExcerpts(messages []openai.ChatCompletionMessage) []ConversationExcerpt {

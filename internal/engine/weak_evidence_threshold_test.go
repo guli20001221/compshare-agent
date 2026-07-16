@@ -83,8 +83,9 @@ func TestIsWeakEvidenceByHybridMode(t *testing.T) {
 }
 
 // TestIsWeakEvidenceEmptyItems verifies the no-hits short-circuit. Pre-fix
-// behavior is preserved: an empty hit list is NEVER weak (the no_evidence
-// branch upstream handles that case via ragNoEvidenceReply).
+// behavior is preserved: an empty hit list is NEVER weak (an empty ledger is
+// handled upstream — the Agent answers directly and the final gate ships it
+// fail-open, never a canned no-evidence refusal).
 func TestIsWeakEvidenceEmptyItems(t *testing.T) {
 	if isWeakEvidence(nil, "qwen3_full") {
 		t.Fatal("nil items must not be weak (caller short-circuits on no_evidence)")

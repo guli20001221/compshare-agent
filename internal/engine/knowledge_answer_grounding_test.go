@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/observability"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,399 +42,203 @@ func TestSanitizedContextRAGRecordsContainNoCustomerIdentifiers(t *testing.T) {
 	assert.Empty(t, sensitive.Find(b), "sanitized real-record fixtures must not carry customer or operational identifiers")
 }
 
-func groundedEngineForRecord(t *testing.T, record sanitizedContextRAGRecord, responses ...llm.ChatResponse) (*Engine, *mockLLM) {
+// syntheticGroundedEngine wires an agent-loop turn that already ran SearchKnowledge
+// and kept one hit (chunk id "kb-port-001"). retryResponses are consumed by the ONE
+// bounded same-model retry, in order.
+func syntheticGroundedEngine(t *testing.T, retryResponses ...llm.ChatResponse) (*Engine, *mockLLM) {
 	t.Helper()
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
-		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
+		ChunkID: "kb-port-001", KBVersion: "test.fixture", Title: "端口说明",
+		Content: "防火墙端口在默认情况下处于关闭状态，需要在控制台手动放通。",
 	}}
-	mock := &mockLLM{responses: responses}
+	mock := &mockLLM{responses: retryResponses}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
-	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
+	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger("端口默认状态", []knowledge.RetrievalHit{hit}, 3, 0)
+	require.NotEmpty(t, eng.searchKnowledgeLedgerThisTurn.Items, "precondition: the kept hit produced a ledger item")
 	return eng, mock
 }
 
-func groundingVerdictResponse(record sanitizedContextRAGRecord, supported bool, usage int) llm.ChatResponse {
-	verdict := knowledgeGroundingVerdict{Supported: supported}
-	if supported {
-		verdict.Claims = []knowledgeGroundingClaim{{
-			AnswerQuote: record.AnswerQuote, ChunkID: record.ChunkID, EvidenceQuote: record.EvidenceQuote,
-		}}
-	} else {
-		verdict.Unsupported = []string{"证据未支持的主张"}
-	}
-	b, _ := json.Marshal(verdict)
-	return llm.ChatResponse{Content: string(b), Usage: llm.TokenUsage{TotalTokens: usage}}
+// A validly-cited answer is accepted deterministically: markers stripped, no second
+// model, and the pure-RAG answer is remembered.
+func TestKnowledgeGrounding_ValidCitationAccepted(t *testing.T) {
+	eng, mock := syntheticGroundedEngine(t)
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "防火墙端口默认是关闭的[[kb-port-001]]。")
+	assert.Equal(t, "防火墙端口默认是关闭的。", got, "the marker is stripped; the prose ships")
+	require.Empty(t, mock.calls, "a validly-cited answer is accepted without any retry or verifier call")
+	require.NotEmpty(t, eng.sessionState.VerifiedKnowledge, "a cited pure-RAG answer is remembered")
+	require.Equal(t, groundingSupported, eng.groundingOutcomeThisTurn)
 }
 
-func repairResponse(record sanitizedContextRAGRecord, usage int) llm.ChatResponse {
-	repaired := map[string]any{
-		"answer":    record.Answer,
-		"supported": true,
-		"claims": []knowledgeGroundingClaim{{
-			AnswerQuote: record.AnswerQuote, ChunkID: record.ChunkID, EvidenceQuote: record.EvidenceQuote,
-		}},
-		"unsupported": []string{},
-	}
-	b, _ := json.Marshal(repaired)
-	return llm.ChatResponse{Content: string(b), Usage: llm.TokenUsage{TotalTokens: usage}}
+// Positional [n] citations resolve the same way.
+func TestKnowledgeGrounding_PositionalCitationAccepted(t *testing.T) {
+	eng, mock := syntheticGroundedEngine(t)
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "防火墙端口默认是关闭的[1]。")
+	assert.Equal(t, "防火墙端口默认是关闭的。", got)
+	require.Empty(t, mock.calls)
 }
 
-func assertResolvedQuestionContract(t *testing.T, calls []llm.ChatRequest, resolved string) {
-	t.Helper()
-	require.NotEmpty(t, calls)
-	for i, call := range calls {
-		require.Len(t, call.Messages, 2, "grounding call %d must be isolated from ReAct history", i)
-		payload := call.Messages[1].Content
-		assert.Contains(t, payload, `"resolved_question":"`+resolved+`"`, "call %d used a different resolved question", i)
-		assert.Contains(t, payload, `"query":"`+resolved+`"`, "call %d did not carry the matching EvidenceLedger.query", i)
-	}
+// An uncited answer with evidence in hand gets exactly one bounded retry; a cited
+// retry result is accepted (groundingRepaired).
+func TestKnowledgeGrounding_UncitedAnswerRetriedThenAccepted(t *testing.T) {
+	eng, mock := syntheticGroundedEngine(t, llm.ChatResponse{Content: "防火墙端口默认是关闭的[1]。"})
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "防火墙端口默认是关闭的。")
+	assert.Equal(t, "防火墙端口默认是关闭的。", got)
+	require.Len(t, mock.calls, 1, "exactly one bounded cite-or-drop retry")
+	require.Equal(t, groundingRepaired, eng.groundingOutcomeThisTurn)
 }
 
-func TestActionProposalDoesNotBypassKnowledgeGrounding(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[0]
-	eng, mock := groundedEngineForRecord(t, record,
-		groundingVerdictResponse(record, false, 10),
-		repairResponse(record, 10),
-	)
-	eng.actionProposalRanThisTurn = true
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.ResolvedQuestion, "未经证据支持的平台结论")
-	require.Equal(t, record.Answer, got)
-	require.Len(t, mock.calls, 2, "写操作提案不得让夹带的知识结论绕过核验和修复")
+// THE core fail-open contract: an answer that is correct and evidence-backed but
+// cites the WRONG chunk id (an LLM mis-fill) must NOT be destroyed. The retry also
+// fails to produce a resolving citation, so the bad marker is stripped and the
+// correct answer ships. Historically this exact case blocked 0/50 correct
+// production answers with a canned "知识库未覆盖" refusal.
+func TestKnowledgeGrounding_WrongChunkIdShipsNotDestroyed(t *testing.T) {
+	answer := "防火墙端口默认是关闭的[[not-the-real-chunk-id]]。"
+	eng, mock := syntheticGroundedEngine(t, llm.ChatResponse{Content: answer}) // retry repeats the mistake
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", answer)
+	assert.Equal(t, "防火墙端口默认是关闭的。", got, "the correct answer survives; the fabricated marker is stripped")
+	assert.NotContains(t, got, "[[", "no fabricated marker reaches the user")
+	assert.NotContains(t, got, "知识库未覆盖", "a correct answer is never replaced by a canned refusal")
+	require.Len(t, mock.calls, 1, "one bounded retry, then fail-open ship")
+	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
 }
 
-// Five sanitized real-record shapes, including the two-character follow-up
-// "粘贴呢". The fallback utterance must never replace the history-aware retrieval
-// query during validation.
-func TestKnowledgeAnswerGrounding_SanitizedContextRecordsUseOneResolvedQuestion(t *testing.T) {
-	for _, record := range loadSanitizedContextRAGRecords(t) {
-		t.Run(record.Name, func(t *testing.T) {
-			eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, true, 100))
-
-			got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
-
-			assert.Equal(t, record.Answer, got)
-			assertResolvedQuestionContract(t, mock.calls, record.ResolvedQuestion)
-			if record.UserMessage == "粘贴呢" {
-				assert.NotContains(t, mock.calls[0].Messages[1].Content, `"resolved_question":"粘贴呢"`)
-			}
-		})
-	}
-}
-
-// A valid citation is attribution, not proof. This is the hole the earlier
-// grounding-not-punctuation branch explicitly left open.
-func TestKnowledgeAnswerGrounding_CitedFabricationAlsoReachesSemanticGate(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[3]
-	fabrication := "所有订单都能在 24 小时内全额退款 [[" + record.ChunkID + "]]。"
-	eng, mock := groundedEngineForRecord(t, record,
-		groundingVerdictResponse(record, false, 100),
-		repairResponse(record, 100),
-	)
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, fabrication)
-
-	assert.Equal(t, record.Answer, got, "the cited fabrication must be replaced by a proved ledger answer")
-	assert.NotContains(t, got, "24 小时")
-	require.Len(t, mock.calls, 2, "cited text must be verified, then repaired; it cannot bypass on punctuation")
-	assert.Contains(t, mock.calls[0].Messages[0].Content, "事实核查员")
-	assertResolvedQuestionContract(t, mock.calls, record.ResolvedQuestion)
-}
-
-func TestKnowledgeAnswerGrounding_UncitedGroundedAnswerIsNotFalseRefused(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[0]
-	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, true, 100))
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
-
-	assert.Equal(t, record.Answer, got)
+// A fully uncited answer that cannot be cited even after the retry still ships
+// (fail-open), never a canned floor.
+func TestKnowledgeGrounding_UncitedFailOpenShips(t *testing.T) {
+	eng, mock := syntheticGroundedEngine(t, llm.ChatResponse{Content: "防火墙端口默认是关闭的。"}) // retry still uncited
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "防火墙端口默认是关闭的。")
+	assert.Equal(t, "防火墙端口默认是关闭的。", got)
 	assert.NotContains(t, got, "知识库未覆盖")
-	require.Len(t, mock.calls, 1, "verify the answer in hand; do not re-roll merely to chase brackets")
+	require.Len(t, mock.calls, 1)
+	require.Empty(t, eng.sessionState.VerifiedKnowledge, "an uncited answer is shipped but not remembered as verified")
 }
 
-func TestKnowledgeAnswerGrounding_NoEvidenceAllowsOnlyVerifiedStableGeneralKnowledge(t *testing.T) {
-	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴","basis":"stable_general","chunk_id":"","evidence_quote":""}],"unsupported":[]}`}}}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "Linux 终端怎么粘贴", answer)
-
-	assert.Equal(t, answer, got)
-	require.Len(t, eng.llmClient.(*mockLLM).calls, 1)
-	assert.Contains(t, eng.llmClient.(*mockLLM).calls[0].Messages[1].Content, `"items":[]`, "verifier payload must not invent evidence")
+// Under typography-only grounding the semantic verifier is deliberately gone: a
+// fabricated claim carrying a VALID citation ships. This is the accepted residual
+// risk documented in the convergence plan (P1c: pure marker-validity cannot catch
+// 断章取义). Encoded so the trade-off is explicit and any future re-introduction of a
+// semantic gate is a conscious decision, not an accident.
+func TestKnowledgeGrounding_CitedFabricationShips_AcceptedResidualRisk(t *testing.T) {
+	eng, mock := syntheticGroundedEngine(t)
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "所有端口默认都是开放的[[kb-port-001]]。")
+	assert.Contains(t, got, "所有端口默认都是开放的", "typography-only ships a validly-cited claim; content is not re-judged")
+	assert.NotContains(t, got, "[[")
+	require.Empty(t, mock.calls, "no second model reviews the answer")
 }
 
-func TestKnowledgeAnswerGrounding_NoEvidenceStillRejectsPlatformCurrentClaim(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":false,"claims":[],"unsupported":["平台当前镜像目录"]}`}}}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "平台现在有哪些镜像", "平台当前提供 Ubuntu-NVIDIA 镜像。")
-
-	assert.Equal(t, ragNoEvidenceReply, got)
-}
-
-func TestKnowledgeAnswerGrounding_AgentMayAnswerStableKnowledgeWithoutSearching(t *testing.T) {
+// No evidence in hand (the Agent answered stable general knowledge directly): the
+// answer ships untouched and the runtime never forces a retrieval or retry.
+func TestKnowledgeGrounding_NoEvidenceShipsStableGeneral(t *testing.T) {
 	mock := &mockLLM{}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = false
-
+	eng.searchKnowledgeRanThisTurn = true // ran, but retrieved nothing
 	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "粘贴呢", answer)
-
-	require.Equal(t, answer, got)
-	require.Empty(t, mock.calls, "runtime must not force a retrieval or verifier call when the Agent chose a direct stable answer")
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "Linux 终端怎么粘贴", answer)
+	assert.Equal(t, answer, got)
+	require.Empty(t, mock.calls, "an empty ledger has nothing to cite; no retry is forced")
 }
 
-func TestKnowledgeAnswerGrounding_IrrelevantSearchDoesNotEraseStableGeneralAnswer(t *testing.T) {
-	hit := knowledge.RetrievalHit{Kept: true, Chunk: knowledge.KBChunk{
-		ChunkID: "irrelevant-platform-doc", Title: "实例计费说明", Content: "实例按量计费。",
+// An irrelevant retrieval hit must not erase a correct stable-general answer, and
+// the answer must not be promoted into durable verified memory against unrelated
+// evidence.
+func TestKnowledgeGrounding_IrrelevantSearchDoesNotEraseStableAnswer(t *testing.T) {
+	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+		ChunkID: "kb-billing-001", KBVersion: "test.fixture", Title: "计费说明", Content: "实例按量计费。",
 	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴","basis":"stable_general","chunk_id":"","evidence_quote":""}],"unsupported":[]}`}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
+	// The retry, faced with irrelevant evidence, keeps the general-knowledge answer.
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: answer}}}, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger("Linux 终端怎么粘贴", []knowledge.RetrievalHit{hit}, 3, 0)
 
-	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "粘贴呢", answer)
-
-	require.Equal(t, answer, got)
-	require.Len(t, mock.calls, 1)
+	assert.Equal(t, answer, got)
 	require.Empty(t, eng.sessionState.VerifiedKnowledge, "general knowledge must not be persisted against unrelated retrieval evidence")
 }
 
-func TestKnowledgeGroundingStableGeneralCannotSmuggleEvidenceFields(t *testing.T) {
-	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "image", Snippet: "Ubuntu 基础镜像"}}}
-	verdict := knowledgeGroundingVerdict{Supported: true, Claims: []knowledgeGroundingClaim{{
-		AnswerQuote: "平台当前提供 Ubuntu-NVIDIA", Basis: "stable_general", ChunkID: "image", EvidenceQuote: "Ubuntu 基础镜像",
-	}}}
-	_, _, ok := validateKnowledgeGroundingProof("平台当前提供 Ubuntu-NVIDIA。", verdict, ledger)
-	require.False(t, ok)
-}
-
-func TestKnowledgeAnswerGrounding_EmptyCurrentSearchDoesNotErasePriorAnswer(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"使用 Ctrl+Shift+V 粘贴","chunk_id":"terminal-paste-001","evidence_quote":"使用 Ctrl+Shift+V 粘贴"}],"unsupported":[]}`}}}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
-	eng.sessionState.VerifiedKnowledge = []VerifiedKnowledgeTurn{{
-		Question: "Windows Terminal 怎么粘贴？",
-		Answer:   "使用 Ctrl+Shift+V 粘贴。",
-		Evidence: knowledge.EvidenceLedger{Query: "Windows Terminal 怎么粘贴？", Items: []knowledge.EvidenceItem{{
-			ChunkID: "terminal-paste-001", Snippet: "使用 Ctrl+Shift+V 粘贴。",
-		}}},
-	}}
-	eng.messages = append(eng.messages,
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Windows Terminal 怎么粘贴？"},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "使用 Ctrl+Shift+V 粘贴。"},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "粘贴呢"},
-	)
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "粘贴呢", "使用 Ctrl+Shift+V 粘贴。")
-
-	assert.Equal(t, "使用 Ctrl+Shift+V 粘贴。", got)
-	assert.Len(t, eng.llmClient.(*mockLLM).calls, 1, "empty current retrieval must be checked against durable prior provenance")
-}
-
-func TestKnowledgeAnswerGrounding_MergesPriorVerifiedAndCurrentEvidence(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{"supported":true,"claims":[{"answer_quote":"粘贴使用 Ctrl+Shift+V","chunk_id":"terminal-paste-001","evidence_quote":"使用 Ctrl+Shift+V 粘贴"},{"answer_quote":"复制使用 Ctrl+Shift+C","chunk_id":"terminal-copy-002","evidence_quote":"使用 Ctrl+Shift+C 复制"}],"unsupported":[]}`}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
-	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{{Chunk: knowledge.KBChunk{ChunkID: "terminal-copy-002", Content: "使用 Ctrl+Shift+C 复制。"}, Kept: true}}
-	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{Query: "Windows Terminal 复制和粘贴", Items: []knowledge.EvidenceItem{{
-		ChunkID: "terminal-copy-002", Snippet: "使用 Ctrl+Shift+C 复制。",
-	}}}
-	eng.sessionState.VerifiedKnowledge = []VerifiedKnowledgeTurn{{
-		Question: "Windows Terminal 怎么粘贴？",
-		Answer:   "使用 Ctrl+Shift+V 粘贴。",
-		Evidence: knowledge.EvidenceLedger{Query: "Windows Terminal 怎么粘贴？", Items: []knowledge.EvidenceItem{{
-			ChunkID: "terminal-paste-001", Snippet: "使用 Ctrl+Shift+V 粘贴。",
-		}}},
-	}}
-
-	answer := "粘贴使用 Ctrl+Shift+V；复制使用 Ctrl+Shift+C。"
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "Windows Terminal 复制和粘贴", answer)
-
-	assert.Equal(t, answer, got)
-	require.Len(t, mock.calls, 1)
-	payload := mock.calls[0].Messages[1].Content
-	assert.Contains(t, payload, "terminal-paste-001")
-	assert.Contains(t, payload, "terminal-copy-002")
-}
-
-func TestKnowledgeAnswerGrounding_RawLeakCannotUseVerifierAsBypass(t *testing.T) {
+// A persistent raw-evidence leak cannot ship verbatim evidence: one bounded retry,
+// then a security stop (never the raw dump). Uses a real sanitized record so the
+// leak needle is real evidence text.
+func TestKnowledgeGrounding_RawLeakRetriedThenBlocked(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[2]
+	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
+	}}
 	leak := "资料原文：" + record.Evidence
-	eng, mock := groundedEngineForRecord(t, record, repairResponse(record, 100))
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: leak}}}, &mockExecutor{}, nil) // retry still leaks
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
+	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
 
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, leak)
-
-	assert.Equal(t, record.Answer, got)
-	require.Len(t, mock.calls, 1, "raw evidence goes directly to safe repair, never to a verifier that might bless the dump")
-	assert.Contains(t, mock.calls[0].Messages[0].Content, "知识答案修复器")
+	assert.Equal(t, ragUngroundableReply, got, "a persistent verbatim dump is a security stop, not shipped")
 	assert.NotContains(t, got, record.Evidence)
+	require.Len(t, eng.llmClient.(*mockLLM).calls, 1, "exactly one bounded retry before the security stop")
 }
 
-func TestKnowledgeAnswerGrounding_CitationMarkersCannotSplitRawLeakNeedle(t *testing.T) {
+// A raw leak that the retry rewrites into a clean cited answer ships.
+func TestKnowledgeGrounding_RawLeakRetriedThenFixed(t *testing.T) {
+	record := loadSanitizedContextRAGRecords(t)[2]
+	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
+	}}
+	leak := "资料原文：" + record.Evidence
+	fixed := "简要说明[[" + record.ChunkID + "]]。"
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: fixed}}}, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
+	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, leak)
+	assert.Equal(t, "简要说明。", got)
+	assert.NotContains(t, got, record.Evidence)
+	require.Len(t, eng.llmClient.(*mockLLM).calls, 1)
+}
+
+// Outside the knowledge_qa agent loop the finalizer is a pass-through: it must not
+// touch a normal answer.
+func TestKnowledgeGrounding_NotAgentLoopIsPassThrough(t *testing.T) {
+	mock := &mockLLM{}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = false
+	answer := "任意回答，可能带 [[fake]] 标记。"
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "q", answer)
+	assert.Equal(t, answer, got)
+	require.Empty(t, mock.calls)
+}
+
+// Wiring gate: drive the real production agent loop end-to-end. Removing the
+// finalizeAgentLoopKnowledgeAnswer call from engine.go would let a fabricated
+// [[chunk_id]] marker reach the user un-stripped and make this red.
+func TestKnowledgeGrounding_ProductionAgentLoopWiresGate(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[0]
-	for _, marker := range []string{"[1]", "[[" + record.ChunkID + "]]"} {
-		t.Run(marker, func(t *testing.T) {
-			runes := []rune(record.Evidence)
-			leak := string(runes[:len(runes)/2]) + marker + string(runes[len(runes)/2:])
-			eng, mock := groundedEngineForRecord(t, record, repairResponse(record, 100))
-			require.NoError(t, knowledge.ValidateNoRawEvidenceLeak(leak, eng.searchKnowledgeHitsThisTurn),
-				"precondition: the marker splits the old contiguous leak needle")
-			require.Error(t, knowledge.ValidateNoRawEvidenceLeak(knowledge.StripCiteMarkers(leak), eng.searchKnowledgeHitsThisTurn),
-				"the displayed answer reconstructs the raw evidence")
-
-			got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, leak)
-
-			assert.Equal(t, record.Answer, got)
-			require.Len(t, mock.calls, 1, "split leak must skip verifier and go directly to bounded repair")
-			assert.Contains(t, mock.calls[0].Messages[0].Content, "知识答案修复器")
-		})
-	}
-}
-
-func TestKnowledgeAnswerGrounding_PaidRepairSurvivesPostCallBudget(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[4]
-	eng, mock := groundedEngineForRecord(t, record,
-		groundingVerdictResponse(record, false, 100),
-		repairResponse(record, 60000),
-	)
-	eng.maxTokensPerTurn = 50000
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, "Git 慢是因为显卡型号不对。")
-
-	assert.Equal(t, record.Answer, got)
-	assert.Greater(t, eng.turnTokensConsumed, eng.maxTokensPerTurn)
-	assert.Len(t, mock.calls, 2, "the already-paid repair must be validated from its proof and delivered")
-}
-
-func TestKnowledgeAnswerGrounding_RepairSuccessRetractsFailureAttribution(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[1]
-	eng, _ := groundedEngineForRecord(t, record,
-		groundingVerdictResponse(record, false, 100),
-		repairResponse(record, 100),
-	)
-	var blocks []observability.EngineHardBlockTrace
-	eng.SetHardBlockObserver(func(trace observability.EngineHardBlockTrace) { blocks = append(blocks, trace) })
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, "Ubuntu 镜像自带 8 张显卡。")
-
-	assert.Equal(t, record.Answer, got)
-	require.GreaterOrEqual(t, len(blocks), 2)
-	assert.True(t, blocks[0].Hit)
-	assert.Equal(t, "search_knowledge_ungrounded", blocks[0].Category)
-	assert.False(t, blocks[len(blocks)-1].Hit, "a rescued turn must not remain recorded as blocked")
-}
-
-// Wiring gate: drive the real production agent-loop route. Deleting the
-// finalizeAgentLoopKnowledgeAnswer call from engine.go makes the cited fabrication
-// escape unchanged and this test red.
-func TestKnowledgeAnswerGrounding_ProductionAgentLoopWiresUnifiedFinalGate(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[3]
 	chunk := knowledge.KBChunk{ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled: true, KBVersion: chunk.KBVersion, Hits: []knowledge.KBChunk{chunk},
 		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
 	}}}
-	fabrication := "所有订单都能在 24 小时内全额退款 [[" + record.ChunkID + "]]。"
+	answer := "该问题的答复见资料[[" + record.ChunkID + "]]。"
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{{ID: "search", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"` + record.ResolvedQuestion + `"}`}}}},
-		{Content: fabrication},
-		groundingVerdictResponse(record, false, 100),
-		repairResponse(record, 100),
+		{Content: answer},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test")
 	eng.SetKnowledgeRetriever(retriever)
 
 	got, err := eng.Chat(context.Background(), record.UserMessage, noopStep)
-
 	require.NoError(t, err)
-	assert.Equal(t, record.Answer, got)
-	assert.NotContains(t, got, "24 小时")
+	assert.NotContains(t, got, "[[", "the citation marker is stripped by the production final gate")
+	assert.Contains(t, got, "该问题的答复见资料")
 	require.Len(t, retriever.calls, 1)
 	assert.Equal(t, record.ResolvedQuestion, retriever.calls[0].question)
-	assertResolvedQuestionContract(t, mock.calls[2:], record.ResolvedQuestion)
-}
-
-func TestKnowledgeAnswerGrounding_ProofRejectsVerifierThatOnlySaysSupported(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[0]
-	ledgerEngine, _ := groundedEngineForRecord(t, record)
-
-	_, _, ok := validateKnowledgeGroundingProof(record.Answer, knowledgeGroundingVerdict{Supported: true}, ledgerEngine.searchKnowledgeLedgerThisTurn)
-
-	assert.False(t, ok, "supported=true without answer/evidence quotes is not a proof")
-}
-
-func TestKnowledgeAnswerGrounding_SemanticVerifierRejectsNegationReversal(t *testing.T) {
-	record := sanitizedContextRAGRecord{
-		Name: "obvious_refund_contradiction", UserMessage: "这个订单能退款吗",
-		ResolvedQuestion: "该订单是否支持退款", ChunkID: "sanitized-refund-contradiction-001",
-		Evidence: "该订单不支持退款。", Answer: "该订单支持退款。",
-		AnswerQuote: "该订单支持退款", EvidenceQuote: "该订单不支持退款",
-	}
-	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, false, 100))
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
-
-	assert.Equal(t, ragUngroundableReply, got)
-	require.Len(t, mock.calls, 2, "a rejected draft gets exactly one proof-carrying repair")
-}
-
-func TestKnowledgeAnswerGrounding_SemanticVerifierRejectsQuantityReversal(t *testing.T) {
-	// Sanitized from the real Coding Plan retrieval record in
-	// eval/trace_gate/billing_jitter_ext1on.jsonl.
-	record := sanitizedContextRAGRecord{
-		Name: "coding_plan_window_reversal", UserMessage: "额度多久刷新",
-		ResolvedQuestion: "Coding Plan 额度刷新窗口是多久", ChunkID: "sanitized-coding-plan-window-001",
-		Evidence: "Coding Plan 采用固定 5 小时窗口刷新额度。", Answer: "额度采用固定 30 小时窗口刷新。",
-		AnswerQuote: "额度采用固定 30 小时窗口刷新", EvidenceQuote: "采用固定 5 小时窗口刷新额度",
-	}
-	eng, mock := groundedEngineForRecord(t, record, groundingVerdictResponse(record, false, 100))
-
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, record.Answer)
-
-	assert.Equal(t, ragUngroundableReply, got)
-	require.Len(t, mock.calls, 2, "a rejected draft gets exactly one proof-carrying repair")
-}
-
-func TestKnowledgeAnswerGrounding_ProofRequiresRealQuotesAndChunk(t *testing.T) {
-	record := loadSanitizedContextRAGRecords(t)[0]
-	eng, _ := groundedEngineForRecord(t, record)
-	base := knowledgeGroundingClaim{
-		AnswerQuote: record.AnswerQuote, ChunkID: record.ChunkID, EvidenceQuote: record.EvidenceQuote,
-	}
-	cases := []struct {
-		name  string
-		claim knowledgeGroundingClaim
-	}{
-		{name: "answer quote absent", claim: knowledgeGroundingClaim{AnswerQuote: "答案中不存在", ChunkID: base.ChunkID, EvidenceQuote: base.EvidenceQuote}},
-		{name: "evidence quote absent", claim: knowledgeGroundingClaim{AnswerQuote: base.AnswerQuote, ChunkID: base.ChunkID, EvidenceQuote: "证据中不存在"}},
-		{name: "unknown chunk", claim: knowledgeGroundingClaim{AnswerQuote: base.AnswerQuote, ChunkID: "fake-chunk", EvidenceQuote: base.EvidenceQuote}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, ok := validateKnowledgeGroundingProof(record.Answer, knowledgeGroundingVerdict{
-				Supported: true, Claims: []knowledgeGroundingClaim{tc.claim},
-			}, eng.searchKnowledgeLedgerThisTurn)
-			assert.False(t, ok)
-		})
-	}
-}
-
-func TestParseKnowledgeGroundingJSONFailsClosed(t *testing.T) {
-	var verdict knowledgeGroundingVerdict
-	assert.True(t, parseKnowledgeGroundingJSON("```json\n{\"supported\":false}\n```", &verdict))
-	assert.False(t, parseKnowledgeGroundingJSON("大概是支持的", &verdict))
-	assert.False(t, parseKnowledgeGroundingJSON(strings.Repeat("{", 2), &verdict))
 }

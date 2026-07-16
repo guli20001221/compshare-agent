@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/compshare-agent/internal/knowledge"
@@ -11,56 +10,16 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// knowledgeAnswerVerifierPrompt validates the thing citations were only a proxy
-// for: whether every substantive claim in the answer is supported by the exact
-// EvidenceLedger shown to the agent. The answer/evidence quote pairs are checked
-// again by Go, so "supported":true on its own is never sufficient.
-const knowledgeAnswerVerifierPrompt = `你是严格的答案依据事实核查员。判断答案中的每条实质主张属于“给定证据支持”还是“稳定通用知识”，不重新回答。
-
-输入中的 resolved_question 与 evidence.query 必须完全一致。对答案中的每一条实质主张：
-1. answer_quote 必须逐字摘自答案，并覆盖该主张所在的完整短句或分句。
-2. 平台当前目录、价格、库存、实例状态、产品规则和账号事实必须使用 basis="evidence"；evidence_quote 必须逐字摘自对应 chunk_id 的 snippet、summary 或 title并明确支持。
-3. 与平台当前状态无关、长期稳定且广泛成立的通用技术知识可以使用 basis="stable_general"，此时 chunk_id 和 evidence_quote 必须留空。例如标准终端快捷键可以是通用知识；“平台当前存在某镜像”绝不是通用知识。
-4. 无法确定是否稳定通用、证据只能推断、或主张可能随平台/时间/账号变化时，supported=false，并把原主张放入 unsupported。
-5. 一个无据主张就使整篇 supported=false。引用标记 [1] 或 [[chunk_id]] 不能证明内容真实。
-6. 礼貌语可以忽略；操作步骤、数字、条件、因果、产品规则都属于实质主张。
-
-只输出 JSON：
-{"supported":true|false,"claims":[{"answer_quote":"答案原句","basis":"evidence|stable_general","chunk_id":"证据ID或空","evidence_quote":"证据原句或空"}],"unsupported":["无据主张"]}`
-
-const knowledgeAnswerRepairPrompt = `你是知识答案修复器。只依据输入的 EvidenceLedger 回答 resolved_question，不得使用外部常识。
-
-要求：
-1. answer 直接回答问题；没有明确依据的内容不要写。
-2. claims 必须覆盖 answer 的每一条实质主张。answer_quote 逐字摘自 answer，evidence_quote 逐字摘自对应证据。
-3. 证据只能回答一部分时，保留有明确依据的部分，并直接说明其余部分缺少当前证据；只要 answer 中的事实主张都有证据，supported=true。完全没有可回答内容时才 supported=false、answer 留空。
-4. 不要大段复制证据原文。引用标记可写可不写，服务端不靠标点判断真实性。
-5. 证据明确支持的结论要直接说清，不要在结尾改口为资料未覆盖或添加无依据的免责话。
-
-只输出 JSON：
-{"answer":"给用户的回答","supported":true|false,"claims":[{"answer_quote":"答案原句","chunk_id":"证据ID","evidence_quote":"证据原句"}],"unsupported":["无据主张"]}`
-
-type knowledgeGroundingClaim struct {
-	AnswerQuote   string `json:"answer_quote"`
-	Basis         string `json:"basis,omitempty"`
-	ChunkID       string `json:"chunk_id"`
-	EvidenceQuote string `json:"evidence_quote"`
-}
-
-type knowledgeGroundingVerdict struct {
-	Supported   bool                      `json:"supported"`
-	Claims      []knowledgeGroundingClaim `json:"claims"`
-	Unsupported []string                  `json:"unsupported"`
-}
-
-type knowledgeRepairEnvelope struct {
-	Answer string `json:"answer"`
-	knowledgeGroundingVerdict
-}
-
 // Large enough to preserve every evidence item shown during one bounded turn.
-// The verifier rejects any proof that names an item outside this ledger.
 const searchKnowledgeLedgerTurnMaxItems = 256
+
+// searchKnowledgeCiteRetryNote is the single bounded cite-or-drop nudge appended
+// to the Agent's OWN context for one same-model retry. There is no second verifier
+// persona: the central Agent rewrites its own answer with citations, or drops the
+// claim it cannot cite. The wording separates material facts (must cite) from
+// general knowledge (need not cite) so the retry never degrades a correct
+// stable-general answer into a refusal.
+const searchKnowledgeCiteRetryNote = `你上一条回答里有来自本轮资料的事实没有标注引用编号。请重写这条回答：每条来自本轮资料的事实都用 [1]、[2] 这样的编号标注（编号对应本轮证据条目的顺序）；属于通用常识、不来自本轮资料的内容可以不标；既无法从本轮资料引用、又不是通用常识的那一句，请删掉或改成不声称它是事实。不要整段复制资料原文，用自己的话概括。`
 
 // resolvedKnowledgeQuestion is the single question used after retrieval. The
 // SearchKnowledge query is already the agent's history-aware rewrite; using the
@@ -80,271 +39,116 @@ func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
 	return resolved
 }
 
-func (e *Engine) verifyKnowledgeAnswer(ctx context.Context, fallbackQuestion, answer string) (string, knowledge.GroundedAnswerReport, bool) {
-	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
-	return e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, answer, e.knowledgeLedgerForVerification(resolved))
-}
-
-func (e *Engine) verifyKnowledgeAnswerAgainstLedger(ctx context.Context, resolved, answer string, ledger knowledge.EvidenceLedger) (string, knowledge.GroundedAnswerReport, bool) {
-	answer = strings.TrimSpace(answer)
-	resolved = strings.TrimSpace(resolved)
-	if e.llmClient == nil || resolved == "" || answer == "" || isKnowledgeRefusal(answer) {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	ledger.Query = resolved
-	payload, err := json.Marshal(struct {
-		ResolvedQuestion string                   `json:"resolved_question"`
-		Evidence         knowledge.EvidenceLedger `json:"evidence"`
-		Answer           string                   `json:"answer"`
-	}{resolved, ledger, answer})
-	if err != nil {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{Messages: []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: knowledgeAnswerVerifierPrompt},
-		{Role: openai.ChatMessageRoleUser, Content: string(payload)},
-	}})
-	if err != nil || resp == nil {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	// There is intentionally no post-call budget check. The call has already
-	// been paid for; a valid verdict must not be discarded after the fact.
-	e.emitTokenUsage(resp.Usage)
-	var verdict knowledgeGroundingVerdict
-	if !parseKnowledgeGroundingJSON(resp.Content, &verdict) {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	return validateKnowledgeGroundingProof(answer, verdict, ledger)
-}
-
-// repairKnowledgeAnswerWithProof performs one bounded repair call. The answer
-// and its evidence proof are returned together, which avoids paying for a repair
-// and then discarding it because a second validation call would cross the budget.
-func (e *Engine) repairKnowledgeAnswerWithProof(ctx context.Context, fallbackQuestion string, allowOverBudget bool) (string, knowledge.GroundedAnswerReport, bool) {
-	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
-	ledger := e.knowledgeLedgerForVerification(resolved)
-	if e.llmClient == nil || len(ledger.Items) == 0 {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	if !allowOverBudget && e.tokenBudgetExceeded() {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	payload, err := json.Marshal(struct {
-		ResolvedQuestion string                   `json:"resolved_question"`
-		Evidence         knowledge.EvidenceLedger `json:"evidence"`
-	}{resolved, ledger})
-	if err != nil {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	resp, err := e.llmClient.Chat(ctx, llm.ChatRequest{Messages: []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: knowledgeAnswerRepairPrompt},
-		{Role: openai.ChatMessageRoleUser, Content: string(payload)},
-	}})
-	if err != nil || resp == nil {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	e.emitTokenUsage(resp.Usage)
-	var repaired knowledgeRepairEnvelope
-	if !parseKnowledgeGroundingJSON(resp.Content, &repaired) {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	answer, report, ok := validateKnowledgeGroundingProof(repaired.Answer, repaired.knowledgeGroundingVerdict, ledger)
-	if !ok || knowledgeAnswerHasRawLeak(repaired.Answer, e.searchKnowledgeHitsThisTurn) {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	return answer, report, true
-}
-
-// finalizeAgentLoopKnowledgeAnswer is the only production agent-loop exit for a
-// SearchKnowledge answer. Every candidate, including one carrying a syntactically
-// valid citation, passes the same model-assisted semantic check and local evidence
-// constraints. This reduces unsupported releases but is not a mathematical proof.
+// finalizeAgentLoopKnowledgeAnswer is the sole production agent-loop exit for a
+// SearchKnowledge answer. It is DETERMINISTIC-ONLY: no second model reviews or
+// rewrites the answer. The central Agent is the semantic decider; the runtime only
+// checks citation-marker validity (typography) — it never re-adjudicates whether
+// prose is "grounded enough", because that judgment historically deleted correct
+// answers (0/50 blocks in production were真无证据; every one shredded a correct,
+// evidence-backed answer that merely mis-cited a chunk id).
+//
+// Policy (fail-open):
+//   - An answer carrying >=1 citation that resolves to a real per-turn ledger
+//     chunk is accepted (markers stripped for display).
+//   - Otherwise, when there is evidence to cite against, the Agent gets exactly
+//     ONE bounded same-model retry to cite or drop the uncited claim.
+//   - If it still cannot cite, the answer SHIPS ANYWAY with all citation markers
+//     (including fabricated ones) stripped: a wrong or missing chunk_id must not
+//     destroy a likely-correct answer. This resolves the chunk_id-mismatch concern
+//     by not blocking on it.
+//
+// The only hard stop is a PERSISTENT raw-evidence leak (a security concern — the
+// answer pastes verbatim evidence, which may include read-tool payloads). Precise
+// platform facts do not travel this path; they are server-rendered from read tools.
 func (e *Engine) finalizeAgentLoopKnowledgeAnswer(ctx context.Context, fallbackQuestion, candidate string) string {
 	if !e.knowledgeQAAgentLoopThisTurn {
 		return candidate
 	}
-	e.groundingOutcomeThisTurn = groundingUnsupported
-	if !e.searchKnowledgeRanThisTurn {
-		resolved := strings.TrimSpace(fallbackQuestion)
-		ledger := e.verifiedKnowledgeLedgerForQuestion(resolved)
-		if len(ledger.Items) == 0 {
-			// The central Agent owns the decision to answer stable general
-			// technical knowledge directly. A verifier with no evidence cannot
-			// distinguish a correct direct answer from a fabrication; forcing RAG
-			// here would undo the Agent's tool decision and made ordinary terminal
-			// shortcuts impossible to answer. Platform-current facts remain covered
-			// by the read-tool contract and searched answers remain fail-closed.
-			e.groundingOutcomeThisTurn = groundingUnavailable
-			return candidate
+	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
+	ledger := e.knowledgeLedgerForVerification(resolved)
+
+	leak := knowledgeAnswerHasRawLeak(candidate, e.searchKnowledgeHitsThisTurn)
+	report := knowledge.ValidateGroundedCitations(candidate, ledger)
+	if !leak && report.HasCitation {
+		return e.acceptGroundedKnowledgeAnswer(resolved, candidate, report, groundingSupported)
+	}
+
+	// One bounded same-model retry, only when there is evidence to cite against.
+	// A no-evidence direct answer (stable-general) has nothing to cite, so it is
+	// never re-rolled — the Agent already owned that decision.
+	if len(ledger.Items) > 0 {
+		if retried, ok := e.retryKnowledgeCitation(ctx); ok {
+			rleak := knowledgeAnswerHasRawLeak(retried, e.searchKnowledgeHitsThisTurn)
+			rreport := knowledge.ValidateGroundedCitations(retried, ledger)
+			if !rleak && rreport.HasCitation {
+				return e.acceptGroundedKnowledgeAnswer(resolved, retried, rreport, groundingRepaired)
+			}
+			candidate, leak = retried, rleak
 		}
-		if answer, report, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
-			e.emitSearchKnowledgeCitationTrace(report)
-			e.groundingOutcomeThisTurn = groundingSupported
-			return answer
-		}
-		// No retrieval and no durable verified source supported this answer. Do
-		// not trust arbitrary historical assistant prose merely because it exists.
-		e.emitSearchKnowledgeHardBlock("conversation_knowledge_ungrounded")
+	}
+
+	// A persistent raw leak still cannot ship verbatim evidence (security stop).
+	if leak {
+		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
+		e.groundingOutcomeThisTurn = groundingUnsupported
 		return ragUngroundableReply
 	}
-	if len(e.searchKnowledgeHitsThisTurn) == 0 || len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
-		// An empty current retrieval does not erase a previously verified source,
-		// but arbitrary assistant prose is not evidence. Re-check the candidate
-		// against durable prior provenance before releasing it.
-		resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
-		ledger := e.verifiedKnowledgeLedgerForQuestion(resolved)
-		if answer, report, ok := e.verifyKnowledgeAnswerAgainstLedger(ctx, resolved, candidate, ledger); ok {
-			e.emitSearchKnowledgeCitationTrace(report)
-			e.groundingOutcomeThisTurn = groundingSupported
-			return answer
-		}
-		return ragNoEvidenceReply
-	}
-	_ = e.resolvedKnowledgeQuestion(fallbackQuestion)
-	leaked := knowledgeAnswerHasRawLeak(candidate, e.searchKnowledgeHitsThisTurn)
-	if leaked {
-		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
-	} else if domainMatchGuardOn {
-		// Product-area inference was intentionally retired with the read-only
-		// sub-classifiers. Until a trusted replacement exists, the existing domain
-		// guard receives an empty question area and remains fail-open. Do not infer
-		// an area from user text here: that would silently revive the removed router.
-		if allOff, _ := allCitedOffDomain("", ledgerProductAreas(e.searchKnowledgeLedgerThisTurn)); allOff {
-			e.emitSearchKnowledgeHardBlock("search_knowledge_wrong_domain")
-			return ragUngroundableReply
-		}
-	}
-	if !leaked {
-		if answer, report, ok := e.verifyKnowledgeAnswer(ctx, fallbackQuestion, candidate); ok {
-			e.emitSearchKnowledgeCitationTrace(report)
-			e.retractKnowledgeHardBlock()
-			resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
-			if len(e.readResponseEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
-				e.rememberVerifiedKnowledge(resolved, answer, e.knowledgeLedgerForVerification(resolved))
-			}
-			e.groundingOutcomeThisTurn = groundingSupported
-			return answer
-		}
-		e.emitSearchKnowledgeHardBlock("search_knowledge_ungrounded")
-	}
 
-	if repaired, ok := e.synthesizeKnowledgeQAFromLedger(ctx, fallbackQuestion); ok {
-		if len(e.readResponseEvidenceThisTurn) == 0 {
-			e.rememberVerifiedKnowledge(e.resolvedKnowledgeQuestion(fallbackQuestion), repaired, e.searchKnowledgeLedgerThisTurn)
-		}
-		e.groundingOutcomeThisTurn = groundingRepaired
-		return repaired
-	}
-	// Evidence existed, so claiming that the KB did not cover the topic is
-	// false. This remains a refusal, but reports the actual failure.
-	return ragUngroundableReply
+	// Fail-open floor: strip any (incl. fabricated) citation markers, ship clean
+	// prose. Never a canned whole-answer replacement.
+	e.groundingOutcomeThisTurn = groundingUnavailable
+	return knowledge.StripCiteMarkers(candidate)
 }
 
-// synthesizeKnowledgeAnswerAfterBudget is the existing one-call rescue policy
-// for a turn that already crossed its normal budget. It never generates from an
-// empty ledger and validates the answer in the same response.
-func (e *Engine) synthesizeKnowledgeAnswerAfterBudget(ctx context.Context, fallbackQuestion string) (string, bool) {
-	if len(e.searchKnowledgeHitsThisTurn) == 0 {
-		return "", false
-	}
-	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
-	if len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
-		e.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(resolved, e.searchKnowledgeHitsThisTurn, searchKnowledgeLedgerTurnMaxItems, 0)
-	}
-	if len(e.searchKnowledgeLedgerThisTurn.Items) == 0 {
-		return "", false
-	}
-	answer, report, ok := e.repairKnowledgeAnswerWithProof(ctx, fallbackQuestion, true)
-	if !ok {
-		return "", false
-	}
+// acceptGroundedKnowledgeAnswer records the citation trace, retracts any standing
+// ungrounded hard-block, strips the markers for display, and durably remembers a
+// pure-RAG answer (never one built on turn-local read-tool evidence).
+func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report knowledge.GroundedAnswerReport, outcome string) string {
 	e.emitSearchKnowledgeCitationTrace(report)
 	e.retractKnowledgeHardBlock()
-	e.rememberVerifiedKnowledge(resolved, answer, e.searchKnowledgeLedgerThisTurn)
-	e.groundingOutcomeThisTurn = groundingRepaired
-	return answer, true
+	display := knowledge.StripCiteMarkers(answer)
+	if len(e.readResponseEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
+		e.rememberVerifiedKnowledge(resolved, display, e.knowledgeLedgerForVerification(resolved))
+	}
+	e.groundingOutcomeThisTurn = outcome
+	return display
 }
 
-func parseKnowledgeGroundingJSON(raw string, dst any) bool {
-	text := strings.TrimSpace(raw)
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return false
+// retryKnowledgeCitation runs exactly one bounded same-model correction. It reuses
+// the Agent's own compiled context (buildMessagesForLLM — which already carries the
+// per-turn evidence and the draft) plus a single cite-or-drop nudge, so the central
+// Agent rewrites its own answer. No Tools are passed (no tool loop) and there is no
+// verifier persona. Returns ("", false) on any client/transport failure.
+func (e *Engine) retryKnowledgeCitation(ctx context.Context) (string, bool) {
+	client := e.agentLLMClient
+	if client == nil {
+		client = e.llmClient
 	}
-	return json.Unmarshal([]byte(text[start:end+1]), dst) == nil
-}
-
-func validateKnowledgeGroundingProof(answer string, verdict knowledgeGroundingVerdict, ledger knowledge.EvidenceLedger) (string, knowledge.GroundedAnswerReport, bool) {
-	answer = strings.TrimSpace(answer)
-	if answer == "" || isKnowledgeRefusal(answer) || !verdict.Supported || len(verdict.Unsupported) > 0 || len(verdict.Claims) == 0 {
-		return "", knowledge.GroundedAnswerReport{}, false
+	if client == nil {
+		return "", false
 	}
-	citationReport := knowledge.ValidateGroundedCitations(answer, ledger)
-	if len(citationReport.UnknownCitations) > 0 {
-		return "", knowledge.GroundedAnswerReport{}, false
+	messages := append(e.buildMessagesForLLM(),
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: searchKnowledgeCiteRetryNote},
+	)
+	resp, err := client.Chat(ctx, llm.ChatRequest{Messages: messages})
+	if err != nil || resp == nil {
+		return "", false
 	}
-	display := strings.TrimSpace(knowledge.StripCiteMarkers(answer))
-	items := make(map[string]knowledge.EvidenceItem, len(ledger.Items))
-	for _, item := range ledger.Items {
-		if id := strings.TrimSpace(item.ChunkID); id != "" {
-			items[id] = item
-		}
+	e.emitTokenUsage(resp.Usage)
+	retried := strings.TrimSpace(resp.Content)
+	if retried == "" {
+		return "", false
 	}
-	used := make([]string, 0, len(verdict.Claims))
-	seen := map[string]struct{}{}
-	validQuotes := make([]string, 0, len(verdict.Claims))
-	for _, claim := range verdict.Claims {
-		answerQuote := normalizeGroundingText(knowledge.StripCiteMarkers(claim.AnswerQuote))
-		evidenceQuote := normalizeGroundingText(claim.EvidenceQuote)
-		if answerQuote == "" || !strings.Contains(normalizeGroundingText(display), answerQuote) {
-			return "", knowledge.GroundedAnswerReport{}, false
-		}
-		basis := strings.TrimSpace(claim.Basis)
-		if basis == "stable_general" {
-			if strings.TrimSpace(claim.ChunkID) != "" || evidenceQuote != "" {
-				return "", knowledge.GroundedAnswerReport{}, false
-			}
-			validQuotes = append(validQuotes, answerQuote)
-			continue
-		}
-		// Empty basis preserves the existing evidence-verdict wire contract during
-		// rollout; new verifier responses name basis="evidence" explicitly.
-		if basis != "" && basis != "evidence" {
-			return "", knowledge.GroundedAnswerReport{}, false
-		}
-		item, exists := items[strings.TrimSpace(claim.ChunkID)]
-		if !exists || evidenceQuote == "" {
-			return "", knowledge.GroundedAnswerReport{}, false
-		}
-		evidenceText := normalizeGroundingText(strings.Join([]string{item.Title, item.Summary, item.Snippet}, " "))
-		if !strings.Contains(evidenceText, evidenceQuote) {
-			return "", knowledge.GroundedAnswerReport{}, false
-		}
-		validQuotes = append(validQuotes, answerQuote)
-		id := strings.TrimSpace(claim.ChunkID)
-		if _, ok := seen[id]; !ok {
-			seen[id] = struct{}{}
-			used = append(used, id)
-		}
-	}
-	if len(validQuotes) == 0 {
-		return "", knowledge.GroundedAnswerReport{}, false
-	}
-	return display, knowledge.GroundedAnswerReport{HasCitation: len(used) > 0, CitedChunkIDs: used}, true
-}
-
-func normalizeGroundingText(s string) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(s)), " "))
+	return retried, true
 }
 
 func knowledgeAnswerHasRawLeak(answer string, hits []knowledge.RetrievalHit) bool {
 	if knowledge.ValidateNoRawEvidenceLeak(answer, hits) != nil {
 		return true
 	}
-	// Citation markers can be inserted inside a raw 32+ rune excerpt to break
-	// the leak detector's contiguous needle. The user sees the markers stripped,
-	// so validate that exact display text as well.
+	// Citation markers can be inserted inside a raw 32+ rune excerpt to break the
+	// leak detector's contiguous needle. The user sees the markers stripped, so
+	// validate that exact display text as well.
 	display := knowledge.StripCiteMarkers(answer)
 	return knowledge.ValidateNoRawEvidenceLeak(display, hits) != nil
 }

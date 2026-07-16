@@ -21,13 +21,18 @@ type streamingSeqMockLLM struct {
 	idx       int
 }
 
-func TestKnowledgeFollowupIsVerifiedBeforeAnyTokenReachesTheClient(t *testing.T) {
+// A knowledge answer must be FINALIZED (its citation markers stripped by the
+// deterministic final gate) BEFORE any token reaches the client — not after.
+// Under typography-only grounding the finalizer no longer replaces "unsupported"
+// prose (the semantic verifier is gone; fail-open ships the Agent's answer), but
+// the streaming invariant is unchanged: a searched turn buffers instead of
+// streaming live, so the raw [[chunk_id]] marker never appears in the token stream.
+func TestKnowledgeAnswerIsFinalizedBeforeAnyTokenReachesTheClient(t *testing.T) {
 	const chunkID = "prior-refund-policy"
 	chunk := knowledge.KBChunk{ChunkID: chunkID, KBVersion: "kb.v1", Title: "退款规则", Content: "该订单不支持退款。"}
 	mock := &streamingSeqMockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("search", "SearchKnowledge", `{"query":"该订单是否支持退款"}`)}},
-		{Content: "所有订单都可以全额退款。"},
-		{Content: `{"supported":false,"claims":[],"unsupported":["所有订单都可以全额退款"]}`},
+		{Content: "该订单不支持退款[[" + chunkID + "]]。"},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test")
@@ -35,26 +40,15 @@ func TestKnowledgeFollowupIsVerifiedBeforeAnyTokenReachesTheClient(t *testing.T)
 		Enabled: true, KBVersion: "kb.v1", Hits: []knowledge.KBChunk{chunk},
 		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
 	}}})
-	eng.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		VerifiedKnowledge: []VerifiedKnowledgeTurn{{
-			Question: "订单是否支持退款",
-			Answer:   "该订单不支持退款。",
-			Evidence: knowledge.EvidenceLedger{Query: "订单是否支持退款", Items: []knowledge.EvidenceItem{{
-				ChunkID: chunkID, Title: "退款规则", Snippet: "该订单不支持退款。",
-			}}},
-		}},
-	}, 0)
 
 	var deltas []string
-	reply, err := eng.ChatWithOptions(context.Background(), "那这个呢？", noopStep, ChatOptions{
+	reply, err := eng.ChatWithOptions(context.Background(), "该订单能退款吗", noopStep, ChatOptions{
 		OnTextDelta: func(delta string) { deltas = append(deltas, delta) },
 	})
 	require.NoError(t, err)
-	assert.Equal(t, ragUngroundableReply, reply)
-	assert.Equal(t, ragUngroundableReply, strings.Join(deltas, ""),
-		"unsupported model prose must be replaced before, not after, streaming")
-	assert.NotContains(t, strings.Join(deltas, ""), "全额退款")
+	assert.Equal(t, "该订单不支持退款。", reply, "the citation marker is stripped in the final reply")
+	assert.Equal(t, reply, strings.Join(deltas, ""), "the stripped answer is what streamed — markers never hit the wire")
+	assert.NotContains(t, strings.Join(deltas, ""), "[[", "the raw marker must never reach the token stream")
 }
 
 func (m *streamingSeqMockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
