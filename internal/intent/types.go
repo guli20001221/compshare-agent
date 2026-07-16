@@ -1,5 +1,7 @@
 package intent
 
+import "github.com/compshare-agent/internal/platform"
+
 const SchemaVersion = "1.0"
 
 type Intent string
@@ -52,46 +54,50 @@ const (
 	IntentCreateInstance Intent = "create_instance"
 )
 
-type TargetRefType string
+// Value-object vocabulary is owned by internal/platform (a leaf package) so a
+// typed capability can consume it without importing this router package. These
+// aliases keep every existing intent.TargetRef / intent.Metric / … reference
+// compiling unchanged.
+type TargetRefType = platform.TargetRefType
 
 const (
-	TargetRefFilter           TargetRefType = "filter"
-	TargetRefName             TargetRefType = "name"
-	TargetRefUHostIDUserInput TargetRefType = "uhost_id_user_input"
-	TargetRefSlotPosition     TargetRefType = "slot_position"
+	TargetRefFilter           = platform.TargetRefFilter
+	TargetRefName             = platform.TargetRefName
+	TargetRefUHostIDUserInput = platform.TargetRefUHostIDUserInput
+	TargetRefSlotPosition     = platform.TargetRefSlotPosition
 )
 
-type TargetSource string
+type TargetSource = platform.TargetSource
 
 const (
-	SourceUserText  TargetSource = "user_text"
-	SourcePriorTurn TargetSource = "prior_turn"
+	SourceUserText  = platform.SourceUserText
+	SourcePriorTurn = platform.SourcePriorTurn
 )
 
-type Metric string
+type Metric = platform.Metric
 
 const (
-	MetricCPU    Metric = "cpu"
-	MetricMemory Metric = "memory"
-	MetricGPU    Metric = "gpu"
-	MetricVRAM   Metric = "vram"
+	MetricCPU    = platform.MetricCPU
+	MetricMemory = platform.MetricMemory
+	MetricGPU    = platform.MetricGPU
+	MetricVRAM   = platform.MetricVRAM
 )
 
-type TimeWindowType string
+type TimeWindowType = platform.TimeWindowType
 
 const (
-	TimeWindowPreset   TimeWindowType = "preset"
-	TimeWindowRelative TimeWindowType = "relative"
-	TimeWindowAbsolute TimeWindowType = "absolute"
+	TimeWindowPreset   = platform.TimeWindowPreset
+	TimeWindowRelative = platform.TimeWindowRelative
+	TimeWindowAbsolute = platform.TimeWindowAbsolute
 )
 
-type ImageSource string
+type ImageSource = platform.ImageSource
 
 const (
-	ImageSourcePlatform  ImageSource = "platform"
-	ImageSourceCustom    ImageSource = "custom"
-	ImageSourceCommunity ImageSource = "community"
-	ImageSourceShared    ImageSource = "shared"
+	ImageSourcePlatform  = platform.ImageSourcePlatform
+	ImageSourceCustom    = platform.ImageSourceCustom
+	ImageSourceCommunity = platform.ImageSourceCommunity
+	ImageSourceShared    = platform.ImageSourceShared
 )
 
 type IntentRoute struct {
@@ -153,34 +159,34 @@ type Slots struct {
 	Action LifecycleAction `json:"action,omitempty"`
 }
 
-type ListMode string
+type ListMode = platform.ListMode
 
 const (
-	ListModeAll      ListMode = "all"
-	ListModeFiltered ListMode = "filtered"
+	ListModeAll      = platform.ListModeAll
+	ListModeFiltered = platform.ListModeFiltered
 )
 
-type PriceKind string
+type PriceKind = platform.PriceKind
 
 const (
-	PriceKindAccount PriceKind = "account"
-	PriceKindCatalog PriceKind = "catalog"
+	PriceKindAccount = platform.PriceKindAccount
+	PriceKindCatalog = platform.PriceKindCatalog
 )
 
-type CFSKind string
+type CFSKind = platform.CFSKind
 
 const (
-	CFSKindList         CFSKind = "list"
-	CFSKindCreatePrice  CFSKind = "create_price"
-	CFSKindUpgradePrice CFSKind = "upgrade_price"
-	CFSKindRefund       CFSKind = "refund"
+	CFSKindList         = platform.CFSKindList
+	CFSKindCreatePrice  = platform.CFSKindCreatePrice
+	CFSKindUpgradePrice = platform.CFSKindUpgradePrice
+	CFSKindRefund       = platform.CFSKindRefund
 )
 
-type DetailLevel string
+type DetailLevel = platform.DetailLevel
 
 const (
-	DetailLevelSummary DetailLevel = "summary"
-	DetailLevelFull    DetailLevel = "full"
+	DetailLevelSummary = platform.DetailLevelSummary
+	DetailLevelFull    = platform.DetailLevelFull
 )
 
 // LifecycleAction is the verb that drives an operation_lifecycle turn. Only
@@ -200,17 +206,9 @@ const (
 	LifecycleActionCreateDisk LifecycleAction = "create_disk"
 )
 
-type TargetRef struct {
-	Type       TargetRefType `json:"type"`
-	Value      string        `json:"value"`
-	Source     TargetSource  `json:"source,omitempty"`
-	SourceSpan string        `json:"source_span,omitempty"`
-}
+type TargetRef = platform.TargetRef
 
-type TimeWindow struct {
-	Type  TimeWindowType `json:"type"`
-	Value string         `json:"value"`
-}
+type TimeWindow = platform.TimeWindow
 
 type Retrieval struct {
 	Enabled bool `json:"enabled"`

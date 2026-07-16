@@ -1,0 +1,226 @@
+package capability
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"reflect"
+	"strings"
+
+	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
+	"github.com/compshare-agent/internal/platform"
+	openai "github.com/sashabaranov/go-openai"
+)
+
+// ReadExecutor is the upstream-call surface a typed read handler needs. The
+// engine's executor satisfies it structurally. A read handler receives this plus
+// its own typed request and read metadata — never the user's raw sentence.
+type ReadExecutor interface {
+	Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error)
+	ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error)
+}
+
+// EntityResolver resolves instance references to registry snapshots. It is
+// structurally satisfied by entity.RegistrySnapshot; a handler resolves the
+// structured TargetRefs it was given, it never re-extracts ids from text.
+type EntityResolver interface {
+	ResolveByID(id string) (*entity.InstanceSnapshot, entity.ResolveResult)
+	ResolveByName(name string) ([]*entity.InstanceSnapshot, entity.ResolveResult)
+	InstanceIDTokensInText(text string) []string
+}
+
+// ReadRuntime carries the server-owned dependencies a read handler needs. None
+// of these is a model parameter: the handler never receives UserText, QueryText
+// or an intent route, and never re-parses natural language.
+type ReadRuntime struct {
+	Executor           ReadExecutor
+	Resolver           EntityResolver
+	FallbackInstanceID string
+	FallbackGPUModel   string
+}
+
+// ReadResult is the neutral outcome a typed read capability produces. It carries
+// the same read-relevant fields the legacy handler result exposed so the engine
+// serialises a migrated capability's observation byte-identically to the
+// pre-migration one. Empty Status is a sentinel used only inside a Handle return
+// to mean "not terminal — render the Response".
+type ReadResult struct {
+	Status             platform.ReadStatus
+	Reply              string
+	NeedsClarification bool
+	FailureClass       platform.ReadFailureClass
+	FallbackReason     platform.ReadFallbackReason
+	ToolAction         string
+	Envelope           *envelope.Envelope
+	MissingFields      []platform.MissingField
+	// Resource-shaped extras, populated only by the capabilities that produce
+	// them (resource selection candidates, resolved stock GPU model).
+	ResourceSelectionCandidates []entity.InstanceSnapshot
+	ResolvedStockGPUModel       string
+}
+
+// ReadHandled marks a completed factual answer.
+func ReadHandled(reply string) ReadResult {
+	return ReadResult{Status: platform.ReadStatusHandled, Reply: reply}
+}
+
+// ReadClarification marks a deterministic clarification rather than an answer.
+func ReadClarification(reply string) ReadResult {
+	r := ReadHandled(reply)
+	r.NeedsClarification = true
+	return r
+}
+
+// ReadFallbackBeforeTool marks a pre-tool fallback with a structured reason.
+func ReadFallbackBeforeTool(reason platform.ReadFallbackReason) ReadResult {
+	return ReadResult{Status: platform.ReadStatusFallbackBeforeTool, FallbackReason: reason}
+}
+
+// FriendlyReadFailureReply is the generic post-tool failure reply. It matches
+// the legacy intent.FriendlyToolFailureReply string so a migrated capability's
+// failure observation is byte-identical to the pre-migration one.
+const FriendlyReadFailureReply = "查询暂时失败，请稍后再试。"
+
+// userFacingError is the structural half of a typed upstream error carrying an
+// actionable recovery message (e.g. *tools.UpstreamAPIError on a 230). Declared
+// structurally so this package does not import the error's package.
+type userFacingError interface{ UserMessage() string }
+
+// ReadFailureAfterTool classifies an upstream error into a terminal read result,
+// mirroring the legacy failureAfterToolForError: a typed upstream error with a
+// non-empty user message surfaces it as an actionable failure; otherwise the
+// generic friendly reply prefixed by the capability label.
+func ReadFailureAfterTool(action, label string, err error) ReadResult {
+	var friendly userFacingError
+	if errors.As(err, &friendly) {
+		if msg := strings.TrimSpace(friendly.UserMessage()); msg != "" {
+			return ReadResult{
+				Status:       platform.ReadStatusFailureAfterTool,
+				Reply:        msg,
+				FailureClass: platform.ReadFailureActionableUpstream,
+				ToolAction:   action,
+			}
+		}
+	}
+	reply := FriendlyReadFailureReply
+	if label = strings.TrimSpace(label); label != "" {
+		reply = label + ": " + reply
+	}
+	return ReadResult{
+		Status:       platform.ReadStatusFailureAfterTool,
+		Reply:        reply,
+		FailureClass: platform.ReadFailureGenericRead,
+		ToolAction:   action,
+	}
+}
+
+// ReadCapabilitySpec is the single definition of one read capability: tool
+// schema, JSON decode, validation, handler and renderer all reference the same
+// Request/Response types. A schema that omits a request field, or a handler
+// wired to the wrong request type, is caught at compile time (the generic type
+// parameter) or by the catalog consistency test (schema property set vs. the
+// Request struct's JSON tags).
+type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
+	// Label is the capability identity, e.g. "pricing_query". It is the tool-name
+	// suffix and the observation's capability tag.
+	Label string
+	// Description is the model-facing tool description.
+	Description string
+	// Schema is the model-facing JSON parameter schema. Its property set must
+	// equal Request's JSON field set (enforced by the catalog consistency test).
+	Schema map[string]any
+	// Handle runs the upstream calls and produces a typed Response. When it needs
+	// to short-circuit (missing data, clarification, fallback, failure) it returns
+	// a terminal ReadResult (non-empty Status); otherwise it returns the Response
+	// with a zero ReadResult and Render is called.
+	Handle func(ctx context.Context, req Request, rt ReadRuntime) (Response, ReadResult)
+	// Render is a pure function of the typed Response — never of the request or
+	// user text — producing the reply and evidence envelope.
+	Render func(Response) ReadResult
+}
+
+// RegisteredRead is the type-erased catalog entry. Type erasure happens exactly
+// once, here at the registry edge; past decodeInto the flow stays fully typed
+// and never falls back to map[string]any or intent.Slots.
+type RegisteredRead struct {
+	Label       string
+	Description string
+	Tool        openai.Tool
+	schema      map[string]any
+	requestType reflect.Type
+	decode      func(map[string]any) (platform.ReadRequest, error)
+	run         func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult
+}
+
+// Decode parses tool arguments into this capability's concrete request type.
+func (r RegisteredRead) Decode(args map[string]any) (platform.ReadRequest, error) {
+	return r.decode(args)
+}
+
+// Run executes the typed handler + renderer for an already-decoded request.
+func (r RegisteredRead) Run(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult {
+	return r.run(ctx, req, rt)
+}
+
+// Schema returns the model-facing parameter schema (for the consistency test).
+func (r RegisteredRead) Schema() map[string]any { return r.schema }
+
+// RequestType returns the reflect.Type of the concrete request (for the
+// consistency test).
+func (r RegisteredRead) RequestType() reflect.Type { return r.requestType }
+
+// NewReadCapability erases a typed spec into a catalog entry. The Request type
+// ties the decoder, the MissingFields validator, the handler and the renderer
+// together: a mismatch is a compile error, not a runtime surprise.
+func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapabilitySpec[Request, Response]) RegisteredRead {
+	toolName := ReadToolPrefix + spec.Label
+	return RegisteredRead{
+		Label:       spec.Label,
+		Description: spec.Description,
+		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
+			Name: toolName, Description: strings.TrimSpace(spec.Description), Parameters: spec.Schema,
+		}},
+		schema:      spec.Schema,
+		requestType: reflect.TypeOf(*new(Request)),
+		decode: func(args map[string]any) (platform.ReadRequest, error) {
+			return decodeStrictRead[Request](args)
+		},
+		run: func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult {
+			typed, ok := req.(Request)
+			if !ok {
+				// Unreachable: Decode produced exactly Request. Defensive only.
+				return ReadFallbackBeforeTool(platform.ReadFallbackValidation)
+			}
+			resp, terminal := spec.Handle(ctx, typed, rt)
+			if terminal.Status != "" {
+				return terminal
+			}
+			return spec.Render(resp)
+		},
+	}
+}
+
+// decodeStrictRead decodes tool arguments into a concrete request type, refusing
+// unknown fields and trailing JSON so a schema/struct drift surfaces as a decode
+// error rather than a silently dropped field.
+func decodeStrictRead[T platform.ReadRequest](args map[string]any) (platform.ReadRequest, error) {
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var request T
+	if err := decoder.Decode(&request); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("trailing JSON value")
+	}
+	return request, nil
+}

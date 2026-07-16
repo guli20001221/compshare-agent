@@ -12,6 +12,7 @@ import (
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/platform"
 )
 
 // ReadCapabilityObservation is the only result shape exposed by the read
@@ -53,6 +54,9 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询参数不完整", TraceResult: map[string]any{"status": string(intent.HandlerStatusNeedsInput), "missing_fields": missing}})
 		return string(payload)
 	}
+	if reg, ok := capability.MigratedRead(action); ok {
+		return e.executeTypedReadCapability(ctx, action, string(readIntent), reg, request, args, onStep)
+	}
 	return e.executeReadCapability(ctx, action, readIntent, request, args, onStep)
 }
 
@@ -61,6 +65,32 @@ func (e *Engine) executeReadCapability(ctx context.Context, action string, readI
 
 	snapshot := e.RegistrySnapshot()
 	result := e.invokeReadHandler(ctx, request, snapshot, onStep)
+	return e.buildReadObservation(action, string(readIntent), result, snapshot.CanAssertAbsence(), onStep)
+}
+
+// executeTypedReadCapability dispatches a migrated read through its typed
+// vertical. The capability produces a capability.ReadResult (never intent.Slots
+// / HandlerResult / DispatchRoute); the engine bridges it to a HandlerResult
+// only to serialise the observation identically to the legacy path.
+func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabilityLabel string, reg capability.RegisteredRead, request intent.ReadRequest, args map[string]any, onStep func(StepEvent)) string {
+	onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
+
+	snapshot := e.RegistrySnapshot()
+	rt := capability.ReadRuntime{
+		Executor:         plannerHandlerExecutor{engine: e, onStep: onStep},
+		Resolver:         snapshot,
+		FallbackGPUModel: e.fallbackStockGpuModel(time.Now()),
+	}
+	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
+		rt.FallbackInstanceID = e.sessionState.SelectedInstanceID
+	}
+	readResult := reg.Run(ctx, request, rt)
+	return e.buildReadObservation(action, capabilityLabel, handlerResultFromReadResult(readResult), snapshot.CanAssertAbsence(), onStep)
+}
+
+// buildReadObservation serialises a read outcome into the single read-tool
+// observation shape shared by the legacy and typed dispatch paths.
+func (e *Engine) buildReadObservation(action, capabilityLabel string, result intent.HandlerResult, canAssertAbsence bool, onStep func(StepEvent)) string {
 	result = e.contextEnvelopeForPlainDirectReply(result)
 	if result.Envelope != nil {
 		if e.readCapabilitySubjectsThisTurn == nil {
@@ -73,19 +103,19 @@ func (e *Engine) executeReadCapability(ctx context.Context, action string, readI
 		}
 	}
 	observation := ReadCapabilityObservation{
-		Capability:       string(readIntent),
+		Capability:       capabilityLabel,
 		Status:           result.Status,
 		FailureClass:     result.FailureClass,
 		FallbackReason:   result.FallbackReason,
 		RouteStatus:      result.RouteStatus,
 		ToolAction:       result.ToolAction,
 		Envelope:         result.Envelope,
-		CanAssertAbsence: snapshot.CanAssertAbsence(),
+		CanAssertAbsence: canAssertAbsence,
 	}
 	if result.Status == intent.HandlerStatusHandled && !result.NeedsClarification && result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
 		placeholder := fmt.Sprintf("{{READ_OBSERVATION_%d}}", len(e.readResponseEvidenceThisTurn)+1)
 		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
-			Capability:  string(readIntent),
+			Capability:  capabilityLabel,
 			Reply:       strings.TrimSpace(result.Reply),
 			Envelope:    *result.Envelope,
 			Placeholder: placeholder,
@@ -104,6 +134,47 @@ func (e *Engine) executeReadCapability(ctx context.Context, action string, readI
 	_ = json.Unmarshal(payload, &traceResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
+}
+
+// handlerResultFromReadResult bridges a typed capability.ReadResult into the
+// legacy HandlerResult shape used only for observation serialisation. RouteStatus
+// is derived from the read status/fallback the same way the legacy result
+// constructors did, so the emitted observation is byte-identical.
+func handlerResultFromReadResult(r capability.ReadResult) intent.HandlerResult {
+	return intent.HandlerResult{
+		Status:                      intent.HandlerStatus(r.Status),
+		Reply:                       r.Reply,
+		NeedsClarification:          r.NeedsClarification,
+		FailureClass:                intent.HandlerFailureClass(r.FailureClass),
+		FallbackReason:              intent.FallbackReason(r.FallbackReason),
+		RouteStatus:                 routeStatusForReadResult(r),
+		ToolAction:                  r.ToolAction,
+		Envelope:                    r.Envelope,
+		ResourceSelectionCandidates: r.ResourceSelectionCandidates,
+		ResolvedStockGpuModel:       r.ResolvedStockGPUModel,
+	}
+}
+
+func routeStatusForReadResult(r capability.ReadResult) intent.RouteStatus {
+	switch r.Status {
+	case platform.ReadStatusHandled:
+		return intent.RouteStatusDispatched
+	case platform.ReadStatusFailureAfterTool:
+		return intent.RouteStatusFailureAfterTool
+	case platform.ReadStatusFallbackBeforeTool:
+		switch r.FallbackReason {
+		case platform.ReadFallbackMissingTarget, platform.ReadFallbackUnresolvedTarget, platform.ReadFallbackAmbiguousTarget:
+			return intent.RouteStatusFallbackUnresolvedTarget
+		case platform.ReadFallbackTimeWindow:
+			return intent.RouteStatusFallbackTimeWindow
+		case platform.ReadFallbackActionNotAllowed:
+			return intent.RouteStatusFallbackIneligible
+		default:
+			return intent.RouteStatusFallbackInvalid
+		}
+	default:
+		return intent.RouteStatusNone
+	}
 }
 
 func marshalReadCapabilityError(err error) string {

@@ -1,10 +1,8 @@
 package capability
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -26,7 +24,15 @@ type ReadDefinition struct {
 	Intent      intent.Intent
 	Description string
 	Tool        openai.Tool
+	// RequestType is the concrete request struct this capability decodes into.
+	// The catalog consistency test reflects it against the tool schema so a field
+	// added to the struct without the schema (or vice versa) fails loudly.
+	RequestType reflect.Type
 	decode      func(map[string]any) (ReadRequest, error)
+	// migrated is non-nil for capabilities that own a typed vertical
+	// (ReadCapabilitySpec). The engine dispatches these through the typed kernel
+	// instead of the legacy intent.Slots handler. nil = not yet migrated.
+	migrated *RegisteredRead
 }
 
 func ReadToolName(id intent.Intent) string { return ReadToolPrefix + string(id) }
@@ -44,7 +50,7 @@ func ReadDefinitions() []ReadDefinition {
 		newReadDefinition[ImageTagCatalogRequest](string(intent.IntentImageTagCatalog), intent.IntentImageTagCatalog, "查询平台镜像标签和分类。", objectSchema(nil, nil)),
 		newReadDefinition[ModelRepositoryRequest](string(intent.IntentModelRepositoryBrowse), intent.IntentModelRepositoryBrowse, "浏览公共模型仓库。", objectSchema(map[string]any{"query": stringSchema(), "mode": enumSchema("all", "filtered")}, nil)),
 		newReadDefinition[NetworkAcceleratorStatusRequest](string(intent.IntentNetAcceleratorStatus), intent.IntentNetAcceleratorStatus, "查询网络加速状态。", objectSchema(map[string]any{"targets": targetRefsSchema()}, nil)),
-		newReadDefinition[PricingRequest](string(intent.IntentPricingQuery), intent.IntentPricingQuery, "查询指定 GPU 机型的账号价或目录价。", objectSchema(map[string]any{"gpu_type": stringSchema(), "gpu_count": map[string]any{"type": "integer", "minimum": 1}, "price_kind": enumSchema("account", "catalog")}, []string{"gpu_type"})),
+		migratedReadDefinition(intent.IntentPricingQuery, NewReadCapability(pricingReadSpec())),
 		newReadDefinition[RefundEstimateRequest](string(intent.IntentRefundEstimate), intent.IntentRefundEstimate, "估算指定实例当前可退金额，不执行释放。", objectSchema(map[string]any{"targets": targetRefsSchema()}, []string{"targets"})),
 		newReadDefinition[CFSListRequest](readCFSList, intent.IntentCFSInfo, "查询 CFS 列表或指定 CFS 状态。", objectSchema(map[string]any{"cfs": cfsRefSchema()}, nil)),
 		newReadDefinition[CFSCreatePriceRequest](readCFSCreatePrice, intent.IntentCFSInfo, "估算创建 CFS 的价格。", objectSchema(map[string]any{"zone": stringSchema(), "target_size_gb": positiveIntegerSchema(), "charge_type": stringSchema()}, []string{"zone", "target_size_gb"})),
@@ -62,7 +68,21 @@ func newReadDefinition[T ReadRequest](name string, readIntent intent.Intent, des
 		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
 			Name: toolName, Description: strings.TrimSpace(description), Parameters: parameters,
 		}},
-		decode: func(args map[string]any) (ReadRequest, error) { return decodeStrictRequest[T](args) },
+		RequestType: reflect.TypeOf(*new(T)),
+		decode:      func(args map[string]any) (ReadRequest, error) { return decodeStrictRead[T](args) },
+	}
+}
+
+// migratedReadDefinition wraps a typed ReadCapabilitySpec as a catalog entry.
+// Its tool schema and decoder come from the spec; the engine dispatches it
+// through the typed kernel (RegisteredRead.Run) rather than the legacy handler.
+func migratedReadDefinition(readIntent intent.Intent, reg RegisteredRead) ReadDefinition {
+	registered := reg
+	return ReadDefinition{
+		Name: reg.Label, Intent: readIntent, Description: reg.Description, Tool: reg.Tool,
+		RequestType: reg.RequestType(),
+		decode:      func(args map[string]any) (ReadRequest, error) { return registered.Decode(args) },
+		migrated:    &registered,
 	}
 }
 
@@ -85,22 +105,15 @@ func ReadIntentForTool(name string) (intent.Intent, bool) {
 	return "", false
 }
 
-func decodeStrictRequest[T ReadRequest](args map[string]any) (ReadRequest, error) {
-	payload, err := json.Marshal(args)
-	if err != nil {
-		return nil, err
+// MigratedRead returns the typed vertical for a read tool, or false when the
+// capability still runs through the legacy intent.Slots handler.
+func MigratedRead(toolName string) (RegisteredRead, bool) {
+	for _, definition := range ReadDefinitions() {
+		if definition.Tool.Function != nil && definition.Tool.Function.Name == toolName && definition.migrated != nil {
+			return *definition.migrated, true
+		}
 	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
-	var request T
-	if err := decoder.Decode(&request); err != nil {
-		return nil, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, fmt.Errorf("trailing JSON value")
-	}
-	return request, nil
+	return RegisteredRead{}, false
 }
 
 func objectSchema(properties map[string]any, required []string) map[string]any {

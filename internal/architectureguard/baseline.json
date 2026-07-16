@@ -2657,6 +2657,69 @@
       "path": "internal/zones/catalog.go",
       "symbol": "Mentions",
       "callee": "strings.Contains"
+    },
+    {
+      "id": "234a29a2b347f374",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b([a-z]{1,3}\\d{2,4}[a-z0-9_]*|\\d{4}(?:_\\d+g)?)\\b"
+    },
+    {
+      "id": "b8e26fe313b4a8c8",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(\\d{2,3})\\s*(?:gb|g)\\b"
+    },
+    {
+      "id": "38d515a8628832c0",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)_(\\d{2,3})g$"
+    },
+    {
+      "id": "2cbf2a60ce2b129c",
+      "kind": "string_heuristic",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "MatchUserGPUVariantAliases",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "c8c9bbb377608f1c",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingFormatNumber",
+      "callee": "strings.HasPrefix",
+      "value": "$"
+    },
+    {
+      "id": "861f47267699fbaf",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingFormatNumber",
+      "callee": "strings.HasPrefix",
+      "value": "¥"
+    },
+    {
+      "id": "6fabfcef8c2bf667",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingKindIsCatalog",
+      "callee": "strings.Contains",
+      "value": "标准价"
+    },
+    {
+      "id": "21520027be91c074",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingKindIsCatalog",
+      "callee": "strings.Contains",
+      "value": "目录价"
     }
   ]
 }

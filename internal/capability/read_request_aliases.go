@@ -15,7 +15,6 @@ type ImageListRequest = intent.ImageListRequest
 type ImageTagCatalogRequest = intent.ImageTagCatalogRequest
 type ModelRepositoryRequest = intent.ModelRepositoryRequest
 type NetworkAcceleratorStatusRequest = intent.NetworkAcceleratorStatusRequest
-type PricingRequest = intent.PricingRequest
 type RefundEstimateRequest = intent.RefundEstimateRequest
 type CFSListRequest = intent.CFSListRequest
 type CFSCreatePriceRequest = intent.CFSCreatePriceRequest

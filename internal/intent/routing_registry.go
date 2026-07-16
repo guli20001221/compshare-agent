@@ -4,14 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/envelope"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/routing"
 	"github.com/compshare-agent/internal/zones"
 )
@@ -498,289 +497,17 @@ const (
 	communityVersionPerGroup = 3  // versions to show per CompshareImageGroup
 )
 
-// matchUserTokensToAPINames returns the subset of API Names (preserving case)
-// that the user mentioned anywhere in their question. The API name set is the
-// matching vocabulary — no hand-maintained GPU dictionary required.
-//
-// Word boundaries are required on both sides so a shorter model name does not
-// substring-match a longer one — e.g. "H20" must not match "H200 96G". Word
-// chars are [0-9A-Za-z_]; CJK and space are non-word, so a name surrounded by
-// space/Chinese matches as expected.
 func matchUserTokensToAPINames(userText string, apiNames []string) []string {
-	if userText == "" || len(apiNames) == 0 {
-		return nil
-	}
-	upper := strings.ToUpper(userText)
-	matched := []string{}
-	seen := map[string]struct{}{}
-	for _, name := range apiNames {
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		if containsAsWord(upper, strings.ToUpper(name)) {
-			matched = append(matched, name)
-			seen[name] = struct{}{}
-		}
-	}
-	if len(matched) == 0 {
-		matched = matchUserGPUVariantAliases(userText, apiNames)
-	}
-	return matched
+	return platform.MatchUserTokensToAPINames(userText, apiNames)
 }
 
-func matchUserGPUVariantAliases(userText string, apiNames []string) []string {
-	if userText == "" || len(apiNames) == 0 {
-		return nil
-	}
-	tokens := gpuLikeTokenRegex.FindAllString(userText, -1)
-	if len(tokens) == 0 {
-		return nil
-	}
-	seenTokens := map[string]struct{}{}
-	matched := []string{}
-	seenNames := map[string]struct{}{}
-	for _, token := range tokens {
-		token = strings.ToUpper(strings.TrimSpace(token))
-		if token == "" {
-			continue
-		}
-		if _, ok := seenTokens[token]; ok {
-			continue
-		}
-		seenTokens[token] = struct{}{}
-		for _, name := range apiNames {
-			if name == "" {
-				continue
-			}
-			if _, ok := seenNames[name]; ok {
-				continue
-			}
-			upperName := strings.ToUpper(name)
-			if !strings.HasPrefix(upperName, token) || len(upperName) == len(token) {
-				continue
-			}
-			next := rune(upperName[len(token)])
-			if !isGPUVariantSuffixRune(next) {
-				continue
-			}
-			matched = append(matched, name)
-			seenNames[name] = struct{}{}
-		}
-	}
-	return matched
-}
-
-func isGPUVariantSuffixRune(r rune) bool {
-	return r == '_' || (r >= 'A' && r <= 'Z')
-}
-
-// containsAsWord reports whether needle appears in haystack with word
-// boundaries on both sides. A word char is [0-9A-Za-z_]; any other rune
-// (including CJK, space, punctuation, start/end of string) counts as a
-// boundary. Substring matches like "H20" inside "H200" return false.
 func containsAsWord(haystack, needle string) bool {
-	if needle == "" {
-		return false
-	}
-	from := 0
-	for from <= len(haystack)-len(needle) {
-		idx := strings.Index(haystack[from:], needle)
-		if idx < 0 {
-			return false
-		}
-		abs := from + idx
-		if !isWordCharBefore(haystack, abs) && !isWordCharAfter(haystack, abs+len(needle)) {
-			return true
-		}
-		from = abs + 1
-	}
-	return false
+	return platform.ContainsAsWord(haystack, needle)
 }
-
-func isWordCharBefore(s string, pos int) bool {
-	if pos <= 0 {
-		return false
-	}
-	r, _ := utf8.DecodeLastRuneInString(s[:pos])
-	return isWordRune(r)
-}
-
-func isWordCharAfter(s string, pos int) bool {
-	if pos >= len(s) {
-		return false
-	}
-	r, _ := utf8.DecodeRuneInString(s[pos:])
-	return isWordRune(r)
-}
-
-func isWordRune(r rune) bool {
-	return r == '_' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
-}
-
-var gpuMemoryHintRegex = regexp.MustCompile(`(?i)\b(\d{2,3})\s*(?:gb|g)\b`)
-var gpuMemorySuffixRegex = regexp.MustCompile(`(?i)_(\d{2,3})g$`)
 
 func matchUserTextToInstanceTypeNames(userText string, items []any, includeFamilyMemoryVariants bool) []string {
-	apiNames := collectAPINamesFromInstanceTypes(items)
-	matched := matchUserTokensToAPINames(userText, apiNames)
-	hints := extractGPUMemoryHints(userText)
-	if len(hints) > 0 {
-		if memoryMatched := matchMemoryHintedInstanceTypeNames(hints, items, matched); len(memoryMatched) > 0 {
-			return memoryMatched
-		}
-		if len(matched) > 0 {
-			return nil
-		}
-	}
-	if includeFamilyMemoryVariants {
-		return expandMemoryVariantMatches(matched, apiNames)
-	}
-	return matched
+	return platform.MatchUserTextToInstanceTypeNames(userText, items, includeFamilyMemoryVariants)
 }
-
-func matchMemoryHintedInstanceTypeNames(hints map[string]struct{}, items []any, matchedNames []string) []string {
-	wantedBases := map[string]struct{}{}
-	for _, name := range matchedNames {
-		if name == "" {
-			continue
-		}
-		wantedBases[name] = struct{}{}
-		wantedBases[memoryVariantBaseName(name)] = struct{}{}
-	}
-
-	out := []string{}
-	seen := map[string]struct{}{}
-	for _, item := range items {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		name := safeString(entry, "Name")
-		if name == "" {
-			continue
-		}
-		if len(wantedBases) > 0 {
-			base := memoryVariantBaseName(name)
-			if _, ok := wantedBases[name]; !ok {
-				if _, ok := wantedBases[base]; !ok {
-					continue
-				}
-			}
-		}
-		if !memoryHintMatchesInstanceType(hints, entry) {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
-	}
-	return out
-}
-
-func extractGPUMemoryHints(userText string) map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, match := range gpuMemoryHintRegex.FindAllStringSubmatch(userText, -1) {
-		if len(match) < 2 {
-			continue
-		}
-		if normalized := normalizeMemoryGB(match[1]); normalized != "" {
-			out[normalized] = struct{}{}
-		}
-	}
-	return out
-}
-
-func memoryHintMatchesInstanceType(hints map[string]struct{}, entry map[string]any) bool {
-	memory := normalizeMemoryGB(nestedValue(entry, "GraphicsMemory"))
-	if memory == "" {
-		memory = apiNameMemoryGB(safeString(entry, "Name"))
-	}
-	if memory == "" {
-		return false
-	}
-	_, ok := hints[memory]
-	return ok
-}
-
-func normalizeMemoryGB(value string) string {
-	normalized := strings.ToUpper(strings.TrimSpace(value))
-	normalized = strings.TrimSuffix(normalized, "GB")
-	normalized = strings.TrimSuffix(normalized, "G")
-	return strings.TrimSpace(normalized)
-}
-
-func apiNameMemoryGB(name string) string {
-	match := gpuMemorySuffixRegex.FindStringSubmatch(name)
-	if len(match) < 2 {
-		return ""
-	}
-	return normalizeMemoryGB(match[1])
-}
-
-func memoryVariantBaseName(name string) string {
-	return gpuMemorySuffixRegex.ReplaceAllString(name, "")
-}
-
-func expandMemoryVariantMatches(matchedNames []string, apiNames []string) []string {
-	if len(matchedNames) == 0 {
-		return nil
-	}
-	wantedNames := map[string]struct{}{}
-	wantedBases := map[string]struct{}{}
-	for _, name := range matchedNames {
-		if name == "" {
-			continue
-		}
-		wantedNames[name] = struct{}{}
-		wantedBases[memoryVariantBaseName(name)] = struct{}{}
-	}
-
-	out := []string{}
-	seen := map[string]struct{}{}
-	for _, name := range apiNames {
-		_, exact := wantedNames[name]
-		_, variant := wantedBases[memoryVariantBaseName(name)]
-		if !exact && !(variant && apiNameMemoryGB(name) != "") {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
-	}
-	return out
-}
-
-// collectAPINamesFromInstanceTypes returns the deduped set of "Name" fields
-// from a DescribeAvailableCompShareInstanceTypes response.
-func collectAPINamesFromInstanceTypes(items []any) []string {
-	out := []string{}
-	seen := map[string]struct{}{}
-	for _, item := range items {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		name := safeString(entry, "Name")
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
-	}
-	return out
-}
-
-var gpuLikeTokenRegex = regexp.MustCompile(`(?i)\b([a-z]{1,3}\d{2,4}[a-z0-9_]*|\d{4}(?:_\d+g)?)\b`)
 
 func renderGPUSpecsReply(raw map[string]any, slots Slots) string {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
@@ -1272,20 +999,8 @@ func selectGPUSpecEntries(items []any, filterTo map[string]struct{}, detailed bo
 	return entries
 }
 
-// nestedValue extracts the "Value" field from a nested map response shape like
-// `{"Performance": {"Rate": 3, "Value": 83}}`. Returns "" if shape doesn't match.
-// Used by gpu_specs_query to pretty-print Performance + GraphicsMemory.
 func nestedValue(m map[string]any, key string) string {
-	v, ok := m[key]
-	if !ok {
-		return ""
-	}
-	if nested, ok := v.(map[string]any); ok {
-		if value, ok := nested["Value"]; ok {
-			return fmt.Sprint(value)
-		}
-	}
-	return safeValue(v)
+	return platform.NestedValue(m, key)
 }
 
 func renderStockReply(raw map[string]any, userText string) string {
@@ -2669,20 +2384,8 @@ func formatMachineSizeSegment(gpu, cpu, memory string) string {
 	return strings.Join(parts, "/")
 }
 
-// mapSliceAt returns m[key].([]any) if shape matches, nil otherwise.
 func mapSliceAt(m map[string]any, key string) []any {
-	if m == nil {
-		return nil
-	}
-	v, ok := m[key]
-	if !ok {
-		return nil
-	}
-	arr, ok := v.([]any)
-	if !ok {
-		return nil
-	}
-	return arr
+	return platform.MapSliceAt(m, key)
 }
 
 func stringSliceAt(m map[string]any, key string) []string {
@@ -2769,19 +2472,7 @@ func uniqueStrings(values []string) []string {
 }
 
 func safeString(m map[string]any, key string) string {
-	if m == nil {
-		return ""
-	}
-	v, ok := m[key]
-	if !ok {
-		return ""
-	}
-	switch typed := v.(type) {
-	case string:
-		return safeValue(typed)
-	default:
-		return safeValue(typed)
-	}
+	return platform.SafeString(m, key)
 }
 
 func safeNumeric(m map[string]any, key string) string {

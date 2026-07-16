@@ -1,17 +1,17 @@
 package intent
 
-// ReadRequest is implemented by one request type per platform capability.
-// The model schema, decoder and handler all use the same concrete type.
-type ReadRequest interface {
-	MissingFields() []MissingField
-}
+import "github.com/compshare-agent/internal/platform"
 
-type MissingField struct {
-	Name   string `json:"name"`
-	Reason string `json:"reason"`
-}
+// The read-request contract (interface, MissingField, status vocabulary) is
+// owned by internal/platform so a typed capability can implement it without
+// importing this router package. These aliases keep intent.ReadRequest /
+// intent.MissingField references compiling unchanged for the not-yet-migrated
+// legacy request types below.
+type ReadRequest = platform.ReadRequest
 
-func missing(name string) MissingField { return MissingField{Name: name, Reason: "required"} }
+type MissingField = platform.MissingField
+
+func missing(name string) MissingField { return platform.Missing(name) }
 
 type ResourceInfoRequest struct {
 	Targets []TargetRef `json:"targets,omitempty"`
@@ -78,19 +78,6 @@ type NetworkAcceleratorStatusRequest struct {
 
 func (NetworkAcceleratorStatusRequest) MissingFields() []MissingField { return nil }
 
-type PricingRequest struct {
-	GPUType  string    `json:"gpu_type"`
-	GPUCount int       `json:"gpu_count,omitempty"`
-	Kind     PriceKind `json:"price_kind,omitempty"`
-}
-
-func (r PricingRequest) MissingFields() []MissingField {
-	if r.GPUType == "" {
-		return []MissingField{missing("gpu_type")}
-	}
-	return nil
-}
-
 type RefundEstimateRequest struct {
 	Targets []TargetRef `json:"targets"`
 }
@@ -106,9 +93,7 @@ type CFSListRequest struct {
 	CFS *CFSRef `json:"cfs,omitempty"`
 }
 
-type CFSRef struct {
-	ID string `json:"id"`
-}
+type CFSRef = platform.CFSRef
 
 func (CFSListRequest) MissingFields() []MissingField { return nil }
 

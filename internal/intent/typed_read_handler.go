@@ -34,8 +34,6 @@ func (h *DemoHandler) HandleReadRequest(ctx context.Context, request ReadRequest
 		return h.HandleModelRepositoryRequest(ctx, typed, meta)
 	case NetworkAcceleratorStatusRequest:
 		return h.HandleNetworkAcceleratorStatusRequest(ctx, typed, meta)
-	case PricingRequest:
-		return h.HandlePricingRequest(ctx, typed, meta)
 	case RefundEstimateRequest:
 		return h.HandleRefundEstimateRequest(ctx, typed, meta)
 	case CFSListRequest:
@@ -86,9 +84,6 @@ func (h *DemoHandler) HandleModelRepositoryRequest(ctx context.Context, request 
 }
 func (h *DemoHandler) HandleNetworkAcceleratorStatusRequest(ctx context.Context, request NetworkAcceleratorStatusRequest, meta ReadHandlerContext) HandlerResult {
 	return h.DispatchRoute(ctx, typedHandlerRequest(IntentNetAcceleratorStatus, Slots{TargetRefs: request.Targets}, meta))
-}
-func (h *DemoHandler) HandlePricingRequest(ctx context.Context, request PricingRequest, meta ReadHandlerContext) HandlerResult {
-	return h.DispatchRoute(ctx, typedHandlerRequest(IntentPricingQuery, Slots{SearchQuery: request.GPUType, GPUCount: request.GPUCount, PriceKind: request.Kind}, meta))
 }
 func (h *DemoHandler) HandleRefundEstimateRequest(ctx context.Context, request RefundEstimateRequest, meta ReadHandlerContext) HandlerResult {
 	return h.DispatchRoute(ctx, typedHandlerRequest(IntentRefundEstimate, Slots{TargetRefs: request.Targets}, meta))

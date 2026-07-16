@@ -14,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/routing"
 	"github.com/compshare-agent/internal/security"
 )
@@ -714,19 +715,7 @@ func instancesFromDescribeResult(raw map[string]any) (resourceDescribeData, erro
 }
 
 func copyArgs(args map[string]any) map[string]any {
-	if args == nil {
-		return nil
-	}
-	out := make(map[string]any, len(args))
-	for key, value := range args {
-		switch typed := value.(type) {
-		case []string:
-			out[key] = append([]string(nil), typed...)
-		default:
-			out[key] = typed
-		}
-	}
-	return out
+	return platform.CopyArgs(args)
 }
 
 func dedupeStrings(values []string) []string {
@@ -1167,7 +1156,7 @@ func matchesRequestedMetric(key string, metrics []Metric) bool {
 }
 
 func safeValue(v any) string {
-	return fmt.Sprint(security.RedactForLLM(v))
+	return platform.SafeValue(v)
 }
 
 func safeValueMap(v map[string]any) map[string]any {
