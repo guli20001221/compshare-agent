@@ -52,10 +52,10 @@ func ReadDefinitions() []ReadDefinition {
 		migratedReadDefinition(intent.IntentNetAcceleratorStatus, NewReadCapability(netAcceleratorReadSpec())),
 		migratedReadDefinition(intent.IntentPricingQuery, NewReadCapability(pricingReadSpec())),
 		migratedReadDefinition(intent.IntentRefundEstimate, NewReadCapability(refundReadSpec())),
-		newReadDefinition[CFSListRequest](readCFSList, intent.IntentCFSInfo, "查询 CFS 列表或指定 CFS 状态。", objectSchema(map[string]any{"cfs": cfsRefSchema()}, nil)),
-		newReadDefinition[CFSCreatePriceRequest](readCFSCreatePrice, intent.IntentCFSInfo, "估算创建 CFS 的价格。", objectSchema(map[string]any{"zone": stringSchema(), "target_size_gb": positiveIntegerSchema(), "charge_type": stringSchema()}, []string{"zone", "target_size_gb"})),
-		newReadDefinition[CFSUpgradePriceRequest](readCFSUpgradePrice, intent.IntentCFSInfo, "估算指定 CFS 扩容到目标容量的价格。", objectSchema(map[string]any{"cfs": cfsRefSchema(), "target_size_gb": positiveIntegerSchema()}, []string{"cfs", "target_size_gb"})),
-		newReadDefinition[CFSRefundEstimateRequest](readCFSRefundEstimate, intent.IntentCFSInfo, "估算指定 CFS 当前可退金额。", objectSchema(map[string]any{"cfs": cfsRefSchema()}, []string{"cfs"})),
+		migratedReadDefinition(intent.IntentCFSInfo, NewReadCapability(cfsListReadSpec())),
+		migratedReadDefinition(intent.IntentCFSInfo, NewReadCapability(cfsCreatePriceReadSpec())),
+		migratedReadDefinition(intent.IntentCFSInfo, NewReadCapability(cfsUpgradePriceReadSpec())),
+		migratedReadDefinition(intent.IntentCFSInfo, NewReadCapability(cfsRefundEstimateReadSpec())),
 	}
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	return definitions

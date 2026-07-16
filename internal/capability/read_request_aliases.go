@@ -2,11 +2,8 @@ package capability
 
 import "github.com/compshare-agent/internal/intent"
 
-// Aliases keep the capability catalog as the public discovery surface while
-// the concrete request contracts live beside the handlers that consume them.
+// The read-request interface and MissingField vocabulary are re-exported so the
+// catalog and kernel keep compiling; every concrete request contract now lives
+// in the capability package beside the handler that consumes it.
 type ReadRequest = intent.ReadRequest
 type MissingField = intent.MissingField
-type CFSListRequest = intent.CFSListRequest
-type CFSCreatePriceRequest = intent.CFSCreatePriceRequest
-type CFSUpgradePriceRequest = intent.CFSUpgradePriceRequest
-type CFSRefundEstimateRequest = intent.CFSRefundEstimateRequest
