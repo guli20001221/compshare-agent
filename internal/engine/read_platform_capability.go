@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/capability"
-	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
@@ -33,15 +32,6 @@ type ReadCapabilityObservation struct {
 	MissingFields    []capability.MissingField  `json:"missing_fields,omitempty"`
 }
 
-func (e *Engine) invokeReadHandler(ctx context.Context, request intent.ReadRequest, snapshot entity.RegistrySnapshot, onStep func(StepEvent)) intent.HandlerResult {
-	handler := intent.NewDemoHandler(plannerHandlerExecutor{engine: e, onStep: onStep})
-	meta := intent.ReadHandlerContext{Resolver: snapshot, FallbackGPUModel: e.fallbackStockGpuModel(time.Now())}
-	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
-		meta.FallbackInstanceID = e.sessionState.SelectedInstanceID
-	}
-	return handler.HandleReadRequest(ctx, request, meta)
-}
-
 func (e *Engine) executeConcreteReadCapability(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
 	readIntent, request, err := capability.DecodeReadRequest(action, args)
 	if err != nil {
@@ -54,18 +44,17 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询参数不完整", TraceResult: map[string]any{"status": string(intent.HandlerStatusNeedsInput), "missing_fields": missing}})
 		return string(payload)
 	}
-	if reg, ok := capability.MigratedRead(action); ok {
-		return e.executeTypedReadCapability(ctx, action, string(readIntent), reg, request, args, onStep)
+	reg, ok := capability.MigratedRead(action)
+	if !ok {
+		// Every model-visible read owns a typed vertical (P3.3/P3.4). A decoded read
+		// tool with no migrated capability is a wiring bug, not a runtime state — the
+		// legacy intent.Slots read dispatch (invokeReadHandler → HandleReadRequest →
+		// DispatchRoute) has been cut from the live path. The intent-side dead code is
+		// deleted in P6.
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: "unmigrated read capability"})
+		return marshalReadCapabilityError(fmt.Errorf("read capability %q has no typed vertical", action))
 	}
-	return e.executeReadCapability(ctx, action, readIntent, request, args, onStep)
-}
-
-func (e *Engine) executeReadCapability(ctx context.Context, action string, readIntent intent.Intent, request intent.ReadRequest, args map[string]any, onStep func(StepEvent)) string {
-	onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
-
-	snapshot := e.RegistrySnapshot()
-	result := e.invokeReadHandler(ctx, request, snapshot, onStep)
-	return e.buildReadObservation(action, string(readIntent), result, snapshot.CanAssertAbsence(), onStep)
+	return e.executeTypedReadCapability(ctx, action, string(readIntent), reg, request, args, onStep)
 }
 
 // executeTypedReadCapability dispatches a migrated read through its typed
