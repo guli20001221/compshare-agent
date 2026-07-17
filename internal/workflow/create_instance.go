@@ -679,17 +679,31 @@ func createChargeType(params map[string]any) string {
 	return deployment.NormalizeChargeType(paramStr(params, "ChargeType", ""))
 }
 
-// workflowZonePlacement resolves a zone to its full placement. It reads the
-// turn's single zone catalog snapshot (built once by the engine, threaded in as
-// reference data) — one record whose ZoneID/Region/AzGroup/IsPod cannot disagree
-// — and falls back to the legacy per-zone param maps only when the run carries no
-// snapshot (direct workflow-engine tests). Production always has the snapshot;
-// the maps and this fallback are removed together in S6.
-func workflowZonePlacement(wfCtx *Context, zone string) deployment.ZonePlacement {
-	if p, ok := wfCtx.ZoneCatalog().Placement(zone); ok {
-		return p
+// workflowZonePlacement resolves a zone to its full placement from the turn's
+// single zone catalog snapshot — one record whose ZoneID/Region/AzGroup/IsPod
+// cannot disagree.
+//
+// The snapshot is authoritative: the ONLY reason to read the legacy per-zone maps
+// is that no snapshot was attached at all (a not-yet-migrated direct
+// workflow-engine test). A snapshot that IS present but cannot answer — it is
+// unavailable, or it does not carry this zone — is a hard failure, NOT a reason
+// to fall back to a stale map. Falling back there would let a zone the authority
+// rejected re-enter through the back door, or continue a create on a zero-value
+// placement. Production always attaches a snapshot; the maps and the nil-only
+// fallback are removed together in S6.
+func workflowZonePlacement(wfCtx *Context, zone string) (deployment.ZonePlacement, error) {
+	cat := wfCtx.ZoneCatalog()
+	if cat == nil {
+		return legacyZonePlacementFromParams(wfCtx.Params, zone), nil
 	}
-	return legacyZonePlacementFromParams(wfCtx.Params, zone)
+	if !cat.Available() {
+		return deployment.ZonePlacement{}, fmt.Errorf("可用区目录当前不可用，无法安全创建，请稍后重试")
+	}
+	p, ok := cat.Placement(zone)
+	if !ok {
+		return deployment.ZonePlacement{}, fmt.Errorf("可用区 %s 不在当前可用区目录中，无法安全创建", zone)
+	}
+	return p, nil
 }
 
 func legacyZonePlacementFromParams(params map[string]any, zone string) deployment.ZonePlacement {
@@ -1093,7 +1107,10 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 		return nil, createImageUnavailableError(wfCtx.Params)
 	}
 	gt, _ := wfCtx.Params["GpuType"].(string)
-	placement := workflowZonePlacement(wfCtx, zone)
+	placement, err := workflowZonePlacement(wfCtx, zone)
+	if err != nil {
+		return nil, err
+	}
 	// Both validations run HERE, once, before capacity, price or the card. The
 	// purchase=true form is the strictest (it alone requires AzGroup on a pod
 	// zone), so passing it subsumes the capacity step's weaker purchase=false
@@ -2162,7 +2179,13 @@ var createFormChargeTypes = []ConfirmFormOption{
 func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 	opts := make([]ConfirmFormOption, len(createFormChargeTypes))
 	copy(opts, createFormChargeTypes)
-	placement := workflowZonePlacement(wfCtx, zone)
+	// Display-only: the Spot option is disabled for a pod zone. If the zone can't
+	// be resolved here, show every charge type — the authoritative create gate
+	// (validateCreatePlacement) still refuses an unresolvable or pod+Spot pick.
+	placement, err := workflowZonePlacement(wfCtx, zone)
+	if err != nil {
+		return opts
+	}
 	for i := range opts {
 		if !strings.EqualFold(opts[i].Value, deployment.ChargeTypeSpot) {
 			continue

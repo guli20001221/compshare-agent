@@ -127,6 +127,10 @@ func (m *recoveryMockExecutor) Execute(_ context.Context, action string, args ma
 			map[string]any{"CompShareImageId": "img-good", "Name": "cuda128_torch291_py312", "ImageType": "App"},
 			map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System"},
 		}}, nil
+	case "DescribeCompShareSupportZone":
+		return map[string]any{"ZoneInfo": []any{
+			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A"},
+		}}, nil
 	case "DescribeAvailableCompShareInstanceTypes":
 		return map[string]any{"AvailableInstanceTypes": []any{
 			map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal", "MachineSizes": []any{

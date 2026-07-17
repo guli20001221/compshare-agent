@@ -34,6 +34,12 @@ func (m *createFlowExecutor) Execute(_ context.Context, action string, args map[
 		return map[string]any{"TotalCount": float64(0), "UHostSet": []any{}}, nil
 	case "DescribeCompShareImages":
 		return map[string]any{"ImageSet": m.images}, nil
+	case "DescribeCompShareSupportZone":
+		// The create resolves to defaultZone (cn-wlcb-01); the authoritative zone
+		// catalog must carry it, or the run refuses (gate #2/#5).
+		return map[string]any{"ZoneInfo": []any{
+			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A"},
+		}}, nil
 	case "DescribeAvailableCompShareInstanceTypes":
 		return map[string]any{"AvailableInstanceTypes": m.available}, nil
 	case "CheckCompShareResourceCapacity":

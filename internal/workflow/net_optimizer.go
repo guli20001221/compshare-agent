@@ -104,13 +104,24 @@ func stepRecheckNetOptimizerStatus() Step {
 }
 
 // netOptimizerAzGroup reads the zone's internal region id (az_group) from the
-// turn's zone catalog snapshot, falling back to the legacy per-zone param map
-// only when the run carries no snapshot. Removed with the map in S6.
-func netOptimizerAzGroup(wfCtx *Context, zone string) uint32 {
-	if p, ok := wfCtx.ZoneCatalog().Placement(zone); ok {
-		return p.AzGroup
+// turn's zone catalog snapshot. Like workflowZonePlacement the snapshot is
+// authoritative: the legacy map is read ONLY when no snapshot is attached (an
+// unmigrated test). A snapshot that is present but unavailable, or that lacks the
+// zone, is a hard failure — never a fall-through to a stale map. Removed with the
+// map in S6.
+func netOptimizerAzGroup(wfCtx *Context, zone string) (uint32, error) {
+	cat := wfCtx.ZoneCatalog()
+	if cat == nil {
+		return guidedZoneRegionID(wfCtx.Params, zone), nil
 	}
-	return guidedZoneRegionID(wfCtx.Params, zone)
+	if !cat.Available() {
+		return 0, fmt.Errorf("可用区目录当前不可用，无法安全开启网络加速")
+	}
+	p, ok := cat.Placement(zone)
+	if !ok {
+		return 0, fmt.Errorf("可用区 %s 不在当前可用区目录中，无法安全开启网络加速", zone)
+	}
+	return p.AzGroup, nil
 }
 
 func normalizeNetOptimizerParams(wfCtx *Context) error {
@@ -125,7 +136,10 @@ func normalizeNetOptimizerParams(wfCtx *Context) error {
 	if region == "" {
 		return fmt.Errorf("无法从可用区推导地域，请同时指定 Region。")
 	}
-	azGroup := netOptimizerAzGroup(wfCtx, zone)
+	azGroup, err := netOptimizerAzGroup(wfCtx, zone)
+	if err != nil {
+		return err
+	}
 	if azGroup == 0 {
 		return fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全开启网络加速。", zone)
 	}
