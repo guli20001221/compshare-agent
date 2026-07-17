@@ -238,11 +238,11 @@ type Engine struct {
 	// zoneCatalog resolves availability zones (incl. Chinese display names) from
 	// the live support-zone catalog. nil → falls back to the process-wide
 	// zones.Default(); tests inject a fresh catalog for isolation.
-	zoneCatalog                *zones.Catalog
-	registry                   *entity.EntityRegistry
-	knowledgeRetriever         KnowledgeRetriever
-	agentRuntimeEventsThisTurn []agentruntime.Event
-	agentRuntimeObserver       func(agentruntime.Event)
+	zoneCatalog                   *zones.Catalog
+	registry                      *entity.EntityRegistry
+	knowledgeRetriever            KnowledgeRetriever
+	agentRuntimeEventsThisTurn    []agentruntime.Event
+	agentRuntimeObserver          func(agentruntime.Event)
 	rendererTraceObserver         func(observability.RendererTrace)
 	historyTrimmedThisSession     bool
 	retrievalTraceObserver        func(observability.RetrievalTrace)
@@ -3602,7 +3602,17 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		}
 	}
 
-	result, err := wfEngine.Run(ctx, wf, args)
+	// Build the turn's zone catalog ONCE and hand it to the run as reference data.
+	// Both the initial run and the image-recovery re-run below share this single
+	// snapshot, so a create fetches the catalog once and the two runs can never see
+	// a different zone list. It is inert until the workflow reads it (S5): today the
+	// old zone-keyed maps injected above still drive resolution.
+	var wfRunOpts []workflow.RunOption
+	if ref := (workflow.ReferenceData{ZoneCatalog: e.zoneCatalogSnapshotForAction(ctx, action)}); ref.ZoneCatalog != nil {
+		wfRunOpts = append(wfRunOpts, workflow.WithReferenceData(ref))
+	}
+
+	result, err := wfEngine.Run(ctx, wf, args, wfRunOpts...)
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
@@ -3630,7 +3640,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 			args["CompShareImageId"] = newID
 			args["ImageName"] = newName
 			args["FallbackNote"] = fmt.Sprintf("原指定镜像在可用区 %s 暂不可用，已自动为你选择可用镜像「%s」。", capacityZone, newName)
-			result, _ = wfEngine.Run(ctx, wf, args)
+			result, _ = wfEngine.Run(ctx, wf, args, wfRunOpts...)
 		}
 	}
 

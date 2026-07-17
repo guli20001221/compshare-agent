@@ -214,6 +214,56 @@ func (e *Engine) deploymentZonePlacement(ctx context.Context, zone string) deplo
 	return placement
 }
 
+// zoneCatalogSnapshot builds the turn's read-only zone catalog from the live
+// support-zone list, one structured placement per zone plus its console display
+// name — the SINGLE reference the resolver validates against and the workflow
+// looks placements up in, replacing the four parallel zone-keyed maps.
+//
+// The network call, its failure mode and caching live HERE (the same
+// process-cached supportZoneList the old chain used, so this adds a cache read,
+// not an API call), so the snapshot the workflow consumes is pure data. An error
+// or an empty list yields an UNAVAILABLE snapshot — never a fallback: a consumer
+// must refuse rather than guess a zone from a stale table, exactly as for the
+// machine-type catalog. Each record carries its own Region (falling back to the
+// structural derivation only when upstream omits it), so ZoneID/Region/AzGroup/
+// IsPod and the display name all come from one row and cannot disagree.
+func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalogSnapshot {
+	list, err := e.supportZoneList(ctx)
+	if err != nil || len(list) == 0 {
+		return deployment.NewZoneCatalogSnapshot(false, nil)
+	}
+	entries := make([]deployment.ZoneCatalogEntry, 0, len(list))
+	for _, z := range list {
+		region := z.Region
+		if region == "" {
+			region = workflow.RegionFromZone(z.Zone)
+		}
+		entries = append(entries, deployment.ZoneCatalogEntry{
+			Placement: deployment.ZonePlacement{
+				Zone:    z.Zone,
+				Region:  region,
+				ZoneID:  z.ZoneID,
+				AzGroup: z.RegionID,
+				IsPod:   z.IsPod,
+			},
+			DisplayName: z.Describe,
+		})
+	}
+	return deployment.NewZoneCatalogSnapshot(true, entries)
+}
+
+// zoneCatalogSnapshotForAction returns the zone catalog for the workflows that
+// resolve a zone, or nil for the rest — so a non-zone workflow attaches no
+// reference data and pays no catalog read.
+func (e *Engine) zoneCatalogSnapshotForAction(ctx context.Context, action string) *deployment.ZoneCatalogSnapshot {
+	switch action {
+	case "CreateInstanceWorkflow", "CreateCFSWorkflow", "EnableNetOptimizerWorkflow":
+		return e.zoneCatalogSnapshot(ctx)
+	default:
+		return nil
+	}
+}
+
 func (e *Engine) zoneIsPodMap(ctx context.Context) map[string]bool {
 	list, err := e.supportZoneList(ctx)
 	if err != nil {
