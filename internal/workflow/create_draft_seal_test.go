@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +13,7 @@ import (
 // about to be auto-derived. That is the shape the seal used to be blind to.
 func draftContext(zone string) *Context {
 	wfCtx := NewContext(map[string]any{"GpuType": "4090"})
+	wfCtx.referenceData.ZoneCatalog = createZoneCatalog()
 	wfCtx.StepResults["查询可用配比"] = zoneTaggedTypes(
 		struct{ Name, Zone, Status string }{"4090", zone, "Normal"},
 	)
@@ -111,7 +111,7 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 		return true
 	}, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	require.NotNil(t, result.Contract, "a passed gate must leave a sealed contract")
@@ -172,7 +172,7 @@ func TestTheSealRecordsThePriceTheUserWasShown(t *testing.T) {
 		return true
 	}, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	require.NotNil(t, result.Contract)
@@ -236,7 +236,7 @@ func TestAPricelessCreateStopsBeforeTheCard(t *testing.T) {
 		return true
 	}, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 
 	assert.False(t, result.Success)

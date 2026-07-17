@@ -684,21 +684,14 @@ func createChargeType(params map[string]any) string {
 // through here, so the snapshot-vs-map decision lives in ONE place instead of a
 // re-implemented branch at each site.
 //
-// The snapshot is authoritative: the ONLY reason to read the legacy per-zone maps
-// is that no snapshot was attached at all (a not-yet-migrated direct
-// workflow-engine test). A snapshot that IS present but cannot answer — it is
-// unavailable, or it does not carry this zone — is a hard failure, NOT a reason to
-// fall back to a stale map: that would let a zone the authority rejected re-enter
-// through the back door, or continue a create on a zero-value placement. The maps
-// and the nil-only fallback branch here are removed together in S6.
+// The turn's zone catalog snapshot is the sole authority. It must be present and
+// available: a missing/unavailable snapshot, or a zone it does not carry, is a hard
+// failure — the create refuses rather than guessing a placement. (Before the zone
+// convergence a nil snapshot fell back to per-zone param maps for unmigrated tests;
+// those maps are gone, and Available() is nil-safe so a nil snapshot simply reports
+// unavailable.)
 func workflowZoneEntry(wfCtx *Context, zone string) (deployment.ZoneCatalogEntry, error) {
 	cat := wfCtx.ZoneCatalog()
-	if cat == nil {
-		return deployment.ZoneCatalogEntry{
-			Placement:   legacyZonePlacementFromParams(wfCtx.Params, zone),
-			DisplayName: zoneDescribeMapFromParams(wfCtx.Params)[strings.TrimSpace(zone)],
-		}, nil
-	}
 	if !cat.Available() {
 		return deployment.ZoneCatalogEntry{}, fmt.Errorf("可用区目录当前不可用，无法安全创建，请稍后重试")
 	}
@@ -710,25 +703,18 @@ func workflowZoneEntry(wfCtx *Context, zone string) (deployment.ZoneCatalogEntry
 }
 
 // workflowZoneIDIndex maps numeric zone id → zone id string for the turn's zones,
-// so a numeric-keyed payload (the GPU inventory) can be decoded to zone names. Same
-// authority rule as workflowZoneEntry: snapshot when present, legacy map only when
-// no snapshot is attached. Removed-map path in S6.
+// so a numeric-keyed payload (the GPU inventory) can be decoded to zone names, from
+// the single authoritative snapshot. An absent/unavailable snapshot yields an empty
+// index (nil-safe), never a per-zone param map.
 func workflowZoneIDIndex(wfCtx *Context) map[uint32]string {
 	out := map[uint32]string{}
-	if cat := wfCtx.ZoneCatalog(); cat != nil {
-		if !cat.Available() {
-			return out
-		}
-		for _, zone := range cat.Zones() {
-			if p, ok := cat.Placement(zone); ok && p.ZoneID != 0 {
-				out[p.ZoneID] = zone
-			}
-		}
+	cat := wfCtx.ZoneCatalog()
+	if !cat.Available() {
 		return out
 	}
-	for zone, id := range guidedZoneIDs(wfCtx.Params) {
-		if zone != "" && id != 0 {
-			out[id] = zone
+	for _, zone := range cat.Zones() {
+		if p, ok := cat.Placement(zone); ok && p.ZoneID != 0 {
+			out[p.ZoneID] = zone
 		}
 	}
 	return out
@@ -742,23 +728,6 @@ func workflowZonePlacement(wfCtx *Context, zone string) (deployment.ZonePlacemen
 		return deployment.ZonePlacement{}, err
 	}
 	return entry.Placement, nil
-}
-
-func legacyZonePlacementFromParams(params map[string]any, zone string) deployment.ZonePlacement {
-	placement := deployment.ZonePlacement{
-		Zone:    strings.TrimSpace(zone),
-		Region:  regionFromZone(zone),
-		ZoneID:  guidedZoneID(params, zone),
-		AzGroup: guidedZoneRegionID(params, zone),
-	}
-	if isPod, ok := guidedZoneIsPod(params, zone); ok {
-		placement.IsPod = isPod
-		return placement
-	}
-	if strings.EqualFold(paramStr(params, "Zone", ""), zone) {
-		placement.IsPod = paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false)
-	}
-	return placement
 }
 
 func validateCreatePlacement(wfCtx *Context, placement deployment.ZonePlacement, purchase bool) error {
@@ -3174,63 +3143,11 @@ func guidedInventoryFrom(wfCtx *Context, result map[string]any) guidedInventory 
 	return guidedInventory{counts: counts}
 }
 
-func guidedZoneIDs(params map[string]any) map[string]uint32 {
-	out := map[string]uint32{}
-	switch m := params["ZoneIds"].(type) {
-	case map[string]uint32:
-		for zone, id := range m {
-			if zone != "" && id != 0 {
-				out[zone] = id
-			}
-		}
-	case map[string]any:
-		for zone, raw := range m {
-			if id, ok := parseUint32Any(raw); ok && zone != "" && id != 0 {
-				out[zone] = id
-			}
-		}
-	case map[string]string:
-		for zone, raw := range m {
-			if id, ok := parseUint32Any(raw); ok && zone != "" && id != 0 {
-				out[zone] = id
-			}
-		}
-	}
-	return out
-}
-
-func guidedZoneRegionIDs(params map[string]any) map[string]uint32 {
-	out := map[string]uint32{}
-	switch m := params["ZoneRegionIds"].(type) {
-	case map[string]uint32:
-		for zone, id := range m {
-			if zone != "" && id != 0 {
-				out[zone] = id
-			}
-		}
-	case map[string]any:
-		for zone, raw := range m {
-			if id, ok := parseUint32Any(raw); ok && zone != "" && id != 0 {
-				out[zone] = id
-			}
-		}
-	case map[string]string:
-		for zone, raw := range m {
-			if id, ok := parseUint32Any(raw); ok && zone != "" && id != 0 {
-				out[zone] = id
-			}
-		}
-	}
-	return out
-}
-
 // addZoneRegionAndID stamps the read-probe query with the zone's Region and
 // internal id taken from ONE catalog record, so the two fields can never come
 // from different sources. On a present-but-unresolvable snapshot (unavailable,
 // or the zone absent) it stamps nothing rather than string-guessing a Region for
-// a zone the authority rejected — the create refuses downstream anyway. On the
-// nil-snapshot bridge workflowZoneEntry returns the legacy placement, whose
-// Region is the zone-derived fallback, preserving the old behaviour.
+// a zone the authority rejected — the create refuses downstream anyway.
 func addZoneRegionAndID(wfCtx *Context, args map[string]any, zone string) map[string]any {
 	entry, err := workflowZoneEntry(wfCtx, zone)
 	if err != nil {
@@ -3245,79 +3162,18 @@ func addZoneRegionAndID(wfCtx *Context, args map[string]any, zone string) map[st
 	return args
 }
 
-func guidedZoneID(params map[string]any, zone string) uint32 {
-	zone = strings.TrimSpace(zone)
-	if zone == "" {
-		return 0
-	}
-	for z, id := range guidedZoneIDs(params) {
-		if strings.EqualFold(z, zone) {
-			return id
-		}
-	}
-	return 0
-}
-
-func guidedZoneRegionID(params map[string]any, zone string) uint32 {
-	zone = strings.TrimSpace(zone)
-	if zone == "" {
-		return 0
-	}
-	for z, id := range guidedZoneRegionIDs(params) {
-		if strings.EqualFold(z, zone) {
-			return id
-		}
-	}
-	return 0
-}
-
 func syncGuidedZoneMeta(wfCtx *Context, zone string) {
 	if wfCtx == nil || strings.TrimSpace(zone) == "" {
 		return
 	}
-	// Resolve through the one entry: on a snapshot the pod flag is the record's; on
-	// the nil path it is the legacy map. An unresolvable zone (unavailable snapshot,
-	// or a zone the catalog does not carry) writes nothing.
+	// The pod flag is the snapshot record's. An unresolvable zone (unavailable
+	// snapshot, or a zone the catalog does not carry) writes nothing.
 	entry, err := workflowZoneEntry(wfCtx, zone)
 	if err != nil {
 		return
 	}
 	wfCtx.Params["ZoneIsPod"] = entry.Placement.IsPod
 	wfCtx.Params["IsPodZone"] = entry.Placement.IsPod
-}
-
-func guidedZoneIsPod(params map[string]any, zone string) (bool, bool) {
-	zone = strings.TrimSpace(zone)
-	if zone == "" {
-		return false, false
-	}
-	switch m := params["ZoneIsPods"].(type) {
-	case map[string]bool:
-		for z, isPod := range m {
-			if strings.EqualFold(z, zone) {
-				return isPod, true
-			}
-		}
-	case map[string]any:
-		for z, raw := range m {
-			if !strings.EqualFold(z, zone) {
-				continue
-			}
-			if b, ok := parseBoolAny(raw); ok {
-				return b, true
-			}
-		}
-	case map[string]string:
-		for z, raw := range m {
-			if !strings.EqualFold(z, zone) {
-				continue
-			}
-			if b, ok := parseBoolAny(raw); ok {
-				return b, true
-			}
-		}
-	}
-	return false, false
 }
 
 func parseUint32Any(v any) (uint32, bool) {
@@ -3353,19 +3209,6 @@ func parseUint32Any(v any) (uint32, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func parseBoolAny(v any) (bool, bool) {
-	switch x := v.(type) {
-	case bool:
-		return x, true
-	case string:
-		b, err := strconv.ParseBool(strings.TrimSpace(x))
-		if err == nil {
-			return b, true
-		}
-	}
-	return false, false
 }
 
 func anyFloat(v any) float64 {
@@ -4123,15 +3966,6 @@ func zoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, current st
 	return opts
 }
 
-// zoneOptionLabel renders a zone for the form: "华北一C" when the display name
-// is known, else the bare zone id. The raw zone id stays in Option.Value/Meta.
-func zoneOptionLabel(describes map[string]string, zone string) string {
-	if d := describes[zone]; d != "" {
-		return d
-	}
-	return zone
-}
-
 // zoneDisplayLabel is the display-lenient view of workflowZoneEntry: it shows the
 // zone's console name, degrading to the bare zone id on any resolution failure
 // (an option a form should not have offered — see the Entry gate). It never
@@ -4141,26 +3975,6 @@ func zoneDisplayLabel(wfCtx *Context, zone string) string {
 		return entry.DisplayName
 	}
 	return zone
-}
-
-func zoneDescribeMapFromParams(params map[string]any) map[string]string {
-	raw, ok := params["ZoneDescribes"]
-	if !ok || raw == nil {
-		return nil
-	}
-	if m, ok := raw.(map[string]string); ok {
-		return m
-	}
-	if m, ok := raw.(map[string]any); ok {
-		out := make(map[string]string, len(m))
-		for k, v := range m {
-			if s, ok := v.(string); ok && strings.TrimSpace(k) != "" && strings.TrimSpace(s) != "" {
-				out[k] = s
-			}
-		}
-		return out
-	}
-	return nil
 }
 
 // imageFormOptions returns the currently selected image id plus up to

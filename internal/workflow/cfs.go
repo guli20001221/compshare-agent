@@ -18,9 +18,8 @@ const (
 func CreateCFSDef() *Definition {
 	return &Definition{
 		Name:        "CreateCFSWorkflow",
-		Description: "查询支持区 -> 查询 CFS 价格 -> 确认创建 -> 创建 CFS -> 回查 CFS",
+		Description: "查询 CFS 价格 -> 确认创建 -> 创建 CFS -> 回查 CFS",
 		Steps: []Step{
-			stepQuerySupportZonesForCreateCFS(),
 			stepQueryCreateCFSPrice(),
 			stepConfirmCreateCFS(),
 			stepCreateCFS(),
@@ -58,33 +57,6 @@ func ResizeCFSDef() *Definition {
 				"current_size_gb": wfCtx.Params["CurrentCFSSize"],
 				"target_size_gb":  wfCtx.Params["Size"],
 			}
-		},
-	}
-}
-
-func stepQuerySupportZonesForCreateCFS() Step {
-	return Step{
-		Name: "查询支持区",
-		Type: StepToolCall,
-		Tool: "DescribeCompShareSupportZone",
-		SkipIf: func(wfCtx *Context) (bool, error) {
-			// The turn's zone catalog snapshot is authoritative: when it is present
-			// resolveCreateCFSZone resolves the Pod-zone placement from it, so this
-			// second support-zone query is redundant. Skip it. The nil-snapshot path
-			// (unmigrated direct workflow-engine tests) still runs the query. The step
-			// is removed entirely in S6.
-			return wfCtx.ZoneCatalog() != nil, nil
-		},
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			args := map[string]any{}
-			addWorkflowIdentityArgs(args, wfCtx.Runtime)
-			return args, nil
-		},
-		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
-			if !hasSupportZoneEntries(result) {
-				return CheckFailed("未获取到支持区列表，无法安全创建 CFS。请稍后重试或到控制台确认可用区。")
-			}
-			return CheckPassed()
 		},
 	}
 }
@@ -343,107 +315,29 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 }
 
 func resolveCreateCFSZone(wfCtx *Context, requested string) (isPod bool, zoneID uint32, azGroup uint32, region string, zone string, err error) {
-	// Snapshot path: the turn's single zone catalog is authoritative — CFS no longer
-	// runs a second support-zone query and re-parse. It keeps its own Pod-only and
-	// internal-id checks on the record the snapshot returns.
-	if wfCtx.ZoneCatalog() != nil {
-		placement, perr := workflowZonePlacement(wfCtx, requested)
-		if perr != nil {
-			return false, 0, 0, "", "", perr
-		}
-		if !placement.IsPod {
-			return false, 0, 0, "", "", fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", requested)
-		}
-		if placement.ZoneID == 0 {
-			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部编号，无法安全创建 CFS。", placement.Zone)
-		}
-		if placement.AzGroup == 0 {
-			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", placement.Zone)
-		}
-		if strings.TrimSpace(placement.Region) == "" {
-			// Fail closed: a record the catalog carries but with no Region must NOT
-			// be back-filled by a zone-string guess (regionFromZone) — that reintroduces
-			// the split-source Region the snapshot exists to end.
-			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的地域，无法安全创建 CFS。", placement.Zone)
-		}
-		return true, placement.ZoneID, placement.AzGroup, placement.Region, placement.Zone, nil
+	// The turn's single zone catalog snapshot is authoritative: CFS resolves its
+	// Pod-zone placement from it (no second support-zone query), keeping its own
+	// Pod-only and internal-id checks on the record the snapshot returns.
+	placement, err := workflowZonePlacement(wfCtx, requested)
+	if err != nil {
+		return false, 0, 0, "", "", err
 	}
-	// Nil-snapshot fallback: the re-queried support-zone step result (unmigrated
-	// direct workflow-engine tests). Removed with the redundant query step in S6.
-	if placement, ok := createCFSSupportZonePlacement(wfCtx.Result("查询支持区"), requested); ok {
-		if !placement.isPod {
-			return false, 0, 0, "", "", fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", requested)
-		}
-		if placement.zoneID == 0 {
-			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部编号，无法安全创建 CFS。", placement.zone)
-		}
-		if placement.azGroup == 0 {
-			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", placement.zone)
-		}
-		return true, placement.zoneID, placement.azGroup, placement.region, placement.zone, nil
+	if !placement.IsPod {
+		return false, 0, 0, "", "", fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", requested)
 	}
-	if hasSupportZoneEntries(wfCtx.Result("查询支持区")) {
-		return false, 0, 0, "", "", fmt.Errorf("未在支持区中找到可用区 %s。请从上游返回的 Pod/容器可用区中选择。", requested)
+	if placement.ZoneID == 0 {
+		return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部编号，无法安全创建 CFS。", placement.Zone)
 	}
-	return false, 0, 0, "", "", fmt.Errorf("未获取到支持区列表，无法安全创建 CFS。请稍后重试或到控制台确认可用区。")
-}
-
-type createCFSZonePlacement struct {
-	zone    string
-	region  string
-	zoneID  uint32
-	azGroup uint32
-	isPod   bool
-}
-
-func createCFSSupportZonePlacement(result map[string]any, requested string) (createCFSZonePlacement, bool) {
-	requested = strings.TrimSpace(requested)
-	if requested == "" {
-		return createCFSZonePlacement{}, false
+	if placement.AzGroup == 0 {
+		return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", placement.Zone)
 	}
-	raw, _ := result["ZoneInfo"].([]any)
-	for _, item := range raw {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		entryZone := strings.TrimSpace(stringFieldAny(entry["Zone"]))
-		describe := strings.TrimSpace(stringFieldAny(entry["Describe"]))
-		if requested != entryZone && requested != describe {
-			continue
-		}
-		placement := createCFSZonePlacement{
-			zone:   entryZone,
-			region: strings.TrimSpace(stringFieldAny(entry["Region"])),
-			isPod:  boolFieldAny(entry["IsPod"]),
-		}
-		if id, ok := parseUint32Any(entry["ZoneId"]); ok {
-			placement.zoneID = id
-		}
-		if id, ok := parseUint32Any(entry["RegionId"]); ok {
-			placement.azGroup = id
-		}
-		return placement, true
+	if strings.TrimSpace(placement.Region) == "" {
+		// Fail closed: a record the catalog carries but with no Region must NOT be
+		// back-filled by a zone-string guess (regionFromZone) — that reintroduces the
+		// split-source Region the snapshot exists to end.
+		return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的地域，无法安全创建 CFS。", placement.Zone)
 	}
-	return createCFSZonePlacement{}, false
-}
-
-func hasSupportZoneEntries(result map[string]any) bool {
-	raw, _ := result["ZoneInfo"].([]any)
-	return len(raw) > 0
-}
-
-func boolFieldAny(v any) bool {
-	switch typed := v.(type) {
-	case bool:
-		return typed
-	case string:
-		switch strings.ToLower(strings.TrimSpace(typed)) {
-		case "true", "1", "yes", "y":
-			return true
-		}
-	}
-	return false
+	return true, placement.ZoneID, placement.AzGroup, placement.Region, placement.Zone, nil
 }
 
 // addWorkflowIdentityArgs forwards server-injected identity (org ids) from the

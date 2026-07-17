@@ -140,6 +140,7 @@ func formMockExecutor() *mockExecutor {
 func formWfCtx(t *testing.T, params map[string]any) *Context {
 	t.Helper()
 	wfCtx := NewContext(params)
+	wfCtx.referenceData.ZoneCatalog = createZoneCatalog()
 	wfCtx.StepResults["查询镜像"] = formImagesFixture()
 	wfCtx.StepResults["查询可用配比"] = formCatalogFixture()
 	wfCtx.StepResults["查询价格"] = map[string]any{"PriceDetails": []any{
@@ -243,7 +244,9 @@ func TestBuildCreateConfirmForm_ZoneOptionsUseDisplayNames(t *testing.T) {
 func TestBuildCreateConfirmForm_ZoneLabelsFallBackToIdWithoutDescribes(t *testing.T) {
 	// No ZoneDescribes (manual/CLI path or catalog unavailable) → labels are the
 	// bare zone ids, byte-identical to the pre-change behavior.
-	form, err := buildCreateConfirmForm(formWfCtx(t, map[string]any{"GpuType": "4090"}))
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
+	wfCtx.referenceData.ZoneCatalog = noDescribeZoneCatalog("cn-wlcb-01", "cn-sh2-02")
+	form, err := buildCreateConfirmForm(wfCtx)
 	require.NoError(t, err)
 	zone := fieldByKey(t, form, "Zone")
 	assert.Equal(t, "cn-wlcb-01", zone.Options[0].Label)
@@ -440,7 +443,7 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 		}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	assert.Equal(t, []int{1, 2, 3, 4, 5, 6}, seenSteps)
@@ -476,16 +479,10 @@ func TestCreateInstanceGuided_PassesZoneIDToCreatePathAPIs(t *testing.T) {
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"GpuType": "4090",
 		"Zone":    "cn-sh2-02",
-		"ZoneIds": map[string]uint32{
-			"cn-sh2-02": 9001,
-		},
-		"ZoneIsPods": map[string]bool{
-			"cn-sh2-02": false,
-		},
-	})
+	}, withNormalZone("cn-sh2-02", "cn-sh2", 9001))
 
 	require.NoError(t, err)
 	require.True(t, result.Success)
@@ -523,7 +520,7 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"GpuType":           "A800",
 		"GuidedGpuLocked":   true,
 		"Zone":              "cn-wlcb-01",
@@ -583,7 +580,7 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 		return ConfirmResolution{Confirmed: false}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"ImageSource":       "community",
 		"ImageName":         "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
 		"CompShareImageId":  "cimg-ltx",
@@ -657,7 +654,7 @@ func TestCreateInstanceGuided_CommunityPurposeRequiresConcreteImageSelectionBefo
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"GpuType":          "4090",
 		"GuidedGpuLocked":  true,
 		"Zone":             "cn-wlcb-01",
@@ -727,7 +724,7 @@ func TestCreateInstanceGuided_InitialCommunitySourceRequiresConcreteImageSelecti
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"ImageSource":      "community",
 		"GpuType":          "4090",
 		"GuidedGpuLocked":  true,
@@ -793,7 +790,7 @@ func TestCreateInstanceGuided_CommunityImageSelectionFeedsCapacityCheck(t *testi
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"GpuType":          "4090",
 		"GuidedGpuLocked":  true,
 		"Zone":             "cn-wlcb-01",
@@ -879,6 +876,12 @@ func TestCreateInstanceGuided_SelectedPlatformImageIsValidatedBeforeCapacity(t *
 				params[key] = value
 			}
 			wfCtx := formWfCtx(t, params)
+			if tt.params["ZoneIsPod"] == true {
+				// IsPod now comes from the catalog record, not the ZoneIsPod param:
+				// this case needs cn-wlcb-01 to BE a Pod zone (with az_group) so it
+				// reaches the container-image check rather than an earlier refusal.
+				wfCtx.referenceData.ZoneCatalog = podZoneCatalog("cn-wlcb-01", "cn-wlcb", 5001, 3001)
+			}
 			wfCtx.StepResults["查询可用配比"] = formSingle4090CatalogFixture()
 			wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{tt.image}}
 
@@ -903,6 +906,7 @@ func TestCreateInstanceGuided_GPUCardSnapshotZeroShowsPendingNotDisabled(t *test
 			"cn-sh2-02":  2,
 		},
 	})
+	wfCtx.referenceData.ZoneCatalog = inventoryZoneCatalog()
 	wfCtx.StepResults["查询GPU库存"] = map[string]any{"GpuInventory": map[string]any{
 		"Exclusive": map[string]any{
 			"1": map[string]any{"4090": float64(0), "4090_48G": float64(1)},
@@ -1068,7 +1072,7 @@ func TestCreateInstanceGuided_CommunityPurposeQueriesCommunityImages(t *testing.
 		}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Equal(t, []string{"cimg-sd-001", "cimg-ds-r1-32b"}, finalImageOptions)
@@ -1114,7 +1118,7 @@ func TestCreateInstanceGuided_CommunityPurposeOverridesInitialPlatformSource(t *
 		}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "platform",
 	})
@@ -1209,6 +1213,7 @@ func TestCreateInstanceGuided_ZoneCardSnapshotZeroShowsPendingNotDisabled(t *tes
 			"cn-sh2-02":  2,
 		},
 	})
+	wfCtx.referenceData.ZoneCatalog = inventoryZoneCatalog()
 	wfCtx.StepResults["查询GPU库存"] = map[string]any{"GpuInventory": map[string]any{
 		"Exclusive": map[string]any{
 			"1": map[string]any{"4090": float64(0)},
@@ -1239,6 +1244,7 @@ func TestApplyGuidedZoneOverridesRefreshesPodState(t *testing.T) {
 			"cn-pod-01":  true,
 		},
 	})
+	wfCtx.referenceData.ZoneCatalog = podZoneCatalog("cn-pod-01", "cn-pod", 7001, 3007)
 
 	require.NoError(t, applyGuidedZoneOverrides(wfCtx, map[string]string{"Zone": "cn-pod-01"}))
 
@@ -1271,7 +1277,7 @@ func TestCreateInstanceGuided_UserLockedZoneSnapshotZeroCanStillCreateWhenCapaci
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"GpuType":          "4090",
 		"Zone":             "cn-wlcb-01",
 		"GuidedZoneLocked": true,
@@ -1302,6 +1308,7 @@ func TestCreateInstanceGuided_GPUCountCardUsesReadableStockCopy(t *testing.T) {
 		"Zone":    "cn-sh2-02",
 		"ZoneIds": map[string]uint32{"cn-sh2-02": 2},
 	})
+	wfCtx.referenceData.ZoneCatalog = inventoryZoneCatalog()
 	wfCtx.StepResults["查询可用配比"] = map[string]any{"AvailableInstanceTypes": []any{
 		map[string]any{"Name": "4090_48G", "Zone": "cn-sh2-02", "Status": "Normal",
 			"MachineSizes": []any{
@@ -1413,7 +1420,7 @@ func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T
 		}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	assert.Equal(t, 2, finalRounds, "final image edit must refresh the final confirm card")
@@ -1458,7 +1465,7 @@ func TestCreateInstance_FormEditRevalidatesAndReconfirms(t *testing.T) {
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Len(t, rounds, 2, "an edit must trigger a second confirm round")
@@ -1492,7 +1499,7 @@ func TestCreateInstance_FormDenyCancels(t *testing.T) {
 	eng.SetConfirmEditsFn(func(string, map[string]any, *ConfirmForm) ConfirmResolution {
 		return ConfirmResolution{Confirmed: false}
 	})
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Equal(t, "用户取消了操作", result.Message)
@@ -1515,7 +1522,7 @@ func TestCreateInstance_FormEditCapStopsLoop(t *testing.T) {
 		}
 		return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"GpuType": next}}
 	})
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Contains(t, result.Message, "修改次数过多")
@@ -1564,7 +1571,7 @@ func TestCreateInstance_FormEditSoldOutFailsGrounded(t *testing.T) {
 		confirms++
 		return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"GpuType": "A800"}}
 	})
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Equal(t, "检查库存", result.StoppedAt)
@@ -1589,7 +1596,7 @@ func TestConfirmEditsFn_WithoutBuildForm_UsesBooleanGate(t *testing.T) {
 		Name: "confirm", Type: StepConfirm,
 		BuildArgs: func(*Context) (map[string]any, error) { return map[string]any{}, nil },
 	}}}
-	result, err := eng.Run(context.Background(), def, nil)
+	result, err := eng.runCreateTest(def, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.True(t, boolCalled, "legacy boolean confirm must be used")

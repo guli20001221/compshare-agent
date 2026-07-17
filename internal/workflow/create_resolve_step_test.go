@@ -218,7 +218,7 @@ func TestCapacityAndPriceAskAboutTheDraftedZone(t *testing.T) {
 	executor := draftMockExecutor("cn-sh2-02")
 	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
 
@@ -243,7 +243,7 @@ func TestPriceIsNotHandedTheCreateOnlyDraftFields(t *testing.T) {
 	executor := draftMockExecutor("cn-sh2-02")
 	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
 
-	_, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
+	_, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
 		"GpuType": "4090", "Name": "my-gpu-server",
 	})
 	require.NoError(t, err)
@@ -271,9 +271,7 @@ func TestPriceIsNotHandedTheCreateOnlyDraftFields(t *testing.T) {
 func TestPodZoneCapacityAndPurchaseFlattenPlacementDifferently(t *testing.T) {
 	wfCtx := draftContext("cn-newpod-03")
 	wfCtx.Params["Zone"] = "cn-newpod-03"
-	wfCtx.Params["ZoneIds"] = map[string]uint32{"cn-newpod-03": 9103}
-	wfCtx.Params["ZoneRegionIds"] = map[string]uint32{"cn-newpod-03": 3103}
-	wfCtx.Params["ZoneIsPods"] = map[string]bool{"cn-newpod-03": true}
+	wfCtx.referenceData.ZoneCatalog = podZoneCatalog("cn-newpod-03", "cn-newpod", 9103, 3103)
 	// A pod zone only takes container images.
 	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-001", "Name": "PyTorch", "Container": true},
@@ -308,13 +306,11 @@ func TestCreateInstance_PodZoneWithoutAzGroupRefusedAtDraft(t *testing.T) {
 	executor := createMockExecutor()
 	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
 		"GpuType": "4090",
 		"Zone":    "cn-newpod-03",
-		"ZoneIds": map[string]uint32{"cn-newpod-03": 9103},
-		// ZoneRegionIds deliberately absent → AzGroup == 0.
-		"ZoneIsPods": map[string]bool{"cn-newpod-03": true},
-	})
+		// az_group deliberately absent from the catalog record → AzGroup == 0.
+	}, withPodZone("cn-newpod-03", "cn-newpod", 9103, 0))
 
 	require.NoError(t, err)
 	assert.False(t, result.Success)
@@ -356,7 +352,7 @@ func TestFormEditRerunsFromTheDraftInDefinitionOrder(t *testing.T) {
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
 
@@ -420,7 +416,7 @@ func TestFormEditDiscardsTheOldCandidateDraft(t *testing.T) {
 		return ConfirmResolution{Confirmed: true}
 	})
 
-	result, err := eng.Run(context.Background(), def, map[string]any{})
+	result, err := eng.runCreateTest(def, map[string]any{})
 
 	require.NoError(t, err)
 	require.True(t, result.Success)
@@ -466,7 +462,7 @@ func TestRevalidateFromUnknownStepFailsLoudly(t *testing.T) {
 		return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"x": "y"}}
 	})
 
-	result, err := eng.Run(context.Background(), def, map[string]any{})
+	result, err := eng.runCreateTest(def, map[string]any{})
 
 	require.NoError(t, err)
 	assert.False(t, result.Success, "an unresolvable re-run boundary must stop the workflow")

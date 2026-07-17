@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,7 +80,7 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -121,7 +120,7 @@ func TestCreateInstance_DescribeFailureDoesNotHideCreatedInstance(t *testing.T) 
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, nil)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -140,7 +139,7 @@ func TestCreateInstance_ConfirmDenied(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -163,7 +162,7 @@ func TestCreateInstance_Defaults(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 		// No Zone, ChargeType, Gpu, Cpu, Memory — all should use defaults
 	})
@@ -227,7 +226,7 @@ func TestCreateInstance_PlatformImageSkipsOfflineCandidate(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, nil)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":   "4090",
 		"ImageName": "PyTorch",
 	})
@@ -264,7 +263,7 @@ func TestCreateInstance_PlatformImageAllOfflineBlockedBeforeCapacity(t *testing.
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, nil)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":   "4090",
 		"ImageName": "PyTorch",
 	})
@@ -295,7 +294,7 @@ func TestCreateInstance_DynamicInputNormalizesToPostpay(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":    "4090",
 		"ChargeType": "Dynamic",
 	})
@@ -327,13 +326,13 @@ func TestCreateInstance_UserOverrides(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":    "A100",
 		"Zone":       "cn-bj2-04",
 		"Gpu":        float64(2),
 		"ChargeType": "Month",
 		"Name":       "my-gpu-server",
-	})
+	}, withNormalZone("cn-bj2-04", "cn-bj2", 6004))
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -374,7 +373,7 @@ func TestCreateInstance_CapacityCheckFails(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, nil, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -426,7 +425,7 @@ func TestCreateInstance_CommunityImage_HappyPath(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "community",
 		"ImageName":   "stable diffusion",
@@ -474,7 +473,7 @@ func TestCreateInstance_CommunityImage_ConfirmShowsImageName(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "community",
 		"ImageName":   "stable diffusion",
@@ -502,7 +501,7 @@ func TestCreateInstance_CommunityImage_NoName_Rejected(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, nil, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "community",
 		// ImageName deliberately omitted
@@ -529,7 +528,7 @@ func TestCreateInstance_ConfirmArgsContainSummary(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -658,7 +657,7 @@ func TestCreateInstance_PlatformImage_DefaultQueryDoesNotForceSystem(t *testing.
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 	assert.NoError(t, err)
@@ -683,7 +682,7 @@ func TestCreateInstance_PlatformImage_WithImageName_UsesNameFilter(t *testing.T)
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":   "4090",
 		"ImageName": "PyTorch",
 	})
@@ -707,7 +706,7 @@ func TestCreateInstance_PlatformImage_WithImageIDUsesExactFilter(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":          "4090",
 		"ImageName":        "PyTorch",
 		"CompShareImageId": "img-exact",
@@ -846,7 +845,7 @@ func TestCreateInstance_CapacityCheck_WrongGpuCount_Rejected(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, nil, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 		"Gpu":     float64(2),
 	})
@@ -871,7 +870,7 @@ func TestCreateInstance_CapacityCheck_SpecNotInList_Rejected(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, nil, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -1035,7 +1034,7 @@ func TestCreateInstance_NonDefaultZone_ThreadsZoneToCreate(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{"GpuType": "2080Ti"})
+	result, err := eng.runCreateTest(def, map[string]any{"GpuType": "2080Ti"})
 	assert.NoError(t, err)
 	assert.True(t, result.Success, "2080Ti in a non-default zone must create successfully")
 
@@ -1072,13 +1071,10 @@ func TestCreateInstance_PodZoneUsesDynamicZoneIDAndAzGroup(t *testing.T) {
 	confirmFn := func(action string, args map[string]any) bool { return true }
 
 	eng := NewEngine(executor, confirmFn, nil)
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
-		"GpuType":       "4090",
-		"Zone":          "cn-newpod-03",
-		"ZoneIds":       map[string]uint32{"cn-newpod-03": 9103},
-		"ZoneRegionIds": map[string]uint32{"cn-newpod-03": 3103},
-		"ZoneIsPods":    map[string]bool{"cn-newpod-03": true},
-	})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-newpod-03",
+	}, withPodZone("cn-newpod-03", "cn-newpod", 9103, 3103))
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -1118,13 +1114,10 @@ func TestCreateInstance_NormalZoneCapacityKeepsZoneAndRegion(t *testing.T) {
 	confirmFn := func(action string, args map[string]any) bool { return true }
 
 	eng := NewEngine(executor, confirmFn, nil)
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
-		"GpuType":       "4090",
-		"Zone":          "cn-sh2-02",
-		"ZoneIds":       map[string]uint32{"cn-sh2-02": 2002},
-		"ZoneRegionIds": map[string]uint32{"cn-sh2-02": 3002},
-		"ZoneIsPods":    map[string]bool{"cn-sh2-02": false},
-	})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-sh2-02",
+	}, withNormalZone("cn-sh2-02", "cn-sh2", 2002))
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -1143,14 +1136,11 @@ func TestCreateInstance_PodZoneRejectsSpotBeforeCapacity(t *testing.T) {
 	executor := createMockExecutor()
 	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
-		"GpuType":       "4090",
-		"Zone":          "cn-newpod-03",
-		"ChargeType":    "Spot",
-		"ZoneIds":       map[string]uint32{"cn-newpod-03": 9103},
-		"ZoneRegionIds": map[string]uint32{"cn-newpod-03": 3103},
-		"ZoneIsPods":    map[string]bool{"cn-newpod-03": true},
-	})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType":    "4090",
+		"Zone":       "cn-newpod-03",
+		"ChargeType": "Spot",
+	}, withPodZone("cn-newpod-03", "cn-newpod", 9103, 3103))
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -1176,7 +1166,7 @@ func TestCreateInstance_UnsupportedImageBlocksBeforeCapacity(t *testing.T) {
 	}}
 	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -1269,7 +1259,7 @@ func TestCreateInstance_MultiCandidate_DefaultsToFirst_WorkflowProceeds(t *testi
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -1301,7 +1291,7 @@ func TestCreateInstance_ExplicitCpuMemory_OverridesDefault(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 		"Cpu":     float64(16),
 		"Memory":  float64(94 * 1024),
@@ -1335,7 +1325,7 @@ func TestCreateInstance_SingleCandidate_ConfirmShowsSpec(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 

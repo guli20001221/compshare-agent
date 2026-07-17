@@ -35,7 +35,7 @@ func TestAPlainCreateRecordsTheZoneItResolved(t *testing.T) {
 	executor := shortageExecutor("cn-sh2-02")
 	eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.False(t, result.Success)
 	require.Contains(t, result.Message, "库存不足")
@@ -70,7 +70,7 @@ func TestAGuidedCreateDoesNotCallASelectionCardAContract(t *testing.T) {
 	executor := shortageExecutor("cn-sh2-02")
 	eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.False(t, result.Success)
 	require.Contains(t, result.Message, "库存不足")
@@ -114,13 +114,10 @@ func TestTheFailureRecordSeparatesTheRequestFromTheDecision(t *testing.T) {
 	}}
 	eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
-		"GpuType":       "4090",
-		"Zone":          "cn-sh2-02",
-		"ZoneIsPods":    map[string]any{"cn-sh2-02": true},
-		"ZoneIds":       map[string]any{"cn-sh2-02": float64(2002)},
-		"ZoneRegionIds": map[string]any{"cn-sh2-02": float64(3002)},
-	})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-sh2-02",
+	}, withPodZone("cn-sh2-02", "cn-sh2", 2002, 3002))
 	require.NoError(t, err)
 	require.False(t, result.Success)
 	require.NotNil(t, result.Failure)
@@ -144,7 +141,7 @@ func TestTheFailureRecordDoesNotAliasTheRequest(t *testing.T) {
 	executor := shortageExecutor("cn-sh2-02")
 	eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.NotNil(t, result.Failure)
 
@@ -177,7 +174,7 @@ func TestOnlyTheSoldOutBranchClassifiesTheFailure(t *testing.T) {
 		executor := shortageExecutor("cn-sh2-02") // ResourceEnough:false for the matched spec
 		eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-		result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+		result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 		require.NoError(t, err)
 		require.NotNil(t, result.Failure)
 		assert.Equal(t, ReasonCapacitySoldOut, result.Failure.Reason,
@@ -193,7 +190,7 @@ func TestOnlyTheSoldOutBranchClassifiesTheFailure(t *testing.T) {
 		}}
 		eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-		result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+		result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 		require.NoError(t, err)
 		require.NotNil(t, result.Failure)
 		require.Contains(t, result.Message, "未找到", "premise: this is the not-found branch, not sold-out")
@@ -262,7 +259,7 @@ func TestAFailingFinalGateAuthorisesNothing(t *testing.T) {
 	eng := NewEngine(&mockExecutor{results: map[string]map[string]any{}},
 		func(_ string, _ map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), def, map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(def, map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.False(t, result.Success)
 	require.Equal(t, "确认创建", result.StoppedAt)
@@ -295,7 +292,7 @@ func TestTheFailureDraftDoesNotAliasWhatTheHookReturned(t *testing.T) {
 	eng := NewEngine(&mockExecutor{results: map[string]map[string]any{}},
 		func(_ string, _ map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), def, map[string]any{})
+	result, err := eng.runCreateTest(def, map[string]any{})
 	require.NoError(t, err)
 	require.NotNil(t, result.Failure)
 	require.NotNil(t, result.Failure.Draft)
@@ -333,7 +330,7 @@ func TestASealedFailureSaysSo(t *testing.T) {
 	executor.failOn = "CreateCompShareInstance"
 	eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.False(t, result.Success)
 	require.Equal(t, "创建实例", result.StoppedAt)
@@ -355,7 +352,7 @@ func TestEveryFailureCarriesARecord(t *testing.T) {
 		executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{}}
 		eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-		result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+		result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 		require.NoError(t, err)
 		require.False(t, result.Success)
 		require.NotNil(t, result.Failure, "a resolve failure is a failure")
@@ -369,7 +366,7 @@ func TestEveryFailureCarriesARecord(t *testing.T) {
 		executor := draftMockExecutor("cn-sh2-02")
 		eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return false }, nil)
 
-		result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+		result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 		require.NoError(t, err)
 		require.False(t, result.Success)
 		require.NotNil(t, result.Failure, "a declined confirmation is a failure with a record")
@@ -385,7 +382,7 @@ func TestASuccessfulWorkflowHasNoFailureRecord(t *testing.T) {
 	executor := draftMockExecutor("cn-sh2-02")
 	eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	assert.Nil(t, result.Failure)

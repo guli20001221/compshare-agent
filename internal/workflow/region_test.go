@@ -285,7 +285,7 @@ func TestCreateInstance_NonDefaultZone_PairsRegionWithZone(t *testing.T) {
 	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
 		"GpuType": "4090",
 		"Zone":    "cn-bj2-04",
-	})
+	}, withNormalZone("cn-bj2-04", "cn-bj2", 6004))
 	assert.NoError(t, err)
 	assert.True(t, result.Success, "message=%q", result.Message)
 

@@ -9,80 +9,53 @@ import (
 	"github.com/compshare-agent/internal/deployment"
 )
 
-// TestWorkflowZonePlacement_PrefersSnapshotOverLegacyMaps proves the migration:
-// when the run carries a zone catalog, the placement comes from that single
-// record — NOT from the legacy per-zone maps, which here deliberately disagree.
-func TestWorkflowZonePlacement_PrefersSnapshotOverLegacyMaps(t *testing.T) {
+// TestWorkflowZonePlacement_ResolvesFromSnapshot proves a zone resolves to the
+// single catalog record — ZoneID/Region/AzGroup/IsPod all from one row.
+func TestWorkflowZonePlacement_ResolvesFromSnapshot(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", ZoneID: 6003, AzGroup: 3003, IsPod: true}},
 	})
-	wfCtx := NewContext(map[string]any{
-		"ZoneIds":       map[string]uint32{"cn-bj2-03": 111},
-		"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 222},
-		"ZoneIsPods":    map[string]bool{"cn-bj2-03": false},
-	})
+	wfCtx := NewContext(map[string]any{})
 	wfCtx.referenceData.ZoneCatalog = snap
 
 	got, err := workflowZonePlacement(wfCtx, "cn-bj2-03")
 
 	require.NoError(t, err)
 	assert.Equal(t, deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", ZoneID: 6003, AzGroup: 3003, IsPod: true}, got,
-		"the single catalog record wins over the legacy maps")
+		"the placement is the single catalog record")
 }
 
-// TestWorkflowZonePlacement_FallsBackOnlyWhenNoSnapshot pins the bridge: a run
-// with NO snapshot at all (an unmigrated direct workflow-engine test) still
-// resolves from the maps.
-func TestWorkflowZonePlacement_FallsBackOnlyWhenNoSnapshot(t *testing.T) {
-	wfCtx := NewContext(map[string]any{
-		"ZoneIds":       map[string]uint32{"cn-sh2-02": 2002},
-		"ZoneRegionIds": map[string]uint32{"cn-sh2-02": 3002},
-		"ZoneIsPods":    map[string]bool{"cn-sh2-02": false},
+// TestWorkflowZonePlacement_RequiresAvailableSnapshot pins the post-convergence
+// contract: the snapshot is the sole authority, so a missing (nil), unavailable,
+// or zone-absent snapshot is a hard failure — there is no per-zone map to fall
+// back to, and Available() is nil-safe so a nil snapshot simply refuses.
+func TestWorkflowZonePlacement_RequiresAvailableSnapshot(t *testing.T) {
+	t.Run("nil snapshot refuses", func(t *testing.T) {
+		_, err := workflowZonePlacement(NewContext(map[string]any{}), "cn-bj2-03")
+		require.Error(t, err, "no snapshot attached must refuse, not guess")
 	})
 
-	got, err := workflowZonePlacement(wfCtx, "cn-sh2-02")
-
-	require.NoError(t, err)
-	assert.Equal(t, uint32(2002), got.ZoneID, "without any snapshot the legacy maps still resolve")
-	assert.Equal(t, uint32(3002), got.AzGroup)
-}
-
-// TestWorkflowZonePlacement_PresentSnapshotNeverFallsBackToMaps is the fix for the
-// review finding: a snapshot that is present but cannot answer must FAIL, not
-// read a stale map. Both an unavailable snapshot and an available one missing the
-// zone must error even though the legacy maps carry a (wrong) answer — otherwise a
-// zone the authority rejected re-enters through the map, or a create proceeds on a
-// zero placement.
-func TestWorkflowZonePlacement_PresentSnapshotNeverFallsBackToMaps(t *testing.T) {
-	legacyMaps := map[string]any{
-		"ZoneIds":       map[string]uint32{"cn-bj2-03": 999},
-		"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 888},
-		"ZoneIsPods":    map[string]bool{"cn-bj2-03": true},
-	}
-
-	t.Run("unavailable snapshot fails, does not read the map", func(t *testing.T) {
-		wfCtx := NewContext(legacyMaps)
+	t.Run("unavailable snapshot refuses", func(t *testing.T) {
+		wfCtx := NewContext(map[string]any{})
 		wfCtx.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
-
 		_, err := workflowZonePlacement(wfCtx, "cn-bj2-03")
-		require.Error(t, err, "an unavailable catalog must refuse, not fall back to the map's 999")
+		require.Error(t, err, "an unavailable catalog must refuse")
 	})
 
-	t.Run("available snapshot missing the zone fails, does not read the map", func(t *testing.T) {
-		wfCtx := NewContext(legacyMaps)
+	t.Run("available snapshot missing the zone refuses", func(t *testing.T) {
+		wfCtx := NewContext(map[string]any{})
 		wfCtx.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 			{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", ZoneID: 2002}},
 		})
-
 		_, err := workflowZonePlacement(wfCtx, "cn-bj2-03")
-		require.Error(t, err, "a zone the catalog does not carry must refuse, not fall back to the map's 999")
+		require.Error(t, err, "a zone the catalog does not carry must refuse")
 	})
 }
 
-// TestResolveCreateCFSZone_PrefersSnapshot pins that CFS resolves its Pod-zone
-// placement from the turn snapshot — no second support-zone query — and keeps its
-// own Pod-only guard on the record the snapshot returns.
-func TestResolveCreateCFSZone_PrefersSnapshot(t *testing.T) {
+// TestResolveCreateCFSZone_ResolvesPodZoneFromSnapshot pins that CFS resolves its
+// Pod-zone placement from the turn snapshot (no second support-zone query) and
+// keeps its own Pod-only guard on the record the snapshot returns.
+func TestResolveCreateCFSZone_ResolvesPodZoneFromSnapshot(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-pod-01", Region: "cn-pod", ZoneID: 7001, AzGroup: 3007, IsPod: true}},
 		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", ZoneID: 2002, AzGroup: 3002, IsPod: false}},
@@ -103,62 +76,56 @@ func TestResolveCreateCFSZone_PrefersSnapshot(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestZoneDisplayLabel_PrefersSnapshotAndIsLenient pins that a form label comes
-// from the snapshot record (over a disagreeing legacy map), falls back to the map
-// only with no snapshot, and degrades to the bare zone id on any failure — a label
-// is display-only and must never error.
-func TestZoneDisplayLabel_PrefersSnapshotAndIsLenient(t *testing.T) {
+// TestZoneDisplayLabel_SnapshotLabelOrBareId pins that a form label comes from the
+// snapshot record and degrades to the bare zone id on any resolution failure — a
+// label is display-only and must never error.
+func TestZoneDisplayLabel_SnapshotLabelOrBareId(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03"}, DisplayName: "华北一C"},
 	})
-	present := NewContext(map[string]any{"ZoneDescribes": map[string]string{"cn-bj2-03": "WRONG"}})
+	present := NewContext(map[string]any{})
 	present.referenceData.ZoneCatalog = snap
-	assert.Equal(t, "华北一C", zoneDisplayLabel(present, "cn-bj2-03"), "the snapshot label wins over the legacy map")
-
-	noSnap := NewContext(map[string]any{"ZoneDescribes": map[string]string{"cn-bj2-03": "华北一C"}})
-	assert.Equal(t, "华北一C", zoneDisplayLabel(noSnap, "cn-bj2-03"), "no snapshot → legacy ZoneDescribes")
+	assert.Equal(t, "华北一C", zoneDisplayLabel(present, "cn-bj2-03"), "label from the snapshot record")
 
 	down := NewContext(nil)
 	down.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
 	assert.Equal(t, "cn-bj2-03", zoneDisplayLabel(down, "cn-bj2-03"), "unresolvable → bare id, never an error")
 }
 
-// TestWorkflowZoneIDIndex_PrefersSnapshot pins the inventory id→zone index reads
-// the snapshot, over a disagreeing map, and falls back only with no snapshot.
-func TestWorkflowZoneIDIndex_PrefersSnapshot(t *testing.T) {
+// TestWorkflowZoneIDIndex_FromSnapshot pins the inventory id→zone index is built
+// from the snapshot; an absent snapshot yields an empty index (nil-safe).
+func TestWorkflowZoneIDIndex_FromSnapshot(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", ZoneID: 6003}},
 		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", ZoneID: 2002}},
 	})
-	present := NewContext(map[string]any{"ZoneIds": map[string]uint32{"cn-bj2-03": 999}})
+	present := NewContext(map[string]any{})
 	present.referenceData.ZoneCatalog = snap
 	idx := workflowZoneIDIndex(present)
-	assert.Equal(t, "cn-bj2-03", idx[6003], "id→zone from the snapshot, not the map's 999")
+	assert.Equal(t, "cn-bj2-03", idx[6003])
 	assert.Equal(t, "cn-sh2-02", idx[2002])
 
-	noSnap := NewContext(map[string]any{"ZoneIds": map[string]uint32{"cn-bj2-03": 999}})
-	assert.Equal(t, "cn-bj2-03", workflowZoneIDIndex(noSnap)[999], "no snapshot → legacy map")
+	assert.Empty(t, workflowZoneIDIndex(NewContext(map[string]any{})), "no snapshot → empty index, no map fallback")
 }
 
-// TestNetOptimizerNormalize_ReadsRegionAndAzGroupFromOneRecord pins that the
+// TestNetOptimizerNormalize_RegionAndAzGroupFromOneRecord pins that the
 // net-optimizer takes BOTH Region and az_group from a single placement record,
-// over a disagreeing legacy map and without deriving Region from the zone string.
-func TestNetOptimizerNormalize_ReadsRegionAndAzGroupFromOneRecord(t *testing.T) {
+// without deriving Region from the zone string.
+func TestNetOptimizerNormalize_RegionAndAzGroupFromOneRecord(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", AzGroup: 3001}},
 	})
-	wfCtx := NewContext(map[string]any{"Zone": "cn-bj2-03", "ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
+	wfCtx := NewContext(map[string]any{"Zone": "cn-bj2-03"})
 	wfCtx.referenceData.ZoneCatalog = snap
 
 	require.NoError(t, normalizeNetOptimizerParams(wfCtx))
 	assert.Equal(t, "cn-bj2", wfCtx.Params["Region"], "Region from the catalog record")
-	assert.Equal(t, uint32(3001), wfCtx.Params["NetOptimizerAzGroup"], "az_group from the same record, not the map's 999")
+	assert.Equal(t, uint32(3001), wfCtx.Params["NetOptimizerAzGroup"], "az_group from the same record")
 }
 
-// TestNetOptimizerNormalize_SnapshotRegionNotOverriddenByParam pins the fix: when
-// a snapshot resolves the zone, a contradictory Region param cannot override the
-// record's Region — otherwise the "single source" is only half true (az_group from
-// the record, Region from the param).
+// TestNetOptimizerNormalize_SnapshotRegionNotOverriddenByParam pins that a
+// contradictory Region param cannot override the record's Region — otherwise the
+// "single source" is only half true (az_group from the record, Region from the param).
 func TestNetOptimizerNormalize_SnapshotRegionNotOverriddenByParam(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", AzGroup: 3001}},
@@ -170,34 +137,30 @@ func TestNetOptimizerNormalize_SnapshotRegionNotOverriddenByParam(t *testing.T) 
 	assert.Equal(t, "cn-bj2", wfCtx.Params["Region"], "the catalog record's Region wins; a param cannot override the snapshot")
 }
 
-// TestNetOptimizerNormalize_SnapshotIsAuthoritative pins the tightened bridge for
-// the net-optimizer: a present-but-unanswerable snapshot fails, a nil snapshot
-// falls back to the maps.
-func TestNetOptimizerNormalize_SnapshotIsAuthoritative(t *testing.T) {
+// TestNetOptimizerNormalize_RequiresAvailableSnapshot pins that the net-optimizer
+// refuses on a missing (nil), zone-absent, or unavailable snapshot — no map fallback.
+func TestNetOptimizerNormalize_RequiresAvailableSnapshot(t *testing.T) {
 	present := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", Region: "cn-sh2", AzGroup: 3002}},
 	})
 
-	// No snapshot → legacy map answers (bridge, removed in S6).
-	noSnap := NewContext(map[string]any{"Zone": "cn-bj2-03", "ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
-	require.NoError(t, normalizeNetOptimizerParams(noSnap))
-	assert.Equal(t, uint32(999), noSnap.Params["NetOptimizerAzGroup"])
+	nilSnap := NewContext(map[string]any{"Zone": "cn-bj2-03"})
+	assert.Error(t, normalizeNetOptimizerParams(nilSnap), "no snapshot → refuse")
 
-	// Present but missing the zone → error, never the map's 999.
-	missing := NewContext(map[string]any{"Zone": "cn-bj2-03", "ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
+	missing := NewContext(map[string]any{"Zone": "cn-bj2-03"})
 	missing.referenceData.ZoneCatalog = present
-	assert.Error(t, normalizeNetOptimizerParams(missing))
+	assert.Error(t, normalizeNetOptimizerParams(missing), "zone absent from the catalog → refuse")
 
-	// Present but unavailable → error, never the map's 999.
-	down := NewContext(map[string]any{"Zone": "cn-bj2-03", "ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
+	down := NewContext(map[string]any{"Zone": "cn-bj2-03"})
 	down.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
-	assert.Error(t, normalizeNetOptimizerParams(down))
+	assert.Error(t, normalizeNetOptimizerParams(down), "unavailable catalog → refuse")
 }
 
-// TestAddZoneRegionAndID_RegionAndIDFromOneRecord pins Fix-3 residual #3: the
-// read-probe stamps Region AND zone_id from a SINGLE catalog record, never a
-// snapshot id paired with a zone-string-guessed Region. The record's Region is
-// deliberately unequal to regionFromZone(zone) so a guess is distinguishable.
+// TestAddZoneRegionAndID_RegionAndIDFromOneRecord pins that the read-probe stamps
+// Region AND zone_id from a SINGLE catalog record, never a snapshot id paired with
+// a zone-string-guessed Region. The record's Region is deliberately unequal to
+// regionFromZone(zone) so a guess is distinguishable; a zone the catalog rejects
+// gets neither field.
 func TestAddZoneRegionAndID_RegionAndIDFromOneRecord(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-realbj", ZoneID: 6003}},
@@ -220,20 +183,13 @@ func TestAddZoneRegionAndID_RegionAndIDFromOneRecord(t *testing.T) {
 		assert.False(t, hasRegion, "a zone the catalog rejects must not get a string-guessed Region")
 		assert.False(t, hasID, "nor a zone_id")
 	})
-
-	t.Run("nil snapshot uses the legacy bridge", func(t *testing.T) {
-		wfCtx := NewContext(map[string]any{"ZoneIds": map[string]uint32{"cn-sh2-02": 2002}})
-		args := addZoneRegionAndID(wfCtx, map[string]any{}, "cn-sh2-02")
-		assert.Equal(t, "cn-sh2", args["Region"], "no snapshot → zone-derived Region bridge")
-		assert.Equal(t, uint32(2002), args["zone_id"], "no snapshot → legacy ZoneIds map")
-	})
 }
 
-// TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot pins Fix-3
-// residual #5: on a snapshot, the CFS Region comes ONLY from the catalog record
-// — a contradictory Region param cannot override it, and a record missing Region
-// fails closed instead of being back-filled by regionFromZone. The pod zone id is
-// chosen so regionFromZone(zone) != the record Region, making a guess visible.
+// TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot pins that the CFS
+// Region comes ONLY from the catalog record — a contradictory Region param cannot
+// override it, and a record missing Region fails closed instead of being back-filled
+// by regionFromZone. The pod zone id is chosen so regionFromZone(zone) != the
+// record Region, making a guess visible.
 func TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot(t *testing.T) {
 	pod := deployment.ZonePlacement{Zone: "cn-pod-bj-01", Region: "cn-realpod", ZoneID: 7001, AzGroup: 3007, IsPod: true}
 
@@ -261,38 +217,14 @@ func TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot(t *testing.T) {
 	})
 }
 
-// TestStepQuerySupportZonesForCreateCFS_SkipsWhenSnapshotPresent pins Fix-3
-// residual #4: the second support-zone query is skipped when the authoritative
-// snapshot is present (redundant), and still runs on the nil-snapshot bridge.
-func TestStepQuerySupportZonesForCreateCFS_SkipsWhenSnapshotPresent(t *testing.T) {
-	step := stepQuerySupportZonesForCreateCFS()
-	require.NotNil(t, step.SkipIf, "the step must carry a SkipIf so a present snapshot can skip it")
-
-	withSnap := NewContext(map[string]any{})
-	withSnap.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
-		{Placement: deployment.ZonePlacement{Zone: "cn-pod-01", IsPod: true}},
-	})
-	skip, err := step.SkipIf(withSnap)
-	require.NoError(t, err)
-	assert.True(t, skip, "a present snapshot makes the second support-zone query redundant")
-
-	noSnap := NewContext(map[string]any{})
-	skip, err = step.SkipIf(noSnap)
-	require.NoError(t, err)
-	assert.False(t, skip, "no snapshot → the query still runs (bridge)")
-}
-
-// TestZoneFormOptions_LabelsFromSnapshot pins Fix-3 residual #1: the confirm-card
-// zone selector labels each option from the snapshot record, over a disagreeing
-// legacy ZoneDescribes map, on BOTH the current-zone head and the loop path.
+// TestZoneFormOptions_LabelsFromSnapshot pins the confirm-card zone selector labels
+// each option from the snapshot record, on BOTH the current-zone head and the loop path.
 func TestZoneFormOptions_LabelsFromSnapshot(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03"}, DisplayName: "华北一C"},
 		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02"}, DisplayName: "华东二B"},
 	})
-	wfCtx := NewContext(map[string]any{"ZoneDescribes": map[string]string{
-		"cn-bj2-03": "WRONG-A", "cn-sh2-02": "WRONG-B",
-	}})
+	wfCtx := NewContext(map[string]any{})
 	wfCtx.referenceData.ZoneCatalog = snap
 	catalog := map[string]any{"AvailableInstanceTypes": []any{
 		map[string]any{"Name": "RTX4090", "Zone": "cn-bj2-03", "Status": "Normal"},
@@ -305,6 +237,6 @@ func TestZoneFormOptions_LabelsFromSnapshot(t *testing.T) {
 	for _, o := range opts {
 		labels[o.Value] = o.Label
 	}
-	assert.Equal(t, "华北一C", labels["cn-bj2-03"], "current-zone head label from the snapshot, not ZoneDescribes")
-	assert.Equal(t, "华东二B", labels["cn-sh2-02"], "loop-path label from the snapshot, not ZoneDescribes")
+	assert.Equal(t, "华北一C", labels["cn-bj2-03"], "current-zone head label from the snapshot")
+	assert.Equal(t, "华东二B", labels["cn-sh2-02"], "loop-path label from the snapshot")
 }

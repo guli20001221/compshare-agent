@@ -4,10 +4,27 @@ import (
 	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// soldOutZoneCatalog is the turn's zone catalog for these sold-out create runs: the
+// workflow resolves to cn-sh2-02 (where the fixtures home 4090) and reads its
+// placement from this snapshot, not a per-zone param map (removed in the convergence).
+func soldOutZoneCatalog() workflow.RunOption {
+	return workflow.WithReferenceData(workflow.ReferenceData{ZoneCatalog: deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", Region: "cn-sh2", ZoneID: 8200, IsPod: false}, DisplayName: "上海二B"},
+	})})
+}
+
+// soldOutPodZoneCatalog carries cn-sh2-02 as a Pod zone, for the pod-zone sold-out case.
+func soldOutPodZoneCatalog() workflow.RunOption {
+	return workflow.WithReferenceData(workflow.ReferenceData{ZoneCatalog: deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", Region: "cn-sh2", ZoneID: 2002, AzGroup: 3002, IsPod: true}},
+	})})
+}
 
 // soldOutExecutor answers the create workflow's reads the way the platform does,
 // except that capacity reports the spec sold out. RetCode is 0 throughout: a
@@ -59,7 +76,7 @@ func TestTheSoldOutReplyReadsTheZoneTheWorkflowResolved(t *testing.T) {
 	require.NotContains(t, args, "Zone")
 
 	wfEng := workflow.NewEngine(soldOutExecutor{}, func(_ string, _ map[string]any) bool { return true }, nil)
-	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), args)
+	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), args, soldOutZoneCatalog())
 	require.NoError(t, err)
 	require.False(t, result.Success)
 	require.Contains(t, result.Message, "库存不足", "this must be the sold-out path, not some other failure")
@@ -78,7 +95,7 @@ func TestTheSoldOutReplyReadsTheZoneTheWorkflowResolved(t *testing.T) {
 // and must still say nothing was authorised.
 func TestTheSoldOutReplyDoesNotTrustASelectionCard(t *testing.T) {
 	wfEng := workflow.NewEngine(soldOutExecutor{}, func(_ string, _ map[string]any) bool { return true }, nil)
-	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"}, soldOutZoneCatalog())
 	require.NoError(t, err)
 	require.False(t, result.Success)
 	require.Contains(t, result.Message, "库存不足")
@@ -121,7 +138,7 @@ func TestSoldOutAlternativesStayInTheUsersZone(t *testing.T) {
 
 	// A real record from a real run: 4090 sold out in the zone the workflow chose.
 	wfEng := workflow.NewEngine(soldOutExecutor{}, confirm, nil)
-	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), map[string]any{"GpuType": "4090"}, soldOutZoneCatalog())
 	require.NoError(t, err)
 	require.Contains(t, result.Message, "库存不足")
 
@@ -159,12 +176,9 @@ func TestSoldOutAlternativesStayInTheUsersPodZone(t *testing.T) {
 
 	wfEng := workflow.NewEngine(podSoldOutExecutor{}, confirm, nil)
 	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), map[string]any{
-		"GpuType":       "4090",
-		"Zone":          "cn-sh2-02",
-		"ZoneIsPods":    map[string]any{"cn-sh2-02": true},
-		"ZoneIds":       map[string]any{"cn-sh2-02": float64(2002)},
-		"ZoneRegionIds": map[string]any{"cn-sh2-02": float64(3002)},
-	})
+		"GpuType": "4090",
+		"Zone":    "cn-sh2-02",
+	}, soldOutPodZoneCatalog())
 	require.NoError(t, err)
 	require.Contains(t, result.Message, "库存不足", "must reach the capacity gate, not fail placement first")
 	require.NotNil(t, result.Failure)
@@ -291,7 +305,7 @@ func TestOnlyASoldOutOffersAlternatives(t *testing.T) {
 	// A real record from a real run whose capacity failed "spec not found" — a full
 	// draft (GpuType + Zone both resolved), but no sold-out reason.
 	wfEng := workflow.NewEngine(specNotFoundExecutor{}, confirm, nil)
-	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), map[string]any{"GpuType": "4090"}, soldOutZoneCatalog())
 	require.NoError(t, err)
 	require.Contains(t, result.Message, "未找到", "premise: the not-found branch, not sold-out")
 	require.NotNil(t, result.Failure)
