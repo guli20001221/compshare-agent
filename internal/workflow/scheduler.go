@@ -139,18 +139,18 @@ func stepQueryForScheduler() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "":
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			case "Running":
 				if extractFirstBool(result, "IsSpot") {
-					return false, "抢占式实例不支持定时关机。"
+					return CheckFailed("抢占式实例不支持定时关机。")
 				}
-				return true, ""
+				return CheckPassed()
 			default:
-				return false, fmt.Sprintf("实例当前未运行（状态：%s），无需设置定时关机。", state)
+				return CheckFailed(fmt.Sprintf("实例当前未运行（状态：%s），无需设置定时关机。", state))
 			}
 		},
 	}
@@ -229,14 +229,14 @@ func stepQueryForCancelScheduler() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			if state == "" {
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			}
 			// Any state is allowed — stopped instances may have residual
 			// scheduler tasks that should be cleaned up.
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }

@@ -72,11 +72,11 @@ func stepQuerySupportZonesForCreateCFS() Step {
 			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			if !hasSupportZoneEntries(result) {
-				return false, "未获取到支持区列表，无法安全创建 CFS。请稍后重试或到控制台确认可用区。"
+				return CheckFailed("未获取到支持区列表，无法安全创建 CFS。请稍后重试或到控制台确认可用区。")
 			}
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }
@@ -195,27 +195,27 @@ func stepQueryCFSForResize() Step {
 			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			cfs, ok := firstCFS(result)
 			if !ok {
-				return false, "未找到该 CFS。"
+				return CheckFailed("未找到该 CFS。")
 			}
 			currentSize := cfsNumber(cfs, "Size")
 			if currentSize <= 0 {
-				return false, "未能识别当前 CFS 容量，无法安全扩容。"
+				return CheckFailed("未能识别当前 CFS 容量，无法安全扩容。")
 			}
 			targetSize := paramNum(wfCtx.Params, "Size", 0)
 			if targetSize <= currentSize {
-				return false, fmt.Sprintf("目标容量必须大于当前容量：当前 %.0fGB，目标 %.0fGB。CFS 只支持扩容，不支持缩容或保持不变。", currentSize, targetSize)
+				return CheckFailed(fmt.Sprintf("目标容量必须大于当前容量：当前 %.0fGB，目标 %.0fGB。CFS 只支持扩容，不支持缩容或保持不变。", currentSize, targetSize))
 			}
 			zoneID := cfsNumber(cfs, "ZoneId", "ZoneID")
 			if zoneID <= 0 {
-				return false, "未获取到 CFS 所在可用区编号，无法安全执行扩容。"
+				return CheckFailed("未获取到 CFS 所在可用区编号，无法安全执行扩容。")
 			}
 			wfCtx.Params["CurrentCFSSize"] = currentSize
 			wfCtx.Params["CFSName"] = cfsString(cfs, "Name")
 			wfCtx.Params["CFSZoneId"] = zoneID
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }

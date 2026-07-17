@@ -22,12 +22,15 @@ const (
 
 // Step defines one step in a workflow.
 type Step struct {
-	Name        string
-	Type        StepType
-	Tool        string                      // API action name (for StepToolCall only)
-	ToolFunc    func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
-	BuildArgs   func(wfCtx *Context) (map[string]any, error)
-	CheckResult func(wfCtx *Context, result map[string]any) (bool, string)
+	Name      string
+	Type      StepType
+	Tool      string                      // API action name (for StepToolCall only)
+	ToolFunc  func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
+	BuildArgs func(wfCtx *Context) (map[string]any, error)
+	// CheckResult inspects a SUCCESSFUL upstream response and decides whether the
+	// workflow may continue. Rejecting here is how a workflow says "the call
+	// worked and the answer is no" — the capacity gate's sold-out is the archetype.
+	CheckResult func(wfCtx *Context, result map[string]any) CheckOutcome
 	// Resolve computes this step's result from the Context (StepResolve only); the
 	// result lands in StepResults exactly like a tool step's would.
 	//
@@ -120,6 +123,58 @@ type Definition struct {
 	FailureDraft func(wfCtx *Context) map[string]any
 }
 
+// FailureReason classifies a failure for callers that must DO something different
+// about different failures, rather than merely retell them.
+//
+// It exists because the alternative is reading the prose. isCreateStockShortage
+// tested strings.Contains(message, "库存不足") — so the sentence a user reads was
+// also a control signal, and the two cannot both be free. Rewording the message
+// changed behaviour; translating it would have removed it. The reason is now
+// produced where the branch is actually taken, and the message is free to be a
+// message again.
+//
+// The zero value classifies nothing, which is the right default: a failure with no
+// declared reason must not accidentally match one.
+type FailureReason string
+
+const (
+	// ReasonCapacitySoldOut: the requested spec exists, and upstream says there is
+	// none of it right now. Alternatives are worth offering. This is NOT the same
+	// as a spec that does not exist (a typo, a wrong combination) — those need a
+	// different answer and must not share a reason.
+	ReasonCapacitySoldOut FailureReason = "capacity_sold_out"
+)
+
+// CheckOutcome is a CheckResult's verdict on a successful upstream response.
+//
+// It is a struct rather than (bool, string) so a rejection can carry WHY without
+// the reason having to be recovered from the prose afterwards. The message and the
+// reason are produced together, at the branch that knows both — the alternative
+// was a caller re-deriving the reason by matching text the workflow had already
+// decided.
+type CheckOutcome struct {
+	OK      bool
+	Message string
+	// Reason is optional. Most rejections need only be explained, not classified;
+	// only a caller that must ACT differently needs one, and inventing reasons for
+	// rejections nobody branches on would be inventing a vocabulary.
+	Reason FailureReason
+}
+
+// CheckPassed lets the workflow continue.
+func CheckPassed() CheckOutcome { return CheckOutcome{OK: true} }
+
+// CheckFailed stops the workflow with an explanation and no classification.
+func CheckFailed(message string) CheckOutcome {
+	return CheckOutcome{Message: message}
+}
+
+// CheckFailedBecause stops the workflow with an explanation AND a machine-readable
+// reason, for the failures a caller has to act on.
+func CheckFailedBecause(reason FailureReason, message string) CheckOutcome {
+	return CheckOutcome{Message: message, Reason: reason}
+}
+
 // StepFailure is what the workflow knows about its own failure, recorded where
 // the failure happened.
 //
@@ -136,9 +191,15 @@ type Definition struct {
 // what failed, what it actually sent, what it was working from, and whether any
 // of it was ever approved are four different questions.
 type StepFailure struct {
-	// Step is the step that stopped the workflow. It anchors the other three:
-	// Args and Draft are that step's, not the workflow's.
+	// Step is the step that stopped the workflow. It anchors the others: Args and
+	// Draft are that step's, not the workflow's.
 	Step string
+	// Reason classifies the failure when the step that raised it said what kind it
+	// was. Empty means unclassified, which is most failures — a caller that only
+	// retells a failure needs no vocabulary for it.
+	//
+	// Do not infer one from Message. That is what this replaces.
+	Reason FailureReason
 	// Args are the arguments THAT step actually sent, copied rather than
 	// referenced so the record cannot move afterwards. nil when the step built
 	// none — it failed before BuildArgs, or it calls no tool at all.

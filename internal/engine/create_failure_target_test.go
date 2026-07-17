@@ -267,6 +267,59 @@ func TestWorkflowFinalParamsNeedsAYesNotJustAContract(t *testing.T) {
 	}
 }
 
+// TestOnlyASoldOutOffersAlternatives is the reply-level counterpart to the
+// workflow's reason test: a create failure that is NOT a sold-out must not list
+// alternatives, even when the draft is perfectly readable.
+//
+// This is the case an unclassified check ("any failure lists alternatives") gets
+// wrong. A spec-not-found failure carries a full draft — GPU and zone both present
+// — so the target lookup succeeds; the only thing standing between it and a wrong
+// "try these instead" is that its reason is not capacity_sold_out.
+func TestOnlyASoldOutOffersAlternatives(t *testing.T) {
+	queried := false
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		if action == "DescribeAvailableCompShareInstanceTypes" {
+			queried = true
+			return map[string]any{"AvailableInstanceTypes": []any{gpuOffer("A100", "cn-sh2-02", 80)}}, nil
+		}
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	confirm := func(string, map[string]any) bool { return true }
+	eng := NewWithDeps(&mockLLM{}, executor, confirm)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirm, nil, true)
+
+	// A real record from a real run whose capacity failed "spec not found" — a full
+	// draft (GpuType + Zone both resolved), but no sold-out reason.
+	wfEng := workflow.NewEngine(specNotFoundExecutor{}, confirm, nil)
+	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "未找到", "premise: the not-found branch, not sold-out")
+	require.NotNil(t, result.Failure)
+	require.Empty(t, result.Failure.Reason)
+	gpuType, zone := createFailureTarget(result.Failure)
+	require.NotEmpty(t, gpuType, "premise: the draft is fully readable, so a target exists")
+	require.NotEmpty(t, zone)
+
+	reply := eng.createFailureReplyWithAlternatives(context.Background(), result.Message, result.Err, result.Failure)
+
+	assert.NotContains(t, reply, "当前可创建的其他机型",
+		"a spec that does not exist is a configuration problem, not a shortage — no substitutes")
+	assert.False(t, queried, "and the reply must not even query availability for a non-shortage")
+}
+
+// specNotFoundExecutor is soldOutExecutor whose capacity returns a spec the draft
+// cannot match, so the gate takes its "库存中未找到…的规格组合" branch.
+type specNotFoundExecutor struct{}
+
+func (specNotFoundExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	if action == "CheckCompShareResourceCapacity" {
+		return map[string]any{"Specs": []any{
+			map[string]any{"Gpu": float64(8), "Cpu": float64(128), "Mem": float64(512), "ResourceEnough": true},
+		}}, nil
+	}
+	return soldOutExecutor{}.Execute(ctx, action, args)
+}
+
 // TestNoTargetMeansNoSuggestionAtAll: when the workflow could not say what it was
 // building, the reply explains the failure and stops there.
 //

@@ -44,21 +44,21 @@ func stepQueryForResizeDisk() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			if extractInstanceState(result) == "" {
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			}
 			disk, err := resolveDiskForResize(wfCtx, result)
 			if err != nil {
-				return false, err.Error()
+				return CheckFailed(err.Error())
 			}
 			targetSize := paramNum(wfCtx.Params, "Size", 0)
 			currentSize := diskNumber(disk, "Size", "DiskSpace")
 			if currentSize <= 0 {
-				return false, "未能识别当前磁盘容量，无法安全扩容。"
+				return CheckFailed("未能识别当前磁盘容量，无法安全扩容。")
 			}
 			if targetSize <= currentSize {
-				return false, fmt.Sprintf("目标容量必须大于当前容量：当前 %.0fGB，目标 %.0fGB。扩已有盘只支持扩容，不能缩容或保持不变。", currentSize, targetSize)
+				return CheckFailed(fmt.Sprintf("目标容量必须大于当前容量：当前 %.0fGB，目标 %.0fGB。扩已有盘只支持扩容，不能缩容或保持不变。", currentSize, targetSize))
 			}
 			diskID := diskIDValue(disk)
 			wfCtx.Params["ResolvedDiskId"] = diskID
@@ -66,7 +66,7 @@ func stepQueryForResizeDisk() Step {
 			wfCtx.Params["ResolvedDiskRole"] = diskRole(disk)
 			wfCtx.Params["ResolvedDiskType"] = diskString(disk, "DiskType")
 			wfCtx.Params["CurrentDiskSize"] = currentSize
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }
@@ -100,14 +100,14 @@ func stepCheckResizeDisk() Step {
 			}
 			return args, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			if needRestart, ok := result["NeedRestart"].(bool); ok {
 				wfCtx.Params["NeedRestart"] = needRestart
 			}
 			if diskID, ok := result["DiskId"].(string); ok && diskID != "" {
 				wfCtx.Params["ResolvedDiskId"] = diskID
 			}
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }

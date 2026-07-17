@@ -3852,12 +3852,29 @@ func createWorkflowFailureReply(message string, err error) string {
 }
 
 // isCreateStockShortage reports whether a CreateInstanceWorkflow failure was a
-// real sold-out — the capacity gate's "...当前库存不足（售罄）..." message
-// (create_instance.go). Matches the stable "库存不足" substring, mirroring
-// isDeployStockShortage. The no-match reply already lists real types, so this
-// deliberately targets only the sold-out case.
-func isCreateStockShortage(message string) bool {
-	return strings.Contains(message, "库存不足")
+// real sold-out: the capacity gate said this exact spec exists and upstream has
+// none of it.
+//
+// It asks the workflow, which decided. It used to test
+// strings.Contains(message, "库存不足"), which was wrong in two ways that have
+// nothing to do with whether it happened to work.
+//
+// The sentence a user reads was also a control signal. Rewording it moved
+// behaviour; translating the product would have removed the behaviour outright.
+// Neither the message nor the branch could change alone, and only one of them
+// looks like code.
+//
+// And the match was unanchored: it tested the WHOLE of result.Message, which for a
+// tool-call failure is "步骤「X」执行失败: <upstream error>". Any step's upstream
+// error mentioning 库存不足 in passing would have been read as the capacity gate's
+// verdict and answered with alternatives. This repo has been bitten by exactly
+// that shape before — createImageUnavailable matched "230" as a substring, which
+// any "230" anywhere in the text could trip (see Result.Err's doc).
+//
+// The reason is set on one branch, by the code that took it, and means only what
+// that branch means.
+func isCreateStockShortage(failure *workflow.StepFailure) bool {
+	return failure != nil && failure.Reason == workflow.ReasonCapacitySoldOut
 }
 
 // createFailureReplyWithAlternatives wraps createWorkflowFailureReply. On a real
@@ -3876,7 +3893,7 @@ func isCreateStockShortage(message string) bool {
 // not exist where the user is buying.
 func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message string, err error, failure *workflow.StepFailure) string {
 	reply := createWorkflowFailureReply(message, err)
-	if !isCreateStockShortage(message) {
+	if !isCreateStockShortage(failure) {
 		return reply
 	}
 	gpuType, zone := createFailureTarget(failure)

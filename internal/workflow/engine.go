@@ -320,16 +320,19 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 	wfCtx.StepResults[step.Name] = apiResult
 
 	if step.CheckResult != nil {
-		ok, msg := step.CheckResult(wfCtx, apiResult)
-		if !ok {
-			e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, msg)
-			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
+		outcome := step.CheckResult(wfCtx, apiResult)
+		if !outcome.OK {
+			e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, outcome.Message)
+			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: outcome.Message})
 			if step.Optional {
 				return toolStepSkipped
 			}
 			result.StoppedAt = step.Name
-			result.Message = msg
+			result.Message = outcome.Message
 			recordFailedArgs(result, args)
+			// The reason travels with the rejection that declared it, so a caller
+			// deciding what to DO never has to read the sentence a user reads.
+			recordFailureReason(result, outcome.Reason)
 			return toolStepFailed
 		}
 	}
@@ -351,6 +354,18 @@ func recordFailedArgs(result *Result, args map[string]any) {
 		result.Failure = &StepFailure{}
 	}
 	result.Failure.Args = deepCopyParams(args)
+}
+
+// recordFailureReason carries a CheckResult's classification onto the record. Like
+// the args, only runToolStep sees it; Run completes the rest.
+func recordFailureReason(result *Result, reason FailureReason) {
+	if reason == "" {
+		return
+	}
+	if result.Failure == nil {
+		result.Failure = &StepFailure{}
+	}
+	result.Failure.Reason = reason
 }
 
 // runConfirmStep runs the HITL gate. Returns true to continue the workflow.

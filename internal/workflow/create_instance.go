@@ -443,15 +443,15 @@ func stepCheckCapacity() Step {
 			}
 			return draft.UpstreamCapacityArgs(), nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			specs, _ := result["Specs"].([]any)
 			if len(specs) == 0 {
-				return false, "库存检查未返回任何规格信息，可能当前 GPU 型号不可用。"
+				return CheckFailed("库存检查未返回任何规格信息，可能当前 GPU 型号不可用。")
 			}
 
 			draft, err := candidateCreateDraft(wfCtx)
 			if err != nil {
-				return false, err.Error()
+				return CheckFailed(err.Error())
 			}
 			gpu := draft.Args.GPU
 			cpu := draft.Args.CPU
@@ -470,13 +470,22 @@ func stepCheckCapacity() Step {
 				sMem, _ := spec["Mem"].(float64)
 				if sGpu == gpu && sCpu == cpu && sMem == memGB {
 					if enough, _ := spec["ResourceEnough"].(bool); enough {
-						return true, ""
+						return CheckPassed()
 					}
-					return false, fmt.Sprintf("%s %.0f 卡 / %.0fC / %.0fGB 当前库存不足（售罄），请换一个规格或稍后再试。", gt, gpu, cpu, memGB)
+					// The one rejection a caller acts on: this spec is real and
+					// upstream has none of it right now, so alternatives are worth
+					// offering. The reason is declared HERE, at the branch that knows
+					// it, which is what frees the sentence below to be reworded or
+					// translated without changing what the engine does.
+					return CheckFailedBecause(ReasonCapacitySoldOut,
+						fmt.Sprintf("%s %.0f 卡 / %.0fC / %.0fGB 当前库存不足（售罄），请换一个规格或稍后再试。", gt, gpu, cpu, memGB))
 				}
 			}
 
-			return false, fmt.Sprintf("库存中未找到 %s %.0f 卡 / %.0fC / %.0fGB 的规格组合，请确认配置是否正确。", gt, gpu, cpu, memGB)
+			// Deliberately NOT capacity_sold_out: this combination does not exist at
+			// all. Offering "other cards in this zone" answers a question the user
+			// did not ask — they need their configuration corrected, not substituted.
+			return CheckFailed(fmt.Sprintf("库存中未找到 %s %.0f 卡 / %.0fC / %.0fGB 的规格组合，请确认配置是否正确。", gt, gpu, cpu, memGB))
 		},
 	}
 }

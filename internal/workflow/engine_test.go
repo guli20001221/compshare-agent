@@ -363,11 +363,11 @@ func TestEngine_Run_CheckResultStops(t *testing.T) {
 				BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 					return map[string]any{}, nil
 				},
-				CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+				CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 					if result["Price"] == 0 {
-						return false, "价格为零，无法继续"
+						return CheckFailed("价格为零，无法继续")
 					}
-					return true, ""
+					return CheckPassed()
 				},
 			},
 			{

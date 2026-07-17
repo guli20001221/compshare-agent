@@ -163,6 +163,45 @@ func TestTheFailureRecordDoesNotAliasTheRequest(t *testing.T) {
 		"the record must not share structure with the map handed to the executor")
 }
 
+// TestOnlyTheSoldOutBranchClassifiesTheFailure pins that the reason is set on the
+// one capacity rejection that means it, and on no other.
+//
+// The capacity gate rejects three ways: the spec is sold out, the spec does not
+// exist in the returned combinations, and the response is empty. Only the first is
+// capacity_sold_out — the other two are a user who needs their configuration
+// corrected, not substituted, and classifying them the same would offer
+// alternatives to a question nobody asked. The old substring on "库存不足" happened
+// to separate them; a reason declared per-branch is why it still does.
+func TestOnlyTheSoldOutBranchClassifiesTheFailure(t *testing.T) {
+	t.Run("sold out -> classified", func(t *testing.T) {
+		executor := shortageExecutor("cn-sh2-02") // ResourceEnough:false for the matched spec
+		eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
+
+		result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+		require.NoError(t, err)
+		require.NotNil(t, result.Failure)
+		assert.Equal(t, ReasonCapacitySoldOut, result.Failure.Reason,
+			"a matched spec upstream has no stock is the one branch alternatives answer")
+	})
+
+	t.Run("spec not found -> NOT classified", func(t *testing.T) {
+		executor := draftMockExecutor("cn-sh2-02")
+		// A spec the draft will not match: the gate takes its "not found" branch,
+		// which is a configuration problem, not a shortage.
+		executor.results["CheckCompShareResourceCapacity"] = map[string]any{"Specs": []any{
+			map[string]any{"Gpu": float64(8), "Cpu": float64(128), "Mem": float64(512), "ResourceEnough": true},
+		}}
+		eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
+
+		result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+		require.NoError(t, err)
+		require.NotNil(t, result.Failure)
+		require.Contains(t, result.Message, "未找到", "premise: this is the not-found branch, not sold-out")
+		assert.Empty(t, result.Failure.Reason,
+			"a spec that does not exist is not a shortage — offering substitutes would answer the wrong question")
+	})
+}
+
 // TestACancelledWorkflowStillDescribesItsFailure closes the hole that made the
 // record optional.
 //

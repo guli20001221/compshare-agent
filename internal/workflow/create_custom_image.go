@@ -30,21 +30,21 @@ func stepQuerySourceInstanceForCustomImage() Step {
 				"UHostIds": []any{uHostId},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "Running", "Stopped":
 				if _, _, ok := sourceCustomImagePlacement(result); !ok {
-					return false, "源实例缺少可用区或地域信息，无法安全创建自制镜像。"
+					return CheckFailed("源实例缺少可用区或地域信息，无法安全创建自制镜像。")
 				}
 				if sourceCustomImageRequiresRunning(result) && state != "Running" {
-					return false, "容器来源实例创建自制镜像需要先开机，请启动实例后再创建。"
+					return CheckFailed("容器来源实例创建自制镜像需要先开机，请启动实例后再创建。")
 				}
-				return true, ""
+				return CheckPassed()
 			case "":
-				return false, "未找到源实例，无法创建自制镜像。"
+				return CheckFailed("未找到源实例，无法创建自制镜像。")
 			default:
-				return false, fmt.Sprintf("源实例当前状态为 %s，暂不能创建自制镜像。", state)
+				return CheckFailed(fmt.Sprintf("源实例当前状态为 %s，暂不能创建自制镜像。", state))
 			}
 		},
 	}
@@ -107,11 +107,11 @@ func stepCreateCustomImage() Step {
 			}
 			return args, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			if customImageID(result) == "" {
-				return false, "创建自制镜像未返回 CompShareImageId。"
+				return CheckFailed("创建自制镜像未返回 CompShareImageId。")
 			}
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }

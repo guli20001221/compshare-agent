@@ -37,19 +37,19 @@ func stepQueryForDisk() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			uhostID, _ := wfCtx.Params["UHostId"].(string)
 			if uhostID != "" && !narrowInstanceResultToUHostID(result, uhostID) {
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			}
 			state := extractInstanceState(result)
 			if state == "" {
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			}
 			if isPodInstanceResult(result) {
-				return false, "Pod 实例不支持普通新建数据盘。可改用系统盘扩容，或使用平台支持的共享存储能力。"
+				return CheckFailed("Pod 实例不支持普通新建数据盘。可改用系统盘扩容，或使用平台支持的共享存储能力。")
 			}
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }

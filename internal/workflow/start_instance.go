@@ -46,22 +46,22 @@ func stepQueryForStart() Step {
 			}
 			return args, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":
 				if startWithoutGPURequested(wfCtx) {
 					return validateWithoutGPUStart(result)
 				}
-				return true, ""
+				return CheckPassed()
 			case "":
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			case "Running":
-				return false, "实例当前已处于运行状态，无需重复开机。"
+				return CheckFailed("实例当前已处于运行状态，无需重复开机。")
 			case "Starting":
-				return false, "实例正在启动中，请稍等。"
+				return CheckFailed("实例正在启动中，请稍等。")
 			default:
-				return false, fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以开机。", state)
+				return CheckFailed(fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以开机。", state))
 			}
 		},
 	}
@@ -128,19 +128,19 @@ func startWithoutGPURequested(wfCtx *Context) bool {
 	}
 }
 
-func validateWithoutGPUStart(result map[string]any) (bool, string) {
+func validateWithoutGPUStart(result map[string]any) CheckOutcome {
 	if !extractFirstBool(result, "SupportWithoutGpuStart") {
 		chargeType := extractField(result, "ChargeType")
 		if chargeType != "" && chargeType != "Dynamic" && chargeType != "Postpay" {
-			return false, "该实例当前计费形态不支持无卡开机。"
+			return CheckFailed("该实例当前计费形态不支持无卡开机。")
 		}
 		gpuType := extractField(result, "GpuType")
 		if gpuType != "" {
-			return false, fmt.Sprintf("该实例当前 GPU 型号 %s 不支持无卡开机。", gpuType)
+			return CheckFailed(fmt.Sprintf("该实例当前 GPU 型号 %s 不支持无卡开机。", gpuType))
 		}
-		return false, "该实例不支持无卡开机。"
+		return CheckFailed("该实例不支持无卡开机。")
 	}
-	return true, ""
+	return CheckPassed()
 }
 
 func extractFirstBool(result map[string]any, key string) bool {

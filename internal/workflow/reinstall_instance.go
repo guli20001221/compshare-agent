@@ -34,19 +34,19 @@ func stepQueryForReinstall() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":
-				return true, ""
+				return CheckPassed()
 			case "":
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			case "Running":
-				return false, "实例当前正在运行，重装系统需要先关机。"
+				return CheckFailed("实例当前正在运行，重装系统需要先关机。")
 			case "Stopping":
-				return false, "实例正在关机中，请稍后再试。"
+				return CheckFailed("实例正在关机中，请稍后再试。")
 			default:
-				return false, fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以重装。", state)
+				return CheckFailed(fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以重装。", state))
 			}
 		},
 	}

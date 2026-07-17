@@ -35,22 +35,22 @@ func stepQueryForResize() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":
 				if !resizeHasEffectiveSpecChange(wfCtx.Params, result) {
-					return false, "目标配置与当前配置一致，无需变配。"
+					return CheckFailed("目标配置与当前配置一致，无需变配。")
 				}
-				return true, ""
+				return CheckPassed()
 			case "":
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			case "Running":
-				return false, "实例当前正在运行，变配需要先关机。"
+				return CheckFailed("实例当前正在运行，变配需要先关机。")
 			case "Stopping":
-				return false, "实例正在关机中，请稍后再试。"
+				return CheckFailed("实例正在关机中，请稍后再试。")
 			default:
-				return false, fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以变配。", state)
+				return CheckFailed(fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以变配。", state))
 			}
 		},
 	}
@@ -76,9 +76,8 @@ func stepQueryResizeAvailableSpecs() Step {
 			}
 			return args, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
-			ok, msg := validateResizeTargetSpec(wfCtx, result)
-			return ok, msg
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
+			return validateResizeTargetSpec(wfCtx, result)
 		},
 	}
 }
@@ -116,34 +115,34 @@ func resizeHasEffectiveSpecChange(params map[string]any, result map[string]any) 
 	return false
 }
 
-func validateResizeTargetSpec(wfCtx *Context, catalog map[string]any) (bool, string) {
+func validateResizeTargetSpec(wfCtx *Context, catalog map[string]any) CheckOutcome {
 	queried := wfCtx.Result("查询实例")
 	host := firstUHost(queried)
 	if host == nil {
-		return false, "未找到该实例。"
+		return CheckFailed("未找到该实例。")
 	}
 	gpuType, _ := host["GpuType"].(string)
 	if gpuType == "" {
-		return false, "未获取到实例 GPU 型号，无法确认合法变配规格。"
+		return CheckFailed("未获取到实例 GPU 型号，无法确认合法变配规格。")
 	}
 	zone, _ := host["Zone"].(string)
 	targetGPU := resizeTargetNumber(wfCtx.Params, host, "Gpu", "GPU")
 	targetCPU := resizeTargetNumber(wfCtx.Params, host, "Cpu", "CPU")
 	targetMemory := resizeTargetNumber(wfCtx.Params, host, "Memory", "Memory")
 	if targetGPU == 0 || targetCPU == 0 || targetMemory == 0 {
-		return false, "未获取到完整的目标 CPU/GPU/内存配置，无法确认合法变配规格。"
+		return CheckFailed("未获取到完整的目标 CPU/GPU/内存配置，无法确认合法变配规格。")
 	}
 	candidates := listSpecCandidates(catalog, gpuType, targetGPU, zone)
 	if len(candidates) == 0 {
-		return false, fmt.Sprintf("未找到 %s × %.0f 卡的合法变配规格，请稍后重试或到控制台确认。", gpuType, targetGPU)
+		return CheckFailed(fmt.Sprintf("未找到 %s × %.0f 卡的合法变配规格，请稍后重试或到控制台确认。", gpuType, targetGPU))
 	}
 	for _, candidate := range candidates {
 		if candidate.CPU == targetCPU && candidate.MemoryMB == targetMemory {
-			return true, ""
+			return CheckPassed()
 		}
 	}
-	return false, fmt.Sprintf("%s × %.0f 卡不支持 %.0fC/%.0fGB 的变配目标。合法选项：%s",
-		gpuType, targetGPU, targetCPU, targetMemory/1024, formatCandidates(candidates))
+	return CheckFailed(fmt.Sprintf("%s × %.0f 卡不支持 %.0fC/%.0fGB 的变配目标。合法选项：%s",
+		gpuType, targetGPU, targetCPU, targetMemory/1024, formatCandidates(candidates)))
 }
 
 func resizeTargetNumber(params map[string]any, host map[string]any, paramKey, hostKey string) float64 {

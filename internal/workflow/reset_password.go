@@ -38,10 +38,10 @@ func stepQueryForReset() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			if state == "" {
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			}
 			instanceType := extractInstanceType(result)
 
@@ -49,19 +49,19 @@ func stepQueryForReset() Step {
 				// Live-verified 2026-07-10: Pod (Container) reset only succeeds
 				// while Running; Stopped returns upstream RetCode 8433.
 				if state == "Running" {
-					return true, ""
+					return CheckPassed()
 				}
-				return false, "容器实例需要先开机才能重置密码。请先执行开机操作。"
+				return CheckFailed("容器实例需要先开机才能重置密码。请先执行开机操作。")
 			}
 
 			// Non-container (VM): only Stopped
 			if state == "Stopped" {
-				return true, ""
+				return CheckPassed()
 			}
 			if state == "Running" {
-				return false, "普通主机需要先关机才能重置密码。请先执行关机操作。"
+				return CheckFailed("普通主机需要先关机才能重置密码。请先执行关机操作。")
 			}
-			return false, "实例当前状态为「" + state + "」，不支持重置密码。"
+			return CheckFailed("实例当前状态为「" + state + "」，不支持重置密码。")
 		},
 	}
 }
