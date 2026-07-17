@@ -970,21 +970,102 @@ func stepConfirmCreateGuided() Step {
 	}
 }
 
-func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
-	gpu, cpu, memMB, zone, err := resolveTargetSpec(wfCtx)
+// createDraftKey is where the materialized execution draft — the FINAL
+// CreateCompShareInstance argument map — lives inside Context.Params.
+//
+// It is deliberately separate from the user's request params (GpuType / Cpu /
+// Memory / Zone). Those record what the user ASKED for and must keep their exact
+// shape across confirm-form edits: to resolveTargetSpec an ABSENT Cpu means
+// "platform default" while a PRESENT one means "must match exactly", so writing a
+// resolved CPU back over Params["Cpu"] would silently change the meaning of the
+// next re-resolve. The draft records what will actually be sent.
+//
+// Living in Params is the whole point: Context.seal hashes Params, so the draft
+// is inside the sealed contract and verifySealedContract catches any post-seal
+// rewrite of it.
+const createDraftKey = "__create_draft"
+
+// materializeCreateDraft resolves every derived create parameter ONCE — zone,
+// CPU/memory, card count, image id, charge type, minimal CPU platform, system
+// disks, placement — and returns the final upstream argument map, also storing it
+// under createDraftKey.
+//
+// This is the "form the CreateExecutionDraft" stage. Before it existed,
+// resolveTargetSpec ran TWICE: once in buildCreateConfirmArgs to render the card,
+// and again inside stepCreateInstance.BuildArgs to build the real API call — with
+// the seal in between, hashing only Params and therefore blind to both. The card
+// and the executed request agreed only because the function was pure and its
+// inputs happened to be frozen after the gate ("查询可用配比" is not in
+// RevalidateSteps). That was an accident of the call graph, not a contract, and
+// it covered Zone, CPU, Memory, GPU count, ImageId, ChargeType, MinimalCpuPlatform,
+// disks and placement alike.
+//
+// Called from the confirm step's BuildArgs, so the draft is materialized on every
+// confirm-form edit round (overrides land in Params, RevalidateSteps re-run, the
+// draft is rebuilt) and the version sealed is the one the user finally approved.
+func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
+	gpu, cpu, mem, zone, err := resolveTargetSpec(wfCtx)
 	if err != nil {
 		return nil, err
 	}
-	zoneLabel := zoneDisplayLabel(wfCtx.Params, zone)
+	imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
+	if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" && imageId == "" {
+		return nil, fmt.Errorf("社区镜像未返回有效的镜像 ID，无法创建实例（请确认社区镜像名称是否正确）")
+	}
+	if imageId == "" {
+		return nil, createImageUnavailableError(wfCtx.Params)
+	}
+	gt, _ := wfCtx.Params["GpuType"].(string)
+	args := map[string]any{
+		"Zone":               zone,
+		"GpuType":            gt,
+		"GPU":                gpu,
+		"CPU":                cpu,
+		"Memory":             mem,
+		"CompShareImageId":   imageId,
+		"ChargeType":         createChargeType(wfCtx.Params),
+		"MachineType":        deployment.MachineTypeGPU,
+		"MinimalCpuPlatform": workflowMinimalCPUPlatform(wfCtx, gt, zone),
+		"LoginMode":          deployment.LoginModeConsole,
+	}
+	if disks := workflowSystemDisks(wfCtx, imageId, zone, gt); len(disks) > 0 {
+		args["Disks"] = disks
+	}
+	if name, ok := wfCtx.Params["Name"]; ok {
+		args["Name"] = name
+	}
+	placement := workflowZonePlacement(wfCtx.Params, zone)
+	// Both validations run HERE, before the card is rendered, so the user is never
+	// asked to approve a combination that cannot execute.
+	if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
+		return nil, err
+	}
+	if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
+		return nil, err
+	}
+	draft := deployment.ApplyPurchasePlacementArgs(args, placement)
+	wfCtx.Params[createDraftKey] = draft
+	return draft, nil
+}
+
+func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
+	draft, err := materializeCreateDraft(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	zone, _ := draft["Zone"].(string)
+	// The card is a projection of the draft plus display-only decoration (price
+	// text, image name, zone label). Every executable value below is read FROM the
+	// draft — never re-derived — so what is shown is what is sealed and executed.
 	return map[string]any{
 		"workflow":   "CreateInstanceWorkflow",
-		"GpuType":    wfCtx.Params["GpuType"],
-		"Gpu":        gpu,
-		"CPU":        cpu,
-		"Memory":     memMB,
+		"GpuType":    draft["GpuType"],
+		"Gpu":        draft["GPU"],
+		"CPU":        draft["CPU"],
+		"Memory":     draft["Memory"],
 		"Zone":       zone,
-		"ZoneLabel":  zoneLabel,
-		"ChargeType": createChargeType(wfCtx.Params),
+		"ZoneLabel":  zoneDisplayLabel(wfCtx.Params, zone),
+		"ChargeType": draft["ChargeType"],
 		"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
 		"price":      confirmPriceText(wfCtx.Result("查询价格"), createChargeType(wfCtx.Params)),
 		// FallbackNote is set by the deploy_model handler when it switched the
@@ -996,52 +1077,36 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	}, nil
 }
 
+// stepCreateInstance executes the sealed draft and nothing else.
+//
+// Its BuildArgs deliberately reads ONE key. It does not call resolveTargetSpec,
+// does not pick an image, does not consult "查询可用配比", and does not fill a
+// default — because every one of those would be a decision made AFTER the user
+// confirmed, outside the contract they approved. The draft was materialized and
+// validated before the card was rendered; by the time this runs the only correct
+// action is to send it verbatim.
 func stepCreateInstance() Step {
 	return Step{
-		Name: "创建实例",
-		Type: StepToolCall,
-		Tool: "CreateCompShareInstance",
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			gpu, cpu, mem, zone, err := resolveTargetSpec(wfCtx)
-			if err != nil {
-				return nil, err
-			}
-			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
-			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" && imageId == "" {
-				return nil, fmt.Errorf("社区镜像未返回有效的镜像 ID，无法创建实例（请确认社区镜像名称是否正确）")
-			}
-			if imageId == "" {
-				return nil, createImageUnavailableError(wfCtx.Params)
-			}
-			gt, _ := wfCtx.Params["GpuType"].(string)
-			args := map[string]any{
-				"Zone":               zone,
-				"GpuType":            gt,
-				"GPU":                gpu,
-				"CPU":                cpu,
-				"Memory":             mem,
-				"CompShareImageId":   imageId,
-				"ChargeType":         createChargeType(wfCtx.Params),
-				"MachineType":        deployment.MachineTypeGPU,
-				"MinimalCpuPlatform": workflowMinimalCPUPlatform(wfCtx, gt, zone),
-				"LoginMode":          deployment.LoginModeConsole,
-			}
-			if disks := workflowSystemDisks(wfCtx, imageId, zone, gt); len(disks) > 0 {
-				args["Disks"] = disks
-			}
-			if name, ok := wfCtx.Params["Name"]; ok {
-				args["Name"] = name
-			}
-			placement := workflowZonePlacement(wfCtx.Params, zone)
-			if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
-				return nil, err
-			}
-			if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
-				return nil, err
-			}
-			return deployment.ApplyPurchasePlacementArgs(args, placement), nil
-		},
+		Name:      "创建实例",
+		Type:      StepToolCall,
+		Tool:      "CreateCompShareInstance",
+		BuildArgs: createArgsFromSealedDraft,
 	}
+}
+
+// createArgsFromSealedDraft returns the confirmed draft as the upstream request.
+//
+// A missing draft is a hard error, never a re-derivation: it would mean this step
+// ran without a preceding confirm gate having materialized one, and silently
+// rebuilding the arguments here is exactly the drift this replaced. Both create
+// definitions place a StepConfirm immediately before this step, so the draft is
+// always present on a real run.
+func createArgsFromSealedDraft(wfCtx *Context) (map[string]any, error) {
+	draft, ok := wfCtx.Params[createDraftKey].(map[string]any)
+	if !ok || len(draft) == 0 {
+		return nil, fmt.Errorf("创建实例缺少已确认的执行合同，拒绝以重新推导的参数创建")
+	}
+	return draft, nil
 }
 
 func stepDescribeInstance() Step {
