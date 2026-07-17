@@ -55,6 +55,30 @@ func TestZoneCatalogSnapshot_UnavailableWhenCatalogDown(t *testing.T) {
 	}
 }
 
+// TestZoneCatalogSnapshot_SuccessfulEmptyCatalogIsAvailable pins the boundary S1
+// defines but S4 blurred: a query that SUCCEEDS with no zones is an available,
+// empty catalog — not a failure. Only "could not obtain it" is unavailable. The
+// difference matters because an unavailable catalog forces a refuse, while an
+// available-but-empty one is a real (if unhelpful) answer.
+func TestZoneCatalogSnapshot_SuccessfulEmptyCatalogIsAvailable(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareSupportZone" {
+			return map[string]any{"ZoneInfo": []any{}}, nil // success, but zero zones
+		}
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
+
+	snap := eng.zoneCatalogSnapshot(zoneUserCtx())
+
+	if !snap.Available() {
+		t.Error("a successful empty support-zone query must be an available (empty) catalog, not unavailable")
+	}
+	if _, ok := snap.Placement("cn-bj2-03"); ok {
+		t.Error("an empty catalog resolves nothing")
+	}
+}
+
 // TestZoneCatalogSnapshotForAction_OnlyZoneWorkflowsFetch pins that a workflow
 // with no zone (e.g. StopInstanceWorkflow) attaches no catalog and pays no read,
 // while the three zone-sensitive creates do.

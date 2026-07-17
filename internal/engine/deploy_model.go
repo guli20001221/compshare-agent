@@ -228,20 +228,27 @@ func (e *Engine) deploymentZonePlacement(ctx context.Context, zone string) deplo
 // structural derivation only when upstream omits it), so ZoneID/Region/AzGroup/
 // IsPod and the display name all come from one row and cannot disagree.
 func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalogSnapshot {
+	// "could not obtain the catalog" is distinct from "obtained an empty catalog":
+	// only the former is unavailable. No executor (CLI, no tenant) or a query error
+	// is a failure — refuse; a successful query is available even when it lists no
+	// zones.
+	if e.externalExecutor == nil {
+		return deployment.NewZoneCatalogSnapshot(false, nil)
+	}
 	list, err := e.supportZoneList(ctx)
-	if err != nil || len(list) == 0 {
+	if err != nil {
 		return deployment.NewZoneCatalogSnapshot(false, nil)
 	}
 	entries := make([]deployment.ZoneCatalogEntry, 0, len(list))
 	for _, z := range list {
-		region := z.Region
-		if region == "" {
-			region = workflow.RegionFromZone(z.Zone)
-		}
+		// Every field comes straight from the catalog row — including Region. A
+		// missing Region is left empty (a consumer that needs it fails explicitly),
+		// never guessed from the zone string: guessing is exactly the interpretation
+		// this convergence removes.
 		entries = append(entries, deployment.ZoneCatalogEntry{
 			Placement: deployment.ZonePlacement{
 				Zone:    z.Zone,
-				Region:  region,
+				Region:  z.Region,
 				ZoneID:  z.ZoneID,
 				AzGroup: z.RegionID,
 				IsPod:   z.IsPod,
