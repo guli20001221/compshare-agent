@@ -170,9 +170,18 @@ func (s CreateConfirmationSnapshot) ToContractMap() map[string]any {
 
 // ParseCreateConfirmationSnapshot decodes the stored confirmation snapshot.
 //
-// A missing price section decodes to a nil EstimatedPrice rather than an error:
-// upstream returning nothing usable is a real outcome (the card then shows no
-// price), and it must not be confused with a corrupted contract.
+// Two different things can be true of a snapshot with no usable price, and they
+// must not decode alike:
+//
+//   - The price section is ABSENT. Legal. Upstream quoted nothing usable, so the
+//     snapshot honestly records no price and the card shows none.
+//   - The price section is PRESENT but incomplete. Corrupt. The only encoder is
+//     ToContractMap, which writes all five keys or writes no section at all, so a
+//     half-written section cannot have come from a real quote — something else
+//     produced it. Decoding it leniently would fill the gaps with zero values and
+//     hand back a record claiming the user was quoted ¥0.00, which is the exact
+//     "absent must never read as free" rule the encoder goes out of its way to
+//     honour. It fails instead.
 func ParseCreateConfirmationSnapshot(m map[string]any) (CreateConfirmationSnapshot, error) {
 	if len(m) == 0 {
 		return CreateConfirmationSnapshot{}, fmt.Errorf("确认快照为空")
@@ -187,24 +196,95 @@ func ParseCreateConfirmationSnapshot(m map[string]any) (CreateConfirmationSnapsh
 	}
 	snapshot := CreateConfirmationSnapshot{Execution: exec}
 
-	rawPrice, ok := m[snapshotKeyPrice].(map[string]any)
-	if !ok {
+	raw, present := m[snapshotKeyPrice]
+	if !present {
 		return snapshot, nil
 	}
-	price := &EstimatedPriceSnapshot{
-		ChargeType:      paramStr(rawPrice, priceKeyChargeType, ""),
-		PayableAmount:   paramNum(rawPrice, priceKeyPayableAmount, 0),
-		DisplayText:     paramStr(rawPrice, priceKeyDisplayText, ""),
-		SourceRequestID: paramStr(rawPrice, priceKeySourceRequestID, ""),
+	rawPrice, ok := raw.(map[string]any)
+	if !ok {
+		return CreateConfirmationSnapshot{}, fmt.Errorf("确认快照的价格记录已损坏：%s 不是一条价格记录", snapshotKeyPrice)
 	}
-	price.Locked, _ = rawPrice[priceKeyLocked].(bool)
-	if raw, present := rawPrice[priceKeyListAmount]; present {
-		if n, ok := priceNumber(raw); ok {
-			price.ListAmount = &n
-		}
+	price, err := parseEstimatedPrice(rawPrice)
+	if err != nil {
+		return CreateConfirmationSnapshot{}, err
 	}
 	snapshot.EstimatedPrice = price
 	return snapshot, nil
+}
+
+// parseEstimatedPrice decodes a present price section, which is all-or-nothing.
+//
+// It checks PRESENCE and TYPE, never value. A payable amount of 0 is a real quote
+// (upstream can price something at zero), Locked is false on every honest record,
+// and SourceRequestID is empty whenever upstream returned no request_uuid — so a
+// rule like "reject an empty/zero field" would reject records the encoder
+// legitimately produces. What cannot legitimately happen is a MISSING or
+// wrong-typed key, because ToContractMap writes all five unconditionally.
+//
+// That is the whole rule: this parser's contract is exactly its encoder's, which
+// is why TestEveryKeyTheEncoderWritesIsRequiredBack derives the cases from
+// ToContractMap's own output rather than from a hand-written list.
+func parseEstimatedPrice(rawPrice map[string]any) (*EstimatedPriceSnapshot, error) {
+	chargeType, ok := rawPrice[priceKeyChargeType].(string)
+	if !ok {
+		return nil, fmt.Errorf("确认快照的价格记录已损坏：缺少 %s", priceKeyChargeType)
+	}
+	payable, ok := priceNumber(rawPrice[priceKeyPayableAmount])
+	if !ok {
+		return nil, fmt.Errorf("确认快照的价格记录已损坏：缺少 %s", priceKeyPayableAmount)
+	}
+	displayText, ok := rawPrice[priceKeyDisplayText].(string)
+	if !ok {
+		return nil, fmt.Errorf("确认快照的价格记录已损坏：缺少 %s", priceKeyDisplayText)
+	}
+	sourceRequestID, ok := rawPrice[priceKeySourceRequestID].(string)
+	if !ok {
+		return nil, fmt.Errorf("确认快照的价格记录已损坏：缺少 %s", priceKeySourceRequestID)
+	}
+	locked, ok := rawPrice[priceKeyLocked].(bool)
+	if !ok {
+		return nil, fmt.Errorf("确认快照的价格记录已损坏：缺少 %s", priceKeyLocked)
+	}
+	price := &EstimatedPriceSnapshot{
+		ChargeType:      chargeType,
+		PayableAmount:   payable,
+		DisplayText:     displayText,
+		SourceRequestID: sourceRequestID,
+		Locked:          locked,
+	}
+	// list_amount is the one optional key, so absence is legal here — but a key
+	// that IS present and unreadable is corruption like any other, not a discount
+	// to quietly drop.
+	if rawList, present := rawPrice[priceKeyListAmount]; present {
+		n, ok := priceNumber(rawList)
+		if !ok {
+			return nil, fmt.Errorf("确认快照的价格记录已损坏：%s 无法解析", priceKeyListAmount)
+		}
+		price.ListAmount = &n
+	}
+	return price, nil
+}
+
+// cloneDiskList returns a disk list that shares no structure with the one given.
+//
+// Disks is the only part of a draft that lives behind a reference. Every other
+// field is a string, a number or a bool, which a plain struct copy already
+// separates — so this one list is the whole of the draft's aliasing surface, and
+// TestDisksAreTheOnlyAliasableFieldOnADraft fails if that ever stops being true.
+//
+// copy() or append() would not be enough: the elements are map[string]any, so
+// copying the slice duplicates the interface headers while leaving every caller
+// pointing at the same inner map. deepCopyValue recurses, which is what makes the
+// copy real; it is the same primitive sealDraft already trusts for this data.
+func cloneDiskList(disks []any) []any {
+	if len(disks) == 0 {
+		return nil
+	}
+	out := make([]any, len(disks))
+	for i, disk := range disks {
+		out[i] = deepCopyValue(disk)
+	}
+	return out
 }
 
 // ToContractMap encodes the draft into the plain JSON-shaped map that Params,
@@ -214,6 +294,11 @@ func ParseCreateConfirmationSnapshot(m map[string]any) (CreateConfirmationSnapsh
 // deepCopyValue would copy shallowly or that paramsDigest could not marshal
 // deterministically. Adding a field here that does not satisfy that is how the
 // seal silently stops meaning anything.
+//
+// The encoding shares no structure with the draft it came from. That is what makes
+// "a fresh map every call" true all the way down rather than one level deep: the
+// map was always fresh, but until the disks were cloned the list inside it was the
+// draft's own, so two encodings of one draft were joined at the disks.
 func (d CreateExecutionDraft) ToContractMap() map[string]any {
 	args := map[string]any{
 		argsKeyZone:               d.Args.Zone,
@@ -230,7 +315,7 @@ func (d CreateExecutionDraft) ToContractMap() map[string]any {
 	// Absent, not empty: an omitted Disks/Name means "platform default" upstream,
 	// which is a different request from one carrying an empty value.
 	if len(d.Args.Disks) > 0 {
-		args[argsKeyDisks] = d.Args.Disks
+		args[argsKeyDisks] = cloneDiskList(d.Args.Disks)
 	}
 	if d.Args.Name != "" {
 		args[argsKeyName] = d.Args.Name
@@ -257,8 +342,16 @@ func (d CreateExecutionDraft) ToContractMap() map[string]any {
 // It is strict about structure and lenient about number types. Structure, because
 // a missing args/image/placement section means the encoding is not a draft and
 // guessing at it would hand the create step something nobody resolved. Number
-// types, because an encoded draft may have been through JSON — a sealed contract
-// can be persisted and rehydrated — and uint32 comes back as float64.
+// types, because an encoded draft may have been through JSON — nothing persists a
+// sealed contract today, but paramsDigest marshals one and the decoder should not
+// be the reason that stays impossible — and uint32 comes back as float64.
+//
+// The decoded draft shares no structure with the map it was decoded from. This is
+// what keeps a request built from a SEALED draft off the sealed record itself:
+// without the disk clone, UpstreamCreateArgs handed the executor the very list
+// inside wfCtx.sealed, and a write through it would have rewritten the frozen
+// record while verifyDigest — which hashes the live Params, not the frozen copy —
+// went on passing. Undetectable, exactly as this type's doc comment warns.
 func ParseCreateExecutionDraft(m map[string]any) (CreateExecutionDraft, error) {
 	if len(m) == 0 {
 		return CreateExecutionDraft{}, fmt.Errorf("执行草稿为空")
@@ -293,7 +386,7 @@ func ParseCreateExecutionDraft(m map[string]any) (CreateExecutionDraft, error) {
 			MachineType:        paramStr(rawArgs, argsKeyMachineType, ""),
 			MinimalCPUPlatform: paramStr(rawArgs, argsKeyMinimalCPUPlatform, ""),
 			LoginMode:          paramStr(rawArgs, argsKeyLoginMode, ""),
-			Disks:              disks,
+			Disks:              cloneDiskList(disks),
 			Name:               paramStr(rawArgs, argsKeyName, ""),
 		},
 		Image: SelectedImage{
@@ -316,6 +409,11 @@ func ParseCreateExecutionDraft(m map[string]any) (CreateExecutionDraft, error) {
 // Every value comes from a decision already recorded on the draft; this only
 // chooses the wire shape, which is why it is safe to run after the seal. It makes
 // no choice of its own — there is no catalog read, no default fill, no lookup.
+//
+// The request shares no structure with the draft, so an executor that normalises
+// or rewrites the args it is handed cannot reach back into the decision. The draft
+// this is called on may itself have been decoded from the sealed contract, which
+// is what makes that a seal-integrity property and not merely tidy.
 func (d CreateExecutionDraft) UpstreamCreateArgs() map[string]any {
 	args := map[string]any{
 		argsKeyZone:               d.Args.Zone,
@@ -330,7 +428,7 @@ func (d CreateExecutionDraft) UpstreamCreateArgs() map[string]any {
 		argsKeyLoginMode:          d.Args.LoginMode,
 	}
 	if len(d.Args.Disks) > 0 {
-		args[argsKeyDisks] = d.Args.Disks
+		args[argsKeyDisks] = cloneDiskList(d.Args.Disks)
 	}
 	if d.Args.Name != "" {
 		args[argsKeyName] = d.Args.Name
@@ -344,13 +442,18 @@ func (d CreateExecutionDraft) UpstreamCreateArgs() map[string]any {
 // and a pod zone flattens placement the other way (Zone/Region/az_group dropped).
 // That is why the draft keeps a structured Placement rather than only a flattened
 // argument map.
+//
+// The disks are cloned before they are handed over, not after: BuildCapacityArgs
+// is shared with the deploy_model saga and assigns whatever slice it is given
+// straight into the request map, so the isolation has to be established on this
+// side of the call rather than asked of a function other callers also rely on.
 func (d CreateExecutionDraft) UpstreamCapacityArgs() map[string]any {
 	args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
 		Zone:               d.Args.Zone,
 		GPUType:            d.Args.GpuType,
 		CompShareImageID:   d.Args.CompShareImageID,
 		ChargeType:         d.Args.ChargeType,
-		Disks:              d.Args.Disks,
+		Disks:              cloneDiskList(d.Args.Disks),
 		MinimalCPUPlatform: d.Args.MinimalCPUPlatform,
 	})
 	return deployment.ApplyCapacityPlacementArgs(args, d.Placement)
@@ -373,7 +476,7 @@ func (d CreateExecutionDraft) UpstreamPriceArgs() map[string]any {
 		argsKeyImageID:    d.Args.CompShareImageID,
 	}
 	if len(d.Args.Disks) > 0 {
-		args[argsKeyDisks] = d.Args.Disks
+		args[argsKeyDisks] = cloneDiskList(d.Args.Disks)
 	}
 	return deployment.ApplyPurchasePlacementArgs(args, d.Placement)
 }

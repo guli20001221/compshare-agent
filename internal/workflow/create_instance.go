@@ -1190,18 +1190,23 @@ func candidateCreateDraft(wfCtx *Context) (CreateExecutionDraft, error) {
 // createDraftKey: reaching Params is what turns a computed candidate into the
 // confirmed contract, so it happens exactly when the user says yes.
 //
-// The copy is deep: Params must not alias StepResults, or a later write to either
-// would diverge the live params from the sealed digest and fail-stop a create the
-// user correctly approved.
+// Params must not alias StepResults, or a later write to either would diverge the
+// live params from the sealed digest and fail-stop a create the user correctly
+// approved.
 func promoteCreateDraft(wfCtx *Context) error {
 	snapshot, err := candidateCreateConfirmation(wfCtx)
 	if err != nil {
 		return err
 	}
-	// The SAME snapshot the card rendered — read once more, not rebuilt. Re-encoded
-	// rather than copied from StepResults: ToContractMap builds a fresh map every
-	// call, so Params cannot alias the candidate and no deep copy is needed to keep
-	// them apart.
+	// The SAME snapshot the card rendered — read once more, not rebuilt. Both the
+	// decode above and the encode below copy the disks, so what lands in Params is
+	// independent of StepResults all the way down.
+	//
+	// This comment used to claim the separation followed from ToContractMap
+	// building a fresh map every call. It does not, and did not: the map was fresh
+	// but the disk list inside it was the candidate's own, so the two were joined
+	// at the one field that lives behind a reference. The codec now copies it; the
+	// freshness of the map was never the thing doing the work.
 	wfCtx.Params[createDraftKey] = snapshot.ToContractMap()
 	return nil
 }
@@ -1223,14 +1228,31 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	// every path today, so nothing was visibly broken — but "the card reads only
 	// the draft" is either structural or it is a habit, and a habit is what the
 	// card/create image split already turned out to be.
+	// No price, no card. A create that reached this gate without a quote used to
+	// render a card with the 价格 row silently missing on the CLI and "price":""
+	// on the wire, and then let the user approve a spend nobody had priced. That
+	// is the one thing docs/workflow-tool-retcode-audit.md refuses: "任何涉及费用
+	// 的操作，要么在确认前展示有效价格，要么在确认前停止" — a rule ResizeInstanceWorkflow
+	// and CFS create already honour through this same message, and which the
+	// create was alone in not honouring.
+	//
+	// Reaching here without a price is narrow: 查询价格 is not Optional, so a
+	// transport error or a non-zero RetCode has already fail-stopped the workflow
+	// upstream of this gate. What is left is a RetCode-0 response quoting nothing
+	// usable for the resolved charge type — which no capture in this repo shows,
+	// and which the live response makes unlikely, since one call returns a row for
+	// every charge type at once (Postpay/Dynamic/Day/Month/Spot — see
+	// eval/real_cli_golden_doubao_lite.md:74-79, the reason this is a no-op on all
+	// four charge types the form offers rather than a new failure mode for three of
+	// them).
+	if snapshot.EstimatedPrice == nil {
+		return nil, fmt.Errorf(missingWorkflowPriceMessage)
+	}
 	// The price the card shows is the snapshot's, verbatim — the same string that
 	// gets sealed. It already carries 预估, because upstream cannot hold a price and
 	// the frontend that renders this frame is not ours to relabel.
-	price, priceNote := "", ""
-	if snapshot.EstimatedPrice != nil {
-		price = snapshot.EstimatedPrice.DisplayText
-		priceNote = createPriceNote
-	}
+	price := snapshot.EstimatedPrice.DisplayText
+	priceNote := createPriceNote
 	return map[string]any{
 		"workflow":   "CreateInstanceWorkflow",
 		"GpuType":    draft.Args.GpuType,
@@ -1242,8 +1264,9 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 		"ChargeType": draft.Args.ChargeType,
 		"image":      draft.Image.Name,
 		"price":      price,
-		// Additive, like FallbackNote: always present, "" when there is no price to
-		// qualify, and skipped by renderers when empty.
+		// Non-empty whenever a card exists at all, now that a priceless create stops
+		// at the gate above. Kept additive (always present) for the renderers, which
+		// still skip it when empty.
 		"PriceNote": priceNote,
 		// FallbackNote is set by the deploy_model handler when it switched the
 		// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
@@ -1305,9 +1328,14 @@ func createArgsFromSealedDraft(wfCtx *Context) (map[string]any, error) {
 	// Only the execution half. The sealed snapshot also records the estimate the
 	// user was shown, which exists for audit and must never reach the API.
 	//
-	// UpstreamCreateArgs builds a fresh map from the parsed values, so the executor
-	// cannot reach into the frozen record the digest is computed over. It chooses
-	// the wire shape and nothing else — every value it uses was sealed.
+	// The executor cannot reach into the frozen record the digest is computed over:
+	// the parse above copies the disks out of the sealed map and UpstreamCreateArgs
+	// copies them again into the request, so the two share nothing. Until those
+	// copies existed this comment was false — the request's disk list WAS the
+	// sealed one, and a write through it would have rewritten the audit record with
+	// verifyDigest none the wiser, since the digest covers the live Params rather
+	// than the frozen copy. It chooses the wire shape and nothing else — every
+	// value it uses was sealed.
 	return snapshot.Execution.UpstreamCreateArgs(), nil
 }
 

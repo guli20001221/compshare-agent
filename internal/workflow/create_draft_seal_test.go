@@ -20,6 +20,11 @@ func draftContext(zone string) *Context {
 	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-001", "Name": "PyTorch"},
 	}}
+	// 查询价格 always runs before the confirm gate in the real definition, so a
+	// context that claims to sit AT that gate has to carry its result. Leaving it
+	// out modelled a state the workflow cannot reach — and now that a priceless
+	// create stops before the card, it would model it as a refusal.
+	wfCtx.StepResults["查询价格"] = livePriceResponse()
 	return wfCtx
 }
 
@@ -202,6 +207,50 @@ func TestTheSealRecordsThePriceTheUserWasShown(t *testing.T) {
 	}
 }
 
+// TestAPricelessCreateStopsBeforeTheCard is the first end-to-end coverage of the
+// no-price path — there was none, on either side of the behaviour.
+//
+// Upstream answers 200 with a body quoting nothing usable. Because 查询价格 is not
+// Optional, only this exact shape gets here: a transport error or a non-zero
+// RetCode has already fail-stopped the workflow. What happened next was the worst
+// available outcome — the card rendered with the 价格 row silently absent (the CLI
+// omits the whole row rather than printing a blank) and the user was invited to
+// approve a spend nobody had priced.
+//
+// docs/workflow-tool-retcode-audit.md:68 already required otherwise, and
+// ResizeInstanceWorkflow and CFS create already complied through this same
+// message; the create was the one exception. It stops now, and it stops BEFORE the
+// gate, which is what makes it a refusal rather than a card the user can say yes
+// to.
+func TestAPricelessCreateStopsBeforeTheCard(t *testing.T) {
+	executor := draftMockExecutor("cn-sh2-02")
+	// RetCode 0, no usable quote for the resolved charge type.
+	executor.results["GetCompShareInstanceUserPrice"] = map[string]any{
+		"PriceDetails": []any{},
+		"RetCode":      float64(0),
+	}
+
+	confirmed := false
+	eng := NewEngine(executor, func(_ string, _ map[string]any) bool {
+		confirmed = true
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	require.NoError(t, err)
+
+	assert.False(t, result.Success)
+	assert.False(t, confirmed, "the user must never be shown a card for a create nobody priced")
+	assert.Equal(t, "确认创建", result.StoppedAt)
+	assert.Contains(t, result.Message, missingWorkflowPriceMessage)
+	assert.Nil(t, result.Contract, "a gate that never opened seals nothing")
+
+	for _, c := range executor.calls {
+		assert.NotEqual(t, "CreateCompShareInstance", c.action,
+			"nothing may be created off a card that was never shown")
+	}
+}
+
 // TestCreateDraftIsNotInParamsBeforeTheGatePasses separates the two facts the
 // draft used to conflate. The resolve step runs BEFORE the confirm gate — on the
 // guided path it runs while an earlier selection card's seal is still live — so
@@ -291,6 +340,64 @@ func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 	sealedArgs := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)[snapshotKeyExecution].(map[string]any)[draftKeyArgs].(map[string]any)
 	assert.Equal(t, "cn-sh2-02", sealedArgs[argsKeyZone],
 		"the executor must not be able to reach into the record the digest is computed over")
+
+	// Writing a KEY, as above, only ever proved the two maps were different maps.
+	// Writing THROUGH the disk list is what proves they share no structure: the
+	// disks are the only part of a draft behind a reference, so they are the only
+	// way a "fresh" map can still be joined to the frozen one.
+	reqDisks, ok := args[argsKeyDisks].([]any)
+	require.True(t, ok, "fixture carries no disks — a disk-aliasing assertion without a disk proves nothing")
+	require.NotEmpty(t, reqDisks)
+	reqDisks[0].(map[string]any)["Size"] = float64(77777)
+	assert.Equal(t, uint32(100), sealedDiskSize(t, wfCtx),
+		"an executor rewriting the request it was handed must not rewrite the sealed record")
+}
+
+// sealedDiskSize reads the boot disk size out of the sealed contract — the frozen
+// record itself, not the live Params the digest is checked against.
+func sealedDiskSize(t *testing.T, wfCtx *Context) any {
+	t.Helper()
+	args := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)[snapshotKeyExecution].(map[string]any)[draftKeyArgs].(map[string]any)
+	disks, ok := args[argsKeyDisks].([]any)
+	require.True(t, ok, "the sealed record carries no disks — this assertion would be vacuous")
+	require.NotEmpty(t, disks)
+	return disks[0].(map[string]any)["Size"]
+}
+
+// TestTheSealedRecordStillHashesToItsOwnDigest is the severe half of the aliasing
+// fix, and it asserts the one thing verifyDigest structurally cannot.
+//
+// verifyDigest hashes the LIVE Params and compares them to the digest stamped at
+// seal time. That catches a rewrite of Params. It cannot catch a rewrite of the
+// FROZEN copy, because neither side of its comparison moves when sealed.
+// BusinessParams is mutated — the digest is a stored string and Params is a
+// different map. So the sealed record would silently stop describing what the user
+// approved while every gate in the system went on passing.
+//
+// That was reachable: createArgsFromSealedDraft decodes the sealed map and hands
+// the result to the executor, and the decoded disk list WAS the sealed one. No
+// executor mutates its args today, so this was latent rather than live — but "the
+// audit record is safe as long as nobody downstream writes to a slice" is not a
+// guarantee, it is a coincidence, and the seal exists to not be a coincidence.
+func TestTheSealedRecordStillHashesToItsOwnDigest(t *testing.T) {
+	wfCtx := draftContext("cn-sh2-02")
+	runToTheGate(t, wfCtx)
+	confirmAndSeal(t, wfCtx)
+
+	args, err := createArgsFromSealedDraft(wfCtx)
+	require.NoError(t, err)
+	disks, ok := args[argsKeyDisks].([]any)
+	require.True(t, ok, "fixture carries no disks — this test would assert nothing")
+	require.NotEmpty(t, disks)
+
+	// Exactly what a normalising executor would do to the args it was handed.
+	disks[0].(map[string]any)["Size"] = float64(99999)
+
+	assert.Equal(t, wfCtx.sealed.Digest, paramsDigest(wfCtx.sealed.BusinessParams),
+		"the frozen record must still hash to the digest stamped over it — a record that "+
+			"disagrees with its own digest proves nothing, and no other gate can notice")
+	assert.True(t, wfCtx.sealed.verifyDigest(wfCtx.Params),
+		"and the live params must still verify: this must not turn into a fail-stop either")
 }
 
 // TestPromotedDraftDoesNotAliasTheCandidate: promote re-encodes, so Params never
@@ -314,6 +421,23 @@ func TestPromotedDraftDoesNotAliasTheCandidate(t *testing.T) {
 	args, err := createArgsFromSealedDraft(wfCtx)
 	require.NoError(t, err)
 	assert.Equal(t, "cn-sh2-02", args["Zone"])
+
+	// The Zone write above replaces a map value, so it only ever showed that the
+	// candidate's args map and the promoted one are different maps — which they
+	// always were. Writing through the disk list is the assertion with teeth: it
+	// reaches the one field that lives behind a reference, and it used to travel
+	// straight into the promoted copy and break the digest, fail-stopping a create
+	// the user had correctly approved.
+	candDisks, ok := candidateArgs[argsKeyDisks].([]any)
+	require.True(t, ok, "fixture carries no disks — a disk-aliasing assertion without a disk proves nothing")
+	require.NotEmpty(t, candDisks)
+	candDisks[0].(map[string]any)["Size"] = float64(99999)
+
+	assert.True(t, wfCtx.sealed.verifyDigest(wfCtx.Params),
+		"rewriting the candidate's DISKS must not disturb the promoted copy either — "+
+			"a shared list here fail-stops a create the user approved")
+	assert.Equal(t, uint32(100), sealedDiskSize(t, wfCtx),
+		"and the sealed record must still carry the disk that was confirmed")
 }
 
 // TestCreateCardNameAndExecutedIDAreOneSelection is the typed-image contract. The

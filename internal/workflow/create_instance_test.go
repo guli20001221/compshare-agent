@@ -10,6 +10,27 @@ import (
 
 // mockInstanceTypes builds a DescribeAvailableCompShareInstanceTypes result
 // for the given GPU type with one size entry per (gpuCount, cpu, memGB) tuple.
+// livePriceDetails is the PriceDetails array a real GetCompShareInstanceUserPrice
+// reply carries, copied from the capture at eval/real_cli_golden_doubao_lite.md:74-79.
+//
+// Two things about it are load-bearing and neither was true of the fixture it
+// replaces. The amount arrives under "Instance"; "Price" appears in no live
+// capture, so a fixture using it exercised only priceAmountFor's fallback — a
+// branch production never reaches. And ONE call quotes EVERY charge type at once,
+// which is what makes the create's exact-charge-type lookup work for 包日/包月/抢占式
+// rather than only for the one that was asked about. A fixture quoting Postpay
+// alone made a Month create look priceless, which is a property of the fixture and
+// not of the platform.
+func livePriceDetails() []any {
+	return []any{
+		map[string]any{"ChargeType": "Postpay", "Instance": 1.58},
+		map[string]any{"ChargeType": "Dynamic", "Instance": 1.58},
+		map[string]any{"ChargeType": "Day", "Instance": 34.9},
+		map[string]any{"ChargeType": "Month", "Instance": 951.85},
+		map[string]any{"ChargeType": "Spot", "Instance": 1.1},
+	}
+}
+
 func mockInstanceTypes(gpuType string, sizes ...struct{ Gpu, Cpu, MemGB float64 }) map[string]any {
 	machineSizes := make([]any, 0, len(sizes))
 	for _, s := range sizes {
@@ -45,10 +66,8 @@ func createMockExecutor() *mockExecutor {
 		"CheckCompShareResourceCapacity": {"Specs": []any{
 			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
 		}},
-		"GetCompShareInstanceUserPrice": {"PriceDetails": []any{
-			map[string]any{"ChargeType": "Postpay", "Price": 1.58},
-		}},
-		"CreateCompShareInstance": {"UHostIds": []any{"uhost-new001"}},
+		"GetCompShareInstanceUserPrice": {"PriceDetails": livePriceDetails()},
+		"CreateCompShareInstance":       {"UHostIds": []any{"uhost-new001"}},
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{"UHostId": "uhost-new001", "State": "Running"},
 		}},
@@ -392,10 +411,8 @@ func communityMockExecutor() *mockExecutor {
 		"CheckCompShareResourceCapacity": {"Specs": []any{
 			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
 		}},
-		"GetCompShareInstanceUserPrice": {"PriceDetails": []any{
-			map[string]any{"ChargeType": "Postpay", "Price": 1.58},
-		}},
-		"CreateCompShareInstance": {"UHostIds": []any{"uhost-new002"}},
+		"GetCompShareInstanceUserPrice": {"PriceDetails": livePriceDetails()},
+		"CreateCompShareInstance":       {"UHostIds": []any{"uhost-new002"}},
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{"UHostId": "uhost-new002", "State": "Running"},
 		}},
@@ -930,6 +947,13 @@ func TestResolveTargetSpec_SingleCandidate_AutoSelect(t *testing.T) {
 
 // zoneTaggedTypes builds a catalog where each entry carries a Zone + Status, as the
 // real (un-MachineTypes-filtered) DescribeAvailableCompShareInstanceTypes returns.
+// zoneTaggedTypes is the zone-aware catalog fixture. It carries a BootDisk for the
+// same reason mockInstanceTypes does: without one, catalogBootDiskType returns ""
+// and ResolveBootDisk returns nil, so every draft built on this fixture carried an
+// empty disk list — and a create with no disk is not a create this platform makes.
+// Every seal and aliasing test in the package is built on this, so the omission
+// made them all disk-blind: the field most able to be shared between the candidate
+// and the seal was the one field they never populated.
 func zoneTaggedTypes(entries ...struct {
 	Name, Zone, Status string
 }) map[string]any {
@@ -942,6 +966,7 @@ func zoneTaggedTypes(entries ...struct {
 					map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
 				},
 			}},
+			"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
 		})
 	}
 	return map[string]any{"AvailableInstanceTypes": types}
