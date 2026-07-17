@@ -134,7 +134,7 @@ func TestFormatToolResult_RealInstancePayloadStaysParseable(t *testing.T) {
 // "UHostSet" and survived intact. The model was told there were thirty instances,
 // shown one or two, and given no signal that anything was missing. Asking a model
 // to account for twenty-eight rows it cannot see is how phantom instances get
-// invented (see COMPSHARE_AGENT_DETERMINISTIC_RENDER's own history).
+// invented.
 //
 // So the count the model reads and the rows the model can read must be
 // reconcilable from the payload alone.

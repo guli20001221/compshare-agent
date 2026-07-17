@@ -236,28 +236,6 @@ func unifiedCreateEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// contextContinuationEnabledFromEnv gates the global LLM-backed context
-// continuation layer. DEFAULT ON: short follow-ups may resume create/deploy
-// frames and mutating workflow tasks, but final execution still goes through
-// workflow validation and confirmation cards. Set =0/off/false to roll back.
-// agentDeterministicRenderEnabledFromEnv gates rendering instance tables from the
-// tool payload instead of asking the model to retype them. Default ON: the
-// substitution is a strict no-op when the model does not emit the placeholder
-// (substituteInstanceTable), so it is never worse than off, and with it off the
-// agent loop invents instance IDs — a fabricated `另一台` row landed in front of a
-// user on 2026-07-13, and a phantom `uhost-…` appeared in the 97-turn replay.
-func agentDeterministicRenderEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_AGENT_DETERMINISTIC_RENDER"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
 const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
 const defaultExternalKnowledgeCorpusPath = "deploy/kb/external_w0.jsonl"
 

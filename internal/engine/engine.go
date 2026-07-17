@@ -263,11 +263,6 @@ type Engine struct {
 	// turn. ToolScope controls whether the tool is available for the active intent.
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
-	// instanceTableThisTurn holds the deterministically rendered instance table for the
-	// current turn, so the {{INSTANCE_TABLE}} placeholder in the model's reply is
-	// substituted with the text WE rendered from the payload — never with anything the
-	// model has retyped. Per-turn; empty when no instance lookup ran.
-	instanceTableThisTurn string
 	// searchKnowledgeCallsThisTurn counts SearchKnowledge invocations this turn so
 	// the ReAct loop can withdraw the tool once it hits maxSearchKnowledgeCallsPerTurn,
 	// bounding the corpus-gap re-search thrash that otherwise exhausts the token
@@ -1184,7 +1179,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.groundingOutcomeThisTurn = "unavailable"
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
-	e.instanceTableThisTurn = ""
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.resolvedKnowledgeQuestionThisTurn = ""
@@ -2552,11 +2546,6 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		// removes the LLM's "guess which subset to show" non-determinism.
 		truncateDescribeResultForReAct(args, result.LLMResult)
 		e.recordPendingSelectionFromDisplayedDescribeResult(result.LLMResult)
-		// Hand the agent the finished table rather than asking it to retype the payload.
-		// Rendered from the ALREADY-TRUNCATED result so the table the model is told to
-		// emit is the same set of instances it can see — a table listing machines the
-		// surrounding data does not contain would be its own kind of lie.
-		e.attachDeterministicInstanceTable(action, result.LLMResult, result.LLMResult)
 	}
 	projected := false
 	if e.reactResultProjectionEnabled {

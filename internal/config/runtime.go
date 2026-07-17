@@ -36,7 +36,6 @@ type FeaturesConfig struct {
 	ReactResultProjection        *bool    `yaml:"react_result_projection"`         // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
 	ReactHistoryCompaction       *bool    `yaml:"react_history_compaction"`        // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
 	UnifiedCreate                *bool    `yaml:"unified_create"`                  // COMPSHARE_UNIFIED_CREATE (default on; false disables)
-	AgentDeterministicRender     *bool    `yaml:"agent_deterministic_render"`      // COMPSHARE_AGENT_DETERMINISTIC_RENDER (default on; false disables)
 	// DEPRECATED (convergence plan P5): the body-driven skill executor mechanism
 	// was removed. These two fields are now INERT — nothing consumes the
 	// USE_SKILL_EXECUTOR / USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS overrides they emit.
@@ -102,7 +101,6 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "USE_REACT_RESULT_PROJECTION", f.ReactResultProjection, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_HISTORY_COMPACTION", f.ReactHistoryCompaction, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_UNIFIED_CREATE", f.UnifiedCreate, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_AGENT_DETERMINISTIC_RENDER", f.AgentDeterministicRender, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE", f.ExternalKnowledge, "1", "0")
 	if len(f.SkillExecutorDiagnosisPilots) > 0 {

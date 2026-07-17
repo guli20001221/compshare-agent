@@ -768,13 +768,6 @@
       "value": "resourcenotenough"
     },
     {
-      "id": "f4130247c0aacc01",
-      "kind": "string_heuristic",
-      "path": "internal/engine/agent_deterministic_render.go",
-      "symbol": "substituteInstanceTable",
-      "callee": "strings.Contains"
-    },
-    {
       "id": "a7588b85fc998908",
       "kind": "string_heuristic",
       "path": "internal/engine/context_assembler.go",

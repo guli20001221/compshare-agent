@@ -59,14 +59,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if domainMatchGuard {
 		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
 	}
-	deterministicRender, unknownDeterministicRender := agentDeterministicRenderEnabledFromEnv(getenv)
-	if unknownDeterministicRender != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_AGENT_DETERMINISTIC_RENDER value %q", unknownDeterministicRender)
-	}
-	engine.SetAgentDeterministicRenderEnabled(deterministicRender)
-	if deterministicRender {
-		log.Printf("runtime: agent-loop deterministic instance rendering enabled (COMPSHARE_AGENT_DETERMINISTIC_RENDER default-on; disable with =0; instance tables are rendered from the payload, not retyped by the model)")
-	}
 	return deps, mutating, nil
 }
 

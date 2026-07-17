@@ -37,9 +37,6 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	if strings.TrimSpace(content) == "" {
 		content = emptyReplyFallbackMessage
 	}
-	if substituted, ok := substituteInstanceTable(content, e.instanceTableThisTurn); ok {
-		content = substituted
-	}
 	return content
 }
 

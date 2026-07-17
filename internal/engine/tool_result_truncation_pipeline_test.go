@@ -3,29 +3,25 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/prompt"
 )
 
-// These gates run the REAL pipeline order from executeTool (engine.go ~4266-4287):
+// These gates run the REAL pipeline order from executeTool (engine.go ~2542):
 //
-//	truncateDescribeResultForReAct   -> caps UHostSet at 10, adds Shown/Truncated
-//	attachDeterministicInstanceTable -> ADDS RenderedInstanceTable + DisplayInstruction
-//	projectToolResultForReAct        -> no-op for this action (not in reactProjectionActions)
-//	prompt.FormatToolResult          -> the cap
+//	truncateDescribeResultForReAct -> caps UHostSet at 10, adds Shown/Truncated
+//	projectToolResultForReAct      -> no-op for this action (not in reactProjectionActions)
+//	prompt.FormatToolResult        -> the cap
 //
-// Testing prompt.FormatToolResult alone would miss the interaction that matters:
-// the deterministic table is a large top-level STRING added immediately before the
-// cap is applied. Under the old byte-cut it survived by accident — Go marshals map
-// keys in sorted order and "RenderedInstanceTable" sorts before "UHostSet", so the
-// cut ate the instance list and left the table whole. That accident is the only
-// reason the user-visible list stayed correct while the model's view was garbage.
-//
-// The new shrink ladder must preserve that protection ON PURPOSE, and its harshest
-// rungs clip long strings — which is exactly what the table is. So: prove the table
-// still survives intact.
+// Testing prompt.FormatToolResult alone would miss the interaction that matters: the
+// cap is applied to a payload that a previous stage has already rewritten, and the
+// counts that stage wrote (Shown / Truncated / TotalCount) must still be reconcilable
+// against the rows that survive the cap. Go marshals map keys in sorted order, so
+// those scalars sort AHEAD of "UHostSet" and survive a cut that eats the rows they
+// describe — the model is then told "10 shown, 30 total" while holding one readable
+// row. Accounting for rows it cannot see is precisely how this repo has produced
+// phantom instances before.
 
 func pipelineInstanceRow(i int) map[string]any {
 	return map[string]any{
@@ -82,9 +78,7 @@ func runRealToolResultPipeline(t *testing.T, n int) string {
 
 	args := map[string]any{} // unpinned: a full-account list, the shape that bites
 
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	truncateDescribeResultForReAct(args, result)
-	eng.attachDeterministicInstanceTable("DescribeCompShareInstance", result, result)
 	if projectToolResultForReAct("DescribeCompShareInstance", result) {
 		t.Fatal("precondition: DescribeCompShareInstance is not in reactProjectionActions, " +
 			"so projection must be a no-op — if this fires, the projection whitelist changed " +
@@ -93,12 +87,11 @@ func runRealToolResultPipeline(t *testing.T, n int) string {
 	return prompt.FormatToolResult(result)
 }
 
-// TestRealPipeline_InstanceListStaysParseableAndHonest is the end-to-end form of the
-// bug: on prod defaults, an unpinned DescribeCompShareInstance inside ReAct.
-func TestRealPipeline_InstanceListStaysParseableAndHonest(t *testing.T) {
-	SetAgentDeterministicRenderEnabled(true) // prod default
-	t.Cleanup(func() { SetAgentDeterministicRenderEnabled(false) })
-
+// TestRealPipeline_InstanceListStaysParseable is the end-to-end form of the bug: an
+// unpinned DescribeCompShareInstance payload, run through the real pipeline order.
+// A payload the model cannot parse at all is the worst outcome — it degrades to
+// guessing about an account it was just shown.
+func TestRealPipeline_InstanceListStaysParseable(t *testing.T) {
 	for _, n := range []int{3, 4, 10, 30} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
 			out := runRealToolResultPipeline(t, n)
@@ -112,42 +105,8 @@ func TestRealPipeline_InstanceListStaysParseableAndHonest(t *testing.T) {
 				t.Fatalf("the model's view of a %d-instance account must be parseable JSON; "+
 					"got %v\nit ends: ...%s", n, err, tail)
 			}
-
-			// The deterministic table is what keeps the USER-visible list correct even
-			// when the model's JSON view is degraded. The shrink ladder must not clip it.
-			table, ok := parsed[renderedInstanceTableKey].(string)
-			if !ok || table == "" {
-				t.Fatalf("n=%d: the rendered instance table must survive the cap — it is the "+
-					"only thing standing between a truncated payload and a fabricated "+
-					"instance list", n)
-			}
-			// HONEST SCOPE NOTE. The presence check above IS a gate: emptying the
-			// shrink ladder sends the payload to oversizeNotice, the table disappears,
-			// and it goes red (verified).
-			//
-			// The clip check below is NOT independently verified — it is a tripwire.
-			// I could not construct a mutation of the ladder that trips it, because on
-			// this action the array shrink always rescues the payload before a scalar
-			// rung is ever reached: truncateDescribeResultForReAct caps UHostSet at 10,
-			// and dropping that list to 2 rows fits under the cap with the table whole.
-			// So on today's shape the assertion is vacuously true. It is kept because a
-			// future ladder edit (or a bulkier table) could make scalar clipping
-			// reachable, and clipping the table is the one change here that would be a
-			// REGRESSION against the old byte-cut — under which the table survived by
-			// the accident of Go's sorted key order putting it ahead of UHostSet.
-			if strings.Contains(table, "此处已截断") {
-				t.Errorf("n=%d: the rendered table was clipped by a scalar rung; the user-visible "+
-					"list is now incomplete, which is a REGRESSION against the old byte-cut", n)
-			}
-			shown := 10
-			if n < shown {
-				shown = n
-			}
-			for i := 1; i <= shown; i++ {
-				id := fmt.Sprintf("uhost-1exampleaa%02d", i)
-				if !strings.Contains(table, id) {
-					t.Errorf("n=%d: instance %s is missing from the rendered table", n, id)
-				}
+			if _, ok := parsed["UHostSet"]; !ok {
+				t.Fatalf("n=%d: UHostSet vanished entirely from the model's view: %s", n, out)
 			}
 		})
 	}
@@ -161,9 +120,6 @@ func TestRealPipeline_InstanceListStaysParseableAndHonest(t *testing.T) {
 // Accounting for rows it cannot see is precisely how this repo has produced phantom
 // instances before.
 func TestRealPipeline_TheModelIsNeverToldACountItCannotReconcile(t *testing.T) {
-	SetAgentDeterministicRenderEnabled(true)
-	t.Cleanup(func() { SetAgentDeterministicRenderEnabled(false) })
-
 	for _, n := range []int{3, 10, 30} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
 			out := runRealToolResultPipeline(t, n)
