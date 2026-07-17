@@ -370,8 +370,16 @@ const (
 // ResourceEnough}). It needs the resolved CompShareImageId (capacity is image-
 // scoped); without one it returns zoneUnknown so the caller falls back to the
 // preferred zone rather than skipping it. Read-only (works in read-only mode too).
-func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID string) zoneStock {
+func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID string, zoneCat *deployment.ZoneCatalogSnapshot) zoneStock {
 	if imageID == "" || gpuType == "" {
+		return zoneUnknown
+	}
+	// The placement comes from the SAME turn snapshot the create used — image
+	// recovery must not re-resolve the zone through a second path. A zone the
+	// snapshot does not carry yields zoneUnknown, so the caller defers to the
+	// preferred zone rather than guessing.
+	placement, ok := zoneCat.Placement(zone)
+	if !ok {
 		return zoneUnknown
 	}
 	capArgs := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
@@ -379,7 +387,7 @@ func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID stri
 		GPUType:          gpuType,
 		CompShareImageID: imageID,
 	})
-	deployment.ApplyCapacityPlacementArgs(capArgs, e.deploymentZonePlacement(ctx, zone))
+	deployment.ApplyCapacityPlacementArgs(capArgs, placement)
 	res := e.querySafeRead(ctx, "CheckCompShareResourceCapacity", capArgs)
 	if res == nil {
 		return zoneUnknown

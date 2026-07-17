@@ -3603,13 +3603,13 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	}
 
 	// Build the turn's zone catalog ONCE and hand it to the run as reference data.
-	// Both the initial run and the image-recovery re-run below share this single
-	// snapshot, so a create fetches the catalog once and the two runs can never see
-	// a different zone list. It is inert until the workflow reads it (S5): today the
-	// old zone-keyed maps injected above still drive resolution.
+	// The initial run, the image-recovery re-run AND recovery's own stock check all
+	// share this single snapshot, so a create fetches the catalog once and no path
+	// can see a different zone list.
+	zoneCat := e.zoneCatalogSnapshotForAction(ctx, action)
 	var wfRunOpts []workflow.RunOption
-	if ref := (workflow.ReferenceData{ZoneCatalog: e.zoneCatalogSnapshotForAction(ctx, action)}); ref.ZoneCatalog != nil {
-		wfRunOpts = append(wfRunOpts, workflow.WithReferenceData(ref))
+	if zoneCat != nil {
+		wfRunOpts = append(wfRunOpts, workflow.WithReferenceData(workflow.ReferenceData{ZoneCatalog: zoneCat}))
 	}
 
 	result, err := wfEngine.Run(ctx, wf, args, wfRunOpts...)
@@ -3632,7 +3632,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// of a cryptic API error. Bounded to a single attempt; only fires on the
 	// 230-image signature, so success / sold-out / balance paths are unchanged.
 	if action == "CreateInstanceWorkflow" && createImageUnavailable(result) && capacityZone != "" {
-		if newID, newName, ok := e.resolveAvailableCreateImage(ctx, args, capacityZone, attemptedImageID); ok {
+		if newID, newName, ok := e.resolveAvailableCreateImage(ctx, args, capacityZone, attemptedImageID, zoneCat); ok {
 			// Build a NEW draft with the substituted image and re-run: the re-run
 			// re-enters the confirmation gate, so the user confirms the available
 			// image (a fresh seal) — never the unavailable one. The image swap is a

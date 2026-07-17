@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 )
@@ -72,7 +73,7 @@ type createImageCand struct {
 // already 230'd and is skipped. This is the engine-side analogue of the
 // deploy_model handler's resolve-in-engine-then-thread pattern, but reactive:
 // it only runs after the saga's own resolution hit the zone-availability wall.
-func (e *Engine) resolveAvailableCreateImage(ctx context.Context, args map[string]any, zone, failedID string) (id, name string, ok bool) {
+func (e *Engine) resolveAvailableCreateImage(ctx context.Context, args map[string]any, zone, failedID string, zoneCat *deployment.ZoneCatalogSnapshot) (id, name string, ok bool) {
 	keyword, _ := args["ImageName"].(string)
 	gpuType, _ := args["GpuType"].(string)
 	if strings.TrimSpace(keyword) == "" || strings.TrimSpace(gpuType) == "" {
@@ -87,7 +88,7 @@ func (e *Engine) resolveAvailableCreateImage(ctx context.Context, args map[strin
 		}
 		// zoneStockState 230s back to zoneUnknown for an image absent from the
 		// zone, so zoneInStock means BOTH "image valid here" AND "has stock".
-		if e.zoneStockState(ctx, zone, gpuType, c.id) == zoneInStock {
+		if e.zoneStockState(ctx, zone, gpuType, c.id, zoneCat) == zoneInStock {
 			return c.id, c.name, true
 		}
 	}
