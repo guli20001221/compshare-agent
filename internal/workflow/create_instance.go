@@ -679,7 +679,20 @@ func createChargeType(params map[string]any) string {
 	return deployment.NormalizeChargeType(paramStr(params, "ChargeType", ""))
 }
 
-func workflowZonePlacement(params map[string]any, zone string) deployment.ZonePlacement {
+// workflowZonePlacement resolves a zone to its full placement. It reads the
+// turn's single zone catalog snapshot (built once by the engine, threaded in as
+// reference data) — one record whose ZoneID/Region/AzGroup/IsPod cannot disagree
+// — and falls back to the legacy per-zone param maps only when the run carries no
+// snapshot (direct workflow-engine tests). Production always has the snapshot;
+// the maps and this fallback are removed together in S6.
+func workflowZonePlacement(wfCtx *Context, zone string) deployment.ZonePlacement {
+	if p, ok := wfCtx.ZoneCatalog().Placement(zone); ok {
+		return p
+	}
+	return legacyZonePlacementFromParams(wfCtx.Params, zone)
+}
+
+func legacyZonePlacementFromParams(params map[string]any, zone string) deployment.ZonePlacement {
 	placement := deployment.ZonePlacement{
 		Zone:    strings.TrimSpace(zone),
 		Region:  regionFromZone(zone),
@@ -1080,7 +1093,7 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 		return nil, createImageUnavailableError(wfCtx.Params)
 	}
 	gt, _ := wfCtx.Params["GpuType"].(string)
-	placement := workflowZonePlacement(wfCtx.Params, zone)
+	placement := workflowZonePlacement(wfCtx, zone)
 	// Both validations run HERE, once, before capacity, price or the card. The
 	// purchase=true form is the strictest (it alone requires AzGroup on a pod
 	// zone), so passing it subsumes the capacity step's weaker purchase=false
@@ -2149,7 +2162,7 @@ var createFormChargeTypes = []ConfirmFormOption{
 func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 	opts := make([]ConfirmFormOption, len(createFormChargeTypes))
 	copy(opts, createFormChargeTypes)
-	placement := workflowZonePlacement(wfCtx.Params, zone)
+	placement := workflowZonePlacement(wfCtx, zone)
 	for i := range opts {
 		if !strings.EqualFold(opts[i].Value, deployment.ChargeTypeSpot) {
 			continue

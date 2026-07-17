@@ -103,6 +103,16 @@ func stepRecheckNetOptimizerStatus() Step {
 	}
 }
 
+// netOptimizerAzGroup reads the zone's internal region id (az_group) from the
+// turn's zone catalog snapshot, falling back to the legacy per-zone param map
+// only when the run carries no snapshot. Removed with the map in S6.
+func netOptimizerAzGroup(wfCtx *Context, zone string) uint32 {
+	if p, ok := wfCtx.ZoneCatalog().Placement(zone); ok {
+		return p.AzGroup
+	}
+	return guidedZoneRegionID(wfCtx.Params, zone)
+}
+
 func normalizeNetOptimizerParams(wfCtx *Context) error {
 	zone := strings.TrimSpace(paramStr(wfCtx.Params, "Zone", ""))
 	if zone == "" {
@@ -115,7 +125,7 @@ func normalizeNetOptimizerParams(wfCtx *Context) error {
 	if region == "" {
 		return fmt.Errorf("无法从可用区推导地域，请同时指定 Region。")
 	}
-	azGroup := guidedZoneRegionID(wfCtx.Params, zone)
+	azGroup := netOptimizerAzGroup(wfCtx, zone)
 	if azGroup == 0 {
 		return fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全开启网络加速。", zone)
 	}
