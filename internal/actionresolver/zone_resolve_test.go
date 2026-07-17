@@ -16,6 +16,29 @@ func twoZoneCatalog() *deployment.ZoneCatalogSnapshot {
 	})
 }
 
+// TestCodecZoneActivatedForZoneWorkflows pins S5c activation: the schema-derived
+// codec for a real "Zone" field is CodecZone (canonicalize against the live
+// catalog), not plain constrained text — and it is exactly the three
+// zone-carrying creates that need the catalog, no lifecycle op. This is the gate
+// that replaces the throwaway blast-radius probe.
+func TestCodecZoneActivatedForZoneWorkflows(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+
+	for _, op := range []string{"CreateInstanceWorkflow", "CreateCFSWorkflow", "EnableNetOptimizerWorkflow"} {
+		spec, ok := catalog.Lookup(op)
+		require.True(t, ok, op)
+		assert.Equal(t, CodecZone, spec.Fields["Zone"].Codec,
+			"%s Zone must route through the live-catalog zone codec, not plain text", op)
+		assert.True(t, SpecNeedsZoneCatalog(spec), "%s must trigger the zone-catalog fetch", op)
+	}
+
+	stop, ok := catalog.Lookup("StopInstanceWorkflow")
+	require.True(t, ok)
+	assert.False(t, SpecNeedsZoneCatalog(stop),
+		"a workflow with no Zone field must not trigger the zone-catalog fetch")
+}
+
 // zoneOnlySpecResolver builds a resolver over a synthetic one-field spec whose
 // Zone is a CodecZone. No shipping spec wires CodecZone until S4, so this is how
 // S3 exercises the codec through the whole Resolve pipeline — the same way the

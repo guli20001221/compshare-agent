@@ -3432,7 +3432,33 @@ func uniqueStrings(values []string) []string {
 
 // executeWorkflow runs a predefined workflow and returns the result as a JSON string
 // for the LLM to narrate.
-func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+// workflowExecOption tunes a single executeWorkflow call. It exists so the
+// action-proposal path can hand in the zone snapshot the resolver already built
+// (one catalog per turn) without changing the ~dozen direct callers, which keep
+// the four-argument form and self-build.
+type workflowExecOption func(*workflowExecConfig)
+
+type workflowExecConfig struct {
+	prebuiltZoneCatalog    *deployment.ZoneCatalogSnapshot
+	hasPrebuiltZoneCatalog bool
+}
+
+// withPrebuiltZoneCatalog supplies the zone snapshot to run against instead of
+// self-building one. The snapshot may be nil (an operation with no zone field):
+// "set to nil" is distinct from "not supplied", so a threaded nil suppresses the
+// self-build exactly as the resolver intended.
+func withPrebuiltZoneCatalog(snap *deployment.ZoneCatalogSnapshot) workflowExecOption {
+	return func(c *workflowExecConfig) {
+		c.prebuiltZoneCatalog = snap
+		c.hasPrebuiltZoneCatalog = true
+	}
+}
+
+func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), opts ...workflowExecOption) string {
+	var execCfg workflowExecConfig
+	for _, opt := range opts {
+		opt(&execCfg)
+	}
 	e.lastWorkflowSucceededThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
@@ -3602,11 +3628,17 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		}
 	}
 
-	// Build the turn's zone catalog ONCE and hand it to the run as reference data.
-	// The initial run, the image-recovery re-run AND recovery's own stock check all
-	// share this single snapshot, so a create fetches the catalog once and no path
-	// can see a different zone list.
-	zoneCat := e.zoneCatalogSnapshotForAction(ctx, action)
+	// The turn's zone catalog: when the action-proposal path already built one for
+	// the resolver it is threaded in here (one catalog per turn — the resolver and
+	// the workflow cannot see different zone lists); direct callers self-build. The
+	// initial run, the image-recovery re-run AND recovery's own stock check all share
+	// this single snapshot.
+	var zoneCat *deployment.ZoneCatalogSnapshot
+	if execCfg.hasPrebuiltZoneCatalog {
+		zoneCat = execCfg.prebuiltZoneCatalog
+	} else {
+		zoneCat = e.zoneCatalogSnapshotForAction(ctx, action)
+	}
 	var wfRunOpts []workflow.RunOption
 	if zoneCat != nil {
 		wfRunOpts = append(wfRunOpts, workflow.WithReferenceData(workflow.ReferenceData{ZoneCatalog: zoneCat}))

@@ -15,6 +15,7 @@ import (
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/workflow"
 )
 
 var (
@@ -138,14 +139,25 @@ func decodeActionProposal(args map[string]any) (actionresolver.ActionProposal, e
 	return proposal, nil
 }
 
-func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[string]any) (actionresolver.ResolvedAction, error) {
+// resolvedProposal carries a resolved action together with the SAME zone catalog
+// snapshot the resolver canonicalized its Zone against, so executeActionProposal
+// can thread that one snapshot into the workflow rather than have the workflow
+// build a second one. The snapshot is never stashed on the Engine — it lives only
+// for this turn's resolve→execute, exactly one per turn (ReferenceData.ZoneCatalog
+// is nil for operations that carry no zone field).
+type resolvedProposal struct {
+	action        actionresolver.ResolvedAction
+	referenceData workflow.ReferenceData
+}
+
+func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[string]any) (resolvedProposal, error) {
 	proposal, err := decodeActionProposal(args)
 	if err != nil {
-		return actionresolver.ResolvedAction{}, err
+		return resolvedProposal{}, err
 	}
 	catalog, err := defaultActionCatalog()
 	if err != nil {
-		return actionresolver.ResolvedAction{}, err
+		return resolvedProposal{}, err
 	}
 	view := e.turnContextViewThisTurn
 	if !e.turnContextViewReady {
@@ -155,18 +167,21 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		proposal.TurnID = view.TurnID
 	}
 	if view.TurnID != "" && proposal.TurnID != view.TurnID {
-		return actionresolver.ResolvedAction{}, fmt.Errorf("proposal turn_id does not match the active turn")
+		return resolvedProposal{}, fmt.Errorf("proposal turn_id does not match the active turn")
 	}
 	spec, ok := catalog.Lookup(proposal.Operation)
-	if ok {
-		proposal = completeCurrentTurnEvidence(proposal, view, spec)
-		proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
-	}
 	if !ok {
-		return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}, actionresolver.MachineTypeCatalog{}).Resolve(proposal), nil
+		resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}, actionresolver.MachineTypeCatalog{}).Resolve(proposal)
+		return resolvedProposal{action: resolved}, nil
 	}
+	proposal = completeCurrentTurnEvidence(proposal, view, spec)
+	proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
-	return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec}, machineTypes).Resolve(proposal), nil
+	zoneCatalog := e.zoneCatalogSnapshotForSpec(ctx, spec)
+	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec}, machineTypes).
+		WithZoneCatalog(zoneCatalog).
+		Resolve(proposal)
+	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog}}, nil
 }
 
 // machineTypeCatalogSnapshot fetches the live machine-type names and hands them
@@ -310,7 +325,7 @@ func (e *Engine) executeActionProposalShadow(ctx context.Context, args map[strin
 		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "ready_for_confirmation": false})
 		return string(payload)
 	}
-	raw, _ := json.Marshal(resolved)
+	raw, _ := json.Marshal(resolved.action)
 	var wire map[string]any
 	_ = json.Unmarshal(raw, &wire)
 	payload, _ := json.Marshal(security.RedactForLLM(wire))
@@ -329,12 +344,15 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "ready_for_confirmation": false})
 		return string(payload)
 	}
-	if !resolved.ReadyForConfirmation {
-		e.rememberPendingResolvedAction(resolved)
-		return resolvedActionForModel(resolved)
+	if !resolved.action.ReadyForConfirmation {
+		e.rememberPendingResolvedAction(resolved.action)
+		return resolvedActionForModel(resolved.action)
 	}
 	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案已验证，进入统一确认与执行门"})
-	return e.executeWorkflow(ctx, resolved.Operation, resolved.Arguments, onStep)
+	// Thread the SAME zone snapshot the resolver canonicalized Zone against into the
+	// workflow, so the create runs against exactly one catalog for the turn rather
+	// than building a second one that could disagree (gate 1).
+	return e.executeWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, withPrebuiltZoneCatalog(resolved.referenceData.ZoneCatalog))
 }
 
 // rememberPendingResolvedAction parks a half-finished write as a task frame so a

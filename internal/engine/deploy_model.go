@@ -8,6 +8,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
+	"github.com/compshare-agent/internal/actionresolver"
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/tools"
@@ -277,14 +278,31 @@ func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalo
 
 // zoneCatalogSnapshotForAction returns the zone catalog for the workflows that
 // resolve a zone, or nil for the rest — so a non-zone workflow attaches no
-// reference data and pays no catalog read.
+// reference data and pays no catalog read. Which workflows those are is NOT a
+// hand-kept name list: it is derived from the same field contract the resolver
+// uses (SpecNeedsZoneCatalog), so the answer can never drift from which specs
+// actually carry a CodecZone field.
 func (e *Engine) zoneCatalogSnapshotForAction(ctx context.Context, action string) *deployment.ZoneCatalogSnapshot {
-	switch action {
-	case "CreateInstanceWorkflow", "CreateCFSWorkflow", "EnableNetOptimizerWorkflow":
-		return e.zoneCatalogSnapshot(ctx)
-	default:
+	catalog, err := defaultActionCatalog()
+	if err != nil {
 		return nil
 	}
+	spec, ok := catalog.Lookup(action)
+	if !ok {
+		return nil
+	}
+	return e.zoneCatalogSnapshotForSpec(ctx, spec)
+}
+
+// zoneCatalogSnapshotForSpec is the spec-gated builder shared by the direct
+// executeWorkflow path and the action-proposal resolver, so both decide "does
+// this operation need the zone catalog?" the same way and, when it does, build
+// exactly one snapshot per turn (the resolver builds it and threads it on).
+func (e *Engine) zoneCatalogSnapshotForSpec(ctx context.Context, spec actionresolver.OperationSpec) *deployment.ZoneCatalogSnapshot {
+	if !actionresolver.SpecNeedsZoneCatalog(spec) {
+		return nil
+	}
+	return e.zoneCatalogSnapshot(ctx)
 }
 
 func (e *Engine) zoneIsPodMap(ctx context.Context) map[string]bool {

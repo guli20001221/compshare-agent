@@ -95,6 +95,9 @@ func codecFromSchema(name string, schema map[string]any, sensitive bool) SlotCod
 	if name == "GpuType" {
 		return CodecMachineType
 	}
+	if name == "Zone" {
+		return CodecZone
+	}
 	if len(stringSlice(schema["enum"])) > 0 {
 		return CodecEnum
 	}

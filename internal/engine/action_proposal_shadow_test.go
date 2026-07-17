@@ -68,11 +68,11 @@ func TestProposeActionResolvesGpuTypeAgainstLiveCatalog(t *testing.T) {
 	resolved, err := eng.resolveActionProposalShadow(context.Background(), createProposalArgs("turn-live", "4090 48G"))
 
 	require.NoError(t, err)
-	require.Empty(t, resolved.DependencyFailures, "the catalog was reachable")
-	require.Equal(t, "4090_48G", resolved.Arguments["GpuType"],
+	require.Empty(t, resolved.action.DependencyFailures, "the catalog was reachable")
+	require.Equal(t, "4090_48G", resolved.action.Arguments["GpuType"],
 		"the engine must fetch the live catalog and the resolver must canonicalize against it")
-	require.NotNil(t, resolved.Confirmation)
-	require.Equal(t, "4090_48G", resolved.Confirmation.Arguments["GpuType"],
+	require.NotNil(t, resolved.action.Confirmation)
+	require.Equal(t, "4090_48G", resolved.action.Confirmation.Arguments["GpuType"],
 		"confirm card and executed args must be the same string")
 }
 
@@ -187,11 +187,11 @@ func TestCurrentTurnReadBecomesProposalEvidenceOnlyAfterItWasObserved(t *testing
 
 	before, err := eng.resolveActionProposalShadow(context.Background(), args)
 	require.NoError(t, err)
-	require.False(t, before.ReadyForConfirmation)
+	require.False(t, before.action.ReadyForConfirmation)
 	eng.readCapabilitySubjectsThisTurn = map[string]struct{}{"uhost-1": {}}
 	after, err := eng.resolveActionProposalShadow(context.Background(), args)
 	require.NoError(t, err)
-	require.True(t, after.ReadyForConfirmation)
+	require.True(t, after.action.ReadyForConfirmation)
 }
 
 func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.T) {
@@ -209,8 +209,8 @@ func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.
 		},
 	})
 	require.NoError(t, err)
-	require.True(t, resolved.ReadyForConfirmation, resolved.Rejected)
-	require.Equal(t, float64(200), resolved.Arguments["Size"])
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Equal(t, float64(200), resolved.action.Arguments["Size"])
 }
 
 func TestProposalRejectsDifferentTurnEvidence(t *testing.T) {
@@ -287,6 +287,6 @@ func TestSealedPasswordIsInjectedWithoutEnteringModelArguments(t *testing.T) {
 		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "tool_observation", "evidence": map[string]any{"context_field": "current_turn_read"}}},
 	})
 	require.NoError(t, err)
-	require.Equal(t, "SecurePass123!", resolved.Arguments["Password"])
-	require.Equal(t, "[REDACTED]", resolved.Confirmation.Arguments["Password"])
+	require.Equal(t, "SecurePass123!", resolved.action.Arguments["Password"])
+	require.Equal(t, "[REDACTED]", resolved.action.Confirmation.Arguments["Password"])
 }
