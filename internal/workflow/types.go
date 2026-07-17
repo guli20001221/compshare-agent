@@ -187,9 +187,10 @@ func CheckFailedBecause(reason FailureReason, message string) CheckOutcome {
 // and authorises nothing. Both readings are guesses about state the workflow
 // itself knew exactly.
 //
-// The four fields are deliberately separate, because conflating them is the bug:
-// what failed, what it actually sent, what it was working from, and whether any
-// of it was ever approved are four different questions.
+// The five fields are deliberately separate, because conflating them is the bug:
+// what failed, what kind of failure it was, what it actually sent, what it was
+// working from, and whether any of it was ever approved are five different
+// questions.
 type StepFailure struct {
 	// Step is the step that stopped the workflow. It anchors the others: Args and
 	// Draft are that step's, not the workflow's.
