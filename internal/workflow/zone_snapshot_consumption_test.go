@@ -94,6 +94,21 @@ func TestNetOptimizerNormalize_ReadsRegionAndAzGroupFromOneRecord(t *testing.T) 
 	assert.Equal(t, uint32(3001), wfCtx.Params["NetOptimizerAzGroup"], "az_group from the same record, not the map's 999")
 }
 
+// TestNetOptimizerNormalize_SnapshotRegionNotOverriddenByParam pins the fix: when
+// a snapshot resolves the zone, a contradictory Region param cannot override the
+// record's Region — otherwise the "single source" is only half true (az_group from
+// the record, Region from the param).
+func TestNetOptimizerNormalize_SnapshotRegionNotOverriddenByParam(t *testing.T) {
+	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", AzGroup: 3001}},
+	})
+	wfCtx := NewContext(map[string]any{"Zone": "cn-bj2-03", "Region": "cn-wlcb"}) // contradictory param
+	wfCtx.referenceData.ZoneCatalog = snap
+
+	require.NoError(t, normalizeNetOptimizerParams(wfCtx))
+	assert.Equal(t, "cn-bj2", wfCtx.Params["Region"], "the catalog record's Region wins; a param cannot override the snapshot")
+}
+
 // TestNetOptimizerNormalize_SnapshotIsAuthoritative pins the tightened bridge for
 // the net-optimizer: a present-but-unanswerable snapshot fails, a nil snapshot
 // falls back to the maps.
