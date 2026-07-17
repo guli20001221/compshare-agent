@@ -103,49 +103,32 @@ func stepRecheckNetOptimizerStatus() Step {
 	}
 }
 
-// netOptimizerAzGroup reads the zone's internal region id (az_group) from the
-// turn's zone catalog snapshot. Like workflowZonePlacement the snapshot is
-// authoritative: the legacy map is read ONLY when no snapshot is attached (an
-// unmigrated test). A snapshot that is present but unavailable, or that lacks the
-// zone, is a hard failure — never a fall-through to a stale map. Removed with the
-// map in S6.
-func netOptimizerAzGroup(wfCtx *Context, zone string) (uint32, error) {
-	cat := wfCtx.ZoneCatalog()
-	if cat == nil {
-		return guidedZoneRegionID(wfCtx.Params, zone), nil
-	}
-	if !cat.Available() {
-		return 0, fmt.Errorf("可用区目录当前不可用，无法安全开启网络加速")
-	}
-	p, ok := cat.Placement(zone)
-	if !ok {
-		return 0, fmt.Errorf("可用区 %s 不在当前可用区目录中，无法安全开启网络加速", zone)
-	}
-	return p.AzGroup, nil
-}
-
 func normalizeNetOptimizerParams(wfCtx *Context) error {
 	zone := strings.TrimSpace(paramStr(wfCtx.Params, "Zone", ""))
 	if zone == "" {
 		return NewMissingSlotError("开启网络加速需要指定可用区。", "zone")
 	}
+	// One record answers both Region and az_group, from the same authoritative
+	// snapshot (or the legacy maps when no snapshot is attached). This replaces the
+	// az_group-from-map + Region-from-zone-string split, so the two can no longer
+	// come from different sources.
+	placement, err := workflowZonePlacement(wfCtx, zone)
+	if err != nil {
+		return err
+	}
 	region := strings.TrimSpace(paramStr(wfCtx.Params, "Region", ""))
 	if region == "" {
-		region = regionFromZone(zone)
+		region = placement.Region
 	}
 	if region == "" {
 		return fmt.Errorf("无法从可用区推导地域，请同时指定 Region。")
 	}
-	azGroup, err := netOptimizerAzGroup(wfCtx, zone)
-	if err != nil {
-		return err
-	}
-	if azGroup == 0 {
+	if placement.AzGroup == 0 {
 		return fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全开启网络加速。", zone)
 	}
 	wfCtx.Params["Zone"] = zone
 	wfCtx.Params["Region"] = region
-	wfCtx.Params["NetOptimizerAzGroup"] = azGroup
+	wfCtx.Params["NetOptimizerAzGroup"] = placement.AzGroup
 	return nil
 }
 

@@ -79,35 +79,41 @@ func TestWorkflowZonePlacement_PresentSnapshotNeverFallsBackToMaps(t *testing.T)
 	})
 }
 
-// TestNetOptimizerAzGroup_SnapshotIsAuthoritative pins the same tightening for the
-// net-optimizer az_group source.
-func TestNetOptimizerAzGroup_SnapshotIsAuthoritative(t *testing.T) {
+// TestNetOptimizerNormalize_ReadsRegionAndAzGroupFromOneRecord pins that the
+// net-optimizer takes BOTH Region and az_group from a single placement record,
+// over a disagreeing legacy map and without deriving Region from the zone string.
+func TestNetOptimizerNormalize_ReadsRegionAndAzGroupFromOneRecord(t *testing.T) {
+	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", AzGroup: 3001}},
+	})
+	wfCtx := NewContext(map[string]any{"Zone": "cn-bj2-03", "ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
+	wfCtx.referenceData.ZoneCatalog = snap
+
+	require.NoError(t, normalizeNetOptimizerParams(wfCtx))
+	assert.Equal(t, "cn-bj2", wfCtx.Params["Region"], "Region from the catalog record")
+	assert.Equal(t, uint32(3001), wfCtx.Params["NetOptimizerAzGroup"], "az_group from the same record, not the map's 999")
+}
+
+// TestNetOptimizerNormalize_SnapshotIsAuthoritative pins the tightened bridge for
+// the net-optimizer: a present-but-unanswerable snapshot fails, a nil snapshot
+// falls back to the maps.
+func TestNetOptimizerNormalize_SnapshotIsAuthoritative(t *testing.T) {
 	present := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
-		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", AzGroup: 3001}},
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", Region: "cn-sh2", AzGroup: 3002}},
 	})
 
-	// Snapshot present and resolving → its az_group, over a disagreeing map.
-	wfCtx := NewContext(map[string]any{"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
-	wfCtx.referenceData.ZoneCatalog = present
-	az, err := netOptimizerAzGroup(wfCtx, "cn-bj2-03")
-	require.NoError(t, err)
-	assert.Equal(t, uint32(3001), az)
-
-	// No snapshot → legacy map answers.
-	noSnap := NewContext(map[string]any{"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
-	az2, err := netOptimizerAzGroup(noSnap, "cn-bj2-03")
-	require.NoError(t, err)
-	assert.Equal(t, uint32(999), az2)
-
-	// Present but unavailable → error, never the map's 999.
-	down := NewContext(map[string]any{"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
-	down.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
-	_, err = netOptimizerAzGroup(down, "cn-bj2-03")
-	require.Error(t, err)
+	// No snapshot → legacy map answers (bridge, removed in S6).
+	noSnap := NewContext(map[string]any{"Zone": "cn-bj2-03", "ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
+	require.NoError(t, normalizeNetOptimizerParams(noSnap))
+	assert.Equal(t, uint32(999), noSnap.Params["NetOptimizerAzGroup"])
 
 	// Present but missing the zone → error, never the map's 999.
-	missing := NewContext(map[string]any{"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
+	missing := NewContext(map[string]any{"Zone": "cn-bj2-03", "ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
 	missing.referenceData.ZoneCatalog = present
-	_, err = netOptimizerAzGroup(missing, "cn-nope-99")
-	require.Error(t, err)
+	assert.Error(t, normalizeNetOptimizerParams(missing))
+
+	// Present but unavailable → error, never the map's 999.
+	down := NewContext(map[string]any{"Zone": "cn-bj2-03", "ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
+	down.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
+	assert.Error(t, normalizeNetOptimizerParams(down))
 }
