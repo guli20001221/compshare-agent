@@ -1,9 +1,60 @@
 package engine
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/compshare-agent/internal/zones"
 )
+
+// zoneFailExecutor serves the create read steps but fails the support-zone query,
+// so the write-path snapshot is unavailable while the draft resolution still
+// reaches the zone lookup.
+type zoneFailExecutor struct{ calls []string }
+
+func (m *zoneFailExecutor) Execute(_ context.Context, action string, _ map[string]any) (map[string]any, error) {
+	m.calls = append(m.calls, action)
+	switch action {
+	case "DescribeCompShareSupportZone":
+		return nil, errors.New("support-zone API down")
+	case "DescribeCompShareImages":
+		return map[string]any{"ImageSet": []any{map[string]any{"CompShareImageId": "img-1", "Name": "PyTorch", "ImageType": "App"}}}, nil
+	case "DescribeAvailableCompShareInstanceTypes":
+		return map[string]any{"AvailableInstanceTypes": []any{availableGPU("4090", 24)}}, nil
+	case "DescribeCompShareInstance":
+		return map[string]any{"TotalCount": float64(0), "UHostSet": []any{}}, nil
+	}
+	return map[string]any{"RetCode": float64(0)}, nil
+}
+
+// TestExecuteWorkflow_ZoneCatalogFailureAbortsCreateBeforeConfirm makes permanent
+// the end-to-end counter-example: when the zone catalog cannot be obtained, a
+// create is refused BEFORE the confirmation gate and the real create API is never
+// called. With strict reads a write never runs on an unavailable (or stale) zone
+// catalog.
+func TestExecuteWorkflow_ZoneCatalogFailureAbortsCreateBeforeConfirm(t *testing.T) {
+	exec := &zoneFailExecutor{}
+	confirmCalls := 0
+	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { confirmCalls++; return true })
+	eng.zoneCatalog = zones.NewCatalog(0) // fresh: the failing fetch is not masked by a shared cache
+
+	reply := eng.executeWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
+		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep)
+
+	if confirmCalls != 0 {
+		t.Errorf("the create must be refused before the confirmation gate, got %d confirm calls", confirmCalls)
+	}
+	for _, c := range exec.calls {
+		if c == "CreateCompShareInstance" {
+			t.Error("the real create API must never be called on an unavailable catalog")
+		}
+	}
+	if !strings.Contains(reply, "可用区目录当前不可用") {
+		t.Errorf("reply should carry the catalog-unavailable error, got: %s", reply)
+	}
+}
 
 // TestZoneCatalogSnapshot_BuildsOneRecordPerZone pins that every placement field
 // AND the display name of a zone come from the SAME upstream row — the single

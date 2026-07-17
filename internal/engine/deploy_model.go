@@ -105,6 +105,22 @@ func (e *Engine) supportZoneList(ctx context.Context) ([]zones.ZoneInfo, error) 
 	return cat.Get(ctx, e.externalExecutor, u.TopOrganizationID, u.OrganizationID)
 }
 
+// supportZoneListStrict is supportZoneList without the serve-stale fallback: an
+// expired catalog that fails to refresh returns an error instead of stale zones.
+// The write-path snapshot builder uses it so a create never lands on a zone list
+// that may have changed upstream.
+func (e *Engine) supportZoneListStrict(ctx context.Context) ([]zones.ZoneInfo, error) {
+	if e.externalExecutor == nil {
+		return nil, nil
+	}
+	cat := e.zoneCatalog
+	if cat == nil {
+		cat = zones.Default()
+	}
+	u, _ := tools.UserFrom(ctx)
+	return cat.GetStrict(ctx, e.externalExecutor, u.TopOrganizationID, u.OrganizationID)
+}
+
 // matchZoneLLM asks the TierAgent model to match a fuzzy zone mention against the
 // live zone list, returning a structured decision (exact / clarify / none).
 // Mirrors extractDeploySearch: small focused prompt, JSON out, hallucinated
@@ -235,7 +251,7 @@ func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalo
 	if e.externalExecutor == nil {
 		return deployment.NewZoneCatalogSnapshot(false, nil)
 	}
-	list, err := e.supportZoneList(ctx)
+	list, err := e.supportZoneListStrict(ctx)
 	if err != nil {
 		return deployment.NewZoneCatalogSnapshot(false, nil)
 	}

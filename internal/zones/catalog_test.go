@@ -106,6 +106,32 @@ func TestCatalog_ServesStaleOnRefreshError(t *testing.T) {
 	}
 }
 
+func TestCatalog_GetStrictRefusesStaleOnRefreshError(t *testing.T) {
+	f := &fakeExec{resp: liveZonesResp()}
+	clock := time.Unix(1000, 0)
+	c := NewCatalog(time.Minute)
+	c.now = func() time.Time { return clock }
+	if _, err := c.GetStrict(context.Background(), f, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	// Within TTL, GetStrict reuses the cache without refetching — strict is not
+	// "always refetch", only "never serve stale".
+	if _, err := c.GetStrict(context.Background(), f, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if f.calls != 1 {
+		t.Fatalf("GetStrict must reuse a fresh cache, got %d fetches", f.calls)
+	}
+	// Expired + refresh fails: strict returns the error, NOT the stale cache that
+	// the lenient Get would serve — a write must refuse rather than run on a zone
+	// list that may have changed upstream.
+	f.err = errors.New("boom")
+	clock = clock.Add(2 * time.Minute)
+	if _, err := c.GetStrict(context.Background(), f, 1, 2); err == nil {
+		t.Fatal("GetStrict must error on an expired-cache refresh failure, not serve stale")
+	}
+}
+
 func TestExactZone(t *testing.T) {
 	list := liveZones()
 	cases := []struct {
