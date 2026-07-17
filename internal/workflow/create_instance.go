@@ -1347,6 +1347,24 @@ func createArgsFromSealedDraft(wfCtx *Context) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("已确认的执行合同无法解析（%v），拒绝以重新推导的参数创建", err)
 	}
+	// A contract with no price cannot be a create anyone agreed to: the card that
+	// forms the agreement cannot be built without one (buildCreateConfirmArgs), so
+	// a sealed snapshot missing its estimate did not come from a user saying yes to
+	// a price.
+	//
+	// The codec deliberately allows a priceless snapshot — an absent quote is a
+	// real outcome and the encoder must be able to say so — so this is the create's
+	// rule, not the format's, and it belongs at the create's own entry. Here rather
+	// than at promoteCreateDraft because this is the last thing between a contract
+	// and an irreversible call: it catches a priceless contract however it was
+	// formed, not only one that came through promote.
+	//
+	// Unreachable by the current wiring, and that is the point. It is the guard
+	// against a future reordering or a second writer reintroducing the confirmed-
+	// without-a-price card that 85da9df6 removed from the front door.
+	if snapshot.EstimatedPrice == nil {
+		return nil, fmt.Errorf("已确认的执行合同中没有价格记录，拒绝创建：用户不可能确认过一个没有价格的下单")
+	}
 	// Only the execution half. The sealed snapshot also records the estimate the
 	// user was shown, which exists for audit and must never reach the API.
 	//

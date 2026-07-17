@@ -47,6 +47,13 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 		if err := ctx.Err(); err != nil {
 			result.StoppedAt = step.Name
 			result.Message = fmt.Sprintf("工作流已取消: %v", err)
+			// A cancellation is a failure like any other and needs the same record.
+			// Without it this path returned "not Success" with no Failure, and a
+			// caller asking the record whether anything was authorised got nil —
+			// which reads as "no answer", not as "no". A guided run cancelled after
+			// its first selection card ends holding a contract, and the two facts
+			// together are exactly the misreading this record exists to end.
+			e.recordStepFailure(result, def, wfCtx, step, i)
 			return result, nil
 		}
 		if step.SkipIf != nil {
@@ -125,27 +132,42 @@ func (e *Engine) recordStepFailure(result *Result, def *Definition, wfCtx *Conte
 		result.Failure = &StepFailure{}
 	}
 	result.Failure.Step = step.Name
-	result.Failure.Sealed = wfCtx.sealed != nil && !confirmGateRemains(def, i)
+	result.Failure.ExecutionAuthorized = wfCtx.sealed != nil && !confirmGateUnpassed(def, i)
 	if def.FailureDraft != nil {
-		result.Failure.Draft = def.FailureDraft(wfCtx)
+		// Copied here rather than trusted from the hook: a definition returning its
+		// own live StepResults entry is the obvious implementation — it is what the
+		// create's does — and evidence that keeps pointing at the workflow's mutable
+		// state is not evidence. Doing it at this single choke point means every
+		// FailureDraft is safe by construction instead of each having to remember,
+		// which is the same reason Args is copied one function down.
+		result.Failure.Draft = deepCopyParams(def.FailureDraft(wfCtx))
 	}
 }
 
-// confirmGateRemains reports whether any confirmation gate sits after step i.
+// confirmGateUnpassed reports whether a confirmation gate at or after step i has
+// not been passed.
 //
 // This is what separates "the user approved this" from "the user approved
 // something on the way here". A seal only ever authorises the steps between its
-// own gate and the next one, so while a gate is still ahead, nothing sealed is
+// own gate and the next one, so while an unpassed gate exists, nothing sealed is
 // permission to execute — however real, and however identical to a final
 // contract, that seal looks.
+//
+// The scan starts AT i, not after it, because step i is the step that just
+// FAILED: if it is itself a gate then that gate did not pass, and a run that
+// never got through its final confirmation has authorised nothing. Scanning from
+// i+1 said otherwise. runConfirmStep normally unseals on entry, which hid this
+// for a gate that fails inside itself — but a SkipIf error is raised by the Run
+// loop before runConfirmStep is ever called, so the previous selection card's
+// seal was still live and got reported as a final create authorisation.
 //
 // A gate ahead that SkipIf would have skipped still counts, and that is the safe
 // direction: the record then says "not authorised" for something that was, and a
 // reader falls back to the candidate draft — which post-confirmation is a copy of
 // the sealed one anyway. The opposite error would let a selection card's seal be
 // read as consent to create.
-func confirmGateRemains(def *Definition, i int) bool {
-	for _, step := range def.Steps[i+1:] {
+func confirmGateUnpassed(def *Definition, i int) bool {
+	for _, step := range def.Steps[i:] {
 		if step.Type == StepConfirm {
 			return true
 		}

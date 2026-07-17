@@ -364,6 +364,34 @@ func sealedDiskSize(t *testing.T, wfCtx *Context) any {
 	return disks[0].(map[string]any)["Size"]
 }
 
+// TestAPricelessContractIsRefusedAtTheExecutionEntry is the second lock on the
+// create's price rule, and it is deliberately unreachable through the front door.
+//
+// buildCreateConfirmArgs already refuses to build a card without a price, so no
+// user can approve one and no contract should ever carry a priceless snapshot. But
+// "should" is doing the work in that sentence: the codec allows a priceless
+// snapshot on purpose (an absent quote is a real outcome the encoder must be able
+// to record), so a reordering or a second writer of createDraftKey could still
+// produce one. This is the last thing between a contract and an irreversible
+// call, so it is where the create asserts its own rule rather than inheriting it
+// from whoever happened to build the card.
+func TestAPricelessContractIsRefusedAtTheExecutionEntry(t *testing.T) {
+	wfCtx := draftContext("cn-sh2-02")
+	draft := runToTheGate(t, wfCtx)
+
+	// A contract that was sealed with an execution but no quote — what a miswired
+	// promote, or a future second writer, would leave behind.
+	wfCtx.Params[createDraftKey] = CreateConfirmationSnapshot{Execution: draft}.ToContractMap()
+	wfCtx.seal("CreateInstanceWorkflow")
+	require.True(t, wfCtx.sealed.verifyDigest(wfCtx.Params),
+		"the contract is internally consistent — nothing else in the system objects to it")
+
+	_, err := createArgsFromSealedDraft(wfCtx)
+
+	require.Error(t, err, "a create nobody could have priced is a create nobody agreed to")
+	assert.Contains(t, err.Error(), "没有价格记录")
+}
+
 // TestTheSealedRecordStillHashesToItsOwnDigest is the severe half of the aliasing
 // fix, and it asserts the one thing verifyDigest structurally cannot.
 //

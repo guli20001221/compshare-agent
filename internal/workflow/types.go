@@ -153,19 +153,22 @@ type StepFailure struct {
 	// definition's FailureDraft reported it. nil when the workflow resolves no
 	// candidate or none existed yet.
 	Draft map[string]any
-	// Sealed reports whether a contract authorising this workflow's MUTATING step
-	// existed when it failed — which is not the same question as whether Contract
-	// is non-nil, and that difference is the whole reason this field exists.
+	// ExecutionAuthorized reports whether a contract authorising this workflow's
+	// MUTATING step existed when it failed — which is not the same question as
+	// whether Contract is non-nil, and that difference is the whole reason this
+	// field exists. It is named for the question it answers rather than for the
+	// mechanism behind it: "Sealed" invited exactly the reading that a seal, any
+	// seal, means the user agreed to the thing about to happen.
 	//
 	// The guided create seals after every one of its seven gates, so a failure at
 	// 检查库存 leaves a perfectly real contract that authorised an image choice and
 	// nothing else. Its Operation is "CreateInstanceWorkflow", exactly like a real
 	// create authorisation's, so no reader can tell them apart by inspection.
 	//
-	// A seal is final only when no confirmation gate remains ahead of the failed
-	// step: while another gate is still to come, whatever is sealed is a selection
-	// the user made along the way, not permission to execute.
-	Sealed bool
+	// True only when every confirmation gate up to and including the failed step
+	// has passed — see confirmGateUnpassed. While any gate has not, whatever is
+	// sealed is a selection the user made along the way, not permission to execute.
+	ExecutionAuthorized bool
 }
 
 // Context accumulates state during workflow execution.

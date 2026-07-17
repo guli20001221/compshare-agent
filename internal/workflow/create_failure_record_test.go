@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,7 +52,7 @@ func TestAPlainCreateRecordsTheZoneItResolved(t *testing.T) {
 		"the zone the resolver derived — the one capacity was actually asked about")
 	assert.Equal(t, "4090", draft.Args.GpuType)
 
-	assert.False(t, result.Failure.Sealed,
+	assert.False(t, result.Failure.ExecutionAuthorized,
 		"a sold-out is the capacity gate's verdict, and that gate runs before every "+
 			"confirmation — nothing can have been authorised yet")
 }
@@ -83,7 +84,7 @@ func TestAGuidedCreateDoesNotCallASelectionCardAContract(t *testing.T) {
 		"but it is a selection card's seal: no promoted draft, because no create was confirmed")
 
 	require.NotNil(t, result.Failure)
-	assert.False(t, result.Failure.Sealed,
+	assert.False(t, result.Failure.ExecutionAuthorized,
 		"gates remain ahead, so nothing sealed so far is permission to create")
 
 	draft, err := ParseCreateExecutionDraft(result.Failure.Draft)
@@ -162,9 +163,132 @@ func TestTheFailureRecordDoesNotAliasTheRequest(t *testing.T) {
 		"the record must not share structure with the map handed to the executor")
 }
 
-// TestASealedFailureSaysSo is the other side of Sealed: a failure AFTER the gate
-// must report that a contract authorised it, or the field would be a constant
-// false dressed up as a fact.
+// TestACancelledWorkflowStillDescribesItsFailure closes the hole that made the
+// record optional.
+//
+// A cancellation returned "not Success" with no record at all, and a guided run
+// cancelled after its first selection card ends holding a contract. A caller then
+// had one fact (a contract exists) and no answer to the question that qualifies it
+// — which is precisely the state this record was built to remove. Silence is not
+// "no": a reader has to be told no.
+func TestACancelledWorkflowStillDescribesItsFailure(t *testing.T) {
+	executor := draftMockExecutor("cn-sh2-02")
+	ctx, cancel := context.WithCancel(context.Background())
+	confirms := 0
+	eng := NewEngine(executor, func(_ string, _ map[string]any) bool {
+		confirms++
+		if confirms == 1 {
+			cancel() // the user walks away right after the first selection card
+		}
+		return true
+	}, nil)
+
+	result, err := eng.Run(ctx, CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Contains(t, result.Message, "已取消")
+
+	// The trap: a real contract survives the cancellation.
+	require.NotNil(t, result.Contract, "the first selection card sealed before the cancel")
+
+	require.NotNil(t, result.Failure, "a cancelled workflow is a failed workflow and needs a record")
+	assert.False(t, result.Failure.ExecutionAuthorized,
+		"the user walked away six gates before authorising a create")
+}
+
+// TestAFailingFinalGateAuthorisesNothing: the failed step is a gate, so that gate
+// did not pass — and a run that never got through its final confirmation has
+// authorised nothing, whatever earlier cards left sealed.
+//
+// runConfirmStep unseals on entry, which hides this for a gate that fails inside
+// itself. A SkipIf error is raised by the Run loop BEFORE runConfirmStep is
+// called, so the previous card's seal is still live at that moment. Scanning for
+// remaining gates from i+1 then skipped the very gate that had just failed and
+// called a selection card a create authorisation.
+func TestAFailingFinalGateAuthorisesNothing(t *testing.T) {
+	def := &Definition{
+		Name: "CreateInstanceWorkflow",
+		Steps: []Step{
+			{Name: "选择镜像", Type: StepConfirm, BuildArgs: func(*Context) (map[string]any, error) {
+				return map[string]any{"ImageId": "img-001"}, nil
+			}},
+			{
+				Name:      "确认创建",
+				Type:      StepConfirm,
+				SkipIf:    func(*Context) (bool, error) { return false, fmt.Errorf("目录读取失败") },
+				BuildArgs: func(*Context) (map[string]any, error) { return map[string]any{}, nil },
+			},
+		},
+	}
+	eng := NewEngine(&mockExecutor{results: map[string]map[string]any{}},
+		func(_ string, _ map[string]any) bool { return true }, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{"GpuType": "4090"})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Equal(t, "确认创建", result.StoppedAt)
+
+	require.NotNil(t, result.Contract, "选择镜像 sealed, and nothing unsealed it — that is the trap")
+	require.NotNil(t, result.Failure)
+	assert.False(t, result.Failure.ExecutionAuthorized,
+		"确认创建 never even ran: the seal in force is 选择镜像's, and it authorises no create")
+}
+
+// TestTheFailureDraftDoesNotAliasWhatTheHookReturned: the record is evidence, and
+// the obvious FailureDraft implementation hands back the definition's own live
+// state — the create's returns wfCtx.Result(...) verbatim, which IS the workflow's
+// StepResults entry. So the copy is taken where the record is built. Every hook is
+// then safe by construction rather than each having to remember, the same way Args
+// is copied rather than trusted from runToolStep.
+func TestTheFailureDraftDoesNotAliasWhatTheHookReturned(t *testing.T) {
+	// Stands in for the workflow's own live state, exactly as createFailureDraft
+	// returns it.
+	live := map[string]any{"args": map[string]any{"Zone": "cn-sh2-02"}}
+	def := &Definition{
+		Name: "AliasProbe",
+		Steps: []Step{{
+			Name:    "会失败的步骤",
+			Type:    StepResolve,
+			Resolve: func(*Context) (map[string]any, error) { return nil, fmt.Errorf("boom") },
+		}},
+		FailureDraft: func(*Context) map[string]any { return live },
+	}
+	eng := NewEngine(&mockExecutor{results: map[string]map[string]any{}},
+		func(_ string, _ map[string]any) bool { return true }, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{})
+	require.NoError(t, err)
+	require.NotNil(t, result.Failure)
+	require.NotNil(t, result.Failure.Draft)
+
+	// A write through the record must not reach the workflow's state — and the
+	// nested map is the only way to tell, exactly as with the draft's disks: a
+	// top-level key write would land on a fresh outer map either way.
+	result.Failure.Draft["args"].(map[string]any)["Zone"] = "TAMPERED"
+
+	assert.Equal(t, "cn-sh2-02", live["args"].(map[string]any)["Zone"],
+		"the record must be a copy: evidence that moves with the workflow is not evidence")
+}
+
+// TestTheCreateFailureDraftReallyIsTheLiveEntry pins the premise of the test above
+// — that the copy is load-bearing because the create's hook does hand back live
+// state. If this ever stopped being true the copy would look gratuitous.
+func TestTheCreateFailureDraftReallyIsTheLiveEntry(t *testing.T) {
+	wfCtx := draftContext("cn-sh2-02")
+	runDraftStep(t, wfCtx)
+
+	got := createFailureDraft(wfCtx)
+	require.NotNil(t, got)
+
+	got[draftKeyArgs].(map[string]any)[argsKeyZone] = "TAMPERED"
+	assert.Equal(t, "TAMPERED",
+		wfCtx.StepResults[createDraftStepName][draftKeyArgs].(map[string]any)[argsKeyZone],
+		"the hook returns the live StepResults entry — which is why recordStepFailure copies it")
+}
+
+// TestASealedFailureSaysSo is the other side of ExecutionAuthorized: a failure
+// AFTER the gate must report that a contract authorised it, or the field would be
+// a constant false dressed up as a fact.
 func TestASealedFailureSaysSo(t *testing.T) {
 	executor := draftMockExecutor("cn-sh2-02")
 	executor.failOn = "CreateCompShareInstance"
@@ -177,7 +301,7 @@ func TestASealedFailureSaysSo(t *testing.T) {
 
 	require.NotNil(t, result.Failure)
 	assert.Equal(t, "创建实例", result.Failure.Step)
-	assert.True(t, result.Failure.Sealed,
+	assert.True(t, result.Failure.ExecutionAuthorized,
 		"this failure is past the confirm gate: a contract really did authorise it")
 	require.NotNil(t, result.Contract)
 }
@@ -199,7 +323,7 @@ func TestEveryFailureCarriesARecord(t *testing.T) {
 		assert.Equal(t, result.StoppedAt, result.Failure.Step)
 		assert.Nil(t, result.Failure.Draft,
 			"no candidate was resolved, and saying so beats returning a half-built one")
-		assert.False(t, result.Failure.Sealed)
+		assert.False(t, result.Failure.ExecutionAuthorized)
 	})
 
 	t.Run("cancelled at the gate", func(t *testing.T) {
@@ -211,7 +335,7 @@ func TestEveryFailureCarriesARecord(t *testing.T) {
 		require.False(t, result.Success)
 		require.NotNil(t, result.Failure, "a declined confirmation is a failure with a record")
 		assert.Equal(t, "确认创建", result.Failure.Step)
-		assert.False(t, result.Failure.Sealed,
+		assert.False(t, result.Failure.ExecutionAuthorized,
 			"a gate that was declined authorised nothing")
 	})
 }

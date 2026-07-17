@@ -3635,22 +3635,8 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	}
 
 	// After Run (and any image-recovery re-run), narrate and recover from the
-	// exact contract the user confirmed. A confirm-form edit or the image swap
-	// lives only in the sealed params — the pre-confirmation args are stale — so
-	// once the user has approved a contract it, not args, is the source for secret
-	// redaction and the deterministic reply.
-	//
-	// "The user approved a contract" is not the same as "Contract != nil", which
-	// is what this used to test. The guided create seals after each of its seven
-	// gates, so a run that stopped at 检查库存 ends holding a real contract that
-	// authorised an image choice and nothing else — with the same Operation as a
-	// genuine create authorisation, so it cannot be told apart by looking. Reading
-	// it as "what the user confirmed" promotes a selection card to consent.
-	// Failure.Sealed is the workflow's own answer to the right question.
-	finalParams := args
-	if result.Contract != nil && (result.Failure == nil || result.Failure.Sealed) {
-		finalParams = result.Contract.BusinessParams
-	}
+	// exact contract the user confirmed.
+	finalParams := workflowFinalParams(result, args)
 
 	if !result.Success {
 		result.Message = security.RedactKnownSecretsInText(result.Message, workflowSecretValues(finalParams))
@@ -3894,6 +3880,15 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 		return reply
 	}
 	gpuType, zone := createFailureTarget(failure)
+	if gpuType == "" || zone == "" {
+		// No suggestion beats a wrong one. ParseAvailableGPUs reads an empty zone as
+		// "every zone" (gpu_live.go:63), so improvising here does not degrade to a
+		// vaguer answer — it degrades to a confident recommendation drawn from
+		// regions the user is not buying in. The failure itself is still explained;
+		// only the "try this instead" is withheld, and only when the workflow could
+		// not say what it was actually trying to build.
+		return reply
+	}
 	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
 	alts := knowledge.FittingGPUAlternatives("", "", nil, knowledge.ParseAvailableGPUs(avail, zone), gpuType, 3)
 	if len(alts) == 0 {
@@ -3907,6 +3902,42 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 		strings.Join(names, " / "), alts[0].Name)
 }
 
+// workflowFinalParams returns the params to narrate and recover from: the
+// confirmed contract once the user has approved one, the original args otherwise.
+//
+// A confirm-form edit or the image swap lives only in the sealed params — the
+// pre-confirmation args are stale — so once there IS an approved contract it, not
+// args, is the source for secret redaction and the deterministic reply.
+//
+// "The user approved a contract" is not the same as "Contract != nil", which is
+// what this used to test. The guided create seals after each of its seven gates,
+// so a run that stopped at 检查库存 ends holding a real contract that authorised an
+// image choice and nothing else — with the same Operation as a genuine create
+// authorisation, so it cannot be told apart by looking. Reading it as "what the
+// user confirmed" promotes a selection card to consent.
+//
+// A failure with no record answers NOTHING, so it must not be read as yes. An
+// earlier version's `Failure == nil` disjunct meant exactly that, which put the
+// whole misreading back on any path that forgot to record one — and the
+// cancellation path had. Run now records on every exit; this reads a silent record
+// as "no" anyway, so that forgetting again costs a narration rather than
+// authorising params nobody approved.
+//
+// It is a function rather than three lines inline because an unreachable safe
+// default that cannot be tested is just a comment: this one is reachable here.
+func workflowFinalParams(result *workflow.Result, args map[string]any) map[string]any {
+	if result.Contract == nil {
+		return args
+	}
+	if result.Success {
+		return result.Contract.BusinessParams
+	}
+	if result.Failure != nil && result.Failure.ExecutionAuthorized {
+		return result.Contract.BusinessParams
+	}
+	return args
+}
+
 // createFailureTarget reads the GPU and zone the failed step was actually working
 // from, out of the candidate draft the workflow recorded with its failure.
 //
@@ -3916,10 +3947,11 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 // draft behind it names one. The draft is the decision; the args are one wire
 // shape of it.
 //
-// Returning "" for both is the honest outcome when no draft was resolved (a
-// failure before 形成执行草稿). Zone "" makes ParseAvailableGPUs list every zone,
-// which is the old bug — but it is now reached only when the workflow genuinely
-// established no zone, rather than every time the user did not type one.
+// Returning "" is the honest outcome when no draft was resolved (a failure before
+// 形成执行草稿) or the draft will not decode. The caller must then offer no
+// alternatives at all: an empty zone is not a weaker filter, it is no filter, and
+// the caller treating it as one is what produced cross-zone recommendations in the
+// first place. This function reports what it knows; it does not fill gaps.
 func createFailureTarget(failure *workflow.StepFailure) (gpuType, zone string) {
 	if failure == nil || len(failure.Draft) == 0 {
 		return "", ""

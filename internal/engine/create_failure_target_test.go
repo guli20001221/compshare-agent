@@ -85,7 +85,7 @@ func TestTheSoldOutReplyDoesNotTrustASelectionCard(t *testing.T) {
 
 	require.NotNil(t, result.Contract, "the guided flow has sealed its selection cards by now")
 	require.NotNil(t, result.Failure)
-	require.False(t, result.Failure.Sealed,
+	require.False(t, result.Failure.ExecutionAuthorized,
 		"…but none of them authorised a create, and the record says so")
 
 	gpuType, zone := createFailureTarget(result.Failure)
@@ -203,6 +203,115 @@ func gpuOffer(name, zone string, vramGB int) map[string]any {
 	return map[string]any{
 		"Name": name, "Zone": zone, "Status": "Normal",
 		"GraphicsMemory": map[string]any{"Value": float64(vramGB)},
+	}
+}
+
+// TestWorkflowFinalParamsNeedsAYesNotJustAContract pins the source-selection rule,
+// including the case that is unreachable today and must stay safe anyway.
+func TestWorkflowFinalParamsNeedsAYesNotJustAContract(t *testing.T) {
+	args := map[string]any{"GpuType": "4090"}
+	sealed := &workflow.SealedActionContract{
+		Operation:      "CreateInstanceWorkflow",
+		BusinessParams: map[string]any{"GpuType": "A100"},
+	}
+
+	for _, tc := range []struct {
+		name   string
+		result *workflow.Result
+		want   map[string]any
+		why    string
+	}{
+		{
+			name:   "no contract at all",
+			result: &workflow.Result{Success: false, Failure: &workflow.StepFailure{Step: "检查库存"}},
+			want:   args,
+			why:    "nothing was ever sealed",
+		},
+		{
+			name:   "success",
+			result: &workflow.Result{Success: true, Contract: sealed},
+			want:   sealed.BusinessParams,
+			why:    "a completed workflow's contract is the one that gated its mutating step",
+		},
+		{
+			name: "failed, authorised",
+			result: &workflow.Result{
+				Success:  false,
+				Contract: sealed,
+				Failure:  &workflow.StepFailure{Step: "创建实例", ExecutionAuthorized: true},
+			},
+			want: sealed.BusinessParams,
+			why:  "the create was approved and then failed — the contract is what it ran on",
+		},
+		{
+			name: "failed, NOT authorised",
+			result: &workflow.Result{
+				Success:  false,
+				Contract: sealed,
+				Failure:  &workflow.StepFailure{Step: "检查库存", ExecutionAuthorized: false},
+			},
+			want: args,
+			why:  "a selection card's seal is not consent to create",
+		},
+		{
+			name:   "failed with NO record — must not be read as yes",
+			result: &workflow.Result{Success: false, Contract: sealed},
+			want:   args,
+			why: "silence is not consent: a path that forgets to record must lose a " +
+				"narration, not gain an authorisation",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, workflowFinalParams(tc.result, args), tc.why)
+		})
+	}
+}
+
+// TestNoTargetMeansNoSuggestionAtAll: when the workflow could not say what it was
+// building, the reply explains the failure and stops there.
+//
+// Returning an empty zone and carrying on was the old bug wearing a new hat: an
+// empty zone is not a looser filter, it is no filter (gpu_live.go:63), so
+// improvising produces a CONFIDENT recommendation drawn from regions the user is
+// not buying in. Withholding the suggestion is the only honest option — the
+// failure itself is still explained.
+func TestNoTargetMeansNoSuggestionAtAll(t *testing.T) {
+	queried := false
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		if action == "DescribeAvailableCompShareInstanceTypes" {
+			queried = true
+			return map[string]any{"AvailableInstanceTypes": []any{
+				gpuOffer("A100", "cn-sh2-02", 80),
+				gpuOffer("H100", "cn-bj2-04", 80),
+			}}, nil
+		}
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	confirm := func(string, map[string]any) bool { return true }
+	eng := NewWithDeps(&mockLLM{}, executor, confirm)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirm, nil, true)
+
+	msg := "4090 1 卡 / 16C / 64GB 当前库存不足（售罄），请换一个规格或稍后再试。"
+
+	for _, tc := range []struct {
+		name    string
+		failure *workflow.StepFailure
+	}{
+		{"no record at all", nil},
+		{"no draft resolved yet", &workflow.StepFailure{Step: "查询镜像"}},
+		{"draft will not decode", &workflow.StepFailure{Step: "检查库存", Draft: map[string]any{"args": "not a draft"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queried = false
+			reply := eng.createFailureReplyWithAlternatives(context.Background(), msg, nil, tc.failure)
+
+			assert.Contains(t, reply, "库存不足", "the failure itself is still explained")
+			assert.NotContains(t, reply, "当前可创建的其他机型",
+				"no target, no suggestion — an every-zone list is worse than none")
+			assert.NotContains(t, reply, "A100")
+			assert.NotContains(t, reply, "H100")
+			assert.False(t, queried, "and it must not even ask: there is nothing to filter by")
+		})
 	}
 }
 
