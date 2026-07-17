@@ -985,6 +985,16 @@ func stepConfirmCreateGuided() Step {
 // rewrite of it.
 const createDraftKey = "__create_draft"
 
+// The draft has two halves, kept apart on purpose. createDraftArgsKey holds
+// exactly what goes upstream — nothing else may be added there, or it would be
+// sent to the API. createDraftImageKey holds the display facts the confirm card
+// needs (the image's name) that are NOT upstream arguments. Both are sealed
+// together, so the name the user read and the id that executes are one decision.
+const (
+	createDraftArgsKey  = "args"
+	createDraftImageKey = "image"
+)
+
 // materializeCreateDraft resolves every derived create parameter ONCE — zone,
 // CPU/memory, card count, image id, charge type, minimal CPU platform, system
 // disks, placement — and returns the final upstream argument map, also storing it
@@ -1008,7 +1018,8 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
+	image := selectCreateImage(wfCtx.Params, wfCtx.Result("查询镜像"))
+	imageId := image.ID
 	if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" && imageId == "" {
 		return nil, fmt.Errorf("社区镜像未返回有效的镜像 ID，无法创建实例（请确认社区镜像名称是否正确）")
 	}
@@ -1043,9 +1054,32 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 	if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
 		return nil, err
 	}
-	draft := deployment.ApplyPurchasePlacementArgs(args, placement)
+	draft := map[string]any{
+		createDraftArgsKey: deployment.ApplyPurchasePlacementArgs(args, placement),
+		// The selection is carried WHOLE, not re-derived for display. The card
+		// renders image.name; the create sends args.CompShareImageId. Both come
+		// from the one selectCreateImage call above.
+		createDraftImageKey: map[string]any{
+			"id": image.ID, "name": image.Name, "source": image.Source,
+		},
+	}
 	wfCtx.Params[createDraftKey] = draft
 	return draft, nil
+}
+
+// draftUpstreamArgs returns the executable half of a draft.
+func draftUpstreamArgs(draft map[string]any) (map[string]any, bool) {
+	args, ok := draft[createDraftArgsKey].(map[string]any)
+	return args, ok && len(args) > 0
+}
+
+// draftImage returns the display half of a draft.
+func draftImage(draft map[string]any) SelectedImage {
+	raw, _ := draft[createDraftImageKey].(map[string]any)
+	id, _ := raw["id"].(string)
+	name, _ := raw["name"].(string)
+	source, _ := raw["source"].(string)
+	return SelectedImage{ID: id, Name: name, Source: source}
 }
 
 func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
@@ -1053,20 +1087,26 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	zone, _ := draft["Zone"].(string)
-	// The card is a projection of the draft plus display-only decoration (price
-	// text, image name, zone label). Every executable value below is read FROM the
-	// draft — never re-derived — so what is shown is what is sealed and executed.
+	args, ok := draftUpstreamArgs(draft)
+	if !ok {
+		return nil, fmt.Errorf("执行草稿缺少上游参数")
+	}
+	zone, _ := args["Zone"].(string)
+	// The card is a projection of the draft. Every executable value is read FROM
+	// it — never re-derived — so what is shown is what is sealed and executed. The
+	// image NAME comes from the draft's carried selection, not a second lookup:
+	// that is what stops the card naming one image while the create sends another.
+	// Only the price text is still resolved here (see the known gap on 查询价格).
 	return map[string]any{
 		"workflow":   "CreateInstanceWorkflow",
-		"GpuType":    draft["GpuType"],
-		"Gpu":        draft["GPU"],
-		"CPU":        draft["CPU"],
-		"Memory":     draft["Memory"],
+		"GpuType":    args["GpuType"],
+		"Gpu":        args["GPU"],
+		"CPU":        args["CPU"],
+		"Memory":     args["Memory"],
 		"Zone":       zone,
 		"ZoneLabel":  zoneDisplayLabel(wfCtx.Params, zone),
-		"ChargeType": draft["ChargeType"],
-		"image":      pickImageName(wfCtx.Params, wfCtx.Result("查询镜像")),
+		"ChargeType": args["ChargeType"],
+		"image":      draftImage(draft).Name,
 		"price":      confirmPriceText(wfCtx.Result("查询价格"), createChargeType(wfCtx.Params)),
 		// FallbackNote is set by the deploy_model handler when it switched the
 		// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
@@ -1121,9 +1161,13 @@ func createArgsFromSealedDraft(wfCtx *Context) (map[string]any, error) {
 	if !ok || len(draft) == 0 {
 		return nil, fmt.Errorf("已确认的执行合同中缺少创建参数，拒绝以重新推导的参数创建")
 	}
+	args, ok := draftUpstreamArgs(draft)
+	if !ok {
+		return nil, fmt.Errorf("已确认的执行合同中缺少上游参数，拒绝以重新推导的参数创建")
+	}
 	// Copy so the tool executor cannot reach into the frozen record the digest is
 	// computed over.
-	return deepCopyParams(draft), nil
+	return deepCopyParams(args), nil
 }
 
 func stepDescribeInstance() Step {
@@ -1202,6 +1246,112 @@ func paramNum(params map[string]any, key string, defaultVal float64) float64 {
 // deploy_model handler does, so the saga creates exactly the image the matcher chose +
 // sized the GPU for, instead of re-resolving independently). CLI/ReAct callers do
 // NOT set it, so their resolution is byte-unchanged.
+// SelectedImage is one image, chosen once: the ID that executes and the Name the
+// user is shown are two fields of a SINGLE selection.
+//
+// They used to be two independent walks of the same response. For platform images
+// pickImageId and pickImageName each called matchPlatformImage and read a
+// different field off the result — agreeing because they shared a starting point,
+// not because anything held them together. For community images they did not even
+// read the same LEVEL: the id came from groups[0].Data[0], the display name from
+// groups[0].ImageName. And when a caller threaded a CompShareImageId, the name
+// shown was whatever ImageName came with it — which is exactly where a stale name
+// can be displayed over a different image's id.
+type SelectedImage struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// selectCreateImage resolves the image ONCE. It is the only image decision in the
+// create flow; the draft carries the result whole, so the confirm card renders
+// Name and the create sends ID without either re-selecting.
+func selectCreateImage(params map[string]any, result map[string]any) SelectedImage {
+	source := paramStr(params, "ImageSource", "platform")
+	if id := paramStr(params, "CompShareImageId", ""); id != "" {
+		// The id is already a decision (threaded in by the deploy_model handler or
+		// a form override). Prefer the name the catalog gives for THAT id over the
+		// ImageName that travelled alongside it: when the two disagree the catalog
+		// describes the image that will actually be built.
+		return SelectedImage{ID: id, Name: catalogImageName(result, id, source, params), Source: source}
+	}
+	if source == "community" {
+		return selectCommunityImage(result)
+	}
+	img := matchPlatformImage(params, result)
+	if img == nil {
+		return SelectedImage{Source: source}
+	}
+	id, _ := img["CompShareImageId"].(string)
+	name, _ := img["Name"].(string)
+	if name == "" {
+		name = "未知"
+	}
+	return SelectedImage{ID: id, Name: name, Source: source}
+}
+
+// catalogImageName returns the catalog's display name for an already-chosen id,
+// falling back to the threaded ImageName when the id is not in this response
+// (a community id against a platform query, a cached id, an empty result).
+func catalogImageName(result map[string]any, id, source string, params map[string]any) string {
+	fallback := paramStr(params, "ImageName", "")
+	if result == nil {
+		return fallback
+	}
+	if source == "community" {
+		if selected := selectCommunityImage(result); selected.ID == id && selected.Name != "" {
+			return selected.Name
+		}
+		return fallback
+	}
+	imageSet, _ := result["ImageSet"].([]any)
+	for _, item := range imageSet {
+		img, _ := item.(map[string]any)
+		if img == nil {
+			continue
+		}
+		if imgID, _ := img["CompShareImageId"].(string); imgID != id {
+			continue
+		}
+		if name, _ := img["Name"].(string); name != "" {
+			return name
+		}
+	}
+	return fallback
+}
+
+// selectCommunityImage reads the id and the display name off the SAME group, so
+// the pair cannot drift apart the way two independent walks could.
+func selectCommunityImage(result map[string]any) SelectedImage {
+	selected := SelectedImage{Name: "未知", Source: "community"}
+	if result == nil {
+		return selected
+	}
+	groups, ok := result["CompshareImageGroup"].([]any)
+	if !ok || len(groups) == 0 {
+		return selected
+	}
+	group, ok := groups[0].(map[string]any)
+	if !ok {
+		return selected
+	}
+	if name, ok := group["ImageName"].(string); ok && name != "" {
+		selected.Name = name
+	}
+	data, ok := group["Data"].([]any)
+	if !ok || len(data) == 0 {
+		return selected
+	}
+	first, ok := data[0].(map[string]any)
+	if !ok {
+		return selected
+	}
+	if id, ok := first["CompShareImageId"].(string); ok {
+		selected.ID = id
+	}
+	return selected
+}
+
 func pickImageId(params map[string]any, result map[string]any) string {
 	if id := paramStr(params, "CompShareImageId", ""); id != "" {
 		return id

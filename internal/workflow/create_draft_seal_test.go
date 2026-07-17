@@ -38,16 +38,22 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 
 	draft, ok := wfCtx.Params[createDraftKey].(map[string]any)
 	require.True(t, ok, "the draft must live in Params, because Params is what seal() hashes")
-	assert.Equal(t, "cn-sh2-02", draft["Zone"], "the auto-derived zone is now inside the sealed contract")
-	assert.Equal(t, "img-001", draft["CompShareImageId"])
-	assert.Equal(t, float64(16), draft["CPU"])
-	assert.Equal(t, float64(64*1024), draft["Memory"])
+	args, ok := draftUpstreamArgs(draft)
+	require.True(t, ok)
+	assert.Equal(t, "cn-sh2-02", args["Zone"], "the auto-derived zone is now inside the sealed contract")
+	assert.Equal(t, "img-001", args["CompShareImageId"])
+	assert.Equal(t, float64(16), args["CPU"])
+	assert.Equal(t, float64(64*1024), args["Memory"])
 
 	// And the card is a projection of that same draft, not a parallel derivation.
-	assert.Equal(t, draft["Zone"], card["Zone"])
-	assert.Equal(t, draft["CPU"], card["CPU"])
-	assert.Equal(t, draft["Memory"], card["Memory"])
-	assert.Equal(t, draft["GPU"], card["Gpu"])
+	assert.Equal(t, args["Zone"], card["Zone"])
+	assert.Equal(t, args["CPU"], card["CPU"])
+	assert.Equal(t, args["Memory"], card["Memory"])
+	assert.Equal(t, args["GPU"], card["Gpu"])
+	// The name on the card and the id in the request are ONE selection.
+	assert.Equal(t, "PyTorch", card["image"])
+	assert.Equal(t, "PyTorch", draftImage(draft).Name)
+	assert.Equal(t, args["CompShareImageId"], draftImage(draft).ID)
 }
 
 // TestCreateExecutesTheConfirmedDraftNotAFreshDerivation is the decisive one: it
@@ -98,7 +104,9 @@ func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 	wfCtx.seal("CreateInstanceWorkflow")
 
 	// Someone rewrites the LIVE draft after confirmation.
-	wfCtx.Params[createDraftKey].(map[string]any)["Zone"] = "cn-wlcb-01"
+	liveDraft := wfCtx.Params[createDraftKey].(map[string]any)
+	liveArgs, _ := draftUpstreamArgs(liveDraft)
+	liveArgs["Zone"] = "cn-wlcb-01"
 
 	args, err := createArgsFromSealedDraft(wfCtx)
 	require.NoError(t, err)
@@ -108,8 +116,59 @@ func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 	// And the returned map must not alias the frozen record.
 	args["Zone"] = "tampered"
 	sealedDraft := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)
-	assert.Equal(t, "cn-sh2-02", sealedDraft["Zone"],
+	sealedArgs, _ := draftUpstreamArgs(sealedDraft)
+	assert.Equal(t, "cn-sh2-02", sealedArgs["Zone"],
 		"the executor must not be able to reach into the record the digest is computed over")
+}
+
+// TestCreateCardNameAndExecutedIDAreOneSelection is the typed-image contract. The
+// card used to render pickImageName while the create sent pickImageId — two walks
+// of the same response. For a THREADED id they could genuinely disagree: the name
+// shown was whatever ImageName travelled alongside, so a stale name could be
+// displayed over a different image's id. Now the catalog's own name for that id
+// wins.
+func TestCreateCardNameAndExecutedIDAreOneSelection(t *testing.T) {
+	wfCtx := draftContext("cn-wlcb-01")
+	// Caller threads an explicit id, paired with a name that no longer describes it.
+	wfCtx.Params["CompShareImageId"] = "img-002"
+	wfCtx.Params["ImageName"] = "陈旧的名字"
+	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-001", "Name": "PyTorch"},
+		map[string]any{"CompShareImageId": "img-002", "Name": "TensorFlow"},
+	}}
+
+	card, err := buildCreateConfirmArgs(wfCtx)
+	require.NoError(t, err)
+	wfCtx.seal("CreateInstanceWorkflow")
+	args, err := createArgsFromSealedDraft(wfCtx)
+	require.NoError(t, err)
+
+	assert.Equal(t, "img-002", args["CompShareImageId"])
+	assert.Equal(t, "TensorFlow", card["image"],
+		"the card must name the image that will actually be built, not the stale name threaded beside its id")
+	assert.NotEqual(t, "陈旧的名字", card["image"])
+}
+
+// TestCommunityImageIdAndNameComeFromTheSameGroup: the two community pickers read
+// different LEVELS of the response — the id from groups[0].Data[0], the name from
+// groups[0].ImageName. One selection now reads both off the same group.
+func TestCommunityImageIdAndNameComeFromTheSameGroup(t *testing.T) {
+	result := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName": "社区-ComfyUI",
+			"Data":      []any{map[string]any{"CompShareImageId": "cimg-001"}},
+		},
+		map[string]any{
+			"ImageName": "社区-另一个",
+			"Data":      []any{map[string]any{"CompShareImageId": "cimg-999"}},
+		},
+	}}
+
+	selected := selectCreateImage(map[string]any{"ImageSource": "community"}, result)
+
+	assert.Equal(t, "cimg-001", selected.ID)
+	assert.Equal(t, "社区-ComfyUI", selected.Name, "name and id must come from the same group")
+	assert.Equal(t, "community", selected.Source)
 }
 
 // TestCreateRefusesAMaterializedButUnconfirmedDraft is the structural guard.
