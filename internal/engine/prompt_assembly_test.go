@@ -23,7 +23,6 @@ func TestAssembledContext_SingleMemoryBlock_WithCompactionOn(t *testing.T) {
 	eng.SetReactHistoryCompactionEnabled(true)
 	eng.SetSessionState(SessionState{
 		SchemaVersion: SessionStateSchemaCurrent,
-		LastIntent:    "resource",
 		TaskSnapshot: TaskSnapshot{
 			Goal:   "把训练机扩容到 200G",
 			Status: TaskSnapshotStatusActive,

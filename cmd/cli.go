@@ -289,7 +289,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			eng.SetFreshnessTraceObserver(traceRecorder.SetFreshnessTrace)
 			eng.SetDiagnosisTraceObserver(traceRecorder.SetDiagnosisTrace)
 			traceRecorder.SetPlannerTraceSupplier(nil)
-			eng.SetContextTraceObserver(traceRecorder.SetContextTrace)
 			if knowledgeRetrievalEnabled {
 				eng.SetRetrievalTraceObserver(traceRecorder.SetRetrievalTrace)
 				eng.SetOutcomeTraceObserver(traceRecorder.SetOutcomeTrace)

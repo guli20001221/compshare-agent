@@ -12,7 +12,6 @@ import (
 // Engine turn. Durable coordination uses this single seam rather than reaching
 // into HTTP's recorder or depending on every individual Engine setter.
 type TraceHooks struct {
-	Context    func(observability.ContextTrace)
 	Retrieval  func(observability.RetrievalTrace)
 	Freshness  func(observability.FreshnessTrace)
 	Diagnosis  func(observability.DiagnosisTrace)
@@ -50,7 +49,6 @@ func (e *Engine) AttachTraceHooks(h TraceHooks) {
 	if e == nil {
 		return
 	}
-	e.SetContextTraceObserver(h.Context)
 	e.SetRetrievalTraceObserver(h.Retrieval)
 	e.SetFreshnessTraceObserver(h.Freshness)
 	e.SetDiagnosisTraceObserver(h.Diagnosis)

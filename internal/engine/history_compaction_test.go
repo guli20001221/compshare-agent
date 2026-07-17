@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,12 +64,19 @@ func TestConversationMemoryCompactorInvalidSourceFallsBackToVerbatimExcerpt(t *t
 	assert.Equal(t, int64(1), state.ConversationDigest.SummaryFrontier)
 }
 
-// The single context card must be a strict superset of the retired
-// buildReActHistorySummary block: every structured signal that block surfaced —
-// last intent, task-level constraints/decisions, the task-expired notice, the
-// selected instance, and the expired-observation "re-query" caution — must still
-// reach the model through renderAgentContextCard, and an expired fact's stale
-// value must never leak.
+// The single context card must carry every structured signal the retired
+// buildReActHistorySummary block surfaced: task-level constraints/decisions, the
+// task-expired notice, the selected instance, and the expired-observation
+// "re-query" caution — all must still reach the model through
+// renderAgentContextCard, and an expired fact's stale value must never leak.
+//
+// DELIBERATELY NARROWED: the block's sixth signal, "上次意图", is no longer
+// promised. SessionState.LastIntent lost its last Go writer when P6 deleted the
+// route stack, so the only values that field could still hold came from rows a
+// pre-P6 binary persisted — a classification nothing refreshes, re-persisted
+// verbatim every turn. That is stale assertion, not memory, so the field and its
+// card line were removed rather than re-wired. This test is the record of that
+// narrowing being a decision; the remaining assertions are unchanged.
 func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 	now := time.Unix(1_000, 0)
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
@@ -78,7 +84,6 @@ func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 		SchemaVersion:        SessionStateSchemaCurrent,
 		SelectedInstanceID:   "uhost-123",
 		SelectedInstanceName: "train-box",
-		LastIntent:           string(intent.IntentMonitorQuery),
 		TaskSnapshot: TaskSnapshot{
 			Goal:        "把训练机监控看板恢复",
 			Constraints: []string{"只看最近五分钟"},
@@ -102,7 +107,8 @@ func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 	eng.refreshConversationDigest(now)
 	card := renderAgentContextCard((ContextCompiler{}).CompileForTurn(eng, "现在怎么样", "", now))
 
-	assert.Contains(t, card, "上次意图："+string(intent.IntentMonitorQuery))
+	assert.NotContains(t, card, "上次意图",
+		"the last-routed-intent line is deliberately gone: nothing refreshes it, so it could only carry a stale pre-P6 value")
 	assert.Contains(t, card, "train-box")
 	assert.Contains(t, card, "uhost-123")
 	assert.Contains(t, card, "把训练机监控看板恢复")
@@ -137,7 +143,6 @@ func TestTrimHistoryCompaction_TrimsToolPairsAndShrinksOldToolResultsWithoutSumm
 	eng.SetSessionState(SessionState{
 		SelectedInstanceID:   "uhost-selected",
 		SelectedInstanceName: "selected-box",
-		LastIntent:           string(intent.IntentResourceInfo),
 	}, 1)
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system"}}
 	// Leading padding whose only job is to push the history over the ceiling so the

@@ -376,7 +376,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"instanceResolutionSourceThisTurn":  true,
 		"factCacheOldestAgeSecondsThisTurn": true,
 		"rendererTraceObserver":             true,
-		"contextTraceObserver":              true,
 		// Per-session: whether this session's history was ever trimmed/compacted.
 		// Leaking it across sessions would report a fresh session as already-trimmed.
 		"historyTrimmedThisSession": true,
@@ -430,12 +429,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 12, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 82, len(perSessionFields); want != got {
+	if want, got := 81, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 94, typ.NumField(); want != got {
+	if want, got := 93, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

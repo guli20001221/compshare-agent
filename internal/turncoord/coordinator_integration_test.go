@@ -61,9 +61,6 @@ func (e *coordinatorTestEngine) ChatWithOptions(
 	onStep func(engine.StepEvent),
 	opts engine.ChatOptions,
 ) (string, error) {
-	if e.hooks.Context != nil {
-		e.hooks.Context(observability.ContextTrace{LoopMessages: 1})
-	}
 	if e.hooks.Completion != nil {
 		defer e.hooks.Completion(observability.TurnCompletionTrace{
 			Class: observability.CompletionClassAgent, Reason: observability.CompletionReasonAgentLoop,

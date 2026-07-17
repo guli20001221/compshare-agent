@@ -48,7 +48,7 @@ eval/realism/out*/
 eval/shadow_qa/2026-05-23-m1-cli-eval/
 # M2 CLI eval round (2026-05-24) — same policy as M1. Reply / tool-call
 # regression check only. CLI path does not hydrate SessionState so the
-# eval does NOT cover M2's RecentFacts / SelectedInstance / LastIntent
+# eval does NOT cover M2's RecentFacts / SelectedInstance
 # writers; those are covered by engine unit/integration tests and the
 # HTTP fact-persist e2e test.
 eval/shadow_qa/2026-05-24-m2-cli-eval/

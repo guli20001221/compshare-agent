@@ -13,14 +13,12 @@ import (
 func TestAttachTraceHooksWiresEveryEngineObserver(t *testing.T) {
 	eng := &Engine{}
 	eng.AttachTraceHooks(TraceHooks{
-		Context:   func(observability.ContextTrace) {},
 		Retrieval: func(observability.RetrievalTrace) {}, Freshness: func(observability.FreshnessTrace) {},
 		Diagnosis: func(observability.DiagnosisTrace) {}, Outcome: func(observability.OutcomeTrace) {},
 		Renderer: func(observability.RendererTrace) {}, HardBlock: func(observability.EngineHardBlockTrace) {},
 		Completion: func(observability.TurnCompletionTrace) {},
 		RateLimit:  func(governance.Decision) {}, TokenUsage: func(llm.TokenUsage) {},
 	})
-	require.NotNil(t, eng.contextTraceObserver)
 	require.NotNil(t, eng.retrievalTraceObserver)
 	require.NotNil(t, eng.freshnessTraceObserver)
 	require.NotNil(t, eng.diagnosisTraceObserver)

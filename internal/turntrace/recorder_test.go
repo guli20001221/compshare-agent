@@ -27,7 +27,6 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	writer := &captureWriter{}
 	recorder := New(Config{Writer: writer, TraceID: "turn:e1", TurnID: "turn", TurnIndex: 2, Start: time.Now()})
 	hooks := recorder.Hooks()
-	require.NotNil(t, hooks.Context)
 	require.NotNil(t, hooks.Retrieval)
 	require.NotNil(t, hooks.Freshness)
 	require.NotNil(t, hooks.Diagnosis)
@@ -38,7 +37,6 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	require.NotNil(t, hooks.RateLimit)
 	require.NotNil(t, hooks.TokenUsage)
 
-	hooks.Context(observability.ContextTrace{LoopMessages: 3})
 	hooks.Retrieval(observability.RetrievalTrace{Enabled: true, Hits: 1})
 	hooks.Freshness(observability.FreshnessTrace{MonitorCallInCurrentTurn: true})
 	hooks.Diagnosis(observability.DiagnosisTrace{Claims: []observability.DiagnosisClaimTrace{{Claim: "checked", Status: "supported"}}})
@@ -53,7 +51,6 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	require.NoError(t, recorder.Finish(nil, nil, "answer", engine.TraceSnapshot{SessionStateHydrated: true}, time.Now()))
 	require.Len(t, writer.records, 1)
 	got := writer.records[0]
-	assert.Equal(t, 3, got.Context.LoopMessages)
 	assert.True(t, got.Retrieval.Enabled)
 	assert.True(t, got.Freshness.MonitorCallInCurrentTurn)
 	require.Len(t, got.Diagnosis.Claims, 1)

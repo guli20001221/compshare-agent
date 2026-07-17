@@ -130,7 +130,6 @@ type TraceRecord struct {
 	ActualExecutionPath string               `json:"actual_execution_path,omitempty"`
 	Runtime             RuntimeTrace         `json:"runtime"`
 	IntentRouter        RouterTrace          `json:"intent_router"`
-	Context             ContextTrace         `json:"context"`
 	EngineHardBlock     EngineHardBlockTrace `json:"engine_hard_block"`
 	EntityRegistry      EntityRegistryTrace  `json:"entity_registry"`
 	ToolCalls           []ToolCallTrace      `json:"tool_calls"`
@@ -161,7 +160,6 @@ type traceRecordJSON struct {
 	ActualExecutionPath string                `json:"actual_execution_path,omitempty"`
 	Runtime             *RuntimeTrace         `json:"runtime,omitempty"`
 	IntentRouter        *RouterTrace          `json:"intent_router,omitempty"`
-	Context             *ContextTrace         `json:"context,omitempty"`
 	EngineHardBlock     *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
 	EntityRegistry      *EntityRegistryTrace  `json:"entity_registry,omitempty"`
 	ToolCalls           []ToolCallTrace       `json:"tool_calls,omitempty"`
@@ -194,9 +192,6 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if tracePlannerObserved(r.IntentRouter) {
 		out.IntentRouter = &r.IntentRouter
-	}
-	if traceContextObserved(r.Context) {
-		out.Context = &r.Context
 	}
 	if traceEngineHardBlockObserved(r.EngineHardBlock) {
 		out.EngineHardBlock = &r.EngineHardBlock
@@ -452,52 +447,6 @@ type RouterTrace struct {
 type PlannerSkillTrace struct {
 	Name       string `json:"name,omitempty"`
 	Resolution string `json:"resolution"`
-}
-
-// ContextTrace records what the turn's two decision-makers could actually SEE.
-//
-// Every other trace in this file records what the agent DID. None record what it
-// KNEW, and that gap makes the single most common user complaint — "它忘了我刚说的话"
-// — undiagnosable: "the agent forgot" and "the agent was never told" produce an
-// identical reply and have opposite fixes.
-//
-// They are also, in this engine, two different components. The ReAct loop carries
-// maxHistoryMessages of history. The intent ROUTER, which runs FIRST and decides which
-// path the turn takes at all, sees only maxPlannerPriorMessages / maxPlannerPriorRunes
-// of user+assistant text with tool results stripped. Widening the loop does nothing for
-// a turn the router already misrouted on a starved view — which is exactly what a blind
-// A/B measured as "no improvement" while both numbers stayed inscrutable.
-//
-// Counts and flags ONLY. No raw user or model text: same rule as PlannerSlots below,
-// and the reason this is safe to leave on in production, where it is most needed.
-type ContextTrace struct {
-	// What the ROUTER saw (upstream; picks the path).
-	RouterPriorMessages int `json:"router_prior_messages"`
-	RouterPriorRunes    int `json:"router_prior_runes"`
-	// RouterPriorInPrompt is the field that matters, and today it is always FALSE.
-	// PriorText is assembled and handed to the router, but buildUserPrompt does not emit
-	// it into the prompt (PR1 hotfix 2026-05-28: dumping the transcript made multi-turn
-	// input grow until ds-v4-flash stopped returning schema-valid JSON). So the router —
-	// which runs first and decides whether a turn is even a troubleshooting turn — is
-	// effectively STATELESS about the conversation, and routes on the current message
-	// plus LastIntent / LastSelectedInstanceID alone.
-	//
-	// That is not a footnote. It is why widening the ReAct loop's history changes nothing
-	// for a turn the router has already misrouted, and why "the agent forgot" is a
-	// misdiagnosis: it was never told.
-	RouterPriorInPrompt   bool `json:"router_prior_in_prompt"`
-	RouterPriorTruncated  bool `json:"router_prior_truncated"` // did the bound bite this turn?
-	RouterHasLastIntent   bool `json:"router_has_last_intent"`
-	RouterHasSelectedHost bool `json:"router_has_selected_host"`
-
-	// What the LOOP saw (downstream; answers the turn).
-	LoopMessages     int  `json:"loop_messages"`
-	LoopToolMessages int  `json:"loop_tool_messages"`
-	LoopTrimmed      bool `json:"loop_trimmed"` // did history get dropped/compacted before this turn?
-}
-
-func traceContextObserved(t ContextTrace) bool {
-	return t.RouterPriorMessages > 0 || t.RouterPriorRunes > 0 || t.LoopMessages > 0
 }
 
 // PlannerSlots projects intent.Slots for the trace. Nothing here may carry raw

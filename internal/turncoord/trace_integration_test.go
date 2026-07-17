@@ -107,7 +107,6 @@ func TestCoordinator_DurableCommitPersistsAttemptTraceToPostgres(t *testing.T) {
 	assert.Equal(t, "committed", trace.Continuity.CommitOutcome)
 	assert.True(t, trace.Continuity.SessionIdentityMatch)
 	assert.Equal(t, observability.CompletionClassAgent, trace.Completion.Class)
-	assert.Equal(t, 1, trace.Context.LoopMessages)
 }
 
 func TestCoordinator_RetryEpochsProduceDistinctAttemptTraces(t *testing.T) {

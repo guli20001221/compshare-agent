@@ -92,14 +92,6 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // resolved by ordinal/name/ID in a later turn. known_constraints /
 // pending_action remain deferred.
 //
-// LastIntent vocabulary contract: when non-empty, the value MUST be
-// exactly string(intent.X) for some X in intent.RuntimeIntents() — e.g.
-// "monitor_query", "resource_info", "gpu_specs_query". Short aliases like
-// "monitor" / "resource" are not legal. The string typing here is
-// intentional to keep the engine package from reverse-depending on the
-// intent package; the test in session_state_test.go enforces the
-// vocabulary contract via test-side import of internal/intent.
-//
 // LastStockGpuModel is the legacy stock referent used only when
 // USE_SESSION_FACT_CONTEXT is disabled or the engine is running without
 // persisted session facts. With fact context enabled, stock follow-ups use
@@ -111,7 +103,6 @@ type SessionState struct {
 	SelectedInstanceSource          string                  `json:"selected_instance_source,omitempty"`
 	SelectedInstanceAtUnix          int64                   `json:"selected_instance_at_unix,omitempty"`
 	SelectedInstanceFreshness       string                  `json:"selected_instance_freshness,omitempty"`
-	LastIntent                      string                  `json:"last_intent,omitempty"`
 	LastStockGpuModel               string                  `json:"last_stock_gpu_model,omitempty"`
 	LastDeployWorkload              string                  `json:"last_deploy_workload,omitempty"`
 	LastDeployZone                  string                  `json:"last_deploy_zone,omitempty"`

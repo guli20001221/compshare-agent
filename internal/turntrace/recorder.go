@@ -86,7 +86,6 @@ func (r *Recorder) Hooks() engine.TraceHooks {
 		return engine.TraceHooks{}
 	}
 	return engine.TraceHooks{
-		Context:   r.SetContextTrace,
 		Retrieval: r.SetRetrievalTrace, Freshness: r.SetFreshnessTrace,
 		Diagnosis: r.SetDiagnosisTrace, Outcome: r.SetOutcomeTrace,
 		Renderer: r.SetRendererTrace, HardBlock: r.SetEngineHardBlock,
@@ -118,14 +117,6 @@ func (r *Recorder) SetUserMessage(message string) {
 	r.record.UserMsgHash = hash
 }
 
-func (r *Recorder) SetContextTrace(trace observability.ContextTrace) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.record.Context = trace
-}
 
 func (r *Recorder) SetPlannerTrace(trace observability.RouterTrace) {
 	if r == nil {

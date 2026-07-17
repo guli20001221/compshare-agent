@@ -253,7 +253,6 @@ type Engine struct {
 	// flag), copied into every session.
 	fastTemplate                  bool
 	rendererTraceObserver         func(observability.RendererTrace)
-	contextTraceObserver          func(observability.ContextTrace)
 	historyTrimmedThisSession     bool
 	retrievalTraceObserver        func(observability.RetrievalTrace)
 	freshnessTraceObserver        func(observability.FreshnessTrace)
@@ -689,51 +688,6 @@ func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	}
 }
 
-// SetContextTraceObserver wires the per-turn record of what the router and the loop
-// could actually SEE. Without it, "the agent forgot" and "the agent was never told"
-// are indistinguishable in a trace: they produce the same reply and need opposite fixes.
-func (e *Engine) SetContextTraceObserver(observer func(observability.ContextTrace)) {
-	e.contextTraceObserver = observer
-}
-
-// emitContextTrace reports the visible-context footprint of the turn. Counts and flags
-// only, never raw text, so it is safe to leave on in production -- which is exactly where
-// "did it actually have the context?" is impossible to answer after the fact.
-//
-// The two numbers are deliberately reported side by side because they are NOT the same
-// context. The ReAct loop carries maxHistoryMessages. The router, which runs FIRST and
-// decides whether the turn is even a troubleshooting turn, sees maxPlannerPriorMessages
-// of user+assistant text with tool results stripped. A turn the router misroutes on its
-// starved view is lost before the loop's memory is ever consulted.
-func (e *Engine) emitContextTrace(priorText, lastIntent, selectedHost string) {
-	if e.contextTraceObserver == nil {
-		return
-	}
-	runes := len([]rune(priorText))
-	priorMsgs := strings.Count(priorText, "\n")
-	var toolMsgs int
-	for _, m := range e.messages {
-		if m.Role == openai.ChatMessageRoleTool {
-			toolMsgs++
-		}
-	}
-	e.contextTraceObserver(observability.ContextTrace{
-		RouterPriorMessages: priorMsgs,
-		RouterPriorRunes:    runes,
-		// The router now sees the same bounded recent conversation that was assembled
-		// here, instead of deciding the whole turn from a 200-rune assistant prefix.
-		RouterPriorInPrompt: strings.TrimSpace(priorText) != "",
-		// Did the bound bite? The router receives this projection, so this flag shows
-		// when its recent-conversation view was intentionally shortened.
-		RouterPriorTruncated:  priorMsgs >= maxPlannerPriorMessages || runes >= maxPlannerPriorTextRunes,
-		RouterHasLastIntent:   lastIntent != "",
-		RouterHasSelectedHost: selectedHost != "",
-		LoopMessages:          len(e.messages),
-		LoopToolMessages:      toolMsgs,
-		LoopTrimmed:           e.historyTrimmedThisSession,
-	})
-}
-
 func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 	// Engine treats a non-nil retriever as the Stage 2B retrieval gate. CLI
 	// code owns env parsing and only calls this after USE_KNOWLEDGE_RETRIEVAL
@@ -1061,7 +1015,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 // has hydrated state with a higher-or-equal version, the incoming state
 // is treated as STALE — its RecentFacts are merged in via
 // mergeFactsByProducedAt, but the scalar fields (SelectedInstance{ID,Name},
-// LastIntent, PendingSelection*) keep the in-memory values. This is the M1
+// PendingSelection*) keep the in-memory values. This is the M1
 // forward-note (docs/agent/plan/m1-session-state-cas.md:429) implementation.
 //
 // When does the merge path fire?
@@ -1084,7 +1038,7 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 	if e.sessionStateHydrated && version <= e.sessionStateVersion {
 		e.sessionState.RecentFacts = mergeFactsByProducedAt(e.sessionState.RecentFacts, state.RecentFacts)
 		e.sessionState.VerifiedKnowledge = mergeVerifiedKnowledge(e.sessionState.VerifiedKnowledge, state.VerifiedKnowledge)
-		// SelectedInstance{ID,Name} / LastIntent / PendingSelection* /
+		// SelectedInstance{ID,Name} / PendingSelection* /
 		// SchemaVersion: keep the in-memory value. The local engine has not
 		// yet persisted, so its scalars are at-or-newer than the incoming row.
 		return
@@ -3374,81 +3328,12 @@ func (e *Engine) fallbackStockGpuModel(now time.Time) string {
 	return e.sessionState.LastStockGpuModel
 }
 
-// rememberLastIntentForRouter persists the router's own classification to
-// SessionState.LastIntent so the NEXT turn's router can see what this conversation is
-// about. It is the whole of the router's memory.
-//
-// It exists separately from recordLastIntentFromPlan for two reasons, and both matter:
-//
-//  1. COVERAGE. recordLastIntentFromPlan only runs when a direct-dispatch handler fully
-//     handled the turn. diagnosis and knowledge_qa have no such handler — they go to
-//     ReAct — so they were never recorded at all, and they are the two biggest intents in
-//     real traffic. The router's memory could not represent the conversations users
-//     actually have.
-//  2. NO SIDE EFFECTS. recordLastIntentFromPlan also clears the pending deploy model and
-//     the deploy clarification carry. Those are correct AFTER a handler has resolved the
-//     turn, and destructive BEFORE the create/deploy resume logic has run. This function
-//     writes one field and touches nothing else.
-//
-// Same vocabulary contract as recordLastIntentFromPlan: refuses empty / IntentUnknown /
-// non-RuntimeIntents, so a fallback plan can never clobber a good LastIntent with garbage.
-// That refusal is load-bearing — it is why a turn the router failed on leaves the previous
-// topic standing instead of erasing it.
-func (e *Engine) rememberLastIntentForRouter(plan intent.IntentRoute) {
-	if !e.sessionStateHydrated {
-		return
-	}
-	if plan.Intent == "" || plan.Intent == intent.IntentUnknown {
-		return
-	}
-	if !runtimeIntentMember(plan.Intent) {
-		return
-	}
-	e.sessionState.LastIntent = string(plan.Intent)
-}
-
-// recordLastIntentFromPlan records the classified topic after a handled route.
-// Task lifetime is intentionally absent from this helper: handler success says
-// the current question was answered, not that the user abandoned a different
-// pending workflow. Only the turn's shared context decision (New/Clear) or an
-// explicitly completed workflow may clear that state.
-func (e *Engine) recordLastIntentFromPlan(plan intent.IntentRoute) {
-	if !e.sessionStateHydrated {
-		return
-	}
-	if plan.Intent == "" || plan.Intent == intent.IntentUnknown {
-		return
-	}
-	if !runtimeIntentMember(plan.Intent) {
-		return
-	}
-	e.sessionState.LastIntent = string(plan.Intent)
-}
-
 func createFamilyIntent(i intent.Intent) bool {
 	return i == intent.IntentDeployModel || i == intent.IntentCreateInstance
 }
 
 func createFamilyIntentString(s string) bool {
 	return s == string(intent.IntentDeployModel) || s == string(intent.IntentCreateInstance)
-}
-
-// runtimeIntentSet is a one-time-built membership set over intent.RuntimeIntents.
-// Used by recordLastIntentFromPlan to refuse non-runtime values without
-// taking a hard compile-time dep on the intent vocabulary from inside
-// session_state.go (the engine package already imports intent, so this
-// is internal-only).
-var runtimeIntentSet = func() map[intent.Intent]struct{} {
-	out := make(map[intent.Intent]struct{}, len(intent.RuntimeIntents()))
-	for _, i := range intent.RuntimeIntents() {
-		out[i] = struct{}{}
-	}
-	return out
-}()
-
-func runtimeIntentMember(i intent.Intent) bool {
-	_, ok := runtimeIntentSet[i]
-	return ok
 }
 
 func (e *Engine) markRegistryInvalidated(action string) {

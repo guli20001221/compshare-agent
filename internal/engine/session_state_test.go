@@ -54,7 +54,6 @@ func TestPersistedContext_RoundTripBytes(t *testing.T) {
 			SelectedInstanceID:     "uhost-abc123",
 			SelectedInstanceName:   "gpu-prod-01",
 			SelectedInstanceSource: SelectedInstanceSourceUser,
-			LastIntent:             string(intent.IntentMonitorQuery),
 			LastDeployWorkload:     "Qwen2.5-32B",
 			LastDeployZone:         "cn-wlcb-01",
 			PendingDeployModel:     "DeepSeek R1",
@@ -270,34 +269,6 @@ func TestSessionState_VerifiedKnowledgeRoundTrip(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// LastIntent vocabulary contract
-// ---------------------------------------------------------------------------
-
-// TestSessionState_LastIntentValuesMatchIntentEnum enforces that any
-// future writer that sets LastIntent uses the exact intent.Intent string
-// values, not short aliases. The engine package stays decoupled from the
-// intent package at compile time (no production-code import); this test
-// imports intent only to assemble the legal-value set.
-func TestSessionState_LastIntentValuesMatchIntentEnum(t *testing.T) {
-	legal := map[string]struct{}{"": {}}
-	for _, it := range intent.RuntimeIntents() {
-		legal[string(it)] = struct{}{}
-	}
-
-	// Spot-check several intents we expect to flow through SessionState writers.
-	assert.Contains(t, legal, string(intent.IntentMonitorQuery))
-	assert.Contains(t, legal, string(intent.IntentResourceInfo))
-	assert.Contains(t, legal, string(intent.IntentGPUSpecsQuery))
-	assert.Contains(t, legal, string(intent.IntentPricingQuery))
-
-	// Reject hypothetical short aliases that might leak in from informal usage.
-	for _, alias := range []string{"monitor", "resource", "gpu_specs", "pricing"} {
-		assert.NotContains(t, legal, alias,
-			"short alias %q must NOT be a legal LastIntent value", alias)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Engine inject / export / clear
 // ---------------------------------------------------------------------------
 
@@ -315,7 +286,6 @@ func TestEngine_SetSessionState_RoundTrip(t *testing.T) {
 	s1 := SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-xyz",
-		LastIntent:         string(intent.IntentResourceInfo),
 	}
 	e.SetSessionState(s1, 7)
 
@@ -336,7 +306,6 @@ func TestEngine_ClearSessionState_ResetsHydrated(t *testing.T) {
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-prev",
-		LastIntent:         string(intent.IntentMonitorQuery),
 	}, 3)
 
 	s, ver, hydrated := e.SessionStateSnapshot()
@@ -361,7 +330,6 @@ func TestEngine_RoundTrip_AcrossReplicas(t *testing.T) {
 	eA.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-roundtrip",
-		LastIntent:         string(intent.IntentGPUSpecsQuery),
 	}, 0)
 
 	stateA, _, _ := eA.SessionStateSnapshot()
@@ -392,7 +360,7 @@ func TestEngine_RoundTrip_AcrossReplicas(t *testing.T) {
 //
 // MUTATION CHECK: removing the `version <= e.sessionStateVersion` guard
 // from SetSessionState (so the function always overwrites) makes this
-// test fail at the SelectedInstance/LastIntent assertions — proven via
+// test fail at the SelectedInstance assertions — proven via
 // mutation experiment during commit 6.
 func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
@@ -402,7 +370,6 @@ func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testin
 		SchemaVersion:        SessionStateSchemaV1,
 		SelectedInstanceID:   "uhost-A",
 		SelectedInstanceName: "train-a",
-		LastIntent:           string(intent.IntentMonitorQuery),
 		RecentFacts: []ToolFact{
 			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200,
 				Payload: map[string]any{"state": "Running"}},
@@ -420,9 +387,8 @@ func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testin
 	// would clobber if the guard were missing.
 	e.SetSessionState(SessionState{
 		SchemaVersion:        SessionStateSchemaV1,
-		SelectedInstanceID:   "uhost-B-stale",                   // MUST NOT clobber
-		SelectedInstanceName: "stale-name",                      // MUST NOT clobber
-		LastIntent:           string(intent.IntentResourceInfo), // MUST NOT clobber
+		SelectedInstanceID:   "uhost-B-stale", // MUST NOT clobber
+		SelectedInstanceName: "stale-name",    // MUST NOT clobber
 		RecentFacts: []ToolFact{
 			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100,
 				Payload: map[string]any{"state": "OLDER"}}, // older — must lose
@@ -439,7 +405,6 @@ func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testin
 	assert.Equal(t, "uhost-A", state.SelectedInstanceID,
 		"stale incoming MUST NOT clobber SelectedInstanceID — the engine's in-memory scalar is at-or-newer than the row")
 	assert.Equal(t, "train-a", state.SelectedInstanceName)
-	assert.Equal(t, string(intent.IntentMonitorQuery), state.LastIntent)
 
 	// Facts merged: uhost-A instance_state stays at 200 (local newer than
 	// stale incoming's 100); uhost-A monitor_sample stays at 210; uhost-C
@@ -466,81 +431,19 @@ func TestSetSessionState_HigherVersionOverwrites(t *testing.T) {
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-stale",
-		LastIntent:         string(intent.IntentMonitorQuery),
 	}, 3)
 
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-fresh",
-		LastIntent:         string(intent.IntentResourceInfo),
 	}, 4) // strictly higher
 
 	state, ver, _ := e.SessionStateSnapshot()
 	assert.Equal(t, "uhost-fresh", state.SelectedInstanceID,
 		"higher version must fully overwrite — the in-memory state was stale")
-	assert.Equal(t, string(intent.IntentResourceInfo), state.LastIntent)
 	assert.Equal(t, 4, ver)
 }
 
-func TestRecordLastIntentFromPlan_UnknownPreservesPendingTask(t *testing.T) {
-	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{
-		SchemaVersion:      SessionStateSchemaV1,
-		LastIntent:         string(intent.IntentDeployModel),
-		PendingDeployModel: "DeepSeek R1",
-	}, 1)
-
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentUnknown})
-
-	state, _, _ := e.SessionStateSnapshot()
-	assert.Equal(t, string(intent.IntentDeployModel), state.LastIntent, "unknown must not replace LastIntent")
-	assert.Equal(t, "DeepSeek R1", state.PendingDeployModel,
-		"an unknown route is a router failure, not evidence that the user abandoned the task")
-}
-
-func TestRecordLastIntentFromPlan_NonCreateTurnDoesNotOwnContextLifetime(t *testing.T) {
-	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		ContextFrame: ContextFrame{
-			Version:        1,
-			Kind:           ContextFrameKindDeploy,
-			Status:         ContextFrameStatusFailedRecoverable,
-			Intent:         string(intent.IntentDeployModel),
-			GPU:            "4090",
-			ProducedAtUnix: time.Now().Unix(),
-			TTLSeconds:     ContextFrameTTLSeconds,
-		},
-	}, 1)
-
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentKnowledgeQA})
-
-	state, _, _ := e.SessionStateSnapshot()
-	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind,
-		"recording a topic must not silently double as a task-lifetime decision")
-}
-
-func TestRecordLastIntentFromPlan_StockTurnDoesNotClearWithoutDecision(t *testing.T) {
-	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		ContextFrame: ContextFrame{
-			Version:        1,
-			Kind:           ContextFrameKindDeploy,
-			Status:         ContextFrameStatusFailedRecoverable,
-			Intent:         string(intent.IntentDeployModel),
-			GPU:            "4090",
-			ProducedAtUnix: time.Now().Unix(),
-			TTLSeconds:     ContextFrameTTLSeconds,
-		},
-	}, 1)
-
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentStockAvailability})
-
-	state, _, _ := e.SessionStateSnapshot()
-	assert.Equal(t, ContextFrameKindDeploy, state.ContextFrame.Kind,
-		"only the shared resolver's New/Clear decision may retire the task")
-}
 
 // TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the
 // single-replica path: ClearSessionState sets hydrated=false, so a
@@ -581,20 +484,17 @@ func TestSetSessionState_StrictlyLowerVersion_MustNotRegressVersion(t *testing.T
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-A",
-		LastIntent:         string(intent.IntentMonitorQuery),
 	}, 5)
 
 	// Stale incoming with STRICTLY lower version (e.g. cross-replica lag).
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-stale",
-		LastIntent:         string(intent.IntentResourceInfo),
 	}, 3)
 
 	state, ver, _ := e.SessionStateSnapshot()
 	assert.Equal(t, 5, ver, "version MUST NOT regress when incoming version < in-memory version (CAS round-trip invariant)")
 	assert.Equal(t, "uhost-A", state.SelectedInstanceID, "scalars MUST NOT clobber on stale-version merge")
-	assert.Equal(t, string(intent.IntentMonitorQuery), state.LastIntent)
 }
 
 // TestSetSessionState_FactTie_LocalWinsOnSameProducedAt closes the P2.2
@@ -682,7 +582,6 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 			SelectedInstanceName:            "gpu-prod",
 			SelectedInstanceSource:          SelectedInstanceSourceUser,
 			SelectedInstanceAtUnix:          1716530000,
-			LastIntent:                      string(intent.IntentMonitorQuery),
 			LastStockGpuModel:               "4090",
 			PendingSelectionKind:            "instance",
 			PendingSelectionIntent:          string(intent.IntentResourceInfo),
@@ -752,7 +651,6 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pc1.AgentSessionState.SchemaVersion, pc2.AgentSessionState.SchemaVersion)
 	require.Equal(t, pc1.AgentSessionState.SelectedInstanceID, pc2.AgentSessionState.SelectedInstanceID)
-	require.Equal(t, pc1.AgentSessionState.LastIntent, pc2.AgentSessionState.LastIntent)
 	require.Equal(t, pc1.AgentSessionState.PendingSelectionKind, pc2.AgentSessionState.PendingSelectionKind)
 	require.Len(t, pc2.AgentSessionState.PendingSelectionItems, 1)
 	require.Equal(t, "uhost-list-1", pc2.AgentSessionState.PendingSelectionItems[0].ID)

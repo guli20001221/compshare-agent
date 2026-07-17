@@ -7,7 +7,6 @@ import (
 
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
@@ -560,7 +559,7 @@ func mustRoundTripPersistedContext(t *testing.T, pc PersistedContext) PersistedC
 }
 
 // ---------------------------------------------------------------------------
-// recordSelectedInstanceFromEnvelope / recordLastIntentFromPlan unit tests
+// recordSelectedInstanceFromEnvelope unit tests
 // ---------------------------------------------------------------------------
 
 // TestRecordSelectedInstanceFromEnvelope_SingleSubject is the canonical
@@ -641,72 +640,14 @@ func TestRecordSelectedInstanceFromEnvelope_RejectsAmbiguousOrEmpty(t *testing.T
 	}
 }
 
-// TestRecordLastIntentFromPlan_AcceptsRuntimeIntents covers the happy path:
-// any intent in RuntimeIntents() is written.
-func TestRecordLastIntentFromPlan_AcceptsRuntimeIntents(t *testing.T) {
-	e := newEngineForToolFactTest(t)
-	for _, i := range []intent.Intent{
-		intent.IntentResourceInfo,
-		intent.IntentMonitorQuery,
-		intent.IntentGPUSpecsQuery,
-		intent.IntentPricingQuery,
-		intent.IntentStockAvailability,
-	} {
-		e.sessionState.LastIntent = ""
-		e.recordLastIntentFromPlan(intent.IntentRoute{Intent: i})
-		assert.Equalf(t, string(i), e.sessionState.LastIntent, "intent %s must be written", i)
-	}
-}
-
-// TestRecordLastIntentFromPlan_RejectsInvalid covers the gate cases:
-// empty intent, IntentUnknown, and non-RuntimeIntents short aliases.
-func TestRecordLastIntentFromPlan_RejectsInvalid(t *testing.T) {
-	e := newEngineForToolFactTest(t)
-	// Pre-set a sentinel so we can verify NO write happens.
-	e.sessionState.LastIntent = "_sentinel_"
-
-	for _, tc := range []struct {
-		name string
-		plan intent.IntentRoute
-	}{
-		{name: "empty intent", plan: intent.IntentRoute{Intent: ""}},
-		{name: "IntentUnknown", plan: intent.IntentRoute{Intent: intent.IntentUnknown}},
-		{name: "short alias 'monitor'", plan: intent.IntentRoute{Intent: intent.Intent("monitor")}},
-		{name: "made-up value", plan: intent.IntentRoute{Intent: intent.Intent("hallucinated_intent")}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e.recordLastIntentFromPlan(tc.plan)
-			assert.Equal(t, "_sentinel_", e.sessionState.LastIntent,
-				"invalid intent %q must NOT overwrite existing LastIntent", tc.plan.Intent)
-		})
-	}
-}
-
-// TestRecordLastIntentFromPlan_NotHydratedSkips mirrors the CLI-path
-// safety for LastIntent.
-func TestRecordLastIntentFromPlan_NotHydratedSkips(t *testing.T) {
-	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
-	}
-	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
-	require.False(t, e.sessionStateHydrated)
-
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentResourceInfo})
-	assert.Empty(t, e.sessionState.LastIntent)
-}
-
-// TestSessionState_FieldsRoundTripWithSelectedAndIntent verifies the M2
-// additions (SelectedInstance / LastIntent) survive JSON round-trip with
-// reflect.DeepEqual semantics — the multi-replica preservation contract.
-func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
+// TestSessionState_FieldsRoundTripWithSelectedInstance verifies the M2
+// SelectedInstance additions survive JSON round-trip with reflect.DeepEqual
+// semantics — the multi-replica preservation contract.
+func TestSessionState_FieldsRoundTripWithSelectedInstance(t *testing.T) {
 	e := newEngineForToolFactTest(t)
 	e.recordSelectedInstanceFromEnvelope(&envelope.Envelope{Subjects: []envelope.Subject{
 		{ID: "uhost-pick", Name: "train-a", Type: envelope.SubjectInstance},
 	}})
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentMonitorQuery})
 
 	state, _, _ := e.SessionStateSnapshot()
 	pc := PersistedContext{AgentSessionState: state}
@@ -715,7 +656,6 @@ func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
 	assert.Equal(t, "uhost-pick", roundTripped.AgentSessionState.SelectedInstanceID)
 	assert.Equal(t, "train-a", roundTripped.AgentSessionState.SelectedInstanceName)
 	assert.Equal(t, SelectedInstanceSourceUser, roundTripped.AgentSessionState.SelectedInstanceSource)
-	assert.Equal(t, string(intent.IntentMonitorQuery), roundTripped.AgentSessionState.LastIntent)
 }
 
 type monitorPayloadHost struct {
