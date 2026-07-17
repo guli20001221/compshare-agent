@@ -79,6 +79,43 @@ func TestWorkflowZonePlacement_PresentSnapshotNeverFallsBackToMaps(t *testing.T)
 	})
 }
 
+// TestZoneDisplayLabel_PrefersSnapshotAndIsLenient pins that a form label comes
+// from the snapshot record (over a disagreeing legacy map), falls back to the map
+// only with no snapshot, and degrades to the bare zone id on any failure — a label
+// is display-only and must never error.
+func TestZoneDisplayLabel_PrefersSnapshotAndIsLenient(t *testing.T) {
+	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03"}, DisplayName: "华北一C"},
+	})
+	present := NewContext(map[string]any{"ZoneDescribes": map[string]string{"cn-bj2-03": "WRONG"}})
+	present.referenceData.ZoneCatalog = snap
+	assert.Equal(t, "华北一C", zoneDisplayLabel(present, "cn-bj2-03"), "the snapshot label wins over the legacy map")
+
+	noSnap := NewContext(map[string]any{"ZoneDescribes": map[string]string{"cn-bj2-03": "华北一C"}})
+	assert.Equal(t, "华北一C", zoneDisplayLabel(noSnap, "cn-bj2-03"), "no snapshot → legacy ZoneDescribes")
+
+	down := NewContext(nil)
+	down.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
+	assert.Equal(t, "cn-bj2-03", zoneDisplayLabel(down, "cn-bj2-03"), "unresolvable → bare id, never an error")
+}
+
+// TestWorkflowZoneIDIndex_PrefersSnapshot pins the inventory id→zone index reads
+// the snapshot, over a disagreeing map, and falls back only with no snapshot.
+func TestWorkflowZoneIDIndex_PrefersSnapshot(t *testing.T) {
+	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", ZoneID: 6003}},
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", ZoneID: 2002}},
+	})
+	present := NewContext(map[string]any{"ZoneIds": map[string]uint32{"cn-bj2-03": 999}})
+	present.referenceData.ZoneCatalog = snap
+	idx := workflowZoneIDIndex(present)
+	assert.Equal(t, "cn-bj2-03", idx[6003], "id→zone from the snapshot, not the map's 999")
+	assert.Equal(t, "cn-sh2-02", idx[2002])
+
+	noSnap := NewContext(map[string]any{"ZoneIds": map[string]uint32{"cn-bj2-03": 999}})
+	assert.Equal(t, "cn-bj2-03", workflowZoneIDIndex(noSnap)[999], "no snapshot → legacy map")
+}
+
 // TestNetOptimizerNormalize_ReadsRegionAndAzGroupFromOneRecord pins that the
 // net-optimizer takes BOTH Region and az_group from a single placement record,
 // over a disagreeing legacy map and without deriving Region from the zone string.

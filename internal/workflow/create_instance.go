@@ -400,7 +400,7 @@ func stepQueryInstanceTypes() Step {
 			args := map[string]any{}
 			if z := paramStr(wfCtx.Params, "Zone", ""); z != "" {
 				args["Zone"] = z // honour an explicit zone (e.g. the deploy handler's ChosenZone)
-				addZoneRegionAndID(args, z, wfCtx.Params)
+				addZoneRegionAndID(wfCtx, args, z)
 			}
 			if strings.EqualFold(createChargeType(wfCtx.Params), deployment.ChargeTypeSpot) {
 				args["InstanceType"] = "spot"
@@ -610,7 +610,7 @@ func stepGuidedChooseCPUMemory() Step {
 			if err != nil {
 				return nil, err
 			}
-			current, opts := guidedCpuMemoryFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+			current, opts := guidedCpuMemoryFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 			if current == "" || len(opts) == 0 {
 				return nil, fmt.Errorf("%s 在 %s 的 %.0f 卡暂无可选 CPU/内存规格，请换一个可用区或卡数量", gpuType, zone, gpu)
 			}
@@ -679,31 +679,69 @@ func createChargeType(params map[string]any) string {
 	return deployment.NormalizeChargeType(paramStr(params, "ChargeType", ""))
 }
 
-// workflowZonePlacement resolves a zone to its full placement from the turn's
-// single zone catalog snapshot — one record whose ZoneID/Region/AzGroup/IsPod
-// cannot disagree.
+// workflowZoneEntry is THE single zone read: every zone consumer (create
+// validation, net-optimizer, form labels, pod meta, zone_id args) resolves a zone
+// through here, so the snapshot-vs-map decision lives in ONE place instead of a
+// re-implemented branch at each site.
 //
 // The snapshot is authoritative: the ONLY reason to read the legacy per-zone maps
 // is that no snapshot was attached at all (a not-yet-migrated direct
 // workflow-engine test). A snapshot that IS present but cannot answer — it is
-// unavailable, or it does not carry this zone — is a hard failure, NOT a reason
-// to fall back to a stale map. Falling back there would let a zone the authority
-// rejected re-enter through the back door, or continue a create on a zero-value
-// placement. Production always attaches a snapshot; the maps and the nil-only
-// fallback are removed together in S6.
-func workflowZonePlacement(wfCtx *Context, zone string) (deployment.ZonePlacement, error) {
+// unavailable, or it does not carry this zone — is a hard failure, NOT a reason to
+// fall back to a stale map: that would let a zone the authority rejected re-enter
+// through the back door, or continue a create on a zero-value placement. The maps
+// and the nil-only fallback branch here are removed together in S6.
+func workflowZoneEntry(wfCtx *Context, zone string) (deployment.ZoneCatalogEntry, error) {
 	cat := wfCtx.ZoneCatalog()
 	if cat == nil {
-		return legacyZonePlacementFromParams(wfCtx.Params, zone), nil
+		return deployment.ZoneCatalogEntry{
+			Placement:   legacyZonePlacementFromParams(wfCtx.Params, zone),
+			DisplayName: zoneDescribeMapFromParams(wfCtx.Params)[strings.TrimSpace(zone)],
+		}, nil
 	}
 	if !cat.Available() {
-		return deployment.ZonePlacement{}, fmt.Errorf("可用区目录当前不可用，无法安全创建，请稍后重试")
+		return deployment.ZoneCatalogEntry{}, fmt.Errorf("可用区目录当前不可用，无法安全创建，请稍后重试")
 	}
-	p, ok := cat.Placement(zone)
+	entry, ok := cat.Entry(zone)
 	if !ok {
-		return deployment.ZonePlacement{}, fmt.Errorf("可用区 %s 不在当前可用区目录中，无法安全创建", zone)
+		return deployment.ZoneCatalogEntry{}, fmt.Errorf("可用区 %s 不在当前可用区目录中，无法安全创建", zone)
 	}
-	return p, nil
+	return entry, nil
+}
+
+// workflowZoneIDIndex maps numeric zone id → zone id string for the turn's zones,
+// so a numeric-keyed payload (the GPU inventory) can be decoded to zone names. Same
+// authority rule as workflowZoneEntry: snapshot when present, legacy map only when
+// no snapshot is attached. Removed-map path in S6.
+func workflowZoneIDIndex(wfCtx *Context) map[uint32]string {
+	out := map[uint32]string{}
+	if cat := wfCtx.ZoneCatalog(); cat != nil {
+		if !cat.Available() {
+			return out
+		}
+		for _, zone := range cat.Zones() {
+			if p, ok := cat.Placement(zone); ok && p.ZoneID != 0 {
+				out[p.ZoneID] = zone
+			}
+		}
+		return out
+	}
+	for zone, id := range guidedZoneIDs(wfCtx.Params) {
+		if zone != "" && id != 0 {
+			out[id] = zone
+		}
+	}
+	return out
+}
+
+// workflowZonePlacement resolves a zone to its full placement — one record whose
+// ZoneID/Region/AzGroup/IsPod cannot disagree — through the single workflowZoneEntry.
+func workflowZonePlacement(wfCtx *Context, zone string) (deployment.ZonePlacement, error) {
+	entry, err := workflowZoneEntry(wfCtx, zone)
+	if err != nil {
+		return deployment.ZonePlacement{}, err
+	}
+	return entry.Placement, nil
 }
 
 func legacyZonePlacementFromParams(params map[string]any, zone string) deployment.ZonePlacement {
@@ -726,16 +764,16 @@ func legacyZonePlacementFromParams(params map[string]any, zone string) deploymen
 func validateCreatePlacement(wfCtx *Context, placement deployment.ZonePlacement, purchase bool) error {
 	chargeType := createChargeType(wfCtx.Params)
 	if placement.IsPod && strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
-		return fmt.Errorf("%s 当前不支持抢占式实例，请改用按量、包日或包月", zoneDisplayLabel(wfCtx.Params, placement.Zone))
+		return fmt.Errorf("%s 当前不支持抢占式实例，请改用按量、包日或包月", zoneDisplayLabel(wfCtx, placement.Zone))
 	}
 	if !placement.IsPod {
 		return nil
 	}
 	if placement.ZoneID == 0 {
-		return fmt.Errorf("未获取到 %s 的内部可用区编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx.Params, placement.Zone))
+		return fmt.Errorf("未获取到 %s 的内部可用区编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx, placement.Zone))
 	}
 	if purchase && placement.AzGroup == 0 {
-		return fmt.Errorf("未获取到 %s 的内部地域编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx.Params, placement.Zone))
+		return fmt.Errorf("未获取到 %s 的内部地域编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx, placement.Zone))
 	}
 	return nil
 }
@@ -748,7 +786,7 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 	}
 	if image == nil {
 		if placement.IsPod {
-			return fmt.Errorf("未能确认 %s 是可用于 %s 的容器镜像，请刷新后重新选择", name, zoneDisplayLabel(wfCtx.Params, placement.Zone))
+			return fmt.Errorf("未能确认 %s 是可用于 %s 的容器镜像，请刷新后重新选择", name, zoneDisplayLabel(wfCtx, placement.Zone))
 		}
 		// Community image searches can return a different page/order on a second
 		// query. Keep the exact selected id for normal zones; the upstream capacity
@@ -759,7 +797,7 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 		return fmt.Errorf("%s 当前不可用，请更换镜像", name)
 	}
 	if placement.IsPod && !imageContainerByID(wfCtx.Result("查询镜像"), imageID) {
-		return fmt.Errorf("%s 不是容器镜像，不能用于 %s，请更换镜像或可用区", name, zoneDisplayLabel(wfCtx.Params, placement.Zone))
+		return fmt.Errorf("%s 不是容器镜像，不能用于 %s，请更换镜像或可用区", name, zoneDisplayLabel(wfCtx, placement.Zone))
 	}
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
 	supported := imageSupportedByID(wfCtx.Result("查询镜像"), imageID)
@@ -1321,7 +1359,7 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 		"CPU":        draft.Args.CPU,
 		"Memory":     draft.Args.Memory,
 		"Zone":       zone,
-		"ZoneLabel":  zoneDisplayLabel(wfCtx.Params, zone),
+		"ZoneLabel":  zoneDisplayLabel(wfCtx, zone),
 		"ChargeType": draft.Args.ChargeType,
 		"image":      draft.Image.Name,
 		"price":      price,
@@ -2429,7 +2467,7 @@ func shouldSkipGuidedZoneStep(wfCtx *Context) (bool, error) {
 	if current == "" || gpuType == "" || !initialParamSet(wfCtx, "Zone") {
 		return false, nil
 	}
-	selected, opts := guidedZoneFormOptions(wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	return strings.EqualFold(selected, current) && enabledOptionExists(opts, current), nil
 }
 
@@ -2443,7 +2481,7 @@ func shouldSkipGuidedGPUCountStep(wfCtx *Context) (bool, error) {
 	if gpuType == "" || zone == "" || current <= 0 {
 		return false, nil
 	}
-	selected, opts := guidedGPUCountFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts := guidedGPUCountFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	value := fmt.Sprintf("%.0f", current)
 	return selected == current && enabledOptionExists(opts, value), nil
 }
@@ -2464,7 +2502,7 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 		return false, nil
 	}
 	current := formatGuidedSpecKey(zone, gpu, cpu, memoryMB)
-	selected, opts := guidedCpuMemoryFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts := guidedCpuMemoryFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	return selected == current && enabledOptionExists(opts, current), nil
 }
 
@@ -2554,7 +2592,7 @@ func buildGuidedGPUForm(wfCtx *Context) (*ConfirmForm, error) {
 	supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像"))
 	locked := paramBool(wfCtx.Params, "GuidedGpuLocked", false) && gpuType != ""
 	recommended := paramBool(wfCtx.Params, "GuidedRecommended", false) && gpuType != ""
-	selected, opts := guidedGPUFormOptions(wfCtx.Result("查询可用配比"), supported, gpuType, locked, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported, gpuType, locked, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("暂无可选 GPU 型号")
 	}
@@ -2601,7 +2639,7 @@ func buildGuidedZoneForm(wfCtx *Context) (*ConfirmForm, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, opts := guidedZoneFormOptions(wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	_, opts := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("%s 暂无可选可用区，请换一个 GPU 型号或稍后再试", gpuType)
 	}
@@ -2637,7 +2675,7 @@ func buildGuidedGPUCountForm(wfCtx *Context) (*ConfirmForm, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, opts := guidedGPUCountFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	_, opts := guidedGPUCountFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("%s 在 %s 暂无可选卡数量，请换一个可用区", gpuType, zone)
 	}
@@ -2678,7 +2716,7 @@ func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, opts := guidedCpuMemoryFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	_, opts := guidedCpuMemoryFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("%s 在 %s 的 %.0f 卡暂无可选 CPU/内存规格，请换一个可用区或卡数量", gpuType, zone, gpu)
 	}
@@ -2855,7 +2893,7 @@ func applyGuidedZoneOverrides(wfCtx *Context, overrides map[string]string) error
 		case "Zone":
 			old := paramStr(wfCtx.Params, "Zone", "")
 			wfCtx.Params["Zone"] = v
-			syncGuidedZoneMeta(wfCtx.Params, v)
+			syncGuidedZoneMeta(wfCtx, v)
 			if !strings.EqualFold(old, v) {
 				delete(wfCtx.Params, "GuidedZoneLocked")
 				delete(wfCtx.Params, "Gpu")
@@ -2901,7 +2939,7 @@ func applyGuidedCpuMemoryOverrides(wfCtx *Context, overrides map[string]string) 
 				return err
 			}
 			wfCtx.Params["Zone"] = zone
-			syncGuidedZoneMeta(wfCtx.Params, zone)
+			syncGuidedZoneMeta(wfCtx, zone)
 			wfCtx.Params["Gpu"] = gpu
 			wfCtx.Params["Cpu"] = cpu
 			wfCtx.Params["Memory"] = memoryMB
@@ -2955,7 +2993,7 @@ func ensureGuidedGPUType(wfCtx *Context) (string, error) {
 	current, _ := wfCtx.Params["GpuType"].(string)
 	supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像"))
 	locked := paramBool(wfCtx.Params, "GuidedGpuLocked", false) && current != ""
-	selected, opts := guidedGPUFormOptions(wfCtx.Result("查询可用配比"), supported, current, locked, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported, current, locked, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if selected == "" {
 		for _, opt := range opts {
 			if !opt.Disabled {
@@ -2993,7 +3031,7 @@ func ensureGuidedZone(wfCtx *Context) (string, error) {
 		return "", err
 	}
 	current := paramStr(wfCtx.Params, "Zone", "")
-	selected, opts := guidedZoneFormOptions(wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if selected == "" || len(opts) == 0 {
 		return "", fmt.Errorf("%s 暂无可选可用区，请换一个 GPU 型号或稍后再试", gpuType)
 	}
@@ -3011,14 +3049,14 @@ func ensureGuidedZone(wfCtx *Context) (string, error) {
 					return "", fmt.Errorf("你指定的可用区 %s 当前%s，请换一个可用区或稍后再试", zoneOptionLabel(zoneDescribeMapFromParams(wfCtx.Params), current), reason)
 				}
 				wfCtx.Params["Zone"] = current
-				syncGuidedZoneMeta(wfCtx.Params, current)
+				syncGuidedZoneMeta(wfCtx, current)
 				return current, nil
 			}
 		}
 		return "", fmt.Errorf("你指定的可用区 %s 当前不支持 %s，请换一个可用区或 GPU 型号", zoneOptionLabel(zoneDescribeMapFromParams(wfCtx.Params), current), gpuType)
 	}
 	wfCtx.Params["Zone"] = selected
-	syncGuidedZoneMeta(wfCtx.Params, selected)
+	syncGuidedZoneMeta(wfCtx, selected)
 	return selected, nil
 }
 
@@ -3032,7 +3070,7 @@ func ensureGuidedGPUCount(wfCtx *Context) (float64, error) {
 		return 0, err
 	}
 	current := paramNum(wfCtx.Params, "Gpu", 0)
-	selected, opts := guidedGPUCountFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts := guidedGPUCountFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if selected == 0 || len(opts) == 0 {
 		return 0, fmt.Errorf("%s 在 %s 暂无可选卡数量，请换一个可用区", gpuType, zone)
 	}
@@ -3053,7 +3091,7 @@ func ensureGuidedCPUMemory(wfCtx *Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	current, opts := guidedCpuMemoryFormOptions(wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	current, opts := guidedCpuMemoryFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if current == "" || len(opts) == 0 {
 		return "", fmt.Errorf("%s 在 %s 的 %.0f 卡暂无可选 CPU/内存规格，请换一个可用区或卡数量", gpuType, zone, gpu)
 	}
@@ -3062,7 +3100,7 @@ func ensureGuidedCPUMemory(wfCtx *Context) (string, error) {
 		return "", err
 	}
 	wfCtx.Params["Zone"] = parsedZone
-	syncGuidedZoneMeta(wfCtx.Params, parsedZone)
+	syncGuidedZoneMeta(wfCtx, parsedZone)
 	wfCtx.Params["Gpu"] = parsedGPU
 	wfCtx.Params["Cpu"] = cpu
 	wfCtx.Params["Memory"] = memoryMB
@@ -3093,9 +3131,9 @@ type guidedInventory struct {
 	counts map[string]map[string]float64
 }
 
-func guidedInventoryFrom(params map[string]any, result map[string]any) guidedInventory {
-	zoneIDs := guidedZoneIDs(params)
-	if len(zoneIDs) == 0 || result == nil {
+func guidedInventoryFrom(wfCtx *Context, result map[string]any) guidedInventory {
+	zoneByID := workflowZoneIDIndex(wfCtx)
+	if len(zoneByID) == 0 || result == nil {
 		return guidedInventory{}
 	}
 	rawInv, _ := result["GpuInventory"].(map[string]any)
@@ -3103,18 +3141,12 @@ func guidedInventoryFrom(params map[string]any, result map[string]any) guidedInv
 		return guidedInventory{}
 	}
 	poolName := "Exclusive"
-	if strings.EqualFold(createChargeType(params), "Spot") {
+	if strings.EqualFold(createChargeType(wfCtx.Params), "Spot") {
 		poolName = "Spot"
 	}
 	rawPool, _ := rawInv[poolName].(map[string]any)
 	if rawPool == nil {
 		return guidedInventory{}
-	}
-	zoneByID := make(map[uint32]string, len(zoneIDs))
-	for zone, id := range zoneIDs {
-		if zone != "" && id != 0 {
-			zoneByID[id] = zone
-		}
 	}
 	counts := map[string]map[string]float64{}
 	for rawZoneID, rawGPUCounts := range rawPool {
@@ -3193,10 +3225,10 @@ func guidedZoneRegionIDs(params map[string]any) map[string]uint32 {
 	return out
 }
 
-func addZoneRegionAndID(args map[string]any, zone string, params map[string]any) map[string]any {
+func addZoneRegionAndID(wfCtx *Context, args map[string]any, zone string) map[string]any {
 	addZoneRegion(args, zone)
-	if id := guidedZoneID(params, zone); id != 0 {
-		args["zone_id"] = id
+	if entry, err := workflowZoneEntry(wfCtx, zone); err == nil && entry.Placement.ZoneID != 0 {
+		args["zone_id"] = entry.Placement.ZoneID
 	}
 	return args
 }
@@ -3227,14 +3259,19 @@ func guidedZoneRegionID(params map[string]any, zone string) uint32 {
 	return 0
 }
 
-func syncGuidedZoneMeta(params map[string]any, zone string) {
-	if params == nil || strings.TrimSpace(zone) == "" {
+func syncGuidedZoneMeta(wfCtx *Context, zone string) {
+	if wfCtx == nil || strings.TrimSpace(zone) == "" {
 		return
 	}
-	if isPod, ok := guidedZoneIsPod(params, zone); ok {
-		params["ZoneIsPod"] = isPod
-		params["IsPodZone"] = isPod
+	// Resolve through the one entry: on a snapshot the pod flag is the record's; on
+	// the nil path it is the legacy map. An unresolvable zone (unavailable snapshot,
+	// or a zone the catalog does not carry) writes nothing.
+	entry, err := workflowZoneEntry(wfCtx, zone)
+	if err != nil {
+		return
 	}
+	wfCtx.Params["ZoneIsPod"] = entry.Placement.IsPod
+	wfCtx.Params["IsPodZone"] = entry.Placement.IsPod
 }
 
 func guidedZoneIsPod(params map[string]any, zone string) (bool, bool) {
@@ -3390,11 +3427,11 @@ func firstEnabledValue(opts []ConfirmFormOption) string {
 	return ""
 }
 
-func guidedGPUFormOptions(catalog map[string]any, supported []string, current string, locked bool, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption) {
+func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []string, current string, locked bool, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption) {
 	if catalog == nil {
 		return current, nil
 	}
-	inventory := guidedInventoryFrom(params, inventoryResult)
+	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
 	candidateOrder, candidateSet := guidedCandidateGPUSet(params)
 	if locked {
 		candidateOrder, candidateSet = nil, nil
@@ -3599,11 +3636,11 @@ func guidedGPUIntentMatches(intent, candidate string) bool {
 	return strings.EqualFold(strings.TrimSpace(intent), strings.TrimSpace(candidate))
 }
 
-func guidedZoneFormOptions(catalog map[string]any, gpuType, current string, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption) {
+func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, current string, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption) {
 	if catalog == nil || gpuType == "" {
 		return "", nil
 	}
-	inventory := guidedInventoryFrom(params, inventoryResult)
+	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
 	types, _ := catalog["AvailableInstanceTypes"].([]any)
@@ -3623,7 +3660,7 @@ func guidedZoneFormOptions(catalog map[string]any, gpuType, current string, para
 			continue
 		}
 		seen[zone] = true
-		zoneLabel := zoneDisplayLabel(params, zone)
+		zoneLabel := zoneDisplayLabel(wfCtx, zone)
 		count, stockKnown := inventory.count(zone, gpuType)
 		note := fmt.Sprintf("%s 可用", gpuType)
 		disabled := false
@@ -3656,11 +3693,11 @@ func guidedZoneFormOptions(catalog map[string]any, gpuType, current string, para
 	return selected, opts
 }
 
-func guidedGPUCountFormOptions(catalog map[string]any, gpuType, zone string, current float64, params map[string]any, inventoryResult map[string]any) (float64, []ConfirmFormOption) {
+func guidedGPUCountFormOptions(wfCtx *Context, catalog map[string]any, gpuType, zone string, current float64, params map[string]any, inventoryResult map[string]any) (float64, []ConfirmFormOption) {
 	if catalog == nil || gpuType == "" || zone == "" {
 		return 0, nil
 	}
-	inventory := guidedInventoryFrom(params, inventoryResult)
+	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
 	types, _ := catalog["AvailableInstanceTypes"].([]any)
@@ -3692,7 +3729,7 @@ func guidedGPUCountFormOptions(catalog map[string]any, gpuType, zone string, cur
 			}
 			seen[value] = true
 			free, stockKnown := inventory.count(zone, gpuType)
-			zoneLabel := zoneDisplayLabel(params, zone)
+			zoneLabel := zoneDisplayLabel(wfCtx, zone)
 			note := fmt.Sprintf("%s · %s", gpuType, zoneLabel)
 			disabled := false
 			disabledReason := ""
@@ -3730,88 +3767,11 @@ func guidedGPUCountFormOptions(catalog map[string]any, gpuType, zone string, cur
 	return selected, opts
 }
 
-func guidedSpecFormOptions(catalog map[string]any, gpuType string, params map[string]any) (string, []ConfirmFormOption) {
-	if catalog == nil || gpuType == "" {
-		return "", nil
-	}
-	current := ""
-	if z, ok := params["Zone"].(string); ok && z != "" {
-		gpu := paramNum(params, "Gpu", 1)
-		if _, hasCPU := params["Cpu"]; hasCPU {
-			if _, hasMem := params["Memory"]; hasMem {
-				current = formatGuidedSpecKey(z, gpu, paramNum(params, "Cpu", 0), paramNum(params, "Memory", 0))
-			}
-		}
-	}
-	seen := map[string]bool{}
-	var opts []ConfirmFormOption
-	types, _ := catalog["AvailableInstanceTypes"].([]any)
-	for _, t := range types {
-		mt, _ := t.(map[string]any)
-		if name, _ := mt["Name"].(string); name != gpuType {
-			continue
-		}
-		if status, _ := mt["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
-			continue
-		}
-		zone, _ := mt["Zone"].(string)
-		if zone == "" {
-			zone = defaultZone
-		}
-		sizes, _ := mt["MachineSizes"].([]any)
-		for _, s := range sizes {
-			size, _ := s.(map[string]any)
-			gpu, _ := size["Gpu"].(float64)
-			if gpu == 0 {
-				continue
-			}
-			collection, _ := size["Collection"].([]any)
-			for _, c := range collection {
-				col, _ := c.(map[string]any)
-				cpu, _ := col["Cpu"].(float64)
-				if cpu == 0 {
-					continue
-				}
-				mems, _ := col["Memory"].([]any)
-				for _, m := range mems {
-					memGB, _ := m.(float64)
-					if memGB <= 0 {
-						continue
-					}
-					memMB := memGB * 1024
-					key := formatGuidedSpecKey(zone, gpu, cpu, memMB)
-					if seen[key] {
-						continue
-					}
-					seen[key] = true
-					if current == "" {
-						current = key
-					}
-					zoneLabel := zoneDisplayLabel(params, zone)
-					opts = append(opts, ConfirmFormOption{
-						Value: key,
-						Label: fmt.Sprintf("%s · %.0f 张 GPU · %.0f 核 CPU · %.0fGB 内存", zoneLabel, gpu, cpu, memGB),
-						Note:  fmt.Sprintf("可用区 %s", zoneLabel),
-						Meta: map[string]string{
-							"Zone":      zone,
-							"ZoneLabel": zoneLabel,
-							"GPU":       fmt.Sprintf("%.0f", gpu),
-							"CPU":       fmt.Sprintf("%.0f", cpu),
-							"MemoryGB":  fmt.Sprintf("%.0f", memGB),
-						},
-					})
-				}
-			}
-		}
-	}
-	return current, opts
-}
-
-func guidedCpuMemoryFormOptions(catalog map[string]any, gpuType, zone string, gpuCount float64, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption) {
+func guidedCpuMemoryFormOptions(wfCtx *Context, catalog map[string]any, gpuType, zone string, gpuCount float64, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption) {
 	if catalog == nil || gpuType == "" || zone == "" || gpuCount <= 0 {
 		return "", nil
 	}
-	inventory := guidedInventoryFrom(params, inventoryResult)
+	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
 	current := ""
 	if _, hasCPU := params["Cpu"]; hasCPU {
 		if _, hasMem := params["Memory"]; hasMem {
@@ -3866,7 +3826,7 @@ func guidedCpuMemoryFormOptions(catalog map[string]any, gpuType, zone string, gp
 						current = key
 					}
 					free, stockKnown := inventory.count(zone, gpuType)
-					zoneLabel := zoneDisplayLabel(params, zone)
+					zoneLabel := zoneDisplayLabel(wfCtx, zone)
 					note := fmt.Sprintf("%s · %.0f 张 GPU · %s", gpuType, gpu, zoneLabel)
 					disabled := false
 					disabledReason := ""
@@ -4157,9 +4117,13 @@ func zoneOptionLabel(describes map[string]string, zone string) string {
 	return zone
 }
 
-func zoneDisplayLabel(params map[string]any, zone string) string {
-	if label := zoneOptionLabel(zoneDescribeMapFromParams(params), zone); strings.TrimSpace(label) != "" {
-		return label
+// zoneDisplayLabel is the display-lenient view of workflowZoneEntry: it shows the
+// zone's console name, degrading to the bare zone id on any resolution failure
+// (an option a form should not have offered — see the Entry gate). It never
+// fails, because a label is display-only.
+func zoneDisplayLabel(wfCtx *Context, zone string) string {
+	if entry, err := workflowZoneEntry(wfCtx, zone); err == nil && strings.TrimSpace(entry.DisplayName) != "" {
+		return entry.DisplayName
 	}
 	return zone
 }
