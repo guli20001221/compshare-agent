@@ -14,51 +14,59 @@ import "strings"
 // the user actually selected does.
 //
 // Available()==false means the engine could not obtain the catalog this turn.
-// That is NOT an empty catalog, and a reader must fail rather than fall back to
-// a built-in alias table — a stale local copy of a platform fact is exactly what
-// this convergence removes.
+// That is NOT an empty catalog, and it is enforced structurally, not by
+// convention: an unavailable snapshot holds no entries AND refuses every read,
+// so a consumer that forgets to check Available() still cannot silently fall
+// back to stale data. A reader must fail rather than degrade to a built-in alias
+// table — a stale local copy of a platform fact is exactly what this convergence
+// removes.
 //
-// It is immutable from the outside: every accessor returns a ZonePlacement
-// (all-scalar) BY VALUE, or a plain string, or a fresh slice — so a selected
-// placement can never share a mutable inner object with the snapshot.
+// It keeps ONE row per zone (placement + display name together), so the label a
+// form shows can never drift from the zone it executes as — the two-parallel-maps
+// shape this whole change deletes cannot be reintroduced inside the type meant to
+// end it. It is immutable from the outside: accessors return a ZonePlacement
+// (all-scalar) BY VALUE, or a plain string, or a fresh slice.
 type ZoneCatalogSnapshot struct {
-	available  bool
-	order      []string                 // canonical zone ids, catalog order
-	placements map[string]ZonePlacement // lower(zone id) -> placement
-	labels     map[string]string        // lower(zone id) -> 显示名 (Describe)
+	available bool
+	order     []string                    // canonical zone ids, catalog order
+	entries   map[string]ZoneCatalogEntry // lower(zone id) -> the one row
 }
 
 // ZoneCatalogEntry is one catalog row the engine builds from a live
-// zones.ZoneInfo: the resolved placement plus the console display name.
+// zones.ZoneInfo: the resolved placement plus the console display name. Placement
+// and DisplayName are ONE unit — a snapshot stores and replaces them together so
+// they cannot diverge.
 type ZoneCatalogEntry struct {
 	Placement   ZonePlacement
 	DisplayName string
 }
 
-// NewZoneCatalogSnapshot freezes the entries into a read-only catalog. Entries
-// with a blank zone id are dropped; a later entry for the same zone id wins
-// (deterministic — the live list is already deduped upstream). available records
-// whether the engine actually obtained the list this turn: pass false for "could
-// not fetch", never an empty slice standing in for a fetch failure.
+// NewZoneCatalogSnapshot freezes the entries into a read-only catalog.
+//
+// When available is false the entries are discarded entirely: a fetch failure
+// cannot masquerade as data even if a caller passes a stale slice. When
+// available is true, entries with a blank zone id are dropped, each stored zone
+// id is trimmed to its canonical form (so Zones() and Placement().Zone always
+// agree), and a later entry for the same zone id replaces the earlier one WHOLE
+// — placement and display name move together, so a repeat with no display name
+// does not inherit the previous label.
 func NewZoneCatalogSnapshot(available bool, entries []ZoneCatalogEntry) *ZoneCatalogSnapshot {
-	s := &ZoneCatalogSnapshot{
-		available:  available,
-		placements: make(map[string]ZonePlacement, len(entries)),
-		labels:     make(map[string]string, len(entries)),
+	s := &ZoneCatalogSnapshot{available: available, entries: map[string]ZoneCatalogEntry{}}
+	if !available {
+		return s
 	}
 	for _, e := range entries {
 		zone := strings.TrimSpace(e.Placement.Zone)
 		if zone == "" {
 			continue
 		}
+		e.Placement.Zone = zone // canonical form is what the row stores AND returns
+		e.DisplayName = strings.TrimSpace(e.DisplayName)
 		key := strings.ToLower(zone)
-		if _, seen := s.placements[key]; !seen {
+		if _, seen := s.entries[key]; !seen {
 			s.order = append(s.order, zone)
 		}
-		s.placements[key] = e.Placement
-		if d := strings.TrimSpace(e.DisplayName); d != "" {
-			s.labels[key] = d
-		}
+		s.entries[key] = e
 	}
 	return s
 }
@@ -69,38 +77,45 @@ func NewZoneCatalogSnapshot(available bool, entries []ZoneCatalogEntry) *ZoneCat
 // than guess.
 func (s *ZoneCatalogSnapshot) Available() bool { return s != nil && s.available }
 
-// Placement returns the resolved placement for a zone id, matched
-// case-insensitively. The second return is false when the zone is not in the
-// catalog (or there is no snapshot). The ZonePlacement is returned by value:
-// mutating it cannot reach the snapshot.
-func (s *ZoneCatalogSnapshot) Placement(zone string) (ZonePlacement, bool) {
-	if s == nil {
-		return ZonePlacement{}, false
+// Entry returns the single catalog row for a zone id, matched case-insensitively.
+// It is the sole read choke point: an unavailable snapshot returns nothing here,
+// so no accessor built on it can leak stale data. This is also the gate a form
+// generator must pass before offering a zone as an executable option — a Label
+// that fell back to the bare id is not proof the zone exists.
+func (s *ZoneCatalogSnapshot) Entry(zone string) (ZoneCatalogEntry, bool) {
+	if !s.Available() {
+		return ZoneCatalogEntry{}, false
 	}
-	p, ok := s.placements[strings.ToLower(strings.TrimSpace(zone))]
-	return p, ok
+	e, ok := s.entries[strings.ToLower(strings.TrimSpace(zone))]
+	return e, ok
+}
+
+// Placement returns the resolved placement for a zone id. The second return is
+// false when the zone is not in the catalog (or the catalog is unavailable). The
+// ZonePlacement is returned by value: mutating it cannot reach the snapshot.
+func (s *ZoneCatalogSnapshot) Placement(zone string) (ZonePlacement, bool) {
+	e, ok := s.Entry(zone)
+	return e.Placement, ok
 }
 
 // Label returns the console display name for a zone, or the zone id itself when
-// the catalog carries no name for it (or there is no snapshot) — a caller
-// labeling a form option always gets a non-empty string. Display name and
-// placement come from the same catalog row, so a label can never disagree with
-// the zone it executes as.
+// the catalog carries no name for it (or is unavailable) — a caller labeling a
+// form option always gets a non-empty string. It projects from the same row as
+// Placement, so a label can never disagree with the zone it executes as. The
+// fallback is for DISPLAY only; use Entry to decide whether a zone is real.
 func (s *ZoneCatalogSnapshot) Label(zone string) string {
 	zone = strings.TrimSpace(zone)
-	if s == nil {
-		return zone
-	}
-	if d, ok := s.labels[strings.ToLower(zone)]; ok {
-		return d
+	if e, ok := s.Entry(zone); ok && e.DisplayName != "" {
+		return e.DisplayName
 	}
 	return zone
 }
 
 // Zones returns the canonical zone ids in catalog order. The returned slice is a
-// fresh copy; mutating it cannot reach the snapshot.
+// fresh copy; mutating it cannot reach the snapshot. An unavailable catalog
+// returns nil.
 func (s *ZoneCatalogSnapshot) Zones() []string {
-	if s == nil {
+	if !s.Available() {
 		return nil
 	}
 	out := make([]string, len(s.order))
