@@ -67,6 +67,14 @@ func stepQuerySupportZonesForCreateCFS() Step {
 		Name: "查询支持区",
 		Type: StepToolCall,
 		Tool: "DescribeCompShareSupportZone",
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			// The turn's zone catalog snapshot is authoritative: when it is present
+			// resolveCreateCFSZone resolves the Pod-zone placement from it, so this
+			// second support-zone query is redundant. Skip it. The nil-snapshot path
+			// (unmigrated direct workflow-engine tests) still runs the query. The step
+			// is removed entirely in S6.
+			return wfCtx.ZoneCatalog() != nil, nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{}
 			addWorkflowIdentityArgs(args, wfCtx.Runtime)
@@ -293,10 +301,6 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	if zone == "" {
 		return NewMissingSlotError("创建 CFS 需要指定可用区。", "zone")
 	}
-	region := strings.TrimSpace(paramStr(wfCtx.Params, "Region", ""))
-	if region == "" {
-		region = regionFromZone(zone)
-	}
 	isPod, zoneID, azGroup, resolvedRegion, resolved, err := resolveCreateCFSZone(wfCtx, zone)
 	if err != nil {
 		return err
@@ -304,8 +308,16 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	if resolved != "" {
 		zone = resolved
 	}
-	if resolvedRegion != "" {
-		region = resolvedRegion
+	region := resolvedRegion
+	if region == "" {
+		// Nil-snapshot bridge only. On a snapshot resolveCreateCFSZone fails closed
+		// on a record missing Region, so resolvedRegion is empty here only when no
+		// snapshot was attached (unmigrated direct workflow-engine test): derive from
+		// the param / zone string for that path. Removed in S6 with the second query.
+		region = strings.TrimSpace(paramStr(wfCtx.Params, "Region", ""))
+		if region == "" {
+			region = regionFromZone(zone)
+		}
 	}
 	if region == "" {
 		return fmt.Errorf("无法从可用区推导地域，请从支持区列表中选择真实 Pod 区。")
@@ -347,6 +359,12 @@ func resolveCreateCFSZone(wfCtx *Context, requested string) (isPod bool, zoneID 
 		}
 		if placement.AzGroup == 0 {
 			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", placement.Zone)
+		}
+		if strings.TrimSpace(placement.Region) == "" {
+			// Fail closed: a record the catalog carries but with no Region must NOT
+			// be back-filled by a zone-string guess (regionFromZone) — that reintroduces
+			// the split-source Region the snapshot exists to end.
+			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的地域，无法安全创建 CFS。", placement.Zone)
 		}
 		return true, placement.ZoneID, placement.AzGroup, placement.Region, placement.Zone, nil
 	}

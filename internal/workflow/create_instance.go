@@ -2317,8 +2317,7 @@ func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
 			Value: gpuType, Editable: true, Options: opts,
 		})
 	}
-	zoneDescribes, _ := wfCtx.Params["ZoneDescribes"].(map[string]string)
-	if opts := zoneFormOptions(catalog, gpuType, zone, zoneDescribes); len(opts) > 1 {
+	if opts := zoneFormOptions(wfCtx, catalog, gpuType, zone); len(opts) > 1 {
 		fields = append(fields, ConfirmFormField{
 			Key: "Zone", Label: "可用区", Type: "select",
 			Value: zone, Editable: true, Options: opts,
@@ -3046,14 +3045,14 @@ func ensureGuidedZone(wfCtx *Context) (string, error) {
 					if reason == "" {
 						reason = "暂不可用"
 					}
-					return "", fmt.Errorf("你指定的可用区 %s 当前%s，请换一个可用区或稍后再试", zoneOptionLabel(zoneDescribeMapFromParams(wfCtx.Params), current), reason)
+					return "", fmt.Errorf("你指定的可用区 %s 当前%s，请换一个可用区或稍后再试", zoneDisplayLabel(wfCtx, current), reason)
 				}
 				wfCtx.Params["Zone"] = current
 				syncGuidedZoneMeta(wfCtx, current)
 				return current, nil
 			}
 		}
-		return "", fmt.Errorf("你指定的可用区 %s 当前不支持 %s，请换一个可用区或 GPU 型号", zoneOptionLabel(zoneDescribeMapFromParams(wfCtx.Params), current), gpuType)
+		return "", fmt.Errorf("你指定的可用区 %s 当前不支持 %s，请换一个可用区或 GPU 型号", zoneDisplayLabel(wfCtx, current), gpuType)
 	}
 	wfCtx.Params["Zone"] = selected
 	syncGuidedZoneMeta(wfCtx, selected)
@@ -3225,9 +3224,22 @@ func guidedZoneRegionIDs(params map[string]any) map[string]uint32 {
 	return out
 }
 
+// addZoneRegionAndID stamps the read-probe query with the zone's Region and
+// internal id taken from ONE catalog record, so the two fields can never come
+// from different sources. On a present-but-unresolvable snapshot (unavailable,
+// or the zone absent) it stamps nothing rather than string-guessing a Region for
+// a zone the authority rejected — the create refuses downstream anyway. On the
+// nil-snapshot bridge workflowZoneEntry returns the legacy placement, whose
+// Region is the zone-derived fallback, preserving the old behaviour.
 func addZoneRegionAndID(wfCtx *Context, args map[string]any, zone string) map[string]any {
-	addZoneRegion(args, zone)
-	if entry, err := workflowZoneEntry(wfCtx, zone); err == nil && entry.Placement.ZoneID != 0 {
+	entry, err := workflowZoneEntry(wfCtx, zone)
+	if err != nil {
+		return args
+	}
+	if r := strings.TrimSpace(entry.Placement.Region); r != "" {
+		args["Region"] = r
+	}
+	if entry.Placement.ZoneID != 0 {
 		args["zone_id"] = entry.Placement.ZoneID
 	}
 	return args
@@ -4083,11 +4095,14 @@ func gpuOptionLabel(catalog map[string]any, gpuType string) string {
 // catalog, threaded in via params["ZoneDescribes"]) labels each option with the
 // console's Chinese name ("华北一C") so the user recognizes the zone; it falls
 // back to the bare zone id when the name is unknown (CLI / catalog unavailable).
-func zoneFormOptions(catalog map[string]any, gpuType, current string, describes map[string]string) []ConfirmFormOption {
+// zoneFormOptions builds the confirm-card zone selector. Each option's display
+// label comes from the turn snapshot (via zoneDisplayLabel) — the single zone
+// authority — degrading to the bare zone id, never the legacy ZoneDescribes map.
+func zoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, current string) []ConfirmFormOption {
 	if catalog == nil {
 		return nil
 	}
-	opts := []ConfirmFormOption{{Value: current, Label: zoneOptionLabel(describes, current)}}
+	opts := []ConfirmFormOption{{Value: current, Label: zoneDisplayLabel(wfCtx, current)}}
 	seen := map[string]bool{current: true}
 	types, _ := catalog["AvailableInstanceTypes"].([]any)
 	for _, t := range types {
@@ -4103,7 +4118,7 @@ func zoneFormOptions(catalog map[string]any, gpuType, current string, describes 
 			continue
 		}
 		seen[z] = true
-		opts = append(opts, ConfirmFormOption{Value: z, Label: zoneOptionLabel(describes, z)})
+		opts = append(opts, ConfirmFormOption{Value: z, Label: zoneDisplayLabel(wfCtx, z)})
 	}
 	return opts
 }

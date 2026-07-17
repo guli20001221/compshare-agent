@@ -193,3 +193,118 @@ func TestNetOptimizerNormalize_SnapshotIsAuthoritative(t *testing.T) {
 	down.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
 	assert.Error(t, normalizeNetOptimizerParams(down))
 }
+
+// TestAddZoneRegionAndID_RegionAndIDFromOneRecord pins Fix-3 residual #3: the
+// read-probe stamps Region AND zone_id from a SINGLE catalog record, never a
+// snapshot id paired with a zone-string-guessed Region. The record's Region is
+// deliberately unequal to regionFromZone(zone) so a guess is distinguishable.
+func TestAddZoneRegionAndID_RegionAndIDFromOneRecord(t *testing.T) {
+	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-realbj", ZoneID: 6003}},
+	})
+
+	t.Run("both fields from the snapshot record", func(t *testing.T) {
+		wfCtx := NewContext(map[string]any{})
+		wfCtx.referenceData.ZoneCatalog = snap
+		args := addZoneRegionAndID(wfCtx, map[string]any{}, "cn-bj2-03")
+		assert.Equal(t, "cn-realbj", args["Region"], "Region from the catalog record, not regionFromZone's cn-bj2")
+		assert.Equal(t, uint32(6003), args["zone_id"], "zone_id from the same record")
+	})
+
+	t.Run("present-but-missing snapshot stamps nothing, no string-guess Region", func(t *testing.T) {
+		wfCtx := NewContext(map[string]any{})
+		wfCtx.referenceData.ZoneCatalog = snap // does not carry cn-sh2-02
+		args := addZoneRegionAndID(wfCtx, map[string]any{}, "cn-sh2-02")
+		_, hasRegion := args["Region"]
+		_, hasID := args["zone_id"]
+		assert.False(t, hasRegion, "a zone the catalog rejects must not get a string-guessed Region")
+		assert.False(t, hasID, "nor a zone_id")
+	})
+
+	t.Run("nil snapshot uses the legacy bridge", func(t *testing.T) {
+		wfCtx := NewContext(map[string]any{"ZoneIds": map[string]uint32{"cn-sh2-02": 2002}})
+		args := addZoneRegionAndID(wfCtx, map[string]any{}, "cn-sh2-02")
+		assert.Equal(t, "cn-sh2", args["Region"], "no snapshot → zone-derived Region bridge")
+		assert.Equal(t, uint32(2002), args["zone_id"], "no snapshot → legacy ZoneIds map")
+	})
+}
+
+// TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot pins Fix-3
+// residual #5: on a snapshot, the CFS Region comes ONLY from the catalog record
+// — a contradictory Region param cannot override it, and a record missing Region
+// fails closed instead of being back-filled by regionFromZone. The pod zone id is
+// chosen so regionFromZone(zone) != the record Region, making a guess visible.
+func TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot(t *testing.T) {
+	pod := deployment.ZonePlacement{Zone: "cn-pod-bj-01", Region: "cn-realpod", ZoneID: 7001, AzGroup: 3007, IsPod: true}
+
+	t.Run("record Region wins over a contradictory param and over a zone-string guess", func(t *testing.T) {
+		snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{Placement: pod}})
+		wfCtx := NewContext(map[string]any{
+			"Name": "cfs1", "Size": float64(100), "Zone": "cn-pod-bj-01",
+			"Region": "cn-wrong", "ChargeType": "Month",
+		})
+		wfCtx.referenceData.ZoneCatalog = snap
+		require.NoError(t, normalizeCreateCFSParams(wfCtx))
+		assert.Equal(t, "cn-realpod", wfCtx.Params["Region"],
+			"Region from the catalog record, not the param cn-wrong nor the guess cn-pod-bj")
+	})
+
+	t.Run("record missing Region fails closed, no regionFromZone fallback", func(t *testing.T) {
+		noRegion := deployment.ZonePlacement{Zone: "cn-pod-bj-01", ZoneID: 7001, AzGroup: 3007, IsPod: true}
+		snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{Placement: noRegion}})
+		wfCtx := NewContext(map[string]any{
+			"Name": "cfs1", "Size": float64(100), "Zone": "cn-pod-bj-01", "ChargeType": "Month",
+		})
+		wfCtx.referenceData.ZoneCatalog = snap
+		require.Error(t, normalizeCreateCFSParams(wfCtx),
+			"a catalog record with no Region must refuse, not fall back to regionFromZone")
+	})
+}
+
+// TestStepQuerySupportZonesForCreateCFS_SkipsWhenSnapshotPresent pins Fix-3
+// residual #4: the second support-zone query is skipped when the authoritative
+// snapshot is present (redundant), and still runs on the nil-snapshot bridge.
+func TestStepQuerySupportZonesForCreateCFS_SkipsWhenSnapshotPresent(t *testing.T) {
+	step := stepQuerySupportZonesForCreateCFS()
+	require.NotNil(t, step.SkipIf, "the step must carry a SkipIf so a present snapshot can skip it")
+
+	withSnap := NewContext(map[string]any{})
+	withSnap.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-pod-01", IsPod: true}},
+	})
+	skip, err := step.SkipIf(withSnap)
+	require.NoError(t, err)
+	assert.True(t, skip, "a present snapshot makes the second support-zone query redundant")
+
+	noSnap := NewContext(map[string]any{})
+	skip, err = step.SkipIf(noSnap)
+	require.NoError(t, err)
+	assert.False(t, skip, "no snapshot → the query still runs (bridge)")
+}
+
+// TestZoneFormOptions_LabelsFromSnapshot pins Fix-3 residual #1: the confirm-card
+// zone selector labels each option from the snapshot record, over a disagreeing
+// legacy ZoneDescribes map, on BOTH the current-zone head and the loop path.
+func TestZoneFormOptions_LabelsFromSnapshot(t *testing.T) {
+	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03"}, DisplayName: "华北一C"},
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02"}, DisplayName: "华东二B"},
+	})
+	wfCtx := NewContext(map[string]any{"ZoneDescribes": map[string]string{
+		"cn-bj2-03": "WRONG-A", "cn-sh2-02": "WRONG-B",
+	}})
+	wfCtx.referenceData.ZoneCatalog = snap
+	catalog := map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "RTX4090", "Zone": "cn-bj2-03", "Status": "Normal"},
+		map[string]any{"Name": "RTX4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+	}}
+
+	opts := zoneFormOptions(wfCtx, catalog, "RTX4090", "cn-bj2-03")
+
+	labels := map[string]string{}
+	for _, o := range opts {
+		labels[o.Value] = o.Label
+	}
+	assert.Equal(t, "华北一C", labels["cn-bj2-03"], "current-zone head label from the snapshot, not ZoneDescribes")
+	assert.Equal(t, "华东二B", labels["cn-sh2-02"], "loop-path label from the snapshot, not ZoneDescribes")
+}
