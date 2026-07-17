@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockInstanceTypes builds a DescribeAvailableCompShareInstanceTypes result
@@ -70,9 +71,9 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	assert.Equal(t, "工作流执行完成", result.Message)
 	assert.Equal(t, []any{"uhost-new001"}, result.Data["UHostIds"])
 
-	// All 8 steps completed
-	assert.Len(t, result.Steps, 8)
-	expectedNames := []string{"查询镜像", "查询可用配比", "形成执行草稿", "检查库存", "查询价格", "确认创建", "创建实例", "查看状态"}
+	// All 9 steps completed
+	assert.Len(t, result.Steps, 9)
+	expectedNames := []string{"查询镜像", "查询可用配比", "形成执行草稿", "检查库存", "查询价格", "形成确认快照", "确认创建", "创建实例", "查看状态"}
 	for i, name := range expectedNames {
 		assert.Equal(t, name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
@@ -534,10 +535,25 @@ func TestCreateInstance_ConfirmArgsContainSummary(t *testing.T) {
 	// the raw GetCompShareInstanceUserPrice object (which the frontend stringified
 	// as "[object Object]"). Default ChargeType is Postpay; the mock returns
 	// PriceDetails [{ChargeType: Postpay, Price: 1.58}] with no list price.
-	assert.Equal(t, "¥1.58/小时", capturedArgs["price"])
+	//
+	// The （预估） is in the VALUE, not only in PriceNote, because upstream returns
+	// no quote id and no validity — it cannot hold this number — and the HTTP
+	// frontend that renders these args is not this repo's to relabel. A bare
+	// number there would read as a commitment the platform never made.
+	assert.Equal(t, "¥1.58/小时（预估）", capturedArgs["price"])
+	assert.Equal(t, "最终费用以实际创建和结算结果为准", capturedArgs["PriceNote"])
 }
 
-func TestConfirmPriceText(t *testing.T) {
+// TestEstimatedPriceDisplayText covers the price rendering, retargeted from
+// confirmPriceText onto extractEstimatedPrice, which absorbed it — there is now
+// one producer of the create's price string, so the card and the sealed record
+// cannot disagree about it.
+//
+// The inputs are unchanged. `want` gained （预估）, which is the point of the
+// change: upstream returns no quote id and no validity, so every one of these
+// numbers is an estimate. An empty `want` means "no snapshot at all" rather than
+// an empty string — an absent price must stay absent, because a 0 renders as free.
+func TestEstimatedPriceDisplayText(t *testing.T) {
 	cases := []struct {
 		name       string
 		price      any
@@ -569,7 +585,11 @@ func TestConfirmPriceText(t *testing.T) {
 			want:       "¥1.58/小时",
 		},
 		{
-			name:       "Instance field fallback (catalog-shape robustness)",
+			// The LIVE shape. Every captured GetCompShareInstancePriceResponse
+			// quotes under "Instance"; the "Price" key the other cases use appears
+			// in none of them. This case was labelled "fallback (catalog-shape
+			// robustness)" — exactly backwards from what upstream actually sends.
+			name:       "Instance field (the shape upstream actually returns)",
 			price:      map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": 2.0}}},
 			chargeType: "Postpay",
 			want:       "¥2.00/小时",
@@ -601,7 +621,13 @@ func TestConfirmPriceText(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, confirmPriceText(tc.price, tc.chargeType))
+			got := extractEstimatedPrice(tc.price, tc.chargeType)
+			if tc.want == "" {
+				assert.Nil(t, got, "nothing usable was quoted — the card must show no price, not a zero")
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, tc.want+estimatedPriceSuffix, got.DisplayText)
 		})
 	}
 }

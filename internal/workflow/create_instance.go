@@ -265,13 +265,14 @@ func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64,
 func CreateInstanceDef() *Definition {
 	return &Definition{
 		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 形成执行草稿 → 检查库存 → 查询价格 → 确认 → 创建实例 → 查看状态",
+		Description: "查询镜像 → 查询可用配比 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认 → 创建实例 → 查看状态",
 		Steps: []Step{
 			stepQueryImages(false),
 			stepQueryInstanceTypes(),
 			stepResolveCreateDraft(),
 			stepCheckCapacity(),
 			stepGetPrice(),
+			stepResolveCreateConfirmation(),
 			stepConfirmCreate(),
 			stepCreateInstance(),
 			stepDescribeInstance(),
@@ -286,7 +287,7 @@ func CreateInstanceDef() *Definition {
 func CreateInstanceGuidedDef() *Definition {
 	return &Definition{
 		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择用途 → 必要时查询社区镜像 → 选择镜像 → 形成执行草稿 → 检查库存 → 查询价格 → 确认镜像计费 → 创建实例 → 查看状态",
+		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择用途 → 必要时查询社区镜像 → 选择镜像 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认镜像计费 → 创建实例 → 查看状态",
 		Steps: []Step{
 			stepQueryImages(true),
 			stepQueryInstanceTypes(),
@@ -303,6 +304,7 @@ func CreateInstanceGuidedDef() *Definition {
 			stepResolveCreateDraft(),
 			stepCheckCapacity(),
 			stepGetPrice(),
+			stepResolveCreateConfirmation(),
 			stepConfirmCreateGuided(),
 			stepCreateInstance(),
 			stepDescribeInstance(),
@@ -834,55 +836,108 @@ func imageMapByID(images map[string]any, id string) map[string]any {
 	return nil
 }
 
-// confirmPriceText renders a human-readable hourly/period price for the confirm
-// card from the GetCompShareInstanceUserPrice result, instead of putting the raw
-// API object into the card (the frontend stringified that as "[object Object]").
-// It reads the payable amount for the resolved ChargeType out of PriceDetails,
-// appending the list price as 原价 when a discount applies. Returns "" when the
-// result is missing/empty/an unexpected shape so the caller omits the price line
-// rather than surfacing a raw object. The UserPrice PriceDetails entry carries a
-// "Price" field (per the API + create/golden/deploy_model fixtures); "Instance"
-// is accepted as a fallback for robustness (it is the catalog-API field name).
-func confirmPriceText(priceResult any, chargeType string) string {
-	raw, ok := priceResult.(map[string]any)
+// priceAmountFor reads the amount quoted for one charge type out of one of the
+// price arrays.
+//
+// It accepts both "Instance" and "Price". "Instance" is what upstream ACTUALLY
+// returns — every live capture of GetCompShareInstancePriceResponse uses it
+// (eval/reports/real_cli_golden_doubao_lite_runner.md,
+// eval/shadow_qa/2026-04-17-real-account-round2/platform_failures_report.md) and
+// "Price" appears in none of them. This function's doc used to say the opposite:
+// that "Price" was the API field and "Instance" a robustness fallback. It was
+// written to match this repo's fixtures, which invented "Price" — so the branch
+// production has always taken was documented as the fallback, and the branch no
+// live response can reach was documented as the contract. Both are read here
+// because the fixtures still exist; the order is not a statement about upstream.
+func priceAmountFor(raw map[string]any, arrKey, chargeType string) (float64, bool) {
+	arr, ok := raw[arrKey].([]any)
 	if !ok {
-		return ""
-	}
-	amountFor := func(arrKey string) (float64, bool) {
-		arr, ok := raw[arrKey].([]any)
-		if !ok {
-			return 0, false
-		}
-		for _, entry := range arr {
-			m, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			if ct, _ := m["ChargeType"].(string); ct != chargeType {
-				continue
-			}
-			if n, ok := priceNumber(m["Price"]); ok {
-				return n, true
-			}
-			if n, ok := priceNumber(m["Instance"]); ok {
-				return n, true
-			}
-		}
 		return 0, false
 	}
-	payable, ok := amountFor("PriceDetails")
+	for _, entry := range arr {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if ct, _ := m["ChargeType"].(string); ct != chargeType {
+			continue
+		}
+		if n, ok := priceNumber(m["Instance"]); ok {
+			return n, true
+		}
+		if n, ok := priceNumber(m["Price"]); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// priceListAmountFor reads the undiscounted price, which upstream reports under
+// either name depending on the endpoint.
+func priceListAmountFor(raw map[string]any, chargeType string) (float64, bool) {
+	if list, ok := priceAmountFor(raw, "ListPriceDetails", chargeType); ok {
+		return list, true
+	}
+	return priceAmountFor(raw, "OriginalPriceDetails", chargeType)
+}
+
+// estimatedPriceSuffix marks the quote as an estimate in the card's price VALUE,
+// not only in a separate note field.
+//
+// The value is where it has to be. The HTTP confirmation frame hands these args to
+// a frontend this repo does not own, which renders them with its own labels; a
+// structured flag alone would be honest only once that frontend adopts it, and
+// until then the user would read a bare number as a commitment. Upstream cannot
+// hold a price, so the number is an estimate in every renderer or it is misleading
+// in some of them.
+const estimatedPriceSuffix = "（预估）"
+
+// createPriceNote is the fuller sentence, carried as its own card field so a
+// renderer can place it properly. CLI prints it under the price.
+const createPriceNote = "最终费用以实际创建和结算结果为准"
+
+// extractEstimatedPrice builds the snapshot of what the user is about to be
+// quoted, and renders the one string that both the card and the seal will carry.
+//
+// It is the ONLY place a create price is turned into text. It absorbed
+// confirmPriceText, which used to render it separately: that function re-ran the
+// very same PriceDetails lookup this one had already done, so the "no price"
+// guard here was dead — its own !ok branch could never be reached, because the
+// second lookup's empty-string branch always caught the same case first. Two
+// lookups of one response, one of them load-bearing and the other shadowing a
+// guard, is the shape of defect this convergence exists to remove; a mutation test
+// found it here rather than a user.
+//
+// Returns nil when upstream quoted nothing usable for this charge type — the card
+// then shows no price rather than a fabricated one, because a 0 renders as free.
+//
+// It records only what upstream said. No quote id (there is none — SourceRequestID
+// is the response's request_uuid and is named for what it is), no validity, no
+// currency, and Locked=false because the platform cannot hold this number.
+func extractEstimatedPrice(priceResult any, chargeType string) *EstimatedPriceSnapshot {
+	raw, ok := priceResult.(map[string]any)
 	if !ok {
-		return ""
+		return nil
+	}
+	payable, ok := priceAmountFor(raw, "PriceDetails", chargeType)
+	if !ok {
+		return nil
 	}
 	text := fmt.Sprintf("¥%.2f%s", payable, chargePeriodUnit(chargeType))
-	list, hasList := amountFor("ListPriceDetails")
-	if !hasList {
-		list, hasList = amountFor("OriginalPriceDetails")
+	snapshot := &EstimatedPriceSnapshot{
+		ChargeType:      chargeType,
+		PayableAmount:   payable,
+		SourceRequestID: paramStr(raw, "request_uuid", ""),
+		Locked:          false,
 	}
-	if hasList && list > payable {
-		text += fmt.Sprintf("（原价 ¥%.2f）", list)
+	if list, hasList := priceListAmountFor(raw, chargeType); hasList {
+		snapshot.ListAmount = &list
+		if list > payable {
+			text += fmt.Sprintf("（原价 ¥%.2f）", list)
+		}
 	}
-	return text
+	snapshot.DisplayText = text + estimatedPriceSuffix
+	return snapshot
 }
 
 // chargePeriodUnit maps a ChargeType to its billing-period suffix for display.
@@ -1063,6 +1118,58 @@ func stepResolveCreateDraft() Step {
 	}
 }
 
+// createConfirmationStepName joins the resolved execution with the price quoted
+// for it. It is a second resolve step rather than part of the draft because the
+// draft must exist BEFORE the price: stock and price are both asked about the
+// draft, so the quote only exists once the draft has already been formed.
+const createConfirmationStepName = "形成确认快照"
+
+// stepResolveCreateConfirmation builds what the user will actually be shown and
+// what the seal will actually freeze.
+func stepResolveCreateConfirmation() Step {
+	return Step{
+		Name:    createConfirmationStepName,
+		Type:    StepResolve,
+		Resolve: materializeCreateConfirmation,
+	}
+}
+
+// materializeCreateConfirmation joins the draft with the estimate quoted for it.
+//
+// The price text is rendered HERE, once. The card reads it and PromoteOnConfirm
+// seals it, so the sentence the user read is the sentence the contract records.
+// Rendering at card time and rebuilding at promote time would be two computations
+// agreeing by luck — which is precisely the shape this convergence has spent eight
+// commits removing, and it would be worse here than elsewhere: the thing that
+// diverged would be the price the user believed they were agreeing to.
+//
+// It records no observation time. A resolve step must be replayable from a trace,
+// and time.Now() here would make it a different computation on every replay; if a
+// quote timestamp is ever wanted it has to be captured when the price TOOL
+// returns, not when a pure step reads its result.
+func materializeCreateConfirmation(wfCtx *Context) (map[string]any, error) {
+	draft, err := candidateCreateDraft(wfCtx)
+	if err != nil {
+		return nil, err
+	}
+	return CreateConfirmationSnapshot{
+		Execution: draft,
+		// nil when upstream quoted nothing usable — an absent price is shown as
+		// absent, never as zero.
+		EstimatedPrice: extractEstimatedPrice(wfCtx.Result("查询价格"), draft.Args.ChargeType),
+	}.ToContractMap(), nil
+}
+
+// candidateCreateConfirmation returns the typed snapshot the confirmation step
+// produced. Like the draft, its absence is a hard error rather than a rebuild.
+func candidateCreateConfirmation(wfCtx *Context) (CreateConfirmationSnapshot, error) {
+	stored := wfCtx.Result(createConfirmationStepName)
+	if len(stored) == 0 {
+		return CreateConfirmationSnapshot{}, fmt.Errorf("尚未形成确认快照，无法继续创建")
+	}
+	return ParseCreateConfirmationSnapshot(stored)
+}
+
 // candidateCreateDraft returns the typed draft the resolve step produced: what
 // WOULD be created, for capacity, price and the confirm card to consume.
 //
@@ -1087,22 +1194,24 @@ func candidateCreateDraft(wfCtx *Context) (CreateExecutionDraft, error) {
 // would diverge the live params from the sealed digest and fail-stop a create the
 // user correctly approved.
 func promoteCreateDraft(wfCtx *Context) error {
-	draft, err := candidateCreateDraft(wfCtx)
+	snapshot, err := candidateCreateConfirmation(wfCtx)
 	if err != nil {
 		return err
 	}
-	// Re-encoded rather than copied from StepResults: ToContractMap builds a fresh
-	// map every call, so Params cannot alias the candidate and no deep copy is
-	// needed to keep them apart.
-	wfCtx.Params[createDraftKey] = draft.ToContractMap()
+	// The SAME snapshot the card rendered — read once more, not rebuilt. Re-encoded
+	// rather than copied from StepResults: ToContractMap builds a fresh map every
+	// call, so Params cannot alias the candidate and no deep copy is needed to keep
+	// them apart.
+	wfCtx.Params[createDraftKey] = snapshot.ToContractMap()
 	return nil
 }
 
 func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
-	draft, err := candidateCreateDraft(wfCtx)
+	snapshot, err := candidateCreateConfirmation(wfCtx)
 	if err != nil {
 		return nil, err
 	}
+	draft := snapshot.Execution
 	zone := draft.Args.Zone
 	// The card is a projection of the draft. Every executable value is read FROM
 	// it — never re-derived — so what is shown is what is sealed and executed. The
@@ -1114,6 +1223,14 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	// every path today, so nothing was visibly broken — but "the card reads only
 	// the draft" is either structural or it is a habit, and a habit is what the
 	// card/create image split already turned out to be.
+	// The price the card shows is the snapshot's, verbatim — the same string that
+	// gets sealed. It already carries 预估, because upstream cannot hold a price and
+	// the frontend that renders this frame is not ours to relabel.
+	price, priceNote := "", ""
+	if snapshot.EstimatedPrice != nil {
+		price = snapshot.EstimatedPrice.DisplayText
+		priceNote = createPriceNote
+	}
 	return map[string]any{
 		"workflow":   "CreateInstanceWorkflow",
 		"GpuType":    draft.Args.GpuType,
@@ -1124,7 +1241,10 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 		"ZoneLabel":  zoneDisplayLabel(wfCtx.Params, zone),
 		"ChargeType": draft.Args.ChargeType,
 		"image":      draft.Image.Name,
-		"price":      confirmPriceText(wfCtx.Result("查询价格"), draft.Args.ChargeType),
+		"price":      price,
+		// Additive, like FallbackNote: always present, "" when there is no price to
+		// qualify, and skipped by renderers when empty.
+		"PriceNote": priceNote,
 		// FallbackNote is set by the deploy_model handler when it switched the
 		// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
 		// Surfaced in the confirm card so the user sees the zone switch before
@@ -1178,14 +1298,17 @@ func createArgsFromSealedDraft(wfCtx *Context) (map[string]any, error) {
 	if !ok || len(stored) == 0 {
 		return nil, fmt.Errorf("已确认的执行合同中缺少创建参数，拒绝以重新推导的参数创建")
 	}
-	draft, err := ParseCreateExecutionDraft(stored)
+	snapshot, err := ParseCreateConfirmationSnapshot(stored)
 	if err != nil {
 		return nil, fmt.Errorf("已确认的执行合同无法解析（%v），拒绝以重新推导的参数创建", err)
 	}
+	// Only the execution half. The sealed snapshot also records the estimate the
+	// user was shown, which exists for audit and must never reach the API.
+	//
 	// UpstreamCreateArgs builds a fresh map from the parsed values, so the executor
 	// cannot reach into the frozen record the digest is computed over. It chooses
 	// the wire shape and nothing else — every value it uses was sealed.
-	return draft.UpstreamCreateArgs(), nil
+	return snapshot.Execution.UpstreamCreateArgs(), nil
 }
 
 func stepDescribeInstance() Step {

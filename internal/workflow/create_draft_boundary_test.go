@@ -72,18 +72,21 @@ func TestTheCodecIsReachableOnlyThroughItsTwoDoors(t *testing.T) {
 	require.NoError(t, err)
 	src := string(body)
 
-	// Four crossings, one per boundary function, and each is structural:
+	// Six crossings, one per boundary function, each structural:
 	//
-	//   encode: materializeCreateDraft  → the resolve step's stored result
-	//           promoteCreateDraft      → Params, once the gate passes
-	//   decode: candidateCreateDraft    → the candidate, for stock/price/card
-	//           createArgsFromSealedDraft → the sealed copy, for the create
+	//   encode: materializeCreateDraft        → the draft step's stored result
+	//           materializeCreateConfirmation → the confirmation step's stored result
+	//           promoteCreateDraft            → Params, once the gate passes
+	//   decode: candidateCreateDraft          → the candidate draft (stock, price)
+	//           candidateCreateConfirmation   → the candidate snapshot (card, promote)
+	//           createArgsFromSealedDraft     → the sealed snapshot (the create)
 	//
-	// A fifth means some other site decided how a draft is stored or read, which is
-	// the moment the map becomes the real contract again.
-	require.Equal(t, 2, strings.Count(src, ".ToContractMap()"),
-		"exactly two encoders belong here: materializeCreateDraft (the step's result) and promoteCreateDraft (into Params)")
-	require.Equal(t, 2, strings.Count(src, "ParseCreateExecutionDraft("),
-		"exactly two decoders belong here: candidateCreateDraft (StepResults) and createArgsFromSealedDraft (the sealed copy). "+
-			"Every other consumer goes through candidateCreateDraft.")
+	// One more means some other site decided how a draft is stored or read, which
+	// is the moment the map becomes the real contract again.
+	require.Equal(t, 3, strings.Count(src, ".ToContractMap()"),
+		"exactly three encoders belong here: the two resolve steps' results and promoteCreateDraft (into Params)")
+	require.Equal(t, 1, strings.Count(src, "ParseCreateExecutionDraft("),
+		"the draft is decoded once, in candidateCreateDraft; everyone else asks it")
+	require.Equal(t, 2, strings.Count(src, "ParseCreateConfirmationSnapshot("),
+		"the snapshot is decoded twice: candidateCreateConfirmation (StepResults) and createArgsFromSealedDraft (the sealed copy)")
 }

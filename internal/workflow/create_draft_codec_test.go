@@ -194,6 +194,148 @@ func TestUpstreamShapesDifferPerCall(t *testing.T) {
 	}
 }
 
+// livePriceResponse is the REAL upstream shape, field for field:
+// GetCompShareInstancePriceResponse returns amounts under "Instance" and carries
+// no quote id, no validity and no currency. Every price fixture in this repo says
+// "Price" — a key that appears in ZERO live captures — so a snapshot test written
+// against fixtures would be testing a response upstream never sends.
+//
+// Source: eval/reports/real_cli_golden_doubao_lite_runner.md:49-119.
+func livePriceResponse() map[string]any {
+	return map[string]any{
+		"Action": "GetCompShareInstancePriceResponse",
+		"PriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": 1.58},
+			map[string]any{"ChargeType": "Month", "Instance": 951.85},
+		},
+		"ListPriceDetails": []any{
+			map[string]any{"ChargeType": "Postpay", "Instance": 1.66},
+			map[string]any{"ChargeType": "Month", "Instance": 1001.95},
+		},
+		"RetCode":      float64(0),
+		"request_uuid": "886d1c25-df7c-4d97-aee1-41c0da1a5ad1",
+	}
+}
+
+// TestEstimatedPriceRecordsOnlyWhatUpstreamSaid is the anti-fabrication gate.
+//
+// Upstream cannot lock a price: the live response has no quote id, no validity and
+// no currency. The snapshot must therefore say "estimate" and must not dress a
+// correlation id up as a commercial one — request_uuid is SourceRequestID, which
+// is all it is. Currency is absent rather than "CNY", because a structured
+// currency field would be this repo asserting a platform fact it was never told;
+// the ¥ on the card is a display convention and stays one.
+func TestEstimatedPriceRecordsOnlyWhatUpstreamSaid(t *testing.T) {
+	got := extractEstimatedPrice(livePriceResponse(), "Postpay")
+
+	require.NotNil(t, got)
+	assert.Equal(t, "Postpay", got.ChargeType)
+	assert.Equal(t, 1.58, got.PayableAmount)
+	require.NotNil(t, got.ListAmount)
+	assert.Equal(t, 1.66, *got.ListAmount)
+	assert.Equal(t, "¥1.58/小时（原价 ¥1.66）（预估）", got.DisplayText)
+	assert.False(t, got.Locked, "upstream cannot hold a price — saying otherwise would invent a commitment")
+	assert.Equal(t, "886d1c25-df7c-4d97-aee1-41c0da1a5ad1", got.SourceRequestID,
+		"this is the response's request_uuid and nothing more; calling it a quote id would fabricate one")
+
+	// And what the type does NOT carry is as load-bearing as what it does.
+	encoded := CreateConfirmationSnapshot{EstimatedPrice: got}.ToContractMap()
+	price, _ := encoded[snapshotKeyPrice].(map[string]any)
+	require.NotEmpty(t, price)
+	for _, invented := range []string{"currency", "Currency", "quote_id", "QuoteID", "expires_at", "valid_until"} {
+		assert.NotContains(t, price, invented,
+			"upstream returns no %s — encoding one would be this repo asserting a fact it was never told", invented)
+	}
+}
+
+// TestEstimatedPriceIsAbsentWhenUpstreamQuotedNothing: no price is shown as no
+// price. A zero would read as free.
+func TestEstimatedPriceIsAbsentWhenUpstreamQuotedNothing(t *testing.T) {
+	assert.Nil(t, extractEstimatedPrice(livePriceResponse(), "Spot"),
+		"the live response quotes no Spot price here — inventing 0 would render as free")
+	assert.Nil(t, extractEstimatedPrice(nil, "Postpay"))
+	assert.Nil(t, extractEstimatedPrice(map[string]any{}, "Postpay"))
+
+	// And the snapshot encodes/decodes that absence rather than a zero price.
+	snapshot := CreateConfirmationSnapshot{Execution: fullDraft(), EstimatedPrice: nil}
+	back, err := ParseCreateConfirmationSnapshot(snapshot.ToContractMap())
+	require.NoError(t, err)
+	assert.Nil(t, back.EstimatedPrice)
+}
+
+// TestConfirmationSnapshotRoundTrips, including through JSON: a sealed contract
+// can be persisted and rehydrated, and an estimate that decodes wrong is an audit
+// record that lies about what the user was shown.
+func TestConfirmationSnapshotRoundTrips(t *testing.T) {
+	list := 1.66
+	original := CreateConfirmationSnapshot{
+		Execution: fullDraft(),
+		EstimatedPrice: &EstimatedPriceSnapshot{
+			ChargeType: "Postpay", PayableAmount: 1.58, ListAmount: &list,
+			DisplayText: "¥1.58/小时（原价 ¥1.66）（预估）", SourceRequestID: "req-1", Locked: false,
+		},
+	}
+
+	back, err := ParseCreateConfirmationSnapshot(original.ToContractMap())
+	require.NoError(t, err)
+	assert.Equal(t, original.Execution, back.Execution)
+	require.NotNil(t, back.EstimatedPrice)
+	assert.Equal(t, *original.EstimatedPrice, *back.EstimatedPrice)
+
+	raw, err := json.Marshal(original.ToContractMap())
+	require.NoError(t, err)
+	var revived map[string]any
+	require.NoError(t, json.Unmarshal(raw, &revived))
+	viaJSON, err := ParseCreateConfirmationSnapshot(revived)
+	require.NoError(t, err)
+	require.NotNil(t, viaJSON.EstimatedPrice)
+	assert.Equal(t, *original.EstimatedPrice, *viaJSON.EstimatedPrice)
+	assert.Equal(t, original.Execution.Placement.ZoneID, viaJSON.Execution.Placement.ZoneID)
+}
+
+// TestConfirmationSnapshotRejectsAMissingExecution: a snapshot without an
+// execution is not a contract. A nil price is fine; a nil execution is not.
+func TestConfirmationSnapshotRejectsAMissingExecution(t *testing.T) {
+	_, err := ParseCreateConfirmationSnapshot(map[string]any{snapshotKeyPrice: map[string]any{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "缺少执行草稿")
+
+	_, err = ParseCreateConfirmationSnapshot(map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "确认快照为空")
+}
+
+// TestSnapshotEncodesOnlySealSafeValues: same rule as the draft's, now including
+// the price. *float64 must be dereferenced on the way out — a pointer in Params
+// would be copied shallowly by the seal.
+func TestSnapshotEncodesOnlySealSafeValues(t *testing.T) {
+	list := 1.66
+	encoded := CreateConfirmationSnapshot{
+		Execution:      fullDraft(),
+		EstimatedPrice: &EstimatedPriceSnapshot{ChargeType: "Postpay", PayableAmount: 1.58, ListAmount: &list},
+	}.ToContractMap()
+
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch tv := v.(type) {
+		case nil, string, bool, float64, float32,
+			int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return
+		case map[string]any:
+			for k, inner := range tv {
+				walk(path+"."+k, inner)
+			}
+		case []any:
+			for _, inner := range tv {
+				walk(path+"[]", inner)
+			}
+		default:
+			t.Errorf("%s: encoded snapshot carries %T — only strings, bools, numbers, maps, slices and nil are seal-safe", path, v)
+		}
+	}
+	walk("snapshot", encoded)
+}
+
 // TestUpstreamArgsDoNotAliasTheDraft: every builder must produce a fresh map, or
 // the tool executor could mutate the record the seal's digest is computed over.
 func TestUpstreamArgsDoNotAliasTheDraft(t *testing.T) {

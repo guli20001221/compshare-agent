@@ -104,6 +104,12 @@ func printCreateConfirmCard(args map[string]any) {
 	}
 	if p := str("price"); p != "" {
 		fmt.Printf("    价格：%s\n", p)
+		// The value already says 预估; this is the sentence that explains why.
+		// Upstream quotes no locked price, so a number shown without this reads as
+		// a commitment the platform has not made.
+		if note := str("PriceNote"); note != "" {
+			fmt.Printf("          %s\n", note)
+		}
 	}
 	if fb := str("FallbackNote"); fb != "" {
 		fmt.Printf("    ℹ️  %s\n", fb)

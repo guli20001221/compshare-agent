@@ -36,6 +36,49 @@ type CreateExecutionDraft struct {
 	Placement deployment.ZonePlacement
 }
 
+// EstimatedPriceSnapshot records what the user was quoted at the moment they were
+// asked to approve a create — so the sealed contract can answer "what price did
+// they see", not only "what did they configure".
+//
+// Every field is what upstream actually returns, and the absences are deliberate:
+//
+//   - There is NO quote id and NO validity, because GetCompShareInstanceUserPrice
+//     has neither. Its live response carries only Action, PriceDetails,
+//     ListPriceDetails, OriginalPriceDetails, RetCode and request_uuid. Naming a
+//     request_uuid "QuoteID" would dress up an HTTP correlation id as a commercial
+//     commitment nobody made; it is SourceRequestID, which is all it is.
+//   - There is NO Currency, because upstream does not return one. The ¥ on the
+//     card is a product display convention and stays a display concern; a
+//     structured Currency:"CNY" here would be this repo asserting a platform fact
+//     it was never told.
+//   - Locked is always false and exists to say so out loud. Upstream cannot hold a
+//     price, so this is an estimate, and the card says 预估 rather than implying a
+//     commitment the platform has not made.
+type EstimatedPriceSnapshot struct {
+	ChargeType      string
+	PayableAmount   float64
+	ListAmount      *float64 // nil when upstream quoted no list/original price
+	DisplayText     string
+	SourceRequestID string
+	Locked          bool
+}
+
+// CreateConfirmationSnapshot is what the user is actually shown and what the seal
+// actually freezes: the resolved execution plus the estimate quoted for it.
+//
+// It exists because the draft is formed BEFORE the price is known — stock and
+// price are asked about the draft — so the price cannot live on the draft itself.
+// A second local computation joins them once both are in hand.
+//
+// The card renders this and PromoteOnConfirm seals this: one object, read twice.
+// Rendering the price text at card time and rebuilding it at promote time would
+// put us back to two computations agreeing by luck, which is the defect this whole
+// convergence has been removing.
+type CreateConfirmationSnapshot struct {
+	Execution      CreateExecutionDraft
+	EstimatedPrice *EstimatedPriceSnapshot // nil when upstream quoted nothing usable
+}
+
 // CreateInstanceArgs is the typed business half of a create request: the values a
 // user decides, not the wire shape they are sent in.
 //
@@ -89,7 +132,80 @@ const (
 	placementKeyZoneID  = "zone_id"
 	placementKeyAzGroup = "az_group"
 	placementKeyIsPod   = "is_pod"
+
+	snapshotKeyExecution = "execution"
+	snapshotKeyPrice     = "estimated_price"
+
+	priceKeyChargeType      = "charge_type"
+	priceKeyPayableAmount   = "payable_amount"
+	priceKeyListAmount      = "list_amount"
+	priceKeyDisplayText     = "display_text"
+	priceKeySourceRequestID = "source_request_id"
+	priceKeyLocked          = "locked"
 )
+
+// ToContractMap encodes the confirmation snapshot for storage and sealing. Same
+// rule as the draft's: plain JSON shapes only.
+func (s CreateConfirmationSnapshot) ToContractMap() map[string]any {
+	out := map[string]any{
+		snapshotKeyExecution: s.Execution.ToContractMap(),
+	}
+	if s.EstimatedPrice != nil {
+		price := map[string]any{
+			priceKeyChargeType:      s.EstimatedPrice.ChargeType,
+			priceKeyPayableAmount:   s.EstimatedPrice.PayableAmount,
+			priceKeyDisplayText:     s.EstimatedPrice.DisplayText,
+			priceKeySourceRequestID: s.EstimatedPrice.SourceRequestID,
+			priceKeyLocked:          s.EstimatedPrice.Locked,
+		}
+		// Absent, not zero: upstream quoting no list price is a different fact from
+		// quoting a list price of 0, and only one of them means "no discount shown".
+		if s.EstimatedPrice.ListAmount != nil {
+			price[priceKeyListAmount] = *s.EstimatedPrice.ListAmount
+		}
+		out[snapshotKeyPrice] = price
+	}
+	return out
+}
+
+// ParseCreateConfirmationSnapshot decodes the stored confirmation snapshot.
+//
+// A missing price section decodes to a nil EstimatedPrice rather than an error:
+// upstream returning nothing usable is a real outcome (the card then shows no
+// price), and it must not be confused with a corrupted contract.
+func ParseCreateConfirmationSnapshot(m map[string]any) (CreateConfirmationSnapshot, error) {
+	if len(m) == 0 {
+		return CreateConfirmationSnapshot{}, fmt.Errorf("确认快照为空")
+	}
+	rawExec, ok := m[snapshotKeyExecution].(map[string]any)
+	if !ok {
+		return CreateConfirmationSnapshot{}, fmt.Errorf("确认快照缺少执行草稿")
+	}
+	exec, err := ParseCreateExecutionDraft(rawExec)
+	if err != nil {
+		return CreateConfirmationSnapshot{}, err
+	}
+	snapshot := CreateConfirmationSnapshot{Execution: exec}
+
+	rawPrice, ok := m[snapshotKeyPrice].(map[string]any)
+	if !ok {
+		return snapshot, nil
+	}
+	price := &EstimatedPriceSnapshot{
+		ChargeType:      paramStr(rawPrice, priceKeyChargeType, ""),
+		PayableAmount:   paramNum(rawPrice, priceKeyPayableAmount, 0),
+		DisplayText:     paramStr(rawPrice, priceKeyDisplayText, ""),
+		SourceRequestID: paramStr(rawPrice, priceKeySourceRequestID, ""),
+	}
+	price.Locked, _ = rawPrice[priceKeyLocked].(bool)
+	if raw, present := rawPrice[priceKeyListAmount]; present {
+		if n, ok := priceNumber(raw); ok {
+			price.ListAmount = &n
+		}
+	}
+	snapshot.EstimatedPrice = price
+	return snapshot, nil
+}
 
 // ToContractMap encodes the draft into the plain JSON-shaped map that Params,
 // StepResults and the sealed contract store.

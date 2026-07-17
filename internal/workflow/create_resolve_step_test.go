@@ -196,7 +196,7 @@ func TestCardPriceUnitFollowsTheDraftNotTheLiveParams(t *testing.T) {
 		map[string]any{"ChargeType": "Postpay", "Instance": 1.58},
 		map[string]any{"ChargeType": "Month", "Instance": 888.0},
 	}}
-	draft := runDraftStep(t, wfCtx)
+	draft := runToTheGate(t, wfCtx)
 	require.Equal(t, "Postpay", draft.Args.ChargeType, "the draft resolved the default charge type")
 
 	// Someone rewrites the request params after the draft was formed.
@@ -206,7 +206,7 @@ func TestCardPriceUnitFollowsTheDraftNotTheLiveParams(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Postpay", card["ChargeType"], "the card's charge type comes from the draft")
-	assert.Equal(t, "¥1.58/小时", card["price"],
+	assert.Equal(t, "¥1.58/小时（预估）", card["price"],
 		"the price must describe what was drafted and will be created, not a live param that moved")
 	assert.NotContains(t, card["price"], "888")
 }
@@ -361,13 +361,19 @@ func TestFormEditRerunsFromTheDraftInDefinitionOrder(t *testing.T) {
 	require.True(t, result.Success)
 
 	// Two passes over the range, each in definition order.
+	//
+	// 形成确认快照 appears in the re-run without anyone adding it there: the gate
+	// names a BOUNDARY, and the engine walks the definition from it. The old
+	// RevalidateSteps list would have had to be edited by hand when that step was
+	// introduced — and if it had not been, the refreshed card would have shown the
+	// price quoted for the PREVIOUS GPU, silently.
 	assert.Equal(t,
 		[]string{
-			"查询镜像", "查询可用配比", createDraftStepName, "检查库存", "查询价格",
-			createDraftStepName, "检查库存", "查询价格",
+			"查询镜像", "查询可用配比", createDraftStepName, "检查库存", "查询价格", createConfirmationStepName,
+			createDraftStepName, "检查库存", "查询价格", createConfirmationStepName,
 			"创建实例", "查看状态",
 		}, order,
-		"an edit must rebuild the draft BEFORE re-asking stock and price about it")
+		"an edit must rebuild the draft BEFORE re-asking stock and price about it, then re-snapshot the quote")
 
 	// And stock was asked about the edited GPU, not the original.
 	var capacityGPUs []string

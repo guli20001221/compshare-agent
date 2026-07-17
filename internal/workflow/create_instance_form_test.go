@@ -297,7 +297,7 @@ func TestBuildCreateConfirmArgs_UsesZoneLabelForDisplayOnly(t *testing.T) {
 		},
 	})
 
-	runDraftStep(t, wfCtx)
+	runToTheGate(t, wfCtx)
 	args, err := buildCreateConfirmArgs(wfCtx)
 	require.NoError(t, err)
 

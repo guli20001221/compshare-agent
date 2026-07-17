@@ -48,10 +48,32 @@ func runDraftStep(t *testing.T, wfCtx *Context) CreateExecutionDraft {
 	return draft
 }
 
-// storedDraft returns the ENCODED candidate, for the few tests that must reach
-// through the storage format on purpose (aliasing, tamper).
-func storedDraft(wfCtx *Context) map[string]any {
-	return wfCtx.Result(createDraftStepName)
+// runConfirmationStep runs the second resolve step — the one that joins the draft
+// with the price quoted for it. The card and the promote both read its product, so
+// a context that has not run it is not at the gate yet.
+func runConfirmationStep(t *testing.T, wfCtx *Context) CreateConfirmationSnapshot {
+	t.Helper()
+	res := &Result{}
+	outcome := (&Engine{}).runResolveStep(stepResolveCreateConfirmation(), 0, 1, wfCtx, res)
+	require.Equal(t, toolStepOK, outcome, "confirmation step failed: %s", res.Message)
+	snapshot, err := candidateCreateConfirmation(wfCtx)
+	require.NoError(t, err)
+	return snapshot
+}
+
+// runToTheGate runs both resolve steps, leaving the context exactly where the
+// confirm gate would find it.
+func runToTheGate(t *testing.T, wfCtx *Context) CreateExecutionDraft {
+	t.Helper()
+	draft := runDraftStep(t, wfCtx)
+	runConfirmationStep(t, wfCtx)
+	return draft
+}
+
+// storedSnapshot returns the ENCODED candidate snapshot, for the few tests that
+// must reach through the storage format on purpose (aliasing, tamper).
+func storedSnapshot(wfCtx *Context) map[string]any {
+	return wfCtx.Result(createConfirmationStepName)
 }
 
 // confirmAndSeal mirrors what the engine does the instant a gate passes:
@@ -94,9 +116,10 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 	require.NotContains(t, result.Contract.BusinessParams, "Zone")
 
 	stored, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
-	require.True(t, ok, "the confirmed draft must be inside the SEALED business params")
-	draft, err := ParseCreateExecutionDraft(stored)
+	require.True(t, ok, "the confirmed snapshot must be inside the SEALED business params")
+	snapshot, err := ParseCreateConfirmationSnapshot(stored)
 	require.NoError(t, err)
+	draft := snapshot.Execution
 	assert.Equal(t, "cn-sh2-02", draft.Args.Zone, "the auto-derived zone is now inside the sealed contract")
 	assert.Equal(t, "img-001", draft.Args.CompShareImageID)
 	assert.Equal(t, float64(16), draft.Args.CPU)
@@ -125,6 +148,60 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 	assert.Equal(t, "img-001", created["CompShareImageId"])
 }
 
+// TestTheSealRecordsThePriceTheUserWasShown is the point of the snapshot.
+//
+// The contract could already prove what the user configured. It could not prove
+// what they were QUOTED: the price lived only in StepResults["查询价格"], outside
+// everything the digest covers. An audit could say "they approved 4090×1 in
+// cn-sh2-02" and not "they approved it at ¥1.58/小时".
+//
+// The card and the seal read ONE object here. If the card rendered the price and
+// promote rebuilt it, they would agree by luck — and the thing that eventually
+// diverged would be the number the user believed they were agreeing to.
+func TestTheSealRecordsThePriceTheUserWasShown(t *testing.T) {
+	executor := draftMockExecutor("cn-sh2-02")
+	executor.results["GetCompShareInstanceUserPrice"] = livePriceResponse()
+	var card map[string]any
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		card = args
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.NotNil(t, result.Contract)
+
+	stored, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
+	require.True(t, ok)
+	snapshot, err := ParseCreateConfirmationSnapshot(stored)
+	require.NoError(t, err)
+
+	require.NotNil(t, snapshot.EstimatedPrice, "the quote the user approved must be inside the seal")
+	assert.Equal(t, 1.58, snapshot.EstimatedPrice.PayableAmount)
+	assert.Equal(t, "Postpay", snapshot.EstimatedPrice.ChargeType)
+	assert.False(t, snapshot.EstimatedPrice.Locked)
+	assert.Equal(t, "886d1c25-df7c-4d97-aee1-41c0da1a5ad1", snapshot.EstimatedPrice.SourceRequestID)
+
+	// The sealed text and the shown text are the same string, not two renderings.
+	require.NotNil(t, card)
+	assert.Equal(t, snapshot.EstimatedPrice.DisplayText, card["price"])
+	assert.Contains(t, card["price"], "预估")
+	assert.Equal(t, "最终费用以实际创建和结算结果为准", card["PriceNote"])
+
+	// And the estimate never reaches the API.
+	var created map[string]any
+	for _, c := range executor.calls {
+		if c.action == "CreateCompShareInstance" {
+			created = c.args
+		}
+	}
+	require.NotNil(t, created)
+	for _, k := range []string{"price", "PriceNote", "estimated_price", "PayableAmount"} {
+		assert.NotContains(t, created, k, "the estimate is an audit record, not a create argument")
+	}
+}
+
 // TestCreateDraftIsNotInParamsBeforeTheGatePasses separates the two facts the
 // draft used to conflate. The resolve step runs BEFORE the confirm gate — on the
 // guided path it runs while an earlier selection card's seal is still live — so
@@ -145,6 +222,12 @@ func TestCreateDraftIsNotInParamsBeforeTheGatePasses(t *testing.T) {
 	assert.Equal(t, before, paramsDigest(wfCtx.Params),
 		"a resolve step may not touch the params the user is being asked to confirm")
 
+	// The confirmation step is a resolve step too, and is bound by the same rule.
+	runConfirmationStep(t, wfCtx)
+	assert.NotContains(t, wfCtx.Params, createDraftKey,
+		"forming the confirmation snapshot is still not the user agreeing to it")
+	assert.Equal(t, before, paramsDigest(wfCtx.Params))
+
 	// Promotion is what crosses that line, and only a passed gate performs it.
 	require.NoError(t, promoteCreateDraft(wfCtx))
 	assert.Contains(t, wfCtx.Params, createDraftKey)
@@ -162,7 +245,7 @@ func TestCreateDraftIsNotInParamsBeforeTheGatePasses(t *testing.T) {
 // says cn-sh2-02 with img-001.
 func TestCreateExecutesTheConfirmedDraftNotAFreshDerivation(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	runDraftStep(t, wfCtx)
+	runToTheGate(t, wfCtx)
 
 	card, err := buildCreateConfirmArgs(wfCtx)
 	require.NoError(t, err)
@@ -190,12 +273,12 @@ func TestCreateExecutesTheConfirmedDraftNotAFreshDerivation(t *testing.T) {
 // only the frozen copy in sealed.BusinessParams is correct.
 func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	runDraftStep(t, wfCtx)
+	runToTheGate(t, wfCtx)
 	confirmAndSeal(t, wfCtx)
 
 	// Someone rewrites the LIVE draft after confirmation, reaching through the
 	// encoded form the way a careless future caller would.
-	liveArgs := wfCtx.Params[createDraftKey].(map[string]any)[draftKeyArgs].(map[string]any)
+	liveArgs := wfCtx.Params[createDraftKey].(map[string]any)[snapshotKeyExecution].(map[string]any)[draftKeyArgs].(map[string]any)
 	liveArgs[argsKeyZone] = "cn-wlcb-01"
 
 	args, err := createArgsFromSealedDraft(wfCtx)
@@ -205,7 +288,7 @@ func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 
 	// And the returned map must not alias the frozen record.
 	args[argsKeyZone] = "tampered"
-	sealedArgs := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)[draftKeyArgs].(map[string]any)
+	sealedArgs := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)[snapshotKeyExecution].(map[string]any)[draftKeyArgs].(map[string]any)
 	assert.Equal(t, "cn-sh2-02", sealedArgs[argsKeyZone],
 		"the executor must not be able to reach into the record the digest is computed over")
 }
@@ -220,10 +303,10 @@ func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 // passing while the sealed record was rewritten underneath it.
 func TestPromotedDraftDoesNotAliasTheCandidate(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	runDraftStep(t, wfCtx)
+	runToTheGate(t, wfCtx)
 	confirmAndSeal(t, wfCtx)
 
-	candidateArgs := storedDraft(wfCtx)[draftKeyArgs].(map[string]any)
+	candidateArgs := storedSnapshot(wfCtx)[snapshotKeyExecution].(map[string]any)[draftKeyArgs].(map[string]any)
 	candidateArgs[argsKeyZone] = "cn-wlcb-01"
 
 	assert.True(t, wfCtx.sealed.verifyDigest(wfCtx.Params),
@@ -249,7 +332,7 @@ func TestCreateCardNameAndExecutedIDAreOneSelection(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-002", "Name": "TensorFlow"},
 	}}
 
-	runDraftStep(t, wfCtx)
+	runToTheGate(t, wfCtx)
 	card, err := buildCreateConfirmArgs(wfCtx)
 	require.NoError(t, err)
 	confirmAndSeal(t, wfCtx)
@@ -317,7 +400,7 @@ func TestCommunityImageIdAndNameComeFromTheSameGroup(t *testing.T) {
 // straight through.
 func TestCreateRefusesAPromotedButUnconfirmedDraft(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	runDraftStep(t, wfCtx)
+	runToTheGate(t, wfCtx)
 	require.NoError(t, promoteCreateDraft(wfCtx)) // draft is in Params...
 	require.Contains(t, wfCtx.Params, createDraftKey)
 	require.Nil(t, wfCtx.sealed, "...but nothing sealed it")
@@ -344,7 +427,7 @@ func TestCreateRefusesWithoutAConfirmedDraft(t *testing.T) {
 // it could ever be detected.
 func TestCreateDraftIsSealedAndTamperEvident(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	runDraftStep(t, wfCtx)
+	runToTheGate(t, wfCtx)
 	confirmAndSeal(t, wfCtx)
 	require.NotNil(t, wfCtx.sealed)
 	require.True(t, wfCtx.sealed.verifyDigest(wfCtx.Params), "freshly sealed params must verify")
