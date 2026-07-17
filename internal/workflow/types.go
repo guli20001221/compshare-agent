@@ -12,6 +12,12 @@ const (
 	StepToolCall StepType = iota
 	// StepConfirm waits for user confirmation.
 	StepConfirm
+	// StepResolve computes derived values from facts earlier steps already
+	// established. It calls no tool and no model, and it may not write Params:
+	// its product is a CANDIDATE, and a candidate is not a decision the user has
+	// agreed to. See Step.Resolve and Step.PromoteOnConfirm for the two halves of
+	// that rule.
+	StepResolve
 )
 
 // Step defines one step in a workflow.
@@ -22,6 +28,15 @@ type Step struct {
 	ToolFunc    func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
 	BuildArgs   func(wfCtx *Context) (map[string]any, error)
 	CheckResult func(wfCtx *Context, result map[string]any) (bool, string)
+	// Resolve computes this step's result from the Context alone (StepResolve
+	// only); the result lands in StepResults exactly like a tool step's would.
+	//
+	// The signature is the guarantee, not a convention: no context.Context and no
+	// executor reach it, so it cannot call a tool or a model. It can only read
+	// what earlier steps established, which is what makes the step replayable
+	// from a trace. runResolveStep additionally rejects any Resolve that mutates
+	// Params — see StepResolve.
+	Resolve func(wfCtx *Context) (map[string]any, error)
 	// SkipIf lets adaptive workflows omit a step once earlier context has made
 	// that choice unambiguous. nil preserves the legacy "always run" behavior.
 	SkipIf func(wfCtx *Context) (bool, error)
@@ -41,9 +56,28 @@ type Step struct {
 	BuildForm func(wfCtx *Context) (*ConfirmForm, error)
 	// ApplyOverrides merges validated form overrides into wfCtx.Params.
 	ApplyOverrides func(wfCtx *Context, overrides map[string]string) error
-	// RevalidateSteps names earlier StepToolCall steps to re-run after
-	// ApplyOverrides, before re-entering this confirm (e.g. stock + price).
-	RevalidateSteps []string
+	// RevalidateFrom names the step this confirm re-runs FROM after
+	// ApplyOverrides, before re-entering the gate. Every step from there up to
+	// (not including) this confirm is discarded and re-run in DEFINITION order.
+	//
+	// It replaced a []string list of step names, which had two defects a boundary
+	// does not have: the list was resolved through a StepToolCall-only lookup that
+	// SILENTLY SKIPPED any name it could not find (a typo, a renamed step, or a
+	// step of any other type simply did not re-run, and the user re-confirmed a
+	// card built on stale results), and its order was the list's rather than the
+	// workflow's. A boundary cannot drift out of order, and an unresolvable one
+	// fail-stops the workflow instead of quietly doing less — see revalidateFrom.
+	RevalidateFrom string
+	// PromoteOnConfirm runs after this gate PASSES and before Run seals, to copy
+	// what the user just approved into Params — the map seal() hashes.
+	//
+	// It exists because a StepResolve may not write Params (an earlier gate's seal
+	// may still be live while it runs, and its output is a candidate nobody has
+	// agreed to yet). This is the one sanctioned crossing from "computed" to
+	// "confirmed", and it is placed exactly where that transition actually
+	// happens. An error here fail-stops: failing to record what the user approved
+	// must never degrade into executing something else.
+	PromoteOnConfirm func(wfCtx *Context) error
 	// ConfirmSubmitMode controls what happens after a form-bearing confirm is
 	// submitted with Overrides. Empty preserves the legacy edit→revalidate→
 	// re-confirm loop. ConfirmSubmitContinue applies the whitelisted selection

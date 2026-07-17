@@ -1,13 +1,14 @@
 package workflow
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// draftContext is a create context sitting exactly where the confirm gate runs:
+// draftContext is a create context sitting exactly where the resolve step runs:
 // the catalog and image queries have returned, nothing is resolved yet, and the
 // user named only a GPU — so zone, CPU, memory, card count and image are all
 // about to be auto-derived. That is the shape the seal used to be blind to.
@@ -22,7 +23,45 @@ func draftContext(zone string) *Context {
 	return wfCtx
 }
 
-// TestCreateDraftPutsAutoDerivedValuesInsideTheSeal is the structural fix.
+// draftMockExecutor is createMockExecutor with the catalog homing 4090 in a
+// NON-default zone, so a zone appearing in the contract can only have come from
+// the resolution — never from the user, never from defaultZone.
+func draftMockExecutor(zone string) *mockExecutor {
+	executor := createMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = zoneTaggedTypes(
+		struct{ Name, Zone, Status string }{"4090", zone, "Normal"},
+	)
+	return executor
+}
+
+// runDraftStep runs the create's resolve step through the engine's own
+// runResolveStep — not a hand-rolled equivalent — so a unit test's context
+// reaches the state the confirm gate actually sees, and so these tests inherit
+// the step's no-Params-write check rather than assuming it.
+func runDraftStep(t *testing.T, wfCtx *Context) map[string]any {
+	t.Helper()
+	res := &Result{}
+	outcome := (&Engine{}).runResolveStep(stepResolveCreateDraft(), 0, 1, wfCtx, res)
+	require.Equal(t, toolStepOK, outcome, "resolve step failed: %s", res.Message)
+	return wfCtx.Result(createDraftStepName)
+}
+
+// confirmAndSeal mirrors what the engine does the instant a gate passes:
+// runConfirmStep calls the step's PromoteOnConfirm, then Run seals. That the
+// create's gate really is wired to those is pinned end-to-end by
+// TestCreateDraftPutsAutoDerivedValuesInsideTheSeal below; these two lines let
+// the function-level tests reach the post-confirm state without a full run.
+func confirmAndSeal(t *testing.T, wfCtx *Context) {
+	t.Helper()
+	require.NoError(t, promoteCreateDraft(wfCtx))
+	wfCtx.seal("CreateInstanceWorkflow")
+}
+
+// TestCreateDraftPutsAutoDerivedValuesInsideTheSeal is the structural fix, and it
+// runs the real workflow because every link in the chain is load-bearing: the
+// resolve step must run, its candidate must be promoted into Params when the gate
+// passes, and Run must seal what promote wrote. Any one of those missing and the
+// confirmed contract would not describe what gets created.
 //
 // Context.seal hashes Params. When the user names no zone, Params carries no
 // "Zone" key at all — so before the draft existed, the zone shown on the card was
@@ -30,14 +69,24 @@ func draftContext(zone string) *Context {
 // image id, charge type, minimal CPU platform, disks or placement. The seal
 // guaranteed nothing about any of them.
 func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
-	wfCtx := draftContext("cn-sh2-02")
-	require.NotContains(t, wfCtx.Params, "Zone", "the user named no zone — that is the whole point")
+	executor := draftMockExecutor("cn-sh2-02")
+	var card map[string]any
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		card = args
+		return true
+	}, nil)
 
-	card, err := buildCreateConfirmArgs(wfCtx)
+	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.NotNil(t, result.Contract, "a passed gate must leave a sealed contract")
 
-	draft, ok := wfCtx.Params[createDraftKey].(map[string]any)
-	require.True(t, ok, "the draft must live in Params, because Params is what seal() hashes")
+	// The user named no zone — that is the whole point. Any zone in this contract
+	// arrived through the draft or not at all.
+	require.NotContains(t, result.Contract.BusinessParams, "Zone")
+
+	draft, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
+	require.True(t, ok, "the confirmed draft must be inside the SEALED business params")
 	args, ok := draftUpstreamArgs(draft)
 	require.True(t, ok)
 	assert.Equal(t, "cn-sh2-02", args["Zone"], "the auto-derived zone is now inside the sealed contract")
@@ -46,14 +95,51 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 	assert.Equal(t, float64(64*1024), args["Memory"])
 
 	// And the card is a projection of that same draft, not a parallel derivation.
+	require.NotNil(t, card)
 	assert.Equal(t, args["Zone"], card["Zone"])
 	assert.Equal(t, args["CPU"], card["CPU"])
 	assert.Equal(t, args["Memory"], card["Memory"])
 	assert.Equal(t, args["GPU"], card["Gpu"])
 	// The name on the card and the id in the request are ONE selection.
-	assert.Equal(t, "PyTorch", card["image"])
-	assert.Equal(t, "PyTorch", draftImage(draft).Name)
+	assert.Equal(t, "Ubuntu 22.04 CUDA 12", card["image"])
+	assert.Equal(t, card["image"], draftImage(draft).Name)
 	assert.Equal(t, args["CompShareImageId"], draftImage(draft).ID)
+
+	// What was sealed is what was sent.
+	var created map[string]any
+	for _, c := range executor.calls {
+		if c.action == "CreateCompShareInstance" {
+			created = c.args
+		}
+	}
+	require.NotNil(t, created)
+	assert.Equal(t, "cn-sh2-02", created["Zone"])
+	assert.Equal(t, "img-001", created["CompShareImageId"])
+}
+
+// TestCreateDraftIsNotInParamsBeforeTheGatePasses separates the two facts the
+// draft used to conflate. The resolve step runs BEFORE the confirm gate — on the
+// guided path it runs while an earlier selection card's seal is still live — so
+// its output may not touch Params. Only a passed gate promotes it.
+//
+// Without this, "the draft is in Params" would again mean nothing more than
+// "someone computed one", which is exactly the reading createArgsFromSealedDraft
+// exists to refuse.
+func TestCreateDraftIsNotInParamsBeforeTheGatePasses(t *testing.T) {
+	wfCtx := draftContext("cn-sh2-02")
+	before := paramsDigest(wfCtx.Params)
+
+	draft := runDraftStep(t, wfCtx)
+
+	require.NotEmpty(t, draft, "the step must actually have produced a candidate...")
+	assert.NotContains(t, wfCtx.Params, createDraftKey,
+		"...and putting it in Params would claim the user agreed to it")
+	assert.Equal(t, before, paramsDigest(wfCtx.Params),
+		"a resolve step may not touch the params the user is being asked to confirm")
+
+	// Promotion is what crosses that line, and only a passed gate performs it.
+	require.NoError(t, promoteCreateDraft(wfCtx))
+	assert.Contains(t, wfCtx.Params, createDraftKey)
 }
 
 // TestCreateExecutesTheConfirmedDraftNotAFreshDerivation is the decisive one: it
@@ -66,17 +152,14 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 // (the catalog re-homes 4090, the image query returns something else). A
 // re-derivation would create in cn-wlcb-01 with img-999; the confirmed contract
 // says cn-sh2-02 with img-001.
-//
-// The seal() call is load-bearing and was missing in this test's first version:
-// without it the test proved only "a cached draft is reused", not "the CONFIRMED
-// contract is executed" — a weaker claim than its own name made.
 func TestCreateExecutesTheConfirmedDraftNotAFreshDerivation(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
+	runDraftStep(t, wfCtx)
 
 	card, err := buildCreateConfirmArgs(wfCtx)
 	require.NoError(t, err)
 	require.Equal(t, "cn-sh2-02", card["Zone"])
-	wfCtx.seal("CreateInstanceWorkflow") // the user approved this card
+	confirmAndSeal(t, wfCtx) // the user approved this card
 
 	// Afterwards the catalog and the image query both move on.
 	wfCtx.StepResults["查询可用配比"] = zoneTaggedTypes(
@@ -99,9 +182,8 @@ func TestCreateExecutesTheConfirmedDraftNotAFreshDerivation(t *testing.T) {
 // only the frozen copy in sealed.BusinessParams is correct.
 func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	_, err := buildCreateConfirmArgs(wfCtx)
-	require.NoError(t, err)
-	wfCtx.seal("CreateInstanceWorkflow")
+	runDraftStep(t, wfCtx)
+	confirmAndSeal(t, wfCtx)
 
 	// Someone rewrites the LIVE draft after confirmation.
 	liveDraft := wfCtx.Params[createDraftKey].(map[string]any)
@@ -121,6 +203,24 @@ func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 		"the executor must not be able to reach into the record the digest is computed over")
 }
 
+// TestPromotedDraftDoesNotAliasTheCandidate: promote deep-copies. If Params
+// aliased StepResults, a later write to either would diverge the live params from
+// the digest and fail-stop a create the user correctly approved.
+func TestPromotedDraftDoesNotAliasTheCandidate(t *testing.T) {
+	wfCtx := draftContext("cn-sh2-02")
+	candidate := runDraftStep(t, wfCtx)
+	confirmAndSeal(t, wfCtx)
+
+	candidateArgs, _ := draftUpstreamArgs(candidate)
+	candidateArgs["Zone"] = "cn-wlcb-01"
+
+	assert.True(t, wfCtx.sealed.verifyDigest(wfCtx.Params),
+		"rewriting the candidate must not disturb the promoted copy the digest covers")
+	args, err := createArgsFromSealedDraft(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "cn-sh2-02", args["Zone"])
+}
+
 // TestCreateCardNameAndExecutedIDAreOneSelection is the typed-image contract. The
 // card used to render pickImageName while the create sent pickImageId — two walks
 // of the same response. For a THREADED id they could genuinely disagree: the name
@@ -137,9 +237,10 @@ func TestCreateCardNameAndExecutedIDAreOneSelection(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-002", "Name": "TensorFlow"},
 	}}
 
+	runDraftStep(t, wfCtx)
 	card, err := buildCreateConfirmArgs(wfCtx)
 	require.NoError(t, err)
-	wfCtx.seal("CreateInstanceWorkflow")
+	confirmAndSeal(t, wfCtx)
 	args, err := createArgsFromSealedDraft(wfCtx)
 	require.NoError(t, err)
 
@@ -196,20 +297,20 @@ func TestCommunityImageIdAndNameComeFromTheSameGroup(t *testing.T) {
 	assert.Equal(t, "community", selected.Source)
 }
 
-// TestCreateRefusesAMaterializedButUnconfirmedDraft is the structural guard.
+// TestCreateRefusesAPromotedButUnconfirmedDraft is the structural guard.
 //
-// A draft in Params means only "someone computed one". If the create step is ever
+// A draft in Params means only "someone put one there". If the create step is ever
 // reached before its gate, it must stop — it cannot lean on verifySealedContract,
 // which fails OPEN when sealed is nil and would wave an unconfirmed create
 // straight through.
-func TestCreateRefusesAMaterializedButUnconfirmedDraft(t *testing.T) {
+func TestCreateRefusesAPromotedButUnconfirmedDraft(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	_, err := buildCreateConfirmArgs(wfCtx) // draft exists...
-	require.NoError(t, err)
+	runDraftStep(t, wfCtx)
+	require.NoError(t, promoteCreateDraft(wfCtx)) // draft is in Params...
 	require.Contains(t, wfCtx.Params, createDraftKey)
-	require.Nil(t, wfCtx.sealed, "...but nothing confirmed it")
+	require.Nil(t, wfCtx.sealed, "...but nothing sealed it")
 
-	_, err = createArgsFromSealedDraft(wfCtx)
+	_, err := createArgsFromSealedDraft(wfCtx)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "拒绝以未经确认的参数创建")
@@ -231,10 +332,8 @@ func TestCreateRefusesWithoutAConfirmedDraft(t *testing.T) {
 // it could ever be detected.
 func TestCreateDraftIsSealedAndTamperEvident(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	_, err := buildCreateConfirmArgs(wfCtx)
-	require.NoError(t, err)
-
-	wfCtx.seal("CreateInstanceWorkflow")
+	runDraftStep(t, wfCtx)
+	confirmAndSeal(t, wfCtx)
 	require.NotNil(t, wfCtx.sealed)
 	require.True(t, wfCtx.sealed.verifyDigest(wfCtx.Params), "freshly sealed params must verify")
 

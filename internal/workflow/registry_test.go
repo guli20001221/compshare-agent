@@ -39,11 +39,11 @@ func TestRegisteredWorkflowActionsMatchRegistry(t *testing.T) {
 }
 
 func TestGetWorkflow(t *testing.T) {
-	// CreateInstanceWorkflow: 7 steps
+	// CreateInstanceWorkflow: 8 steps
 	def, ok := GetWorkflow("CreateInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 7)
+	assert.Len(t, def.Steps, 8)
 
 	// StopInstanceWorkflow: query -> query support zones -> confirm -> stop
 	def, ok = GetWorkflow("StopInstanceWorkflow")

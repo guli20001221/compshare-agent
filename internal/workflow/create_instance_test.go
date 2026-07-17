@@ -70,15 +70,16 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	assert.Equal(t, "工作流执行完成", result.Message)
 	assert.Equal(t, []any{"uhost-new001"}, result.Data["UHostIds"])
 
-	// All 7 steps completed
-	assert.Len(t, result.Steps, 7)
-	expectedNames := []string{"查询镜像", "查询可用配比", "检查库存", "查询价格", "确认创建", "创建实例", "查看状态"}
+	// All 8 steps completed
+	assert.Len(t, result.Steps, 8)
+	expectedNames := []string{"查询镜像", "查询可用配比", "形成执行草稿", "检查库存", "查询价格", "确认创建", "创建实例", "查看状态"}
 	for i, name := range expectedNames {
 		assert.Equal(t, name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	// 6 API calls in order (confirm step does not call executor)
+	// 6 API calls in order — unchanged by the draft step, which is the point:
+	// neither the confirm gate NOR the resolve step calls the executor.
 	assert.Len(t, executor.calls, 6)
 	expectedActions := []string{
 		"DescribeCompShareImages",
@@ -250,7 +251,10 @@ func TestCreateInstance_PlatformImageAllOfflineBlockedBeforeCapacity(t *testing.
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "检查库存", result.StoppedAt)
+	// Stops while forming the draft: an image that cannot be selected is not a
+	// question to ask capacity about. This used to surface one step later, from
+	// 检查库存's own image lookup.
+	assert.Equal(t, "形成执行草稿", result.StoppedAt)
 	assert.Contains(t, result.Message, "未找到可用的 PyTorch 镜像")
 	for _, call := range executor.calls {
 		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
@@ -1099,7 +1103,9 @@ func TestCreateInstance_PodZoneRejectsSpotBeforeCapacity(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "检查库存", result.StoppedAt)
+	// Placement is validated once, while the draft is formed — under the stricter
+	// purchase=true form that capacity's own check never applied.
+	assert.Equal(t, "形成执行草稿", result.StoppedAt)
 	assert.Contains(t, result.Message, "不支持抢占式")
 	for _, call := range executor.calls {
 		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
@@ -1125,7 +1131,7 @@ func TestCreateInstance_UnsupportedImageBlocksBeforeCapacity(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "检查库存", result.StoppedAt)
+	assert.Equal(t, "形成执行草稿", result.StoppedAt)
 	assert.Contains(t, result.Message, "不支持当前 GPU")
 	for _, call := range executor.calls {
 		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)

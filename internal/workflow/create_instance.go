@@ -255,15 +255,21 @@ func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64,
 	return candidates
 }
 
-// CreateInstanceDef returns the 7-step workflow definition for creating a
+// CreateInstanceDef returns the 8-step workflow definition for creating a
 // CompShare GPU instance.
+//
+// 形成执行草稿 sits between the queries and 检查库存 because everything after it
+// must describe ONE resolution: stock is checked for the draft, price is quoted
+// for the draft, the card shows the draft, and the create sends the copy of it
+// the user sealed.
 func CreateInstanceDef() *Definition {
 	return &Definition{
 		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 检查库存 → 查询价格 → 确认 → 创建实例 → 查看状态",
+		Description: "查询镜像 → 查询可用配比 → 形成执行草稿 → 检查库存 → 查询价格 → 确认 → 创建实例 → 查看状态",
 		Steps: []Step{
 			stepQueryImages(false),
 			stepQueryInstanceTypes(),
+			stepResolveCreateDraft(),
 			stepCheckCapacity(),
 			stepGetPrice(),
 			stepConfirmCreate(),
@@ -280,7 +286,7 @@ func CreateInstanceDef() *Definition {
 func CreateInstanceGuidedDef() *Definition {
 	return &Definition{
 		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择用途 → 必要时查询社区镜像 → 选择镜像 → 检查库存 → 查询价格 → 确认镜像计费 → 创建实例 → 查看状态",
+		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择用途 → 必要时查询社区镜像 → 选择镜像 → 形成执行草稿 → 检查库存 → 查询价格 → 确认镜像计费 → 创建实例 → 查看状态",
 		Steps: []Step{
 			stepQueryImages(true),
 			stepQueryInstanceTypes(),
@@ -292,6 +298,9 @@ func CreateInstanceGuidedDef() *Definition {
 			stepGuidedChooseImagePurpose(),
 			stepQueryCommunityImagesAfterPurpose(),
 			stepGuidedChooseImage(),
+			// Runs while 选择镜像's seal is still live — hence the rule that a
+			// resolve step may not write Params, which would break that digest.
+			stepResolveCreateDraft(),
 			stepCheckCapacity(),
 			stepGetPrice(),
 			stepConfirmCreateGuided(),
@@ -416,35 +425,34 @@ func stepCheckCapacity() Step {
 		Name: "检查库存",
 		Type: StepToolCall,
 		Tool: "CheckCompShareResourceCapacity",
+		// Capacity asks about the draft — the same resolution the card will show
+		// and the create will send. It no longer calls resolveTargetSpec or
+		// pickImageId: doing so made this a SECOND interpretation of the request,
+		// which agreed with the draft's only because both are pure and nothing
+		// moved between them. The draft's validations (placement, image
+		// compatibility) already ran in the resolve step under the stricter
+		// purchase=true form, so there is nothing left for this step to re-check.
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			// Resolve target spec early so ambiguity errors surface before
-			// making a pointless capacity API call. The resolved zone is where
-			// the requested GPU actually lives (not a hardcoded default).
-			_, _, _, zone, err := resolveTargetSpec(wfCtx)
+			draft, err := candidateCreateDraft(wfCtx)
 			if err != nil {
 				return nil, err
 			}
-			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
-			if imageId == "" {
-				return nil, createImageUnavailableError(wfCtx.Params)
+			create, ok := draftUpstreamArgs(draft)
+			if !ok {
+				return nil, fmt.Errorf("执行草稿缺少上游参数")
 			}
-			placement := workflowZonePlacement(wfCtx.Params, zone)
-			if err := validateCreatePlacement(wfCtx, placement, false); err != nil {
-				return nil, err
-			}
-			if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
-				return nil, err
-			}
-			gpuType, _ := wfCtx.Params["GpuType"].(string)
 			args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
-				Zone:               zone,
-				GPUType:            gpuType,
-				CompShareImageID:   imageId,
-				ChargeType:         createChargeType(wfCtx.Params),
-				Disks:              workflowSystemDisks(wfCtx, imageId, zone, gpuType),
-				MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gpuType, zone),
+				Zone:               paramStr(create, "Zone", ""),
+				GPUType:            paramStr(create, "GpuType", ""),
+				CompShareImageID:   paramStr(create, "CompShareImageId", ""),
+				ChargeType:         paramStr(create, "ChargeType", ""),
+				Disks:              draftDisks(create),
+				MinimalCPUPlatform: paramStr(create, "MinimalCpuPlatform", ""),
 			})
-			return deployment.ApplyCapacityPlacementArgs(args, placement), nil
+			// Capacity flattens placement differently from purchase (a pod zone
+			// drops Zone/Region/az_group here but keeps them there), which is why
+			// the draft carries the structured placement rather than only args.
+			return deployment.ApplyCapacityPlacementArgs(args, draftPlacement(draft)), nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
 			specs, _ := result["Specs"].([]any)
@@ -452,13 +460,24 @@ func stepCheckCapacity() Step {
 				return false, "库存检查未返回任何规格信息，可能当前 GPU 型号不可用。"
 			}
 
-			gpu, cpu, memMB, _, err := resolveTargetSpec(wfCtx)
+			draft, err := candidateCreateDraft(wfCtx)
 			if err != nil {
 				return false, err.Error()
 			}
-			memGB := memMB / 1024 // Specs.Mem is in GB; our memoryMB is in MB
+			create, ok := draftUpstreamArgs(draft)
+			if !ok {
+				return false, "执行草稿缺少上游参数"
+			}
+			gpu := paramNum(create, "GPU", 0)
+			cpu := paramNum(create, "CPU", 0)
+			memGB := paramNum(create, "Memory", 0) / 1024 // Specs.Mem is in GB; the draft's Memory is MB
+			gt := paramStr(create, "GpuType", "")
+			if gt == "" {
+				gt = "该 GPU"
+			}
 
-			// Match the exact GPU/CPU/Mem combination the workflow will create.
+			// Match the exact GPU/CPU/Mem combination the workflow will create —
+			// read off the draft, so "will create" is a fact rather than a claim.
 			for _, s := range specs {
 				spec, _ := s.(map[string]any)
 				sGpu, _ := spec["Gpu"].(float64)
@@ -468,18 +487,10 @@ func stepCheckCapacity() Step {
 					if enough, _ := spec["ResourceEnough"].(bool); enough {
 						return true, ""
 					}
-					gt, _ := wfCtx.Params["GpuType"].(string)
-					if gt == "" {
-						gt = "该 GPU"
-					}
 					return false, fmt.Sprintf("%s %.0f 卡 / %.0fC / %.0fGB 当前库存不足（售罄），请换一个规格或稍后再试。", gt, gpu, cpu, memGB)
 				}
 			}
 
-			gt, _ := wfCtx.Params["GpuType"].(string)
-			if gt == "" {
-				gt = "该 GPU"
-			}
 			return false, fmt.Sprintf("库存中未找到 %s %.0f 卡 / %.0fC / %.0fGB 的规格组合，请确认配置是否正确。", gt, gpu, cpu, memGB)
 		},
 	}
@@ -490,39 +501,36 @@ func stepGetPrice() Step {
 		Name: "查询价格",
 		Type: StepToolCall,
 		Tool: "GetCompShareInstanceUserPrice",
+		// Price quotes the draft, so the number on the confirm card describes the
+		// instance that will actually be created. Like capacity, it selects fields
+		// from the one resolution instead of performing its own.
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			gpu, cpu, mem, zone, err := resolveTargetSpec(wfCtx)
+			draft, err := candidateCreateDraft(wfCtx)
 			if err != nil {
 				return nil, err
 			}
-			gt, _ := wfCtx.Params["GpuType"].(string)
+			create, ok := draftUpstreamArgs(draft)
+			if !ok {
+				return nil, fmt.Errorf("执行草稿缺少上游参数")
+			}
+			// Only the fields upstream prices on: the draft also carries
+			// MachineType / MinimalCpuPlatform / LoginMode / Name, which
+			// GetCompShareInstanceUserPrice is not given today and must not start
+			// receiving as a side effect of sharing a draft. CompShareImageId IS
+			// included — live pricing can fail when the image is omitted.
 			args := map[string]any{
-				"Zone":       zone,
-				"GpuType":    gt,
-				"GPU":        gpu,
-				"CPU":        cpu,
-				"Memory":     mem,
-				"ChargeType": createChargeType(wfCtx.Params),
+				"Zone":             paramStr(create, "Zone", ""),
+				"GpuType":          paramStr(create, "GpuType", ""),
+				"GPU":              paramNum(create, "GPU", 0),
+				"CPU":              paramNum(create, "CPU", 0),
+				"Memory":           paramNum(create, "Memory", 0),
+				"ChargeType":       paramStr(create, "ChargeType", ""),
+				"CompShareImageId": paramStr(create, "CompShareImageId", ""),
 			}
-			// Price uses the same resolved image as capacity and create. Upstream
-			// GetCompShareInstancePriceRequest carries CompShareImageId, and live
-			// UCloud pricing can fail when the image is omitted.
-			imageId := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
-			if imageId == "" {
-				return nil, createImageUnavailableError(wfCtx.Params)
-			}
-			args["CompShareImageId"] = imageId
-			if disks := workflowSystemDisks(wfCtx, imageId, zone, gt); len(disks) > 0 {
+			if disks := draftDisks(create); len(disks) > 0 {
 				args["Disks"] = disks
 			}
-			placement := workflowZonePlacement(wfCtx.Params, zone)
-			if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
-				return nil, err
-			}
-			if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
-				return nil, err
-			}
-			return deployment.ApplyPurchasePlacementArgs(args, placement), nil
+			return deployment.ApplyPurchasePlacementArgs(args, draftPlacement(draft)), nil
 		},
 	}
 }
@@ -952,47 +960,79 @@ func stepConfirmCreate() Step {
 		// HTTP path wires a ConfirmEditsFunc (COMPSHARE_CONFIRM_FORM on +
 		// client opt-in); the CLI boolean confirm and the deploy_model saga
 		// ignore these three fields entirely.
-		BuildForm:       buildCreateConfirmForm,
-		ApplyOverrides:  applyCreateOverrides,
-		RevalidateSteps: []string{"检查库存", "查询价格"},
-		BuildArgs:       buildCreateConfirmArgs,
+		BuildForm:      buildCreateConfirmForm,
+		ApplyOverrides: applyCreateOverrides,
+		// An edit re-runs from the draft, not from stock: the edited params must
+		// be re-resolved before anything is asked about them, or capacity and
+		// price would answer about the previous combination. Naming the boundary
+		// rather than the steps also means this cannot fall out of step with the
+		// definition's order — the engine walks the definition.
+		RevalidateFrom:   createDraftStepName,
+		PromoteOnConfirm: promoteCreateDraft,
+		BuildArgs:        buildCreateConfirmArgs,
 	}
 }
 
 func stepConfirmCreateGuided() Step {
 	return Step{
-		Name:            "确认创建",
-		Type:            StepConfirm,
-		BuildForm:       buildGuidedFinalForm,
-		ApplyOverrides:  applyCreateOverrides,
-		RevalidateSteps: []string{"检查库存", "查询价格"},
-		BuildArgs:       buildCreateConfirmArgs,
+		Name:             "确认创建",
+		Type:             StepConfirm,
+		BuildForm:        buildGuidedFinalForm,
+		ApplyOverrides:   applyCreateOverrides,
+		RevalidateFrom:   createDraftStepName,
+		PromoteOnConfirm: promoteCreateDraft,
+		BuildArgs:        buildCreateConfirmArgs,
 	}
 }
 
-// createDraftKey is where the materialized execution draft — the FINAL
-// CreateCompShareInstance argument map — lives inside Context.Params.
+// createDraftStepName is the resolve step that forms the create draft. It is the
+// single place every derived create value is decided, and the boundary the
+// confirm gate re-runs from after a form edit.
+const createDraftStepName = "形成执行草稿"
+
+// createDraftKey is where the CONFIRMED execution draft lives inside
+// Context.Params. Only PromoteOnConfirm writes it, and only once the user has
+// approved the card built from the candidate.
 //
-// It is deliberately separate from the user's request params (GpuType / Cpu /
-// Memory / Zone). Those record what the user ASKED for and must keep their exact
-// shape across confirm-form edits: to resolveTargetSpec an ABSENT Cpu means
-// "platform default" while a PRESENT one means "must match exactly", so writing a
-// resolved CPU back over Params["Cpu"] would silently change the meaning of the
-// next re-resolve. The draft records what will actually be sent.
+// The candidate draft lives in StepResults[createDraftStepName] instead, and the
+// difference is the whole design. Params is what seal() hashes, so a draft there
+// is inside the sealed contract — which is exactly why the resolve step may not
+// put it there: the guided create runs six selection gates before the draft is
+// formed, Run seals after each one, and writing Params under a live seal would
+// break the digest of a card the user legitimately confirmed. "Computed" and
+// "agreed to" are different facts and now live in different places.
 //
-// Living in Params is the whole point: Context.seal hashes Params, so the draft
-// is inside the sealed contract and verifySealedContract catches any post-seal
-// rewrite of it.
+// The draft is also deliberately separate from the user's request params
+// (GpuType / Cpu / Memory / Zone). Those record what the user ASKED for and must
+// keep their exact shape across confirm-form edits: to resolveTargetSpec an
+// ABSENT Cpu means "platform default" while a PRESENT one means "must match
+// exactly", so writing a resolved CPU back over Params["Cpu"] would silently
+// change the meaning of the next re-resolve. The draft records what will
+// actually be sent.
 const createDraftKey = "__create_draft"
 
-// The draft has two halves, kept apart on purpose. createDraftArgsKey holds
-// exactly what goes upstream — nothing else may be added there, or it would be
-// sent to the API. createDraftImageKey holds the display facts the confirm card
-// needs (the image's name) that are NOT upstream arguments. Both are sealed
-// together, so the name the user read and the id that executes are one decision.
+// The draft has three halves, kept apart on purpose.
+//
+//   - createDraftArgsKey holds exactly what goes upstream to
+//     CreateCompShareInstance — nothing else may be added there, or it would be
+//     sent to the API.
+//   - createDraftImageKey holds the display facts the confirm card needs (the
+//     image's name) that are NOT upstream arguments.
+//   - createDraftPlacementKey holds the resolved zone placement, which the
+//     capacity and price steps need but cannot recover from args: the placement
+//     is FLATTENED into args by ApplyPurchasePlacementArgs, and capacity needs a
+//     different flattening (ApplyCapacityPlacementArgs deletes Zone/Region/
+//     az_group for a pod zone where purchase keeps them). Carrying the structured
+//     value is what lets one resolution serve three differently-shaped requests.
+//     It is a plain map, not a deployment.ZonePlacement, so the draft survives a
+//     JSON round-trip intact like every other business param.
+//
+// All three are sealed together, so the name the user read, the placement that
+// was validated and the id that executes are one decision.
 const (
-	createDraftArgsKey  = "args"
-	createDraftImageKey = "image"
+	createDraftArgsKey      = "args"
+	createDraftImageKey     = "image"
+	createDraftPlacementKey = "placement"
 )
 
 // materializeCreateDraft resolves every derived create parameter ONCE — zone,
@@ -1010,9 +1050,16 @@ const (
 // it covered Zone, CPU, Memory, GPU count, ImageId, ChargeType, MinimalCpuPlatform,
 // disks and placement alike.
 //
-// Called from the confirm step's BuildArgs, so the draft is materialized on every
-// confirm-form edit round (overrides land in Params, RevalidateSteps re-run, the
-// draft is rebuilt) and the version sealed is the one the user finally approved.
+// It runs as the createDraftStepName resolve step, BEFORE capacity and price, so
+// those two consume the same resolution the card shows and the create sends
+// instead of interpreting the request a second and third time. On a confirm-form
+// edit the gate re-runs from that step (Step.RevalidateFrom), so the draft is
+// rebuilt from the edited params before stock and price are re-checked, and the
+// version finally promoted and sealed is the one the user approved.
+//
+// It returns the draft rather than storing it: a resolve step's product is a
+// candidate, and runResolveStep rejects any Resolve that writes Params. See
+// createDraftKey.
 func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 	gpu, cpu, mem, zone, err := resolveTargetSpec(wfCtx)
 	if err != nil {
@@ -1046,15 +1093,17 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 		args["Name"] = name
 	}
 	placement := workflowZonePlacement(wfCtx.Params, zone)
-	// Both validations run HERE, before the card is rendered, so the user is never
-	// asked to approve a combination that cannot execute.
+	// Both validations run HERE, once, before capacity, price or the card. The
+	// purchase=true form is the strictest (it alone requires AzGroup on a pod
+	// zone), so passing it subsumes the capacity step's weaker purchase=false
+	// check — which is why capacity no longer runs one of its own.
 	if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
 		return nil, err
 	}
 	if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
 		return nil, err
 	}
-	draft := map[string]any{
+	return map[string]any{
 		createDraftArgsKey: deployment.ApplyPurchasePlacementArgs(args, placement),
 		// The selection is carried WHOLE, not re-derived for display. The card
 		// renders image.name; the create sends args.CompShareImageId. Both come
@@ -1062,9 +1111,55 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 		createDraftImageKey: map[string]any{
 			"id": image.ID, "name": image.Name, "source": image.Source,
 		},
+		createDraftPlacementKey: map[string]any{
+			"zone": placement.Zone, "region": placement.Region,
+			"zone_id": placement.ZoneID, "az_group": placement.AzGroup,
+			"is_pod": placement.IsPod,
+		},
+	}, nil
+}
+
+// stepResolveCreateDraft forms the create draft. It is a StepResolve, so it calls
+// no tool and no model and may not write Params — see createDraftKey for why
+// that matters on the guided path.
+func stepResolveCreateDraft() Step {
+	return Step{
+		Name:    createDraftStepName,
+		Type:    StepResolve,
+		Resolve: materializeCreateDraft,
 	}
-	wfCtx.Params[createDraftKey] = draft
+}
+
+// candidateCreateDraft returns the draft the resolve step produced: what WOULD be
+// created, for capacity, price and the confirm card to consume.
+//
+// Its absence is a hard error, never a rebuild. Re-deriving here would restore
+// exactly what this step exists to remove — a second interpretation of the
+// request, agreeing with the first only for as long as nothing between them
+// changes.
+func candidateCreateDraft(wfCtx *Context) (map[string]any, error) {
+	draft := wfCtx.Result(createDraftStepName)
+	if len(draft) == 0 {
+		return nil, fmt.Errorf("尚未形成执行草稿，无法继续创建")
+	}
 	return draft, nil
+}
+
+// promoteCreateDraft copies the approved candidate into Params so seal() covers
+// it. It is the create's Step.PromoteOnConfirm and the only writer of
+// createDraftKey: reaching Params is what turns a computed candidate into the
+// confirmed contract, so it happens exactly when the user says yes.
+//
+// The copy is deep: Params must not alias StepResults, or a later write to either
+// would diverge the live params from the sealed digest and fail-stop a create the
+// user correctly approved.
+func promoteCreateDraft(wfCtx *Context) error {
+	draft, err := candidateCreateDraft(wfCtx)
+	if err != nil {
+		return err
+	}
+	wfCtx.Params[createDraftKey] = deepCopyParams(draft)
+	return nil
 }
 
 // draftUpstreamArgs returns the executable half of a draft.
@@ -1082,8 +1177,31 @@ func draftImage(draft map[string]any) SelectedImage {
 	return SelectedImage{ID: id, Name: name, Source: source}
 }
 
+// draftDisks returns the resolved system disks from a draft's upstream args.
+// Absent means the platform default, which is why an empty result is returned
+// rather than an error.
+func draftDisks(create map[string]any) []any {
+	disks, _ := create["Disks"].([]any)
+	return disks
+}
+
+// draftPlacement returns the resolved placement half of a draft. Numbers are
+// parsed leniently because a promoted draft may have been through JSON (uint32
+// arrives back as float64); the values themselves are never re-derived.
+func draftPlacement(draft map[string]any) deployment.ZonePlacement {
+	raw, _ := draft[createDraftPlacementKey].(map[string]any)
+	zone, _ := raw["zone"].(string)
+	region, _ := raw["region"].(string)
+	isPod, _ := raw["is_pod"].(bool)
+	zoneID, _ := parseUint32Any(raw["zone_id"])
+	azGroup, _ := parseUint32Any(raw["az_group"])
+	return deployment.ZonePlacement{
+		Zone: zone, Region: region, ZoneID: zoneID, AzGroup: azGroup, IsPod: isPod,
+	}
+}
+
 func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
-	draft, err := materializeCreateDraft(wfCtx)
+	draft, err := candidateCreateDraft(wfCtx)
 	if err != nil {
 		return nil, err
 	}

@@ -72,6 +72,11 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 				return result, nil
 			}
 
+		case StepResolve:
+			if e.runResolveStep(step, i, total, wfCtx, result) == toolStepFailed {
+				return result, nil
+			}
+
 		case StepConfirm:
 			if !e.runConfirmStep(ctx, def, step, i, total, wfCtx, result) {
 				return result, nil
@@ -79,6 +84,19 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 			// Seal the confirmed draft: from here the business params are frozen
 			// and every subsequent mutating step is checked against them.
 			wfCtx.seal(def.Name)
+
+		default:
+			// A step type this loop does not handle must stop the workflow. With no
+			// default arm, an unhandled type fell through the switch, emitted
+			// nothing, and let Run report Success — a step declared in the
+			// definition would silently not have happened, which is the worst
+			// possible reading of "the workflow completed".
+			msg := fmt.Sprintf("工作流定义错误：步骤「%s」的类型 %d 无法执行", step.Name, step.Type)
+			e.emit(step.Name, i, total, step.Type, "failed", "", nil, msg)
+			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
+			result.StoppedAt = step.Name
+			result.Message = msg
+			return result, nil
 		}
 	}
 
@@ -123,6 +141,51 @@ func (e *Engine) verifySealedContract(step Step, i, total int, wfCtx *Context, r
 	result.StoppedAt = step.Name
 	result.Message = msg
 	return false
+}
+
+// runResolveStep executes one StepResolve: a pure computation over facts earlier
+// steps established, whose result lands in StepResults like a tool step's.
+//
+// It enforces the invariant that gives the step type its meaning: a resolve step
+// MUST NOT write Params. The check is a before/after digest, always on, rather
+// than the narrower "don't break a live seal" — because the two paths differ.
+// Under a live seal (the guided create runs this step after six選択 gates have
+// each sealed), a write would be caught by the next tool step's
+// verifySealedContract; on the plain create there is no seal yet, and
+// verifySealedContract fails OPEN on a nil seal, so a write there would sail
+// through unnoticed. An invariant that only holds on one of the two paths is not
+// an invariant.
+//
+// The rule is not fussiness about purity. Params is the set the user is being
+// asked to confirm; a resolve step writing into it would edit the question while
+// it is being asked.
+func (e *Engine) runResolveStep(step Step, i, total int, wfCtx *Context, result *Result) toolStepOutcome {
+	fail := func(msg string) toolStepOutcome {
+		e.emit(step.Name, i, total, StepResolve, "failed", "", nil, msg)
+		result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
+		result.StoppedAt = step.Name
+		result.Message = msg
+		return toolStepFailed
+	}
+	if step.Resolve == nil {
+		return fail(fmt.Sprintf("工作流定义错误：解析步骤「%s」未定义解析函数", step.Name))
+	}
+
+	e.emit(step.Name, i, total, StepResolve, "running", "", nil, "")
+	before := paramsDigest(wfCtx.Params)
+	out, err := step.Resolve(wfCtx)
+	if err != nil {
+		result.MissingSlots = MissingSlotsFromError(err)
+		return fail(fmt.Sprintf("步骤「%s」执行失败: %v", step.Name, err))
+	}
+	if paramsDigest(wfCtx.Params) != before {
+		return fail(fmt.Sprintf("工作流定义错误：解析步骤「%s」改写了业务参数，只能产出候选结果", step.Name))
+	}
+
+	wfCtx.StepResults[step.Name] = out
+	e.emit(step.Name, i, total, StepResolve, "success", "", nil, "")
+	result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
+	return toolStepOK
 }
 
 // toolStepOutcome reports how a StepToolCall ended for the Run loop.
@@ -236,6 +299,22 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 		return false
 	}
 
+	// pass is every route out of this gate that means "the user said yes". The
+	// promote hook runs BEFORE the success event, so a failure to record what was
+	// approved is reported as a failure rather than after an event claiming the
+	// step succeeded. Run seals immediately after this returns true, so this is
+	// the last moment Params can still be written legitimately.
+	pass := func() bool {
+		if step.PromoteOnConfirm != nil {
+			if err := step.PromoteOnConfirm(wfCtx); err != nil {
+				return failStop(fmt.Sprintf("步骤「%s」确认后固化参数失败: %v", step.Name, err))
+			}
+		}
+		e.emit(step.Name, i, total, StepConfirm, "success", "", nil, "")
+		result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
+		return true
+	}
+
 	for edits := 0; ; {
 		args, err := step.BuildArgs(wfCtx)
 		if err != nil {
@@ -264,9 +343,7 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 				result.Message = "用户取消了操作"
 				return false
 			}
-			e.emit(step.Name, i, total, StepConfirm, "success", "", nil, "")
-			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
-			return true
+			return pass()
 		}
 
 		res := e.confirmEditsFn(def.Name, args, form)
@@ -289,9 +366,7 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 					}
 				}
 			}
-			e.emit(step.Name, i, total, StepConfirm, "success", "", nil, "")
-			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
-			return true
+			return pass()
 		}
 
 		// Confirmed WITH overrides → validate, apply, revalidate, re-ask.
@@ -311,31 +386,85 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 			return failStop(fmt.Sprintf("配置修改无效: %v", aerr))
 		}
 		if step.ConfirmSubmitMode == ConfirmSubmitContinue {
-			e.emit(step.Name, i, total, StepConfirm, "success", "", nil, "")
-			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
-			return true
+			return pass()
 		}
-		for _, name := range step.RevalidateSteps {
-			rs, idx, ok := findToolStep(def, name)
-			if !ok {
-				continue
+		ok, defErr := e.revalidateFrom(ctx, def, step, i, total, wfCtx, result)
+		if !ok {
+			if defErr != "" {
+				return failStop(defErr)
 			}
-			if e.runToolStep(ctx, rs, idx, total, wfCtx, result) == toolStepFailed {
-				return false
-			}
+			return false // the failing step already populated result
 		}
 		// Loop: rebuild card+form from the revalidated results and re-ask.
 	}
 }
 
-// findToolStep locates a StepToolCall by name in the definition.
-func findToolStep(def *Definition, name string) (Step, int, bool) {
-	for i, s := range def.Steps {
-		if s.Name == name && s.Type == StepToolCall {
-			return s, i, true
+// revalidateFrom discards and re-runs every step from step.RevalidateFrom up to
+// (not including) the confirm at confirmIdx, in definition order, after the user
+// edited the params this confirm is gating.
+//
+// Returns (false, msg) for a definition error the caller should fail-stop with,
+// and (false, "") when a re-run step failed and already populated result.
+//
+// The discard is not redundant with the re-run. A step that fails mid-range
+// fail-stops the workflow, so nothing downstream reads a stale result on that
+// path — but a SkipIf that starts returning true after the edit would otherwise
+// leave the previous round's result in place to be read as if it were fresh.
+// Discarding first makes "these results describe params the user has replaced"
+// true by construction rather than by whichever paths happen to exist today.
+func (e *Engine) revalidateFrom(ctx context.Context, def *Definition, step Step, confirmIdx, total int, wfCtx *Context, result *Result) (bool, string) {
+	if step.RevalidateFrom == "" {
+		return true, ""
+	}
+	start := -1
+	for i := range def.Steps {
+		if def.Steps[i].Name == step.RevalidateFrom {
+			start = i
+			break
 		}
 	}
-	return Step{}, 0, false
+	if start < 0 {
+		return false, fmt.Sprintf("工作流定义错误：找不到重跑起点「%s」", step.RevalidateFrom)
+	}
+	if start >= confirmIdx {
+		return false, fmt.Sprintf("工作流定义错误：重跑起点「%s」不在确认步骤「%s」之前", step.RevalidateFrom, step.Name)
+	}
+
+	for i := start; i < confirmIdx; i++ {
+		delete(wfCtx.StepResults, def.Steps[i].Name)
+	}
+
+	for i := start; i < confirmIdx; i++ {
+		rs := def.Steps[i]
+		// A gate inside the range would ask the user to confirm something in the
+		// middle of them editing it, and Run would seal that answer. Refuse the
+		// definition rather than interpret it.
+		if rs.Type == StepConfirm {
+			return false, fmt.Sprintf("工作流定义错误：重跑区间内不能包含确认步骤「%s」", rs.Name)
+		}
+		if rs.SkipIf != nil {
+			skip, err := rs.SkipIf(wfCtx)
+			if err != nil {
+				return false, fmt.Sprintf("步骤「%s」跳过判断失败: %v", rs.Name, err)
+			}
+			if skip {
+				continue
+			}
+		}
+		switch rs.Type {
+		case StepResolve:
+			if e.runResolveStep(rs, i, total, wfCtx, result) == toolStepFailed {
+				return false, ""
+			}
+		case StepToolCall:
+			if e.runToolStep(ctx, rs, i, total, wfCtx, result) == toolStepFailed {
+				return false, ""
+			}
+		default:
+			return false, fmt.Sprintf("工作流定义错误：重跑区间内步骤「%s」的类型 %d 无法执行", rs.Name, rs.Type)
+		}
+	}
+	return true, ""
 }
 
 func (e *Engine) emit(name string, idx, total int, st StepType, status, tool string, args map[string]any, msg string) {

@@ -3503,6 +3503,16 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 				attemptedImageID = iid
 			}
 		}
+		// A workflow resolve step calls no tool, and this vocabulary has no term
+		// for an internal computation: eventType below defaults to StepToolCall
+		// and only a workflow.StepToolCall is promoted to StepToolResult on
+		// success, so forwarding one would announce a tool call with an empty
+		// Action on BOTH its running and success events — a phantom call that
+		// never returns, and a trace keyed on an empty action. Its FAILURE does
+		// map correctly (StepError, below) and is the only part the user must see.
+		if ev.Type == workflow.StepResolve && ev.Status != "failed" {
+			return
+		}
 		eventType := StepToolCall
 		message := fmt.Sprintf("[%d/%d] %s: %s", ev.StepIndex+1, ev.Total, ev.StepName, ev.Status)
 		if ev.Message != "" {

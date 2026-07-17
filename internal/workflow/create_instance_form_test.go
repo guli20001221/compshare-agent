@@ -297,6 +297,7 @@ func TestBuildCreateConfirmArgs_UsesZoneLabelForDisplayOnly(t *testing.T) {
 		},
 	})
 
+	runDraftStep(t, wfCtx)
 	args, err := buildCreateConfirmArgs(wfCtx)
 	require.NoError(t, err)
 
@@ -844,6 +845,14 @@ func TestCreateInstanceGuided_SelectedPlatformImageIsValidatedBeforeCapacity(t *
 			params: map[string]any{
 				"GpuType": "4090", "Zone": "cn-wlcb-01", "ZoneIsPod": true, "IsPodZone": true,
 				"ZoneIds": map[string]uint32{"cn-wlcb-01": 5001},
+				// The guided path always resolves this (syncGuidedZoneMeta); the
+				// fixture omitted it because the old capacity step validated
+				// placement with purchase=false, which skips the az_group check.
+				// The draft validates with purchase=true, so without it this case
+				// stops on the missing az_group and never reaches the image check
+				// it exists to probe. That refusal is pinned on its own in
+				// TestCreateInstance_PodZoneWithoutAzGroupRefusedAtDraft.
+				"ZoneRegionIds": map[string]uint32{"cn-wlcb-01": 3001},
 			},
 			wantError: "容器镜像",
 		},
@@ -873,7 +882,11 @@ func TestCreateInstanceGuided_SelectedPlatformImageIsValidatedBeforeCapacity(t *
 			wfCtx.StepResults["查询可用配比"] = formSingle4090CatalogFixture()
 			wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{tt.image}}
 
-			_, err := stepCheckCapacity().BuildArgs(wfCtx)
+			// The validation now lives in the resolve step, which runs BEFORE
+			// capacity — so the claim in this test's name holds more strongly than
+			// when 检查库存 validated the image itself. Same fixtures, same
+			// expected errors; only the step that raises them moved.
+			_, err := stepResolveCreateDraft().Resolve(wfCtx)
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantError)
