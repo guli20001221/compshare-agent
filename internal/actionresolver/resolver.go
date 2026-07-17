@@ -8,12 +8,18 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/compshare-agent/internal/deployment"
 )
 
 type Resolver struct {
 	catalog      *Catalog
 	verifier     EvidenceVerifier
 	machineTypes MachineTypeCatalog
+	// zoneCatalog is the live zone snapshot for a CodecZone field, attached via
+	// WithZoneCatalog. nil (the default) reports every zone as catalog-unavailable
+	// — refuse, never guess — exactly like a failed fetch.
+	zoneCatalog *deployment.ZoneCatalogSnapshot
 }
 
 // New builds a resolver over a static operation catalog plus the live
@@ -210,6 +216,12 @@ func (r *Resolver) normalizeValue(field FieldSpec, value any) (any, error) {
 			return nil, fmt.Errorf("must be a non-empty machine type name")
 		}
 		return r.canonicalMachineTypeValue(strings.TrimSpace(text))
+	case CodecZone:
+		text, ok := value.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, fmt.Errorf("must be a non-empty zone id or display name")
+		}
+		return r.canonicalZoneValue(strings.TrimSpace(text))
 	case CodecResourceRef:
 		text, ok := value.(string)
 		if !ok || strings.TrimSpace(text) == "" {

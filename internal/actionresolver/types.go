@@ -43,7 +43,12 @@ const (
 	// CodecMachineType is a platform machine-type (GPU) name. It is canonicalized
 	// against the LIVE catalog the engine snapshots — never against a table in
 	// this repo. See MachineTypeCatalog.
-	CodecMachineType     SlotCodecKind = "machine_type"
+	CodecMachineType SlotCodecKind = "machine_type"
+	// CodecZone is an availability-zone. Like CodecMachineType it canonicalizes an
+	// agent-supplied zone id or console display name against the LIVE zone catalog
+	// the engine snapshots — never an alias table or city keyword. See
+	// deployment.ZoneCatalogSnapshot and canonicalZone.
+	CodecZone            SlotCodecKind = "zone"
 	CodecCapacity        SlotCodecKind = "capacity"
 	CodecInteger         SlotCodecKind = "integer"
 	CodecNumber          SlotCodecKind = "number"
