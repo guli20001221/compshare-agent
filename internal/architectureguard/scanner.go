@@ -126,7 +126,8 @@ func scanCalls(path, symbol string, node ast.Node, findings *[]Finding) {
 		switch callee {
 		case "regexp.Compile", "regexp.MustCompile", "regexp.CompilePOSIX", "regexp.MustCompilePOSIX":
 			kind = "regex"
-		case "strings.Contains", "strings.HasPrefix", "strings.HasSuffix":
+		case "strings.Contains", "strings.HasPrefix", "strings.HasSuffix",
+			"strings.Index", "strings.IndexAny", "strings.LastIndex":
 			kind = "string_heuristic"
 		}
 		if kind == "" {

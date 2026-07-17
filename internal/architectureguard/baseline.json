@@ -728,6 +728,14 @@
       "value": "ubuntu"
     },
     {
+      "id": "865b869432ab8276",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_stock.go",
+      "symbol": "stockRegionFromZone",
+      "callee": "strings.LastIndex",
+      "value": "-"
+    },
+    {
       "id": "e7a4e954ca38763b",
       "kind": "string_heuristic",
       "path": "internal/config/config.go",
@@ -899,6 +907,22 @@
       "callee": "strings.Contains"
     },
     {
+      "id": "8589fb9c1302aef7",
+      "kind": "string_heuristic",
+      "path": "internal/engine/deploy_model.go",
+      "symbol": "extractJSONObject",
+      "callee": "strings.Index",
+      "value": "{"
+    },
+    {
+      "id": "deb5759ae49a680f",
+      "kind": "string_heuristic",
+      "path": "internal/engine/deploy_model.go",
+      "symbol": "extractJSONObject",
+      "callee": "strings.LastIndex",
+      "value": "}"
+    },
+    {
       "id": "a4c863c6ee04953f",
       "kind": "string_heuristic",
       "path": "internal/engine/engine.go",
@@ -1017,6 +1041,22 @@
       "path": "internal/engine/history_compaction.go",
       "symbol": "compactOldRetrievableToolResults",
       "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "22a2400012eb1b5f",
+      "kind": "string_heuristic",
+      "path": "internal/engine/history_compaction.go",
+      "symbol": "parseFirstJSONObject",
+      "callee": "strings.Index",
+      "value": "{"
+    },
+    {
+      "id": "6f3113b5d8378994",
+      "kind": "string_heuristic",
+      "path": "internal/engine/history_compaction.go",
+      "symbol": "parseFirstJSONObject",
+      "callee": "strings.LastIndex",
+      "value": "}"
     },
     {
       "id": "96adc5f2074d142d",
@@ -1469,6 +1509,13 @@
       "value": "["
     },
     {
+      "id": "b8a873d4c14b0962",
+      "kind": "string_heuristic",
+      "path": "internal/httpapi/ws_durable.go",
+      "symbol": "durableImageDigest",
+      "callee": "strings.Index"
+    },
+    {
       "id": "9ef02fcbc223a5bf",
       "kind": "string_heuristic",
       "path": "internal/intent/validator.go",
@@ -1685,6 +1732,20 @@
       "path": "internal/ocr/validate.go",
       "symbol": "ValidateImageDataURL",
       "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "3587953d229e680a",
+      "kind": "string_heuristic",
+      "path": "internal/ocr/validate.go",
+      "symbol": "ValidateImageDataURL",
+      "callee": "strings.Index"
+    },
+    {
+      "id": "28ff8846cc061ae8",
+      "kind": "string_heuristic",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "ContainsAsWord",
+      "callee": "strings.Index"
     },
     {
       "id": "2cbf2a60ce2b129c",
@@ -2248,12 +2309,27 @@
       "callee": "strings.Contains"
     },
     {
+      "id": "7e8482f8e32dae0a",
+      "kind": "string_heuristic",
+      "path": "internal/workflow/create_instance.go",
+      "symbol": "versionAfterToken",
+      "callee": "strings.Index"
+    },
+    {
       "id": "03a11410d5c96b00",
       "kind": "string_heuristic",
       "path": "internal/workflow/instance_shape.go",
       "symbol": "isPodInstanceResult",
       "callee": "strings.HasPrefix",
       "value": "cpod-"
+    },
+    {
+      "id": "03b69fccf8f347fc",
+      "kind": "string_heuristic",
+      "path": "internal/workflow/region.go",
+      "symbol": "regionFromZone",
+      "callee": "strings.LastIndex",
+      "value": "-"
     },
     {
       "id": "5d3deca58360348a",
