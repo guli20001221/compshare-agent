@@ -2406,19 +2406,15 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		return errClass + "。工具参数必须是合法的 JSON 对象，请按该工具的参数结构仅输出 JSON 后重新调用。"
 	}
 
-	// Knowledge tools execute locally — no API call, no security check needed
-	if knowledge.IsKnowledgeTool(action) {
-		args = e.safeExecutor.FilterArgs(action, args)
-		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceKnowledgeLocal, Args: args})
-		result, err := knowledge.ExecuteTool(action, args)
-		if err != nil {
-			errMsg := fmt.Sprintf("知识查询失败: %v", err)
-			onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceKnowledgeLocal, Message: errMsg})
-			return errMsg
-		}
-		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceKnowledgeLocal, Message: "查询成功", TraceResult: result})
-		return knowledge.ResultToJSON(result)
-	}
+	// The local GPU knowledge tools (GetGPUSpecs / GetGPURecommendation /
+	// GetModelVRAMRequirement) used to execute here, straight off a hand-maintained
+	// spec table with — as the deleted comment put it — "no security check needed".
+	// They are gone: every GPU fact now comes from the upstream catalog via
+	// ReadCapability_gpu_specs_query. The entry point went with them, because
+	// leaving it was not harmless. centralAgentToolWindow never advertised those
+	// names, but this branch would still have run them had the model emitted one
+	// from memory — a retired, drift-prone answer path reachable by hallucination,
+	// at an UNMEASURED rate.
 
 	// SearchKnowledge executes locally on the engine's retriever, never through
 	// SafeToolExecutor. The knowledge-route check above is the authorization
@@ -3548,12 +3544,13 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 		wfEngine.SetConfirmEditsFn(e.confirmEditsFn)
 	}
 
-	// Normalize the GPU candidate already accepted by Action Resolver. The sealed
-	// execution contract is the only write source; never re-read lastUserMsg here.
+	// GpuType is NOT normalized here any more. It arrives canonical: the resolver
+	// matched it against the live machine-type catalog before ReadyForConfirmation,
+	// so the confirm card, the sealed contract and this call all carry the same
+	// string. The rewrite that used to sit here consulted a static table AFTER the
+	// user had confirmed, which meant the value we showed and the value we executed
+	// could differ and neither layer owned the final say.
 	if action == "CreateInstanceWorkflow" {
-		if gt, ok := args["GpuType"].(string); ok && gt != "" {
-			args["GpuType"] = knowledge.CanonicalGPUType(gt)
-		}
 		if gt, _ := args["GpuType"].(string); gt != "" {
 			if e.guidedCreate && e.confirmEditsFn != nil {
 				if _, preset := args["GuidedGpuLocked"]; !preset {

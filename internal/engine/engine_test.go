@@ -275,59 +275,6 @@ func TestChat_DirectReply(t *testing.T) {
 	assert.Len(t, mock.calls[0].Messages, 2) // system + user
 }
 
-func TestChat_KnowledgeTool_GetGPUSpecs(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		// Round 1: LLM decides to call GetGPUSpecs
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetGPUSpecs", `{"GpuType":"4090"}`),
-		}},
-		// Round 2: LLM generates final reply using tool result
-		{Content: "4090 有 24GB 显存"},
-	}}
-	onStep, events := collectSteps()
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	reply, err := eng.Chat(context.Background(), "4090什么配置", onStep)
-	assert.NoError(t, err)
-	assert.Equal(t, "4090 有 24GB 显存", reply)
-
-	// Should have tool call + tool result events
-	assert.GreaterOrEqual(t, len(*events), 2)
-	assert.Equal(t, StepToolCall, (*events)[0].Type)
-	assert.Equal(t, "GetGPUSpecs", (*events)[0].Action)
-	assert.Equal(t, StepToolResult, (*events)[1].Type)
-
-	// Tool result fed back to LLM should contain GPU spec data
-	assert.Len(t, mock.calls, 2)
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	assert.Contains(t, toolMsg.Content, "24")          // VRAM
-	assert.Contains(t, toolMsg.Content, "fp16_tflops") // has FP16 field
-}
-
-func TestChat_KnowledgeTool_GetGPURecommendation(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetGPURecommendation", `{"scene":"LoRA微调","budget_sensitive":false}`),
-		}},
-		{Content: "推荐 4090"},
-	}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	reply, err := eng.Chat(context.Background(), "微调用什么卡", noopStep)
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "4090")
-
-	// Verify tool result contains recommendation
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	assert.Contains(t, toolMsg.Content, "recommendations")
-}
 
 func TestChat_ExternalTool_L0(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -902,21 +849,27 @@ func TestKnowledgeTool_DoesNotCallExecutor(t *testing.T) {
 	assert.Empty(t, executor.calls)
 }
 
+// The subject is fan-out — two tool calls in one round, both executed, both fed
+// back. The vehicle used to be GetGPUSpecs twice; that tool is deleted, so the
+// test drives two surviving external reads instead. Retargeted, not dropped:
+// nothing about multi-call handling changed.
 func TestMultipleToolCalls(t *testing.T) {
-	// LLM calls two tools in one round (e.g., GetGPUSpecs for two GPUs)
 	idx0 := 0
 	idx1 := 1
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
 			{ID: "tc1", Type: openai.ToolTypeFunction, Index: &idx0,
-				Function: openai.FunctionCall{Name: "GetGPUSpecs", Arguments: `{"GpuType":"4090"}`}},
+				Function: openai.FunctionCall{Name: "DescribeCompShareInstance", Arguments: `{}`}},
 			{ID: "tc2", Type: openai.ToolTypeFunction, Index: &idx1,
-				Function: openai.FunctionCall{Name: "GetGPUSpecs", Arguments: `{"GpuType":"A100"}`}},
+				Function: openai.FunctionCall{Name: "DescribeAvailableCompShareInstanceTypes", Arguments: `{}`}},
 		}},
 		{Content: "对比结果"},
 	}}
 	onStep, events := collectSteps()
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng := NewWithDeps(mock, &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":               {"UHostSet": []any{}, "RetCode": 0},
+		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{}, "RetCode": 0},
+	}}, nil)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
 	}
@@ -1808,14 +1761,21 @@ func TestFilterAllowedParams_ExternalToolCall(t *testing.T) {
 }
 
 // Verify tool result JSON is valid by parsing it
+// The subject is the tool-result WIRE FORMAT: whatever a tool returns must reach
+// the model as parseable JSON on a role=tool message. The vehicle moved from the
+// deleted GetGPUSpecs to a surviving external read; the "96" assertion went with
+// it, because it pinned H20's VRAM from the static table — a platform fact this
+// repo no longer stores. The JSON contract it was really guarding is unchanged.
 func TestToolResult_IsValidJSON(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetGPUSpecs", `{"GpuType":"H20"}`),
+			toolCall("tc1", "DescribeCompShareInstance", `{}`),
 		}},
 		{Content: "done"},
 	}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng := NewWithDeps(mock, &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0, "TotalCount": float64(0)},
+	}}, nil)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
 	}
@@ -1829,7 +1789,7 @@ func TestToolResult_IsValidJSON(t *testing.T) {
 	var parsed map[string]any
 	err := json.Unmarshal([]byte(toolMsg.Content), &parsed)
 	assert.NoError(t, err, "tool result should be valid JSON: %s", toolMsg.Content)
-	assert.Contains(t, toolMsg.Content, "96") // H20 VRAM
+	assert.NotEmpty(t, parsed, "tool result must be a non-empty JSON object, not a bare string")
 }
 
 func TestChat_WorkflowTool_ArgsFiltered(t *testing.T) {
@@ -2295,7 +2255,7 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 		// 50k cap). Second response would be returned if round 1 ran.
 		{
 			ToolCalls: []openai.ToolCall{
-				toolCall("tc1", "GetGPUSpecs", `{"GpuType":"4090"}`),
+				toolCall("tc1", "DescribeCompShareInstance", `{}`),
 			},
 			Usage: llm.TokenUsage{TotalTokens: 60000},
 		},
@@ -2304,7 +2264,9 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 	onStep, events := collectSteps()
 	var hardBlockHits []observability.EngineHardBlockTrace
 
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng := NewWithDeps(mock, &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0},
+	}}, nil)
 	eng.maxTokensPerTurn = 50000
 	eng.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) {
 		hardBlockHits = append(hardBlockHits, t)
@@ -2327,10 +2289,10 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 	// the pair stays atomic across the budget break.
 	var sawToolCall, sawToolResult bool
 	for _, ev := range *events {
-		if ev.Type == StepToolCall && ev.Action == "GetGPUSpecs" {
+		if ev.Type == StepToolCall && ev.Action == "DescribeCompShareInstance" {
 			sawToolCall = true
 		}
-		if ev.Type == StepToolResult && ev.Action == "GetGPUSpecs" {
+		if ev.Type == StepToolResult && ev.Action == "DescribeCompShareInstance" {
 			sawToolResult = true
 		}
 	}

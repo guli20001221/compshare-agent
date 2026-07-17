@@ -44,8 +44,9 @@ func TestCapabilityRegistryDerivesResultOwnershipFromExecutionRoute(t *testing.T
 		contract ResultContract
 		owner    string
 	}{
+		// SearchKnowledge is now the only ActionRouteKnowledge member; the GetGPUSpecs
+		// row that used to sit beside it went with the static GPU table.
 		{name: "SearchKnowledge", contract: ResultContractGroundedAnswer, owner: "grounding"},
-		{name: "GetGPUSpecs", contract: ResultContractGroundedAnswer, owner: "grounding"},
 		{name: "DescribeCompShareInstance", contract: ResultContractModelObservation, owner: "agent"},
 		{name: "StopInstanceWorkflow", contract: ResultContractWorkflowResult, owner: "workflow"},
 	}

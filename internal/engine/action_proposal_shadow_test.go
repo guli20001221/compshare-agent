@@ -123,11 +123,11 @@ func TestCurrentTurnReadBecomesProposalEvidenceOnlyAfterItWasObserved(t *testing
 		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "tool_observation", "evidence": map[string]any{"context_field": "current_turn_read"}}},
 	}
 
-	before, err := eng.resolveActionProposalShadow(args)
+	before, err := eng.resolveActionProposalShadow(context.Background(), args)
 	require.NoError(t, err)
 	require.False(t, before.ReadyForConfirmation)
 	eng.readCapabilitySubjectsThisTurn = map[string]struct{}{"uhost-1": {}}
-	after, err := eng.resolveActionProposalShadow(args)
+	after, err := eng.resolveActionProposalShadow(context.Background(), args)
 	require.NoError(t, err)
 	require.True(t, after.ReadyForConfirmation)
 }
@@ -139,7 +139,7 @@ func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-capacity", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(map[string]any{
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
 		"operation": "CreateDiskWorkflow",
 		"slots": []any{
 			map[string]any{"name": "UHostId", "value": "uhost-1", "source": "user_explicit", "evidence": map[string]any{"quote": "uhost-1"}},
@@ -155,7 +155,7 @@ func TestProposalRejectsDifferentTurnEvidence(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "停止 uhost-1", "active-turn", time.Now())
 	eng.turnContextViewReady = true
-	_, err := eng.resolveActionProposalShadow(map[string]any{"turn_id": "old-turn", "operation": "StopInstanceWorkflow", "slots": []any{}})
+	_, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{"turn_id": "old-turn", "operation": "StopInstanceWorkflow", "slots": []any{}})
 	require.ErrorContains(t, err, "does not match")
 }
 
@@ -220,7 +220,7 @@ func TestSealedPasswordIsInjectedWithoutEnteringModelArguments(t *testing.T) {
 	eng.readCapabilitySubjectsThisTurn = map[string]struct{}{"uhost-1": {}}
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "重置密码为[已脱敏:凭据]", "turn-secret", time.Now())
 	eng.turnContextViewReady = true
-	resolved, err := eng.resolveActionProposalShadow(map[string]any{
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
 		"turn_id": "turn-secret", "operation": "ResetPasswordWorkflow",
 		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "tool_observation", "evidence": map[string]any{"context_field": "current_turn_read"}}},
 	})

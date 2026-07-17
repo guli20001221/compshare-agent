@@ -29,7 +29,7 @@ func TestResolverRequiresServerVerifiedTargetProvenance(t *testing.T) {
 	require.NoError(t, err)
 	verified := New(catalog, EvidenceVerifierFunc(func(candidate SlotCandidate) bool {
 		return candidate.Evidence != nil && candidate.Evidence.Quote == "uhost-1"
-	}))
+	}), MachineTypeCatalog{})
 	proposal := ActionProposal{TurnID: "turn-1", Operation: "StopInstanceWorkflow", Slots: []SlotCandidate{{
 		Name: "UHostId", Value: "uhost-1", Source: SourceUserExplicit,
 		Evidence: &SourceEvidence{MessageID: "turn-1", Start: 3, End: 10, Quote: "uhost-1"},
@@ -42,7 +42,7 @@ func TestResolverRequiresServerVerifiedTargetProvenance(t *testing.T) {
 	require.Equal(t, "SafeToolExecutor", resolved.Gate.Executor)
 	require.True(t, resolved.Gate.RequiresJournal)
 
-	unverified := New(catalog, nil).Resolve(proposal)
+	unverified := New(catalog, nil, MachineTypeCatalog{}).Resolve(proposal)
 	require.False(t, unverified.ReadyForConfirmation)
 	require.NotEmpty(t, unverified.Rejected)
 
@@ -55,7 +55,7 @@ func TestResolverRequiresServerVerifiedTargetProvenance(t *testing.T) {
 func TestResolverNeverSilentlyChoosesConflictingCurrentValues(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }))
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateDiskWorkflow", Slots: []SlotCandidate{
 		{Name: "UHostId", Value: "uhost-8g", Source: SourceVerifiedContext, Evidence: &SourceEvidence{ContextField: "selected_entities"}},
 		{Name: "Size", Value: 30, Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "30"}},
@@ -71,7 +71,7 @@ func TestResolverNeverSilentlyChoosesConflictingCurrentValues(t *testing.T) {
 func TestResolverDoesNotTrustInstanceNamesWithoutServerEvidence(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return false }))
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return false }), MachineTypeCatalog{})
 	for _, value := range []string{"test", "host", "a"} {
 		resolved := resolver.Resolve(ActionProposal{Operation: "StopInstanceWorkflow", Slots: []SlotCandidate{{
 			Name: "UHostId", Value: value, Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: value},
@@ -84,7 +84,7 @@ func TestResolverDoesNotTrustInstanceNamesWithoutServerEvidence(t *testing.T) {
 func TestOperationSpecificStructuredValidatorRejectsAmbiguity(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }))
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
 	resolved := resolver.Resolve(ActionProposal{Operation: "SetStopSchedulerWorkflow", Slots: []SlotCandidate{
 		{Name: "UHostId", Value: "uhost-1", Source: SourceToolObservation, Evidence: &SourceEvidence{ContextField: "recent_observations"}},
 		{Name: "AfterMinutes", Value: 30, Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "30"}},
@@ -106,7 +106,7 @@ func TestCatalogMarksSensitiveAndResourceFields(t *testing.T) {
 func TestCorrectionOverridesInheritedValueButTwoCorrectionsConflict(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }))
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
 	base := []SlotCandidate{{Name: "UHostId", Value: "uhost-1", Source: SourceVerifiedContext, Evidence: &SourceEvidence{ContextField: "selected_entities"}}}
 	resolved := resolver.Resolve(ActionProposal{Operation: "RenameInstanceWorkflow", Slots: append(base,
 		SlotCandidate{Name: "Name", Value: "old", Source: SourceVerifiedContext},
@@ -126,7 +126,7 @@ func TestCorrectionOverridesInheritedValueButTwoCorrectionsConflict(t *testing.T
 func TestConfirmationPreviewRedactsSensitiveValues(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }))
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
 	resolved := resolver.Resolve(ActionProposal{Operation: "ResetPasswordWorkflow", Slots: []SlotCandidate{
 		{Name: "UHostId", Value: "uhost-1", Source: SourceToolObservation, Evidence: &SourceEvidence{ContextField: "recent_observations"}},
 		{Name: "Password", Value: "SecurePass123!", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "SecurePass123!"}},

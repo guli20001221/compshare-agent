@@ -39,7 +39,11 @@ type ActionProposal struct {
 type SlotCodecKind string
 
 const (
-	CodecResourceRef     SlotCodecKind = "resource_ref"
+	CodecResourceRef SlotCodecKind = "resource_ref"
+	// CodecMachineType is a platform machine-type (GPU) name. It is canonicalized
+	// against the LIVE catalog the engine snapshots — never against a table in
+	// this repo. See MachineTypeCatalog.
+	CodecMachineType     SlotCodecKind = "machine_type"
 	CodecCapacity        SlotCodecKind = "capacity"
 	CodecInteger         SlotCodecKind = "integer"
 	CodecNumber          SlotCodecKind = "number"
@@ -83,9 +87,15 @@ type ConfirmationPreview struct {
 	Arguments map[string]any `json:"arguments"`
 }
 
+// Conflict is a slot the resolver refuses to decide. Two shapes reach it:
+// Candidates is set when sources disagree on a value; CatalogCandidates is set
+// when the value matched several live catalog entries. Both mean the same thing
+// to the caller — the agent must ask, the server must not guess.
 type Conflict struct {
-	Slot       string          `json:"slot"`
-	Candidates []SlotCandidate `json:"candidates"`
+	Slot              string          `json:"slot"`
+	Candidates        []SlotCandidate `json:"candidates,omitempty"`
+	CatalogCandidates []string        `json:"catalog_candidates,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
 }
 
 type ResolvedSlot struct {
@@ -94,6 +104,13 @@ type ResolvedSlot struct {
 	Codec  SlotCodecKind   `json:"codec"`
 }
 
+// ResolvedAction is the adjudicated proposal. The four refusal channels are
+// distinct on purpose and must not be collapsed: Missing means the user has not
+// said it yet, Conflicts means several readings are defensible, Rejected means
+// the value is invalid, and DependencyFailures means the SERVER could not obtain
+// a fact it needs to decide (e.g. the live machine-type catalog). Only the last
+// is a server-side outage — reporting it as a rejection would blame the user for
+// our own failed query, and reporting it as success would mean guessing.
 type ResolvedAction struct {
 	TurnID               string                           `json:"turn_id"`
 	Operation            string                           `json:"operation"`
@@ -102,6 +119,7 @@ type ResolvedAction struct {
 	Missing              []string                         `json:"missing,omitempty"`
 	Conflicts            []Conflict                       `json:"conflicts,omitempty"`
 	Rejected             []string                         `json:"rejected,omitempty"`
+	DependencyFailures   []string                         `json:"dependency_failures,omitempty"`
 	NeedsConfirm         bool                             `json:"needs_confirm"`
 	ReadyForConfirmation bool                             `json:"ready_for_confirmation"`
 	Confirmation         *ConfirmationPreview             `json:"confirmation,omitempty"`

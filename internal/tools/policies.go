@@ -328,12 +328,12 @@ func actionAllowsBackendIdentity(action string) bool {
 
 func routeForAction(action string) ActionRoute {
 	switch {
-	case action == "GetGPUSpecs" || action == "GetGPURecommendation" || action == "GetModelVRAMRequirement":
-		return ActionRouteKnowledge
 	case action == "SearchKnowledge":
 		// Agentic-RAG read-only tool (P3). Routed locally on a dedicated engine
-		// branch (like the GetGPUSpecs knowledge tools), never through
-		// SafeToolExecutor — its Route is Knowledge, not external_api.
+		// branch, never through SafeToolExecutor — its Route is Knowledge, not
+		// external_api. It is now the ONLY member of this route: the local GPU
+		// knowledge tools that used to share it were deleted with the static spec
+		// table they answered from.
 		return ActionRouteKnowledge
 	case strings.HasSuffix(action, "Workflow"):
 		return ActionRouteWorkflow

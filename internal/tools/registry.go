@@ -26,65 +26,6 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "GetGPUSpecs",
-			Description: "查询 GPU 型号的概览规格参数（显存、算力、最大卡数、适用场景等），不展开控制台全部 CPU/内存/GPU 合法组合。用户明确要求所有/完整规格或某型号所有配置时，应使用 DescribeAvailableCompShareInstanceTypes。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"GpuType": map[string]any{
-						"type":        "string",
-						"description": "GPU 类型，可填上游返回的机型名称，例如 4090 或 A100。不传则返回本地 GPU 概览；要确认当前平台完整可选机型和配比，请用 DescribeAvailableCompShareInstanceTypes。",
-					},
-				},
-				"required": []string{},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "GetGPURecommendation",
-			Description: "根据使用场景推荐最合适的 GPU 配置。支持的场景包括：推理/部署、LoRA微调、全量训练、SD/ComfyUI绘图、学习入门等。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"scene": map[string]any{
-						"type":        "string",
-						"description": "使用场景描述，如 '训练7B模型'、'部署vLLM'、'跑SD绘图'、'学习入门' 等",
-					},
-					"budget_sensitive": map[string]any{
-						"type":        "boolean",
-						"description": "是否对价格敏感，为 true 时优先推荐性价比高的选项",
-					},
-				},
-				"required": []string{"scene"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "GetModelVRAMRequirement",
-			Description: "根据大模型名称(或参数量)估算推理所需显存,并给出可单卡承载的 GPU 选项;无单卡可承载时给出多卡方案。用于部署/选型,如 'Qwen32B'、'Llama3-70B'、'deepseek-67b'。仅做显存与可承载性计算;算力/场景优选请叠加 GetGPURecommendation,价格用 GetCompShareInstancePrice。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"model_name": map[string]any{
-						"type":        "string",
-						"description": "模型名称或参数量,如 'Qwen32B'、'Qwen2.5-32B-Instruct'、'Llama3-70B'、'7B'。",
-					},
-					"quantization": map[string]any{
-						"type":        "string",
-						"description": "量化精度,默认 fp16。可选 fp16 / bf16 / fp8 / int8 / int4(越低显存越省)。",
-					},
-				},
-				"required": []string{"model_name"},
-			},
-		},
-	},
 	// --- External API Tools ---
 	{
 		Type: openai.ToolTypeFunction,

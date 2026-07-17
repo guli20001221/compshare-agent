@@ -11,7 +11,7 @@ import (
 )
 
 // GPU-specs read capability (migrated from the legacy intent route). It lists
-// static GPU machine-type specs via DescribeAvailableCompShareInstanceTypes and
+// GPU machine-type specs via DescribeAvailableCompShareInstanceTypes and
 // renders an overview or full-spec table plus a gpu_specs evidence envelope. The
 // typed request carries the GPU name filter + detail level, so the handler and
 // renderer never re-read the user's sentence (the legacy path re-derived them
@@ -45,7 +45,11 @@ type GPUSpecsResponse struct {
 func gpuSpecsReadSpec() ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse] {
 	return ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse]{
 		Label:       gpuSpecsCapabilityLabel,
-		Description: "查询 GPU 机型的静态规格。",
+		// Model-visible. It said "静态规格" while reading the live catalog — after the
+		// hand-maintained gpuSpecs table was deleted this is the ONLY source of GPU
+		// facts, and calling it static invited the agent to trust it less and answer
+		// from its own weights instead.
+		Description: "查询平台 GPU 机型规格（显存、算力、最大卡数等），数据来自上游机型接口。",
 		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "detail_level": enumParam(platform.DetailLevelValues()...)}),
 		Handle:      gpuSpecsHandle,
 		Render:      gpuSpecsRender,

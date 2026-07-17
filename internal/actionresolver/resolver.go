@@ -11,13 +11,33 @@ import (
 )
 
 type Resolver struct {
-	catalog  *Catalog
-	verifier EvidenceVerifier
+	catalog      *Catalog
+	verifier     EvidenceVerifier
+	machineTypes MachineTypeCatalog
 }
 
-func New(catalog *Catalog, verifier EvidenceVerifier) *Resolver {
-	return &Resolver{catalog: catalog, verifier: verifier}
+// New builds a resolver over a static operation catalog plus the live
+// machine-type snapshot the ENGINE fetched. machineTypes is pure data: this
+// package performs no I/O, so a Resolve is replayable from its inputs alone.
+// Pass the zero MachineTypeCatalog for operations with no machine-type field —
+// SpecNeedsMachineTypeCatalog reports which those are.
+func New(catalog *Catalog, verifier EvidenceVerifier, machineTypes MachineTypeCatalog) *Resolver {
+	return &Resolver{catalog: catalog, verifier: verifier, machineTypes: machineTypes}
 }
+
+// dependencyError marks a value the resolver could not adjudicate because a
+// server-side fact was unavailable — not the user's fault, not a rejection.
+type dependencyError struct{ detail string }
+
+func (e dependencyError) Error() string { return e.detail }
+
+// ambiguityError marks a value that matched several live catalog entries.
+type ambiguityError struct {
+	detail     string
+	candidates []string
+}
+
+func (e ambiguityError) Error() string { return e.detail }
 
 func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	result := ResolvedAction{TurnID: proposal.TurnID, Operation: proposal.Operation, Arguments: map[string]any{}, Provenance: map[string]ResolvedSlot{}}
@@ -45,9 +65,18 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: user-explicit source is not verified", name))
 			continue
 		}
-		value, err := normalizeValue(field, candidate.Value)
+		value, err := r.normalizeValue(field, candidate.Value)
 		if err != nil {
-			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: %v", name, err))
+			switch typed := err.(type) {
+			case dependencyError:
+				result.DependencyFailures = append(result.DependencyFailures, fmt.Sprintf("%s: %v", name, typed))
+			case ambiguityError:
+				result.Conflicts = append(result.Conflicts, Conflict{
+					Slot: name, CatalogCandidates: typed.candidates, Reason: typed.Error(),
+				})
+			default:
+				result.Rejected = append(result.Rejected, fmt.Sprintf("%s: %v", name, err))
+			}
 			continue
 		}
 		candidate.Name, candidate.Value = name, value
@@ -74,15 +103,17 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			}
 		}
 	}
-	if len(result.Missing) == 0 && len(result.Conflicts) == 0 && len(result.Rejected) == 0 && spec.ValidateResolved != nil {
+	if len(result.Missing) == 0 && len(result.Conflicts) == 0 && len(result.Rejected) == 0 && len(result.DependencyFailures) == 0 && spec.ValidateResolved != nil {
 		if err := spec.ValidateResolved(result.Arguments); err != nil {
 			result.Rejected = append(result.Rejected, err.Error())
 		}
 	}
 	sort.Strings(result.Missing)
 	sort.Strings(result.Rejected)
+	sort.Strings(result.DependencyFailures)
 	sort.Slice(result.Conflicts, func(i, j int) bool { return result.Conflicts[i].Slot < result.Conflicts[j].Slot })
-	result.ReadyForConfirmation = len(result.Missing) == 0 && len(result.Conflicts) == 0 && len(result.Rejected) == 0
+	result.ReadyForConfirmation = len(result.Missing) == 0 && len(result.Conflicts) == 0 &&
+		len(result.Rejected) == 0 && len(result.DependencyFailures) == 0
 	if result.ReadyForConfirmation {
 		arguments := make(map[string]any, len(result.Arguments))
 		for name, value := range result.Arguments {
@@ -154,8 +185,14 @@ func sourceRank(source CandidateSource) int {
 	}
 }
 
-func normalizeValue(field FieldSpec, value any) (any, error) {
+func (r *Resolver) normalizeValue(field FieldSpec, value any) (any, error) {
 	switch field.Codec {
+	case CodecMachineType:
+		text, ok := value.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, fmt.Errorf("must be a non-empty machine type name")
+		}
+		return r.canonicalMachineTypeValue(strings.TrimSpace(text))
 	case CodecResourceRef:
 		text, ok := value.(string)
 		if !ok || strings.TrimSpace(text) == "" {

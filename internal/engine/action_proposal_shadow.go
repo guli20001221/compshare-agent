@@ -12,6 +12,7 @@ import (
 
 	"github.com/compshare-agent/internal/actionresolver"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -137,7 +138,7 @@ func decodeActionProposal(args map[string]any) (actionresolver.ActionProposal, e
 	return proposal, nil
 }
 
-func (e *Engine) resolveActionProposalShadow(args map[string]any) (actionresolver.ResolvedAction, error) {
+func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[string]any) (actionresolver.ResolvedAction, error) {
 	proposal, err := decodeActionProposal(args)
 	if err != nil {
 		return actionresolver.ResolvedAction{}, err
@@ -162,9 +163,41 @@ func (e *Engine) resolveActionProposalShadow(args map[string]any) (actionresolve
 		proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
 	}
 	if !ok {
-		return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}).Resolve(proposal), nil
+		return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}, actionresolver.MachineTypeCatalog{}).Resolve(proposal), nil
 	}
-	return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec}).Resolve(proposal), nil
+	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
+	return actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec}, machineTypes).Resolve(proposal), nil
+}
+
+// machineTypeCatalogSnapshot fetches the live machine-type names and hands them
+// to the resolver as data. This function is the boundary the design turns on:
+// the network call, its failure mode and any future caching live HERE, in the
+// engine, so actionresolver stays a pure function of its inputs and a Resolve
+// can be replayed from a trace.
+//
+// A failed or empty query yields Available=false — NOT a fallback to a built-in
+// table. Canonicalizing a machine type against a stale local copy is exactly the
+// bug this vertical removed: the platform's catalog is the only thing that knows
+// which cards exist, so when we cannot reach it we say so and refuse rather than
+// name a card from memory.
+//
+// Status is deliberately NOT filtered: a sold-out card is still a real machine
+// type, and resolving the name then failing at the capacity precheck tells the
+// user the truth ("4090 售罄") instead of a lie ("没有 4090 这种机型").
+func (e *Engine) machineTypeCatalogSnapshot(ctx context.Context, spec actionresolver.OperationSpec) actionresolver.MachineTypeCatalog {
+	if !actionresolver.SpecNeedsMachineTypeCatalog(spec) {
+		return actionresolver.MachineTypeCatalog{}
+	}
+	result := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
+	if result == nil {
+		return actionresolver.MachineTypeCatalog{Available: false}
+	}
+	items, _ := result["AvailableInstanceTypes"].([]any)
+	names := platform.CollectAPINamesFromInstanceTypes(items)
+	if len(names) == 0 {
+		return actionresolver.MachineTypeCatalog{Available: false}
+	}
+	return actionresolver.MachineTypeCatalog{Names: names, Available: true}
 }
 
 // completeCurrentTurnEvidence fills protocol metadata that the runtime already
@@ -270,8 +303,8 @@ func addSealedSecretCandidates(proposal actionresolver.ActionProposal, spec acti
 	return proposal
 }
 
-func (e *Engine) executeActionProposalShadow(args map[string]any, onStep func(StepEvent)) string {
-	resolved, err := e.resolveActionProposalShadow(args)
+func (e *Engine) executeActionProposalShadow(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
+	resolved, err := e.resolveActionProposalShadow(ctx, args)
 	if err != nil {
 		onStep(StepEvent{Type: StepError, Action: tools.ProposeActionName, Source: observability.ToolSourceShadowOnly, Message: err.Error()})
 		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "ready_for_confirmation": false})
@@ -290,7 +323,7 @@ func (e *Engine) executeActionProposalShadow(args map[string]any, onStep func(St
 
 func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
 	e.actionProposalRanThisTurn = true
-	resolved, err := e.resolveActionProposalShadow(args)
+	resolved, err := e.resolveActionProposalShadow(ctx, args)
 	if err != nil {
 		onStep(StepEvent{Type: StepError, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "ready_for_confirmation": false})

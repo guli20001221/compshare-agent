@@ -92,6 +92,9 @@ func codecFromSchema(name string, schema map[string]any, sensitive bool) SlotCod
 	if isTargetField(name) {
 		return CodecResourceRef
 	}
+	if name == "GpuType" {
+		return CodecMachineType
+	}
 	if len(stringSlice(schema["enum"])) > 0 {
 		return CodecEnum
 	}

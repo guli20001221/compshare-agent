@@ -334,7 +334,6 @@ func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 		"GetCompShareInstanceMonitor",
 		"DiagnoseSSH",
 		"DiagnoseBilling",
-		"GetGPUSpecs",
 	} {
 		assert.True(t, names[name], "read-only/diagnosis tool %s should remain visible", name)
 	}
@@ -385,8 +384,13 @@ func TestSafeExecutorRejectsMissingPolicy(t *testing.T) {
 	assert.Equal(t, 0, inner.calls)
 }
 
+// The knowledge-route case is SearchKnowledge, not the deleted GetGPUSpecs. The
+// subject here is the ROUTE (knowledge / diagnosis / workflow tools must never
+// reach the inner API executor), so the case was retargeted at that route's
+// surviving member rather than dropped — dropping it would have quietly left the
+// knowledge route ungated while the test kept passing.
 func TestSafeExecutorDoesNotSendMetaToolsToInnerExecutor(t *testing.T) {
-	for _, action := range []string{"GetGPUSpecs", "DiagnoseSSH", "StartInstanceWorkflow"} {
+	for _, action := range []string{"SearchKnowledge", "DiagnoseSSH", "StartInstanceWorkflow"} {
 		t.Run(action, func(t *testing.T) {
 			inner := &spyExecutor{}
 			safe := NewSafeToolExecutor(inner)

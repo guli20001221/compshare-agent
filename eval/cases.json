@@ -390,8 +390,7 @@
     "description": "GPU选型推荐——训练场景",
     "expected_intent": "simple_query",
     "expected_tools": [
-      "GetGPURecommendation",
-      "GetGPUSpecs"
+      "ReadCapability_gpu_specs_query"
     ],
     "user_context": "用户当前没有实例。",
     "tags": [
@@ -405,8 +404,7 @@
     "description": "GPU选型推荐——SD绘图",
     "expected_intent": "simple_query",
     "expected_tools": [
-      "GetGPURecommendation",
-      "GetGPUSpecs"
+      "ReadCapability_gpu_specs_query"
     ],
     "user_context": "用户当前没有实例。",
     "tags": []
@@ -418,7 +416,7 @@
     "description": "GPU对比——规格查询",
     "expected_intent": "simple_query",
     "expected_tools": [
-      "GetGPUSpecs"
+      "ReadCapability_gpu_specs_query"
     ],
     "user_context": "用户当前没有实例。",
     "tags": []
@@ -430,8 +428,7 @@
     "description": "预算敏感的推荐",
     "expected_intent": "simple_query",
     "expected_tools": [
-      "GetGPURecommendation",
-      "GetGPUSpecs"
+      "ReadCapability_gpu_specs_query"
     ],
     "user_context": "用户当前没有实例。",
     "tags": []
@@ -443,7 +440,7 @@
     "description": "特定GPU规格查询",
     "expected_intent": "simple_query",
     "expected_tools": [
-      "GetGPUSpecs"
+      "ReadCapability_gpu_specs_query"
     ],
     "user_context": "用户当前没有实例。",
     "tags": []
@@ -861,8 +858,7 @@
     "description": "预算受限大模型推荐",
     "expected_intent": "simple_query",
     "expected_tools": [
-      "GetGPURecommendation",
-      "GetGPUSpecs"
+      "ReadCapability_gpu_specs_query"
     ],
     "user_context": "用户当前没有实例。",
     "tags": []

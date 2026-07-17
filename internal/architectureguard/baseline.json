@@ -418,14 +418,6 @@
       "value": "(评价|你觉得|怎么看|看法|意见|支持|反对|拥护|批评)"
     },
     {
-      "id": "b0459f46c599b03e",
-      "kind": "regex",
-      "path": "internal/knowledge/gpu_specs.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])(?:rtx\\s*)?4090[\\s_-]*48\\s*g(?:b)?(?:[^0-9a-z]|$)"
-    },
-    {
       "id": "3f455e55b3a1985b",
       "kind": "regex",
       "path": "internal/knowledge/grounded_validator.go",
@@ -1417,13 +1409,6 @@
       "kind": "string_heuristic",
       "path": "internal/knowledge/evidence_adapter.go",
       "symbol": "ValidateNoRawEvidenceLeak",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "c43684bc0b78b832",
-      "kind": "string_heuristic",
-      "path": "internal/knowledge/gpu_specs.go",
-      "symbol": "containsAny",
       "callee": "strings.Contains"
     },
     {
