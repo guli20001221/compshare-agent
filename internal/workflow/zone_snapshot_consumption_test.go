@@ -21,7 +21,7 @@ func TestWorkflowZonePlacement_PrefersSnapshotOverLegacyMaps(t *testing.T) {
 		"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 222},
 		"ZoneIsPods":    map[string]bool{"cn-bj2-03": false},
 	})
-	wfCtx.ReferenceData.ZoneCatalog = snap
+	wfCtx.referenceData.ZoneCatalog = snap
 
 	got, err := workflowZonePlacement(wfCtx, "cn-bj2-03")
 
@@ -62,7 +62,7 @@ func TestWorkflowZonePlacement_PresentSnapshotNeverFallsBackToMaps(t *testing.T)
 
 	t.Run("unavailable snapshot fails, does not read the map", func(t *testing.T) {
 		wfCtx := NewContext(legacyMaps)
-		wfCtx.ReferenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
+		wfCtx.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
 
 		_, err := workflowZonePlacement(wfCtx, "cn-bj2-03")
 		require.Error(t, err, "an unavailable catalog must refuse, not fall back to the map's 999")
@@ -70,7 +70,7 @@ func TestWorkflowZonePlacement_PresentSnapshotNeverFallsBackToMaps(t *testing.T)
 
 	t.Run("available snapshot missing the zone fails, does not read the map", func(t *testing.T) {
 		wfCtx := NewContext(legacyMaps)
-		wfCtx.ReferenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		wfCtx.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
 			{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", ZoneID: 2002}},
 		})
 
@@ -88,7 +88,7 @@ func TestNetOptimizerAzGroup_SnapshotIsAuthoritative(t *testing.T) {
 
 	// Snapshot present and resolving → its az_group, over a disagreeing map.
 	wfCtx := NewContext(map[string]any{"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
-	wfCtx.ReferenceData.ZoneCatalog = present
+	wfCtx.referenceData.ZoneCatalog = present
 	az, err := netOptimizerAzGroup(wfCtx, "cn-bj2-03")
 	require.NoError(t, err)
 	assert.Equal(t, uint32(3001), az)
@@ -101,13 +101,13 @@ func TestNetOptimizerAzGroup_SnapshotIsAuthoritative(t *testing.T) {
 
 	// Present but unavailable → error, never the map's 999.
 	down := NewContext(map[string]any{"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
-	down.ReferenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
+	down.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(false, nil)
 	_, err = netOptimizerAzGroup(down, "cn-bj2-03")
 	require.Error(t, err)
 
 	// Present but missing the zone → error, never the map's 999.
 	missing := NewContext(map[string]any{"ZoneRegionIds": map[string]uint32{"cn-bj2-03": 999}})
-	missing.ReferenceData.ZoneCatalog = present
+	missing.referenceData.ZoneCatalog = present
 	_, err = netOptimizerAzGroup(missing, "cn-nope-99")
 	require.Error(t, err)
 }

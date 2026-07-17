@@ -259,12 +259,16 @@ type Context struct {
 	// Runtime carries server-injected identity/trace lifted out of Params, so
 	// business params (and the confirm form / sealed digest) never mix them in.
 	Runtime RuntimeMetadata
-	// ReferenceData holds server-trusted read-only snapshots (the turn's zone
+	// referenceData holds server-trusted read-only snapshots (the turn's zone
 	// catalog) attached via a RunOption. It is set once on the fresh context and
 	// persists across confirm-form re-runs, yet — unlike Params — it never passes
 	// through deepCopyParams and is never captured by seal(), so it can neither
 	// alias into a selected placement nor enter the sealed contract.
-	ReferenceData ReferenceData
+	//
+	// It is private on purpose: read-only is a guarantee, not a convention. Step
+	// code reaches it only through ZoneCatalog(), so a step cannot swap the whole
+	// reference out from under the run.
+	referenceData ReferenceData
 	// sealed is set once the user confirms: the immutable snapshot the mutating
 	// step consumes. nil before confirmation.
 	sealed *SealedActionContract
@@ -296,7 +300,7 @@ func (c *Context) Sealed() *SealedActionContract { return c.sealed }
 // carries none. ZoneCatalogSnapshot's methods are nil-safe, so callers can chain
 // c.ZoneCatalog().Placement(...) without a guard — an absent catalog resolves
 // nothing, exactly as a failed fetch does.
-func (c *Context) ZoneCatalog() *deployment.ZoneCatalogSnapshot { return c.ReferenceData.ZoneCatalog }
+func (c *Context) ZoneCatalog() *deployment.ZoneCatalogSnapshot { return c.referenceData.ZoneCatalog }
 
 // Result returns the API result from a previous step, or nil.
 func (c *Context) Result(stepName string) map[string]any {

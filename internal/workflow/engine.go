@@ -43,7 +43,7 @@ type RunOption func(*Context)
 // the SAME snapshot — including confirm-form re-runs, which never re-fetch — yet
 // it is never copied into the sealed contract.
 func WithReferenceData(ref ReferenceData) RunOption {
-	return func(c *Context) { c.ReferenceData = ref }
+	return func(c *Context) { c.referenceData = ref }
 }
 
 // Run executes a workflow definition with the given initial parameters.
