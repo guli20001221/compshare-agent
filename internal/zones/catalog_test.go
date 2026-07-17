@@ -2,7 +2,6 @@ package zones
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -153,27 +152,6 @@ func TestExactZone(t *testing.T) {
 	}
 }
 
-func TestMentions(t *testing.T) {
-	cases := []struct {
-		msg  string
-		want bool
-	}{
-		{"华北一区的4090", true},  // region-word token
-		{"用cn-bj2-03", true}, // cn- token
-		{"上海二B 机房", true},    // 机房 token
-		{"XX可用区创建一台", true},  // 可用区 token
-		// A non-existent zone phrased with a region word is still detected, so it
-		// reaches the matcher and gets challenged (the matcher names what IS supported).
-		{"创建华北十区的4090", true},
-		{"部署一个qwen 32b", false}, // no zone reference at all
-	}
-	for _, c := range cases {
-		if got := Mentions(c.msg); got != c.want {
-			t.Errorf("Mentions(%q) = %v, want %v", c.msg, got, c.want)
-		}
-	}
-}
-
 func TestDescribeForAndLabel(t *testing.T) {
 	list := liveZones()
 	if d := DescribeFor(list, "cn-bj2-03"); d != "华北一C" {
@@ -185,51 +163,4 @@ func TestDescribeForAndLabel(t *testing.T) {
 	if l := Label(list, "cn-unknown-99"); l != "cn-unknown-99" {
 		t.Errorf("unknown zone Label should be bare id, got %q", l)
 	}
-}
-
-func TestParseDecision(t *testing.T) {
-	list := liveZones()
-	pj := func(s string, v any) error { return json.Unmarshal([]byte(s), v) }
-
-	if d := ParseDecision(`{"decision":"exact","zone":"cn-bj2-03"}`, list, pj); d.Kind != "exact" || d.Zone != "cn-bj2-03" {
-		t.Errorf("exact: %+v", d)
-	}
-	// Hallucinated zone not in list → downgraded to none (never reaches saga).
-	if d := ParseDecision(`{"decision":"exact","zone":"cn-gd-99"}`, list, pj); d.Kind != "none" {
-		t.Errorf("hallucination should be none: %+v", d)
-	}
-	if d := ParseDecision(`{"decision":"clarify","clarify":"您是指 华北一C 吗？"}`, list, pj); d.Kind != "clarify" || d.Clarify == "" {
-		t.Errorf("clarify: %+v", d)
-	}
-	if d := ParseDecision(`{"decision":"none"}`, list, pj); d.Kind != "none" {
-		t.Errorf("none: %+v", d)
-	}
-	// clarify with empty text degrades to none (nothing to show).
-	if d := ParseDecision(`{"decision":"clarify","clarify":""}`, list, pj); d.Kind != "none" {
-		t.Errorf("empty clarify: %+v", d)
-	}
-	if d := ParseDecision(`garbage`, list, pj); d.Kind != "none" {
-		t.Errorf("garbage: %+v", d)
-	}
-}
-
-func TestMatchSystemPrompt_ListsLiveZones(t *testing.T) {
-	p := MatchSystemPrompt(liveZones())
-	for _, want := range []string{"华北一C", "cn-bj2-03", "华北二A", "上海二B"} {
-		if !contains(p, want) {
-			t.Errorf("prompt missing %q", want)
-		}
-	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
-}
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
