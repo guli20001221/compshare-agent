@@ -15,7 +15,11 @@ import (
 // TestCreateResolveStepCallsNoTool is the first thing StepResolve promises. The
 // promise has teeth because the step's Resolve signature receives neither a
 // context.Context nor an executor — but a definition could still have declared
-// the draft as a tool step, so the run is what proves it.
+// the draft as a tool step, so the declaration is what this checks.
+//
+// Note the narrow scope: this says the step calls no TOOL. It does not say Resolve
+// is read-only — it holds the live Context and only Params is guarded. See
+// Step.Resolve.
 func TestCreateResolveStepCallsNoTool(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -160,6 +164,47 @@ func TestCapacityAndPriceConsumeTheDraft(t *testing.T) {
 			assert.Contains(t, err.Error(), "尚未形成执行草稿")
 		})
 	}
+}
+
+// TestCardPriceUnitFollowsTheDraftNotTheLiveParams closes the last hole in "the
+// card reads only the draft".
+//
+// The price TEXT's charge type was still re-normalised from Params
+// (createChargeType(wfCtx.Params)) while every other card value was projected from
+// the draft. On every real path the two agree, so nothing was visibly wrong and
+// the suite stayed green — which is exactly the shape of the card/create image
+// split this whole step exists to remove: agreement by habit, not by contract.
+//
+// Here Params says Month AFTER the draft resolved Postpay, and the price response
+// quotes BOTH. confirmPriceText selects its entry BY charge type, so a card
+// reading Params does not merely mislabel the unit — it shows ¥888.00/月 for an
+// instance the sealed contract will create as pay-as-you-go at ¥1.58/小时. The
+// user approves a monthly commitment they are not making, at a price that is not
+// theirs.
+//
+// Both entries are required for this test to mean anything: with only the Postpay
+// entry the lookup misses and the price merely goes blank, which is a different
+// (and much more obvious) bug than the one being pinned.
+func TestCardPriceUnitFollowsTheDraftNotTheLiveParams(t *testing.T) {
+	wfCtx := draftContext("cn-sh2-02")
+	wfCtx.StepResults["查询价格"] = map[string]any{"PriceDetails": []any{
+		map[string]any{"ChargeType": "Postpay", "Price": 1.58},
+		map[string]any{"ChargeType": "Month", "Price": 888.0},
+	}}
+	draft := runDraftStep(t, wfCtx)
+	args, _ := draftUpstreamArgs(draft)
+	require.Equal(t, "Postpay", args["ChargeType"], "the draft resolved the default charge type")
+
+	// Someone rewrites the request params after the draft was formed.
+	wfCtx.Params["ChargeType"] = "Month"
+
+	card, err := buildCreateConfirmArgs(wfCtx)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Postpay", card["ChargeType"], "the card's charge type comes from the draft")
+	assert.Equal(t, "¥1.58/小时", card["price"],
+		"the price must describe what was drafted and will be created, not a live param that moved")
+	assert.NotContains(t, card["price"], "888")
 }
 
 // TestCapacityAndPriceAskAboutTheDraftedZone: the draft's zone reaches both

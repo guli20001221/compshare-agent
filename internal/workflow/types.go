@@ -28,14 +28,21 @@ type Step struct {
 	ToolFunc    func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
 	BuildArgs   func(wfCtx *Context) (map[string]any, error)
 	CheckResult func(wfCtx *Context, result map[string]any) (bool, string)
-	// Resolve computes this step's result from the Context alone (StepResolve
-	// only); the result lands in StepResults exactly like a tool step's would.
+	// Resolve computes this step's result from the Context (StepResolve only); the
+	// result lands in StepResults exactly like a tool step's would.
 	//
-	// The signature is the guarantee, not a convention: no context.Context and no
-	// executor reach it, so it cannot call a tool or a model. It can only read
-	// what earlier steps established, which is what makes the step replayable
-	// from a trace. runResolveStep additionally rejects any Resolve that mutates
-	// Params — see StepResolve.
+	// What is actually guaranteed, and what is not:
+	//   - It receives no context.Context and no executor, so it cannot call a tool
+	//     or a model. That much IS structural.
+	//   - runResolveStep rejects any Resolve that mutates Params.
+	//   - It is NOT otherwise read-only. It holds the live *Context and could
+	//     still write StepResults, InitialParams or Runtime. Nothing stops it.
+	//
+	// So "pure" is a property of each Resolve today, not of the type. Before
+	// StepResolve is used outside the create draft, this should take a read-only
+	// snapshot (deep-copied Params + StepResults, Runtime by value) and return its
+	// result, rather than being handed the Context itself — then replayability
+	// from a trace would follow from the signature instead of from review.
 	Resolve func(wfCtx *Context) (map[string]any, error)
 	// SkipIf lets adaptive workflows omit a step once earlier context has made
 	// that choice unambiguous. nil preserves the legacy "always run" behavior.

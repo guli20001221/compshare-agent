@@ -127,10 +127,10 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 // doc claims — that the mutating step executes exactly what the user confirmed —
 // is only true when the hash covers the state the call is actually made on.
 //
-// Calling it here also covers the RevalidateSteps path (runConfirmStep re-runs
-// earlier steps through runToolStep directly, bypassing the Run loop). That path
-// is pre-seal today, where this is a no-op, but it is no longer an unguarded
-// write surface by construction rather than by luck.
+// Calling it here also covers the re-validation path (runConfirmStep re-runs
+// earlier steps through runToolStep directly, bypassing the Run loop — see
+// revalidateFrom). That path is pre-seal today, where this is a no-op, but it is
+// no longer an unguarded write surface by construction rather than by luck.
 func (e *Engine) verifySealedContract(step Step, i, total int, wfCtx *Context, result *Result) bool {
 	if wfCtx.sealed == nil || wfCtx.sealed.verifyDigest(wfCtx.Params) {
 		return true
@@ -143,10 +143,11 @@ func (e *Engine) verifySealedContract(step Step, i, total int, wfCtx *Context, r
 	return false
 }
 
-// runResolveStep executes one StepResolve: a pure computation over facts earlier
-// steps established, whose result lands in StepResults like a tool step's.
+// runResolveStep executes one StepResolve: a computation over facts earlier steps
+// established, whose result lands in StepResults like a tool step's. It calls no
+// tool, because no executor reaches a Resolve.
 //
-// It enforces the invariant that gives the step type its meaning: a resolve step
+// It enforces the one invariant that gives the step type its meaning: a resolve step
 // MUST NOT write Params. The check is a before/after digest, always on, rather
 // than the narrower "don't break a live seal" — because the two paths differ.
 // Under a live seal (the guided create runs this step after six選択 gates have
@@ -156,9 +157,11 @@ func (e *Engine) verifySealedContract(step Step, i, total int, wfCtx *Context, r
 // through unnoticed. An invariant that only holds on one of the two paths is not
 // an invariant.
 //
-// The rule is not fussiness about purity. Params is the set the user is being
-// asked to confirm; a resolve step writing into it would edit the question while
-// it is being asked.
+// The rule is not fussiness about purity — and it is not a general purity check
+// either: Resolve still holds the live Context and nothing here stops it writing
+// StepResults or Runtime (see Step.Resolve). Params specifically is the set the
+// user is being asked to confirm, so a resolve step writing into it would edit the
+// question while it is being asked. That is the one this guards.
 func (e *Engine) runResolveStep(step Step, i, total int, wfCtx *Context, result *Result) toolStepOutcome {
 	fail := func(msg string) toolStepOutcome {
 		e.emit(step.Name, i, total, StepResolve, "failed", "", nil, msg)
@@ -272,8 +275,8 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 //   - Legacy boolean gate (ConfirmFunc) — used whenever the richer gate or the
 //     step's BuildForm is absent. Byte-identical to the pre-form behavior.
 //   - Editable-form gate (ConfirmEditsFunc) — the user may confirm as-is, deny,
-//     or submit select-only field Overrides. Overrides re-run the step's
-//     RevalidateSteps (stock/price) with the new params and re-enter the
+//     or submit select-only field Overrides. Overrides re-run every step from
+//     the step's RevalidateFrom boundary with the new params and re-enter the
 //     confirm with a refreshed card+form (方案 A: never create on an
 //     unvalidated combination, never show a stale price), capped at
 //     maxConfirmEdits rounds.
@@ -282,7 +285,7 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 	// from an EARLIER gate is void from here. The guided create asks seven times
 	// (GPU, zone, card count, CPU/memory, purpose, image, final), and Run seals
 	// after each one; without this, a later card's edits would be measured against
-	// the seal an earlier card left behind, and its RevalidateSteps — which run
+	// the seal an earlier card left behind, and its re-validation — which runs
 	// through runToolStep, where the digest is now checked — would fail-stop on a
 	// change the user is in the middle of making legitimately.
 	//

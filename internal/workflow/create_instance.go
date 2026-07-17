@@ -1037,18 +1037,18 @@ const (
 
 // materializeCreateDraft resolves every derived create parameter ONCE — zone,
 // CPU/memory, card count, image id, charge type, minimal CPU platform, system
-// disks, placement — and returns the final upstream argument map, also storing it
-// under createDraftKey.
+// disks, placement — and RETURNS the draft. It stores nothing; see the note at the
+// end of this comment.
 //
 // This is the "form the CreateExecutionDraft" stage. Before it existed,
 // resolveTargetSpec ran TWICE: once in buildCreateConfirmArgs to render the card,
 // and again inside stepCreateInstance.BuildArgs to build the real API call — with
 // the seal in between, hashing only Params and therefore blind to both. The card
 // and the executed request agreed only because the function was pure and its
-// inputs happened to be frozen after the gate ("查询可用配比" is not in
-// RevalidateSteps). That was an accident of the call graph, not a contract, and
-// it covered Zone, CPU, Memory, GPU count, ImageId, ChargeType, MinimalCpuPlatform,
-// disks and placement alike.
+// inputs happened to be frozen after the gate (the old re-validation named only
+// the stock and price steps, so "查询可用配比" never re-ran). That was an accident
+// of the call graph, not a contract, and it covered Zone, CPU, Memory, GPU count,
+// ImageId, ChargeType, MinimalCpuPlatform, disks and placement alike.
 //
 // It runs as the createDraftStepName resolve step, BEFORE capacity and price, so
 // those two consume the same resolution the card shows and the create sends
@@ -1214,7 +1214,12 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	// it — never re-derived — so what is shown is what is sealed and executed. The
 	// image NAME comes from the draft's carried selection, not a second lookup:
 	// that is what stops the card naming one image while the create sends another.
-	// Only the price text is still resolved here (see the known gap on 查询价格).
+	//
+	// The price TEXT is part of that contract too, which is why its charge type is
+	// read off the draft rather than re-normalised from Params. The two agree on
+	// every path today, so nothing was visibly broken — but "the card reads only
+	// the draft" is either structural or it is a habit, and a habit is what the
+	// card/create image split already turned out to be.
 	return map[string]any{
 		"workflow":   "CreateInstanceWorkflow",
 		"GpuType":    args["GpuType"],
@@ -1225,7 +1230,7 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 		"ZoneLabel":  zoneDisplayLabel(wfCtx.Params, zone),
 		"ChargeType": args["ChargeType"],
 		"image":      draftImage(draft).Name,
-		"price":      confirmPriceText(wfCtx.Result("查询价格"), createChargeType(wfCtx.Params)),
+		"price":      confirmPriceText(wfCtx.Result("查询价格"), paramStr(args, "ChargeType", "")),
 		// FallbackNote is set by the deploy_model handler when it switched the
 		// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
 		// Surfaced in the confirm card so the user sees the zone switch before
