@@ -43,12 +43,15 @@ resurfaces.
 
 ## First read-only tool→skill candidates (ranked)
 
-1. **`CheckCompShareNetOptimizer`** — maps to a real, documented user complaint ("网速怎么这么慢" → "开下网络加速"); read-only; already L0-internal so it only needs LLM exposure + a fast skill + an `eval/skill` case. **Recommended first.**
+1. **`CheckCompShareNetOptimizer`** — maps to a real, documented user complaint ("网速怎么这么慢" → "开下网络加速"); read-only; already L0-internal so it only needs a read-capability vertical. **Recommended first.**
 2. **`DescribeModelRepositoryModels` + `DescribeModelRepositoryTags`** — model-repository browse; clean params; pairs naturally into one skill.
 3. **`DescribeCompShareImageTags`** — image catalog/tag browse.
 
-Each lands as: register tool (LLM-exposed) → fast-tier handler/skill (intent + `SKILL.md`) →
-**its `eval/skill` case** (with the now-mandatory expected-tool / no-extra-tool / arg pins).
+Each lands as one `ReadCapabilitySpec` vertical under `internal/capability`: the typed request
+struct, its `schemaNode` field contract, its handler and renderer, an entry in `ReadDefinitions()`
+(`read_catalog.go`), and **its own `read_<name>_test.go`** driving `NewReadCapability(...).Run`.
+There is no separate route manifest or offline skill-eval case: P6 deleted the intent-route stack,
+and the per-vertical test is the gate.
 
 After the first read-only expansion, the higher-value branch is likely **write-workflow
 templates**, not more narrow read-only browsing: disk attach/create first, then custom-image
