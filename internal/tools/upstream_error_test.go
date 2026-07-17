@@ -9,9 +9,12 @@ import (
 
 // TestUpstreamAPIError_ErrorStringByteIdentical is the coupling guard: the
 // Error() string MUST stay byte-identical to the historical flat format, because
-// engine.isImageUnavailableMessage keys off the "230"+"CompShareImageId"
-// substrings and saga step wrappers embed it via %v. If this drifts, zone-image
-// auto-recovery silently breaks.
+// saga step wrappers embed it via %v and that text reaches user-facing narration.
+//
+// It no longer guards zone-image auto-recovery: that now classifies on the typed
+// Code (engine.isImageUnavailableError), so it cannot break if this string drifts.
+// The cases below stay because the format is still a real output contract, not
+// because a classifier greps it.
 func TestUpstreamAPIError_ErrorStringByteIdentical(t *testing.T) {
 	cases := []struct {
 		code int
@@ -29,10 +32,11 @@ func TestUpstreamAPIError_ErrorStringByteIdentical(t *testing.T) {
 		}
 	}
 
-	// The exact string the create-image recovery matches on must round-trip.
-	const recoveryMatch = "API error (RetCode=230): Params [CompShareImageId] not available"
-	if got := NewUpstreamAPIError(230, "Params [CompShareImageId] not available").Error(); got != recoveryMatch {
-		t.Fatalf("recovery-coupling string drifted: %q", got)
+	// The 230 image rejection still round-trips its historical text, which is what
+	// the user-facing narration path carries. Recovery keys off Code, not this.
+	const imageRejection = "API error (RetCode=230): Params [CompShareImageId] not available"
+	if got := NewUpstreamAPIError(230, "Params [CompShareImageId] not available").Error(); got != imageRejection {
+		t.Fatalf("230 image-rejection string drifted: %q", got)
 	}
 }
 

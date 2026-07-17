@@ -10,10 +10,15 @@ import (
 // CompShare response carries a non-zero RetCode.
 //
 // Its Error() string is BYTE-IDENTICAL to the historical flat format
-// ("API error (RetCode=N): MSG"), so every existing string-matching consumer is
-// unaffected — most importantly engine.isImageUnavailableMessage, which keys off
-// the "230"+"CompShareImageId" substrings to trigger zone-image auto-recovery,
-// and the saga step wrappers that embed %v. Do NOT change Error()'s format.
+// ("API error (RetCode=N): MSG"), because the saga step wrappers embed it via %v
+// and that text reaches user-facing narration. Do NOT change Error()'s format.
+//
+// Classification, however, must NOT go through this string. Callers deciding what
+// to DO about a failure read the typed fields: engine.isImageUnavailableError
+// checks Code == 230 as an integer. It used to grep Error() for the "230" and
+// "CompShareImageId" substrings, which matched any "230" anywhere in the sentence
+// (a memory size, a byte count, part of an id) and could trigger an image swap on
+// an unrelated failure.
 //
 // Hint carries optional recovery guidance (P0 阶段1B). It is NOT part of Error()
 // and is surfaced to the model/user separately, so reading it can never leak the

@@ -34,12 +34,12 @@
       "value": "\\n{3,}"
     },
     {
-      "id": "bf39e60f88e53bda",
+      "id": "7dfcdbd9b11fbf33",
       "kind": "regex",
       "path": "internal/engine/engine.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
-      "value": "(?:\\b\\d{1,2}:\\d{2}\\b|\\d{1,2}点(?:\\d{1,2}分)?)\\s*(?:~|-|到|至)\\s*(?:\\b\\d{1,2}:\\d{2}\\b|\\d{1,2}点(?:\\d{1,2}分)?)"
+      "value": "(?:(\\d{4}-\\d{2}-\\d{2})[\\s,，]*)?((?:\\b\\d{1,2}:\\d{2}\\b|\\d{1,2}点(?:\\d{1,2}分)?)\\s*(?:~|-|到|至)\\s*(?:\\b\\d{1,2}:\\d{2}\\b|\\d{1,2}点(?:\\d{1,2}分)?))"
     },
     {
       "id": "7d2a2e0c5ebfcc81",
@@ -48,14 +48,6 @@
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "RetCode=(\\d+)\\)?(?::)?\\s*(.*)"
-    },
-    {
-      "id": "9cf61e7c536028fe",
-      "kind": "regex",
-      "path": "internal/engine/engine.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "\\d{4}-\\d{2}-\\d{2}"
     },
     {
       "id": "766b711da7f15b08",
@@ -870,18 +862,10 @@
       "callee": "strings.HasPrefix"
     },
     {
-      "id": "af1ae6e165771d8b",
+      "id": "85feb660b9793a35",
       "kind": "string_heuristic",
       "path": "internal/engine/create_image_recovery.go",
-      "symbol": "isImageUnavailableMessage",
-      "callee": "strings.Contains",
-      "value": "230"
-    },
-    {
-      "id": "680d59f8758cc97b",
-      "kind": "string_heuristic",
-      "path": "internal/engine/create_image_recovery.go",
-      "symbol": "isImageUnavailableMessage",
+      "symbol": "isImageUnavailableError",
       "callee": "strings.Contains",
       "value": "CompShareImageId"
     },

@@ -143,9 +143,19 @@ const (
 // decision point when the priority chain grows beyond this narrow bridge set.
 
 var (
-	beijingZone  = time.FixedZone("CST", 8*3600)
-	isoDateRE    = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
-	clockRangeRE = regexp.MustCompile(`(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)`)
+	beijingZone = time.FixedZone("CST", 8*3600)
+	// monitorWindowRE matches a monitor-window statement: a clock range, with the
+	// ISO date that immediately precedes it captured as an optional group.
+	//
+	// The date is deliberately anchored to the clock range rather than matched on
+	// its own. A bare `\d{4}-\d{2}-\d{2}` rewrite hit EVERY date in the finished
+	// answer, so a reply that also mentioned an instance's creation or expiry date
+	// had that date silently overwritten with the monitor window's date — turning a
+	// correct fact into a false one. Failing to correct a date the model got wrong
+	// leaves a model error as a model error; rewriting an unrelated correct date
+	// manufactures a new one, which is strictly worse. Only "<date> <clock range>"
+	// is a window statement, so only that pair is rewritten.
+	monitorWindowRE = regexp.MustCompile(`(?:(\d{4}-\d{2}-\d{2})[\s,，]*)?((?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?))`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -2595,10 +2605,9 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		// P0 阶段1B: attach a recovery hint for known upstream RetCodes so the model
 		// self-corrects (change zone/region/image, back off) instead of blindly
 		// retrying the same failing call — the codebase's recorded create-failure
-		// root cause. The hint is carried out-of-band on the typed error (Error()
-		// is unchanged, so isImageUnavailableMessage and saga string matches are
-		// unaffected) and never contains the raw upstream tokens, so surfacing it
-		// cannot leak them into the reply.
+		// root cause. The hint is carried out-of-band on the typed error and never
+		// contains the raw upstream tokens, so surfacing it cannot leak them into
+		// the reply.
 		if apiErr, ok := tools.UpstreamAPIErrorFrom(err); ok && apiErr.Hint != "" {
 			errMsg += "\n建议：" + apiErr.Hint
 		}
@@ -3477,13 +3486,16 @@ func (e *Engine) guardMonitorTemporalFinalReply(content string) string {
 	endAt := time.Unix(e.currentMonitorEnd, 0).In(beijingZone)
 	targetDate := startAt.Format("2006-01-02")
 	targetTimeRange := fmt.Sprintf("%s ~ %s", startAt.Format("15:04"), endAt.Format("15:04"))
-	corrected := isoDateRE.ReplaceAllStringFunc(content, func(date string) string {
-		if date == targetDate {
-			return date
+	corrected := monitorWindowRE.ReplaceAllStringFunc(content, func(window string) string {
+		// Group 1 is the date, present only when it directly precedes the clock
+		// range. When it is absent the statement carries no date to correct, so
+		// none is injected — the reply keeps whatever surrounding prose it had.
+		sub := monitorWindowRE.FindStringSubmatch(window)
+		if sub == nil || sub[1] == "" {
+			return targetTimeRange
 		}
-		return targetDate
+		return targetDate + " " + targetTimeRange
 	})
-	corrected = clockRangeRE.ReplaceAllString(corrected, targetTimeRange)
 	replacements := map[string]string{
 		"当前实时监控":  "该历史时间窗监控",
 		"当前监控":    "该历史时间窗监控",
@@ -3867,7 +3879,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// grounded — on a no-match it lists the REAL available types, and on sold-out it
 	// names the exact spec — so return it deterministically and skip narration.
 	if !result.Success && action == "CreateInstanceWorkflow" {
-		reply := e.createFailureReplyWithAlternatives(ctx, result.Message, finalParams)
+		reply := e.createFailureReplyWithAlternatives(ctx, result.Message, result.Err, finalParams)
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
 		return finalReplyPrefix + reply
 	}
@@ -4027,17 +4039,21 @@ func workflowSecretValues(args map[string]any) []string {
 // (available types, sold-out spec, etc.).
 var workflowStepPrefixRE = regexp.MustCompile(`^步骤「[^」]*」(?:参数构建失败|执行失败)[：:]\s*`)
 
-// createWorkflowFailureReply turns a failed CreateInstanceWorkflow result message
-// into a deterministic, user-facing reply. It is deliberately NOT run through the
-// LLM (see the call site): the workflow message is already grounded, and narration
+// createWorkflowFailureReply turns a failed CreateInstanceWorkflow result into a
+// deterministic, user-facing reply. It is deliberately NOT run through the LLM
+// (see the call site): the workflow message is already grounded, and narration
 // has been observed to fabricate availability/下架 claims.
-func createWorkflowFailureReply(message string) string {
+//
+// err is the workflow's typed cause (Result.Err), nil for failures we raise
+// ourselves from a successful upstream response. message stays the source for
+// our own grounded sentences; err is what classifies upstream rejections.
+func createWorkflowFailureReply(message string, err error) string {
 	// When the chosen image isn't available in the resolved zone, the raw
 	// upstream error ("API error (RetCode=230): Params [CompShareImageId] not
 	// available") is cryptic. The recovery above already tried to swap in an
 	// available image; reaching here means none was creatable, so give honest,
 	// actionable guidance rather than leaking the error code.
-	if isImageUnavailableMessage(message) {
+	if isImageUnavailableError(err) {
 		return "抱歉，创建实例没有成功：您指定的镜像在当前可用区暂不可用。请更换镜像名称重试，或在控制台创建页选择该可用区支持的镜像。"
 	}
 	if deployment.ClassifyCreateFailure(message).Kind == deployment.FailureImageZoneNotAdapted {
@@ -4067,8 +4083,8 @@ func isCreateStockShortage(message string) bool {
 // no model/image constraint, so it lists the currently-offered cards
 // (strongest-first, excluding the sold-out one). Falls back to the plain reply
 // when nothing else is offered or the availability query fails.
-func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message string, args map[string]any) string {
-	reply := createWorkflowFailureReply(message)
+func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message string, err error, args map[string]any) string {
+	reply := createWorkflowFailureReply(message, err)
 	if !isCreateStockShortage(message) {
 		return reply
 	}

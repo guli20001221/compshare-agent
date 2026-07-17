@@ -124,6 +124,22 @@ type Result struct {
 	// secret-bearing confirmed params); the engine reads it to narrate results
 	// and recover from the exact confirmed params instead of stale input.
 	Contract *SealedActionContract `json:"-"`
+	// Err is the error that stopped this workflow, unflattened, or nil. Message
+	// keeps the human sentence; Err keeps the typed cause, so a caller deciding
+	// what to DO about a failure can read the upstream error's fields instead of
+	// grepping the sentence. (createImageUnavailable used to match "230" and
+	// "CompShareImageId" as substrings of Message — an unanchored match that any
+	// "230" anywhere in the text could trip.)
+	//
+	// It is deliberately NOT set for failures we raise ourselves from a SUCCESSFUL
+	// upstream response, e.g. the capacity gate's "库存不足" (CheckResult): those
+	// have no upstream error and must not be mistaken for one.
+	//
+	// Server-internal (json:"-"): the model must never see the raw upstream tokens
+	// ("RetCode=230" / "not available"), which the reply_not_contains eval gate
+	// forbids — see internal/tools/upstream_error.go. This field adds no bytes to
+	// the model-facing payload.
+	Err error `json:"-"`
 }
 
 // StepSummary records one step's outcome.

@@ -406,6 +406,17 @@ func syncEventForReason(reason RefreshReason) SyncEvent {
 	}
 }
 
+// invalidatesRegistry reports whether a completed action changed something this
+// registry caches, and therefore must force a re-Describe rather than serve the
+// snapshot taken before it ran.
+//
+// The bar is "does the action mutate a field of InstanceSnapshot", not "is the
+// action a write" — ResetPassword and CreateCustomImage are writes that change
+// nothing this cache holds, so they deliberately stay out. Every registered
+// workflow must be classified one way or the other; TestEveryWorkflowActionIsClassifiedForInvalidation
+// fails when a new one is added and nobody decides, because the failure mode of
+// forgetting is silent (a stale snapshot served for up to
+// DefaultRegistryFreshnessTTL), not loud.
 func invalidatesRegistry(action string) bool {
 	switch action {
 	case "CreateCompShareInstance",
@@ -421,7 +432,13 @@ func invalidatesRegistry(action string) bool {
 		"UpdateCompShareStopScheduler",
 		"DeleteCompShareStopScheduler",
 		"SetStopSchedulerWorkflow",
-		"CancelStopSchedulerWorkflow":
+		"CancelStopSchedulerWorkflow",
+		// Resize rewrites GPU/GpuType/CPU/Memory and Reinstall rewrites
+		// OsType/ImageType — all InstanceSnapshot fields. Both were absent here
+		// while being registered workflows, so a resize or reinstall left the
+		// cache serving the pre-change spec.
+		"ResizeInstanceWorkflow",
+		"ReinstallInstanceWorkflow":
 		return true
 	default:
 		return false

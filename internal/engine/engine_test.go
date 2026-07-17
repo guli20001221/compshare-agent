@@ -650,6 +650,32 @@ func TestGuardMonitorTemporalFinalReplyCorrectsChineseClockRangeWording(t *testi
 	assert.NotContains(t, reply, "2025-06-30")
 }
 
+// TestGuardMonitorTemporalFinalReplyLeavesUnrelatedDatesAlone pins the boundary
+// the temporal guard must not cross: it may correct the window the model stated
+// for the monitor data, and nothing else. The guard used to rewrite every ISO
+// date in the finished answer to the monitor window's date, so an answer that
+// also mentioned the instance's creation date shipped that date REWRITTEN — a
+// correct fact turned into a false one by the very code meant to keep the reply
+// truthful. Correcting a wrong window is worth doing; manufacturing a wrong
+// creation date to do it is not.
+func TestGuardMonitorTemporalFinalReplyLeavesUnrelatedDatesAlone(t *testing.T) {
+	eng := NewWithDeps(nil, nil, nil)
+	eng.currentMonitorWindow = true
+	eng.currentMonitorStart = 1777442400
+	eng.currentMonitorEnd = 1777444200
+
+	reply := eng.guardMonitorTemporalFinalReply(
+		"该实例创建于 2026-01-15，到期时间 2027-03-20。历史监控显示 2025-06-30 13:00 ~ 13:30 CPU 42%")
+
+	// The window statement is still corrected.
+	assert.Contains(t, reply, "2026-04-29")
+	assert.Contains(t, reply, "14:00 ~ 14:30")
+	assert.NotContains(t, reply, "2025-06-30")
+	// The dates that were never about the monitor window survive untouched.
+	assert.Contains(t, reply, "2026-01-15", "instance creation date must not be rewritten to the monitor date")
+	assert.Contains(t, reply, "2027-03-20", "expiry date must not be rewritten to the monitor date")
+}
+
 func TestChat_ClearHistoricalMonitorQuestionMayUseReActHistoryTool(t *testing.T) {
 	cases := []string{
 		"\u770b\u6628\u5929 8\u70b9\u523010\u70b9 CPU \u76d1\u63a7",

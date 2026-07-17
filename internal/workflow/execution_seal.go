@@ -70,6 +70,12 @@ func (c SealedActionContract) verifyDigest(params map[string]any) bool {
 	return paramsDigest(params) == c.Digest
 }
 
+// unseal voids the current contract. It is called when the workflow re-enters a
+// confirmation gate: at that moment the user is being asked again, so no set of
+// params is currently confirmed and there is nothing to hold anyone to. Sealing
+// is per-gate, not per-workflow — see runConfirmStep.
+func (c *Context) unseal() { c.sealed = nil }
+
 // seal freezes the confirmed draft (the current business Params + Runtime) into
 // an immutable contract stored on the context. sealDraft deep-copies the params,
 // so the frozen record is independent of the live Params: a later write to

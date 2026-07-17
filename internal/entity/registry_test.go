@@ -8,9 +8,50 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestEveryWorkflowActionIsClassifiedForInvalidation forces a decision for every
+// registered workflow: it either invalidates this cache or it is listed below as
+// deliberately not invalidating. It exists because forgetting is silent — a
+// workflow that mutates an InstanceSnapshot field but is missing from
+// invalidatesRegistry leaves the cache serving the pre-change value for up to
+// DefaultRegistryFreshnessTTL, with nothing red and no user-visible error. That
+// is exactly how ResizeInstanceWorkflow and ReinstallInstanceWorkflow (which
+// rewrite GPU/GpuType/CPU/Memory and OsType/ImageType respectively) were both
+// registered as workflows yet absent from the invalidation set.
+//
+// workflow.RegisteredWorkflowActions() is the source of truth on purpose: a
+// hardcoded copy of the list here would drift the same way the thing it guards
+// drifted. Adding a workflow fails this test until its author states which side
+// it is on.
+func TestEveryWorkflowActionIsClassifiedForInvalidation(t *testing.T) {
+	// Writes that change nothing this registry caches. Each needs a reason, not
+	// just an entry — "it is a write" is not why it belongs here.
+	deliberatelyNotInvalidating := map[string]string{
+		"ResetPasswordWorkflow":      "changes the login password; no InstanceSnapshot field holds it",
+		"CreateCustomImageWorkflow":  "creates a new image from the instance; the instance itself is unchanged",
+		"CreateDiskWorkflow":         "attaches a data disk; InstanceSnapshot carries no disk fields",
+		"ResizeDiskWorkflow":         "resizes a data disk; InstanceSnapshot carries no disk fields",
+		"EnableNetOptimizerWorkflow": "network accelerator state is not part of InstanceSnapshot",
+		"CreateCFSWorkflow":          "CFS is a separate resource; no InstanceSnapshot field changes",
+		"ResizeCFSWorkflow":          "CFS is a separate resource; no InstanceSnapshot field changes",
+	}
+
+	for _, action := range workflow.RegisteredWorkflowActions() {
+		t.Run(action, func(t *testing.T) {
+			invalidates := invalidatesRegistry(action)
+			_, exempt := deliberatelyNotInvalidating[action]
+			require.NotEqual(t, invalidates, exempt,
+				"workflow %q is unclassified for cache invalidation: either add it to invalidatesRegistry "+
+					"(if it mutates a field of InstanceSnapshot: %s) or record here why it does not. "+
+					"Leaving it out silently serves a stale snapshot.",
+				action, "UHostId/Name/State/OsType/GPU/GpuType/ImageType/CPU/Memory/Zone/Region/ChargeType/ExpireTime/AutoRenew")
+		})
+	}
+}
 
 func TestResolveByID_Statuses(t *testing.T) {
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
@@ -402,6 +443,11 @@ func TestNeedsRefreshAndInvalidationWhitelist(t *testing.T) {
 		"DeleteCompShareStopScheduler",
 		"SetStopSchedulerWorkflow",
 		"CancelStopSchedulerWorkflow",
+		// Resize rewrites GPU/GpuType/CPU/Memory; Reinstall rewrites
+		// OsType/ImageType. Both are InstanceSnapshot fields, so both must force
+		// a re-Describe instead of serving the spec from before the change.
+		"ResizeInstanceWorkflow",
+		"ReinstallInstanceWorkflow",
 	}
 	for _, action := range invalidateActions {
 		t.Run(action, func(t *testing.T) {

@@ -66,12 +66,8 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 
 		switch step.Type {
 		case StepToolCall:
-			// Once the user has confirmed, a mutating step must run on exactly the
-			// sealed params. A digest mismatch means a confirmed field was rewritten
-			// after the gate — fail-stop rather than act on unconfirmed params.
-			if !e.verifySealedContract(step, i, total, wfCtx, result) {
-				return result, nil
-			}
+			// The seal is enforced inside runToolStep, after BuildArgs — see
+			// verifySealedContract for why the check cannot live here.
 			if e.runToolStep(ctx, step, i, total, wfCtx, result) == toolStepFailed {
 				return result, nil
 			}
@@ -94,12 +90,29 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 	return result, nil
 }
 
-// verifySealedContract enforces the seal before a post-confirmation tool step.
+// verifySealedContract enforces the seal for a post-confirmation tool step.
 // Before the confirmation gate (no seal yet) it is a no-op. After the gate, the
 // live business params must still hash to the sealed digest; a mismatch means
 // something rewrote a confirmed field after the user approved it, so the
 // workflow fail-stops rather than executing on unconfirmed params. Returns true
 // to proceed.
+//
+// It MUST be called from inside runToolStep, after step.BuildArgs and before the
+// executor call, and this is the whole point rather than an implementation
+// detail. It used to run in the Run loop BEFORE runToolStep, so it hashed the
+// params as they were before BuildArgs — which is not what the call it guards
+// executes on. A step whose own BuildArgs rewrote a confirmed param therefore
+// passed its own check and made its call on the rewritten value; only the NEXT
+// tool step's check noticed. For CreateInstanceWorkflow the write IS the last
+// mutating step (only an Optional read-back follows), so "the next step catches
+// it" meant "the instance already exists". The guarantee this function's own
+// doc claims — that the mutating step executes exactly what the user confirmed —
+// is only true when the hash covers the state the call is actually made on.
+//
+// Calling it here also covers the RevalidateSteps path (runConfirmStep re-runs
+// earlier steps through runToolStep directly, bypassing the Run loop). That path
+// is pre-seal today, where this is a no-op, but it is no longer an unguarded
+// write surface by construction rather than by luck.
 func (e *Engine) verifySealedContract(step Step, i, total int, wfCtx *Context, result *Result) bool {
 	if wfCtx.sealed == nil || wfCtx.sealed.verifyDigest(wfCtx.Params) {
 		return true
@@ -145,6 +158,13 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 		return toolStepFailed
 	}
 
+	// Enforce the seal AFTER BuildArgs and before the call: BuildArgs reads
+	// wfCtx.Params, and may write them, so a check that ran before it could not
+	// see what this very call is about to execute on.
+	if !e.verifySealedContract(step, i, total, wfCtx, result) {
+		return toolStepFailed
+	}
+
 	e.emit(step.Name, i, total, StepToolCall, "running", toolName, args, "")
 
 	apiResult, err := e.executor.Execute(ctx, toolName, args)
@@ -156,6 +176,9 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 		}
 		result.StoppedAt = step.Name
 		result.Message = fmt.Sprintf("步骤「%s」执行失败: %v", step.Name, err)
+		// Keep the typed cause alongside the flattened sentence so callers can
+		// classify the failure by its fields instead of by substrings of Message.
+		result.Err = err
 		return toolStepFailed
 	}
 
@@ -192,6 +215,19 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 //     unvalidated combination, never show a stale price), capped at
 //     maxConfirmEdits rounds.
 func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step, i, total int, wfCtx *Context, result *Result) bool {
+	// Entering a confirmation gate means nothing is confirmed yet, so any seal
+	// from an EARLIER gate is void from here. The guided create asks seven times
+	// (GPU, zone, card count, CPU/memory, purpose, image, final), and Run seals
+	// after each one; without this, a later card's edits would be measured against
+	// the seal an earlier card left behind, and its RevalidateSteps — which run
+	// through runToolStep, where the digest is now checked — would fail-stop on a
+	// change the user is in the middle of making legitimately.
+	//
+	// The seal's lifetime is therefore exactly: from a PASSED gate to the next
+	// gate or the end of the workflow. That is the window in which "the user
+	// confirmed these params" is a true statement.
+	wfCtx.unseal()
+
 	failStop := func(msg string) bool {
 		e.emit(step.Name, i, total, StepConfirm, "failed", "", nil, msg)
 		result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})

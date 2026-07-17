@@ -5,19 +5,72 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestIsImageUnavailableMessage locks WHICH create failures are eligible for the
+// TestIsImageUnavailableError locks WHICH create failures are eligible for the
 // zone-image recovery: only the upstream "image not available in this zone" 230,
 // never sold-out stock / balance / other failures (those have different remedies
 // and must keep their existing grounded replies).
-func TestIsImageUnavailableMessage(t *testing.T) {
-	assert.True(t, isImageUnavailableMessage("步骤「检查库存」执行失败: API error (RetCode=230): Params [CompShareImageId] not available"))
-	assert.False(t, isImageUnavailableMessage("4090 1 卡当前库存不足（售罄），请换一个规格或稍后再试。"))
-	assert.False(t, isImageUnavailableMessage("API error (RetCode=400): insufficient balance"))
-	assert.False(t, isImageUnavailableMessage(""))
+//
+// These are the same four cases this test has always made, restated against the
+// typed cause now that the classifier reads Result.Err instead of grepping
+// Result.Message. The sold-out case is the one that changes shape and it is worth
+// naming: 库存不足 is raised by OUR capacity gate from a SUCCESSFUL upstream
+// response, so it carries no upstream error at all — it is ineligible because
+// there is no error to classify, which is a stronger reason than its text not
+// matching.
+func TestIsImageUnavailableError(t *testing.T) {
+	assert.True(t, isImageUnavailableError(tools.NewUpstreamAPIError(230, "Params [CompShareImageId] not available")),
+		"the upstream image-not-available rejection is the one recoverable case")
+	assert.False(t, isImageUnavailableError(nil),
+		"sold-out stock comes from our own capacity gate on a successful response: no upstream error, not recoverable")
+	assert.False(t, isImageUnavailableError(tools.NewUpstreamAPIError(400, "insufficient balance")),
+		"a balance failure needs a different remedy than swapping the image")
+	assert.False(t, isImageUnavailableError(fmt.Errorf("dial tcp: connection refused")),
+		"a transport error carries no RetCode and must not be read as an image rejection")
+}
+
+// TestIsImageUnavailableErrorIsAnchoredToTheCode is the regression that the
+// substring form could not make. It used to be enough for "230" and
+// "CompShareImageId" to appear ANYWHERE in the flattened message, so a failure
+// about a different param whose text merely mentioned a 230-containing number and
+// the image field triggered an image swap and a whole re-run of the create.
+// Reading Code as an int makes "contains 230" and "is 230" different questions.
+func TestIsImageUnavailableErrorIsAnchoredToTheCode(t *testing.T) {
+	assert.False(t, isImageUnavailableError(
+		tools.NewUpstreamAPIError(400, "memory 23040 MB is invalid for CompShareImageId img-abc")),
+		"a 400 whose text merely contains 230 (inside 23040) is not an image-unavailable rejection")
+	assert.False(t, isImageUnavailableError(
+		tools.NewUpstreamAPIError(230, "Params [Zone] not available")),
+		"a genuine 230 about a DIFFERENT param must not swap the image")
+}
+
+// TestCreateImageUnavailableReadsTypedCauseNotMessage pins the boundary at the
+// level the recovery actually calls: a workflow Result. The sold-out failure and
+// the image rejection can carry text that overlaps; only the typed cause
+// separates them.
+func TestCreateImageUnavailableReadsTypedCause(t *testing.T) {
+	imageRejected := &workflow.Result{
+		Success:   false,
+		StoppedAt: "检查库存",
+		Message:   "步骤「检查库存」执行失败: API error (RetCode=230): Params [CompShareImageId] not available",
+		Err:       tools.NewUpstreamAPIError(230, "Params [CompShareImageId] not available"),
+	}
+	assert.True(t, createImageUnavailable(imageRejected))
+
+	soldOut := &workflow.Result{
+		Success:   false,
+		StoppedAt: "检查库存",
+		Message:   "4090 1 卡当前库存不足（售罄），请换一个规格或稍后再试。",
+	}
+	assert.False(t, createImageUnavailable(soldOut), "our own capacity gate sets no Err and must not trigger image recovery")
+
+	assert.False(t, createImageUnavailable(&workflow.Result{Success: true}), "a successful create is never recovered")
+	assert.False(t, createImageUnavailable(nil))
 }
 
 // TestRankCreateImageCandidates locks the recovery's image-selection intent: a
@@ -84,7 +137,13 @@ func (m *recoveryMockExecutor) Execute(_ context.Context, action string, args ma
 		}}, nil
 	case "CheckCompShareResourceCapacity":
 		if id, _ := args["CompShareImageId"].(string); id == "img-bad" {
-			return nil, fmt.Errorf("API error (RetCode=230): Params [CompShareImageId] not available")
+			// This mock stands in for ExternalExecutor, which returns a TYPED
+			// *UpstreamAPIError on any non-zero upstream RetCode (tools/external.go:220).
+			// It used to hand back a bare fmt.Errorf whose text merely imitated that
+			// error — enough to satisfy the old substring classifier, but not the
+			// thing production actually produces. A fixture that forges the text of a
+			// typed error tests the forgery, not the code path.
+			return nil, tools.NewUpstreamAPIError(230, "Params [CompShareImageId] not available")
 		}
 		return map[string]any{"Specs": []any{
 			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 )
 
@@ -13,21 +14,48 @@ import (
 // API. Ordered by keyword relevance, so the most likely match is probed first.
 const maxCreateRecoveryProbes = 8
 
-// isImageUnavailableMessage reports whether a failed workflow message is the
+// isImageUnavailableError reports whether a failed workflow's cause is the
 // upstream "image not available in this zone" rejection — RetCode=230 on
 // CheckCompShareResourceCapacity ("Params [CompShareImageId] not available").
 // Platform images are zone-blind at query time (DescribeCompShareImages has no
 // Zone param), so a name-matched image can simply be absent from the resolved
 // create-zone; the capacity precheck is the only signal we get.
-func isImageUnavailableMessage(msg string) bool {
-	return strings.Contains(msg, "230") && strings.Contains(msg, "CompShareImageId")
+//
+// The code is read off the typed error rather than matched in the message text.
+// The previous form, strings.Contains(msg, "230") && strings.Contains(msg,
+// "CompShareImageId"), was unanchored on both halves: any "230" anywhere in the
+// sentence satisfied it — a memory size, a byte count, a substring of an id — so
+// an unrelated failure whose text happened to mention the image param could
+// trigger an image swap and re-run.
+//
+// The param name is still checked, and that is not laziness: upstream shares 230
+// between CodeParamsError and CodeParamsConflictError (uhost-compshare-api
+// internal/errors/code.go), with a generic "Params [%s] not available" body, so
+// the code alone does not identify WHICH param was rejected. Matching the typed
+// Message (the upstream body, not our wrapped sentence) is the narrowest signal
+// available.
+func isImageUnavailableError(err error) bool {
+	apiErr, ok := tools.UpstreamAPIErrorFrom(err)
+	if !ok {
+		return false
+	}
+	return apiErr.Code == upstreamParamsRejectedCode && strings.Contains(apiErr.Message, "CompShareImageId")
 }
+
+// upstreamParamsRejectedCode is upstream's params-rejected RetCode. It is shared
+// by several param errors, so it is necessary but not sufficient to identify an
+// image rejection — see isImageUnavailableError.
+const upstreamParamsRejectedCode = 230
 
 // createImageUnavailable reports whether a CreateInstanceWorkflow result failed
 // specifically because the chosen platform image is not available in the
 // resolved zone (vs. sold-out stock, insufficient balance, etc.).
+//
+// Note it reads Result.Err, not Result.Message: a failure we raise ourselves from
+// a successful upstream response (the capacity gate's "库存不足") carries no Err
+// and is correctly not eligible for image recovery — it needs a different remedy.
 func createImageUnavailable(result *workflow.Result) bool {
-	return result != nil && !result.Success && isImageUnavailableMessage(result.Message)
+	return result != nil && !result.Success && isImageUnavailableError(result.Err)
 }
 
 type createImageCand struct {
