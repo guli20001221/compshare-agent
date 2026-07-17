@@ -3616,9 +3616,9 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// A user-named availability zone is resolved BEFORE this point, by the action
 	// resolver's CodecZone against the live catalog (an exact id/display name wins,
 	// an ambiguous/unknown mention refuses with candidates) — args["Zone"] is already
-	// canonical here. The old engine-side applyCreateZoneResolution chain (a second
-	// LLM zone match plus the four legacy zone maps) was removed in the zone
-	// convergence; the workflow validates the canonical zone against the snapshot.
+	// canonical here. The old engine-side zone-resolution chain (a second LLM zone
+	// match plus the four legacy zone maps) was removed in the zone convergence; the
+	// workflow validates the canonical zone against the snapshot.
 
 	// The turn's zone catalog: when the action-proposal path already built one for
 	// the resolver it is threaded in here (one catalog per turn — the resolver and

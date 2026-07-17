@@ -3933,14 +3933,10 @@ func gpuOptionLabel(catalog map[string]any, gpuType string) string {
 	return gpuType
 }
 
-// zoneFormOptions lists the zones the current GPU type is sellable in,
-// current zone first. describes (zone-id → 显示名, from the live support-zone
-// catalog, threaded in via params["ZoneDescribes"]) labels each option with the
-// console's Chinese name ("华北一C") so the user recognizes the zone; it falls
-// back to the bare zone id when the name is unknown (CLI / catalog unavailable).
-// zoneFormOptions builds the confirm-card zone selector. Each option's display
-// label comes from the turn snapshot (via zoneDisplayLabel) — the single zone
-// authority — degrading to the bare zone id, never the legacy ZoneDescribes map.
+// zoneFormOptions builds the confirm-card zone selector, listing the zones the
+// current GPU type is sellable in with the current zone first. Each option's
+// display label comes from the turn snapshot (via zoneDisplayLabel) — the single
+// zone authority — degrading to the bare zone id, never a legacy per-zone label map.
 func zoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, current string) []ConfirmFormOption {
 	if catalog == nil {
 		return nil
