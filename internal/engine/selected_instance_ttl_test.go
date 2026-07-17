@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compshare-agent/internal/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +18,7 @@ func TestExpireStaleSelectedInstanceRetainsIdentityButRevokesTrustAfterTTL(t *te
 		SchemaVersion:          SessionStateSchemaCurrent,
 		SelectedInstanceID:     "uhost-a",
 		SelectedInstanceName:   "alpha",
-		SelectedInstanceSource: SelectedInstanceSourceUser,
+		SelectedInstanceSource: SelectedInstanceSourceObserved,
 		SelectedInstanceAtUnix: base.Unix(),
 	}, 1)
 
@@ -43,7 +42,7 @@ func TestExpireStaleSelectedInstanceKeepsFreshBinding(t *testing.T) {
 		SchemaVersion:          SessionStateSchemaCurrent,
 		SelectedInstanceID:     "uhost-a",
 		SelectedInstanceName:   "alpha",
-		SelectedInstanceSource: SelectedInstanceSourceUser,
+		SelectedInstanceSource: SelectedInstanceSourceObserved,
 		SelectedInstanceAtUnix: base.Unix(),
 	}, 1)
 
@@ -51,7 +50,7 @@ func TestExpireStaleSelectedInstanceKeepsFreshBinding(t *testing.T) {
 
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Equal(t, "uhost-a", state.SelectedInstanceID, "fresh selection must survive")
-	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+	assert.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource)
 	assert.Equal(t, ContinuityFreshnessStale, state.SelectedInstanceFreshness,
 		"a binding in the second half of its TTL is stale but still within its authorization window")
 }
@@ -66,7 +65,7 @@ func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 		SchemaVersion:          SessionStateSchemaCurrent,
 		SelectedInstanceID:     "uhost-legacy",
 		SelectedInstanceName:   "legacy",
-		SelectedInstanceSource: SelectedInstanceSourceUser,
+		SelectedInstanceSource: SelectedInstanceSourceObserved,
 		// SelectedInstanceAtUnix intentionally zero (legacy row).
 	}, 1)
 
@@ -78,44 +77,22 @@ func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 	assert.Equal(t, ContinuityFreshnessStale, state.SelectedInstanceFreshness)
 }
 
-// TestRecordSelectedInstanceIDStampsTimestamp verifies recording a user
-// selection stamps SelectedInstanceAtUnix so the TTL clock starts.
-func TestRecordSelectedInstanceIDStampsTimestamp(t *testing.T) {
+// TestRecordObservedInstanceIDStampsTimestamp verifies recording a selection
+// stamps SelectedInstanceAtUnix so the TTL clock starts. recordObservedInstanceID
+// is the only writer left: the two User-sourced writers it replaces
+// (recordSelectedInstanceID / recordSelectedInstanceFromEnvelope) were fed by the
+// direct-dispatch lane P6 deleted, so nothing produced a "user" source any more.
+func TestRecordObservedInstanceIDStampsTimestamp(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
 	before := time.Now().Unix()
-	eng.recordSelectedInstanceID("uhost-a", "alpha")
+	eng.recordObservedInstanceID("uhost-a", "alpha")
 	after := time.Now().Unix()
 
 	state, _, _ := eng.SessionStateSnapshot()
 	require.Equal(t, "uhost-a", state.SelectedInstanceID)
+	require.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource)
 	assert.GreaterOrEqual(t, state.SelectedInstanceAtUnix, before, "selection must be stamped at record time")
-	assert.LessOrEqual(t, state.SelectedInstanceAtUnix, after)
-}
-
-// TestRecordSelectedInstanceFromEnvelopeStampsTimestamp guards the second
-// trusted (Source=User) writer. The envelope path (direct-dispatch monitor /
-// resource-selection resume) establishes exactly the same mutating-trusted
-// binding as recordSelectedInstanceID, so it MUST also start the TTL clock —
-// otherwise the most common way a "current instance" is bound would carry
-// SelectedInstanceAtUnix==0 and be permanently exempt from
-// expireStaleSelectedInstance (indistinguishable from a pre-field legacy row).
-// This test fails if the envelope writer stops stamping (e.g. reverts to inline
-// field assignment).
-func TestRecordSelectedInstanceFromEnvelopeStampsTimestamp(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-
-	before := time.Now().Unix()
-	eng.recordSelectedInstanceFromEnvelope(&envelope.Envelope{Subjects: []envelope.Subject{
-		{ID: "uhost-a", Name: "alpha", Type: envelope.SubjectInstance},
-	}})
-	after := time.Now().Unix()
-
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Equal(t, "uhost-a", state.SelectedInstanceID)
-	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
-	assert.GreaterOrEqual(t, state.SelectedInstanceAtUnix, before, "envelope selection must start the TTL clock")
 	assert.LessOrEqual(t, state.SelectedInstanceAtUnix, after)
 }

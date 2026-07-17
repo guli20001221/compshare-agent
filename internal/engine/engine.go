@@ -426,7 +426,6 @@ type Engine struct {
 	//     injected this turn, or -1 when none. Bucketed before it leaves the
 	//     recorder.
 	selectedInstanceIDAtTurnStart      string
-	selectedInstanceSourceAtTurnStart  string
 	instanceResolutionSourceThisTurn   string
 	factCacheOldestAgeSecondsThisTurn  int
 	trustedWorkflowFrameActionThisTurn string
@@ -1200,7 +1199,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
 	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
-	e.selectedInstanceSourceAtTurnStart = e.sessionState.SelectedInstanceSource
 	e.instanceResolutionSourceThisTurn = ""
 	e.factCacheOldestAgeSecondsThisTurn = -1
 	e.trustedWorkflowFrameActionThisTurn = ""
@@ -3109,56 +3107,15 @@ func isAllAcceptedKeys(kind string, payload map[string]any) bool {
 	return true
 }
 
-// recordSelectedInstanceFromEnvelope sets SessionState.SelectedInstance{ID,Name}
-// when the handler envelope identifies exactly one instance subject. Called
-// only from route/resume success paths — see callers in tryRouteDispatch
-// and tryResumeResourceSelection.
-//
-// Gates:
-//   - sessionStateHydrated — never mutate sessionState without an explicit
-//     SetSessionState earlier in the turn (CLI path safety, matches the
-//     fact writer's gate).
-//   - env != nil and Subjects has exactly one item of type SubjectInstance
-//     with non-empty ID.
-//
-// Why "exactly one": multi-instance results (e.g. "show all my instances")
-// give Subjects > 1 — the user has not selected anything. Zero-instance
-// results (filter matched nothing) give Subjects == 0 — same reasoning.
-// This matches the M2 design doc §3.1: write only when the user has
-// unambiguously identified a single instance.
-func (e *Engine) recordSelectedInstanceFromEnvelope(env *envelope.Envelope) {
-	if env == nil || !e.sessionStateHydrated {
-		return
-	}
-	if len(env.Subjects) != 1 {
-		return
-	}
-	s := env.Subjects[0]
-	if s.Type != envelope.SubjectInstance || s.ID == "" {
-		return
-	}
-	// Route through the shared choke-point so this User-source selection is
-	// stamped with SelectedInstanceAtUnix (TTL clock) exactly like every other
-	// trusted binding. Assigning the fields inline here previously skipped the
-	// timestamp, leaving envelope-established selections permanently exempt from
-	// expireStaleSelectedInstance (they looked like unstamped legacy rows).
-	e.recordSelectedInstanceIDWithSource(s.ID, s.Name, SelectedInstanceSourceUser)
-}
-
-// recordSelectedInstanceID tracks a user-trusted "current instance", such as
-// a literal ID/name in the user's message or an explicit pick from a displayed
-// candidate list. Tool observations use recordObservedInstanceID instead: they
-// remain useful read-only context, but cannot authorize a later mutating
-// workflow. Callers MUST pass an id only when the user unambiguously identified
-// exactly one instance. Name is resolved from the registry when the caller
-// doesn't have it.
-func (e *Engine) recordSelectedInstanceID(id, name string) {
-	e.recordSelectedInstanceIDWithSource(id, name, SelectedInstanceSourceUser)
-}
-
 // recordObservedInstanceID records one instance as read-only conversational
-// context from a tool result. It intentionally does not create a trusted write
-// target; workflowTargetIsTrusted requires SelectedInstanceSourceUser.
+// context from a tool result. It is the ONLY writer of SelectedInstance* left:
+// the User-sourced writers (recordSelectedInstanceID /
+// recordSelectedInstanceFromEnvelope) were fed by the direct-dispatch lane P6
+// deleted, so nothing in this binary ever produced a "user" source. The field is
+// understanding-only — it helps resolve who "它" is, and is the default subject of
+// a read-only query. It grants NO execution authority: a write is authorized by
+// ProposeAction_* -> Resolver -> the confirmation gate, and the sealed contract
+// guarantees what executes is what was confirmed.
 func (e *Engine) recordObservedInstanceID(id, name string) {
 	e.recordSelectedInstanceIDWithSource(id, name, SelectedInstanceSourceObserved)
 }
@@ -3171,16 +3128,6 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 		if inst, res := e.RegistrySnapshot().ResolveByID(id); res.Status == entity.ResolveHit && inst != nil {
 			name = inst.Name
 		}
-	}
-	if source == SelectedInstanceSourceObserved &&
-		strings.EqualFold(strings.TrimSpace(e.sessionState.SelectedInstanceID), strings.TrimSpace(id)) &&
-		e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
-		e.sessionState.SelectedInstanceID = id
-		if strings.TrimSpace(name) != "" {
-			e.sessionState.SelectedInstanceName = name
-		}
-		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
-		return
 	}
 	e.sessionState.SelectedInstanceID = id
 	e.sessionState.SelectedInstanceName = name
@@ -3764,18 +3711,13 @@ func (e *Engine) workflowTargetIsTrusted(action, uHostId string, targetAutoFille
 	if strings.TrimSpace(e.lastUserMsg) == "" {
 		return true
 	}
-	// Trust ONLY the binding frozen at turn start (engine.go:1254), never the
-	// live e.sessionState.SelectedInstanceID: a model-issued single-host
-	// DescribeCompShareInstance writes the live field mid-turn
-	// (recordToolFacts -> recordInstanceStateFacts -> recordSelectedInstanceID),
-	// so trusting it would let the model self-elect a target — the exact
-	// phantom-selection this guard exists to stop. A genuinely user-referenced
+	// The carried-binding branch is gone. It trusted the turn-start
+	// SelectedInstance* when its source was "user", and nothing in this binary
+	// produces that source any more: the User-source writers were fed by the
+	// direct-dispatch lane P6 deleted, so the branch could only ever fire on a row
+	// an older binary wrote. Deleting it is a runtime no-op. A user-referenced
 	// target is still trusted via the explicit-ID / pending-selection /
 	// name-mention branches below.
-	if strings.TrimSpace(e.selectedInstanceIDAtTurnStart) == uHostId &&
-		selectedInstanceSourceTrustedForWorkflow(e.selectedInstanceSourceAtTurnStart) {
-		return true
-	}
 	if strings.TrimSpace(e.trustedWorkflowFrameActionThisTurn) == action &&
 		strings.TrimSpace(e.trustedWorkflowFrameTargetThisTurn) == uHostId {
 		return true
@@ -3801,10 +3743,6 @@ func (e *Engine) workflowTargetIsTrusted(action, uHostId string, targetAutoFille
 		return workflowTargetNameMentioned(e.lastUserMsg, inst.Name)
 	}
 	return false
-}
-
-func selectedInstanceSourceTrustedForWorkflow(source string) bool {
-	return strings.TrimSpace(source) == SelectedInstanceSourceUser
 }
 
 func workflowTargetNameMentioned(userMsg, name string) bool {

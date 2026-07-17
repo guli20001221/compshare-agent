@@ -1413,21 +1413,6 @@
       "callee": "strings.Index"
     },
     {
-      "id": "9ef02fcbc223a5bf",
-      "kind": "string_heuristic",
-      "path": "internal/intent/validator.go",
-      "symbol": "validateProvenance",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "67c92f10583b53a4",
-      "kind": "string_heuristic",
-      "path": "internal/intent/validator.go",
-      "symbol": "validateProvenance",
-      "callee": "strings.Contains",
-      "ordinal": 2
-    },
-    {
       "id": "d0289d1d87c33e3e",
       "kind": "string_heuristic",
       "path": "internal/knowledge/evidence_adapter.go",

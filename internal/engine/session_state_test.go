@@ -53,7 +53,7 @@ func TestPersistedContext_RoundTripBytes(t *testing.T) {
 			SchemaVersion:          SessionStateSchemaV1,
 			SelectedInstanceID:     "uhost-abc123",
 			SelectedInstanceName:   "gpu-prod-01",
-			SelectedInstanceSource: SelectedInstanceSourceUser,
+			SelectedInstanceSource: "user",
 			LastDeployWorkload:     "Qwen2.5-32B",
 			LastDeployZone:         "cn-wlcb-01",
 			PendingDeployModel:     "DeepSeek R1",
@@ -225,8 +225,8 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	pc, err = ParsePersistedContext(raw)
 	require.NoError(t, err)
 	assert.Equal(t, SessionStateSchemaV4, pc.AgentSessionState.SchemaVersion)
-	assert.Equal(t, SelectedInstanceSourceUser, pc.AgentSessionState.SelectedInstanceSource)
-	assert.Equal(t, SelectedInstanceSourceUser, pc.AgentSessionState.ContextFrame.SlotSources["instance_id"])
+	assert.Equal(t, "user", pc.AgentSessionState.SelectedInstanceSource)
+	assert.Equal(t, "user", pc.AgentSessionState.ContextFrame.SlotSources["instance_id"])
 
 	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"5.0","task_snapshot":{"goal":"给训练机扩容","status":"active","missing_slots":["target_size_gb"]},"conversation_digest":{"narrative":"目标：给训练机扩容"}}}`)
 	pc, err = ParsePersistedContext(raw)
@@ -580,7 +580,7 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 			SchemaVersion:                   SessionStateSchemaV1,
 			SelectedInstanceID:              "uhost-abc",
 			SelectedInstanceName:            "gpu-prod",
-			SelectedInstanceSource:          SelectedInstanceSourceUser,
+			SelectedInstanceSource:          "user",
 			SelectedInstanceAtUnix:          1716530000,
 			LastStockGpuModel:               "4090",
 			PendingSelectionKind:            "instance",

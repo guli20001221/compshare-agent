@@ -82,7 +82,7 @@ func TestChat_ExpiredFrameKeepsSemanticsButCannotResume(t *testing.T) {
 			Workflow:        "ResizeDiskWorkflow",
 			OriginalUserMsg: "把训练机的数据盘扩到 200G",
 			Slots:           map[string]string{"instance_id": "uhost-a", "target_size_gb": "200"},
-			SlotSources:     map[string]string{"instance_id": SelectedInstanceSourceUser},
+			SlotSources:     map[string]string{"instance_id": "user"},
 			MissingSlots:    []string{"disk_id"},
 			Stage:           "missing_slots",
 			FailureReason:   "需要选择数据盘",

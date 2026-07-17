@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/tools"
 
@@ -221,12 +220,11 @@ func TestRecordMonitorSampleFacts_TwoHosts_ProducesTwoFacts(t *testing.T) {
 // ---------------------------------------------------------------------------
 // SelectedInstanceID tracking from the tool-fact (ReAct) path
 // ---------------------------------------------------------------------------
-// WHY: recordSelectedInstanceFromEnvelope only fires on the direct-dispatch
-// route paths. The intent router routes the SAME monitor/state question to
-// either direct-dispatch OR ReAct (flash jitter); on the ReAct path the
-// instance went untracked, so the next turn's "它的状态 / 重启它" lost it and
-// re-listed all instances (live-reproduced via the local server, 上下文复用
-// cluster). Tracking here unifies both paths.
+// WHY: this is now the ONLY path that binds a session's current instance. The
+// direct-dispatch writers it used to merely complement were deleted with the route
+// stack in P6, so a tool result naming exactly one host is the sole remaining
+// source. The binding is understanding-only — it answers "who is 它" and supplies
+// the default subject of a read-only query; it does not authorize a write.
 
 // TestRecordInstanceStateFacts_SingleHostSetsSelectedInstance: a result naming
 // exactly one instance pins it as the session's current instance.
@@ -241,23 +239,6 @@ func TestRecordInstanceStateFacts_SingleHostSetsSelectedInstance(t *testing.T) {
 	assert.Equal(t, "uhost-solo", e.sessionState.SelectedInstanceID)
 	assert.Equal(t, "only-one", e.sessionState.SelectedInstanceName)
 	assert.Equal(t, SelectedInstanceSourceObserved, e.sessionState.SelectedInstanceSource)
-}
-
-func TestRecordInstanceStateFacts_DoesNotDowngradeUserSelectedInstance(t *testing.T) {
-	e := newEngineForToolFactTest(t)
-	e.recordSelectedInstanceID("uhost-solo", "selected-name")
-
-	e.recordInstanceStateFacts(map[string]any{
-		"UHostSet": []any{map[string]any{
-			"UHostId": "uhost-solo", "Name": "observed-name", "State": "Running",
-			"GPU": 1, "GpuType": "RTX4090", "CPU": 16, "Memory": 65536, "Zone": "cn-bj-01",
-		}},
-	})
-
-	assert.Equal(t, "uhost-solo", e.sessionState.SelectedInstanceID)
-	assert.Equal(t, "observed-name", e.sessionState.SelectedInstanceName)
-	assert.Equal(t, SelectedInstanceSourceUser, e.sessionState.SelectedInstanceSource,
-		"read-only facts about the same selected instance must not downgrade a user-selected write target")
 }
 
 // TestRecordInstanceStateFacts_MultiHostKeepsSelectedInstanceUnset: a list-all
@@ -559,40 +540,31 @@ func mustRoundTripPersistedContext(t *testing.T, pc PersistedContext) PersistedC
 }
 
 // ---------------------------------------------------------------------------
-// recordSelectedInstanceFromEnvelope unit tests
+// recordSelectedInstanceIDWithSource unit tests
 // ---------------------------------------------------------------------------
-
-// TestRecordSelectedInstanceFromEnvelope_SingleSubject is the canonical
-// case: one Subject of type Instance → write SelectedInstanceID/Name.
-func TestRecordSelectedInstanceFromEnvelope_SingleSubject(t *testing.T) {
-	e := newEngineForToolFactTest(t)
-	env := &envelope.Envelope{
-		Kind: envelope.KindResourceInfo,
-		Subjects: []envelope.Subject{
-			{ID: "uhost-pick", Name: "train-a", Type: envelope.SubjectInstance},
-		},
-	}
-	e.recordSelectedInstanceFromEnvelope(env)
-	assert.Equal(t, "uhost-pick", e.sessionState.SelectedInstanceID)
-	assert.Equal(t, "train-a", e.sessionState.SelectedInstanceName)
-	assert.Equal(t, SelectedInstanceSourceUser, e.sessionState.SelectedInstanceSource)
-}
+//
+// These previously drove recordSelectedInstanceFromEnvelope, deleted with the
+// route stack that fed it. The contracts below are NOT the envelope's — they live
+// in the shared choke-point recordSelectedInstanceIDWithSource and are still
+// reachable through recordObservedInstanceID, the only writer left. The
+// envelope-shape rules (exactly-one-subject / wrong-type / empty-ID) went with the
+// envelope path; their surviving equivalent is the single-vs-multi-host rule in
+// recordInstanceStateFacts, covered above.
 
 func TestRecordSelectedInstanceSourceUpgradesSchemaVersion(t *testing.T) {
 	e := newEngineForToolFactTest(t)
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV3}, 1)
 
-	e.recordSelectedInstanceID("uhost-pick", "train-a")
+	e.recordObservedInstanceID("uhost-pick", "train-a")
 
 	state, _, _ := e.SessionStateSnapshot()
 	assert.Equal(t, SessionStateSchemaCurrent, state.SchemaVersion)
-	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+	assert.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource)
 }
 
-// TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips guards the CLI-
-// path safety: same as the fact writer, no mutation without explicit
-// SetSessionState.
-func TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips(t *testing.T) {
+// TestRecordSelectedInstance_NotHydratedSkips guards the CLI-path safety: same as
+// the fact writer, no mutation without explicit SetSessionState.
+func TestRecordSelectedInstance_NotHydratedSkips(t *testing.T) {
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
 		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
@@ -602,42 +574,16 @@ func TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips(t *testing.T) {
 	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
 	require.False(t, e.sessionStateHydrated)
 
-	env := &envelope.Envelope{
-		Subjects: []envelope.Subject{{ID: "uhost-x", Name: "x", Type: envelope.SubjectInstance}},
-	}
-	e.recordSelectedInstanceFromEnvelope(env)
+	e.recordObservedInstanceID("uhost-x", "x")
 	assert.Empty(t, e.sessionState.SelectedInstanceID)
 }
 
-// TestRecordSelectedInstanceFromEnvelope_RejectsAmbiguousOrEmpty enumerates
-// the cases where the engine MUST NOT write SelectedInstance: multiple
-// subjects (ambiguous), zero subjects, wrong type, empty ID, nil envelope.
-func TestRecordSelectedInstanceFromEnvelope_RejectsAmbiguousOrEmpty(t *testing.T) {
-	cases := []struct {
-		name string
-		env  *envelope.Envelope
-	}{
-		{name: "nil envelope", env: nil},
-		{name: "zero subjects", env: &envelope.Envelope{Subjects: []envelope.Subject{}}},
-		{name: "two subjects (ambiguous)", env: &envelope.Envelope{Subjects: []envelope.Subject{
-			{ID: "uhost-a", Type: envelope.SubjectInstance},
-			{ID: "uhost-b", Type: envelope.SubjectInstance},
-		}}},
-		{name: "non-instance subject", env: &envelope.Envelope{Subjects: []envelope.Subject{
-			{ID: "rtx-4090", Type: envelope.SubjectGPUModel},
-		}}},
-		{name: "empty ID", env: &envelope.Envelope{Subjects: []envelope.Subject{
-			{ID: "", Type: envelope.SubjectInstance},
-		}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEngineForToolFactTest(t)
-			e.recordSelectedInstanceFromEnvelope(tc.env)
-			assert.Empty(t, e.sessionState.SelectedInstanceID,
-				"input %q must NOT set SelectedInstance", tc.name)
-		})
-	}
+// TestRecordSelectedInstance_EmptyIDIsRejected pins the one input gate that
+// survives in the choke-point itself.
+func TestRecordSelectedInstance_EmptyIDIsRejected(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+	e.recordObservedInstanceID("", "no-id")
+	assert.Empty(t, e.sessionState.SelectedInstanceID, "an empty id must NOT set SelectedInstance")
 }
 
 // TestSessionState_FieldsRoundTripWithSelectedInstance verifies the M2
@@ -645,9 +591,7 @@ func TestRecordSelectedInstanceFromEnvelope_RejectsAmbiguousOrEmpty(t *testing.T
 // semantics — the multi-replica preservation contract.
 func TestSessionState_FieldsRoundTripWithSelectedInstance(t *testing.T) {
 	e := newEngineForToolFactTest(t)
-	e.recordSelectedInstanceFromEnvelope(&envelope.Envelope{Subjects: []envelope.Subject{
-		{ID: "uhost-pick", Name: "train-a", Type: envelope.SubjectInstance},
-	}})
+	e.recordObservedInstanceID("uhost-pick", "train-a")
 
 	state, _, _ := e.SessionStateSnapshot()
 	pc := PersistedContext{AgentSessionState: state}
@@ -655,7 +599,7 @@ func TestSessionState_FieldsRoundTripWithSelectedInstance(t *testing.T) {
 
 	assert.Equal(t, "uhost-pick", roundTripped.AgentSessionState.SelectedInstanceID)
 	assert.Equal(t, "train-a", roundTripped.AgentSessionState.SelectedInstanceName)
-	assert.Equal(t, SelectedInstanceSourceUser, roundTripped.AgentSessionState.SelectedInstanceSource)
+	assert.Equal(t, SelectedInstanceSourceObserved, roundTripped.AgentSessionState.SelectedInstanceSource)
 }
 
 type monitorPayloadHost struct {

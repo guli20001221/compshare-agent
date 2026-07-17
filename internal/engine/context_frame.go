@@ -3,22 +3,7 @@ package engine
 import (
 	"strings"
 	"time"
-
-	"github.com/compshare-agent/internal/intent"
 )
-
-func newContextFrame(kind string, plan intent.IntentRoute, userMsg string, turn int, now time.Time) ContextFrame {
-	return ContextFrame{
-		Version:         1,
-		Kind:            kind,
-		Status:          ContextFrameStatusPending,
-		Intent:          string(plan.Intent),
-		OriginalUserMsg: strings.TrimSpace(userMsg),
-		CreatedTurn:     turn,
-		ProducedAtUnix:  now.Unix(),
-		TTLSeconds:      ContextFrameTTLSeconds,
-	}
-}
 
 func (f ContextFrame) active(now time.Time) bool {
 	if strings.TrimSpace(f.Kind) == "" || strings.TrimSpace(f.Status) == "" {

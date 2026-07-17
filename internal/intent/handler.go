@@ -1,21 +1,5 @@
 package intent
 
-import (
-	"github.com/compshare-agent/internal/entity"
-	"github.com/compshare-agent/internal/envelope"
-)
-
-const FriendlyToolFailureReply = "查询暂时失败，请稍后再试。"
-
-type HandlerStatus string
-
-const (
-	HandlerStatusHandled            HandlerStatus = "handled"
-	HandlerStatusNeedsInput         HandlerStatus = "needs_input"
-	HandlerStatusFallbackBeforeTool HandlerStatus = "fallback_before_tool"
-	HandlerStatusFailureAfterTool   HandlerStatus = "failure_after_tool"
-)
-
 // HandlerFailureClass is control-flow metadata. User-facing wording may change
 // without changing whether the engine should continue into its context-aware,
 // read-only agent lane.
@@ -25,18 +9,6 @@ const (
 	HandlerFailureNone               HandlerFailureClass = ""
 	HandlerFailureGenericRead        HandlerFailureClass = "generic_read"
 	HandlerFailureActionableUpstream HandlerFailureClass = "actionable_upstream"
-)
-
-type FallbackReason string
-
-const (
-	FallbackNone             FallbackReason = ""
-	FallbackMissingTarget    FallbackReason = "missing_target"
-	FallbackUnresolvedTarget FallbackReason = "unresolved_target"
-	FallbackAmbiguousTarget  FallbackReason = "ambiguous_target"
-	FallbackTimeWindow       FallbackReason = "time_window"
-	FallbackValidation       FallbackReason = "validation"
-	FallbackActionNotAllowed FallbackReason = "action_not_allowed"
 )
 
 type RouteStatus string
@@ -77,33 +49,4 @@ const (
 	RouteStatusSelectionRequired         RouteStatus = "selection_required"
 )
 
-type HandlerResult struct {
-	Status HandlerStatus
-	Reply  string
-	// NeedsClarification marks a complete deterministic clarification rather
-	// than a factual answer. The engine may let the context-aware Agent resolve
-	// it when the current utterance clearly depends on a recent complete turn.
-	NeedsClarification bool
-	FallbackReason     FallbackReason
-	RouteStatus        RouteStatus
-	FailureClass       HandlerFailureClass
-	ToolAction         string
-	ToolArgs           map[string]any
-	Envelope           *envelope.Envelope
-	// RendererInputToolArgHashes records tool args consumed by deterministic
-	// handler renderers before engine-level tool call ids exist. Phase 1 demo
-	// populates this for monitor handler results only.
-	RendererInputToolArgHashes  []string
-	RendererInputEnvelopeHashes []string
-	// ResourceSelectionCandidates is the ordered instance list actually surfaced
-	// in a resource_info reply. Engine persists this list so a later "第 N 台 /
-	// 这台" follow-up can only resolve to an item the user saw.
-	ResourceSelectionCandidates []entity.InstanceSnapshot
-	// ResolvedStockGpuModel is the single GPU model (API instance-type Name,
-	// e.g. "4090") a stock-availability turn resolved to, or "" when the turn
-	// was ambiguous / listed all models. engine.go records it into
-	// SessionState.LastStockGpuModel so a later subject-eliding stock turn can
-	// reuse it as the referent (RC017). Populated by handleStockAvailability only.
-	ResolvedStockGpuModel string
-}
 

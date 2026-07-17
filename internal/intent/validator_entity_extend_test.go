@@ -9,7 +9,9 @@ import (
 
 func TestValidatedTargetRefTypesDoNotExposeUnwiredPlatformEntities(t *testing.T) {
 	root := filepath.Join("..", "..", "internal", "intent")
-	files := []string{"types.go", "validator.go"}
+	// validator.go was deleted with ValidateRoute; types.go still carries the
+	// TargetRef* enum this guard is actually about.
+	files := []string{"types.go"}
 	for _, file := range files {
 		data, err := os.ReadFile(filepath.Join(root, file))
 		if err != nil {

@@ -117,9 +117,9 @@ func ReadFallbackBeforeTool(reason platform.ReadFallbackReason) ReadResult {
 	return ReadResult{Status: platform.ReadStatusFallbackBeforeTool, FallbackReason: reason}
 }
 
-// FriendlyReadFailureReply is the generic post-tool failure reply. It matches
-// the legacy intent.FriendlyToolFailureReply string so a migrated capability's
-// failure observation is byte-identical to the pre-migration one.
+// FriendlyReadFailureReply is the generic post-tool failure reply. It is
+// byte-identical to the legacy route-dispatch failure string it replaced, so a
+// migrated capability's failure observation matches the pre-migration one.
 const FriendlyReadFailureReply = "查询暂时失败，请稍后再试。"
 
 // userFacingError is the structural half of a typed upstream error carrying an

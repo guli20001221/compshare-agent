@@ -135,7 +135,6 @@ type VerifiedKnowledgeTurn struct {
 }
 
 const (
-	SelectedInstanceSourceUser     = "user"
 	SelectedInstanceSourceObserved = "observed"
 
 	ContextFrameKindCreate       = "create_instance"

@@ -11,9 +11,9 @@ import (
 // snapshots. It is the typed-capability twin of the legacy intent
 // resolveResourceTargetSnapshots: byte-for-byte the same resolution semantics
 // (ID / name resolve, ambiguity + miss handling, dedupe + stable UHostId sort),
-// but it returns a structured *platform.ReadFallbackReason instead of an
-// *intent.HandlerResult, so a read capability never depends on the intent
-// router's result type.
+// but it returns a structured *platform.ReadFallbackReason instead of the
+// legacy route-dispatch result carrier, so a read capability never depends on
+// the intent router's result type.
 //
 // An empty ref list returns (nil, nil, nil): whether that is a fallback is
 // request-specific (monitor needs a target; resource_info lists everything), so

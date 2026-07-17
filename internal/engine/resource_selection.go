@@ -1,9 +1,7 @@
 package engine
 
 import (
-	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -228,15 +226,6 @@ func isPersistedSelectionExpired(nowUnix int64, state SessionState) bool {
 	return nowUnix > state.PendingSelectionProducedAtUnix+int64(ttl)
 }
 
-func isResourceSelectionFallbackReason(reason intent.FallbackReason) bool {
-	switch reason {
-	case intent.FallbackMissingTarget, intent.FallbackUnresolvedTarget, intent.FallbackAmbiguousTarget:
-		return true
-	default:
-		return false
-	}
-}
-
 func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnapshot, sourceIntent intent.Intent, originalUserMsg string, total int, truncated bool) {
 	if e == nil || !e.sessionStateHydrated || len(instances) == 0 {
 		return
@@ -273,19 +262,6 @@ func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnaps
 	e.sessionState.PendingSelectionTruncated = truncated || limited || total > len(items)
 	e.sessionState.PendingSelectionTotalCount = total
 	e.sessionState.PendingSelectionItems = items
-}
-
-func (e *Engine) recordPendingSelectionFromHandlerResult(result intent.HandlerResult, plan intent.IntentRoute, originalUserMsg string) {
-	if e == nil || result.Status != intent.HandlerStatusHandled || plan.Intent != intent.IntentResourceInfo {
-		return
-	}
-	e.recordPendingInstanceSelection(
-		result.ResourceSelectionCandidates,
-		plan.Intent,
-		originalUserMsg,
-		len(result.ResourceSelectionCandidates),
-		false,
-	)
 }
 
 func pendingSelectionItemFromInstance(index int, inst entity.InstanceSnapshot) PendingSelectionItem {
@@ -400,101 +376,6 @@ func snapshotFromPendingSelectionCandidates(candidates []entity.InstanceSnapshot
 	}
 }
 
-func (e *Engine) candidateInstancesForSelection(ctx context.Context, plan intent.IntentRoute, snapshot entity.RegistrySnapshot, _ func(StepEvent)) ([]entity.InstanceSnapshot, entity.RegistrySnapshot, bool, bool, error) {
-	snapshot, ok, err := e.freshResourceSelectionSnapshot(ctx, snapshot)
-	if err != nil {
-		return nil, entity.RegistrySnapshot{}, false, false, err
-	}
-	if !ok {
-		return nil, entity.RegistrySnapshot{}, false, false, nil
-	}
-
-	var candidates []entity.InstanceSnapshot
-	if len(plan.Slots.TargetRefs) == 0 {
-		candidates = instancesFromSelectionSnapshot(snapshot)
-	} else {
-		candidates = matchingSelectionCandidates(plan, snapshot)
-		if len(candidates) == 0 {
-			candidates = instancesFromSelectionSnapshot(snapshot)
-		}
-	}
-	candidates, truncated := sortAndLimitResourceSelectionCandidates(candidates)
-	return candidates, snapshot, truncated, len(candidates) > 0, nil
-}
-
-func (e *Engine) freshResourceSelectionSnapshot(ctx context.Context, snapshot entity.RegistrySnapshot) (entity.RegistrySnapshot, bool, error) {
-	if e == nil || e.registry == nil {
-		return snapshot, len(snapshot.Instances) > 0 && !snapshot.LastFullSync.IsZero(), nil
-	}
-	if e.registry.NeedsRefresh(time.Now()) || len(snapshot.Instances) == 0 {
-		if _, err := e.refreshRegistry(ctx, entity.RefreshReasonTTL); err != nil {
-			return entity.RegistrySnapshot{}, false, err
-		}
-		return e.RegistrySnapshot(), true, nil
-	}
-	if snapshot.LastFullSync.IsZero() || len(snapshot.Instances) == 0 {
-		snapshot = e.RegistrySnapshot()
-	}
-	return snapshot, !snapshot.LastFullSync.IsZero() && len(snapshot.Instances) > 0, nil
-}
-
-func matchingSelectionCandidates(plan intent.IntentRoute, snapshot entity.RegistrySnapshot) []entity.InstanceSnapshot {
-	var candidates []entity.InstanceSnapshot
-	for _, ref := range plan.Slots.TargetRefs {
-		switch ref.Type {
-		case intent.TargetRefName:
-			matches, res := snapshot.ResolveByName(ref.Value)
-			if res.Status != entity.ResolveHit && res.Status != entity.ResolveAmbiguous {
-				continue
-			}
-			for _, match := range matches {
-				if match != nil {
-					candidates = append(candidates, *match)
-				}
-			}
-		case intent.TargetRefUHostIDUserInput:
-			if inst, res := snapshot.ResolveByID(ref.Value); res.Status == entity.ResolveHit && inst != nil {
-				candidates = append(candidates, *inst)
-			}
-		}
-	}
-	return dedupeResourceSelectionCandidates(candidates)
-}
-
-func instancesFromSelectionSnapshot(snapshot entity.RegistrySnapshot) []entity.InstanceSnapshot {
-	candidates := make([]entity.InstanceSnapshot, 0, len(snapshot.Instances))
-	for _, inst := range snapshot.Instances {
-		candidates = append(candidates, inst)
-	}
-	return candidates
-}
-
-func sortAndLimitResourceSelectionCandidates(candidates []entity.InstanceSnapshot) ([]entity.InstanceSnapshot, bool) {
-	candidates = dedupeResourceSelectionCandidates(candidates)
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].UHostId < candidates[j].UHostId
-	})
-	if len(candidates) > maxResourceSelectionCandidates {
-		return candidates[:maxResourceSelectionCandidates], true
-	}
-	return candidates, false
-}
-
-func dedupeResourceSelectionCandidates(candidates []entity.InstanceSnapshot) []entity.InstanceSnapshot {
-	if len(candidates) < 2 {
-		return candidates
-	}
-	seen := make(map[string]struct{}, len(candidates))
-	out := make([]entity.InstanceSnapshot, 0, len(candidates))
-	for _, candidate := range candidates {
-		if _, ok := seen[candidate.UHostId]; ok {
-			continue
-		}
-		seen[candidate.UHostId] = struct{}{}
-		out = append(out, candidate)
-	}
-	return out
-}
 
 func planWithSelectedResource(plan intent.IntentRoute, uhostID string) intent.IntentRoute {
 	plan.Slots.TargetRefs = []intent.TargetRef{{

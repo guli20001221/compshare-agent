@@ -463,7 +463,12 @@ type PlannerSkillTrace struct {
 //
 // "Provably confined" means confined by the time it reaches here — not merely
 // enum-typed in Go. ImageSource/ListMode/PriceKind/CFSKind/ChargeType/DetailLevel
-// are checked by intent.ValidateRoute, and SizeGB is bounded there. Action is
+// and SizeGB used to be checked by intent.ValidateRoute, which was deleted with
+// the route stack (it had zero production callers by then, so the check it is
+// credited with here had already stopped running before it was removed). Their
+// confinement now rests on whatever produces the plan, not on a validator — if a
+// producer is ever added that does not confine them, this projection would record
+// unconfined text verbatim, so re-establish the check before trusting it. Action is
 // NOT: the router schema deliberately omits slots.action and is non-strict, so a
 // model that volunteers an arbitrary string still produces a SchemaValid plan
 // (see internal/intent/router_schema.go). It is therefore closed at projection

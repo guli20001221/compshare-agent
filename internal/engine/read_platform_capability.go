@@ -59,8 +59,7 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 
 // executeTypedReadCapability dispatches a migrated read through its typed
 // vertical. The capability produces a capability.ReadResult directly, without
-// the legacy route-dispatch machinery; the engine bridges it to a HandlerResult
-// only to serialise the observation identically to the legacy path.
+// the legacy route-dispatch machinery — which no longer exists to bridge to.
 func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabilityLabel string, reg capability.RegisteredRead, request platform.ReadRequest, args map[string]any, onStep func(StepEvent)) string {
 	onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
 
