@@ -97,15 +97,17 @@ func addComputedResourceMeta(env *envelope.Envelope, meta ResourceEnvelopeMeta) 
 			addComputed("shown_count", "Shown count", strconv.Itoa(meta.Shown))
 		}
 		addComputed("truncated", "Truncated", "true")
-		// PR1 hotfix follow-up (2026-05-28 联调): the grounded renderer LLM,
-		// shown only `truncated:true` + `shown_count:10`, freelances text like
+		// PR1 hotfix follow-up (2026-05-28 联调): the answering model, shown only
+		// `truncated:true` + `shown_count:10`, freelances text like
 		// "剩余 2 台实例因分页未在此列表中展示，请缩小查询范围或调整分页参数"
 		// — there is no pagination mechanism in this codebase; the truncation
 		// is a fixed "top 10 by State+StartTime" display cap. Inject the exact
-		// user-facing sentence the renderer MUST emit verbatim, computed from
+		// user-facing sentence the model MUST emit verbatim, computed from
 		// the canonical denominator (matched_count for filtered queries,
-		// otherwise total_count). The grounded renderer prompt has a paired
-		// directive forbidding 分页 phrasing.
+		// otherwise total_count). This Constraint is now the only thing holding
+		// that wording: the paired prompt directive that used to forbid 分页
+		// phrasing lived in the grounded renderer's own system prompt, which was
+		// deleted along with that never-invoked package.
 		denominator := meta.TotalCount
 		if meta.FilterApplied != "" && meta.MatchedCount > 0 {
 			denominator = meta.MatchedCount
@@ -380,8 +382,8 @@ type MonitorScalar struct {
 
 // ExtractMonitorScalars walks a GetCompShareInstanceMonitor raw result and
 // returns the per-(host, metric) latest scalar values, using the same
-// renderer vocabulary that route handlers and the grounded renderer
-// emit. Returns nil if the payload is unrecognized or contains no
+// display vocabulary that read capabilities emit.
+// Returns nil if the payload is unrecognized or contains no
 // known-metric data; callers should treat nil as "no fact to write" (a
 // successful empty-data probe is not a fact-producing event).
 //

@@ -23,7 +23,6 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
-	grounded "github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
@@ -152,16 +151,6 @@ func (r *scriptedKnowledgeRetriever) Retrieve(question, productArea string) know
 		}
 	}
 	return result
-}
-
-type mockGroundedGenerator struct {
-	result   grounded.RenderResult
-	requests []grounded.RenderRequest
-}
-
-func (r *mockGroundedGenerator) Render(_ context.Context, req grounded.RenderRequest) grounded.RenderResult {
-	r.requests = append(r.requests, req)
-	return r.result
 }
 
 // --- Mock Executor ---

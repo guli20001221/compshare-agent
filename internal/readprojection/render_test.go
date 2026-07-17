@@ -34,7 +34,7 @@ func TestRenderResourceSummaryByteExact(t *testing.T) {
 }
 
 // TestRenderResourceSummaryTruncationNotice pins the deterministic truncation
-// sentence (the grounded renderer must not freelance 分页 wording here).
+// sentence (the answering model must not freelance 分页 wording here).
 func TestRenderResourceSummaryTruncationNotice(t *testing.T) {
 	instances := []entity.InstanceSnapshot{{UHostId: "uhost-a", Name: "a", State: "Running"}}
 

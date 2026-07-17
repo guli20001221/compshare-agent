@@ -23,8 +23,8 @@ package engine
 //   — would let session A redirect session B's LLM calls.
 // - "I added UpdateCorpus to KnowledgeRetriever for hot-reload"
 //   — would let session A poison session B's RAG corpus.
-// - "I added ResetState to GroundedGenerator to fix flaky tests"
-//   — would let session A wipe session B's renderer state mid-turn.
+// - "I added ResetCounters to RateLimiter to fix flaky tests"
+//   — would let session A clear session B's quota mid-turn.
 //
 // What this does NOT catch
 // ------------------------
@@ -56,7 +56,6 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
-	grounded "github.com/compshare-agent/internal/renderer"
 )
 
 // mutatingVerbPrefixes is the banned-verb list. Any exported method on a
@@ -91,7 +90,6 @@ var allowedSharedDepMethods = map[string]struct{}{}
 var sharedDepConcreteTypes = []reflect.Type{
 	reflect.TypeOf((*llm.Client)(nil)),                     // SharedDeps.LLMClient
 	reflect.TypeOf((*knowledge.Retriever)(nil)),            // SharedDeps.KnowledgeRetriever
-	reflect.TypeOf((*grounded.GroundedGenerator)(nil)),     // SharedDeps.GroundedGenerator
 	reflect.TypeOf((*governance.InMemoryRateLimiter)(nil)), // SharedDeps.RateLimiter
 	reflect.TypeOf((*knowledge.EmbeddingSidecar)(nil)),     // injected into knowledge.Retriever
 	reflect.TypeOf((*embedding.Client)(nil)),               // upstream of knowledge.EmbeddingSidecar
@@ -141,8 +139,6 @@ func TestSharedDeps_NoMutatingSetterLeakage(t *testing.T) {
 // grows — a new mutable type could slip in unaudited.
 var nonAuditableFields = map[string]string{
 	"IntentRouteIntents":            "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
-	"GroundedGeneratorModel":        "string — no methods",
-	"FastTemplateRenderer":          "bool — no methods",
 	"SupportsObjectToolChoice":      "bool — no methods",
 	"SupportsRequiredToolChoice":    "bool — no methods",
 	"MaxTokensPerTurn":              "int — no methods",
@@ -187,8 +183,6 @@ func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {
 			requireAudited(t, audited, "github.com/compshare-agent/internal/llm.Client", field.Name)
 		case "KnowledgeRetriever":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/knowledge.Retriever", field.Name)
-		case "GroundedGenerator":
-			requireAudited(t, audited, "github.com/compshare-agent/internal/renderer.GroundedGenerator", field.Name)
 		case "RateLimiter":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/governance.InMemoryRateLimiter", field.Name)
 		default:

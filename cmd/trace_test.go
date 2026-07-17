@@ -165,40 +165,6 @@ func TestCleanupTraceWriterDeletesExpiredFiles(t *testing.T) {
 	require.FileExists(t, filepath.Join(dir, "agent-trace-2026-04-08.jsonl"))
 }
 
-func TestGroundedGeneratorModeFromEnv(t *testing.T) {
-	mode, unknown := groundedRendererModeFromEnv(func(string) string { return "" })
-	require.Equal(t, "llm", mode)
-	require.Empty(t, unknown)
-
-	mode, unknown = groundedRendererModeFromEnv(func(key string) string {
-		if key == "USE_GROUNDED_RENDERER" {
-			return " llm "
-		}
-		return ""
-	})
-	require.Equal(t, "llm", mode)
-	require.Empty(t, unknown)
-
-	mode, unknown = groundedRendererModeFromEnv(func(key string) string {
-		if key == "USE_GROUNDED_RENDERER" {
-			return "fast_template"
-		}
-		return ""
-	})
-	// B3: fast_template must be a RECOGNIZED mode, not an unknown value —
-	// an unknown value is logged-and-treated-as-off, which would silently
-	// disable the feature with no operator signal.
-	require.Equal(t, "fast_template", mode)
-	require.Empty(t, unknown)
-
-	mode, unknown = groundedRendererModeFromEnv(func(string) string { return "weird" })
-	require.Empty(t, mode)
-	require.Equal(t, "weird", unknown)
-
-	require.Equal(t, "grounded_renderer=llm", groundedRendererRuntimeLine("llm"))
-	require.Equal(t, "grounded_renderer=off", groundedRendererRuntimeLine(""))
-}
-
 func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
 	enabled, unknown := mutatingToolsEnabledFromEnv(func(string) string { return "" })
 	require.False(t, enabled)

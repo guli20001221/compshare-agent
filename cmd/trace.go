@@ -144,13 +144,6 @@ func cleanupTraceWriter(writer observability.Writer, now time.Time) error {
 	return observability.Cleanup(dir, observability.DefaultTraceRetentionDays, now)
 }
 
-func groundedRendererRuntimeLine(mode string) string {
-	if mode == "" {
-		mode = "off"
-	}
-	return fmt.Sprintf("grounded_renderer=%s", mode)
-}
-
 func mutatingToolsEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	value := strings.TrimSpace(getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"))
 	switch value {
@@ -722,22 +715,6 @@ func (r *cliTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
 	r.record.Outcome.AttemptedHallucinatedCount = trace.AttemptedHallucinatedCount
 	r.record.Outcome.EscapedHallucinatedCount = trace.EscapedHallucinatedCount
 	r.record.Outcome.KBConflictCount = trace.KBConflictCount
-}
-
-func groundedRendererModeFromEnv(getenv getenvFunc) (string, string) {
-	raw := strings.ToLower(strings.TrimSpace(getenv("USE_GROUNDED_RENDERER")))
-	switch raw {
-	case "", "llm":
-		return "llm", ""
-	case "fast_template":
-		// B3: fast-tier catalog envelopes render via deterministic template
-		// (handler Reply); knowledge/agent tiers still use the LLM renderer.
-		return "fast_template", ""
-	case "off", "none", "disabled", "false", "0":
-		return "", ""
-	default:
-		return "", raw
-	}
 }
 
 func (r *cliTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {

@@ -85,13 +85,12 @@ agent:
     skill_executor_diagnosis_pilots: [] # e.g. [diagnose-ssh, diagnose-billing] — requires skill_executor: true
 
   # Knowledge retrieval / RAG. The default answer stack: curated retrieval,
-  # qwen3 RRF, LLM grounded rendering. corpus/embeddings/model/timeout fields
+  # qwen3 RRF. corpus/embeddings/model/timeout fields
   # are left empty = use the pinned built-in defaults; set them only to point
   # at a non-default corpus or tune timeouts.
   retrieval:
     knowledge_retrieval: curated        # curated | off
     mode: qwen3_rrf                     # qwen3_rrf | bm25_only | hybrid_cosine | hybrid_rerank | qwen3_full
-    grounded_renderer: llm             # llm | fast_template | off
     # corpus_path: ""                  # COMPSHARE_KNOWLEDGE_CORPUS (default deploy/kb/stage2b_w0.jsonl)
     # embeddings_path: ""              # COMPSHARE_KNOWLEDGE_EMBEDDINGS (default: computed from digest)
     # external_corpus_path: ""        # COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS (default deploy/kb/external_w0.jsonl)

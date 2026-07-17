@@ -70,7 +70,7 @@ CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,
 3. **Planner 路由** — 语义分类 → `{tier, agent_subtype?, skills[], slots, tool_calls?}`
 4. **按 tier 分发:**
    - fast → 确定性 handler → 调 tool → envelope → 模板渲染
-   - knowledge → 检索 → RRF 融合 → rerank → grounded 渲染
+   - knowledge → 检索 → RRF 融合 → rerank → 引用合成
    - agent → orchestrator 循环(可中途暂停等用户确认,见 §8)
 5. **输出守卫** — 脱敏 + 引用泄漏检查
 
@@ -136,12 +136,12 @@ router.For(llm.TierAgent)     // 强模型(必要时可升到更强的模型兜�
 2. BM25 关键词 top-50 ⊕ qwen3-embedding-8b 向量 top-50(hybrid 检索,两路并行召回)
 3. Reciprocal Rank Fusion 融合(k=60)
 4. qwen3-reranker-8b cross-encoder 精排,取 top-3
-5. 命中片段作为证据,交给 grounded 渲染
+5. 命中片段作为证据,交给引用合成
 
 要点:
 
 - 关键词召回和向量召回各有盲区,hybrid + RRF 把两路结果融合后再用 cross-encoder 精排,比单一召回稳。embedder 和 reranker 用同族模型(都是 qwen3)比跨族混搭更可靠。
-- **grounded 渲染**(`internal/renderer/`):接收证据片段,LLM 生成带引用的中文回答,**没有证据必须拒答**,不允许凭模型知识补。引用标记是否泄漏到最终文本由输出守卫兜底检查。
+- **引用合成**:接收证据片段,LLM 生成带引用的中文回答,**没有证据必须拒答**,不允许凭模型知识补。引用标记是否泄漏到最终文本由输出守卫兜底检查。
 - 知识库是 `deploy/kb/stage2b_w0.jsonl` 加预计算的 embedding sidecar,三件套用 SHA256 字节锁定,对不上直接拒绝启动,保证线上跑的语料就是验证过的那份。
 
 ## 8. Agent tier — orchestrator + tool loop + HITL
@@ -276,7 +276,6 @@ skill 是给模型当方法论用的,如果一份方法论本身只是当初的�
 | `skills/` | Skill bundle + 渐进式加载 loader + codegen(含 5 个 `diagnose_*` 诊断方法论) |
 | `tools/` | Tool spec(Function Calling + x-compshare)+ codegen + handler |
 | `knowledge/` | hybrid 检索 + RRF + rerank |
-| `renderer/` | grounded 渲染(knowledge)+ 模板渲染(fast) |
 | `engine/` | 外层骨架 + 三路 dispatch |
 | `orchestrator/` | agent 循环 + saga 回滚 + HITL 确认 |
 | `diagnosis/` | 诊断 SubAgent 接口 + registry |

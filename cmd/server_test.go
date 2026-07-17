@@ -299,8 +299,6 @@ func TestApplySharedDepsSessionFactContextFromEnv(t *testing.T) {
 			return "1"
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
-		case "USE_GROUNDED_RENDERER":
-			return "off"
 		default:
 			return ""
 		}
@@ -321,8 +319,6 @@ func TestApplySharedDepsReactResultProjectionFromEnv(t *testing.T) {
 		case "USE_REACT_RESULT_PROJECTION":
 			return "1"
 		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "off"
-		case "USE_GROUNDED_RENDERER":
 			return "off"
 		default:
 			return ""
@@ -345,8 +341,6 @@ func TestApplySharedDepsReactHistoryCompactionFromEnv(t *testing.T) {
 			return "1"
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
-		case "USE_GROUNDED_RENDERER":
-			return "off"
 		default:
 			return ""
 		}
@@ -356,7 +350,7 @@ func TestApplySharedDepsReactHistoryCompactionFromEnv(t *testing.T) {
 	require.True(t, deps.ReactHistoryCompactionEnabled)
 }
 
-func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
+func TestApplySharedDepsDefaultsToQwenRRF(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{
 			BaseURL: "http://localhost:1",
@@ -379,8 +373,6 @@ func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, deps.KnowledgeRetriever, "default runtime should enable qwen3_rrf retrieval")
-	require.NotNil(t, deps.GroundedGenerator, "default runtime should enable LLM grounded renderer")
-	require.Equal(t, "deepseek-v4-flash", deps.GroundedGeneratorModel)
 }
 
 func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {

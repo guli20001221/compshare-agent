@@ -56,7 +56,6 @@ Verified against `main` (file:line where it helps). "Why" cites the mismatch.
 |---|---|---|
 | `Saga` (orchestrator) | `StepRunner` / `WorkflowRunner` | The code itself states it does **not** implement reverse-compensation; `Step.Compensate` is "reserved-but-unconsumed" (`internal/orchestrator/saga.go:22-23`). "Saga" over-promises durable compensation we don't have. |
 | `MemoryLimiter` | `InMemoryRateLimiter` | Implements `RateLimiter` (`internal/governance/ratelimit.go:48/98`) — in-memory rate limiting, unrelated to agent memory. |
-| `grounded_renderer` / `GroundedRenderer` | `CitedAnswerGenerator` | "Renderer" implies UI; it synthesizes a cited answer from evidence. |
 | `agentic SearchKnowledge` | `KnowledgeSearchTool` | "agentic" is too generic; it's a read-only retrieval **tool**. |
 | `runtime_form` | `execution_path` / `execution_mode` | Non-standard term; reads poorly externally. |
 | `RealizedTier` | `ActualExecutionTier` | Disambiguate from `TaskTier` / `RuntimeForm`. |
@@ -80,4 +79,4 @@ Naming changes follow the same risk discipline as any change here:
 4. **Prompt text** that the model reads (e.g. "You are the … planner") is a behavior surface — rename behind an eval-gated A/B, not byte-stable.
 5. **Wire/ops contracts are NOT free to rename**: the trace JSON tags (`json:"planner"`, `json:"cutover_status"`, `json:"cutover_intents"`) and env flags (`USE_INTENT_PLANNER*`) are consumed by trace storage/dashboards **and the eval harness itself**. These move behind a compat window (dual-emit / dual-read) with consumers updated in the same change.
 
-Priority order (highest naming-debt first): **Planner → IntentRouter**, **cutover → direct dispatch**, the **three routers** split, then env-prefix unification, then the remaining over-promising names (`Saga`, `MemoryLimiter`, `grounded_renderer`, …).
+Priority order (highest naming-debt first): **Planner → IntentRouter**, **cutover → direct dispatch**, the **three routers** split, then env-prefix unification, then the remaining over-promising names (`Saga`, `MemoryLimiter`, …).

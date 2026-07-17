@@ -928,7 +928,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
   retrieval:
     knowledge_retrieval: curated
     mode: qwen3_rrf
-    grounded_renderer: llm
     hybrid_timeout_ms: 8000
   trace:
     enabled: true

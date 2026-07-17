@@ -334,7 +334,7 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 		env.Subjects = append(env.Subjects, envelope.Subject{
 			ID: subjectID, Name: name, Type: envelope.SubjectImage,
 		})
-		// Skip the raw-id / redundant-name display facts so the grounded renderer
+		// Skip the raw-id / redundant-name display facts so the answering model
 		// does not dump CompShareImageId per row — the id lives in Subject.ID and the
 		// name in Subject.Name. Keeps the rendered list clean (类型/状态/作者 only).
 		for _, key := range fieldOrder {
@@ -447,8 +447,8 @@ func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode pl
 		filtered = append(filtered, entry)
 	}
 	// Surface genuinely-popular images first: live API order is recommend-weighted,
-	// so sort subjects by CreatedCount (部署次数) desc — the grounded renderer lists
-	// subjects in envelope order.
+	// so sort subjects by CreatedCount (部署次数) desc — subjects are presented
+	// in envelope order.
 	sort.SliceStable(filtered, func(i, j int) bool {
 		return communityDeployCount(filtered[i]) > communityDeployCount(filtered[j])
 	})

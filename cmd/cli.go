@@ -14,10 +14,8 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/knowledge"
-	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
-	"github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/tools"
 
 	"github.com/spf13/cobra"
@@ -165,24 +163,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	}
 	knowledgeRetriever, knowledgeRetrievalEnabled, knowledgeErr := knowledgeRetrieverFromEnv(getenv)
 	applyKnowledgeRetrieverStartup(eng, knowledgeRetrievalRequested, knowledgeRetriever, knowledgeRetrievalEnabled, knowledgeErr)
-	groundedRendererMode, unknownGroundedGeneratorMode := groundedRendererModeFromEnv(getenv)
-	if unknownGroundedGeneratorMode != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_GROUNDED_RENDERER value %q\n", unknownGroundedGeneratorMode)
-	}
-	if groundedRendererMode == "llm" || groundedRendererMode == "fast_template" {
-		router, err := buildLLMRouter(cfg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: build LLM router for grounded renderer: %v\n", err)
-			os.Exit(1)
-		}
-		// LLM renderer serves knowledge/agent tiers in both modes; B3
-		// fast_template additionally diverts fast-tier catalog envelopes to
-		// the deterministic template.
-		eng.SetGroundedGenerator(renderer.NewGroundedGenerator(router.For(llm.TierKnowledge)), router.Model(llm.TierKnowledge))
-		if groundedRendererMode == "fast_template" {
-			eng.SetFastTemplate(true)
-		}
-	}
 	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(getenv)
 	if traceErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: trace disabled: %v\n", traceErr)
@@ -213,7 +193,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 	fmt.Println("│     Compshare Copilot v0.1           │")
 	fmt.Println("╰──────────────────────────────────────╯")
 	fmt.Println("runtime: agent_runtime=central")
-	fmt.Printf("renderer: %s\n", groundedRendererRuntimeLine(groundedRendererMode))
 	fmt.Printf("tools: %s\n", mutatingToolsRuntimeLine(mutatingToolsEnabled))
 	fmt.Println()
 	fmt.Println("正在初始化，获取您的实例信息...")

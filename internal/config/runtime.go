@@ -46,12 +46,11 @@ type FeaturesConfig struct {
 	SkillExecutorDiagnosisPilots []string `yaml:"skill_executor_diagnosis_pilots"` // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (inert)
 }
 
-// RetrievalConfig holds the RAG / knowledge retrieval + grounded-renderer knobs.
+// RetrievalConfig holds the RAG / knowledge retrieval knobs.
 // Empty string / zero int means "omitted — fall through to env, then default".
 type RetrievalConfig struct {
 	KnowledgeRetrieval     string `yaml:"knowledge_retrieval"`      // USE_KNOWLEDGE_RETRIEVAL: curated|off
 	Mode                   string `yaml:"mode"`                     // RAG_RETRIEVAL_MODE: qwen3_rrf|bm25_only|hybrid_cosine|hybrid_rerank|qwen3_full
-	GroundedRenderer       string `yaml:"grounded_renderer"`        // USE_GROUNDED_RENDERER: llm|fast_template|off
 	CorpusPath             string `yaml:"corpus_path"`              // COMPSHARE_KNOWLEDGE_CORPUS
 	EmbeddingsPath         string `yaml:"embeddings_path"`          // COMPSHARE_KNOWLEDGE_EMBEDDINGS
 	ExternalCorpusPath     string `yaml:"external_corpus_path"`     // COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS
@@ -113,7 +112,6 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	r := c.Agent.Retrieval
 	putStrEnv(overrides, "USE_KNOWLEDGE_RETRIEVAL", r.KnowledgeRetrieval)
 	putStrEnv(overrides, "RAG_RETRIEVAL_MODE", r.Mode)
-	putStrEnv(overrides, "USE_GROUNDED_RENDERER", r.GroundedRenderer)
 	putStrEnv(overrides, "COMPSHARE_KNOWLEDGE_CORPUS", r.CorpusPath)
 	putStrEnv(overrides, "COMPSHARE_KNOWLEDGE_EMBEDDINGS", r.EmbeddingsPath)
 	putStrEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS", r.ExternalCorpusPath)

@@ -27,7 +27,6 @@ import (
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/readprojection"
 	"github.com/compshare-agent/internal/refusal"
-	grounded "github.com/compshare-agent/internal/renderer"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
@@ -244,14 +243,6 @@ type Engine struct {
 	knowledgeRetriever         KnowledgeRetriever
 	agentRuntimeEventsThisTurn []agentruntime.Event
 	agentRuntimeObserver       func(agentruntime.Event)
-	groundedRenderer           grounded.Renderer
-	groundedRendererModel      string
-	// fastTemplate, when true, makes fast-tier catalog envelopes
-	// (gpu_specs / stock / image_list) render via the handler's
-	// deterministic Reply instead of the LLM grounded renderer (B3). The
-	// LLM renderer is still used for the other tiers. Shared (process-wide
-	// flag), copied into every session.
-	fastTemplate                  bool
 	rendererTraceObserver         func(observability.RendererTrace)
 	historyTrimmedThisSession     bool
 	retrievalTraceObserver        func(observability.RetrievalTrace)
@@ -409,7 +400,7 @@ type Engine struct {
 	// snapshot.
 	continuityAdvisories ContinuityAdvisories
 	// turnContextViewThisTurn is the immutable understanding projection shared by
-	// routing fallbacks and grounded rendering. It is rebuilt exactly once after
+	// routing fallbacks and the agent context card. It is rebuilt exactly once after
 	// turn-entry expiry/refresh and before the current user message is appended.
 	turnContextViewThisTurn TurnContextView
 	turnContextViewReady    bool
@@ -453,22 +444,16 @@ type Engine struct {
 // (RateLimiter has its own mutex). See plan §3.1 / §5 for the full
 // classification rationale.
 //
-// KnowledgeRetriever and GroundedGenerator are exported so server bootstrap
-// can assign them on immutable process-wide dependencies before sessions start.
+// KnowledgeRetriever is exported so server bootstrap
+// can assign it on immutable process-wide dependencies before sessions start.
 type SharedDeps struct {
 	LLMClient LLMClient
 	// AgentLLMClient is the TierAgent (strong-model) client. NewSharedDeps
 	// keeps the router's TierAgent client instead of discarding it (the same
 	// router that yields LLMClient = For(TierFast)). Copied into every
 	// NewSession as Engine.agentLLMClient. Empty on the test path.
-	AgentLLMClient         LLMClient
-	KnowledgeRetriever     KnowledgeRetriever
-	GroundedGenerator      grounded.Renderer
-	GroundedGeneratorModel string
-	// FastTemplateRenderer enables B3: fast-tier catalog envelopes render
-	// via the handler's deterministic Reply instead of the LLM grounded
-	// renderer. Default false (LLM renderer for all tiers, unchanged).
-	FastTemplateRenderer       bool
+	AgentLLMClient             LLMClient
+	KnowledgeRetriever         KnowledgeRetriever
 	RateLimiter                governance.RateLimiter
 	SupportsObjectToolChoice   bool
 	SupportsRequiredToolChoice bool
@@ -509,7 +494,7 @@ type SessionOptions struct {
 
 // NewSharedDeps assembles the always-shared engine dependencies from config.
 // Call once at process startup; share the result across every NewSession.
-// Planner / KnowledgeRetriever / GroundedGenerator are NOT populated here —
+// Planner / KnowledgeRetriever are NOT populated here —
 // they are env-driven and the caller assigns them on the returned struct
 // (server) or via Engine setters post-NewSession (CLI).
 func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
@@ -578,9 +563,6 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		llmClient:                  deps.LLMClient,
 		agentLLMClient:             deps.AgentLLMClient,
 		knowledgeRetriever:         deps.KnowledgeRetriever,
-		groundedRenderer:           deps.GroundedGenerator,
-		groundedRendererModel:      deps.GroundedGeneratorModel,
-		fastTemplate:               deps.FastTemplateRenderer,
 		rateLimiter:                deps.RateLimiter,
 		supportsObjectToolChoice:   deps.SupportsObjectToolChoice,
 		supportsRequiredToolChoice: deps.SupportsRequiredToolChoice,
@@ -693,16 +675,6 @@ func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 	// code owns env parsing and only calls this after USE_KNOWLEDGE_RETRIEVAL
 	// and corpus loading succeed.
 	e.knowledgeRetriever = retriever
-}
-
-func (e *Engine) SetGroundedGenerator(r grounded.Renderer, model string) {
-	e.groundedRenderer = r
-	e.groundedRendererModel = model
-}
-
-// SetFastTemplate toggles B3 fast-tier template rendering (see Engine.fastTemplate).
-func (e *Engine) SetFastTemplate(v bool) {
-	e.fastTemplate = v
 }
 
 func (e *Engine) SetRendererTraceObserver(observer func(observability.RendererTrace)) {
