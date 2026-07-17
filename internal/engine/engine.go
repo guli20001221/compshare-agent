@@ -1465,7 +1465,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// turn, deliver the final cited answer from it instead of discarding the whole
 	// turn for a bare 请重新描述 — the same recovery the token-budget gate uses at the
 	// top of this loop. synthesizeOnBudgetExceeded returns ("",false) on an empty
-	// ledger, so a no-evidence thrash (GetGPUSpecs-only, or a corpus-gap query the
+	// ledger, so a no-evidence thrash (plain reads only, or a corpus-gap query the
 	// relevance floor emptied) keeps the canned message byte-identical and never
 	// fabricates. Streaming invariant: any turn that ran SearchKnowledge has
 	// guardMayRewrite=true (searchKnowledgeRanThisTurn), so its deltas were buffered

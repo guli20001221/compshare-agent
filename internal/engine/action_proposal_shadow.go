@@ -337,8 +337,15 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	return e.executeWorkflow(ctx, resolved.Operation, resolved.Arguments, onStep)
 }
 
+// rememberPendingResolvedAction parks a half-finished write as a task frame so a
+// later turn can complete it. It fires ONLY for a clean "the user has not told us
+// X yet" — never for a DependencyFailure, which means OUR catalog query failed. A
+// frame in that case would persist "waiting for the user to supply GpuType" into
+// the session, blaming the user for our outage and poisoning every later turn's
+// context with a task they cannot resolve.
 func (e *Engine) rememberPendingResolvedAction(resolved actionresolver.ResolvedAction) {
-	if len(resolved.Missing) == 0 || len(resolved.Conflicts) != 0 || len(resolved.Rejected) != 0 {
+	if len(resolved.Missing) == 0 || len(resolved.Conflicts) != 0 ||
+		len(resolved.Rejected) != 0 || len(resolved.DependencyFailures) != 0 {
 		return
 	}
 	now := time.Now()

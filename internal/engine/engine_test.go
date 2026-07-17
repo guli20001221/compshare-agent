@@ -741,7 +741,7 @@ func TestChat_ExternalTool_L1Denied(t *testing.T) {
 func TestChat_InvalidToolArgs(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetGPUSpecs", `not json`),
+			toolCall("tc1", "DescribeCompShareInstance", `not json`),
 		}},
 		{Content: "抱歉出错了"},
 	}}
@@ -769,7 +769,7 @@ func TestChat_MaxRoundsExceeded(t *testing.T) {
 	for i := range responses {
 		responses[i] = llm.ChatResponse{
 			ToolCalls: []openai.ToolCall{
-				toolCall("tc", "GetGPUSpecs", `{"GpuType":"4090"}`),
+				toolCall("tc", "DescribeCompShareInstance", `{}`),
 			},
 		}
 	}
@@ -782,7 +782,7 @@ func TestChat_MaxRoundsExceeded(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "test", noopStep)
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "轮次超限")
-	// No SearchKnowledge ran (GetGPUSpecs-only) → empty ledger → the loop-ceiling
+	// No SearchKnowledge ran (plain reads only) → empty ledger → the loop-ceiling
 	// recovery must NOT fire and the canned message stays byte-identical. Pins the
 	// no-fabrication contract that gates synthesizeOnBudgetExceeded at this exit.
 	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "no evidence gathered → recovery must not fabricate over the ceiling refusal")
@@ -829,11 +829,16 @@ func TestInit_FailedContextInjection(t *testing.T) {
 	assert.NotContains(t, eng.messages[0].Content, "平台常见问题")
 }
 
+// Knowledge-route tools run locally and must never reach the API executor.
+// Retargeted from GetGPUSpecs to SearchKnowledge, that route's only remaining
+// member. This mattered: with a deleted tool name the assertion held for the
+// WRONG reason — an unknown tool never reaches any executor either, so the test
+// proved nothing about the knowledge lane.
 func TestKnowledgeTool_DoesNotCallExecutor(t *testing.T) {
 	executor := &mockExecutor{}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetGPUSpecs", `{"GpuType":"A100"}`),
+			toolCall("tc1", "SearchKnowledge", `{"query":"A100 规格"}`),
 		}},
 		{Content: "A100 规格"},
 	}}
@@ -1685,28 +1690,25 @@ func TestNewWarnsWhenPublicKeyMissingForRateLimiter(t *testing.T) {
 	assert.Equal(t, governance.AnonymousSubjectKey, eng.rateLimitSubject)
 }
 
+// TestKnowledgeTool_ArgsFiltered pins the knowledge route's arg allowlist.
+// SearchKnowledge is now that route's only member (the GetGPUSpecs this used to
+// drive is deleted with the static GPU table).
+//
+// It deliberately does NOT drive Chat and inspect the StepToolCall event, the way
+// its ancestor did. That shape CANNOT work here: executeSearchKnowledge
+// hand-builds its event args as {"query": query} (engine.go), so the event never
+// carries the raw map and `NotContains(ev.Args, "evil")` holds no matter what the
+// filter does. Verified by mutation — deleting the FilterArgs call left the
+// event-driven version green, i.e. it was still a vacuous gate after being
+// retargeted. Assert the filter itself, which is the thing with teeth.
 func TestKnowledgeTool_ArgsFiltered(t *testing.T) {
-	// Knowledge tools should also have args filtered
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetGPUSpecs", `{"GpuType":"4090","evil":"injection"}`),
-		}},
-		{Content: "done"},
-	}}
-	onStep, events := collectSteps()
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	eng.Chat(context.Background(), "test", onStep)
-
-	for _, ev := range *events {
-		if ev.Type == StepToolCall && ev.Action == "GetGPUSpecs" {
-			assert.NotContains(t, ev.Args, "evil")
-			assert.Contains(t, ev.Args, "GpuType")
-		}
-	}
+	filtered := tools.NewSafeToolExecutor(&mockExecutor{}).FilterArgs("SearchKnowledge", map[string]any{
+		"query":        "4090 显存",
+		"context_hint": "创建实例",
+		"evil":         "injection",
+	})
+	assert.Equal(t, map[string]any{"query": "4090 显存", "context_hint": "创建实例"}, filtered,
+		"unknown params must be stripped before a knowledge tool sees them")
 }
 
 func TestFilterAllowedParams_StripsUnknown(t *testing.T) {

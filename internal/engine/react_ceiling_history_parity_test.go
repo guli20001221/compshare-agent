@@ -50,16 +50,17 @@ func prose(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
 }
 
 // exhaustTheRoundCeiling drives a turn that burns every ReAct round on tool
-// calls and never produces an answer. GetGPUSpecs is deliberate: it is not
+// calls and never produces an answer. The tool is deliberately NOT
 // SearchKnowledge, so the evidence ledger stays empty and synthesizeOnBudget-
 // Exceeded declines to recover — which is what lands the turn on the bare
-// refusal instead of a synthesized answer.
+// refusal instead of a synthesized answer. (It used to be GetGPUSpecs, deleted
+// with the static GPU table; any non-SearchKnowledge read serves the purpose.)
 func exhaustTheRoundCeiling(t *testing.T, userMsg string) (*Engine, string) {
 	t.Helper()
 	responses := make([]llm.ChatResponse, maxReActRounds+1)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{
-			ToolCalls: []openai.ToolCall{toolCall("tc", "GetGPUSpecs", `{"GpuType":"4090"}`)},
+			ToolCalls: []openai.ToolCall{toolCall("tc", "DescribeCompShareInstance", `{}`)},
 		}
 	}
 	eng := NewWithDeps(&mockLLM{responses: responses}, &mockExecutor{}, nil)

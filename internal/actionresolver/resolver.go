@@ -50,10 +50,18 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	result.Gate = GateContract{Executor: "SafeToolExecutor", Risk: spec.Risk, RequiresPermission: true, RequiresConfirmation: spec.NeedsConfirm, RequiresJournal: true}
 	result.Execution = spec.Execution
 	grouped := map[string][]SlotCandidate{}
+	// adjudicated records every field the resolver formed an opinion about and
+	// could not accept — rejected, conflicted, or dependency-failed. Such a field
+	// is NOT Missing: the value WAS supplied, we just could not honour it. Missing
+	// means only "nobody has said it yet", and mixing the two tells the agent to
+	// ask the user for something they already gave us (or, worse, for something
+	// our own failed catalog query is to blame for).
+	adjudicated := map[string]struct{}{}
 	for _, candidate := range proposal.Slots {
 		name := normalizeName(candidate.Name)
 		if !knownSource(candidate.Source) {
 			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: unknown candidate source", name))
+			adjudicated[name] = struct{}{}
 			continue
 		}
 		field, exists := spec.Fields[name]
@@ -63,6 +71,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		}
 		if candidate.Source == SourceUserExplicit && (candidate.Evidence == nil || r.verifier == nil || !r.verifier.VerifyCandidate(candidate)) {
 			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: user-explicit source is not verified", name))
+			adjudicated[name] = struct{}{}
 			continue
 		}
 		value, err := r.normalizeValue(field, candidate.Value)
@@ -77,11 +86,13 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			default:
 				result.Rejected = append(result.Rejected, fmt.Sprintf("%s: %v", name, err))
 			}
+			adjudicated[name] = struct{}{}
 			continue
 		}
 		candidate.Name, candidate.Value = name, value
 		if field.Target && !r.trustedTarget(candidate) {
 			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: target source is not verified", name))
+			adjudicated[name] = struct{}{}
 			continue
 		}
 		grouped[name] = append(grouped[name], candidate)
@@ -90,6 +101,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		winner, conflict := resolveCandidates(candidates)
 		if conflict {
 			result.Conflicts = append(result.Conflicts, Conflict{Slot: name, Candidates: candidates})
+			adjudicated[name] = struct{}{}
 			continue
 		}
 		field := spec.Fields[name]
@@ -97,11 +109,16 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		result.Provenance[name] = ResolvedSlot{Value: winner.Value, Source: winner.Source, Codec: field.Codec}
 	}
 	for name, field := range spec.Fields {
-		if field.Required {
-			if _, ok := result.Arguments[name]; !ok {
-				result.Missing = append(result.Missing, name)
-			}
+		if !field.Required {
+			continue
 		}
+		if _, ok := result.Arguments[name]; ok {
+			continue
+		}
+		if _, judged := adjudicated[name]; judged {
+			continue
+		}
+		result.Missing = append(result.Missing, name)
 	}
 	if len(result.Missing) == 0 && len(result.Conflicts) == 0 && len(result.Rejected) == 0 && len(result.DependencyFailures) == 0 && spec.ValidateResolved != nil {
 		if err := spec.ValidateResolved(result.Arguments); err != nil {

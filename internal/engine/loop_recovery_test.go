@@ -106,7 +106,7 @@ func prepareKnowledgeRecoveryLane(t *testing.T, eng *Engine) {
 }
 
 // TestChat_RoundCeiling_RecoversFromGatheredEvidence: round 0 calls
-// SearchKnowledge (records a kept hit), rounds 1..9 thrash with GetGPUSpecs and
+// SearchKnowledge (records a kept hit), rounds 1..9 thrash with a plain read and
 // never produce a final text reply, so the loop hits the round ceiling with a
 // non-empty ledger → recovery synthesizes the cited answer instead of refusing.
 func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
@@ -116,7 +116,7 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	}}
 	for i := 1; i < maxReActRounds; i++ {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall("tc", "GetGPUSpecs", `{"GpuType":"4090"}`),
+			toolCall("tc", "DescribeCompShareInstance", `{}`),
 		}}
 	}
 	// Index maxReActRounds is consumed by the one-call grounded recovery, NOT

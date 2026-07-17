@@ -14,6 +14,68 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// createProposalArgs is a CreateInstanceWorkflow proposal naming a GPU the user
+// really did say — the only thing that can go wrong here is on our side.
+func createProposalArgs(turnID, gpuType string) map[string]any {
+	return map[string]any{
+		"turn_id": turnID, "operation": "CreateInstanceWorkflow",
+		"slots": []any{map[string]any{
+			"name": "GpuType", "value": gpuType, "source": "user_explicit",
+			"evidence": map[string]any{"quote": gpuType},
+		}},
+	}
+}
+
+// TestProposeActionCatalogOutageParksNoPendingTask is the engine half of the
+// "our failure is not the user's fault" contract. The resolver reporting a
+// DependencyFailure is not enough on its own: the engine must also refuse to
+// persist a task frame from it. A frame here would survive into later turns as
+// "waiting for the user to supply GpuType" — a task they cannot possibly resolve,
+// because the value was never the problem.
+func TestProposeActionCatalogOutageParksNoPendingTask(t *testing.T) {
+	// mockExecutor has no result for DescribeAvailableCompShareInstanceTypes, so
+	// querySafeRead returns nil and the snapshot reports Available=false — the
+	// same shape a real upstream outage produces.
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.sessionStateHydrated = true
+	eng.lastUserMsg = "给我开一台 4090"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-outage", time.Now())
+	eng.turnContextViewReady = true
+
+	_ = eng.executeActionProposal(context.Background(), createProposalArgs("turn-outage", "4090"), noopStep)
+
+	require.Empty(t, eng.sessionState.ContextFrame.Workflow,
+		"a catalog outage must not park a task frame asking the user to re-supply GpuType")
+	require.Empty(t, eng.sessionState.ContextFrame.MissingSlots)
+}
+
+// TestProposeActionResolvesGpuTypeAgainstLiveCatalog is the engine-level wiring
+// gate: the proposal path must actually query the upstream catalog and carry the
+// canonical name through. The resolver unit tests cannot see this — they are
+// handed a snapshot, so they would keep passing if the engine never fetched one.
+func TestProposeActionResolvesGpuTypeAgainstLiveCatalog(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090"},
+			map[string]any{"Name": "4090_48G"},
+		}},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "给我开一台 4090 48G"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-live", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), createProposalArgs("turn-live", "4090 48G"))
+
+	require.NoError(t, err)
+	require.Empty(t, resolved.DependencyFailures, "the catalog was reachable")
+	require.Equal(t, "4090_48G", resolved.Arguments["GpuType"],
+		"the engine must fetch the live catalog and the resolver must canonicalize against it")
+	require.NotNil(t, resolved.Confirmation)
+	require.Equal(t, "4090_48G", resolved.Confirmation.Arguments["GpuType"],
+		"confirm card and executed args must be the same string")
+}
+
 func TestProposeActionShadowRejectsSubstringTarget(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.lastUserMsg = "pytest"

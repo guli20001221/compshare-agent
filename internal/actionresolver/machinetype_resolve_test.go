@@ -54,6 +54,8 @@ func TestResolveRejectsUnknownGpuTypeWithoutGuessing(t *testing.T) {
 	assert.NotEmpty(t, resolved.Rejected)
 	assert.Nil(t, resolved.Arguments["GpuType"], "an unknown card must not resolve to anything")
 	assert.Empty(t, resolved.DependencyFailures, "an unknown card is the user's input, not our outage")
+	assert.NotContains(t, resolved.Missing, "GpuType",
+		"a value we rejected is not a value the user withheld — reporting both asks them to re-supply what they just gave us")
 }
 
 // TestResolveReportsCatalogOutageAsDependencyFailure pins the four refusal
@@ -72,6 +74,22 @@ func TestResolveReportsCatalogOutageAsDependencyFailure(t *testing.T) {
 	assert.Empty(t, resolved.Rejected, "a server-side outage must not be blamed on the user's value")
 	assert.Nil(t, resolved.Arguments["GpuType"])
 	assert.Nil(t, resolved.Confirmation)
+	// The leak this test originally missed: GpuType was absent from Arguments, so
+	// the required-field sweep also called it Missing. The agent then saw "your
+	// catalog is down" AND "the user never told you the GPU" for the same field,
+	// and the engine parked a task frame asking them to supply it.
+	assert.Empty(t, resolved.Missing,
+		"our failed catalog query must never be reported as the user withholding a value")
+}
+
+func TestResolveDoesNotReportAmbiguousGpuTypeAsMissing(t *testing.T) {
+	resolver := createResolver(t, MachineTypeCatalog{Names: []string{"4090_48G", "4090-48G"}, Available: true})
+
+	resolved := resolver.Resolve(createProposal("4090 48G"))
+
+	require.Len(t, resolved.Conflicts, 1)
+	assert.Empty(t, resolved.Missing,
+		"an ambiguous value was supplied — the question is which one, not whether one was given")
 }
 
 func TestResolveReportsGpuAmbiguityAsConflict(t *testing.T) {
