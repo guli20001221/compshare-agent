@@ -2,67 +2,6 @@
   "version": 1,
   "findings": [
     {
-      "id": "26314cc657e4cb3c",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_stock.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "cuda"
-    },
-    {
-      "id": "0bea534907cf0db6",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_stock.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "nvidia"
-    },
-    {
-      "id": "35cc58f764c82143",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_stock.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "ubuntu"
-    },
-    {
-      "id": "57159e23460ed400",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_catalog_helpers.go",
-      "symbol": "entryMatchesSlotQuery",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "2da4ad28320070b1",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_model_repository.go",
-      "symbol": "matchModelRepositoryTags",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "7646a3f44a7be397",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deployTextHasModelFamilyAndSize",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)[a-z]"
-    },
-    {
-      "id": "bbcdf361136954dd",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deployTextHasModelFamilyAndSize",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\d+(?:\\.\\d+)?b"
-    },
-    {
-      "id": "c42a94a44c2c62f4",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "gpuNameMatchPattern",
-      "callee": "regexp.MustCompile"
-    },
-    {
       "id": "884e90340644463d",
       "kind": "regex",
       "path": "internal/engine/deploy_model.go",
@@ -79,134 +18,6 @@
       "value": "!\\[[^\\]]*\\]\\([^)]*\\)"
     },
     {
-      "id": "8b69f75c68bd32b6",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])2080(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "6b44964e3d44c3c6",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])2080\\s*ti(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "ade109f779f408e1",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])3080\\s*ti(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "0dcd838259d67c91",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])3090(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "c2a18834be7a2456",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])4090(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "4846393e2959f03c",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])4090[\\s_-]*48g(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "1dbab2c5a81765f6",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])4090\\s*pro(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "a7e76ab0d292d922",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])5090(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "22a0a7229599e988",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])5090d(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "acfa3f53a1f3b103",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])a100(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "5a548b115fd3c7ba",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])a800(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "d894adb5530028f2",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])h20(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "9a821d7e4a855e25",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])p40(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "572145b3fd818a92",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:^|[^0-9a-z])v100s?(?:[^0-9a-z]|$)"
-    },
-    {
-      "id": "dc9aef02e157950f",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)([a-z][a-z0-9._/-]*?)?\\s*[-_ ]?\\s*(\\d+(?:\\.\\d+)?)\\s*b\\b"
-    },
-    {
-      "id": "b98ae01d00583e55",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)^\\d+(?:\\.\\d+)?b$"
-    },
-    {
       "id": "590e2652517db7a1",
       "kind": "regex",
       "path": "internal/engine/deploy_model.go",
@@ -221,22 +32,6 @@
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "\\n{3,}"
-    },
-    {
-      "id": "527dd955eb5770f2",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "「(.+?)」有多个参数规模"
-    },
-    {
-      "id": "86bfa05f96b836fa",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "splitDeployModelSize",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(\\d+(?:\\.\\d+)?b)"
     },
     {
       "id": "bf39e60f88e53bda",
@@ -631,86 +426,6 @@
       "value": "(评价|你觉得|怎么看|看法|意见|支持|反对|拥护|批评)"
     },
     {
-      "id": "9ca65d600aadca13",
-      "kind": "regex",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:过去|最近|近|past|last|previous)\\s*(\\d+)\\s*([a-z]+|分钟|分|小时|时)"
-    },
-    {
-      "id": "0957daf96bfe94ea",
-      "kind": "regex",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseMonitorTime",
-      "callee": "regexp.MustCompile",
-      "value": "(\\d{4}-\\d{2}-\\d{2})T(\\d{1,2}:\\d{2}(?::\\d{2})?(?:Z|[+-]\\d{2}:\\d{2}))"
-    },
-    {
-      "id": "932ac1403f56c51b",
-      "kind": "regex",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseMonitorTime",
-      "callee": "regexp.MustCompile",
-      "value": "(\\d{4}-\\d{2}-\\d{2})\\s+(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?"
-    },
-    {
-      "id": "23f82eb3f63f6b82",
-      "kind": "regex",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseMonitorTimeWithDefaultDate",
-      "callee": "regexp.MustCompile",
-      "value": "(?:^|\\D)(\\d{1,2})(?:\\s*(?::|点|时)\\s*(\\d{1,2})?)?"
-    },
-    {
-      "id": "499c4e569749d9e4",
-      "kind": "regex",
-      "path": "internal/readprojection/resource_filter.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "^[A-Za-z0-9_.-]+$"
-    },
-    {
-      "id": "3b28e41f98161fe0",
-      "kind": "regex",
-      "path": "internal/intent/routing_cfs_refund.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\bu(?:host|h)-[a-z0-9-]+\\b"
-    },
-    {
-      "id": "b547fabc4a852511",
-      "kind": "regex",
-      "path": "internal/intent/routing_cfs_refund.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)cfs-[a-z0-9-]+"
-    },
-    {
-      "id": "d44c57eee6e8bea3",
-      "kind": "regex",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b([a-z]{1,3}\\d{2,4}[a-z0-9_]*|\\d{4}(?:_\\d+g)?)\\b"
-    },
-    {
-      "id": "2c9c85fe00e48340",
-      "kind": "regex",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(\\d{2,3})\\s*(?:gb|g)\\b"
-    },
-    {
-      "id": "b055ef2f01b5678b",
-      "kind": "regex",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)_(\\d{2,3})g$"
-    },
-    {
       "id": "b0459f46c599b03e",
       "kind": "regex",
       "path": "internal/knowledge/gpu_specs.go",
@@ -757,6 +472,70 @@
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "\\buhost-[A-Za-z0-9]+\\b"
+    },
+    {
+      "id": "234a29a2b347f374",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b([a-z]{1,3}\\d{2,4}[a-z0-9_]*|\\d{4}(?:_\\d+g)?)\\b"
+    },
+    {
+      "id": "b8e26fe313b4a8c8",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(\\d{2,3})\\s*(?:gb|g)\\b"
+    },
+    {
+      "id": "38d515a8628832c0",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)_(\\d{2,3})g$"
+    },
+    {
+      "id": "499c4e569749d9e4",
+      "kind": "regex",
+      "path": "internal/readprojection/resource_filter.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "^[A-Za-z0-9_.-]+$"
+    },
+    {
+      "id": "9ca65d600aadca13",
+      "kind": "regex",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)(?:过去|最近|近|past|last|previous)\\s*(\\d+)\\s*([a-z]+|分钟|分|小时|时)"
+    },
+    {
+      "id": "0957daf96bfe94ea",
+      "kind": "regex",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseMonitorTime",
+      "callee": "regexp.MustCompile",
+      "value": "(\\d{4}-\\d{2}-\\d{2})T(\\d{1,2}:\\d{2}(?::\\d{2})?(?:Z|[+-]\\d{2}:\\d{2}))"
+    },
+    {
+      "id": "932ac1403f56c51b",
+      "kind": "regex",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseMonitorTime",
+      "callee": "regexp.MustCompile",
+      "value": "(\\d{4}-\\d{2}-\\d{2})\\s+(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?"
+    },
+    {
+      "id": "23f82eb3f63f6b82",
+      "kind": "regex",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseMonitorTimeWithDefaultDate",
+      "callee": "regexp.MustCompile",
+      "value": "(?:^|\\D)(\\d{1,2})(?:\\s*(?::|点|时)\\s*(\\d{1,2})?)?"
     },
     {
       "id": "55878f555cf76caf",
@@ -839,36 +618,12 @@
       "value": "百分之\\s*\\d+(?:\\.\\d+)?|\\d+(?:\\.\\d+)?\\s*[%％]?"
     },
     {
-      "id": "a83b1b6fff45f04f",
-      "kind": "regex",
-      "path": "internal/routing/loader.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "^[a-z][a-z0-9_]*[a-z0-9]$"
-    },
-    {
       "id": "7937b0b26e125e35",
       "kind": "regex",
       "path": "internal/security/secret_boundary.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "[^a-z0-9]+"
-    },
-    {
-      "id": "f23f745738a1adf0",
-      "kind": "regex",
-      "path": "internal/skills/loader.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(uhost-[a-z0-9]+|org-[a-z0-9]+|RetCode\\s*[:=]\\s*\\d+|cn-[a-z0-9]+-[a-z0-9-]+)\\b"
-    },
-    {
-      "id": "4058bbf23522ee59",
-      "kind": "regex",
-      "path": "internal/skills/loader.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
     },
     {
       "id": "fcb651138eaebd79",
@@ -901,6 +656,76 @@
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "\\d+(?:\\.\\d+)*"
+    },
+    {
+      "id": "57159e23460ed400",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_catalog_helpers.go",
+      "symbol": "entryMatchesSlotQuery",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "2da4ad28320070b1",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_model_repository.go",
+      "symbol": "matchModelRepositoryTags",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "c8c9bbb377608f1c",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingFormatNumber",
+      "callee": "strings.HasPrefix",
+      "value": "$"
+    },
+    {
+      "id": "861f47267699fbaf",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingFormatNumber",
+      "callee": "strings.HasPrefix",
+      "value": "¥"
+    },
+    {
+      "id": "6fabfcef8c2bf667",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingKindIsCatalog",
+      "callee": "strings.Contains",
+      "value": "标准价"
+    },
+    {
+      "id": "21520027be91c074",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingKindIsCatalog",
+      "callee": "strings.Contains",
+      "value": "目录价"
+    },
+    {
+      "id": "26314cc657e4cb3c",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_stock.go",
+      "symbol": "selectCapacityPrecheckImageID",
+      "callee": "strings.Contains",
+      "value": "cuda"
+    },
+    {
+      "id": "0bea534907cf0db6",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_stock.go",
+      "symbol": "selectCapacityPrecheckImageID",
+      "callee": "strings.Contains",
+      "value": "nvidia"
+    },
+    {
+      "id": "35cc58f764c82143",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_stock.go",
+      "symbol": "selectCapacityPrecheckImageID",
+      "callee": "strings.Contains",
+      "value": "ubuntu"
     },
     {
       "id": "e7a4e954ca38763b",
@@ -1067,127 +892,11 @@
       "callee": "strings.Contains"
     },
     {
-      "id": "8d073f730d012b54",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deployImageNamesRelated",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "26a3a8a75ac4ccbc",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deployImageNamesRelated",
-      "callee": "strings.Contains",
-      "ordinal": 2
-    },
-    {
-      "id": "1788bfa88db9a93a",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deployImageNamesRelated",
-      "callee": "strings.HasPrefix"
-    },
-    {
-      "id": "bba97aa818b5277f",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deployImageNamesRelated",
-      "callee": "strings.HasPrefix",
-      "ordinal": 2
-    },
-    {
-      "id": "1272a1d444f0148c",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deploySelfDeployHint",
-      "callee": "strings.Contains",
-      "value": "lmdeploy"
-    },
-    {
-      "id": "90f8068898485976",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deploySelfDeployHint",
-      "callee": "strings.Contains",
-      "value": "ollama"
-    },
-    {
-      "id": "b3ce96e330eb3773",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deploySelfDeployHint",
-      "callee": "strings.Contains",
-      "value": "sglang"
-    },
-    {
-      "id": "f2957b8f696f9e79",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deploySelfDeployHint",
-      "callee": "strings.Contains",
-      "value": "tensorrt"
-    },
-    {
-      "id": "b977b26ce269d59c",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "deploySelfDeployHint",
-      "callee": "strings.Contains",
-      "value": "vllm"
-    },
-    {
-      "id": "d17249ea1ec142f9",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "exactCommunityModelImageName",
-      "callee": "strings.Contains"
-    },
-    {
       "id": "f64e397663611d8b",
       "kind": "string_heuristic",
       "path": "internal/engine/deploy_model.go",
       "symbol": "extractDeployZone",
       "callee": "strings.Contains"
-    },
-    {
-      "id": "691954d255f50134",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "isDeployStockShortage",
-      "callee": "strings.Contains",
-      "value": "库存不足"
-    },
-    {
-      "id": "3a6af66b6dd3bcdb",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "isTerminalFailState",
-      "callee": "strings.Contains",
-      "value": "fail"
-    },
-    {
-      "id": "745bc351bf66601b",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "matchCandidateName",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "de881d6d8c02bd8c",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "matchCandidateName",
-      "callee": "strings.Contains",
-      "ordinal": 2
-    },
-    {
-      "id": "275871f31a315777",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "writeUsageGuidance",
-      "callee": "strings.Contains",
-      "value": "jupyter"
     },
     {
       "id": "a4c863c6ee04953f",
@@ -1310,20 +1019,6 @@
       "callee": "strings.HasPrefix"
     },
     {
-      "id": "cca6eb3b1a042e04",
-      "kind": "string_heuristic",
-      "path": "internal/engine/history_compaction.go",
-      "symbol": "hasReactHistorySummary",
-      "callee": "strings.HasPrefix"
-    },
-    {
-      "id": "843f48a6fa899756",
-      "kind": "string_heuristic",
-      "path": "internal/engine/history_compaction.go",
-      "symbol": "replaceReactHistorySummary",
-      "callee": "strings.HasPrefix"
-    },
-    {
       "id": "96adc5f2074d142d",
       "kind": "string_heuristic",
       "path": "internal/engine/history_compaction.go",
@@ -1344,28 +1039,6 @@
       "symbol": "validateMemoryDelta",
       "callee": "strings.Contains",
       "ordinal": 2
-    },
-    {
-      "id": "8c3a2eef76e396c1",
-      "kind": "string_heuristic",
-      "path": "internal/engine/knowledge_answer_grounding.go",
-      "symbol": "validateKnowledgeGroundingProof",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "fa3cd3ca313b2b56",
-      "kind": "string_heuristic",
-      "path": "internal/engine/knowledge_answer_grounding.go",
-      "symbol": "validateKnowledgeGroundingProof",
-      "callee": "strings.Contains",
-      "ordinal": 2
-    },
-    {
-      "id": "d4ec78d1b0f7b001",
-      "kind": "string_heuristic",
-      "path": "internal/engine/knowledge_answer_policy.go",
-      "symbol": "isKnowledgeRefusal",
-      "callee": "strings.Contains"
     },
     {
       "id": "dec1534d6bd6e1ec",
@@ -1796,152 +1469,6 @@
       "value": "["
     },
     {
-      "id": "13acf66d4f5db286",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/render.go",
-      "symbol": "matchesRequestedMetric",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "e9aa5ae3a5b3d7f8",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseRelativeMonitorWindow",
-      "callee": "strings.Contains",
-      "value": "yesterday"
-    },
-    {
-      "id": "05146c2d077f44a0",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseRelativeMonitorWindow",
-      "callee": "strings.Contains",
-      "value": "昨天"
-    },
-    {
-      "id": "8b70d246a11668ff",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/render.go",
-      "symbol": "presentMonitorMetrics",
-      "callee": "strings.Contains",
-      "value": "cpu"
-    },
-    {
-      "id": "fff4d9284c3838b8",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/render.go",
-      "symbol": "presentMonitorMetrics",
-      "callee": "strings.Contains",
-      "value": "gpu"
-    },
-    {
-      "id": "2f381152542ad799",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/render.go",
-      "symbol": "presentMonitorMetrics",
-      "callee": "strings.Contains",
-      "value": "memory"
-    },
-    {
-      "id": "e10d95fca33ccf1d",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/render.go",
-      "symbol": "presentMonitorMetrics",
-      "callee": "strings.Contains",
-      "value": "vram"
-    },
-    {
-      "id": "780f2645b195ca68",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/resource_filter.go",
-      "symbol": "MatchesGPUTypeFilter",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "c4da2a9413644707",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_pricing.go",
-      "symbol": "pricingFormatNumber",
-      "callee": "strings.HasPrefix",
-      "value": "$"
-    },
-    {
-      "id": "764e9afb3cd0df2d",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_pricing.go",
-      "symbol": "pricingFormatNumber",
-      "callee": "strings.HasPrefix",
-      "value": "¥"
-    },
-    {
-      "id": "c74668f1f8bd634c",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_pricing.go",
-      "symbol": "pricingKindIsCatalog",
-      "callee": "strings.Contains",
-      "value": "标准价"
-    },
-    {
-      "id": "4a9a37cca8805af2",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_pricing.go",
-      "symbol": "pricingKindIsCatalog",
-      "callee": "strings.Contains",
-      "value": "目录价"
-    },
-    {
-      "id": "336b0884be8a9c9c",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "entryMatchesAnyKeyword",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "cdc5bf0bceda7292",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "entryMatchesSlotQuery",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "bd40392527814f34",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "matchModelRepositoryTags",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "935f8b3f1ba17527",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "matchUserGPUVariantAliases",
-      "callee": "strings.HasPrefix"
-    },
-    {
-      "id": "40690ee114c3224f",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "cuda"
-    },
-    {
-      "id": "9758b271fa94845b",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "nvidia"
-    },
-    {
-      "id": "0ebd4dedbb08954a",
-      "kind": "string_heuristic",
-      "path": "internal/intent/routing_registry.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "ubuntu"
-    },
-    {
       "id": "9ef02fcbc223a5bf",
       "kind": "string_heuristic",
       "path": "internal/intent/validator.go",
@@ -2160,6 +1687,13 @@
       "callee": "strings.HasPrefix"
     },
     {
+      "id": "2cbf2a60ce2b129c",
+      "kind": "string_heuristic",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "MatchUserGPUVariantAliases",
+      "callee": "strings.HasPrefix"
+    },
+    {
       "id": "a8b889ef56d01e65",
       "kind": "string_heuristic",
       "path": "internal/policy/leakage.go",
@@ -2181,6 +1715,68 @@
       "symbol": "loadStaffNames",
       "callee": "strings.HasPrefix",
       "value": "#"
+    },
+    {
+      "id": "13acf66d4f5db286",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "matchesRequestedMetric",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "8b70d246a11668ff",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "presentMonitorMetrics",
+      "callee": "strings.Contains",
+      "value": "cpu"
+    },
+    {
+      "id": "fff4d9284c3838b8",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "presentMonitorMetrics",
+      "callee": "strings.Contains",
+      "value": "gpu"
+    },
+    {
+      "id": "2f381152542ad799",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "presentMonitorMetrics",
+      "callee": "strings.Contains",
+      "value": "memory"
+    },
+    {
+      "id": "e10d95fca33ccf1d",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "presentMonitorMetrics",
+      "callee": "strings.Contains",
+      "value": "vram"
+    },
+    {
+      "id": "780f2645b195ca68",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/resource_filter.go",
+      "symbol": "MatchesGPUTypeFilter",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "e9aa5ae3a5b3d7f8",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseRelativeMonitorWindow",
+      "callee": "strings.Contains",
+      "value": "yesterday"
+    },
+    {
+      "id": "05146c2d077f44a0",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseRelativeMonitorWindow",
+      "callee": "strings.Contains",
+      "value": "昨天"
     },
     {
       "id": "d5610f756193850f",
@@ -2421,14 +2017,6 @@
       "symbol": "isBillingOrCostKey",
       "callee": "strings.Contains",
       "value": "price"
-    },
-    {
-      "id": "5790bc957e6b6314",
-      "kind": "string_heuristic",
-      "path": "internal/skills/loader.go",
-      "symbol": "splitFrontmatter",
-      "callee": "strings.HasPrefix",
-      "value": "---"
     },
     {
       "id": "f8866346a56150c8",
@@ -2695,69 +2283,6 @@
       "path": "internal/zones/catalog.go",
       "symbol": "Mentions",
       "callee": "strings.Contains"
-    },
-    {
-      "id": "234a29a2b347f374",
-      "kind": "regex",
-      "path": "internal/platform/gpumatch.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b([a-z]{1,3}\\d{2,4}[a-z0-9_]*|\\d{4}(?:_\\d+g)?)\\b"
-    },
-    {
-      "id": "b8e26fe313b4a8c8",
-      "kind": "regex",
-      "path": "internal/platform/gpumatch.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(\\d{2,3})\\s*(?:gb|g)\\b"
-    },
-    {
-      "id": "38d515a8628832c0",
-      "kind": "regex",
-      "path": "internal/platform/gpumatch.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)_(\\d{2,3})g$"
-    },
-    {
-      "id": "2cbf2a60ce2b129c",
-      "kind": "string_heuristic",
-      "path": "internal/platform/gpumatch.go",
-      "symbol": "MatchUserGPUVariantAliases",
-      "callee": "strings.HasPrefix"
-    },
-    {
-      "id": "c8c9bbb377608f1c",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_pricing.go",
-      "symbol": "pricingFormatNumber",
-      "callee": "strings.HasPrefix",
-      "value": "$"
-    },
-    {
-      "id": "861f47267699fbaf",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_pricing.go",
-      "symbol": "pricingFormatNumber",
-      "callee": "strings.HasPrefix",
-      "value": "¥"
-    },
-    {
-      "id": "6fabfcef8c2bf667",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_pricing.go",
-      "symbol": "pricingKindIsCatalog",
-      "callee": "strings.Contains",
-      "value": "标准价"
-    },
-    {
-      "id": "21520027be91c074",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_pricing.go",
-      "symbol": "pricingKindIsCatalog",
-      "callee": "strings.Contains",
-      "value": "目录价"
     }
   ]
 }

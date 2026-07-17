@@ -48,7 +48,7 @@ Verified against `main` (file:line where it helps). "Why" cites the mismatch.
 | Legacy | Canonical | Why |
 |---|---|---|
 | `internal/router` (package) | `internal/inputguard` (or `preblock`) | It is `PreBlock`, "a thin, domain-agnostic rule dispatcher" (`internal/router/preblock.go:3`) — input guarding, not business routing. |
-| `internal/routing` (package) | `internal/routecatalog` (or `intent_routes`) | This is the route.yaml **catalog**/registry metadata, not the routing logic. *(Lower priority — package rename is high-churn; "routing" is defensible.)* |
+| ~~`internal/routing` (package)~~ | *(removed)* | The route.yaml catalog/registry metadata and its dispatch stack (`cmd/routegen`, `DispatchRoute`) were physically deleted in P6 — read dispatch now runs through the typed Capability catalog (`internal/capability`). |
 | `llm.Router` | `ModelRouter` | Tier-aware **model** selection; collides with the intent router. (`internal/llm/router.go:44`) |
 
 ### Other over-promising / unclear names

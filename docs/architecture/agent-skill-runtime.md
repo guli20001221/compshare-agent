@@ -139,11 +139,13 @@ merged.
 - Disk creation already has a workflow.
 - Custom image creation is a high-value mutating action, but it still needs a
   saga workflow with confirmation and progress follow-up.
-- Deterministic routing entries now live in route manifests
-  (`internal/routing/<name>/route.yaml`); the skill-shaped files
-  (`internal/skills/<name>/SKILL.md`) hold only the agent-lane diagnosis
-  skills. The earlier skill-shaped routing entries were an authoring artifact,
-  since migrated — they were never the runtime definition of a true skill.
+- Deterministic read-only dispatch now runs through the typed **Capability
+  catalog** (`internal/capability/read_*.go`, `ReadDefinitions()`), invoked by the
+  central Agent as read tools — there is no separate route registry. The legacy
+  route manifests (`internal/routing/<name>/route.yaml`) and their dispatch stack
+  (`internal/routing`, `cmd/routegen`, `DispatchRoute`/`IsRoutingIntent`) were
+  physically deleted in P6. The skill-shaped files (`internal/skills/<name>/SKILL.md`)
+  hold only the agent-lane diagnosis skills.
 
 ## Naming Rules
 

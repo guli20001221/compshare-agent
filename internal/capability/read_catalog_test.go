@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
-	"github.com/compshare-agent/internal/routing"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,8 +26,19 @@ func TestReadDefinitionsUseCapabilitySpecificSchemas(t *testing.T) {
 		properties, _ := root["properties"].(map[string]any)
 		require.NotContains(t, properties, "slots", "通用槽位袋不得重新进入模型协议")
 	}
-	for _, route := range routing.GeneratedRoutes() {
-		require.Greater(t, coveredIntents[intent.Intent(route.IntentLabel)], 0, "route %s is missing from agent read catalog", route.Name)
+	// Capability-Catalog self-completeness: the catalog must expose every
+	// model-visible read intent on its own terms. This used to be validated
+	// against routing.GeneratedRoutes() (the retired route registry); the catalog
+	// is now the sole source, so the expected set is pinned here — dropping a
+	// capability from ReadDefinitions fails loudly instead of silently.
+	expectedReadIntents := []intent.Intent{
+		intent.IntentResourceInfo, intent.IntentMonitorQuery, intent.IntentMonitorHistory,
+		intent.IntentGPUSpecsQuery, intent.IntentStockAvailability, intent.IntentImageList,
+		intent.IntentImageTagCatalog, intent.IntentModelRepositoryBrowse, intent.IntentNetAcceleratorStatus,
+		intent.IntentPricingQuery, intent.IntentRefundEstimate, intent.IntentCFSInfo,
+	}
+	for _, want := range expectedReadIntents {
+		require.Greater(t, coveredIntents[want], 0, "read capability catalog is missing intent %s", want)
 	}
 	require.Equal(t, 4, coveredIntents[intent.IntentCFSInfo], "CFS 查询、创建询价、扩容询价和退费估算必须是独立能力")
 }
