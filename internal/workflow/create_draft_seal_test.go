@@ -57,16 +57,22 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 // after the gate, reading "查询可用配比" again. The card and the create agreed only
 // because that function is pure and its inputs happened to be frozen — an accident
 // of the call graph, not a contract. Here the world moves after the user approves
-// (the catalog now places 4090 in a different zone). A re-derivation would create
-// in cn-wlcb-01; the confirmed contract says cn-sh2-02.
+// (the catalog re-homes 4090, the image query returns something else). A
+// re-derivation would create in cn-wlcb-01 with img-999; the confirmed contract
+// says cn-sh2-02 with img-001.
+//
+// The seal() call is load-bearing and was missing in this test's first version:
+// without it the test proved only "a cached draft is reused", not "the CONFIRMED
+// contract is executed" — a weaker claim than its own name made.
 func TestCreateExecutesTheConfirmedDraftNotAFreshDerivation(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
 
 	card, err := buildCreateConfirmArgs(wfCtx)
 	require.NoError(t, err)
 	require.Equal(t, "cn-sh2-02", card["Zone"])
+	wfCtx.seal("CreateInstanceWorkflow") // the user approved this card
 
-	// The user has now approved cn-sh2-02. Afterwards the catalog changes.
+	// Afterwards the catalog and the image query both move on.
 	wfCtx.StepResults["查询可用配比"] = zoneTaggedTypes(
 		struct{ Name, Zone, Status string }{"4090", "cn-wlcb-01", "Normal"},
 	)
@@ -82,17 +88,57 @@ func TestCreateExecutesTheConfirmedDraftNotAFreshDerivation(t *testing.T) {
 		"the create must execute the image the user confirmed, not a freshly re-picked one")
 }
 
-// TestCreateRefusesWithoutAConfirmedDraft pins the failure mode. If this step is
-// ever reached without a confirm gate having materialized a draft, the only safe
-// answer is to stop — silently rebuilding the arguments here is precisely the
-// drift the draft removed.
+// TestCreateReadsTheSealedCopyNotTheLiveParams separates "a draft exists" from
+// "the user confirmed it". Both a stale live draft and a moved world are present;
+// only the frozen copy in sealed.BusinessParams is correct.
+func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
+	wfCtx := draftContext("cn-sh2-02")
+	_, err := buildCreateConfirmArgs(wfCtx)
+	require.NoError(t, err)
+	wfCtx.seal("CreateInstanceWorkflow")
+
+	// Someone rewrites the LIVE draft after confirmation.
+	wfCtx.Params[createDraftKey].(map[string]any)["Zone"] = "cn-wlcb-01"
+
+	args, err := createArgsFromSealedDraft(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "cn-sh2-02", args["Zone"],
+		"must read the frozen copy in sealed.BusinessParams — Params is mutable and proves nothing about consent")
+
+	// And the returned map must not alias the frozen record.
+	args["Zone"] = "tampered"
+	sealedDraft := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)
+	assert.Equal(t, "cn-sh2-02", sealedDraft["Zone"],
+		"the executor must not be able to reach into the record the digest is computed over")
+}
+
+// TestCreateRefusesAMaterializedButUnconfirmedDraft is the structural guard.
+//
+// A draft in Params means only "someone computed one". If the create step is ever
+// reached before its gate, it must stop — it cannot lean on verifySealedContract,
+// which fails OPEN when sealed is nil and would wave an unconfirmed create
+// straight through.
+func TestCreateRefusesAMaterializedButUnconfirmedDraft(t *testing.T) {
+	wfCtx := draftContext("cn-sh2-02")
+	_, err := buildCreateConfirmArgs(wfCtx) // draft exists...
+	require.NoError(t, err)
+	require.Contains(t, wfCtx.Params, createDraftKey)
+	require.Nil(t, wfCtx.sealed, "...but nothing confirmed it")
+
+	_, err = createArgsFromSealedDraft(wfCtx)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "拒绝以未经确认的参数创建")
+}
+
+// TestCreateRefusesWithoutAConfirmedDraft: no gate ran at all.
 func TestCreateRefusesWithoutAConfirmedDraft(t *testing.T) {
 	wfCtx := draftContext("cn-wlcb-01") // queries done, but no confirm ran
 
 	_, err := createArgsFromSealedDraft(wfCtx)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "拒绝以重新推导的参数创建")
+	assert.Contains(t, err.Error(), "拒绝以未经确认的参数创建")
 }
 
 // TestCreateDraftIsSealedAndTamperEvident closes the loop with the seal itself:

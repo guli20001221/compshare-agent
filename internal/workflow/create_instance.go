@@ -1094,19 +1094,36 @@ func stepCreateInstance() Step {
 	}
 }
 
-// createArgsFromSealedDraft returns the confirmed draft as the upstream request.
+// createArgsFromSealedDraft returns the SEALED draft as the upstream request.
 //
-// A missing draft is a hard error, never a re-derivation: it would mean this step
-// ran without a preceding confirm gate having materialized one, and silently
-// rebuilding the arguments here is exactly the drift this replaced. Both create
-// definitions place a StepConfirm immediately before this step, so the draft is
-// always present on a real run.
+// It reads Context.sealed, not Context.Params. The distinction is the whole
+// guarantee: Params is the live, mutable working set — a draft sitting there means
+// only "someone computed one", never "the user approved it". sealed is written by
+// Context.seal exactly when a confirmation gate PASSES, and unseal() voids it the
+// moment a gate is re-entered, so `sealed != nil` is the only fact in this package
+// that actually means "confirmed".
+//
+// Requiring it here matters because verifySealedContract fails OPEN on a nil seal
+// (engine.go: `if wfCtx.sealed == nil || ...verifyDigest(...)` returns true). So
+// had this function kept reading Params, a future reordering that put the create
+// before its gate would have found a materialized draft, passed the digest check
+// vacuously, and created an instance nobody confirmed. The current step order does
+// not do that; this makes it structural rather than a property of the current
+// list.
+//
+// A missing or unsealed draft is a hard error, never a re-derivation — silently
+// rebuilding the arguments here is precisely the drift the draft replaced.
 func createArgsFromSealedDraft(wfCtx *Context) (map[string]any, error) {
-	draft, ok := wfCtx.Params[createDraftKey].(map[string]any)
-	if !ok || len(draft) == 0 {
-		return nil, fmt.Errorf("创建实例缺少已确认的执行合同，拒绝以重新推导的参数创建")
+	if wfCtx.sealed == nil || wfCtx.sealed.Operation != "CreateInstanceWorkflow" {
+		return nil, fmt.Errorf("创建实例缺少已确认的执行合同，拒绝以未经确认的参数创建")
 	}
-	return draft, nil
+	draft, ok := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)
+	if !ok || len(draft) == 0 {
+		return nil, fmt.Errorf("已确认的执行合同中缺少创建参数，拒绝以重新推导的参数创建")
+	}
+	// Copy so the tool executor cannot reach into the frozen record the digest is
+	// computed over.
+	return deepCopyParams(draft), nil
 }
 
 func stepDescribeInstance() Step {
