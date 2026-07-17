@@ -79,6 +79,30 @@ func TestWorkflowZonePlacement_PresentSnapshotNeverFallsBackToMaps(t *testing.T)
 	})
 }
 
+// TestResolveCreateCFSZone_PrefersSnapshot pins that CFS resolves its Pod-zone
+// placement from the turn snapshot — no second support-zone query — and keeps its
+// own Pod-only guard on the record the snapshot returns.
+func TestResolveCreateCFSZone_PrefersSnapshot(t *testing.T) {
+	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-pod-01", Region: "cn-pod", ZoneID: 7001, AzGroup: 3007, IsPod: true}},
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", ZoneID: 2002, AzGroup: 3002, IsPod: false}},
+	})
+	wfCtx := NewContext(map[string]any{})
+	wfCtx.referenceData.ZoneCatalog = snap
+
+	isPod, zoneID, azGroup, region, zone, err := resolveCreateCFSZone(wfCtx, "cn-pod-01")
+	require.NoError(t, err)
+	assert.True(t, isPod)
+	assert.Equal(t, uint32(7001), zoneID)
+	assert.Equal(t, uint32(3007), azGroup)
+	assert.Equal(t, "cn-pod", region, "Region from the catalog record")
+	assert.Equal(t, "cn-pod-01", zone)
+
+	// CFS requires a Pod zone; a non-pod zone from the snapshot is refused.
+	_, _, _, _, _, err = resolveCreateCFSZone(wfCtx, "cn-sh2-02")
+	require.Error(t, err)
+}
+
 // TestZoneDisplayLabel_PrefersSnapshotAndIsLenient pins that a form label comes
 // from the snapshot record (over a disagreeing legacy map), falls back to the map
 // only with no snapshot, and degrades to the bare zone id on any failure — a label

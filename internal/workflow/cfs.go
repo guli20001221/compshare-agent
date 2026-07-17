@@ -331,6 +331,27 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 }
 
 func resolveCreateCFSZone(wfCtx *Context, requested string) (isPod bool, zoneID uint32, azGroup uint32, region string, zone string, err error) {
+	// Snapshot path: the turn's single zone catalog is authoritative — CFS no longer
+	// runs a second support-zone query and re-parse. It keeps its own Pod-only and
+	// internal-id checks on the record the snapshot returns.
+	if wfCtx.ZoneCatalog() != nil {
+		placement, perr := workflowZonePlacement(wfCtx, requested)
+		if perr != nil {
+			return false, 0, 0, "", "", perr
+		}
+		if !placement.IsPod {
+			return false, 0, 0, "", "", fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", requested)
+		}
+		if placement.ZoneID == 0 {
+			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部编号，无法安全创建 CFS。", placement.Zone)
+		}
+		if placement.AzGroup == 0 {
+			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", placement.Zone)
+		}
+		return true, placement.ZoneID, placement.AzGroup, placement.Region, placement.Zone, nil
+	}
+	// Nil-snapshot fallback: the re-queried support-zone step result (unmigrated
+	// direct workflow-engine tests). Removed with the redundant query step in S6.
 	if placement, ok := createCFSSupportZonePlacement(wfCtx.Result("查询支持区"), requested); ok {
 		if !placement.isPod {
 			return false, 0, 0, "", "", fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", requested)
