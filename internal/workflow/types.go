@@ -2,10 +2,25 @@ package workflow
 
 import (
 	"fmt"
+
+	"github.com/compshare-agent/internal/deployment"
 )
 
 // StepType identifies the kind of workflow step.
 type StepType int
+
+// ReferenceData is the server-trusted, read-only reference data a workflow run
+// consults but never seals. Each field is an explicit typed snapshot, not a
+// catch-all map: reference data has a known shape, and a map would invite the
+// same untyped scatter this convergence removes. It carries platform facts the
+// user never confirmed (the live zone catalog), so it is deliberately absent
+// from the seal — steps consult it, nothing mutates it.
+type ReferenceData struct {
+	// ZoneCatalog is the live availability-zone catalog for this turn, or nil on
+	// paths with no catalog (CLI, or a failed fetch). Its accessors are nil-safe,
+	// so a consumer reads it the same way whether or not it is present.
+	ZoneCatalog *deployment.ZoneCatalogSnapshot
+}
 
 const (
 	// StepToolCall executes an API tool via executor.
@@ -244,6 +259,12 @@ type Context struct {
 	// Runtime carries server-injected identity/trace lifted out of Params, so
 	// business params (and the confirm form / sealed digest) never mix them in.
 	Runtime RuntimeMetadata
+	// ReferenceData holds server-trusted read-only snapshots (the turn's zone
+	// catalog) attached via a RunOption. It is set once on the fresh context and
+	// persists across confirm-form re-runs, yet — unlike Params — it never passes
+	// through deepCopyParams and is never captured by seal(), so it can neither
+	// alias into a selected placement nor enter the sealed contract.
+	ReferenceData ReferenceData
 	// sealed is set once the user confirms: the immutable snapshot the mutating
 	// step consumes. nil before confirmation.
 	sealed *SealedActionContract
@@ -270,6 +291,12 @@ func NewContext(params map[string]any) *Context {
 // gate, or nil. The engine reads this after Run to narrate results from the
 // exact confirmed params rather than re-deriving them from stale input.
 func (c *Context) Sealed() *SealedActionContract { return c.sealed }
+
+// ZoneCatalog returns the turn's zone catalog snapshot, or nil when the run
+// carries none. ZoneCatalogSnapshot's methods are nil-safe, so callers can chain
+// c.ZoneCatalog().Placement(...) without a guard — an absent catalog resolves
+// nothing, exactly as a failed fetch does.
+func (c *Context) ZoneCatalog() *deployment.ZoneCatalogSnapshot { return c.ReferenceData.ZoneCatalog }
 
 // Result returns the API result from a previous step, or nil.
 func (c *Context) Result(stepName string) map[string]any {

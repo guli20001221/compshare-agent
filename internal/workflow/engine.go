@@ -33,10 +33,26 @@ func (e *Engine) SetConfirmEditsFn(fn ConfirmEditsFunc) {
 // client resending overrides cannot spin the workflow indefinitely.
 const maxConfirmEdits = 3
 
+// RunOption configures a workflow run before its first step. Options set
+// non-business context (reference data) that must not travel through Params —
+// the engine builds it, the run consumes it, and it never enters the seal.
+type RunOption func(*Context)
+
+// WithReferenceData attaches server-trusted reference data (e.g. the turn's zone
+// catalog) to the run. It is applied to the fresh Context, so every step sees
+// the SAME snapshot — including confirm-form re-runs, which never re-fetch — yet
+// it is never copied into the sealed contract.
+func WithReferenceData(ref ReferenceData) RunOption {
+	return func(c *Context) { c.ReferenceData = ref }
+}
+
 // Run executes a workflow definition with the given initial parameters.
 // It never returns a Go error for step failures — those are captured in Result.
-func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any) (*Result, error) {
+func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any, opts ...RunOption) (*Result, error) {
 	wfCtx := NewContext(params)
+	for _, opt := range opts {
+		opt(wfCtx)
+	}
 	total := len(def.Steps)
 	result := &Result{Steps: make([]StepSummary, 0, total)}
 	// The sealed contract (set once the confirmation gate passes) is surfaced to
