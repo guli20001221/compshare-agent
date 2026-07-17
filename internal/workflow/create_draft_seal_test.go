@@ -149,6 +149,31 @@ func TestCreateCardNameAndExecutedIDAreOneSelection(t *testing.T) {
 	assert.NotEqual(t, "陈旧的名字", card["image"])
 }
 
+// TestThreadedCommunityIdResolvesNameFromAnyGroup: an id the user picked from the
+// SECOND group is in the catalog, so its name must come from the catalog.
+//
+// The first version of catalogImageName grew a private community lookup off
+// selectCommunityImage, which only reads groups[0]. Any id past the first group was
+// therefore treated as "not in the catalog" and fell back to the threaded name —
+// the exact failure the lookup exists to prevent, reintroduced by writing a second
+// implementation instead of reusing imageNameByID (which already walks every group).
+func TestThreadedCommunityIdResolvesNameFromAnyGroup(t *testing.T) {
+	result := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "社区-第一组", "Data": []any{map[string]any{"CompShareImageId": "cimg-001"}}},
+		map[string]any{"ImageName": "社区-第二组", "Data": []any{map[string]any{"CompShareImageId": "cimg-002"}}},
+		map[string]any{"ImageName": "社区-第三组", "Data": []any{map[string]any{"CompShareImageId": "cimg-003"}}},
+	}}
+	params := map[string]any{
+		"ImageSource": "community", "CompShareImageId": "cimg-003", "ImageName": "陈旧的名字",
+	}
+
+	selected := selectCreateImage(params, result)
+
+	assert.Equal(t, "cimg-003", selected.ID)
+	assert.Equal(t, "社区-第三组", selected.Name,
+		"the id IS in the catalog — only groups[0] blindness could make this fall back to the threaded name")
+}
+
 // TestCommunityImageIdAndNameComeFromTheSameGroup: the two community pickers read
 // different LEVELS of the response — the id from groups[0].Data[0], the name from
 // groups[0].ImageName. One selection now reads both off the same group.

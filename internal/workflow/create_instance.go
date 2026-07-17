@@ -1273,7 +1273,7 @@ func selectCreateImage(params map[string]any, result map[string]any) SelectedIma
 		// a form override). Prefer the name the catalog gives for THAT id over the
 		// ImageName that travelled alongside it: when the two disagree the catalog
 		// describes the image that will actually be built.
-		return SelectedImage{ID: id, Name: catalogImageName(result, id, source, params), Source: source}
+		return SelectedImage{ID: id, Name: catalogImageName(result, id, params), Source: source}
 	}
 	if source == "community" {
 		return selectCommunityImage(result)
@@ -1290,34 +1290,25 @@ func selectCreateImage(params map[string]any, result map[string]any) SelectedIma
 	return SelectedImage{ID: id, Name: name, Source: source}
 }
 
-// catalogImageName returns the catalog's display name for an already-chosen id,
-// falling back to the threaded ImageName when the id is not in this response
-// (a community id against a platform query, a cached id, an empty result).
-func catalogImageName(result map[string]any, id, source string, params map[string]any) string {
-	fallback := paramStr(params, "ImageName", "")
-	if result == nil {
-		return fallback
+// catalogImageName returns the catalog's display name for an already-chosen id.
+//
+// It delegates to imageNameByID, which walks EVERY community group and the whole
+// platform ImageSet. The first version of this function grew its own community
+// lookup off selectCommunityImage — which only reads groups[0] — so an id living
+// in the second group or later was reported "not in the catalog" and fell back to
+// the threaded name, breaking the very contract this function exists to keep. One
+// id→name lookup, not two.
+//
+// The fallback is only reached when the id is genuinely absent from this response
+// (a community id against a platform query, a cached id, an empty result). What it
+// returns is a name NOT confirmed against the catalog — the caller is trusting the
+// pair it was handed. A future typed image capability should distinguish resolved
+// / not-found / catalog-unavailable instead of flattening all three into a string.
+func catalogImageName(result map[string]any, id string, params map[string]any) string {
+	if name := imageNameByID(result, id); name != "" {
+		return name
 	}
-	if source == "community" {
-		if selected := selectCommunityImage(result); selected.ID == id && selected.Name != "" {
-			return selected.Name
-		}
-		return fallback
-	}
-	imageSet, _ := result["ImageSet"].([]any)
-	for _, item := range imageSet {
-		img, _ := item.(map[string]any)
-		if img == nil {
-			continue
-		}
-		if imgID, _ := img["CompShareImageId"].(string); imgID != id {
-			continue
-		}
-		if name, _ := img["Name"].(string); name != "" {
-			return name
-		}
-	}
-	return fallback
+	return paramStr(params, "ImageName", "")
 }
 
 // selectCommunityImage reads the id and the display name off the SAME group, so
