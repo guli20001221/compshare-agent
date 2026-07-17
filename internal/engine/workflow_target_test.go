@@ -166,7 +166,6 @@ func TestExecuteWorkflowAllowsOrdinalPendingSelectionTarget(t *testing.T) {
 	assert.Contains(t, exec.calls, "StopCompShareInstance")
 }
 
-
 // A carried SelectedInstance binding never authorizes a write, whatever its
 // source. This used to be true only for source=observed; the source=user branch
 // that let a carried binding through was deleted once its writers were gone, so a
@@ -226,10 +225,14 @@ func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {
 	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
 	eng.lastUserMsg = "原始文本中的可用区不得参与执行"
 
+	// Zone is already the canonical id: display-name → id resolution now lives in the
+	// action resolver's CodecZone (tested in internal/actionresolver), not in the
+	// workflow. executeWorkflow receives a canonical zone and resolves its Pod-zone
+	// internal ids (zone_id/az_group) from the turn's catalog snapshot.
 	_ = eng.executeWorkflow(zoneUserCtx(), "CreateCFSWorkflow", map[string]any{
 		"Name": "shared-train",
 		"Size": float64(50),
-		"Zone": "华北一C",
+		"Zone": "cn-bj2-03",
 	}, noopStep)
 
 	require.NotNil(t, priceArgs)

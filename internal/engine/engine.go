@@ -3613,20 +3613,12 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 			}
 		}
 	}
-	if action == "CreateInstanceWorkflow" || action == "CreateCFSWorkflow" || action == "EnableNetOptimizerWorkflow" {
-		// Resolve a user-named availability zone before zone-sensitive creates
-		// run. The ReAct LLM echoes the user's literal zone text (or the tool's
-		// documented default) into Zone but cannot know a new zone's id, so
-		// without this a "华北一C" create can silently land in a default zone or
-		// miss Pod routing. Same resolver as the deploy saga: an exact name/id
-		// overrides Zone, partial/ambiguous mention stops and asks, and no
-		// catalog leaves the LLM-provided Zone untouched for the workflow to
-		// validate.
-		if clarify := e.applyCreateZoneResolution(ctx, args); clarify != "" {
-			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), clarify, nil))
-			return finalReplyPrefix + clarify
-		}
-	}
+	// A user-named availability zone is resolved BEFORE this point, by the action
+	// resolver's CodecZone against the live catalog (an exact id/display name wins,
+	// an ambiguous/unknown mention refuses with candidates) — args["Zone"] is already
+	// canonical here. The old engine-side applyCreateZoneResolution chain (a second
+	// LLM zone match plus the four legacy zone maps) was removed in the zone
+	// convergence; the workflow validates the canonical zone against the snapshot.
 
 	// The turn's zone catalog: when the action-proposal path already built one for
 	// the resolver it is threaded in here (one catalog per turn — the resolver and
