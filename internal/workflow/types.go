@@ -32,8 +32,12 @@ type Step struct {
 	// result lands in StepResults exactly like a tool step's would.
 	//
 	// What is actually guaranteed, and what is not:
-	//   - It receives no context.Context and no executor, so it cannot call a tool
-	//     or a model. That much IS structural.
+	//   - It is handed no runtime-provided tool, model or network dependency: no
+	//     context.Context, no executor. That is the only thing the signature
+	//     settles — a plain Go function can still reach a global, an HTTP client
+	//     or another package, so "calls no tool" describes today's create
+	//     Resolver (materializeCreateDraft computes locally and nothing else),
+	//     not an invariant of the type.
 	//   - runResolveStep rejects any Resolve that mutates Params.
 	//   - It is NOT otherwise read-only. It holds the live *Context and could
 	//     still write StepResults, InitialParams or Runtime. Nothing stops it.

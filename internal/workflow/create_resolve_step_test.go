@@ -187,13 +187,17 @@ func TestCapacityAndPriceConsumeTheDraft(t *testing.T) {
 // (and much more obvious) bug than the one being pinned.
 func TestCardPriceUnitFollowsTheDraftNotTheLiveParams(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
+	// The REAL upstream shape: GetCompShareInstancePriceResponse returns
+	// {"ChargeType": ..., "Instance": <amount>}. Every fixture in this repo says
+	// "Price" instead, a key that appears in zero live captures — confirmPriceText
+	// tries Price first and falls back to Instance, so production has always run
+	// the fallback while the tests exercised a branch that never fires.
 	wfCtx.StepResults["查询价格"] = map[string]any{"PriceDetails": []any{
-		map[string]any{"ChargeType": "Postpay", "Price": 1.58},
-		map[string]any{"ChargeType": "Month", "Price": 888.0},
+		map[string]any{"ChargeType": "Postpay", "Instance": 1.58},
+		map[string]any{"ChargeType": "Month", "Instance": 888.0},
 	}}
 	draft := runDraftStep(t, wfCtx)
-	args, _ := draftUpstreamArgs(draft)
-	require.Equal(t, "Postpay", args["ChargeType"], "the draft resolved the default charge type")
+	require.Equal(t, "Postpay", draft.Args.ChargeType, "the draft resolved the default charge type")
 
 	// Someone rewrites the request params after the draft was formed.
 	wfCtx.Params["ChargeType"] = "Month"

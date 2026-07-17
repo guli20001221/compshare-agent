@@ -38,11 +38,19 @@ func draftMockExecutor(zone string) *mockExecutor {
 // runResolveStep — not a hand-rolled equivalent — so a unit test's context
 // reaches the state the confirm gate actually sees, and so these tests inherit
 // the step's no-Params-write check rather than assuming it.
-func runDraftStep(t *testing.T, wfCtx *Context) map[string]any {
+func runDraftStep(t *testing.T, wfCtx *Context) CreateExecutionDraft {
 	t.Helper()
 	res := &Result{}
 	outcome := (&Engine{}).runResolveStep(stepResolveCreateDraft(), 0, 1, wfCtx, res)
 	require.Equal(t, toolStepOK, outcome, "resolve step failed: %s", res.Message)
+	draft, err := candidateCreateDraft(wfCtx)
+	require.NoError(t, err)
+	return draft
+}
+
+// storedDraft returns the ENCODED candidate, for the few tests that must reach
+// through the storage format on purpose (aliasing, tamper).
+func storedDraft(wfCtx *Context) map[string]any {
 	return wfCtx.Result(createDraftStepName)
 }
 
@@ -85,25 +93,25 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 	// arrived through the draft or not at all.
 	require.NotContains(t, result.Contract.BusinessParams, "Zone")
 
-	draft, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
+	stored, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
 	require.True(t, ok, "the confirmed draft must be inside the SEALED business params")
-	args, ok := draftUpstreamArgs(draft)
-	require.True(t, ok)
-	assert.Equal(t, "cn-sh2-02", args["Zone"], "the auto-derived zone is now inside the sealed contract")
-	assert.Equal(t, "img-001", args["CompShareImageId"])
-	assert.Equal(t, float64(16), args["CPU"])
-	assert.Equal(t, float64(64*1024), args["Memory"])
+	draft, err := ParseCreateExecutionDraft(stored)
+	require.NoError(t, err)
+	assert.Equal(t, "cn-sh2-02", draft.Args.Zone, "the auto-derived zone is now inside the sealed contract")
+	assert.Equal(t, "img-001", draft.Args.CompShareImageID)
+	assert.Equal(t, float64(16), draft.Args.CPU)
+	assert.Equal(t, float64(64*1024), draft.Args.Memory)
 
 	// And the card is a projection of that same draft, not a parallel derivation.
 	require.NotNil(t, card)
-	assert.Equal(t, args["Zone"], card["Zone"])
-	assert.Equal(t, args["CPU"], card["CPU"])
-	assert.Equal(t, args["Memory"], card["Memory"])
-	assert.Equal(t, args["GPU"], card["Gpu"])
+	assert.Equal(t, draft.Args.Zone, card["Zone"])
+	assert.Equal(t, draft.Args.CPU, card["CPU"])
+	assert.Equal(t, draft.Args.Memory, card["Memory"])
+	assert.Equal(t, draft.Args.GPU, card["Gpu"])
 	// The name on the card and the id in the request are ONE selection.
 	assert.Equal(t, "Ubuntu 22.04 CUDA 12", card["image"])
-	assert.Equal(t, card["image"], draftImage(draft).Name)
-	assert.Equal(t, args["CompShareImageId"], draftImage(draft).ID)
+	assert.Equal(t, card["image"], draft.Image.Name)
+	assert.Equal(t, draft.Args.CompShareImageID, draft.Image.ID)
 
 	// What was sealed is what was sent.
 	var created map[string]any
@@ -185,34 +193,38 @@ func TestCreateReadsTheSealedCopyNotTheLiveParams(t *testing.T) {
 	runDraftStep(t, wfCtx)
 	confirmAndSeal(t, wfCtx)
 
-	// Someone rewrites the LIVE draft after confirmation.
-	liveDraft := wfCtx.Params[createDraftKey].(map[string]any)
-	liveArgs, _ := draftUpstreamArgs(liveDraft)
-	liveArgs["Zone"] = "cn-wlcb-01"
+	// Someone rewrites the LIVE draft after confirmation, reaching through the
+	// encoded form the way a careless future caller would.
+	liveArgs := wfCtx.Params[createDraftKey].(map[string]any)[draftKeyArgs].(map[string]any)
+	liveArgs[argsKeyZone] = "cn-wlcb-01"
 
 	args, err := createArgsFromSealedDraft(wfCtx)
 	require.NoError(t, err)
-	assert.Equal(t, "cn-sh2-02", args["Zone"],
+	assert.Equal(t, "cn-sh2-02", args[argsKeyZone],
 		"must read the frozen copy in sealed.BusinessParams — Params is mutable and proves nothing about consent")
 
 	// And the returned map must not alias the frozen record.
-	args["Zone"] = "tampered"
-	sealedDraft := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)
-	sealedArgs, _ := draftUpstreamArgs(sealedDraft)
-	assert.Equal(t, "cn-sh2-02", sealedArgs["Zone"],
+	args[argsKeyZone] = "tampered"
+	sealedArgs := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)[draftKeyArgs].(map[string]any)
+	assert.Equal(t, "cn-sh2-02", sealedArgs[argsKeyZone],
 		"the executor must not be able to reach into the record the digest is computed over")
 }
 
-// TestPromotedDraftDoesNotAliasTheCandidate: promote deep-copies. If Params
-// aliased StepResults, a later write to either would diverge the live params from
-// the digest and fail-stop a create the user correctly approved.
+// TestPromotedDraftDoesNotAliasTheCandidate: promote re-encodes, so Params never
+// aliases StepResults. If it did, a later write to either would diverge the live
+// params from the digest and fail-stop a create the user correctly approved.
+//
+// This test is also the tripwire for storing the draft as a STRUCT in Params:
+// deepCopyParams copies a struct by value and shares its inner maps, so the
+// "copy" and the original would move together — and verifyDigest would keep
+// passing while the sealed record was rewritten underneath it.
 func TestPromotedDraftDoesNotAliasTheCandidate(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
-	candidate := runDraftStep(t, wfCtx)
+	runDraftStep(t, wfCtx)
 	confirmAndSeal(t, wfCtx)
 
-	candidateArgs, _ := draftUpstreamArgs(candidate)
-	candidateArgs["Zone"] = "cn-wlcb-01"
+	candidateArgs := storedDraft(wfCtx)[draftKeyArgs].(map[string]any)
+	candidateArgs[argsKeyZone] = "cn-wlcb-01"
 
 	assert.True(t, wfCtx.sealed.verifyDigest(wfCtx.Params),
 		"rewriting the candidate must not disturb the promoted copy the digest covers")
