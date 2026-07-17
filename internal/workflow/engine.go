@@ -57,6 +57,7 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
 				result.StoppedAt = step.Name
 				result.Message = msg
+				e.recordStepFailure(result, def, wfCtx, step, i)
 				return result, nil
 			}
 			if skip {
@@ -69,16 +70,19 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 			// The seal is enforced inside runToolStep, after BuildArgs — see
 			// verifySealedContract for why the check cannot live here.
 			if e.runToolStep(ctx, step, i, total, wfCtx, result) == toolStepFailed {
+				e.recordStepFailure(result, def, wfCtx, step, i)
 				return result, nil
 			}
 
 		case StepResolve:
 			if e.runResolveStep(step, i, total, wfCtx, result) == toolStepFailed {
+				e.recordStepFailure(result, def, wfCtx, step, i)
 				return result, nil
 			}
 
 		case StepConfirm:
 			if !e.runConfirmStep(ctx, def, step, i, total, wfCtx, result) {
+				e.recordStepFailure(result, def, wfCtx, step, i)
 				return result, nil
 			}
 			// Seal the confirmed draft: from here the business params are frozen
@@ -96,6 +100,7 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
 			result.StoppedAt = step.Name
 			result.Message = msg
+			e.recordStepFailure(result, def, wfCtx, step, i)
 			return result, nil
 		}
 	}
@@ -106,6 +111,46 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 	}
 	result.Message = "工作流执行完成"
 	return result, nil
+}
+
+// recordStepFailure completes the failure record for the step that just stopped
+// the workflow. It runs at every exit-on-failure in Run, so a caller can rely on
+// "not Success" and "Failure != nil" meaning the same thing.
+//
+// runToolStep has already put the step's arguments on the record if it built any;
+// this fills in what only the loop knows — which step, what it was working from,
+// and whether anything had been authorised.
+func (e *Engine) recordStepFailure(result *Result, def *Definition, wfCtx *Context, step Step, i int) {
+	if result.Failure == nil {
+		result.Failure = &StepFailure{}
+	}
+	result.Failure.Step = step.Name
+	result.Failure.Sealed = wfCtx.sealed != nil && !confirmGateRemains(def, i)
+	if def.FailureDraft != nil {
+		result.Failure.Draft = def.FailureDraft(wfCtx)
+	}
+}
+
+// confirmGateRemains reports whether any confirmation gate sits after step i.
+//
+// This is what separates "the user approved this" from "the user approved
+// something on the way here". A seal only ever authorises the steps between its
+// own gate and the next one, so while a gate is still ahead, nothing sealed is
+// permission to execute — however real, and however identical to a final
+// contract, that seal looks.
+//
+// A gate ahead that SkipIf would have skipped still counts, and that is the safe
+// direction: the record then says "not authorised" for something that was, and a
+// reader falls back to the candidate draft — which post-confirmation is a copy of
+// the sealed one anyway. The opposite error would let a selection card's seal be
+// read as consent to create.
+func confirmGateRemains(def *Definition, i int) bool {
+	for _, step := range def.Steps[i+1:] {
+		if step.Type == StepConfirm {
+			return true
+		}
+	}
+	return false
 }
 
 // verifySealedContract enforces the seal for a post-confirmation tool step.
@@ -228,6 +273,7 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 	// wfCtx.Params, and may write them, so a check that ran before it could not
 	// see what this very call is about to execute on.
 	if !e.verifySealedContract(step, i, total, wfCtx, result) {
+		recordFailedArgs(result, args)
 		return toolStepFailed
 	}
 
@@ -245,6 +291,7 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 		// Keep the typed cause alongside the flattened sentence so callers can
 		// classify the failure by its fields instead of by substrings of Message.
 		result.Err = err
+		recordFailedArgs(result, args)
 		return toolStepFailed
 	}
 
@@ -260,6 +307,7 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 			}
 			result.StoppedAt = step.Name
 			result.Message = msg
+			recordFailedArgs(result, args)
 			return toolStepFailed
 		}
 	}
@@ -267,6 +315,20 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 	e.emit(step.Name, i, total, StepToolCall, "success", toolName, nil, "")
 	result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
 	return toolStepOK
+}
+
+// recordFailedArgs puts the arguments a failing tool step actually sent onto the
+// failure record. Only runToolStep knows them — Run sees the outcome, not the
+// request — so the record is filled from both ends and completed by
+// recordStepFailure.
+//
+// The copy is the point. These args were handed to the executor, and a record of
+// what was sent that moves when the executor rewrites it is not a record.
+func recordFailedArgs(result *Result, args map[string]any) {
+	if result.Failure == nil {
+		result.Failure = &StepFailure{}
+	}
+	result.Failure.Args = deepCopyParams(args)
 }
 
 // runConfirmStep runs the HITL gate. Returns true to continue the workflow.

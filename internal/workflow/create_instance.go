@@ -277,7 +277,8 @@ func CreateInstanceDef() *Definition {
 			stepCreateInstance(),
 			stepDescribeInstance(),
 		},
-		ResultData: createInstanceResultData,
+		ResultData:   createInstanceResultData,
+		FailureDraft: createFailureDraft,
 	}
 }
 
@@ -309,7 +310,8 @@ func CreateInstanceGuidedDef() *Definition {
 			stepCreateInstance(),
 			stepDescribeInstance(),
 		},
-		ResultData: createInstanceResultData,
+		ResultData:   createInstanceResultData,
+		FailureDraft: createFailureDraft,
 	}
 }
 
@@ -1183,6 +1185,26 @@ func candidateCreateDraft(wfCtx *Context) (CreateExecutionDraft, error) {
 		return CreateExecutionDraft{}, fmt.Errorf("尚未形成执行草稿，无法继续创建")
 	}
 	return ParseCreateExecutionDraft(stored)
+}
+
+// createFailureDraft reports the resolved execution the failed step was working
+// from, for the workflow's failure record. It is the create's Definition.
+// FailureDraft, and like ResultData it hands the engine an encoding the engine
+// never looks inside.
+//
+// It returns the CANDIDATE — 形成执行草稿's own result — and not the sealed copy,
+// on purpose. The failure this record has to answer for is the capacity gate's
+// 库存不足, which is reached before any create is authorised: on the plain path
+// nothing is sealed at all, and on the guided path what IS sealed authorised an
+// image choice. The candidate is the only thing that describes what the failed
+// step was actually asking about. Whether it was ever approved is a separate
+// question, and StepFailure.Sealed is where the record answers it rather than
+// leaving a reader to infer it from a contract's presence.
+//
+// Nil before 形成执行草稿 has run — an early failure resolved no candidate, and
+// saying so is better than returning a half-built one.
+func createFailureDraft(wfCtx *Context) map[string]any {
+	return wfCtx.Result(createDraftStepName)
 }
 
 // promoteCreateDraft copies the approved candidate into Params so seal() covers

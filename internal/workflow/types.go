@@ -110,6 +110,62 @@ type Definition struct {
 	Description string
 	Steps       []Step
 	ResultData  func(wfCtx *Context) map[string]any
+	// FailureDraft returns the candidate this workflow was working from, encoded,
+	// for the failure record. Like ResultData it is the definition's own way of
+	// naming what only it understands — the engine never interprets what comes
+	// back, it only carries it to a caller that does.
+	//
+	// nil for a workflow that resolves no candidate; its failures then carry the
+	// failed step and its arguments and nothing more, which is honest.
+	FailureDraft func(wfCtx *Context) map[string]any
+}
+
+// StepFailure is what the workflow knows about its own failure, recorded where
+// the failure happened.
+//
+// It exists because the alternative is reconstruction, and reconstruction from
+// "whichever params survived" gets it wrong in both directions. A caller had to
+// read the spec out of top-level params: on the plain create those params are the
+// user's original request, so a zone the resolver derived was simply not in them
+// and the caller searched every zone; on the guided create they were whatever
+// contract happened to be sealed, which between gates is a SELECTION card's seal
+// and authorises nothing. Both readings are guesses about state the workflow
+// itself knew exactly.
+//
+// The four fields are deliberately separate, because conflating them is the bug:
+// what failed, what it actually sent, what it was working from, and whether any
+// of it was ever approved are four different questions.
+type StepFailure struct {
+	// Step is the step that stopped the workflow. It anchors the other three:
+	// Args and Draft are that step's, not the workflow's.
+	Step string
+	// Args are the arguments THAT step actually sent, copied rather than
+	// referenced so the record cannot move afterwards. nil when the step built
+	// none — it failed before BuildArgs, or it calls no tool at all.
+	//
+	// It is a record of the request, NOT a source for the decision behind it: the
+	// two differ on purpose. ApplyCapacityPlacementArgs drops Zone/Region/az_group
+	// for a pod zone, so a capacity request can carry no zone while the draft
+	// behind it names one. Read Draft for what was decided; read Args for what was
+	// asked.
+	Args map[string]any
+	// Draft is the candidate the failed step was working from, encoded, as the
+	// definition's FailureDraft reported it. nil when the workflow resolves no
+	// candidate or none existed yet.
+	Draft map[string]any
+	// Sealed reports whether a contract authorising this workflow's MUTATING step
+	// existed when it failed — which is not the same question as whether Contract
+	// is non-nil, and that difference is the whole reason this field exists.
+	//
+	// The guided create seals after every one of its seven gates, so a failure at
+	// 检查库存 leaves a perfectly real contract that authorised an image choice and
+	// nothing else. Its Operation is "CreateInstanceWorkflow", exactly like a real
+	// create authorisation's, so no reader can tell them apart by inspection.
+	//
+	// A seal is final only when no confirmation gate remains ahead of the failed
+	// step: while another gate is still to come, whatever is sealed is a selection
+	// the user made along the way, not permission to execute.
+	Sealed bool
 }
 
 // Context accumulates state during workflow execution.
@@ -163,12 +219,22 @@ type Result struct {
 	MissingSlots []string       `json:"missing_slots,omitempty"`
 	Data         map[string]any `json:"data,omitempty"`
 	Steps        []StepSummary  `json:"steps"`
-	// Contract is the sealed contract that gated this workflow's mutating step,
-	// or nil if the workflow never reached its confirmation gate. It is
-	// server-internal (json:"-": never serialised to the model — it may carry
-	// secret-bearing confirmed params); the engine reads it to narrate results
-	// and recover from the exact confirmed params instead of stale input.
+	// Contract is the seal in force when the workflow ended, or nil if it never
+	// passed a confirmation gate. It is server-internal (json:"-": never
+	// serialised to the model — it may carry secret-bearing confirmed params);
+	// the engine reads it to narrate results and recover from the exact confirmed
+	// params instead of stale input.
+	//
+	// It is NOT, on its own, "the contract that gated the mutating step" — this
+	// comment used to say that, and on the guided create it is false. That flow
+	// seals after each of its seven gates, so a run that stopped at 检查库存 ends
+	// with a contract that authorised the image selection and no more. Ask
+	// Failure.Sealed whether a contract authorising execution exists; a non-nil
+	// Contract answers a different question.
 	Contract *SealedActionContract `json:"-"`
+	// Failure describes the step that stopped this workflow, or nil when it
+	// succeeded. Server-internal, like Contract and Err.
+	Failure *StepFailure `json:"-"`
 	// Err is the error that stopped this workflow, unflattened, or nil. Message
 	// keeps the human sentence; Err keeps the typed cause, so a caller deciding
 	// what to DO about a failure can read the upstream error's fields instead of

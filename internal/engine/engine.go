@@ -3637,11 +3637,18 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// After Run (and any image-recovery re-run), narrate and recover from the
 	// exact contract the user confirmed. A confirm-form edit or the image swap
 	// lives only in the sealed params — the pre-confirmation args are stale — so
-	// once a contract exists it, not args, is the source for failure alternatives,
-	// secret redaction and the deterministic reply. Before the confirm gate
-	// (Contract nil) there is nothing confirmed yet, so args remain the source.
+	// once the user has approved a contract it, not args, is the source for secret
+	// redaction and the deterministic reply.
+	//
+	// "The user approved a contract" is not the same as "Contract != nil", which
+	// is what this used to test. The guided create seals after each of its seven
+	// gates, so a run that stopped at 检查库存 ends holding a real contract that
+	// authorised an image choice and nothing else — with the same Operation as a
+	// genuine create authorisation, so it cannot be told apart by looking. Reading
+	// it as "what the user confirmed" promotes a selection card to consent.
+	// Failure.Sealed is the workflow's own answer to the right question.
 	finalParams := args
-	if result.Contract != nil {
+	if result.Contract != nil && (result.Failure == nil || result.Failure.Sealed) {
 		finalParams = result.Contract.BusinessParams
 	}
 
@@ -3679,7 +3686,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// grounded — on a no-match it lists the REAL available types, and on sold-out it
 	// names the exact spec — so return it deterministically and skip narration.
 	if !result.Success && action == "CreateInstanceWorkflow" {
-		reply := e.createFailureReplyWithAlternatives(ctx, result.Message, result.Err, finalParams)
+		reply := e.createFailureReplyWithAlternatives(ctx, result.Message, result.Err, result.Failure)
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
 		return finalReplyPrefix + reply
 	}
@@ -3874,13 +3881,19 @@ func isCreateStockShortage(message string) bool {
 // no model/image constraint, so it lists the currently-offered cards
 // (strongest-first, excluding the sold-out one). Falls back to the plain reply
 // when nothing else is offered or the availability query fails.
-func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message string, err error, args map[string]any) string {
+//
+// It reads the spec off the workflow's failure record rather than off params.
+// Params could not answer: a sold-out is the capacity gate's verdict, and the
+// zone it checked was resolved from the catalog inside the workflow, so on a
+// create where the user named no zone there was no zone in params to find —
+// alternatives were then searched across EVERY zone and offered cards that do
+// not exist where the user is buying.
+func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message string, err error, failure *workflow.StepFailure) string {
 	reply := createWorkflowFailureReply(message, err)
 	if !isCreateStockShortage(message) {
 		return reply
 	}
-	gpuType, _ := args["GpuType"].(string)
-	zone, _ := args["Zone"].(string)
+	gpuType, zone := createFailureTarget(failure)
 	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
 	alts := knowledge.FittingGPUAlternatives("", "", nil, knowledge.ParseAvailableGPUs(avail, zone), gpuType, 3)
 	if len(alts) == 0 {
@@ -3892,6 +3905,30 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 	}
 	return reply + fmt.Sprintf("\n当前可创建的其他机型：%s。回复机型名（如「用 %s」）我帮你换一个重建（实际是否有货以创建结果为准）。",
 		strings.Join(names, " / "), alts[0].Name)
+}
+
+// createFailureTarget reads the GPU and zone the failed step was actually working
+// from, out of the candidate draft the workflow recorded with its failure.
+//
+// The draft, not the failure's Args: those are the request as sent, and
+// ApplyCapacityPlacementArgs strips Zone/Region/az_group for a pod zone, so the
+// capacity call that reported the shortage can carry no zone at all while the
+// draft behind it names one. The draft is the decision; the args are one wire
+// shape of it.
+//
+// Returning "" for both is the honest outcome when no draft was resolved (a
+// failure before 形成执行草稿). Zone "" makes ParseAvailableGPUs list every zone,
+// which is the old bug — but it is now reached only when the workflow genuinely
+// established no zone, rather than every time the user did not type one.
+func createFailureTarget(failure *workflow.StepFailure) (gpuType, zone string) {
+	if failure == nil || len(failure.Draft) == 0 {
+		return "", ""
+	}
+	draft, err := workflow.ParseCreateExecutionDraft(failure.Draft)
+	if err != nil {
+		return "", ""
+	}
+	return draft.Args.GpuType, draft.Args.Zone
 }
 
 func cfsWorkflowFailureReply(message string) string {
