@@ -51,6 +51,12 @@ func TestProductionCannotReEnableLegacySemanticRuntime(t *testing.T) {
 		"startWithoutGPURequestedByText",
 		"planWithUserTextMonitorMetrics",
 		"augmentPlanTargetRefsFromUserText",
+		// P6 orphan retirement (2026-07): the router-time boundary-pack
+		// classification directives were deleted along with the intent router;
+		// the package had no caller and only its own tests kept it "alive". Guard
+		// against the symbol / package returning as live prompt input.
+		"boundarypacks",
+		"BoundaryPromptFragments",
 	}
 	for _, top := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d fs.DirEntry, walkErr error) error {
