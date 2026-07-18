@@ -91,8 +91,12 @@ code-enforced.
 
 RAG is retrieval used **inside** the Agent loop, via the `SearchKnowledge` tool —
 not a terminal answer form. Retrieval (`internal/knowledge/`, qwen3 RRF) returns
-cited chunks the Agent grounds its answer in; no evidence means refuse. Citation
-leakage into the final text is caught by the output guard.
+cited chunks the Agent grounds its answer in. Citation discipline is **fail-open**:
+if the Agent cannot cite, it gets one bounded retry, then the answer ships anyway
+with citation markers stripped — a wrong or missing chunk_id must not destroy a
+likely-correct answer. The only hard stop is a persistent raw-evidence leak
+(security). Citation-marker leakage into the final text is caught by the output
+guard.
 
 ### Diagnosis Chain
 

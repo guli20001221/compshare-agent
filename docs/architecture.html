@@ -110,7 +110,7 @@
 
 ## 1. 概述
 
-CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,帮用户查实例 / 价格 / 库存 / 规格、回答平台知识问题、以及完成部署和排障这类多步任务。系统是一个 Go 单二进制,支持两种接入:命令行(CLI,`cmd/agent.go`)和 HTTP SSE 流式(`cmd/server.go`)。两条接入都通过 `engine.NewSession` 创建**同一个中心 AgentRuntime**;`cmd/trace.go` 只负责检索、渲染和 trace 等运行依赖的接线,不再有独立的 Router。
+CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,帮用户查实例 / 价格 / 库存 / 规格、回答平台知识问题、以及完成部署和排障这类多步任务。系统是一个 Go 单二进制,支持三种接入:命令行(CLI,`cmd/agent.go`)、HTTP SSE 流式(`cmd/server.go`,`POST /`)、和 WebSocket(`internal/httpapi/ws`,含持久化到 PostgreSQL 的 durable 变体)。三条接入都通过 `engine.NewSession` 创建**同一个中心 AgentRuntime**;`cmd/trace.go` 只负责检索、渲染和 trace 等运行依赖的接线,不再有独立的 Router。
 
 用户请求的复杂度差异极大,但都由同一个中心 Agent 处理——它按需选择只读能力、检索知识、或提出写操作:
 
@@ -125,7 +125,7 @@ CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,
 - **单一中心 Agent。** 不再按 tier 分三套执行管线。一个 ReAct 风格的循环(`internal/engine/`)接收编译好的 `AgentContext`,每轮要么选一个只读 capability、要么调知识检索工具、要么提出一个写操作,并在同一循环里观察工具结果。
 - **能力是 typed capability,不是 route manifest。** 模型可见的只读能力在 `internal/capability/read_*.go`,每个能力自带 typed 请求结构、字段合同(`field_contract.go` 的 `schemaNode` 是工具 schema、运行时校验、一致性测试的**单一来源**)、handler 和 renderer。没有独立的路由注册表。
 - **read-only 默认,写操作密封。** 变更类操作(创建 / 开关机 / 重启 / 重置密码 / 改名)默认关闭(`COMPSHARE_ENABLE_MUTATING_TOOLS=1` 才开);写操作先经 Action Resolver 确定性定目标,再进 Sealed Workflow,过 resolver / 确认 / 权限 / action-journal 四道门。删除、注销等 L2 破坏性动作无论如何都拒(`internal/tools/safe_executor.go`)。
-- **证据驱动。** 回答基于工具返回的事实或检索到的文档。RAG 不是一条独立管线,而是中心 Agent 在循环内调用的 `SearchKnowledge` 工具;没有证据必须拒答,不凭记忆编造。
+- **证据驱动 + fail-open。** 回答基于工具返回的事实或检索到的文档;RAG 不是独立管线,而是中心 Agent 在循环内调用的 `SearchKnowledge` 工具。引用纪律是 **fail-open** 的:能引就引,引不出时给一次有界重试,仍引不出则**照发**(去掉引用标记)——一个错或缺的 chunk_id 不能毁掉一个大概率正确的答案;唯一硬停是**持续原样泄漏检索原文**(安全)。精确平台事实不走这条路,由只读工具服务端渲染。
 - **确定性渲染。** 精确的标识、数量、价格、库存、规格、状态由代码渲染成 typed observation,Agent 在最终回答里插入 `render_ref` 占位,由 Response Gateway 替换成确定性结果,防止模型改写数字或截断列表。
 - **分层安全。** 输入守卫、工具执行管控、输出脱敏三层独立实施。
 
@@ -180,7 +180,7 @@ graph TD
 
 1. **输入守卫** — 命中拦截规则(越狱 / off-topic / 特定关键词)→ 直接返回固定话术,不进 LLM。
 2. **上下文装配** — 恢复未决的实例选择、注入近端事实缓存与压缩历史,编译成 `AgentContext`。
-3. **中心 Agent 循环**(`maxReActRounds=10`,`maxHistoryMessages=40`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=20`),每轮:
+3. **中心 Agent 循环**(`maxReActRounds=10`,`maxHistoryMessages=120`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=20`),每轮:
    - 选一个 **read capability** → `executeConcreteReadCapability` → `capability.MigratedRead(action)` → `RegisteredRead.Run` → 返回 Typed Observation(见 §5、§7)。
    - 调 **`SearchKnowledge`** → 在循环内检索平台知识 / 排障资料作为证据(见 §8)。
    - 提出**写操作** → Action Resolver 确定性定目标 → Sealed Workflow 暂停等确认(见 §6)。
@@ -231,7 +231,7 @@ RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不�
 ```
 
 - 关键词召回和向量召回各有盲区,hybrid + RRF + cross-encoder 精排比单一召回稳;embedder 和 reranker 用同族(qwen3)比跨族混搭可靠。
-- **cite-or-refuse**:合成带引用的中文回答,**没有证据必须拒答**;引用是否泄漏到最终文本由输出守卫兜底。
+- **引用纪律(fail-open)**:合成带引用的中文回答;引不出引用时一次有界重试后**照发**(去掉引用标记),不做罐头拒答——唯一硬停是持续原样泄漏检索原文(安全)。引用标记是否泄漏到最终文本由输出守卫兜底。
 - **知识库**:`deploy/kb/stage2b_w0.jsonl` + 两份预计算 embedding sidecar,三件套用 LF 归一 SHA256 字节锁定(`internal/knowledge/corpus_digest.go`),对不上直接拒绝启动。外部工具 / 运维语料(`external_w0.jsonl`)默认合入索引。
 - 系统提示由 `internal/prompt/segments.go` 的 Go 段组装,**没有** Go/Python 共用的 prompt 目录(旧的 terminal-RAG `rag_system_segments` 已删)。
 
@@ -249,7 +249,7 @@ RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不�
 
 ## 11. 状态与服务
 
-- **接入** — CLI 单进程单 Engine;HTTP `POST /`(Action 路由)+ `GET /healthz`,身份从请求 body 取(`top_organization_id` / `organization_id` / `request_uuid`,snake_case,网关注入),不走 header。Phase-1 Actions:`GetSession` / `CreateSession` / `Chat`(SSE)/ `GetMeta` / `Feedback`。
+- **接入** — CLI 单进程单 Engine;HTTP `POST /`(Action 路由)+ `GET /healthz`;WebSocket(`internal/httpapi/ws.go` / `ws_durable.go`,`CreateCSAgentWS`,durable 变体持久化到 PostgreSQL)。身份从请求 body 取(`top_organization_id` / `organization_id` / `request_uuid`,snake_case,网关注入),不走 header。Phase-1 Actions:`GetSession` / `CreateSession` / `Chat`(SSE)/ `GetMeta` / `Feedback`。
 - **会话** — HTTP 路径用 `internal/agentpool` 的 LRU 池(200 / 30min idle)维护 per-session Engine,miss 时从 PostgreSQL 经 `RehydrateHistory` 重建历史;同一会话并发请求串行化。
 - **持久化** — PostgreSQL(`database/sql` + `lib/pq`;从 MySQL/TiDB 迁移,`store.OpenMySQL` 符号、`mysql` 配置键、`MYSQL_DSN` 环境变量名为兼容保留但连的是 postgres)。`messages` 每轮 INSERT 两次(用户即时、assistant 占位)、SSE done 时 UPDATE 一次,不逐 token 写。DDL 由 ops 跑,不是二进制。
 - **配置** — YAML(`deploy/conf/config.yaml`),typed 字段在 `agent.features` / `agent.retrieval` / `agent.trace`(见 `internal/config/runtime.go`);不再走 `.env` / `*.example`。
