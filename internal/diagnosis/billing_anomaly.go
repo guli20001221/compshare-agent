@@ -328,10 +328,6 @@ func actualInstanceCost(state, chargeType string, isSpot bool, price float64) fl
 	return price
 }
 
-func formatInstanceCost(host map[string]any) string {
-	return formatInstanceFactCost(billingInstanceFact(host))
-}
-
 func formatInstanceFactCost(fact BillingInstanceFact) string {
 	billing := chargeTypeLabel(fact.ChargeType, fact.IsSpot)
 	actual := fact.ActualComputeCharge
