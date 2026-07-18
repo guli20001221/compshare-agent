@@ -99,7 +99,7 @@ Model-visible read capabilities live in `internal/capability/read_*.go`. Each ow
 Multi-step mutating flows (create/start/stop/reboot/reset-password/rename) live as `*Workflow` types. Confirmation is delivered via the `engine.ConfirmFunc` callback (CLI implementation in `cmd/agent.go::cliConfirm`).
 
 ### Knowledge / RAG (`internal/knowledge/`)
-Retriever modes are listed above. The RAG **system prompt** is composed from shared text snippets in `internal/prompt/rag_system_segments/` (ordered by `order.txt`), and the same snippets are read by the Python eval harness — keep both consumers in mind when editing. Reranker / embedder timeouts are knobbed by `RAG_HYBRID_TIMEOUT_MS` / `RAG_RERANKER_TIMEOUT_MS`.
+Retriever modes are listed above. The production Agent's **system prompt** is built from the Go segments in `internal/prompt/segments.go` (assembled by `builder.go`); there is no shared Go/Python prompt directory. The old terminal-RAG `internal/prompt/rag_system_segments/` snippets and the Python `evaluate_answers` answer-grading harness that read them were removed — RAG is now an in-loop tool the central Agent calls, not a separate terminal-RAG prompt, and answer-quality eval should be re-derived from real HTTP/WebSocket traces rather than a second Python prompt. Reranker / embedder timeouts are knobbed by `RAG_HYBRID_TIMEOUT_MS` / `RAG_RERANKER_TIMEOUT_MS`.
 
 ### Diagnosis (`internal/diagnosis/`)
 Read-only diagnostic tools (init failure, billing anomaly, GPU not detected, image issue, port/firewall, SSH failure). Boundary rule baked into prompts: read-only self-check commands may be suggested as user actions; commands that change environment must be marked as **optional fixes**, never auto-executed. Source-of-truth notes:
