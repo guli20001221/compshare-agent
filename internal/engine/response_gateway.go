@@ -21,7 +21,7 @@ type readResponseEvidence struct {
 // It does not infer intent from words in the answer. Instead it selects the
 // applicable contract from evidence that actually crossed a tool boundary.
 func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) string {
-	content := e.guardMonitorTemporalFinalReply(draft)
+	content := e.guardMonitorNoDataFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
 
 	// SearchKnowledge owns its semantic claim verifier and repair path. Read

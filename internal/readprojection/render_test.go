@@ -96,3 +96,31 @@ func TestExtractMonitorScalarsSharesRendererVocabulary(t *testing.T) {
 	assert.Equal(t, "%", byKey["cpu_usage"].Unit)
 	assert.Equal(t, "uhost-a", byKey["cpu_usage"].SubjectID)
 }
+
+// TestRenderHistoricalMonitorSummaryStatesWindow pins the structured replacement for
+// the deleted engine date-regex: the deterministic historical reply itself states
+// the exact queried Beijing window, so the model no longer needs post-hoc correction.
+func TestRenderHistoricalMonitorSummaryStatesWindow(t *testing.T) {
+	// 1777442400 = 2026-04-29 14:00, 1777444200 = 14:30 (Asia/Shanghai, UTC+8).
+	got := RenderHistoricalMonitorSummary(nil, map[string]any{}, 1777442400, 1777444200)
+	assert.Contains(t, got, "北京时间 2026-04-29 14:00 ~ 14:30（历史时间窗）", "the reply states the exact queried window")
+	assert.Contains(t, got, "未返回监控数据", "empty payload is window-scoped no-data, never a fabricated 0%/healthy value")
+}
+
+// An unset window (current monitor / window-less caller) adds no prefix.
+func TestRenderHistoricalMonitorSummaryNoWindowNoPrefix(t *testing.T) {
+	assert.Equal(t, "未返回监控数据。", RenderHistoricalMonitorSummary(nil, map[string]any{}, 0, 0))
+}
+
+// TestBuildHistoricalMonitorEnvelopeMarksWindowRange pins that historical facts carry
+// the window as structured evidence (Period=range + WindowStart/End) — the Observation
+// half of the "mark historical, carry start/end" contract.
+func TestBuildHistoricalMonitorEnvelopeMarksWindowRange(t *testing.T) {
+	env := BuildHistoricalMonitorEnvelope([]entity.InstanceSnapshot{{UHostId: "uhost-a"}}, []Metric{MetricCPU}, monitorAPIResult(), 1777442400, 1777444200)
+	require.NotEmpty(t, env.Facts, "historical monitor facts are present")
+	for _, f := range env.Facts {
+		assert.Equal(t, "range", f.Period, "historical facts are a range, not latest")
+		assert.Equal(t, int64(1777442400), f.WindowStart)
+		assert.Equal(t, int64(1777444200), f.WindowEnd)
+	}
+}

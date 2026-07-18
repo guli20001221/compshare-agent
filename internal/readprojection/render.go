@@ -117,13 +117,14 @@ type monitorHistoricalSeries struct {
 	Points []monitorHistoricalPoint
 }
 
-func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any) string {
+func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, windowStart, windowEnd int64) string {
+	prefix := historicalMonitorWindowPrefix(windowStart, windowEnd)
 	series := historicalMonitorSeries(metrics, payload)
 	if len(series) == 0 {
 		if len(historicalMonitorSeries(nil, payload)) > 0 {
-			return noRequestedMonitorValuesReply
+			return prefix + noRequestedMonitorValuesReply
 		}
-		return noMonitorValuesReply
+		return prefix + noMonitorValuesReply
 	}
 	parts := make([]string, 0, len(series))
 	for _, item := range series {
@@ -154,9 +155,24 @@ func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any) st
 		))
 	}
 	if len(parts) == 0 {
-		return noMonitorValuesReply
+		return prefix + noMonitorValuesReply
 	}
-	return strings.Join(parts, "; ")
+	return prefix + strings.Join(parts, "; ")
+}
+
+// historicalMonitorWindowPrefix renders the queried Beijing window as a
+// self-labeled prefix so the deterministic historical reply states the exact time
+// window it aggregates — the structured replacement for the engine's former
+// post-hoc date-regex correction. Empty for an unset window (0) so current-monitor
+// and window-less callers are unchanged. monitorHistoryLoc is Asia/Shanghai
+// (UTC+8), matching the engine's beijingZone, so the two never disagree.
+func historicalMonitorWindowPrefix(start, end int64) string {
+	if start <= 0 || end <= 0 {
+		return ""
+	}
+	startAt := time.Unix(start, 0).In(monitorHistoryLoc)
+	endAt := time.Unix(end, 0).In(monitorHistoryLoc)
+	return fmt.Sprintf("北京时间 %s ~ %s（历史时间窗）：", startAt.Format("2006-01-02 15:04"), endAt.Format("15:04"))
 }
 
 func historicalMonitorSeries(metrics []Metric, payload map[string]any) []monitorHistoricalSeries {

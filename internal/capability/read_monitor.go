@@ -41,10 +41,12 @@ func (MonitorCurrentRequest) MissingFields() []platform.MissingField { return ni
 // instances, the requested metrics and the raw upstream payload the renderer /
 // envelope builder consume. Historical distinguishes the two render paths.
 type MonitorResponse struct {
-	Instances  []entity.InstanceSnapshot
-	Metrics    []platform.Metric
-	Raw        map[string]any
-	Historical bool
+	Instances   []entity.InstanceSnapshot
+	Metrics     []platform.Metric
+	Raw         map[string]any
+	Historical  bool
+	WindowStart int64
+	WindowEnd   int64
 }
 
 func monitorCurrentReadSpec() ReadCapabilitySpec[MonitorCurrentRequest, MonitorResponse] {
@@ -118,7 +120,7 @@ func monitorHistoryHandle(ctx context.Context, req MonitorHistoryRequest, rt Rea
 	if err != nil {
 		return MonitorResponse{}, ReadFailureAfterTool(monitorAction, monitorCurrentCapabilityLabel, err)
 	}
-	return MonitorResponse{Instances: instances, Metrics: req.Metrics, Raw: raw, Historical: true}, ReadResult{}
+	return MonitorResponse{Instances: instances, Metrics: req.Metrics, Raw: raw, Historical: true, WindowStart: start, WindowEnd: end}, ReadResult{}
 }
 
 // resolveMonitorTargets applies the instance-scoped monitor target contract: an
@@ -147,12 +149,13 @@ func resolveMonitorTargets(targets []platform.TargetRef, rt ReadRuntime) ([]enti
 
 func monitorRender(resp MonitorResponse) ReadResult {
 	reply := readprojection.RenderMonitorSummary(resp.Metrics, resp.Raw)
+	env := readprojection.BuildMonitorEnvelope(resp.Instances, resp.Metrics, resp.Raw)
 	if resp.Historical {
-		reply = readprojection.RenderHistoricalMonitorSummary(resp.Metrics, resp.Raw)
+		reply = readprojection.RenderHistoricalMonitorSummary(resp.Metrics, resp.Raw, resp.WindowStart, resp.WindowEnd)
+		env = readprojection.BuildHistoricalMonitorEnvelope(resp.Instances, resp.Metrics, resp.Raw, resp.WindowStart, resp.WindowEnd)
 	}
 	r := ReadHandled(reply)
 	r.ToolAction = monitorAction
-	env := readprojection.BuildMonitorEnvelope(resp.Instances, resp.Metrics, resp.Raw)
 	r.Envelope = &env
 	return r
 }

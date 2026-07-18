@@ -170,6 +170,21 @@ func BuildMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics []Metric, 
 	return env
 }
 
+// BuildHistoricalMonitorEnvelope is the historical variant of BuildMonitorEnvelope:
+// identical facts, but every metric fact is marked as an aggregate over the queried
+// window (Period="range" + WindowStart/WindowEnd) so the observation carries the
+// exact historical time window as structured evidence, instead of the engine
+// correcting the model's prose after the fact.
+func BuildHistoricalMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics []Metric, payload map[string]any, windowStart, windowEnd int64) envelope.Envelope {
+	env := BuildMonitorEnvelope(subjects, metrics, payload)
+	for i := range env.Facts {
+		env.Facts[i].Period = "range"
+		env.Facts[i].WindowStart = windowStart
+		env.Facts[i].WindowEnd = windowEnd
+	}
+	return env
+}
+
 type monitorScalarFact struct {
 	SubjectID string
 	Key       string

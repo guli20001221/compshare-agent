@@ -143,18 +143,6 @@ const (
 
 var (
 	beijingZone = time.FixedZone("CST", 8*3600)
-	// monitorWindowRE matches a monitor-window statement: a clock range, with the
-	// ISO date that immediately precedes it captured as an optional group.
-	//
-	// The date is deliberately anchored to the clock range rather than matched on
-	// its own. A bare `\d{4}-\d{2}-\d{2}` rewrite hit EVERY date in the finished
-	// answer, so a reply that also mentioned an instance's creation or expiry date
-	// had that date silently overwritten with the monitor window's date — turning a
-	// correct fact into a false one. Failing to correct a date the model got wrong
-	// leaves a model error as a model error; rewriting an unrelated correct date
-	// manufactures a new one, which is strictly worse. Only "<date> <clock range>"
-	// is a window statement, so only that pair is rewritten.
-	monitorWindowRE = regexp.MustCompile(`(?:(\d{4}-\d{2}-\d{2})[\s,，]*)?((?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?)\s*(?:~|-|到|至)\s*(?:\b\d{1,2}:\d{2}\b|\d{1,2}点(?:\d{1,2}分)?))`)
 )
 
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
@@ -3260,42 +3248,23 @@ func (x engineToolExecutor) Execute(ctx context.Context, action string, args map
 	return x.engine.executeRawTool(ctx, action, args, x.origin)
 }
 
-// guardMonitorTemporalFinalReply keeps LLM narration aligned with the actual
-// historical monitor window when a routed/tool-call path queried StartTime and
-// EndTime.
-func (e *Engine) guardMonitorTemporalFinalReply(content string) string {
+// guardMonitorNoDataFinalReply enforces the never-0%/healthy invariant for
+// historical monitoring as a STRUCTURAL status check, not a prose rewrite: when
+// every historical monitor target queried this turn returned
+// NO_DATA_IN_REQUESTED_WINDOW, the whole answer is replaced with the window-scoped
+// no-data reply so the model cannot narrate a value or health for a window that has
+// none. The correct window and historical framing now come from the structured
+// render (RenderHistoricalMonitorSummary states the window; the envelope marks each
+// fact as a range), so the former date-regex rewrite and "当前实时监控"→"历史时间窗"
+// phrase substitution are gone — this guard only fires on all-no-data.
+func (e *Engine) guardMonitorNoDataFinalReply(content string) string {
 	if !e.currentMonitorWindow || content == "" {
 		return content
 	}
 	if e.allCurrentHistoricalMonitorResultsNoData() {
 		return formatHistoricalMonitorNoDataReply(e.currentMonitorStart, e.currentMonitorEnd, e.currentMonitorNoData)
 	}
-
-	startAt := time.Unix(e.currentMonitorStart, 0).In(beijingZone)
-	endAt := time.Unix(e.currentMonitorEnd, 0).In(beijingZone)
-	targetDate := startAt.Format("2006-01-02")
-	targetTimeRange := fmt.Sprintf("%s ~ %s", startAt.Format("15:04"), endAt.Format("15:04"))
-	corrected := monitorWindowRE.ReplaceAllStringFunc(content, func(window string) string {
-		// Group 1 is the date, present only when it directly precedes the clock
-		// range. When it is absent the statement carries no date to correct, so
-		// none is injected — the reply keeps whatever surrounding prose it had.
-		sub := monitorWindowRE.FindStringSubmatch(window)
-		if sub == nil || sub[1] == "" {
-			return targetTimeRange
-		}
-		return targetDate + " " + targetTimeRange
-	})
-	replacements := map[string]string{
-		"当前实时监控":  "该历史时间窗监控",
-		"当前监控":    "该历史时间窗监控",
-		"当前实时":    "该历史时间窗",
-		"当前值":     "该时间窗值",
-		"最近较短时间内": "指定历史时间窗内",
-	}
-	for old, repl := range replacements {
-		corrected = strings.ReplaceAll(corrected, old, repl)
-	}
-	return corrected
+	return content
 }
 
 // trackMonitorResult records historical monitor query metadata so no-data and

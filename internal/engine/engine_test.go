@@ -465,82 +465,6 @@ func TestChat_ExternalToolReadRetriesTransientError(t *testing.T) {
 	assert.NotContains(t, toolMsg.Content, "API")
 }
 
-// Reference-only legacy scenario kept for future historical-monitor re-enable.
-// It is intentionally not a Test* while this stage rejects history windows.
-func legacyChat_HistoricalMonitorNoDataFinalReplyAndTurnReset(t *testing.T) {
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"GetCompShareInstanceMonitor": {
-			"RetCode": 0,
-			"Data": []any{
-				map[string]any{"UHostId": "uhost-1", "MonitorSet": []any{}},
-			},
-		},
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-1"],"StartTime":1777442400,"EndTime":1777444200}`),
-		}},
-		{Content: "当前实时监控显示 CPU 99%，GPU 88%。"},
-		{Content: "第二轮普通回复 CPU 99%。"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	reply, err := eng.Chat(context.Background(), "看 2026-04-29 14:00 的监控", noopStep)
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "北京时间 2026-04-29 14:00 ~ 2026-04-29 14:30")
-	assert.Contains(t, reply, "uhost-1")
-	assert.Contains(t, reply, "没有返回有效监控数据")
-	assert.NotContains(t, reply, "CPU 99")
-	assert.NotContains(t, reply, "GPU 88")
-
-	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
-	assert.Contains(t, toolMsg.Content, "MonitorDataStatus")
-
-	reply, err = eng.Chat(context.Background(), "这轮不查工具", noopStep)
-	assert.NoError(t, err)
-	assert.Equal(t, "第二轮普通回复 CPU 99%。", reply)
-}
-
-// Reference-only legacy scenario kept for future historical-monitor re-enable.
-// It is intentionally not a Test* while this stage rejects history windows.
-func legacyChat_HistoricalMonitorFinalReplyCorrectsWindowWording(t *testing.T) {
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"GetCompShareInstanceMonitor": {
-			"RetCode": 0,
-			"Data": []any{
-				map[string]any{
-					"UHostId": "uhost-1",
-					"Metrics": []any{
-						map[string]any{"Results": []any{map[string]any{"Values": []any{map[string]any{"Value": float64(42)}}}}},
-					},
-				},
-			},
-		},
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-1"],"StartTime":1777442400,"EndTime":1777444200}`),
-		}},
-		{Content: "当前实时监控显示 2025-06-30 13:00 ~ 13:30 CPU 42%。"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	reply, err := eng.Chat(context.Background(), "看 2026-04-29 14:00 的监控", noopStep)
-	assert.NoError(t, err)
-	assert.Contains(t, reply, "该历史时间窗监控")
-	assert.Contains(t, reply, "2026-04-29")
-	assert.Contains(t, reply, "14:00 ~ 14:30")
-	assert.Contains(t, reply, "CPU 42")
-	assert.NotContains(t, reply, "2025-06-30")
-	assert.NotContains(t, reply, "当前实时监控")
-}
-
 func TestChat_HistoricalMonitorToolCallExecutesWithTemporalGuard(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{
 		ToolCalls: []openai.ToolCall{
@@ -558,58 +482,23 @@ func TestChat_HistoricalMonitorToolCallExecutesWithTemporalGuard(t *testing.T) {
 	assert.Equal(t, []string{"GetCompShareInstanceMonitor"}, executor.calls)
 }
 
-func TestGuardMonitorTemporalFinalReplyCorrectsWindowWording(t *testing.T) {
+// The historical-monitor guard no longer rewrites the model's prose: the correct
+// window now ships deterministically from the structured render (see
+// RenderHistoricalMonitorSummary), not a post-hoc regex. When data is present the
+// guard is a pure passthrough, so a window the model stated — and every unrelated
+// date — survive verbatim (the old code rewrote them). The only remaining behavior
+// is the all-no-data whole-answer override, covered by the Chat-level tests above.
+func TestGuardMonitorNoDataFinalReplyPassthroughWhenDataPresent(t *testing.T) {
 	eng := NewWithDeps(nil, nil, nil)
 	eng.currentMonitorWindow = true
 	eng.currentMonitorStart = 1777442400
 	eng.currentMonitorEnd = 1777444200
+	// currentMonitorTargets is empty → not all-no-data → the override does not fire.
 
-	reply := eng.guardMonitorTemporalFinalReply("historical monitor shows 2025-06-30 13:00 ~ 13:30 CPU 42%")
+	answer := "该实例创建于 2026-01-15，到期时间 2027-03-20。历史监控显示 2025-06-30 13:00 ~ 13:30 CPU 42%"
+	reply := eng.guardMonitorNoDataFinalReply(answer)
 
-	assert.Contains(t, reply, "2026-04-29")
-	assert.Contains(t, reply, "14:00 ~ 14:30")
-	assert.Contains(t, reply, "CPU 42")
-	assert.NotContains(t, reply, "2025-06-30")
-}
-
-func TestGuardMonitorTemporalFinalReplyCorrectsChineseClockRangeWording(t *testing.T) {
-	eng := NewWithDeps(nil, nil, nil)
-	eng.currentMonitorWindow = true
-	eng.currentMonitorStart = 1777442400
-	eng.currentMonitorEnd = 1777444200
-
-	reply := eng.guardMonitorTemporalFinalReply("\u5386\u53f2\u76d1\u63a7\u663e\u793a 2025-06-30 8\u70b9\u523010\u70b9 CPU 42\u3002")
-
-	assert.Contains(t, reply, "14:00 ~ 14:30")
-	assert.Contains(t, reply, "CPU 42")
-	assert.NotContains(t, reply, "8\u70b9\u523010\u70b9")
-	assert.NotContains(t, reply, "2025-06-30")
-}
-
-// TestGuardMonitorTemporalFinalReplyLeavesUnrelatedDatesAlone pins the boundary
-// the temporal guard must not cross: it may correct the window the model stated
-// for the monitor data, and nothing else. The guard used to rewrite every ISO
-// date in the finished answer to the monitor window's date, so an answer that
-// also mentioned the instance's creation date shipped that date REWRITTEN — a
-// correct fact turned into a false one by the very code meant to keep the reply
-// truthful. Correcting a wrong window is worth doing; manufacturing a wrong
-// creation date to do it is not.
-func TestGuardMonitorTemporalFinalReplyLeavesUnrelatedDatesAlone(t *testing.T) {
-	eng := NewWithDeps(nil, nil, nil)
-	eng.currentMonitorWindow = true
-	eng.currentMonitorStart = 1777442400
-	eng.currentMonitorEnd = 1777444200
-
-	reply := eng.guardMonitorTemporalFinalReply(
-		"该实例创建于 2026-01-15，到期时间 2027-03-20。历史监控显示 2025-06-30 13:00 ~ 13:30 CPU 42%")
-
-	// The window statement is still corrected.
-	assert.Contains(t, reply, "2026-04-29")
-	assert.Contains(t, reply, "14:00 ~ 14:30")
-	assert.NotContains(t, reply, "2025-06-30")
-	// The dates that were never about the monitor window survive untouched.
-	assert.Contains(t, reply, "2026-01-15", "instance creation date must not be rewritten to the monitor date")
-	assert.Contains(t, reply, "2027-03-20", "expiry date must not be rewritten to the monitor date")
+	assert.Equal(t, answer, reply, "with data present the guard is a passthrough; it no longer rewrites windows, dates, or phrases")
 }
 
 func TestChat_ClearHistoricalMonitorQuestionMayUseReActHistoryTool(t *testing.T) {
