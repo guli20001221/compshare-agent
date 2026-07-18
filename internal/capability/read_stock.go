@@ -517,16 +517,25 @@ func stockRegionFromZone(zone string) string {
 	return zone[:idx]
 }
 
-// selectCapacityPrecheckImageID returns any usable image id to satisfy the capacity
-// API's REQUIRED CompShareImageId param (CheckCompShareResourceCapacity returns RetCode
-// 230 without it). The image only seeds the probe (and its boot-disk sizing) — it never
-// drives the GPU-capacity conclusion the Agent reports — so the pick is deterministic
-// and keyword-free: the caller already scoped the query to ImageType=System, so the
-// first Available row is representative. There is deliberately NO name interpretation
-// (ubuntu/nvidia/cuda scoring): that was a second image interpreter the image
-// convergence removed everywhere else, and a stock turn carries no user image request
-// to resolve. Returns "" when no usable row — the caller then surfaces an honest
-// 容量预检未执行 message rather than defaulting to some image.
+// selectCapacityPrecheckImageID returns any Available System image id to satisfy the
+// capacity API's REQUIRED CompShareImageId param (CheckCompShareResourceCapacity returns
+// RetCode 230 without it). It is deliberately keyword-free — NO ubuntu/nvidia/cuda name
+// scoring (that was a second image interpreter the image convergence removed everywhere
+// else) and a stock turn carries no user image request to resolve — so it just returns
+// the first Available System row.
+//
+// This image is a SAMPLE probe parameter, NOT a representative or authoritative one, and
+// the choice is NOT inert: per upstream CheckCompShareResourceCapacity the image feeds
+// the OS type and boot-disk sizing into the scheduler simulation, and
+// DescribeCompShareImages returns rows in resource-search order (there is no "first row
+// is the canonical probe image" contract). So a precheck that runs with this image and
+// returns all ResourceEnough=false is a SAMPLE negative only — it must NOT be
+// generalized to "this GPU has no stock" (see renderStockInventoryCapacityReply). Only a
+// POSITIVE result confirms creatability; the authoritative negative comes from the create
+// workflow re-checking the user's final sealed image/zone/disk/spec.
+//
+// Returns "" when no usable row — the caller then surfaces an honest 容量预检未执行
+// message rather than defaulting to some image.
 func selectCapacityPrecheckImageID(raw map[string]any) string {
 	for _, item := range mapSliceAt(raw, "ImageSet") {
 		entry, ok := item.(map[string]any)
@@ -631,7 +640,10 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 		// the catalog answer.)
 		return fmt.Sprintf("%s 机型当前开售；本次容量预检未能确认具体配置的可创建性，精确库存请以控制台创建页为准。", models)
 	}
-	reply := fmt.Sprintf("%s 当前暂无可创建库存，暂时不能新建实例。", models)
+	// checkedSpecs>0 but nothing enough is a SAMPLE negative (the probe image's OS/disk
+	// feed the sim); it must not be generalized into a global creation denial. Keep the
+	// on-sale truth and defer the authoritative answer to the create flow.
+	reply := fmt.Sprintf("%s 机型开售；样本容量预检未通过，但不能据此判断该机型无法创建，精确可创建性以创建流程中你最终选择的镜像与配置为准。", models)
 	return appendCapacityFailureNote(reply, failedZones)
 }
 
@@ -652,7 +664,13 @@ func renderStockInventoryCapacityReply(checks []stockCapacityCheck, inventoryLin
 	if allStockCapacityFailed(checks) {
 		return fmt.Sprintf("%s 默认创建配置容量预检未完成，暂不能确认默认配置是否可创建。\n%s\n机型状态：开售。", models, inventoryLine)
 	}
-	return fmt.Sprintf("%s 默认创建配置暂未通过容量预检，暂时不能新建实例。\n%s\n机型状态：开售。", models, inventoryLine)
+	// A precheck that RAN but returned all ResourceEnough=false is a SAMPLE negative
+	// only: it used a placeholder probe image whose OS/boot-disk feed the scheduler sim,
+	// so an all-false sample does NOT prove the GPU has no creatable stock. Report the
+	// sample outcome and keep the real on-sale + inventory facts; never emit a global
+	// creation denial ("暂无可创建库存" / "暂时不能新建实例") — the authoritative negative
+	// comes only from the create workflow re-checking the user's final sealed config.
+	return fmt.Sprintf("%s 对默认配置做的样本容量预检未通过，但这不代表该机型无法创建（样本所用镜像/磁盘可能不适配），精确可创建性请在创建流程中以你最终选择的镜像与配置为准。\n%s\n机型状态：开售。", models, inventoryLine)
 }
 
 func uniqueStockCheckNames(checks []stockCapacityCheck) []string {

@@ -144,8 +144,14 @@ func TestStockHandle_CapacityPrecheckForMatchedNormalGPU(t *testing.T) {
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", result.ToolAction)
-	assert.Contains(t, result.Reply, "默认创建配置暂未通过容量预检")
+	// The precheck RAN (call succeeded) but returned all ResourceEnough=false. That is a
+	// SAMPLE negative (the probe used an arbitrary System image whose OS/disk feed the
+	// sim), so the reply must report the on-sale truth and the sample outcome WITHOUT
+	// generalizing to a global creation denial.
+	assert.Contains(t, result.Reply, "样本容量预检未通过")
 	assert.Contains(t, result.Reply, "机型状态：开售")
+	assert.NotContains(t, result.Reply, "暂时不能新建实例", "a sample all-false must not be generalized to a global creation denial")
+	assert.NotContains(t, result.Reply, "暂无可创建库存")
 	assert.NotContains(t, result.Reply, "ResourceEnough", "no implementation details leak")
 	require.Equal(t, []ReadEffect{RememberStockReferent{GPUModel: "4090"}}, result.Effects,
 		"single matched model is remembered as a typed RC017 effect, not a shared-result field")
@@ -199,4 +205,40 @@ func TestSelectCapacityPrecheckImageID_SkipsUnusableAndEmpty(t *testing.T) {
 	assert.Equal(t, "img-ok", selectCapacityPrecheckImageID(raw), "first usable id after skipping busy + blank-id rows")
 	assert.Equal(t, "", selectCapacityPrecheckImageID(map[string]any{"ImageSet": []any{}}),
 		"no usable row must return \"\" (honest absence, never a default image)")
+}
+
+// TestRenderStockCapacity_AllPrecheckFailedIsUncertainNotSoldOut bounds the worst case
+// of the capacity-probe image choice: even if the probe image errors every zone's
+// precheck, a model the catalog reports as on-sale must degrade to "开售 / 未完成 /
+// 暂不能确认", NEVER "售罄 / 暂无可创建库存". A precheck failure must not manufacture a
+// false sold-out (the honest-degradation invariant referenced at read_stock.go's #3b).
+func TestRenderStockCapacity_AllPrecheckFailedIsUncertainNotSoldOut(t *testing.T) {
+	checks := []stockCapacityCheck{
+		{Name: "4090", Zone: "cn-wlcb-01", Failed: true},
+		{Name: "4090", Zone: "cn-bj2-03", Failed: true},
+	}
+	reply := renderStockInventoryCapacityReply(checks, "原始 GPU 库存：接口未返回数量。")
+	assert.Contains(t, reply, "未完成")
+	assert.Contains(t, reply, "开售")
+	assert.NotContains(t, reply, "售罄")
+	assert.NotContains(t, reply, "暂无可创建库存")
+	assert.NotContains(t, reply, "暂时不能新建实例")
+}
+
+// TestRenderStockCapacity_SuccessButAllFalseIsNotGlobalDenial is the F3 sample-authority
+// gate: a precheck that RAN (CheckedSpec>0, not Failed) but found no enough spec is a
+// SAMPLE negative — the probe image's OS/boot-disk feed the scheduler sim, so it cannot
+// prove the GPU has no stock. The reply must keep 机型开售 and must NOT emit a global
+// creation denial. Only a POSITIVE precheck is authoritative. Goes red if the code
+// generalizes an all-false sample into "暂时不能新建实例".
+func TestRenderStockCapacity_SuccessButAllFalseIsNotGlobalDenial(t *testing.T) {
+	checks := []stockCapacityCheck{
+		{Name: "4090", Zone: "cn-wlcb-01", CheckedSpec: 2}, // ran, no EnoughSpecs, not Failed
+	}
+	reply := renderStockInventoryCapacityReply(checks, "原始 GPU 库存：接口未返回数量。")
+	assert.Contains(t, reply, "开售")
+	assert.Contains(t, reply, "样本")
+	assert.NotContains(t, reply, "暂时不能新建实例", "an all-false sample must not become a global creation denial")
+	assert.NotContains(t, reply, "暂无可创建库存")
+	assert.NotContains(t, reply, "售罄")
 }

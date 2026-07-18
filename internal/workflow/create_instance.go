@@ -17,6 +17,7 @@ const (
 	guidedStepZone
 	guidedStepGPUCount
 	guidedStepCPUMemory
+	guidedStepImageSource
 	guidedStepImageFacets
 	guidedStepImage
 	guidedStepFinal
@@ -287,7 +288,7 @@ func CreateInstanceDef() *Definition {
 func CreateInstanceGuidedDef() *Definition {
 	return &Definition{
 		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择镜像筛选 → 必要时查询社区镜像 → 选择镜像 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认镜像计费 → 创建实例 → 查看状态",
+		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择镜像来源 → 查询所选来源镜像 → 选择镜像筛选 → 选择镜像 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认镜像计费 → 创建实例 → 查看状态",
 		Steps: []Step{
 			stepQueryImages(true),
 			stepQueryInstanceTypes(),
@@ -296,8 +297,9 @@ func CreateInstanceGuidedDef() *Definition {
 			stepGuidedChooseZone(),
 			stepGuidedChooseGPUCount(),
 			stepGuidedChooseCPUMemory(),
+			stepGuidedChooseImageSource(),
+			stepReQuerySelectedSourceImages(),
 			stepGuidedChooseImageFacets(),
-			stepQueryCommunityImagesAfterFacets(),
 			stepGuidedChooseImage(),
 			// Runs while 选择镜像's seal is still live — hence the rule that a
 			// resolve step may not write Params, which would break that digest.
@@ -369,14 +371,32 @@ func communityImageBrowseArgs(name string) map[string]any {
 	return args
 }
 
-func stepQueryCommunityImagesAfterFacets() Step {
+// stepReQuerySelectedSourceImages re-fetches the image catalog for the source the user
+// chose in the guided source step, into the SAME "查询镜像" result the whole image
+// selection reads — so a source switch in EITHER direction (platform↔community) replaces
+// the initial catalog with the chosen source's, and the facets/picker/resolve/boot-disk
+// steps never read a stale foreign-source catalog. Skipped when the source is unchanged
+// from the initial (the first 查询镜像 already fetched it) or an explicit image is pinned.
+func stepReQuerySelectedSourceImages() Step {
 	return Step{
 		Name:   "查询镜像",
 		Type:   StepToolCall,
-		Tool:   "DescribeCommunityImages",
-		SkipIf: shouldSkipCommunityImageQuery,
+		SkipIf: shouldSkipSourceReQuery,
+		ToolFunc: func(wfCtx *Context) string {
+			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
+				return "DescribeCommunityImages"
+			}
+			return "DescribeCompShareImages"
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			return communityImageBrowseArgs(paramStr(wfCtx.Params, "ImageName", "")), nil
+			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
+				return communityImageBrowseArgs(paramStr(wfCtx.Params, "ImageName", "")), nil
+			}
+			args := map[string]any{"Limit": 20}
+			if name := paramStr(wfCtx.Params, "ImageName", ""); name != "" {
+				args["Name"] = name
+			}
+			return args, nil
 		},
 	}
 }
@@ -625,6 +645,28 @@ func stepGuidedChooseCPUMemory() Step {
 	}
 }
 
+// stepGuidedChooseImageSource is the FIRST of the two-stage image flow: it picks the
+// image SOURCE alone (platform/community). It comes before the source re-query and the
+// facets step so that a source change re-queries that source's real catalog and the
+// facets/picker are built from it — never from the previous source's stale listing.
+func stepGuidedChooseImageSource() Step {
+	return Step{
+		Name:              "选择镜像来源",
+		Type:              StepConfirm,
+		SkipIf:            shouldSkipGuidedImageSourceStep,
+		BuildForm:         buildGuidedImageSourceForm,
+		ApplyOverrides:    applyGuidedImageSourceOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return map[string]any{
+				"workflow":    "CreateInstanceWorkflow",
+				"step":        guidedStepLabel(wfCtx, guidedStepImageSource),
+				"ImageSource": paramStr(wfCtx.Params, "ImageSource", "platform"),
+			}, nil
+		},
+	}
+}
+
 func stepGuidedChooseImageFacets() Step {
 	return Step{
 		Name:              "选择镜像筛选",
@@ -635,11 +677,10 @@ func stepGuidedChooseImageFacets() Step {
 		ConfirmSubmitMode: ConfirmSubmitContinue,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			return map[string]any{
-				"workflow":    "CreateInstanceWorkflow",
-				"step":        guidedStepLabel(wfCtx, guidedStepImageFacets),
-				"ImageSource": paramStr(wfCtx.Params, "ImageSource", "platform"),
-				"ImageType":   paramStr(wfCtx.Params, "ImageType", ""),
-				"ImageTag":    paramStr(wfCtx.Params, "ImageTag", ""),
+				"workflow":  "CreateInstanceWorkflow",
+				"step":      guidedStepLabel(wfCtx, guidedStepImageFacets),
+				"ImageType": paramStr(wfCtx.Params, "ImageType", ""),
+				"ImageTag":  paramStr(wfCtx.Params, "ImageTag", ""),
 			}, nil
 		},
 	}
@@ -1834,6 +1875,8 @@ func guidedStepSkipped(wfCtx *Context, logical int) bool {
 		skip, err = shouldSkipGuidedGPUCountStep(wfCtx)
 	case guidedStepCPUMemory:
 		skip, err = shouldSkipGuidedCPUMemoryStep(wfCtx)
+	case guidedStepImageSource:
+		skip, err = shouldSkipGuidedImageSourceStep(wfCtx)
 	case guidedStepImageFacets:
 		skip, err = shouldSkipGuidedImageFacetsStep(wfCtx)
 	case guidedStepImage:
@@ -1926,8 +1969,23 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 	return selected == current && enabledOptionExists(opts, current), nil
 }
 
+// shouldSkipGuidedImageSourceStep and shouldSkipGuidedImageFacetsStep gate the two-stage
+// image flow on hasExplicitImageSelection (a concrete image already pinned), NOT
+// hasExplicitImageIntent — so BOTH steps show for community BROWSING (source chosen, no
+// concrete image yet), which is exactly the case the two-stage flow serves.
+func shouldSkipGuidedImageSourceStep(wfCtx *Context) (bool, error) {
+	return hasExplicitImageSelection(wfCtx.Params), nil
+}
+
 func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
-	return hasExplicitImageIntent(wfCtx.Params), nil
+	if hasExplicitImageSelection(wfCtx.Params) {
+		return true, nil
+	}
+	// No empty card: the facets step earns its place only when the chosen source's
+	// catalog (this run's 查询镜像, refreshed by the re-query) offers a real ImageType or
+	// ImageTag choice. An absent facet never filters, so skipping here excludes nothing.
+	snap := createImageCatalog(wfCtx)
+	return len(imageTypeFacetOptions(snap)) == 0 && len(imageTagFacetOptions(snap)) == 0, nil
 }
 
 func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
@@ -1950,20 +2008,18 @@ func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
 	return false, nil
 }
 
-func shouldSkipCommunityImageQuery(wfCtx *Context) (bool, error) {
-	if !strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")), "community") {
+// shouldSkipSourceReQuery skips the post-source re-query when an explicit image is
+// pinned (no browsing) or when the guided source step did NOT change the source from the
+// initial one — then the first 查询镜像 already fetched the right source and its result
+// is authoritative. When the source DID change (either direction — platform↔community),
+// the re-query replaces the stale initial catalog with the chosen source's, so the
+// facets/picker/resolve steps never read a foreign-source listing.
+func shouldSkipSourceReQuery(wfCtx *Context) (bool, error) {
+	if hasExplicitImageSelection(wfCtx.Params) {
 		return true, nil
 	}
-	if initialParamSet(wfCtx, "CompShareImageId") {
-		return true, nil
-	}
-	// When community was the source from the start, the first 查询镜像 step already
-	// queried community — this after-facets re-query is only for a source SWITCHED to
-	// community mid-flow.
-	if strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.InitialParams, "ImageSource", "")), "community") {
-		return true, nil
-	}
-	return false, nil
+	return normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) ==
+		normalizedImageSource(paramStr(wfCtx.InitialParams, "ImageSource", "platform")), nil
 }
 
 func initialParamSet(wfCtx *Context, key string) bool {
@@ -2278,25 +2334,19 @@ func imageSelectionMatchesFacets(snap *deployment.ImageCatalogSnapshot, id, want
 	return true
 }
 
-// buildGuidedImageFacetsForm is the guided image-filter step that replaced the
-// deleted ImagePurpose enum. It offers THREE independent, real dimensions — never a
-// conflated purpose keyword: ImageSource (only the sources create supports),
-// ImageType (the distinct real types among candidates) and ImageTag (the distinct
-// real catalog tags among candidates). ImageType/ImageTag are shown only when they
-// offer a genuine choice; an absent tag facet never filters anything. Natural-language
-// intent ("大模型推理" / "深度学习") is NOT handled here — the central Agent maps it to a
-// real image before the workflow runs; this step is the click-through fallback.
+// buildGuidedImageFacetsForm is the SECOND of the two-stage image flow: it offers the
+// ImageType and ImageTag facets built ONLY from the catalog of the source chosen in the
+// prior source step (createImageCatalog reads this run's 查询镜像, which the re-query
+// refreshed to the chosen source). The source itself is NOT editable here — that is the
+// separate source step, so the facets shown are always the chosen source's real types
+// and tags, never a foreign source's. ImageType/ImageTag are shown only when they offer
+// a genuine choice; an absent tag facet never filters anything. Natural-language intent
+// ("大模型推理" / "深度学习") is NOT handled here — the central Agent maps it to a real
+// image before the workflow runs; this step is the click-through fallback.
 func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 	snap := createImageCatalog(wfCtx)
 	index, total := guidedStepPosition(wfCtx, guidedStepImageFacets)
-	source := paramStr(wfCtx.Params, "ImageSource", "platform")
-	if source != "community" {
-		source = "platform"
-	}
-	fields := []ConfirmFormField{{
-		Key: "ImageSource", Label: "镜像来源", Type: "select",
-		Value: source, Render: "cards", Editable: true, Options: imageSourceFacetOptions(),
-	}}
+	var fields []ConfirmFormField
 	if opts := imageTypeFacetOptions(snap); len(opts) > 0 {
 		fields = append(fields, ConfirmFormField{
 			Key: "ImageType", Label: "镜像类型", Type: "select",
@@ -2314,13 +2364,40 @@ func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 		Step: &ConfirmFormStep{
 			Index:          index,
 			Total:          total,
-			Title:          guidedStepTitle(index, "请选择镜像来源与筛选"),
-			Description:    "镜像来源、类型和标签都来自真实镜像目录。标签留空表示不按标签筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。",
+			Title:          guidedStepTitle(index, "请选择镜像筛选"),
+			Description:    "镜像类型和标签都来自所选来源的真实镜像目录。标签留空表示不按标签筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。",
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
 			Skippable:      true,
 		},
 		Fields: fields,
+	}, nil
+}
+
+// buildGuidedImageSourceForm is the source-only form of the two-stage image flow. It
+// offers just the ImageSource (the sources create supports) so the following re-query
+// and facets step can rebuild from the chosen source's real catalog.
+func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
+	index, total := guidedStepPosition(wfCtx, guidedStepImageSource)
+	source := paramStr(wfCtx.Params, "ImageSource", "platform")
+	if source != "community" {
+		source = "platform"
+	}
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          index,
+			Total:          total,
+			Title:          guidedStepTitle(index, "请选择镜像来源"),
+			Description:    "先选择镜像来源；随后只在该来源的真实镜像目录里做类型/标签筛选与选择。切换来源会按新来源重新查询并展示其真实类型与标签。",
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "跳过",
+			Skippable:      true,
+		},
+		Fields: []ConfirmFormField{{
+			Key: "ImageSource", Label: "镜像来源", Type: "select",
+			Value: source, Render: "cards", Editable: true, Options: imageSourceFacetOptions(),
+		}},
 	}, nil
 }
 
@@ -2516,19 +2593,8 @@ func applyGuidedCpuMemoryOverrides(wfCtx *Context, overrides map[string]string) 
 }
 
 func applyGuidedImageFacetsOverrides(wfCtx *Context, overrides map[string]string) error {
-	prevSource := paramStr(wfCtx.Params, "ImageSource", "platform")
-	sourceChanged := false
 	for k, v := range overrides {
 		switch k {
-		case "ImageSource":
-			source := strings.ToLower(strings.TrimSpace(v))
-			if source != "community" {
-				source = "platform"
-			}
-			if source != prevSource {
-				sourceChanged = true
-			}
-			wfCtx.Params["ImageSource"] = source
 		case "ImageType":
 			wfCtx.Params["ImageType"] = strings.TrimSpace(v)
 		case "ImageTag":
@@ -2537,27 +2603,62 @@ func applyGuidedImageFacetsOverrides(wfCtx *Context, overrides map[string]string
 			return fmt.Errorf("不支持修改字段 %s", k)
 		}
 	}
-	// A source change invalidates the ImageType/ImageTag facets: those options were
-	// derived from the PREVIOUS source's catalog (platform types/tags differ from a
-	// community listing's), so carrying them would filter the new source's candidates
-	// against foreign values and can empty the list. Clear to absent = "no filter"
-	// (honest absence, never "match nothing"), so the re-queried source lists all its
-	// candidates; the user re-picks from that source's real facets. Fire ONLY on an
-	// actual source change so a same-source type/tag edit is preserved.
-	if sourceChanged {
-		delete(wfCtx.Params, "ImageType")
-		delete(wfCtx.Params, "ImageTag")
-	}
-	// Any facet change invalidates a previously-picked concrete image: the refreshed
-	// image step re-picks from the newly-scoped candidates rather than carrying a
-	// stale id/name that may not match the new source/type/tag. A source change also
-	// re-queries (platform vs community are different listings) via the community
-	// query step + revalidation. Nothing is silent: the user re-confirms the refreshed
-	// card before anything is created.
+	// A type/tag change invalidates a previously-picked concrete image: the refreshed
+	// image step re-picks from the newly-scoped candidates rather than carrying a stale
+	// id/name that may not match the new type/tag. The source is owned by the earlier
+	// source step and is never touched here. Nothing is silent: the user re-confirms the
+	// refreshed card before anything is created.
 	delete(wfCtx.Params, "CompShareImageId")
 	delete(wfCtx.Params, "ImageName")
 	markGuidedStepReached(wfCtx, guidedStepImageFacets)
 	return nil
+}
+
+// applyGuidedImageSourceOverrides applies the source-only step's edit. On an ACTUAL
+// source change it clears everything derived from the PREVIOUS source's catalog — the
+// ImageType/ImageTag facets and any pinned concrete image — so the source re-query +
+// facets step rebuild from the newly-chosen source (cleared = absent = "no filter",
+// honest absence, never "match nothing"). A same-source re-confirm preserves whatever
+// was already chosen.
+func applyGuidedImageSourceOverrides(wfCtx *Context, overrides map[string]string) error {
+	prevSource := normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform"))
+	sourceChanged := false
+	for k, v := range overrides {
+		if k != "ImageSource" {
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+		source := normalizedImageSource(v)
+		if source != prevSource {
+			sourceChanged = true
+		}
+		wfCtx.Params["ImageSource"] = source
+	}
+	if sourceChanged {
+		delete(wfCtx.Params, "ImageType")
+		delete(wfCtx.Params, "ImageTag")
+		delete(wfCtx.Params, "CompShareImageId")
+		delete(wfCtx.Params, "ImageName")
+	}
+	markGuidedStepReached(wfCtx, guidedStepImageSource)
+	return nil
+}
+
+// normalizedImageSource collapses any input to the two sources create supports;
+// anything that is not community is platform.
+func normalizedImageSource(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), "community") {
+		return "community"
+	}
+	return "platform"
+}
+
+// hasExplicitImageSelection reports a concrete image already pinned by id or name —
+// distinct from hasExplicitImageIntent, which ALSO treats ImageSource=community as
+// "intent". The two-stage source/facets steps must show for community BROWSING (source
+// chosen, no concrete image yet), so they gate on this narrower predicate.
+func hasExplicitImageSelection(params map[string]any) bool {
+	return strings.TrimSpace(paramStr(params, "CompShareImageId", "")) != "" ||
+		strings.TrimSpace(paramStr(params, "ImageName", "")) != ""
 }
 
 func applyGuidedImageOverrides(wfCtx *Context, overrides map[string]string) error {

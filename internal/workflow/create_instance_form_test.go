@@ -424,13 +424,15 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.Contains(t, optionValues(spec), "cn-wlcb-01|1|32|131072")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"CpuMemory": "cn-wlcb-01|1|32|131072"}}
 		case 5:
-			// Step 5 is now the image-facet step (ImagePurpose was deleted): it must
-			// offer the ImageSource facet, defaulting to platform, and never the
-			// removed ImagePurpose field.
+			// Step 5 is now the image-SOURCE step (first of the two-stage image flow):
+			// it offers only the ImageSource facet, defaulting to platform, never the
+			// deleted ImagePurpose field. The type/tag facets step is skipped here
+			// because this fixture's images declare no distinct ImageType/Tags.
 			source := fieldByKey(t, form, "ImageSource")
 			assert.Equal(t, "platform", source.Value)
 			assert.Equal(t, []string{"platform", "community"}, optionValues(source))
 			assert.Nil(t, form.Field("ImagePurpose"))
+			assert.Nil(t, form.Field("ImageType"), "source step is source-only; type/tag is the next step")
 			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
 			return ConfirmResolution{Confirmed: true}
 		case 6:
@@ -976,34 +978,39 @@ func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
 	assert.Nil(t, form.Field("ImagePurpose"), "explicit image intent should not ask a generic purpose question")
 }
 
-func TestGuidedImageFacetsFormAppearsWhenNoImageIntent(t *testing.T) {
-	// With no explicit image intent the facet step is shown. It offers the
-	// ImageSource facet (always the two sources create supports), plus ImageType /
-	// ImageTag facets built from the REAL types and tags in the candidate catalog —
-	// never the deleted ImagePurpose keyword enum.
+func TestGuidedImageSourceAndFacetsFormsAppearWhenNoImageIntent(t *testing.T) {
+	// With no explicit image SELECTION the two-stage image flow shows two forms: first a
+	// source-only form (always the two sources create supports), then a facets form with
+	// ImageType / ImageTag built from the REAL types and tags in the chosen source's
+	// candidate catalog — never the deleted ImagePurpose keyword enum, and never the
+	// source (that is the separate prior step).
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
 	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-sys", "Name": "Ubuntu 22.04", "ImageType": "System", "Status": "Available", "Tags": []any{"深度学习"}},
 		map[string]any{"CompShareImageId": "img-app", "Name": "PyTorch 2.4", "ImageType": "App", "Status": "Available", "Tags": []any{"大模型推理"}},
 	}}
 
-	form, err := buildGuidedImageFacetsForm(wfCtx)
+	sourceForm, err := buildGuidedImageSourceForm(wfCtx)
 	require.NoError(t, err)
-
-	source := fieldByKey(t, form, "ImageSource")
+	source := fieldByKey(t, sourceForm, "ImageSource")
 	assert.Equal(t, "platform", source.Value)
 	assert.Equal(t, []string{"platform", "community"}, optionValues(source))
+	assert.Nil(t, sourceForm.Field("ImageType"), "the source step is source-only")
+
+	facetsForm, err := buildGuidedImageFacetsForm(wfCtx)
+	require.NoError(t, err)
+	assert.Nil(t, facetsForm.Field("ImageSource"), "the facets step must not re-offer the source; that is the separate source step")
 
 	// ImageType facet appears because ≥2 distinct real types exist, led by the
 	// "全部类型" (all-types) sentinel, then the real ImageType values in catalog order.
-	imgType := fieldByKey(t, form, "ImageType")
+	imgType := fieldByKey(t, facetsForm, "ImageType")
 	assert.Equal(t, []string{"", "System", "App"}, optionValues(imgType))
 
 	// ImageTag facet lists the real catalog tags, led by the "不限标签" sentinel.
-	tag := fieldByKey(t, form, "ImageTag")
+	tag := fieldByKey(t, facetsForm, "ImageTag")
 	assert.Equal(t, []string{"", "深度学习", "大模型推理"}, optionValues(tag))
 
-	assert.Nil(t, form.Field("ImagePurpose"))
+	assert.Nil(t, facetsForm.Field("ImagePurpose"))
 }
 
 func TestGuidedImageFacetsStepSkipsWhenImageIntentExists(t *testing.T) {
@@ -1076,10 +1083,10 @@ func TestGuidedImageFacetsOverridesClearStaleImageSelection(t *testing.T) {
 	assert.NotContains(t, wfCtx.Params, "ImageName")
 }
 
-func TestGuidedImageFacetsOverrideCommunitySwitchesSource(t *testing.T) {
-	// Switching the ImageSource facet to community must flip the source (which drives
-	// the community re-query) AND clear the stale platform image selection. There is
-	// no ImagePurpose param anymore — ImageSource is the sole source authority.
+func TestGuidedImageSourceOverrideCommunitySwitchesSource(t *testing.T) {
+	// Switching the ImageSource in the (separate) source step flips the source — which
+	// drives the re-query — AND clears the stale platform image selection. ImageSource is
+	// the sole source authority (no ImagePurpose).
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":          "4090",
 		"ImageSource":      "platform",
@@ -1087,20 +1094,19 @@ func TestGuidedImageFacetsOverrideCommunitySwitchesSource(t *testing.T) {
 		"ImageName":        "cuda128_torch291_py312",
 	})
 
-	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
+	require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
 
 	assert.Equal(t, "community", wfCtx.Params["ImageSource"])
 	assert.NotContains(t, wfCtx.Params, "CompShareImageId")
 	assert.NotContains(t, wfCtx.Params, "ImageName")
 }
 
-// TestGuidedImageFacetsSourceChangeClearsStaleTypeTag is the F2 gate: an ImageType /
-// ImageTag chosen against the PREVIOUS source's catalog must be cleared when the source
-// changes, so it cannot filter the new source's candidates against foreign values (a
-// platform "System" type / platform tag would otherwise empty the community listing).
-// Cleared = absent = "no filter" (honest absence). Would go red if the source switch
-// carried the stale facets through.
-func TestGuidedImageFacetsSourceChangeClearsStaleTypeTag(t *testing.T) {
+// TestGuidedImageSourceChangeClearsStaleTypeTag is the F2 gate: an ImageType / ImageTag
+// chosen against the PREVIOUS source's catalog must be cleared when the source changes in
+// the source step, so it cannot filter the new source's candidates against foreign values
+// (a platform "System" type / platform tag would otherwise empty the community listing).
+// Cleared = absent = "no filter" (honest absence).
+func TestGuidedImageSourceChangeClearsStaleTypeTag(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "platform",
@@ -1108,37 +1114,40 @@ func TestGuidedImageFacetsSourceChangeClearsStaleTypeTag(t *testing.T) {
 		"ImageTag":    "深度学习",
 	})
 
-	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
+	require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
 
 	assert.Equal(t, "community", wfCtx.Params["ImageSource"])
 	assert.NotContains(t, wfCtx.Params, "ImageType", "a source change must clear the previous source's type facet")
 	assert.NotContains(t, wfCtx.Params, "ImageTag", "a source change must clear the previous source's tag facet")
 }
 
-// TestGuidedImageFacetsSourceChangeClearsResubmittedType covers the reachable combined
-// edit: the facets form shows source+type together, so a single submit can carry the
-// old platform ImageType alongside ImageSource=community. The post-loop clear must win
-// regardless of map iteration order — the foreign type must not survive.
-func TestGuidedImageFacetsSourceChangeClearsResubmittedType(t *testing.T) {
+// TestGuidedImageSourceChangeClearsOnReverseSwitch pins the SYMMETRY the reviewer
+// demanded: a community→platform switch (the reverse direction) must also drop the
+// previous source's facets and pinned image, so the platform selection never inherits a
+// stale community catalog filter. This is the direction the old asymmetric path missed.
+func TestGuidedImageSourceChangeClearsOnReverseSwitch(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{
-		"GpuType":     "4090",
-		"ImageSource": "platform",
-		"ImageType":   "App",
+		"GpuType":          "4090",
+		"ImageSource":      "community",
+		"ImageType":        "community",
+		"ImageTag":         "视频",
+		"CompShareImageId": "cimg-x",
+		"ImageName":        "some community image",
 	})
 
-	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{
-		"ImageSource": "community",
-		"ImageType":   "App",
-	}))
+	require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": "platform"}))
 
-	assert.Equal(t, "community", wfCtx.Params["ImageSource"])
-	assert.NotContains(t, wfCtx.Params, "ImageType", "a resubmitted foreign type must be cleared on source change, not re-applied")
+	assert.Equal(t, "platform", wfCtx.Params["ImageSource"])
+	assert.NotContains(t, wfCtx.Params, "ImageType")
+	assert.NotContains(t, wfCtx.Params, "ImageTag")
+	assert.NotContains(t, wfCtx.Params, "CompShareImageId")
+	assert.NotContains(t, wfCtx.Params, "ImageName")
 }
 
-// TestGuidedImageFacetsSameSourceEditPreservesTypeTag is the negative half: the clear
-// fires ONLY on an actual source change. A same-source type edit must be preserved —
-// otherwise the fix would wipe a deliberate facet selection.
-func TestGuidedImageFacetsSameSourceEditPreservesTypeTag(t *testing.T) {
+// TestGuidedImageSourceSameSourceEditPreservesTypeTag is the negative half: the clear
+// fires ONLY on an ACTUAL source change. A same-source re-confirm must preserve type/tag
+// already chosen — otherwise a no-op re-confirm would wipe deliberate selections.
+func TestGuidedImageSourceSameSourceEditPreservesTypeTag(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "platform",
@@ -1146,14 +1155,88 @@ func TestGuidedImageFacetsSameSourceEditPreservesTypeTag(t *testing.T) {
 		"ImageTag":    "深度学习",
 	})
 
-	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{
-		"ImageSource": "platform",
-		"ImageType":   "System",
-	}))
+	require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": "platform"}))
 
 	assert.Equal(t, "platform", wfCtx.Params["ImageSource"])
-	assert.Equal(t, "System", wfCtx.Params["ImageType"], "a same-source type edit must be preserved")
-	assert.Equal(t, "深度学习", wfCtx.Params["ImageTag"], "an untouched tag on a same-source edit must be preserved")
+	assert.Equal(t, "App", wfCtx.Params["ImageType"], "a same-source re-confirm must preserve the type facet")
+	assert.Equal(t, "深度学习", wfCtx.Params["ImageTag"], "a same-source re-confirm must preserve the tag facet")
+}
+
+// TestSourceReQueryFiresOnBothDirectionSwitches is the correctness gate for the symmetric
+// re-query: it must fire whenever the guided source step CHANGED the source from the
+// initial one, in EITHER direction, and skip when unchanged. This is what fixes the
+// community→platform stale-catalog read (the old code only re-queried on a switch TO
+// community).
+func TestSourceReQueryFiresOnBothDirectionSwitches(t *testing.T) {
+	cases := []struct {
+		name     string
+		initial  string
+		chosen   string
+		wantSkip bool
+	}{
+		{"platform→community re-queries", "platform", "community", false},
+		{"community→platform re-queries", "community", "platform", false},
+		{"platform unchanged skips", "platform", "platform", true},
+		{"community unchanged skips", "community", "community", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wfCtx := NewContext(map[string]any{"GpuType": "4090", "ImageSource": tc.chosen})
+			wfCtx.InitialParams["ImageSource"] = tc.initial
+			skip, err := shouldSkipSourceReQuery(wfCtx)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSkip, skip)
+		})
+	}
+}
+
+// TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalog is the
+// reverse-direction correctness test the reviewer demanded: an initial community browse
+// switched to platform in the source step must RE-QUERY platform and select from the
+// PLATFORM catalog — never leave the stale community listing in place. This is the exact
+// bug the old asymmetric community-only re-query missed (it skipped the reverse switch).
+func TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalog(t *testing.T) {
+	executor := formMockExecutor()
+	var finalImageOptions []string
+
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		require.NotNil(t, form.Step)
+		switch form.Step.Index {
+		case 1, 2, 3, 4:
+			return ConfirmResolution{Confirmed: true}
+		case 5:
+			source := fieldByKey(t, form, "ImageSource")
+			assert.Equal(t, "community", source.Value, "initial source is community")
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "platform"}}
+		case 6:
+			// Facets skipped (fixtures declare no types/tags) → step 6 is the platform
+			// image picker in the final form.
+			image := fieldByKey(t, form, "ImageId")
+			finalImageOptions = optionValues(image)
+			return ConfirmResolution{Confirmed: false}
+		default:
+			t.Fatalf("unexpected guided form step %d", form.Step.Index)
+			return ConfirmResolution{}
+		}
+	})
+
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090", "ImageSource": "community"})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	// The platform catalog after the reverse switch — NOT the stale community images.
+	assert.Contains(t, finalImageOptions, "img-001")
+	assert.NotContains(t, finalImageOptions, "cimg-sd-001", "reverse switch must drop the stale community catalog")
+
+	var calls []string
+	for _, c := range executor.calls {
+		calls = append(calls, c.action)
+	}
+	// Both queries happened: the initial community browse AND the reverse re-query to
+	// platform (the old code skipped this second one on a switch away from community).
+	assert.Contains(t, calls, "DescribeCommunityImages")
+	assert.Contains(t, calls, "DescribeCompShareImages")
 }
 
 func TestCreateInstanceGuided_CommunitySourceQueriesCommunityImages(t *testing.T) {
