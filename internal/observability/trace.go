@@ -284,6 +284,15 @@ const (
 	ActualExecutionTierAgent     = "agent"
 )
 
+// LEGACY TRACE COMPAT (post-P6). The routing / terminal_rag / agent runtime-form
+// taxonomy predates the central-Agent cutover. The CURRENT runtime has a single
+// execution form — the central Agent loop — so these values are retained ONLY so
+// trace storage, dashboards, and the eval harness keep reading historical and
+// cutover-era records. Do NOT treat them as the current architecture: P7 (and any
+// new acceptance) must judge a turn by its real tools / steps / observations /
+// final answer, not by a derived form label. Removing them is a wire-visible
+// trace-schema migration, not a comment/test cleanup.
+//
 // ExecutionPath* are the runtime-form-axis values for TraceRecord.ActualExecutionPath
 // (and PlannedExecutionPath). NOTE: "terminal_rag" is the odd value out vs the
 // rest of the routing/agent vocabulary; renaming it to "rag" is a wire-visible
@@ -352,8 +361,10 @@ func (r TraceRecord) DeriveActualExecutionTier() string {
 	return ""
 }
 
-// DeriveActualExecutionPath computes the production architecture form that
-// actually handled the turn. It is intentionally coarser than ActualExecutionTier:
+// DeriveActualExecutionPath computes the LEGACY runtime-form label for a turn
+// (see the ExecutionPath* const note). It maps a trace's router status to the
+// retired routing / terminal_rag / agent taxonomy for trace/dashboard continuity;
+// it is NOT the current architecture (one central Agent form). Kept coarse:
 // terminal RAG is only a final-answer retrieval workflow; retrieval used inside
 // diagnosis or another agent path remains agent.
 func (r TraceRecord) DeriveActualExecutionPath() string {

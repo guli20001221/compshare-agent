@@ -6,6 +6,15 @@ is not aligned with the industrialized agent vocabulary used by OpenAI and
 Anthropic. New code and new docs MUST use the canonical names here; legacy names
 are being migrated (see [Migration policy](#migration-policy)).
 
+> **P6 update.** The central-Agent cutover (P6) **physically deleted** the intent
+> router (`internal/intent/planner.go`), `internal/orchestrator`, and
+> `internal/router` — the central AgentRuntime is now the only production path.
+> Section 1 (industry vocabulary) and Section 3 (migration policy) stay current; in
+> Section 2, the rows that describe the intent router / `Saga` orchestrator /
+> `internal/router` as code to rename are **historical naming-debt records**, not
+> live migration targets (the code is gone). Current architecture:
+> [`architecture.md`](architecture.md).
+
 Primary sources:
 - OpenAI Agents SDK — Agent / Tool / Guardrail / Handoff / Run: https://developers.openai.com/api/docs/guides/agents
 - OpenAI Agents SDK Tracing — Trace / Span: https://openai.github.io/openai-agents-python/tracing/
@@ -19,7 +28,7 @@ Primary sources:
 |---|---|
 | **Agent** | An LLM-driven executor that dynamically decides its own path/steps — plans, calls tools, keeps state, completes multi-step tasks. In this repo: the ReAct loop. |
 | **Workflow** | A fixed or semi-fixed code path over LLM + tools. NOT an agent. Anthropic's named patterns: **routing** (classify → dispatch), **orchestrator-workers**, **evaluator-optimizer**, prompt-chaining, parallelization. |
-| **Routing** | The workflow pattern that classifies an input and dispatches to a fixed handler. Our intent layer is exactly this — a single classification step, not multi-step planning. |
+| **Routing** | The workflow pattern that classifies an input and dispatches to a fixed handler. Our **pre-P6** intent layer was exactly this; P6 removed the standalone classification step — the central Agent now decides in-loop. |
 | **Tool** | A typed, named capability the agent invokes; the result is fed back into context. Tools should have clear names, boundaries, and namespacing. |
 | **Guardrail** | A code-enforced safety rule (destructive-action block, mutating-action confirmation, tool-policy check, citation/leak validation). NOT a model judgment. |
 | **Trace / Span** | A trace is one end-to-end run; spans are nested timed sub-operations within it. Production-observability vocabulary. |
