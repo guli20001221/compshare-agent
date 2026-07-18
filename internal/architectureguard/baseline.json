@@ -1651,13 +1651,6 @@
       "value": "vram"
     },
     {
-      "id": "780f2645b195ca68",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/resource_filter.go",
-      "symbol": "MatchesGPUTypeFilter",
-      "callee": "strings.Contains"
-    },
-    {
       "id": "e9aa5ae3a5b3d7f8",
       "kind": "string_heuristic",
       "path": "internal/readprojection/timewindow.go",
