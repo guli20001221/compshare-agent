@@ -38,6 +38,15 @@ func TestCodecImageActivatedForReinstall(t *testing.T) {
 	require.True(t, ok)
 	_, hasIDField := create.Fields["CompShareImageId"]
 	assert.False(t, hasIDField, "create carries no CompShareImageId field (image is resolved by name in the workflow)")
+	// This is the invariant the guided two-stage image flow depends on: because
+	// create needs no image catalog, the engine threads ReferenceData.ImageCatalog=nil
+	// (imageCatalogSnapshotForSpec returns nil), so workflow.createImageCatalog never
+	// takes the injected-snapshot branch and always reads this run's re-queried 查询镜像.
+	// A source switch mid-flow therefore cannot be shadowed by a stale proposal-time
+	// snapshot. If a future change gives create a CompShareImageId/CodecImage field,
+	// this flips true and the re-query would be silently overridden — fix the flow first.
+	assert.False(t, SpecNeedsImageCatalog(create),
+		"create must not trigger the resolver image fetch, or a stale proposal snapshot would shadow the guided re-query")
 
 	stop, ok := catalog.Lookup("StopInstanceWorkflow")
 	require.True(t, ok)
