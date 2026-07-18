@@ -3,7 +3,7 @@
 # Source of gates: golden_two_axis_2026-06-22.jsonl (axisA strong predicates).
 # Signal: replay-output JSONL (http_session_replay.go) per-turn steps[]/confirmations[]/reply.
 #   - steps[].type in {tool_call, tool_result, confirm_needed, blocked, error}
-#   - steps[].action = real tool/workflow name (DescribeCompShareInstance, DiagnosePortOrFirewall,
+#   - steps[].action = real tool/workflow name (DescribeCompShareInstance, SearchKnowledge,
 #     CreateInstanceWorkflow, StopInstanceWorkflow, ...)
 #   - confirmations[].action = confirm-frame workflow identity
 #   - reply / final_reply = text
@@ -49,8 +49,8 @@ READ_TOOLS = {
 # Only DiagnoseBilling survives as a dedicated diagnosis chain (DiagnoseSSH is
 # advertised too but has no golden probe in this set). The GPU / init /
 # port-firewall / image chains were deleted in the pre-P7 convergence; their
-# symptoms now assert diagnose_grounded (evidence via the central Agent) in gen(),
-# never a dead tool name.
+# symptoms now assert diagnose_evidence_call (an evidence-gathering call happened,
+# via the central Agent) in gen(), never a dead tool name.
 DIAG_TOOLS = {
     "DiagnoseBilling": ["diagnosebilling","费率"],
 }
@@ -91,15 +91,17 @@ def gen():
         if "route_to_diagnosis" in a:
             # DiagnoseBilling is the only surviving dedicated chain → keep its route.
             # Every other symptom (GPU / init / port / image — chains deleted) is now
-            # handled by the central Agent gathering evidence, so assert grounding
-            # (real instance state OR knowledge retrieval) instead of a dead tool name.
+            # handled by the central Agent gathering evidence. Assert only that an
+            # evidence-gathering CALL happened (real instance state OR knowledge
+            # retrieval) — NOT that the answer is grounded in the result; verifying
+            # the answer against the evidence is P7 replay work, not this cheap gate.
             if pick(DIAG_TOOLS, s, default=None) == "DiagnoseBilling":
                 specs.append(dict(case_id=cid, gate="route_to_diagnosis", kind="require_step_action",
                                   params=dict(actions=["DiagnoseBilling"]), note="进入对应诊断"))
             else:
-                specs.append(dict(case_id=cid, gate="diagnose_grounded", kind="require_step_action",
+                specs.append(dict(case_id=cid, gate="diagnose_evidence_call", kind="require_step_action",
                                   params=dict(actions=["DescribeCompShareInstance","SearchKnowledge"]),
-                                  note="排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"))
+                                  note="取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"))
         if "read_truth" in a:
             tool = pick(READ_TOOLS, s, default="DescribeCompShareInstance")
             actions = [tool]

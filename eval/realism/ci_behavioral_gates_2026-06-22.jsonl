@@ -14,7 +14,7 @@
 {"case_id": "M012", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M013", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeAvailableCompShareInstanceTypes"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M013", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
-{"case_id": "M014", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M014", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M015", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["GetCompShareInstanceUserPrice", "GetCompShareInstancePrice"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M016", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
 {"case_id": "M016", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
@@ -79,21 +79,21 @@
 {"case_id": "M064", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M067", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
 {"case_id": "M070", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
-{"case_id": "M074", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M074", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M075", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
 {"case_id": "M076", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": false}
 {"case_id": "M078", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
 {"case_id": "M080", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
-{"case_id": "M084", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M084", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M085", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M085", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
 {"case_id": "M087", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCommunityImages"]}, "note": "调对应只读 API 反映真值"}
-{"case_id": "M088", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M088", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M088", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M093", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": false}
-{"case_id": "M094", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M094", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M094", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
-{"case_id": "M098", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M098", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M098", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
 {"case_id": "M098", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
 {"case_id": "M099", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["CreateInstanceWorkflow"]}, "note": "到达对应变更确认门"}
@@ -101,20 +101,20 @@
 {"case_id": "M100", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M102", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M102", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
-{"case_id": "M105", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M105", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M108", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": false}
 {"case_id": "M109", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M111", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
 {"case_id": "M113", "gate": "route_to_diagnosis", "kind": "require_step_action", "params": {"actions": ["DiagnoseBilling"]}, "note": "进入对应诊断"}
-{"case_id": "M116", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M116", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M116", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "M116", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
 {"case_id": "M116", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
 {"case_id": "M118", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
-{"case_id": "M119", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M119", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M119", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
 {"case_id": "M120", "gate": "route_not_create", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "must-not 进创建/部署确认 saga"}
-{"case_id": "M120", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "M120", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "M121", "gate": "route_not_create", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "must-not 进创建/部署确认 saga"}
 {"case_id": "M122", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
 {"case_id": "M124", "gate": "route_not_create", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "must-not 进创建/部署确认 saga"}
@@ -153,17 +153,17 @@
 {"case_id": "N004", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["CreateInstanceWorkflow"]}, "note": "到达对应变更确认门"}
 {"case_id": "N005", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "N005", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
-{"case_id": "N006", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "N006", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "N006", "gate": "reach_confirm", "kind": "require_confirm_action", "params": {"actions": ["StopInstanceWorkflow"]}, "note": "到达对应变更确认门"}
 {"case_id": "N006", "gate": "must_confirm_mutating", "kind": "forbid_step_action", "params": {"actions": ["StartCompShareInstance", "StopCompShareInstance", "RebootCompShareInstance", "ResetCompShareInstancePassword", "CreateCompShareInstance", "DeleteCompShareInstance", "TerminateCompShareInstance", "ResizeCompShareInstance", "ModifyCompShareInstanceName", "AttachCompShareDisk", "DetachCompShareDisk"]}, "note": "mutating 须经确认门:replay confirm=false→任何 raw 执行=确认门被绕过=FAIL"}
 {"case_id": "N006", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
-{"case_id": "N007", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "N007", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "N007", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "N010", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
 {"case_id": "N014", "gate": "read_truth", "kind": "require_step_action", "params": {"actions": ["GetCompShareInstanceMonitor"]}, "note": "调对应只读 API 反映真值"}
 {"case_id": "N015", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}
 {"case_id": "N016", "gate": "route_no_misroute", "kind": "forbid_step_action", "params": {"actions": ["CreateInstanceWorkflow", "CreateInstanceDef", "deploy_create"]}, "note": "未误路由到无关 mutating 流程", "reply_semantic": true}
-{"case_id": "N018", "gate": "diagnose_grounded", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"}
+{"case_id": "N018", "gate": "diagnose_evidence_call", "kind": "require_step_action", "params": {"actions": ["DescribeCompShareInstance", "SearchKnowledge"]}, "note": "取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"}
 {"case_id": "N018", "gate": "slot_retain", "kind": "forbid_reply_substring", "params": {"substrings": ["是哪台实例", "请选择哪", "请选择实例", "请提供实例", "请告诉我实例", "您要操作哪", "请指定实例", "请问要操作哪", "要查询哪台", "请选择要"]}, "note": "保持已选实例不重问", "reply_semantic": true}
 {"case_id": "N018", "gate": "state_honest", "kind": "judge_assisted", "params": {}, "note": "如实反映实例状态(需 ground-truth fixture / judge)"}
 {"case_id": "N023", "gate": "non_empty", "kind": "require_nonempty", "params": {}, "note": "非空、非裸错误、非 abort"}

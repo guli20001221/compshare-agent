@@ -19,7 +19,7 @@ name: Behavioral Gate
 # a China/UCloud-resident runner. BUT GitHub-hosted runners CANNOT reach the China STS
 # endpoints — VERIFIED 2026-06-22: AssumeRole fails, 7/7 executor calls error. So on
 # GitHub-hosted the executor degrades gracefully and only the ROUTING/DECISION gates are
-# meaningful (read_truth / route_to_diagnosis / diagnose_grounded / route_not_create /
+# meaningful (read_truth / route_to_diagnosis / diagnose_evidence_call / route_not_create /
 # route_no_misroute / no_false_cancel / non_empty) — they assert the tool CALL, emitted
 # before execution.
 # The executor-dependent gates (reach_confirm / must_confirm_mutating / slot_retain) are
