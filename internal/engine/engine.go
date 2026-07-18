@@ -3439,7 +3439,7 @@ func uniqueStrings(values []string) []string {
 // the workflow can never see different zone lists (gate 1). A nil snapshot is the
 // honest "this operation has no zone" signal; a zone-needing workflow handed nil
 // (or an unavailable snapshot) fails closed rather than guessing.
-func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), zoneCat *deployment.ZoneCatalogSnapshot) string {
+func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData) string {
 	e.lastWorkflowSucceededThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
@@ -3601,13 +3601,12 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// match plus the four legacy zone maps) was removed in the zone convergence; the
 	// workflow validates the canonical zone against the snapshot.
 
-	// zoneCat is the caller-supplied catalog for the turn (nil for a non-zone op);
-	// the initial run, the image-recovery re-run AND recovery's own stock check all
-	// share this single snapshot.
-	var wfRunOpts []workflow.RunOption
-	if zoneCat != nil {
-		wfRunOpts = append(wfRunOpts, workflow.WithReferenceData(workflow.ReferenceData{ZoneCatalog: zoneCat}))
-	}
+	// refData is the caller-supplied reference data for the turn — the live zone and
+	// image catalogs the resolver already canonicalized against (either nil for an op
+	// that carries no such field). The initial run, the image-recovery re-run AND
+	// recovery's own stock check all share this single snapshot, so the create can
+	// never see a catalog that disagrees with the one the resolver used.
+	wfRunOpts := []workflow.RunOption{workflow.WithReferenceData(refData)}
 
 	result, err := wfEngine.Run(ctx, wf, args, wfRunOpts...)
 	if err != nil {
@@ -3629,7 +3628,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// of a cryptic API error. Bounded to a single attempt; only fires on the
 	// 230-image signature, so success / sold-out / balance paths are unchanged.
 	if action == "CreateInstanceWorkflow" && createImageUnavailable(result) && capacityZone != "" {
-		if newID, newName, ok := e.resolveAvailableCreateImage(ctx, args, capacityZone, attemptedImageID, zoneCat); ok {
+		if newID, newName, ok := e.resolveAvailableCreateImage(ctx, args, capacityZone, attemptedImageID, refData.ZoneCatalog); ok {
 			// Build a NEW draft with the substituted image and re-run: the re-run
 			// re-enters the confirmation gate, so the user confirms the available
 			// image (a fresh seal) — never the unavailable one. The image swap is a

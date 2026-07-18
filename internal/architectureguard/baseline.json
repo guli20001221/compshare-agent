@@ -736,6 +736,50 @@
       "value": "}"
     },
     {
+      "id": "2af44c0f99d4954d",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "nameSimilarity",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "08b48109c17b1eb9",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "nameSimilarity",
+      "callee": "strings.Contains",
+      "ordinal": 2
+    },
+    {
+      "id": "7782cd3ae30d19f4",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "sharedSubstring",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "d4ddfb46356aba64",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "substringFold",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "f1b552feba21dfef",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "versionRelated",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "d4794095ca350623",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "versionRelated",
+      "callee": "strings.HasPrefix",
+      "ordinal": 2
+    },
+    {
       "id": "b0a49134acecce96",
       "kind": "string_heuristic",
       "path": "internal/deployment/planner.go",
@@ -786,13 +830,6 @@
       "kind": "string_heuristic",
       "path": "internal/engine/create_image_recovery.go",
       "symbol": "sharesSubstringFold",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "f64e397663611d8b",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "extractDeployZone",
       "callee": "strings.Contains"
     },
     {
@@ -863,14 +900,6 @@
       "path": "internal/engine/engine.go",
       "symbol": "friendlyMessageFromText",
       "callee": "strings.Contains"
-    },
-    {
-      "id": "b7f819a974b8805e",
-      "kind": "string_heuristic",
-      "path": "internal/engine/engine.go",
-      "symbol": "isCreateStockShortage",
-      "callee": "strings.Contains",
-      "value": "库存不足"
     },
     {
       "id": "4e2023fa94343f5e",
@@ -2027,13 +2056,6 @@
       "symbol": "ExactZone",
       "callee": "strings.Contains",
       "ordinal": 2
-    },
-    {
-      "id": "5b3945545303b764",
-      "kind": "string_heuristic",
-      "path": "internal/zones/catalog.go",
-      "symbol": "Mentions",
-      "callee": "strings.Contains"
     }
   ]
 }

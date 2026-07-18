@@ -59,7 +59,7 @@ func TestExecuteWorkflowBlocksModelSelfElectedTargetViaSingleDescribe(t *testing
 	require.Equal(t, SelectedInstanceSourceObserved, eng.sessionState.SelectedInstanceSource,
 		"precondition: single-host tool observations must not be trusted as user-selected targets")
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, nil)
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, zoneRefData(nil))
 
 	// The user never referenced uhost-a; the model picked it. It must be blocked.
 	assert.Contains(t, reply, "请先确认要操作的实例",

@@ -20,6 +20,12 @@ type ReferenceData struct {
 	// paths with no catalog (CLI, or a failed fetch). Its accessors are nil-safe,
 	// so a consumer reads it the same way whether or not it is present.
 	ZoneCatalog *deployment.ZoneCatalogSnapshot
+	// ImageCatalog is the live image catalog for this turn, resolved once by the
+	// engine and shared with BOTH the action resolver (CodecImage) and the workflow
+	// (selectCreateImage) — the single authority that ends the three-interpreter
+	// image resolution. nil on paths that carry no image field; nil-safe accessors,
+	// so a consumer reads it the same way whether or not it is present.
+	ImageCatalog *deployment.ImageCatalogSnapshot
 }
 
 const (
@@ -301,6 +307,14 @@ func (c *Context) Sealed() *SealedActionContract { return c.sealed }
 // c.ZoneCatalog().Placement(...) without a guard — an absent catalog resolves
 // nothing, exactly as a failed fetch does.
 func (c *Context) ZoneCatalog() *deployment.ZoneCatalogSnapshot { return c.referenceData.ZoneCatalog }
+
+// ImageCatalog returns the turn's image catalog snapshot, or nil when the run
+// carries none. ImageCatalogSnapshot's methods are nil-safe, so callers can chain
+// c.ImageCatalog().ByID(...) without a guard — an absent catalog resolves nothing,
+// exactly as a failed fetch does.
+func (c *Context) ImageCatalog() *deployment.ImageCatalogSnapshot {
+	return c.referenceData.ImageCatalog
+}
 
 // Result returns the API result from a previous step, or nil.
 func (c *Context) Result(stepName string) map[string]any {

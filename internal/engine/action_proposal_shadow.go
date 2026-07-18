@@ -178,10 +178,12 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
 	zoneCatalog := e.zoneCatalogSnapshotForSpec(ctx, spec)
+	imageCatalog := e.imageCatalogSnapshotForSpec(ctx, spec, proposalSlotString(proposal, "ImageSource"))
 	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec}, machineTypes).
 		WithZoneCatalog(zoneCatalog).
+		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
-	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog}}, nil
+	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog}}, nil
 }
 
 // machineTypeCatalogSnapshot fetches the live machine-type names and hands them
@@ -352,7 +354,7 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	// Thread the SAME zone snapshot the resolver canonicalized Zone against into the
 	// workflow, so the create runs against exactly one catalog for the turn rather
 	// than building a second one that could disagree (gate 1).
-	return e.executeWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData.ZoneCatalog)
+	return e.executeWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData)
 }
 
 // rememberPendingResolvedAction parks a half-finished write as a task frame so a

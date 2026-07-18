@@ -48,7 +48,14 @@ const (
 	// agent-supplied zone id or console display name against the LIVE zone catalog
 	// the engine snapshots — never an alias table or city keyword. See
 	// deployment.ZoneCatalogSnapshot and canonicalZone.
-	CodecZone            SlotCodecKind = "zone"
+	CodecZone SlotCodecKind = "zone"
+	// CodecImage is a CompShareImageId. It VERIFIES an explicitly-proposed image id
+	// against the LIVE image catalog the engine snapshots — only a catalog-verified
+	// id may pass (invariant 1), never a caller-supplied id we could not confirm. It
+	// does NOT resolve a free-text ImageName (that is the workflow's recommend-and-
+	// confirm job on the same snapshot). See deployment.ImageCatalogSnapshot and
+	// deployment.ResolveImage.
+	CodecImage           SlotCodecKind = "image"
 	CodecCapacity        SlotCodecKind = "capacity"
 	CodecInteger         SlotCodecKind = "integer"
 	CodecNumber          SlotCodecKind = "number"

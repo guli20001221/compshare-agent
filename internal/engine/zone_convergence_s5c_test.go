@@ -56,7 +56,7 @@ func TestExecuteWorkflow_RunsAgainstThreadedSnapshotNotASelfBuild(t *testing.T) 
 
 	reply := eng.executeWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
 		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep,
-		deployment.NewZoneCatalogSnapshot(false, nil))
+		zoneRefData(deployment.NewZoneCatalogSnapshot(false, nil)))
 
 	assert.Contains(t, reply, "可用区目录当前不可用",
 		"executeWorkflow must run against the THREADED (unavailable) snapshot, not self-build a healthy one")

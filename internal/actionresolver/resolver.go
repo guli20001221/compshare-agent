@@ -20,6 +20,10 @@ type Resolver struct {
 	// WithZoneCatalog. nil (the default) reports every zone as catalog-unavailable
 	// — refuse, never guess — exactly like a failed fetch.
 	zoneCatalog *deployment.ZoneCatalogSnapshot
+	// imageCatalog is the live image snapshot for a CodecImage field, attached via
+	// WithImageCatalog. nil (the default) reports every image id as
+	// catalog-unavailable — refuse, never guess — exactly like a failed fetch.
+	imageCatalog *deployment.ImageCatalogSnapshot
 }
 
 // New builds a resolver over a static operation catalog plus the live
@@ -222,6 +226,12 @@ func (r *Resolver) normalizeValue(field FieldSpec, value any) (any, error) {
 			return nil, fmt.Errorf("must be a non-empty zone id or display name")
 		}
 		return r.canonicalZoneValue(strings.TrimSpace(text))
+	case CodecImage:
+		text, ok := value.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, fmt.Errorf("must be a non-empty image id")
+		}
+		return r.canonicalImageValue(strings.TrimSpace(text))
 	case CodecResourceRef:
 		text, ok := value.(string)
 		if !ok || strings.TrimSpace(text) == "" {
