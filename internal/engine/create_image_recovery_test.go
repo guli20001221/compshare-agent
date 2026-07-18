@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
@@ -73,31 +74,25 @@ func TestCreateImageUnavailableReadsTypedCause(t *testing.T) {
 	assert.False(t, createImageUnavailable(nil))
 }
 
-// TestRankCreateImageCandidates locks the recovery's image-selection intent: a
-// "PyTorch" request must prefer a name that contains the keyword, then one that
-// shares a meaningful substring (cuda…torch…), and must DROP unrelated images (a
-// bare Ubuntu/Windows system image) so recovery never silently swaps in a wholly
-// different kind of image. The already-failed image is excluded.
-func TestRankCreateImageCandidates(t *testing.T) {
-	imageSet := []any{
-		map[string]any{"CompShareImageId": "img-bad", "Name": "PyTorch:24.04-py3"},       // the failed one
-		map[string]any{"CompShareImageId": "img-cuda", "Name": "cuda128_torch291_py312"}, // shares "torch"
-		map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},         // unrelated → dropped
-		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.1 CUDA 12.1"},    // contains keyword
-	}
-	got := rankCreateImageCandidates(imageSet, "PyTorch", "img-bad")
+// TestRecoveryCandidatesRankThroughResolver locks the recovery's image-selection
+// intent — now delegated to the ONE interpreter (deployment.ResolveImage), no
+// private matcher: a "PyTorch" request prefers a name that contains the keyword
+// over a substring-only share (cuda…torch…), DROPS unrelated images (a bare Ubuntu
+// system image) so recovery never silently swaps in a wholly different kind of
+// image, and excludes the id that already 230'd.
+func TestRecoveryCandidatesRankThroughResolver(t *testing.T) {
+	snap := deployment.NewImageCatalogSnapshot(true, []deployment.ImageCatalogEntry{
+		{ID: "img-bad", Name: "PyTorch:24.04-py3", Source: "platform"},       // the failed one
+		{ID: "img-cuda", Name: "cuda128_torch291_py312", Source: "platform"}, // shares "torch"
+		{ID: "img-ubuntu", Name: "Ubuntu 22.04", Source: "platform"},         // unrelated → dropped
+		{ID: "img-pt", Name: "PyTorch 2.1 CUDA 12.1", Source: "platform"},    // contains keyword
+	})
+	res := deployment.ResolveImage(snap, deployment.ImageRequest{Name: "PyTorch", Source: "platform"})
+	got := recoveryCandidates(res, "img-bad")
 
 	require.Len(t, got, 2, "the failed image and the unrelated Ubuntu image must be excluded")
-	assert.Equal(t, "img-pt", got[0].id, "name containing the keyword ranks above a substring-only share")
-	assert.Equal(t, "img-cuda", got[1].id, "cuda…torch… shares a substring and stays as a fallback candidate")
-}
-
-// TestSharesSubstringFold covers the substring bridge that connects a "PyTorch"
-// request to the platform's actual "cuda…torch…py…" image names.
-func TestSharesSubstringFold(t *testing.T) {
-	assert.True(t, sharesSubstringFold("PyTorch", "cuda128_torch291_py312", 4)) // shares "torch"
-	assert.False(t, sharesSubstringFold("PyTorch", "Ubuntu 22.04", 4))
-	assert.False(t, sharesSubstringFold("SD", "cuda128_torch291", 4)) // keyword shorter than minLen
+	assert.Equal(t, "img-pt", got[0].ID, "name containing the keyword ranks above a substring-only share")
+	assert.Equal(t, "img-cuda", got[1].ID, "cuda…torch… shares a substring and stays as a fallback candidate")
 }
 
 // recoveryMockExecutor is arg-sensitive (unlike the action-keyed mockExecutor):

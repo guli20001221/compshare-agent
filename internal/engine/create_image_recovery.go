@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"sort"
 	"strings"
 
 	"github.com/compshare-agent/internal/deployment"
@@ -59,89 +58,72 @@ func createImageUnavailable(result *workflow.Result) bool {
 	return result != nil && !result.Success && isImageUnavailableError(result.Err)
 }
 
-type createImageCand struct {
-	id    string
-	name  string
-	score int
-}
-
 // resolveAvailableCreateImage finds a platform image that (a) relates to the
 // user's requested image keyword and (b) is actually creatable (single-card
 // stock) in the given zone for gpuType — probing capacity per candidate, first
 // available wins. Returns ok=false when no relevant image is creatable, so the
 // caller falls back to an honest failure reply. failedID is the image that
-// already 230'd and is skipped. This is the engine-side analogue of the
-// deploy_model handler's resolve-in-engine-then-thread pattern, but reactive:
-// it only runs after the saga's own resolution hit the zone-availability wall.
+// already 230'd and is skipped. It runs only after the create's own resolution
+// hit the zone-availability wall (RetCode=230).
+//
+// The relevance ranking is the ONE image interpreter — deployment.ResolveImage —
+// not a second private matcher: this used to re-rank the pool with its own
+// keyword/substring scorer, exactly the duplication the convergence removes.
 func (e *Engine) resolveAvailableCreateImage(ctx context.Context, args map[string]any, zone, failedID string, zoneCat *deployment.ZoneCatalogSnapshot) (id, name string, ok bool) {
 	keyword, _ := args["ImageName"].(string)
 	gpuType, _ := args["GpuType"].(string)
 	if strings.TrimSpace(keyword) == "" || strings.TrimSpace(gpuType) == "" {
 		return "", "", false
 	}
+	// Query a BROAD image pool (not the create's name-filtered 20) so recovery has
+	// alternatives to probe. It is NOT prefiltered — this pool is unfiltered, so
+	// the resolver's client-side name relevance still applies and recovery never
+	// swaps in a wholly unrelated image.
 	res := e.querySafeRead(ctx, "DescribeCompShareImages", map[string]any{"Limit": 100})
-	imageSet, _ := res["ImageSet"].([]any)
-	cands := rankCreateImageCandidates(imageSet, keyword, failedID)
-	for i, c := range cands {
+	if res == nil {
+		return "", "", false
+	}
+	snap := deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(res, "platform"))
+	resolution := deployment.ResolveImage(snap, deployment.ImageRequest{
+		Name:         keyword,
+		RequestedGPU: gpuType,
+		Source:       "platform",
+	})
+	for i, c := range recoveryCandidates(resolution, failedID) {
 		if i >= maxCreateRecoveryProbes {
 			break
 		}
 		// zoneStockState 230s back to zoneUnknown for an image absent from the
 		// zone, so zoneInStock means BOTH "image valid here" AND "has stock".
-		if e.zoneStockState(ctx, zone, gpuType, c.id, zoneCat) == zoneInStock {
-			return c.id, c.name, true
+		if e.zoneStockState(ctx, zone, gpuType, c.ID, zoneCat) == zoneInStock {
+			return c.ID, c.Name, true
 		}
 	}
 	return "", "", false
 }
 
-// rankCreateImageCandidates orders platform images by relevance to keyword,
-// keeping only images with some relation: exact name > name contains keyword >
-// shares a >=4-char substring (e.g. "PyTorch" ↔ "cuda128_torch291_py312" via
-// "torch"). Unrelated images (a Windows image for a "pytorch" request) are
-// dropped so recovery never silently swaps in a wholly different kind of image.
-// The failed image and entries without an id/name are skipped.
-func rankCreateImageCandidates(imageSet []any, keyword, failedID string) []createImageCand {
-	kw := strings.ToLower(strings.TrimSpace(keyword))
-	var out []createImageCand
-	for _, item := range imageSet {
-		img, _ := item.(map[string]any)
-		id, _ := img["CompShareImageId"].(string)
-		nm, _ := img["Name"].(string)
-		if id == "" || nm == "" || id == failedID {
-			continue
+// recoveryCandidates flattens a resolution into the ranked images recovery should
+// probe — the resolved selection first (an exact name match), then the resolver's
+// ranked near-matches — dropping the id that already 230'd. It carries NO ranking
+// of its own: the order is exactly what deployment.ResolveImage produced.
+func recoveryCandidates(res deployment.ImageResolution, failedID string) []deployment.ImageSelection {
+	var out []deployment.ImageSelection
+	seen := map[string]struct{}{}
+	add := func(sel deployment.ImageSelection) {
+		if sel.ID == "" || strings.EqualFold(sel.ID, failedID) {
+			return
 		}
-		ln := strings.ToLower(nm)
-		score := 0
-		switch {
-		case ln == kw:
-			score = 3
-		case kw != "" && strings.Contains(ln, kw):
-			score = 2
-		case sharesSubstringFold(kw, ln, 4):
-			score = 1
+		if _, dup := seen[strings.ToLower(sel.ID)]; dup {
+			return
 		}
-		if score == 0 {
-			continue
-		}
-		out = append(out, createImageCand{id: id, name: nm, score: score})
+		seen[strings.ToLower(sel.ID)] = struct{}{}
+		out = append(out, sel)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
+	if res.Status == deployment.ResolutionResolved {
+		add(res.Selection)
+	}
+	for _, c := range res.Candidates {
+		add(c)
+	}
 	return out
-}
-
-// sharesSubstringFold reports whether a and b share a common substring of at
-// least minLen (case-insensitive). It operates on bytes; image names are ASCII
-// so this is exact for them and merely best-effort (never panics) for CJK.
-func sharesSubstringFold(a, b string, minLen int) bool {
-	a, b = strings.ToLower(a), strings.ToLower(b)
-	if len(a) < minLen || len(b) < minLen {
-		return false
-	}
-	for i := 0; i+minLen <= len(a); i++ {
-		if strings.Contains(b, a[i:i+minLen]) {
-			return true
-		}
-	}
-	return false
 }
