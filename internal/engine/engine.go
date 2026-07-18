@@ -3601,11 +3601,15 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// match plus the four legacy zone maps) was removed in the zone convergence; the
 	// workflow validates the canonical zone against the snapshot.
 
-	// refData is the caller-supplied reference data for the turn — the live zone and
-	// image catalogs the resolver already canonicalized against (either nil for an op
-	// that carries no such field). The initial run, the image-recovery re-run AND
-	// recovery's own stock check all share this single snapshot, so the create can
-	// never see a catalog that disagrees with the one the resolver used.
+	// refData is the caller-supplied reference data for the turn — the zone catalog
+	// (and, for an image-bearing op like reinstall, the image catalog) the resolver
+	// already canonicalized against; nil for a field the op does not carry. Create
+	// carries no CompShareImageId, so refData.ImageCatalog is nil and the workflow
+	// reads its own 查询镜像. The ZONE catalog is the single snapshot shared by the
+	// initial run, the 230 image-recovery re-run and recovery's stock check, so the
+	// create's zone can never disagree with the resolver's. The image-recovery re-run
+	// does NOT reuse an image snapshot — it re-queries a broad catalog and re-ranks
+	// through the same deployment.ResolveImage (see resolveAvailableCreateImage).
 	wfRunOpts := []workflow.RunOption{workflow.WithReferenceData(refData)}
 
 	result, err := wfEngine.Run(ctx, wf, args, wfRunOpts...)

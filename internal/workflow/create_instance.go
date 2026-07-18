@@ -1635,10 +1635,15 @@ func formImageCatalog(images map[string]any, source string) *deployment.ImageCat
 }
 
 // createImageCatalog is the workflow's single view of the image catalog for
-// selection: the engine-threaded snapshot when present (the same one the resolver
-// canonicalized against), otherwise one built from this run's 查询镜像 result — so
-// the selection reads the SAME images the compatibility / boot-disk checks read,
-// never a second source.
+// selection. For CreateInstanceWorkflow the engine threads NO image snapshot: create
+// carries no CompShareImageId/CodecImage field, so SpecNeedsImageCatalog is false and
+// ReferenceData.ImageCatalog stays nil — this therefore always reads THIS run's 查询镜像,
+// which the guided source step's re-query refreshes to the chosen source (so a
+// platform↔community switch is never shadowed by a stale proposal-time snapshot). The
+// engine-threaded branch is live only for an image-bearing op (reinstall, which resolves
+// an explicit CompShareImageId against that snapshot). Either way there is one source, so
+// the selection reads the SAME images the compatibility / boot-disk checks read, never a
+// second catalog.
 func createImageCatalog(wfCtx *Context) *deployment.ImageCatalogSnapshot {
 	if snap := wfCtx.ImageCatalog(); snap.Available() {
 		return snap
