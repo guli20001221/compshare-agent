@@ -3432,33 +3432,14 @@ func uniqueStrings(values []string) []string {
 
 // executeWorkflow runs a predefined workflow and returns the result as a JSON string
 // for the LLM to narrate.
-// workflowExecOption tunes a single executeWorkflow call. It exists so the
-// action-proposal path can hand in the zone snapshot the resolver already built
-// (one catalog per turn) without changing the ~dozen direct callers, which keep
-// the four-argument form and self-build.
-type workflowExecOption func(*workflowExecConfig)
-
-type workflowExecConfig struct {
-	prebuiltZoneCatalog    *deployment.ZoneCatalogSnapshot
-	hasPrebuiltZoneCatalog bool
-}
-
-// withPrebuiltZoneCatalog supplies the zone snapshot to run against instead of
-// self-building one. The snapshot may be nil (an operation with no zone field):
-// "set to nil" is distinct from "not supplied", so a threaded nil suppresses the
-// self-build exactly as the resolver intended.
-func withPrebuiltZoneCatalog(snap *deployment.ZoneCatalogSnapshot) workflowExecOption {
-	return func(c *workflowExecConfig) {
-		c.prebuiltZoneCatalog = snap
-		c.hasPrebuiltZoneCatalog = true
-	}
-}
-
-func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), opts ...workflowExecOption) string {
-	var execCfg workflowExecConfig
-	for _, opt := range opts {
-		opt(&execCfg)
-	}
+//
+// zoneCat is the turn's zone catalog, supplied by the caller — executeWorkflow
+// never builds one itself. The action-proposal path builds exactly one snapshot
+// per turn (zoneCatalogSnapshotForSpec) and threads it here, so the resolver and
+// the workflow can never see different zone lists (gate 1). A nil snapshot is the
+// honest "this operation has no zone" signal; a zone-needing workflow handed nil
+// (or an unavailable snapshot) fails closed rather than guessing.
+func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), zoneCat *deployment.ZoneCatalogSnapshot) string {
 	e.lastWorkflowSucceededThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
@@ -3620,17 +3601,9 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 	// match plus the four legacy zone maps) was removed in the zone convergence; the
 	// workflow validates the canonical zone against the snapshot.
 
-	// The turn's zone catalog: when the action-proposal path already built one for
-	// the resolver it is threaded in here (one catalog per turn — the resolver and
-	// the workflow cannot see different zone lists); direct callers self-build. The
-	// initial run, the image-recovery re-run AND recovery's own stock check all share
-	// this single snapshot.
-	var zoneCat *deployment.ZoneCatalogSnapshot
-	if execCfg.hasPrebuiltZoneCatalog {
-		zoneCat = execCfg.prebuiltZoneCatalog
-	} else {
-		zoneCat = e.zoneCatalogSnapshotForAction(ctx, action)
-	}
+	// zoneCat is the caller-supplied catalog for the turn (nil for a non-zone op);
+	// the initial run, the image-recovery re-run AND recovery's own stock check all
+	// share this single snapshot.
 	var wfRunOpts []workflow.RunOption
 	if zoneCat != nil {
 		wfRunOpts = append(wfRunOpts, workflow.WithReferenceData(workflow.ReferenceData{ZoneCatalog: zoneCat}))

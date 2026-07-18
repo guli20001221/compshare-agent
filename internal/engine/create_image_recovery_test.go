@@ -189,7 +189,7 @@ func TestCreateZoneRecovery_SwapsToAvailableImage(t *testing.T) {
 
 	eng := NewWithDeps(&mockLLM{}, exec, confirmFn)
 	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow",
-		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep)
+		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep, eng.zoneCatalogSnapshot(context.Background()))
 
 	// The cryptic upstream error must never reach the user.
 	assert.NotContains(t, reply, "RetCode=230")

@@ -48,7 +48,7 @@ func TestExecuteWorkflowBlocksUntrustedModelChosenInstanceTarget(t *testing.T) {
 	}, "test"))
 	onStep, events := collectSteps()
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, onStep)
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, onStep, nil)
 
 	assert.Contains(t, reply, "请先确认要操作的实例")
 	assert.Empty(t, exec.calls, "untrusted target must be blocked before workflow tools run")
@@ -69,7 +69,7 @@ func TestExecuteWorkflowBlocksUntrustedTargetWithoutHydratedSession(t *testing.T
 		},
 	}, "test"))
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, nil)
 
 	assert.Contains(t, reply, "请先确认要操作的实例")
 	assert.Empty(t, exec.calls, "untrusted target must be blocked even without hydrated session state")
@@ -97,7 +97,7 @@ func TestExecuteWorkflowDoesNotTrustContextFrameUnlessResumed(t *testing.T) {
 		},
 	}, "test"))
 
-	reply := eng.executeWorkflow(context.Background(), "CreateDiskWorkflow", map[string]any{"UHostId": "uhost-a", "Size": float64(200)}, noopStep)
+	reply := eng.executeWorkflow(context.Background(), "CreateDiskWorkflow", map[string]any{"UHostId": "uhost-a", "Size": float64(200)}, noopStep, nil)
 
 	assert.Contains(t, reply, "请先确认要操作的实例")
 	assert.Empty(t, exec.calls, "context frame alone must not let a direct model workflow call pick a target")
@@ -126,7 +126,7 @@ func TestExecuteWorkflowAllowsExplicitIDTarget(t *testing.T) {
 		},
 	}, "test"))
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, nil)
 
 	assert.Contains(t, reply, "执行关机")
 	assert.Contains(t, exec.calls, "StopCompShareInstance")
@@ -160,7 +160,7 @@ func TestExecuteWorkflowAllowsOrdinalPendingSelectionTarget(t *testing.T) {
 		},
 	}, "test"))
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, nil)
 
 	assert.Contains(t, reply, "执行关机")
 	assert.Contains(t, exec.calls, "StopCompShareInstance")
@@ -192,7 +192,7 @@ func TestExecuteWorkflowBlocksObservedSelectedInstanceTarget(t *testing.T) {
 		},
 	}, "test"))
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep)
+	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, nil)
 
 	assert.Contains(t, reply, "请先确认要操作的实例")
 	assert.Empty(t, exec.calls, "tool-observed selected instance must not authorize a mutating workflow")
@@ -233,7 +233,7 @@ func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {
 		"Name": "shared-train",
 		"Size": float64(50),
 		"Zone": "cn-bj2-03",
-	}, noopStep)
+	}, noopStep, eng.zoneCatalogSnapshot(zoneUserCtx()))
 
 	require.NotNil(t, priceArgs)
 	require.NotNil(t, createArgs)
@@ -261,7 +261,7 @@ func TestExecuteWorkflowCreateCFSRejectsNonPodZoneDeterministically(t *testing.T
 		"Name": "shared-train",
 		"Size": float64(50),
 		"Zone": "cn-wlcb-01",
-	}, noopStep)
+	}, noopStep, eng.zoneCatalogSnapshot(zoneUserCtx()))
 
 	assert.Contains(t, reply, "CFS 创建没有成功")
 	assert.Contains(t, reply, "只支持 Pod")
@@ -290,7 +290,7 @@ func TestExecuteWorkflowEnableNetOptimizerResolvesAzGroup(t *testing.T) {
 
 	_ = eng.executeWorkflow(zoneUserCtx(), "EnableNetOptimizerWorkflow", map[string]any{
 		"Zone": "cn-bj2-03",
-	}, noopStep)
+	}, noopStep, eng.zoneCatalogSnapshot(zoneUserCtx()))
 
 	require.NotNil(t, syncArgs)
 	assert.Equal(t, uint32(3003), syncArgs["az_group"])

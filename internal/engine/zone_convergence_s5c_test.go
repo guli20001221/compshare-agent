@@ -42,12 +42,12 @@ func s5cCreateExecutor() *createFlowExecutor {
 	}
 }
 
-// TestExecuteWorkflow_RunsAgainstThreadedSnapshotNotASelfBuild pins S5c step 3 /
-// gate 1 (one snapshot per turn): when a snapshot is threaded in, executeWorkflow
-// runs against THAT one and never self-builds a second. The counter-example makes
-// it unforgeable — an UNAVAILABLE snapshot is threaded while the executor WOULD
-// serve a healthy catalog if consulted; the create must refuse on the threaded
-// snapshot, before the confirmation gate, proving the self-build was suppressed.
+// TestExecuteWorkflow_RunsAgainstThreadedSnapshotNotASelfBuild pins gate 1 (one
+// snapshot per turn): executeWorkflow runs against the snapshot the caller threads
+// in and never builds its own. The counter-example makes it unforgeable — an
+// UNAVAILABLE snapshot is threaded while the executor WOULD serve a healthy catalog
+// if consulted; the create must refuse on the threaded snapshot, before the
+// confirmation gate, proving executeWorkflow used the threaded value.
 func TestExecuteWorkflow_RunsAgainstThreadedSnapshotNotASelfBuild(t *testing.T) {
 	exec := s5cCreateExecutor()
 	confirmCalls := 0
@@ -56,26 +56,9 @@ func TestExecuteWorkflow_RunsAgainstThreadedSnapshotNotASelfBuild(t *testing.T) 
 
 	reply := eng.executeWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
 		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep,
-		withPrebuiltZoneCatalog(deployment.NewZoneCatalogSnapshot(false, nil)))
+		deployment.NewZoneCatalogSnapshot(false, nil))
 
 	assert.Contains(t, reply, "可用区目录当前不可用",
 		"executeWorkflow must run against the THREADED (unavailable) snapshot, not self-build a healthy one")
 	assert.Equal(t, 0, confirmCalls, "the create must refuse before the confirmation gate on the threaded snapshot")
-}
-
-// TestExecuteWorkflow_SelfBuildsWhenNoSnapshotThreaded pins the other half: a
-// direct four-argument caller (no threaded snapshot) still self-builds its
-// catalog, so those callers keep working. Here the healthy executor's catalog IS
-// consulted, so the create reaches the confirmation gate rather than refusing.
-func TestExecuteWorkflow_SelfBuildsWhenNoSnapshotThreaded(t *testing.T) {
-	exec := s5cCreateExecutor()
-	reachedConfirm := false
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { reachedConfirm = true; return false })
-	eng.zoneCatalog = zones.NewCatalog(0)
-
-	_ = eng.executeWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
-		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep)
-
-	assert.True(t, reachedConfirm,
-		"with no threaded snapshot executeWorkflow must self-build a catalog and reach the confirm gate")
 }

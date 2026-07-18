@@ -41,7 +41,7 @@ func TestExecuteWorkflow_ZoneCatalogFailureAbortsCreateBeforeConfirm(t *testing.
 	eng.zoneCatalog = zones.NewCatalog(0) // fresh: the failing fetch is not masked by a shared cache
 
 	reply := eng.executeWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
-		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep)
+		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep, eng.zoneCatalogSnapshot(zoneUserCtx()))
 
 	if confirmCalls != 0 {
 		t.Errorf("the create must be refused before the confirmation gate, got %d confirm calls", confirmCalls)
@@ -127,22 +127,5 @@ func TestZoneCatalogSnapshot_SuccessfulEmptyCatalogIsAvailable(t *testing.T) {
 	}
 	if _, ok := snap.Placement("cn-bj2-03"); ok {
 		t.Error("an empty catalog resolves nothing")
-	}
-}
-
-// TestZoneCatalogSnapshotForAction_OnlyZoneWorkflowsFetch pins that a workflow
-// with no zone (e.g. StopInstanceWorkflow) attaches no catalog and pays no read,
-// while the three zone-sensitive creates do.
-func TestZoneCatalogSnapshotForAction_OnlyZoneWorkflowsFetch(t *testing.T) {
-	eng := newZoneEngine(zoneCatalogExec(), "SHOULD-NOT-BE-USED")
-	ctx := zoneUserCtx()
-
-	for _, action := range []string{"CreateInstanceWorkflow", "CreateCFSWorkflow", "EnableNetOptimizerWorkflow"} {
-		if eng.zoneCatalogSnapshotForAction(ctx, action) == nil {
-			t.Errorf("%s must receive a zone catalog", action)
-		}
-	}
-	if eng.zoneCatalogSnapshotForAction(ctx, "StopInstanceWorkflow") != nil {
-		t.Error("a non-zone workflow must not fetch a zone catalog")
 	}
 }

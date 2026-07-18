@@ -108,20 +108,15 @@ func normalizeNetOptimizerParams(wfCtx *Context) error {
 	if zone == "" {
 		return NewMissingSlotError("开启网络加速需要指定可用区。", "zone")
 	}
-	// One record answers both Region and az_group. With a snapshot the record is
-	// the SOLE source — a model- or param-supplied Region cannot override it, so the
-	// two fields can never disagree. Only the nil-snapshot migration path still
-	// honours an explicit Region param (removed in S6).
+	// One record answers both Region and az_group, and it is the SOLE source — a
+	// model- or param-supplied Region cannot override it, so the two fields can never
+	// disagree. workflowZonePlacement fails closed on a nil/unavailable catalog, so a
+	// record carrying an empty Region is the only way region stays empty here.
 	placement, err := workflowZonePlacement(wfCtx, zone)
 	if err != nil {
 		return err
 	}
 	region := placement.Region
-	if wfCtx.ZoneCatalog() == nil {
-		if r := strings.TrimSpace(paramStr(wfCtx.Params, "Region", "")); r != "" {
-			region = r
-		}
-	}
 	if region == "" {
 		return fmt.Errorf("无法从可用区推导地域，请同时指定 Region。")
 	}

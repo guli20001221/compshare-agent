@@ -280,20 +280,10 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	if resolved != "" {
 		zone = resolved
 	}
+	// resolveCreateCFSZone fails closed on a record missing Region, so resolvedRegion
+	// is always non-empty here: the catalog record is the sole Region source, never a
+	// zone-string guess.
 	region := resolvedRegion
-	if region == "" {
-		// Nil-snapshot bridge only. On a snapshot resolveCreateCFSZone fails closed
-		// on a record missing Region, so resolvedRegion is empty here only when no
-		// snapshot was attached (unmigrated direct workflow-engine test): derive from
-		// the param / zone string for that path. Removed in S6 with the second query.
-		region = strings.TrimSpace(paramStr(wfCtx.Params, "Region", ""))
-		if region == "" {
-			region = regionFromZone(zone)
-		}
-	}
-	if region == "" {
-		return fmt.Errorf("无法从可用区推导地域，请从支持区列表中选择真实 Pod 区。")
-	}
 	chargeType := cfsChargeType(wfCtx.Params)
 	if strings.EqualFold(chargeType, "Postpay") {
 		return fmt.Errorf("CFS 不支持按量付费，请选择 Month、Year、Day 或 Dynamic。")

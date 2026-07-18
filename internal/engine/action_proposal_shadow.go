@@ -352,7 +352,7 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	// Thread the SAME zone snapshot the resolver canonicalized Zone against into the
 	// workflow, so the create runs against exactly one catalog for the turn rather
 	// than building a second one that could disagree (gate 1).
-	return e.executeWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, withPrebuiltZoneCatalog(resolved.referenceData.ZoneCatalog))
+	return e.executeWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData.ZoneCatalog)
 }
 
 // rememberPendingResolvedAction parks a half-finished write as a task frame so a

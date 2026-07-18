@@ -45,26 +45,6 @@ func regionFromZone(zone string) string {
 	return zone[:idx]
 }
 
-// RegionFromZone is the exported create-path region derivation (engine-side
-// callers like zoneStockState need the same Region the saga steps add via
-// addZoneRegion, so the per-zone stock probe doesn't 230 on a non-default zone).
-func RegionFromZone(zone string) string { return regionFromZone(zone) }
-
-// addZoneRegion sets the Region the create-path APIs require alongside a
-// non-default Zone. The upstream rejects any zone but the default cn-wlcb-01
-// with RetCode=230 "Params [Zone] not available" unless its Region accompanies
-// it — live-verified 2026-06-16: cn-bj2-03 (华北一C) needs Region=cn-bj2,
-// cn-sh2-02 needs cn-sh2; the default cn-wlcb-01 is accepted with or without.
-// Region is derived from the zone name (regionFromZone); a zone with no
-// derivable region (empty / default-region) leaves args untouched so the API
-// falls back to its implicit default region. Returns args for chaining.
-func addZoneRegion(args map[string]any, zone string) map[string]any {
-	if r := regionFromZone(zone); r != "" {
-		args["Region"] = r
-	}
-	return args
-}
-
 // extractInstanceRegion returns the Region the workflow should use for a
 // mutating call on a queried instance. Resolution order:
 //  1. Region field from the first UHostSet entry (upstream populates this).

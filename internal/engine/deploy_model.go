@@ -46,10 +46,12 @@ func (e *Engine) supportZoneListStrict(ctx context.Context) ([]zones.ZoneInfo, e
 //
 // The network call, its failure mode and caching live HERE (the same
 // process-cached supportZoneList the old chain used, so this adds a cache read,
-// not an API call), so the snapshot the workflow consumes is pure data. An error
-// or an empty list yields an UNAVAILABLE snapshot — never a fallback: a consumer
-// must refuse rather than guess a zone from a stale table, exactly as for the
-// machine-type catalog. Each record carries its own Region (falling back to the
+// not an API call), so the snapshot the workflow consumes is pure data. Only a
+// FAILURE to obtain the catalog (no executor or a query error) yields an
+// UNAVAILABLE snapshot — never a fallback: a consumer must refuse rather than
+// guess a zone from a stale table, exactly as for the machine-type catalog. A
+// query that SUCCEEDS with zero zones is an available (empty) catalog, not
+// unavailable. Each record carries its own Region (falling back to the
 // structural derivation only when upstream omits it), so ZoneID/Region/AzGroup/
 // IsPod and the display name all come from one row and cannot disagree.
 func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalogSnapshot {
@@ -84,28 +86,10 @@ func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalo
 	return deployment.NewZoneCatalogSnapshot(true, entries)
 }
 
-// zoneCatalogSnapshotForAction returns the zone catalog for the workflows that
-// resolve a zone, or nil for the rest — so a non-zone workflow attaches no
-// reference data and pays no catalog read. Which workflows those are is NOT a
-// hand-kept name list: it is derived from the same field contract the resolver
-// uses (SpecNeedsZoneCatalog), so the answer can never drift from which specs
-// actually carry a CodecZone field.
-func (e *Engine) zoneCatalogSnapshotForAction(ctx context.Context, action string) *deployment.ZoneCatalogSnapshot {
-	catalog, err := defaultActionCatalog()
-	if err != nil {
-		return nil
-	}
-	spec, ok := catalog.Lookup(action)
-	if !ok {
-		return nil
-	}
-	return e.zoneCatalogSnapshotForSpec(ctx, spec)
-}
-
-// zoneCatalogSnapshotForSpec is the spec-gated builder shared by the direct
-// executeWorkflow path and the action-proposal resolver, so both decide "does
-// this operation need the zone catalog?" the same way and, when it does, build
-// exactly one snapshot per turn (the resolver builds it and threads it on).
+// zoneCatalogSnapshotForSpec is the spec-gated builder the action-proposal
+// resolver uses to decide "does this operation need the zone catalog?" and, when
+// it does, build exactly one snapshot per turn — which the resolver then threads
+// into executeWorkflow, the sole consumer (executeWorkflow never builds its own).
 func (e *Engine) zoneCatalogSnapshotForSpec(ctx context.Context, spec actionresolver.OperationSpec) *deployment.ZoneCatalogSnapshot {
 	if !actionresolver.SpecNeedsZoneCatalog(spec) {
 		return nil

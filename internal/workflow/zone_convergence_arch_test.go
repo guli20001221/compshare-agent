@@ -16,8 +16,10 @@ import (
 //
 // Zones are resolved from ONE per-turn deployment.ZoneCatalogSnapshot; nothing in
 // production reads a ZoneIds/ZoneRegionIds/ZoneIsPods/ZoneDescribes map, calls the
-// old engine chain, or uses the deleted zones matcher primitives. Tests may still
-// name these tokens (fixtures, this gate), so only non-test sources are scanned.
+// old engine chain, uses the deleted zones matcher primitives, or rebuilds a second
+// catalog inside executeWorkflow (which now takes the snapshot as a parameter).
+// Tests may still name these tokens (fixtures, this gate), so only non-test sources
+// are scanned.
 func TestZoneConvergence_NoLegacyChainInProduction(t *testing.T) {
 	forbidden := []string{
 		// The four legacy per-zone maps (quoted so prose/comments never false-trip):
@@ -31,6 +33,10 @@ func TestZoneConvergence_NoLegacyChainInProduction(t *testing.T) {
 		"guidedZoneIsPod", "zoneOptionLabel", "zoneDescribeMapFromParams",
 		// The deleted zones-package matcher primitives.
 		"MatchSystemPrompt", "ParseDecision", "func Mentions",
+		// The deleted self-query builder and the option that threaded a prebuilt
+		// catalog: executeWorkflow now REQUIRES the snapshot as a parameter and never
+		// builds its own, so a second catalog can no longer come into being here.
+		"zoneCatalogSnapshotForAction", "withPrebuiltZoneCatalog",
 	}
 
 	for _, dir := range []string{".", "../engine", "../zones"} {
