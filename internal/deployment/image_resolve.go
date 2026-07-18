@@ -158,6 +158,27 @@ func ResolveImage(snap *ImageCatalogSnapshot, req ImageRequest) ImageResolution 
 	return ImageResolution{Status: ResolutionNotFound, Candidates: selections(ranked, ProvenanceStructuredRecommendation)}
 }
 
+// RankImages returns the viable images ranked by the same ladder ResolveImage picks
+// its winner from — for a form that must present an option list rather than one
+// selection. Viability (status usable, pod⇒container) is applied; a GPU-recommendation
+// mismatch is NOT filtered (the form shows it disabled), so the caller reads each
+// row's SupportedGPUTypes to decide.
+//
+// When the request names a SPECIFIC image (a Name or a structured preference), the
+// list is FILTERED to the related candidates — the form-list analogue of ResolveImage
+// returning not_found plus only ranked near-matches for a specific miss, so a card
+// that asked for "torch" never offers a wholly unrelated Windows image beside it. A
+// bare browse (no specific ask) keeps every viable row. An exact name match leads;
+// otherwise the order is structured-match + name similarity, then the version ladder,
+// then catalog order. Empty when the catalog is unavailable.
+func RankImages(snap *ImageCatalogSnapshot, req ImageRequest) []ImageSelection {
+	if !snap.Available() {
+		return nil
+	}
+	viable := viableEntries(scopeBySource(snap.Entries(), req.Source), req)
+	return selections(rankRecommendations(viable, req, !hasSpecificRequest(req)), ProvenanceStructuredRecommendation)
+}
+
 func hasSpecificRequest(req ImageRequest) bool {
 	return strings.TrimSpace(req.Name) != "" ||
 		strings.TrimSpace(req.Framework) != "" ||

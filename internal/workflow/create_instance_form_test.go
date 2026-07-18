@@ -424,8 +424,13 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.Contains(t, optionValues(spec), "cn-wlcb-01|1|32|131072")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"CpuMemory": "cn-wlcb-01|1|32|131072"}}
 		case 5:
-			purpose := fieldByKey(t, form, "ImagePurpose")
-			assert.Equal(t, "deep_learning", purpose.Value)
+			// Step 5 is now the image-facet step (ImagePurpose was deleted): it must
+			// offer the ImageSource facet, defaulting to platform, and never the
+			// removed ImagePurpose field.
+			source := fieldByKey(t, form, "ImageSource")
+			assert.Equal(t, "platform", source.Value)
+			assert.Equal(t, []string{"platform", "community"}, optionValues(source))
+			assert.Nil(t, form.Field("ImagePurpose"))
 			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
 			return ConfirmResolution{Confirmed: true}
 		case 6:
@@ -644,8 +649,8 @@ func TestCreateInstanceGuided_CommunityPurposeRequiresConcreteImageSelectionBefo
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
-		if form.Field("ImagePurpose") != nil {
-			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImagePurpose": "community"}}
+		if form.Field("ImageSource") != nil {
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "community"}}
 		}
 		if form.Field("ImageId") != nil {
 			imageForm = form
@@ -781,8 +786,8 @@ func TestCreateInstanceGuided_CommunityImageSelectionFeedsCapacityCheck(t *testi
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
-		if form.Field("ImagePurpose") != nil {
-			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImagePurpose": "community"}}
+		if form.Field("ImageSource") != nil {
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "community"}}
 		}
 		if form.Field("ImageId") != nil && form.Step != nil && !form.Step.Final {
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": "cimg-live"}}
@@ -946,11 +951,19 @@ func TestCreateInstanceGuided_LockedGPUIgnoresSnapshotZeroUntilCapacityCheck(t *
 }
 
 func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
+	// Explicit ImageName="torch" narrows the option list to the name-related
+	// candidates (the Windows/ComfyUI images are dropped), and the two PyTorch
+	// images are ordered newest-first by their REAL SoftwareFacts version key
+	// (FrameworkVersionIndex 291 > 280) — not by a name-version regex, which was
+	// deleted. The two torch fixtures carry the same Framework so the index is
+	// comparable between them.
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageName": "torch"})
 	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
-		map[string]any{"CompShareImageId": "img-torch-old", "Name": "cuda128_torch280_py312", "ImageType": "App", "Status": "Available"},
-		map[string]any{"CompShareImageId": "img-torch-new", "Name": "cuda130_torch291_py312", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-torch-old", "Name": "cuda128_torch280_py312", "ImageType": "App", "Status": "Available",
+			"Softwares": map[string]any{"Framework": "PyTorch", "FrameworkVersionIndex": float64(280)}},
+		map[string]any{"CompShareImageId": "img-torch-new", "Name": "cuda130_torch291_py312", "ImageType": "App", "Status": "Available",
+			"Softwares": map[string]any{"Framework": "PyTorch", "FrameworkVersionIndex": float64(291)}},
 		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
 	}}
 
@@ -963,29 +976,55 @@ func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
 	assert.Nil(t, form.Field("ImagePurpose"), "explicit image intent should not ask a generic purpose question")
 }
 
-func TestGuidedImagePurposeFormAppearsWhenNoImageIntent(t *testing.T) {
+func TestGuidedImageFacetsFormAppearsWhenNoImageIntent(t *testing.T) {
+	// With no explicit image intent the facet step is shown. It offers the
+	// ImageSource facet (always the two sources create supports), plus ImageType /
+	// ImageTag facets built from the REAL types and tags in the candidate catalog —
+	// never the deleted ImagePurpose keyword enum.
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
+	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-sys", "Name": "Ubuntu 22.04", "ImageType": "System", "Status": "Available", "Tags": []any{"深度学习"}},
+		map[string]any{"CompShareImageId": "img-app", "Name": "PyTorch 2.4", "ImageType": "App", "Status": "Available", "Tags": []any{"大模型推理"}},
+	}}
 
-	form, err := buildGuidedImagePurposeForm(wfCtx)
+	form, err := buildGuidedImageFacetsForm(wfCtx)
 	require.NoError(t, err)
 
-	purpose := fieldByKey(t, form, "ImagePurpose")
-	assert.Equal(t, "deep_learning", purpose.Value)
-	assert.Equal(t, []string{"deep_learning", "llm_inference", "image_video", "system", "platform_app", "community"}, optionValues(purpose))
+	source := fieldByKey(t, form, "ImageSource")
+	assert.Equal(t, "platform", source.Value)
+	assert.Equal(t, []string{"platform", "community"}, optionValues(source))
+
+	// ImageType facet appears because ≥2 distinct real types exist, led by the
+	// "全部类型" (all-types) sentinel, then the real ImageType values in catalog order.
+	imgType := fieldByKey(t, form, "ImageType")
+	assert.Equal(t, []string{"", "System", "App"}, optionValues(imgType))
+
+	// ImageTag facet lists the real catalog tags, led by the "不限标签" sentinel.
+	tag := fieldByKey(t, form, "ImageTag")
+	assert.Equal(t, []string{"", "深度学习", "大模型推理"}, optionValues(tag))
+
+	assert.Nil(t, form.Field("ImagePurpose"))
 }
 
-func TestGuidedImagePurposeStepSkipsWhenImageIntentExists(t *testing.T) {
+func TestGuidedImageFacetsStepSkipsWhenImageIntentExists(t *testing.T) {
+	// An explicit image intent (a named image) means the user has already chosen;
+	// the facet-filter step is skipped so we don't ask a redundant browse question.
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageName": "torch"})
-	skip, err := shouldSkipGuidedImagePurposeStep(wfCtx)
+	skip, err := shouldSkipGuidedImageFacetsStep(wfCtx)
 	require.NoError(t, err)
 	assert.True(t, skip)
 }
 
-func TestGuidedFinalFormUsesPurposeToNarrowImages(t *testing.T) {
-	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImagePurpose": "deep_learning"})
+func TestGuidedFinalFormTagNarrowsImages(t *testing.T) {
+	// An ImageTag facet narrows the option list by EXACT membership against each
+	// image's REAL catalog Tags — not by a purpose keyword or the image name. Only
+	// img-torch carries the "深度学习" tag, so the vLLM/ComfyUI/Windows images are
+	// excluded even though their names would match a name-based heuristic.
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageTag": "深度学习"})
 	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
-		map[string]any{"CompShareImageId": "img-torch", "Name": "cuda128_torch291_py312", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-torch", "Name": "cuda128_torch291_py312", "ImageType": "App", "Status": "Available",
+			"Tags": []any{"深度学习"}},
 		map[string]any{"CompShareImageId": "img-vllm", "Name": "vLLM v0.12.0", "ImageType": "App", "Status": "Available"},
 		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
 	}}
@@ -998,13 +1037,18 @@ func TestGuidedFinalFormUsesPurposeToNarrowImages(t *testing.T) {
 	assert.Equal(t, "img-torch", img.Value)
 }
 
-func TestGuidedFinalFormPurposeSwitchNarrowsLLMImages(t *testing.T) {
-	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImagePurpose": "llm_inference"})
+func TestGuidedFinalFormTagNarrowsLLMImages(t *testing.T) {
+	// The "大模型推理" tag is a REAL catalog tag carried by exactly the vLLM and
+	// Ollama images; the option list is those two, in catalog order, and nothing
+	// else. Name/framework play no part — only exact Tags membership.
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageTag": "大模型推理"})
 	wfCtx.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
 		map[string]any{"CompShareImageId": "img-torch", "Name": "cuda128_torch291_py312", "ImageType": "App", "Status": "Available"},
-		map[string]any{"CompShareImageId": "img-vllm", "Name": "vLLM v0.12.0", "ImageType": "App", "Status": "Available"},
-		map[string]any{"CompShareImageId": "img-ollama", "Name": "Ollama v0.13.1", "ImageType": "App", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-vllm", "Name": "vLLM v0.12.0", "ImageType": "App", "Status": "Available",
+			"Tags": []any{"大模型推理"}},
+		map[string]any{"CompShareImageId": "img-ollama", "Name": "Ollama v0.13.1", "ImageType": "App", "Status": "Available",
+			"Tags": []any{"大模型推理"}},
 		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
 	}}
 
@@ -1015,33 +1059,36 @@ func TestGuidedFinalFormPurposeSwitchNarrowsLLMImages(t *testing.T) {
 	assert.Equal(t, []string{"img-vllm", "img-ollama"}, optionValues(img))
 }
 
-func TestGuidedImagePurposeOverridesClearStaleImageSelection(t *testing.T) {
+func TestGuidedImageFacetsOverridesClearStaleImageSelection(t *testing.T) {
+	// Changing any facet (here the ImageTag) must drop the previously-pinned concrete
+	// image: the refreshed image step re-picks from the newly-scoped candidates, so a
+	// stale id/name that may not match the new tag can never survive the edit.
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":          "4090",
-		"ImagePurpose":     "deep_learning",
 		"CompShareImageId": "img-torch",
 		"ImageName":        "cuda128_torch291_py312",
 	})
 
-	require.NoError(t, applyGuidedImagePurposeOverrides(wfCtx, map[string]string{"ImagePurpose": "llm_inference"}))
+	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{"ImageTag": "大模型推理"}))
 
-	assert.Equal(t, "llm_inference", wfCtx.Params["ImagePurpose"])
+	assert.Equal(t, "大模型推理", wfCtx.Params["ImageTag"])
 	assert.NotContains(t, wfCtx.Params, "CompShareImageId")
 	assert.NotContains(t, wfCtx.Params, "ImageName")
 }
 
-func TestGuidedImagePurposeOverrideCommunitySwitchesSource(t *testing.T) {
+func TestGuidedImageFacetsOverrideCommunitySwitchesSource(t *testing.T) {
+	// Switching the ImageSource facet to community must flip the source (which drives
+	// the community re-query) AND clear the stale platform image selection. There is
+	// no ImagePurpose param anymore — ImageSource is the sole source authority.
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":          "4090",
-		"ImagePurpose":     "deep_learning",
 		"ImageSource":      "platform",
 		"CompShareImageId": "img-torch",
 		"ImageName":        "cuda128_torch291_py312",
 	})
 
-	require.NoError(t, applyGuidedImagePurposeOverrides(wfCtx, map[string]string{"ImagePurpose": "community"}))
+	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
 
-	assert.Equal(t, "community", wfCtx.Params["ImagePurpose"])
 	assert.Equal(t, "community", wfCtx.Params["ImageSource"])
 	assert.NotContains(t, wfCtx.Params, "CompShareImageId")
 	assert.NotContains(t, wfCtx.Params, "ImageName")
@@ -1059,9 +1106,9 @@ func TestCreateInstanceGuided_CommunityPurposeQueriesCommunityImages(t *testing.
 		case 1, 2, 3, 4:
 			return ConfirmResolution{Confirmed: true}
 		case 5:
-			purpose := fieldByKey(t, form, "ImagePurpose")
-			assert.Contains(t, optionValues(purpose), "community")
-			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImagePurpose": "community"}}
+			source := fieldByKey(t, form, "ImageSource")
+			assert.Contains(t, optionValues(source), "community")
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "community"}}
 		case 6:
 			image := fieldByKey(t, form, "ImageId")
 			finalImageOptions = optionValues(image)
@@ -1108,7 +1155,7 @@ func TestCreateInstanceGuided_CommunityPurposeOverridesInitialPlatformSource(t *
 		case 1, 2, 3, 4:
 			return ConfirmResolution{Confirmed: true}
 		case 5:
-			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImagePurpose": "community"}}
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "community"}}
 		case 6:
 			finalImageOptions = optionValues(fieldByKey(t, form, "ImageId"))
 			return ConfirmResolution{Confirmed: false}
@@ -1135,34 +1182,8 @@ func TestCreateInstanceGuided_CommunityPurposeOverridesInitialPlatformSource(t *
 	assert.Equal(t, 1, communityCalls)
 }
 
-func TestCommunityImageCandidatesUseOneLatestVersionPerGroup(t *testing.T) {
-	groups := []any{
-		map[string]any{
-			"ImageName": "LiveTalking",
-			"Data": []any{
-				map[string]any{"CompShareImageId": "cimg-live-new", "Name": "2026-06"},
-				map[string]any{"CompShareImageId": "cimg-live-old", "Name": "2026-05"},
-			},
-		},
-		map[string]any{
-			"ImageName": "LTX-2.3视频生成合集！支持文生视频、图生视频、数字人视频等",
-			"Data": []any{
-				map[string]any{"CompShareImageId": "cimg-ltx-new", "Name": "latest"},
-			},
-		},
-	}
-
-	candidates, labels := communityImageCandidates(groups)
-
-	require.Len(t, candidates, 2)
-	assert.Equal(t, "cimg-live-new", candidates[0].ID)
-	assert.Equal(t, "LiveTalking", labels["cimg-live-new"])
-	assert.Equal(t, "cimg-ltx-new", candidates[1].ID)
-	assert.NotContains(t, labels, "cimg-live-old")
-}
-
 func TestGuidedImageFormOptionsShowsTopTenCommunityGroups(t *testing.T) {
-	params := map[string]any{"GpuType": "4090", "ImagePurpose": "community"}
+	params := map[string]any{"GpuType": "4090", "ImageSource": "community"}
 	images := formManyCommunityImagesFixture(12)
 
 	_, opts := guidedImageFormOptions(params, images, "4090")
@@ -1170,10 +1191,6 @@ func TestGuidedImageFormOptionsShowsTopTenCommunityGroups(t *testing.T) {
 	require.Len(t, opts, 10)
 	assert.Equal(t, "cimg-hot-01", opts[0].Value)
 	assert.Equal(t, "cimg-hot-10", opts[9].Value)
-}
-
-func TestNormalizeImagePurposeKeepsLegacyAppCommunityAsPlatformApp(t *testing.T) {
-	assert.Equal(t, imagePurposePlatformApp, normalizeImagePurpose(imagePurposeAppCommunity))
 }
 
 func TestCreateInstanceGuided_ZoneCardUsesDisplayNamesAndRawValues(t *testing.T) {

@@ -484,17 +484,6 @@ func TestCreateInstance_CommunityImage_ConfirmShowsImageName(t *testing.T) {
 	assert.Equal(t, "Stable Diffusion WebUI", capturedArgs["image"])
 }
 
-func TestPickFirstCommunityImageId_MalformedData(t *testing.T) {
-	assert.Equal(t, "", pickFirstCommunityImageId(nil))
-	assert.Equal(t, "", pickFirstCommunityImageId(map[string]any{}))
-	assert.Equal(t, "", pickFirstCommunityImageId(map[string]any{
-		"CompshareImageGroup": []any{},
-	}))
-	assert.Equal(t, "", pickFirstCommunityImageId(map[string]any{
-		"CompshareImageGroup": []any{map[string]any{"Data": []any{}}},
-	}))
-}
-
 func TestCreateInstance_CommunityImage_NoName_Rejected(t *testing.T) {
 	executor := communityMockExecutor()
 	onStep, _ := collectEvents()
@@ -723,108 +712,6 @@ func TestCreateInstance_PlatformImage_WithImageIDUsesExactFilter(t *testing.T) {
 	assert.NotNil(t, imageArgs)
 	assert.Equal(t, "img-exact", imageArgs["CompShareImageId"], "image id must win over fuzzy name filters")
 	assert.NotContains(t, imageArgs, "Name")
-}
-
-func TestPickPlatformImageId_PrefersNameMatch(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},
-			map[string]any{"CompShareImageId": "img-pytorch", "Name": "PyTorch 2.1 CUDA 12"},
-		},
-	}
-
-	// With ImageName → should prefer PyTorch over Ubuntu
-	id := pickPlatformImageId(map[string]any{"ImageName": "PyTorch"}, result)
-	assert.Equal(t, "img-pytorch", id)
-
-	// Without ImageName → falls back to first entry
-	id = pickPlatformImageId(map[string]any{}, result)
-	assert.Equal(t, "img-ubuntu", id)
-}
-
-func TestPickPlatformImage_ExactMatchWins(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-1", "Name": "PyTorch 2.1 CUDA 12"},
-			map[string]any{"CompShareImageId": "img-2", "Name": "CUDA"},
-		},
-	}
-	// Exact match (case-insensitive) takes priority over contains
-	id := pickPlatformImageId(map[string]any{"ImageName": "CUDA"}, result)
-	assert.Equal(t, "img-2", id)
-}
-
-func TestPickPlatformImage_ContainsMatch(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},
-			map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI v1.3 CUDA 12"},
-		},
-	}
-	id := pickPlatformImageId(map[string]any{"ImageName": "comfyui"}, result)
-	assert.Equal(t, "img-comfy", id, "case-insensitive contains should match")
-}
-
-func TestPickPlatformImage_PrefersRequestedGPUSupportWithinNameMatches(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-pytorch-a800", "Name": "PyTorch 2.4",
-				"ImageType": "App", "Status": "Available", "SupportedGpuTypes": []any{"A800"}},
-			map[string]any{"CompShareImageId": "img-pytorch-4090", "Name": "PyTorch 2.4-4090",
-				"ImageType": "App", "Status": "Available", "SupportedGpuTypes": []any{"4090"}},
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04",
-				"ImageType": "System", "Status": "Available"},
-		},
-	}
-
-	id := pickPlatformImageId(map[string]any{"ImageName": "PyTorch", "GpuType": "4090"}, result)
-	assert.Equal(t, "img-pytorch-4090", id)
-}
-
-func TestPickPlatformImage_PyTorchLatestMatchesTorchNamedImages(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-torch-old", "Name": "cuda128_torch280_py312", "ImageType": "App", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-torch-new", "Name": "cuda130_torch291_py312", "ImageType": "App", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
-		},
-	}
-
-	id := pickPlatformImageId(map[string]any{"ImageName": "torch", "GpuType": "4090"}, result)
-
-	assert.Equal(t, "img-torch-new", id)
-}
-
-func TestPickPlatformImage_VLLMLatestUsesVersionOrder(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-vllm-010", "Name": "vLLM v0.10.0", "ImageType": "App", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-vllm-012", "Name": "vLLM v0.12.0", "ImageType": "App", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 24.04 64位", "ImageType": "System", "Status": "Available"},
-		},
-	}
-
-	id := pickPlatformImageId(map[string]any{"ImageName": "vLLM", "GpuType": "4090"}, result)
-
-	assert.Equal(t, "img-vllm-012", id)
-}
-
-func TestPickPlatformImage_NoMatchFallsBackToFirst(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},
-		},
-	}
-	id := pickPlatformImageId(map[string]any{"ImageName": "NonExistent"}, result)
-	assert.Equal(t, "img-ubuntu", id, "should fall back to first when no match")
-}
-
-func TestPickPlatformImage_EmptyResult(t *testing.T) {
-	assert.Equal(t, "", pickPlatformImageId(map[string]any{}, nil))
-	assert.Equal(t, "", pickPlatformImageId(map[string]any{}, map[string]any{}))
-	assert.Equal(t, "", pickPlatformImageId(map[string]any{}, map[string]any{"ImageSet": []any{}}))
-	assert.Equal(t, "未知", pickPlatformImageName(map[string]any{}, nil))
 }
 
 // --- Capacity check exact-match tests (bug regression) ---

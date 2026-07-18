@@ -141,6 +141,79 @@ func TestImageListEnvelope_PlatformDropsRawIDFacts(t *testing.T) {
 	assert.Equal(t, "PyTorch 2.9", env.Subjects[0].Name)
 }
 
+// TestImageListEnvelope_AgentSeesStructuredCandidateFacts is acceptance gate #1 (and
+// the red half of gate #8): the image_list evidence the central Agent consumes must
+// carry each candidate's REAL Tags (as a structured []string, never concatenated
+// prose), its Description, source, runtime form and the structured SoftwareFacts —
+// this is exactly what lets the Agent map a natural-language goal ("大模型推理",
+// "深度学习") to a real image WITHOUT any keyword table. Deleting the
+// appendStructuredImageFacts wiring turns this red.
+func TestImageListEnvelope_AgentSeesStructuredCandidateFacts(t *testing.T) {
+	raw := map[string]any{"ImageSet": []any{
+		map[string]any{
+			"CompShareImageId":  "img-torch",
+			"Name":              "PyTorch 2.9.1",
+			"ImageType":         "App",
+			"Status":            "Available",
+			"Container":         "True",
+			"Description":       "PyTorch 深度学习基础镜像",
+			"Tags":              []any{"深度学习", "PyTorch"},
+			"SupportedGpuTypes": []any{"4090", "A800"},
+			"Softwares": map[string]any{
+				"Framework": "PyTorch", "FrameworkVersion": "2.9.1",
+				"CUDAVersion": "12.8", "OsVersion": "Ubuntu 22.04", "PythonVersion": "3.12",
+			},
+		},
+	}}
+	result := runImageList(t, &fakeReadExec{result: raw}, ImageListRequest{Source: platform.ImageSourcePlatform})
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.NotNil(t, result.Envelope)
+
+	facts := map[string]any{}
+	for _, f := range result.Envelope.Facts {
+		if f.SubjectID == "image:img-torch" {
+			facts[f.Key] = f.Value
+		}
+	}
+
+	tags, ok := facts["tags"].([]string)
+	require.True(t, ok, "tags must be a structured []string, got %T", facts["tags"])
+	assert.Equal(t, []string{"深度学习", "PyTorch"}, tags)
+	gpus, ok := facts["supported_gpu_types"].([]string)
+	require.True(t, ok, "supported_gpu_types must be a structured []string, got %T", facts["supported_gpu_types"])
+	assert.Equal(t, []string{"4090", "A800"}, gpus)
+	assert.Equal(t, "PyTorch 深度学习基础镜像", facts["description"])
+	assert.Equal(t, "platform", facts["source"])
+	assert.Equal(t, "App", facts["image_type"])
+	assert.Equal(t, "Available", facts["status"])
+	assert.Equal(t, true, facts["container"])
+	assert.Equal(t, "PyTorch", facts["framework"])
+	assert.Equal(t, "12.8", facts["cuda_version"])
+	assert.Equal(t, "Ubuntu 22.04", facts["os_version"])
+	assert.Equal(t, "3.12", facts["python_version"])
+}
+
+// TestImageListEnvelope_HonestAbsenceNoTagFabrication pins the honest-absence half:
+// a bare image with no upstream Tags/Software emits NO tags fact and NO software
+// facts — never an empty string or empty list the Agent might read as "matches no
+// tag" and use to exclude the image (gate #3's data-side guarantee).
+func TestImageListEnvelope_HonestAbsenceNoTagFabrication(t *testing.T) {
+	raw := map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-bare", "Name": "Ubuntu 22.04", "ImageType": "System", "Status": "Available"},
+	}}
+	result := runImageList(t, &fakeReadExec{result: raw}, ImageListRequest{Source: platform.ImageSourcePlatform})
+	require.NotNil(t, result.Envelope)
+	for _, f := range result.Envelope.Facts {
+		if f.SubjectID != "image:img-bare" {
+			continue
+		}
+		switch f.Key {
+		case "tags", "description", "framework", "cuda_version", "os_version", "python_version":
+			t.Errorf("bare image must emit no %q fact (honest absence, not empty-match), got %v", f.Key, f.Value)
+		}
+	}
+}
+
 func TestImageListEnvelope_CommunitySortsByDeployCount(t *testing.T) {
 	raw := map[string]any{"CompshareImageGroup": []any{
 		map[string]any{"ImageName": "Low", "CreatedCount": float64(10), "Data": []any{}},

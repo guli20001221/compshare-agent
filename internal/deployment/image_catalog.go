@@ -47,9 +47,21 @@ type ImageCatalogEntry struct {
 	Container         bool   // true only when upstream Container=="True"
 	SupportedGPUTypes []string
 	Software          SoftwareFacts
-	SizeMB            float64 // image size in MB (Size), for reinstall disk sizing
-	CreateTime        int64
-	PubTime           int64
+	// Tags is upstream CompShareImage.Tags (镜像标签) — the platform's own tag
+	// classification for the image. nil means the upstream row carried no Tags: honest
+	// absence (unknown), NEVER "matches no tag". A consumer must read len(Tags)==0 as
+	// "we don't know this image's tags", not as a reason to exclude it. It is the real
+	// data the central Agent reasons over (deep_learning→whatever real tag exists) and
+	// the ONLY thing an explicit ImageTag filter does exact membership against.
+	Tags []string
+	// Description is upstream CompShareImage.Description (镜像描述). "" = absent. Shown to
+	// the Agent as structured context for semantic image selection; never parsed for
+	// keywords by the workflow. (README/Readme is deliberately NOT captured here — it is
+	// large untrusted rich text, fetched per-id later, out of the catalog.)
+	Description string
+	SizeMB      float64 // image size in MB (Size), for reinstall disk sizing
+	CreateTime  int64
+	PubTime     int64
 }
 
 // SoftwareFacts mirrors upstream SoftwareDetail (pkg/api describe_compshare_images.go
@@ -110,11 +122,33 @@ func (s *ImageCatalogSnapshot) ByID(id string) (ImageCatalogEntry, bool) {
 		return ImageCatalogEntry{}, false
 	}
 	e, ok := s.entries[strings.ToLower(strings.TrimSpace(id))]
-	return e, ok
+	if !ok {
+		return ImageCatalogEntry{}, false
+	}
+	return e.clone(), true
+}
+
+// clone returns a deep copy of the entry with fresh SupportedGPUTypes and Tags
+// slices, so a caller that mutates either cannot reach the snapshot's stored row.
+// Every accessor returns through here, so the immutability the snapshot promises
+// holds for the two slice fields too, not only the scalars.
+func (e ImageCatalogEntry) clone() ImageCatalogEntry {
+	if len(e.SupportedGPUTypes) > 0 {
+		gpus := make([]string, len(e.SupportedGPUTypes))
+		copy(gpus, e.SupportedGPUTypes)
+		e.SupportedGPUTypes = gpus
+	}
+	if len(e.Tags) > 0 {
+		tags := make([]string, len(e.Tags))
+		copy(tags, e.Tags)
+		e.Tags = tags
+	}
+	return e
 }
 
 // Entries returns the catalog rows in catalog order. The returned slice (and each
-// row's SupportedGPUTypes) is a fresh copy; mutating it cannot reach the snapshot.
+// row's SupportedGPUTypes and Tags) is a fresh copy; mutating it cannot reach the
+// snapshot.
 // An unavailable catalog returns nil. This is what the resolver scans to match a
 // name or structured preference.
 func (s *ImageCatalogSnapshot) Entries() []ImageCatalogEntry {
@@ -123,13 +157,7 @@ func (s *ImageCatalogSnapshot) Entries() []ImageCatalogEntry {
 	}
 	out := make([]ImageCatalogEntry, 0, len(s.order))
 	for _, id := range s.order {
-		e := s.entries[strings.ToLower(id)]
-		if len(e.SupportedGPUTypes) > 0 {
-			gpus := make([]string, len(e.SupportedGPUTypes))
-			copy(gpus, e.SupportedGPUTypes)
-			e.SupportedGPUTypes = gpus
-		}
-		out = append(out, e)
+		out = append(out, s.entries[strings.ToLower(id)].clone())
 	}
 	return out
 }
@@ -235,6 +263,8 @@ func imageEntryFromMap(img map[string]any, source string) (ImageCatalogEntry, bo
 		Status:            asString(img, "Status"),
 		Container:         parseContainerFlag(img["Container"]) || asBool(img, "IsContainer"),
 		SupportedGPUTypes: asStringSlice(img["SupportedGpuTypes"]),
+		Tags:              asStringSlice(img["Tags"]),
+		Description:       asString(img, "Description"),
 		SizeMB:            asFloat(img, "Size", "ActualSize", "ImageSize"),
 		CreateTime:        asInt64(img, "CreateTime"),
 		PubTime:           asInt64(img, "PubTime"),

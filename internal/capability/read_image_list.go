@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
@@ -320,6 +321,18 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 		envelope.Fact{Key: "image_category", Label: "Image category", Value: category, Source: envelope.FactSourceComputed},
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
 	)
+	// Parse the same rows into typed catalog entries so every image subject carries
+	// the STRUCTURED per-candidate facts the central Agent reads to choose an image —
+	// source, type, status, container, the real Tags, Description and SoftwareFacts —
+	// as discrete keyed facts (Tags/SupportedGpuTypes stay []string values), never a
+	// rendered sentence. The raw CompShareImageId / redundant Name are still NOT facts
+	// (the id is Subject.ID, the name Subject.Name); the human-facing list is a
+	// separate clean render (renderImageListReply) — this envelope is the Agent's
+	// evidence, the thing the Agent reasons over and cites.
+	byID := map[string]deployment.ImageCatalogEntry{}
+	for _, catalogEntry := range deployment.ParsePlatformImageEntries(raw, category) {
+		byID[strings.ToLower(catalogEntry.ID)] = catalogEntry
+	}
 	shown := 0
 	for i, entry := range filtered {
 		if shown >= imageListDisplayCap {
@@ -334,19 +347,14 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 		env.Subjects = append(env.Subjects, envelope.Subject{
 			ID: subjectID, Name: name, Type: envelope.SubjectImage,
 		})
-		// Skip the raw-id / redundant-name display facts so the answering model
-		// does not dump CompShareImageId per row — the id lives in Subject.ID and the
-		// name in Subject.Name. Keeps the rendered list clean (类型/状态/作者 only).
-		for _, key := range fieldOrder {
-			if _, skip := imageDisplaySkipFields[key]; skip {
-				continue
-			}
-			v := safeString(entry, key)
-			if v == "" {
-				continue
-			}
+		if catalogEntry, ok := byID[strings.ToLower(id)]; ok {
+			appendStructuredImageFacts(&env, subjectID, catalogEntry)
+		}
+		// Author is a listing field, not a catalog-entry field, so it is emitted
+		// straight from the row when present (community/custom author attribution).
+		if author := safeString(entry, "Author"); author != "" {
 			env.Facts = append(env.Facts, envelope.Fact{
-				SubjectID: subjectID, Key: key, Label: imageFieldLabel(key), Value: v, Source: envelope.FactSourceAPI,
+				SubjectID: subjectID, Key: "author", Label: "作者", Value: author, Source: envelope.FactSourceAPI,
 			})
 		}
 		shown++
@@ -359,6 +367,61 @@ func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []str
 		})
 	}
 	return env
+}
+
+// appendStructuredImageFacts emits, for one image subject, the per-candidate
+// structured facts the central Agent reads to make a semantic image choice —
+// source, type, status, container, the real Tags, the Description and the
+// SoftwareFacts — as DISCRETE keyed facts (Tags and SupportedGpuTypes stay
+// []string values, never concatenated into prose), so the Agent reasons over
+// structure, not a rendered sentence. Absent fields are OMITTED (honest absence):
+// a missing Framework is no fact, never an empty string the Agent could mistake for
+// a value, and absent Tags is no tag fact — never a signal to exclude the image.
+// Container is the one field emitted unconditionally (as a bool): it is a hard
+// runtime-form constraint (a pod requires a container image), so the Agent must
+// never have to infer it from the name.
+func appendStructuredImageFacts(env *envelope.Envelope, subjectID string, e deployment.ImageCatalogEntry) {
+	add := func(key, label string, value any) {
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: key, Label: label, Value: value, Source: envelope.FactSourceAPI,
+		})
+	}
+	if e.Source != "" {
+		add("source", "来源", e.Source)
+	}
+	if e.ImageType != "" {
+		add("image_type", "镜像类型", e.ImageType)
+	}
+	if e.Status != "" {
+		add("status", "状态", e.Status)
+	}
+	add("container", "容器镜像", e.Container)
+	if len(e.Tags) > 0 {
+		add("tags", "标签", append([]string(nil), e.Tags...))
+	}
+	if e.Description != "" {
+		add("description", "描述", e.Description)
+	}
+	if len(e.SupportedGPUTypes) > 0 {
+		add("supported_gpu_types", "推荐GPU机型", append([]string(nil), e.SupportedGPUTypes...))
+	}
+	if e.Software.Present {
+		if e.Software.Framework != "" {
+			add("framework", "框架", e.Software.Framework)
+		}
+		if e.Software.FrameworkVersion != "" {
+			add("framework_version", "框架版本", e.Software.FrameworkVersion)
+		}
+		if e.Software.CUDAVersion != "" {
+			add("cuda_version", "CUDA版本", e.Software.CUDAVersion)
+		}
+		if e.Software.OsVersion != "" {
+			add("os_version", "操作系统", e.Software.OsVersion)
+		}
+		if e.Software.PythonVersion != "" {
+			add("python_version", "Python版本", e.Software.PythonVersion)
+		}
+	}
 }
 
 func renderCommunityImageReply(raw map[string]any, searchQuery string, mode platform.ListMode) string {

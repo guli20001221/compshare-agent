@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,7 +17,7 @@ const (
 	guidedStepZone
 	guidedStepGPUCount
 	guidedStepCPUMemory
-	guidedStepImagePurpose
+	guidedStepImageFacets
 	guidedStepImage
 	guidedStepFinal
 )
@@ -288,7 +287,7 @@ func CreateInstanceDef() *Definition {
 func CreateInstanceGuidedDef() *Definition {
 	return &Definition{
 		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择用途 → 必要时查询社区镜像 → 选择镜像 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认镜像计费 → 创建实例 → 查看状态",
+		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择镜像筛选 → 必要时查询社区镜像 → 选择镜像 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认镜像计费 → 创建实例 → 查看状态",
 		Steps: []Step{
 			stepQueryImages(true),
 			stepQueryInstanceTypes(),
@@ -297,8 +296,8 @@ func CreateInstanceGuidedDef() *Definition {
 			stepGuidedChooseZone(),
 			stepGuidedChooseGPUCount(),
 			stepGuidedChooseCPUMemory(),
-			stepGuidedChooseImagePurpose(),
-			stepQueryCommunityImagesAfterPurpose(),
+			stepGuidedChooseImageFacets(),
+			stepQueryCommunityImagesAfterFacets(),
 			stepGuidedChooseImage(),
 			// Runs while 选择镜像's seal is still live — hence the rule that a
 			// resolve step may not write Params, which would break that digest.
@@ -370,12 +369,12 @@ func communityImageBrowseArgs(name string) map[string]any {
 	return args
 }
 
-func stepQueryCommunityImagesAfterPurpose() Step {
+func stepQueryCommunityImagesAfterFacets() Step {
 	return Step{
 		Name:   "查询镜像",
 		Type:   StepToolCall,
 		Tool:   "DescribeCommunityImages",
-		SkipIf: shouldSkipCommunityPurposeImageQuery,
+		SkipIf: shouldSkipCommunityImageQuery,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			return communityImageBrowseArgs(paramStr(wfCtx.Params, "ImageName", "")), nil
 		},
@@ -626,20 +625,21 @@ func stepGuidedChooseCPUMemory() Step {
 	}
 }
 
-func stepGuidedChooseImagePurpose() Step {
+func stepGuidedChooseImageFacets() Step {
 	return Step{
-		Name:              "选择用途",
+		Name:              "选择镜像筛选",
 		Type:              StepConfirm,
-		SkipIf:            shouldSkipGuidedImagePurposeStep,
-		BuildForm:         buildGuidedImagePurposeForm,
-		ApplyOverrides:    applyGuidedImagePurposeOverrides,
+		SkipIf:            shouldSkipGuidedImageFacetsStep,
+		BuildForm:         buildGuidedImageFacetsForm,
+		ApplyOverrides:    applyGuidedImageFacetsOverrides,
 		ConfirmSubmitMode: ConfirmSubmitContinue,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			purpose := imagePurposeValue(wfCtx.Params)
 			return map[string]any{
-				"workflow":     "CreateInstanceWorkflow",
-				"step":         guidedStepLabel(wfCtx, guidedStepImagePurpose),
-				"ImagePurpose": purpose,
+				"workflow":    "CreateInstanceWorkflow",
+				"step":        guidedStepLabel(wfCtx, guidedStepImageFacets),
+				"ImageSource": paramStr(wfCtx.Params, "ImageSource", "platform"),
+				"ImageType":   paramStr(wfCtx.Params, "ImageType", ""),
+				"ImageTag":    paramStr(wfCtx.Params, "ImageTag", ""),
 			}, nil
 		},
 	}
@@ -1535,18 +1535,28 @@ type SelectedImage struct {
 //     shows, and the user confirms it (the acceptance gate). Community no longer
 //     blindly takes groups[0].Data[0].
 func selectCreateImage(wfCtx *Context) SelectedImage {
-	params := wfCtx.Params
-	source := paramStr(params, "ImageSource", "platform")
-	snap := createImageCatalog(wfCtx)
+	return resolveSelectedImage(wfCtx.Params, createImageCatalog(wfCtx))
+}
 
+// resolveSelectedImage is the shared image decision used by both the create seal
+// (selectCreateImage) and the guided/confirm image forms (pickImageId/pickImageName)
+// — one interpreter, one snapshot, so the id a form offers as "current" is resolved
+// the same way the create seals it.
+//
+// An explicitly threaded CompShareImageId is VERIFIED against the catalog; only a
+// verified id wins with its catalog name. An unverified id falls through to
+// name-based resolution rather than being sealed under the caller's ImageName
+// (invariant 1). A named request with no exact match returns the best ranked
+// recommendation (real catalog name), which rides the confirm gate — never a silent
+// swap. Prefiltered: the query already filtered by name, so a non-exact request
+// recommends the best returned row rather than re-rejecting the API's own hits.
+func resolveSelectedImage(params map[string]any, snap *deployment.ImageCatalogSnapshot) SelectedImage {
+	source := paramStr(params, "ImageSource", "platform")
 	if id := paramStr(params, "CompShareImageId", ""); id != "" {
 		if res := deployment.ResolveImage(snap, deployment.ImageRequest{ID: id}); res.Status == deployment.ResolutionResolved {
 			return selectedImageFrom(res.Selection, source)
 		}
-		// Unverified id: fall through to name-based resolution rather than sealing
-		// the caller's ImageName over an id the catalog cannot confirm (invariant 1).
 	}
-
 	res := deployment.ResolveImage(snap, deployment.ImageRequest{
 		Name:         paramStr(params, "ImageName", ""),
 		RequestedGPU: paramStr(params, "GpuType", ""),
@@ -1554,22 +1564,33 @@ func selectCreateImage(wfCtx *Context) SelectedImage {
 			Zone:  paramStr(params, "Zone", ""),
 			IsPod: paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false),
 		},
-		Source: source,
-		// The 查询镜像 step already filtered by name (platform Name= / community
-		// FuzzySearch=), so a non-exact request recommends the best of the returned
-		// rows instead of re-rejecting the API's own hits.
+		Source:      source,
 		Prefiltered: true,
 	})
 	if res.Status == deployment.ResolutionResolved {
 		return selectedImageFrom(res.Selection, source)
 	}
 	if len(res.Candidates) > 0 {
-		// A recommendation for a not_found/ambiguous named request. It carries the
-		// real catalog name, and the create's confirm gate makes the user confirm it,
-		// so this is never a silent swap.
 		return selectedImageFrom(res.Candidates[0], source)
 	}
 	return SelectedImage{Source: source}
+}
+
+// formImageCatalog builds the snapshot the guided/confirm image forms rank from,
+// detecting the response shape: a grouped CompshareImageGroup is community, a flat
+// ImageSet is the requested platform/custom/shared source.
+func formImageCatalog(images map[string]any, source string) *deployment.ImageCatalogSnapshot {
+	if images == nil {
+		return deployment.NewImageCatalogSnapshot(false, nil)
+	}
+	if _, ok := images["CompshareImageGroup"]; ok {
+		return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(images))
+	}
+	tag := source
+	if tag == "" || tag == "community" {
+		tag = "platform"
+	}
+	return deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(images, tag))
 }
 
 // createImageCatalog is the workflow's single view of the image catalog for
@@ -1606,154 +1627,23 @@ func pickImageId(params map[string]any, result map[string]any) string {
 	if id := paramStr(params, "CompShareImageId", ""); id != "" {
 		return id
 	}
-	if paramStr(params, "ImageSource", "platform") == "community" {
-		return pickFirstCommunityImageId(result)
-	}
-	return pickPlatformImageId(params, result)
+	return resolveSelectedImage(params, formImageCatalog(result, paramStr(params, "ImageSource", "platform"))).ID
 }
 
-// pickImageName dispatches to the correct picker based on ImageSource. When an
-// image id was threaded (deploy_model handler), the threaded ImageName is the display
-// name of that exact image — use it so the confirm shows what actually gets built.
+// pickImageName resolves the display name through the same interpreter as the id.
+// When an image id was threaded, the threaded ImageName is the display name of that
+// exact image — use it so the confirm shows what actually gets built.
 func pickImageName(params map[string]any, result map[string]any) string {
 	if paramStr(params, "CompShareImageId", "") != "" {
 		if name := paramStr(params, "ImageName", ""); name != "" {
 			return name
 		}
 	}
-	if paramStr(params, "ImageSource", "platform") == "community" {
-		return pickFirstCommunityImageName(result)
-	}
-	return pickPlatformImageName(params, result)
-}
-
-// --- Platform image helpers ---
-
-// pickPlatformImageId selects a platform image ID using name matching when
-// ImageName is provided, falling back to the first result.
-func pickPlatformImageId(params map[string]any, result map[string]any) string {
-	img := matchPlatformImage(params, result)
-	if img == nil {
-		return ""
-	}
-	if id, ok := img["CompShareImageId"].(string); ok {
-		return id
-	}
-	return ""
-}
-
-// pickPlatformImageName selects a platform image display name using name
-// matching when ImageName is provided, falling back to the first result.
-func pickPlatformImageName(params map[string]any, result map[string]any) string {
-	img := matchPlatformImage(params, result)
-	if img == nil {
+	sel := resolveSelectedImage(params, formImageCatalog(result, paramStr(params, "ImageSource", "platform")))
+	if sel.Name == "" {
 		return "未知"
 	}
-	if name, ok := img["Name"].(string); ok && name != "" {
-		return name
-	}
-	return "未知"
-}
-
-// matchPlatformImage returns the best-matching image map from ImageSet.
-// Priority: intent/name relevance > newer version > first viable catalog entry.
-// Within a name-matched bucket, GPU-supported images rank first via the shared
-// deployment selector. SupportedGpuTypes is a ranking hint, not a static zone
-// guarantee; the create call remains authoritative for final image adaptation.
-func matchPlatformImage(params map[string]any, result map[string]any) map[string]any {
-	if result == nil {
-		return nil
-	}
-	imageSet, ok := result["ImageSet"].([]any)
-	if !ok || len(imageSet) == 0 {
-		return nil
-	}
-
-	keyword := paramStr(params, "ImageName", "")
-	if keyword == "" {
-		if ranked, narrowed := platformImagesForIntent(params, platformImageMaps(imageSet)); narrowed {
-			if img := bestViablePlatformImage(params, ranked); img != nil {
-				return img
-			}
-			return nil
-		}
-		// No name/purpose preference — keep the catalog's default order, only skipping
-		// entries the shared selector rejects as unavailable / wrong shape.
-		if img := firstViablePlatformImage(params, imageSet); img != nil {
-			return img
-		}
-		return firstUsableImageMap(imageSet)
-	}
-
-	maps := platformImageMaps(imageSet)
-	if ranked, narrowed := platformImagesForIntent(params, maps); narrowed {
-		if img := bestViablePlatformImage(params, ranked); img != nil {
-			return img
-		}
-		return nil
-	}
-
-	// No match — fall back to the default platform image.
-	if img := firstViablePlatformImage(params, imageSet); img != nil {
-		return img
-	}
-	return firstUsableImageMap(imageSet)
-}
-
-func platformImageMaps(imageSet []any) []map[string]any {
-	maps := make([]map[string]any, 0, len(imageSet))
-	for _, item := range imageSet {
-		if img, _ := item.(map[string]any); img != nil {
-			maps = append(maps, img)
-		}
-	}
-	return maps
-}
-
-func filterPlatformImages(imageSet []any, keyword string, exact bool) []map[string]any {
-	var out []map[string]any
-	lowerKeyword := strings.ToLower(keyword)
-	for _, item := range imageSet {
-		img, _ := item.(map[string]any)
-		if img == nil {
-			continue
-		}
-		name, _ := img["Name"].(string)
-		if exact {
-			if strings.EqualFold(name, keyword) {
-				out = append(out, img)
-			}
-			continue
-		}
-		if platformImageRelevance(lowerKeyword, name) > 0 {
-			out = append(out, img)
-		}
-	}
-	return out
-}
-
-func firstImageMap(imageSet []any) map[string]any {
-	for _, item := range imageSet {
-		if img, _ := item.(map[string]any); img != nil {
-			return img
-		}
-	}
-	return nil
-}
-
-func firstUsableImageMap(imageSet []any) map[string]any {
-	for _, item := range imageSet {
-		if img, _ := item.(map[string]any); img != nil && platformImageStatusUsable(img) {
-			return img
-		}
-	}
-	return nil
-}
-
-func platformImageStatusUsable(img map[string]any) bool {
-	status, _ := img["Status"].(string)
-	status = strings.TrimSpace(status)
-	return status == "" || status == deployment.ImageStatusAvailable
+	return sel.Name
 }
 
 func createImageUnavailableError(params map[string]any) error {
@@ -1762,402 +1652,6 @@ func createImageUnavailableError(params map[string]any) error {
 		return fmt.Errorf("未找到可用的 %s 镜像；候选镜像可能已下线或不适配当前实例形态，请换镜像或稍后重试", imageName)
 	}
 	return fmt.Errorf("未找到可用镜像，无法创建实例；请换镜像或稍后重试")
-}
-
-func firstViablePlatformImage(params map[string]any, imageSet []any) map[string]any {
-	maps := make([]map[string]any, 0, len(imageSet))
-	for _, item := range imageSet {
-		if img, _ := item.(map[string]any); img != nil {
-			maps = append(maps, img)
-		}
-	}
-	viable := viablePlatformImageIDs(params, maps)
-	for _, img := range maps {
-		if id, _ := img["CompShareImageId"].(string); viable[id] {
-			return img
-		}
-	}
-	return nil
-}
-
-func bestViablePlatformImage(params map[string]any, images []map[string]any) map[string]any {
-	if len(images) == 0 {
-		return nil
-	}
-	images, _ = platformImagesForIntent(params, images)
-	candidates, byID := platformImageCandidates(images)
-	selected := deployment.SelectImageCandidates(deployment.ImageSelectionInput{
-		Images:       candidates,
-		RequestedGPU: paramStr(params, "GpuType", ""),
-		Zone: deployment.ZoneConstraint{
-			Zone:  paramStr(params, "Zone", ""),
-			IsPod: paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false),
-		},
-	})
-	if len(selected.Viable) == 0 {
-		return nil
-	}
-	return byID[selected.Viable[0].Image.ID]
-}
-
-func platformImagesForIntent(params map[string]any, images []map[string]any) ([]map[string]any, bool) {
-	keyword := strings.ToLower(strings.TrimSpace(paramStr(params, "ImageName", "")))
-	if len(images) == 0 {
-		return images, false
-	}
-	if keyword == "" {
-		if purpose := strings.TrimSpace(paramStr(params, "ImagePurpose", "")); purpose != "" {
-			return platformImagesForPurpose(images, normalizeImagePurpose(purpose))
-		}
-		return images, false
-	}
-	type rankedImage struct {
-		img       map[string]any
-		relevance int
-		version   []int
-		index     int
-	}
-	ranked := make([]rankedImage, 0, len(images))
-	for i, img := range images {
-		name, _ := img["Name"].(string)
-		relevance := platformImageRelevance(keyword, name)
-		if relevance <= 0 {
-			continue
-		}
-		ranked = append(ranked, rankedImage{
-			img:       img,
-			relevance: relevance,
-			version:   platformImageVersionKey(keyword, name),
-			index:     i,
-		})
-	}
-	if len(ranked) == 0 {
-		return images, false
-	}
-	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].relevance != ranked[j].relevance {
-			return ranked[i].relevance > ranked[j].relevance
-		}
-		if c := compareVersionKeys(ranked[i].version, ranked[j].version); c != 0 {
-			return c > 0
-		}
-		return ranked[i].index < ranked[j].index
-	})
-	out := make([]map[string]any, 0, len(ranked))
-	for _, item := range ranked {
-		out = append(out, item.img)
-	}
-	return out, true
-}
-
-func platformImagesForPurpose(images []map[string]any, purpose string) ([]map[string]any, bool) {
-	if normalizeImagePurpose(purpose) == imagePurposeCommunity {
-		return nil, true
-	}
-	type rankedImage struct {
-		img       map[string]any
-		relevance int
-		index     int
-	}
-	ranked := make([]rankedImage, 0, len(images))
-	for i, img := range images {
-		name, _ := img["Name"].(string)
-		imageType, _ := img["ImageType"].(string)
-		relevance := platformImagePurposeRelevance(purpose, name, imageType)
-		if relevance <= 0 {
-			continue
-		}
-		ranked = append(ranked, rankedImage{img: img, relevance: relevance, index: i})
-	}
-	if len(ranked) == 0 {
-		return images, false
-	}
-	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].relevance != ranked[j].relevance {
-			return ranked[i].relevance > ranked[j].relevance
-		}
-		return ranked[i].index < ranked[j].index
-	})
-	out := make([]map[string]any, 0, len(ranked))
-	for _, item := range ranked {
-		out = append(out, item.img)
-	}
-	return out, true
-}
-
-func platformImagePurposeRelevance(purpose, name, imageType string) int {
-	nm := strings.ToLower(strings.TrimSpace(name))
-	it := strings.ToLower(strings.TrimSpace(imageType))
-	if nm == "" {
-		return 0
-	}
-	containsAny := func(words ...string) bool {
-		for _, w := range words {
-			if strings.Contains(nm, strings.ToLower(w)) {
-				return true
-			}
-		}
-		return false
-	}
-	switch normalizeImagePurpose(purpose) {
-	case imagePurposeDeepLearning:
-		if containsAny("pytorch", "torch", "cuda", "tensorflow", "miniconda", "conda", "python") {
-			return 100
-		}
-	case imagePurposeLLMInference:
-		if containsAny("vllm", "ollama", "sglang") {
-			return 100
-		}
-	case imagePurposeImageVideo:
-		if containsAny("comfyui", "sd-webui", "stable diffusion", "图生视频", "图像", "视频", "wan") {
-			return 100
-		}
-	case imagePurposeSystem:
-		if strings.EqualFold(it, deployment.ImageTypeSystem) || containsAny("ubuntu", "windows") {
-			return 100
-		}
-	case imagePurposePlatformApp:
-		if strings.EqualFold(it, deployment.ImageTypeApp) || containsAny("dify", "ragflow", "docker", "isaac", "niugee") {
-			return 100
-		}
-	}
-	return 0
-}
-
-func platformImageRelevance(keyword, name string) int {
-	kw := strings.ToLower(strings.TrimSpace(keyword))
-	nm := strings.ToLower(strings.TrimSpace(name))
-	if kw == "" || nm == "" {
-		return 0
-	}
-	if nm == kw {
-		return 300
-	}
-	if strings.Contains(nm, kw) {
-		return 200
-	}
-	if (kw == "pytorch" || kw == "torch") && strings.Contains(nm, "torch") {
-		return 180
-	}
-	if kw == "cuda" && strings.Contains(nm, "nvidia") {
-		return 120
-	}
-	if sharesImageSubstring(kw, nm, 4) {
-		return 100
-	}
-	return 0
-}
-
-var (
-	imageNumberRE = regexp.MustCompile(`\d+(?:\.\d+)*`)
-	torchTagRE    = regexp.MustCompile(`(?i)torch[_-]?(\d{2,4})`)
-	cudaTagRE     = regexp.MustCompile(`(?i)cuda[_-]?(\d{2,4})`)
-)
-
-func platformImageVersionKey(keyword, name string) []int {
-	lowerKeyword := strings.ToLower(strings.TrimSpace(keyword))
-	lowerName := strings.ToLower(strings.TrimSpace(name))
-	var key []int
-	if lowerKeyword == "torch" || lowerKeyword == "pytorch" || strings.Contains(lowerKeyword, "torch") {
-		if v := versionAfterToken(lowerName, "pytorch"); len(v) > 0 {
-			key = append(key, v...)
-		}
-		if v := packedVersionFromRegex(torchTagRE, lowerName); len(v) > 0 {
-			key = append(key, v...)
-		}
-		if v := packedVersionFromRegex(cudaTagRE, lowerName); len(v) > 0 {
-			key = append(key, v...)
-		}
-		if len(key) > 0 {
-			return key
-		}
-	}
-	if lowerKeyword == "cuda" || strings.Contains(lowerKeyword, "cuda") {
-		if v := packedVersionFromRegex(cudaTagRE, lowerName); len(v) > 0 {
-			return v
-		}
-	}
-	return firstNumericVersion(lowerName)
-}
-
-func versionAfterToken(name, token string) []int {
-	idx := strings.Index(name, token)
-	if idx < 0 {
-		return nil
-	}
-	tail := name[idx+len(token):]
-	match := imageNumberRE.FindString(tail)
-	return parseVersionParts(match)
-}
-
-func packedVersionFromRegex(re *regexp.Regexp, name string) []int {
-	m := re.FindStringSubmatch(name)
-	if len(m) < 2 {
-		return nil
-	}
-	s := m[1]
-	if strings.Contains(s, ".") {
-		return parseVersionParts(s)
-	}
-	switch len(s) {
-	case 2:
-		return []int{atoiZero(s[:1]), atoiZero(s[1:])}
-	case 3:
-		return []int{atoiZero(s[:1]), atoiZero(s[1:2]), atoiZero(s[2:])}
-	case 4:
-		return []int{atoiZero(s[:2]), atoiZero(s[2:3]), atoiZero(s[3:])}
-	default:
-		return []int{atoiZero(s)}
-	}
-}
-
-func firstNumericVersion(name string) []int {
-	return parseVersionParts(imageNumberRE.FindString(name))
-}
-
-func parseVersionParts(s string) []int {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	raw := strings.Split(s, ".")
-	out := make([]int, 0, len(raw))
-	for _, part := range raw {
-		if part == "" {
-			continue
-		}
-		out = append(out, atoiZero(part))
-	}
-	return out
-}
-
-func atoiZero(s string) int {
-	n, _ := strconv.Atoi(s)
-	return n
-}
-
-func compareVersionKeys(a, b []int) int {
-	max := len(a)
-	if len(b) > max {
-		max = len(b)
-	}
-	for i := 0; i < max; i++ {
-		var av, bv int
-		if i < len(a) {
-			av = a[i]
-		}
-		if i < len(b) {
-			bv = b[i]
-		}
-		if av != bv {
-			return av - bv
-		}
-	}
-	return 0
-}
-
-func sharesImageSubstring(a, b string, minLen int) bool {
-	if len(a) < minLen || len(b) < minLen {
-		return false
-	}
-	for i := 0; i+minLen <= len(a); i++ {
-		if strings.Contains(b, a[i:i+minLen]) {
-			return true
-		}
-	}
-	return false
-}
-
-func viablePlatformImageIDs(params map[string]any, images []map[string]any) map[string]bool {
-	candidates, _ := platformImageCandidates(images)
-	selected := deployment.SelectImageCandidates(deployment.ImageSelectionInput{
-		Images:       candidates,
-		RequestedGPU: "",
-		Zone: deployment.ZoneConstraint{
-			Zone:  paramStr(params, "Zone", ""),
-			IsPod: paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false),
-		},
-	})
-	out := make(map[string]bool, len(selected.Viable))
-	for _, item := range selected.Viable {
-		out[item.Image.ID] = true
-	}
-	return out
-}
-
-func platformImageCandidates(images []map[string]any) ([]deployment.ImageCandidate, map[string]map[string]any) {
-	candidates := make([]deployment.ImageCandidate, 0, len(images))
-	byID := make(map[string]map[string]any, len(images))
-	for i, img := range images {
-		id, _ := img["CompShareImageId"].(string)
-		if id == "" {
-			id = fmt.Sprintf("__image_%d", i)
-		}
-		name, _ := img["Name"].(string)
-		imageType, _ := img["ImageType"].(string)
-		status, _ := img["Status"].(string)
-		candidates = append(candidates, deployment.ImageCandidate{
-			ID:                id,
-			Name:              name,
-			ImageType:         imageType,
-			Container:         paramBool(img, "Container", false) || paramBool(img, "IsContainer", false),
-			Status:            status,
-			SupportedGPUTypes: formStringSlice(img["SupportedGpuTypes"]),
-		})
-		byID[id] = img
-	}
-	return candidates, byID
-}
-
-// --- Community image helpers ---
-// Community image response structure:
-//   CompshareImageGroup[0].Data[0].CompShareImageId  // image ID
-//   CompshareImageGroup[0].ImageName                  // group name
-//   CompshareImageGroup[0].Data[0].Name               // version name
-
-func pickFirstCommunityImageId(result map[string]any) string {
-	if result == nil {
-		return ""
-	}
-	groups, ok := result["CompshareImageGroup"].([]any)
-	if !ok || len(groups) == 0 {
-		return ""
-	}
-	group, ok := groups[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	data, ok := group["Data"].([]any)
-	if !ok || len(data) == 0 {
-		return ""
-	}
-	first, ok := data[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	if id, ok := first["CompShareImageId"].(string); ok {
-		return id
-	}
-	return ""
-}
-
-func pickFirstCommunityImageName(result map[string]any) string {
-	if result == nil {
-		return "未知"
-	}
-	groups, ok := result["CompshareImageGroup"].([]any)
-	if !ok || len(groups) == 0 {
-		return "未知"
-	}
-	group, ok := groups[0].(map[string]any)
-	if !ok {
-		return "未知"
-	}
-	// Use group ImageName as the display name
-	if name, ok := group["ImageName"].(string); ok && name != "" {
-		return name
-	}
-	return "未知"
 }
 
 // ---------------------------------------------------------------------------
@@ -2208,52 +1702,6 @@ func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 		}
 	}
 	return opts
-}
-
-const (
-	imagePurposeDeepLearning = "deep_learning"
-	imagePurposeLLMInference = "llm_inference"
-	imagePurposeImageVideo   = "image_video"
-	imagePurposeSystem       = "system"
-	imagePurposePlatformApp  = "platform_app"
-	imagePurposeCommunity    = "community"
-	imagePurposeAppCommunity = "app_community" // legacy spelling; normalized to platform_app.
-)
-
-var createImagePurposeOptions = []ConfirmFormOption{
-	{Value: imagePurposeDeepLearning, Label: "深度学习训练", Note: "PyTorch / CUDA / TensorFlow / Python 环境"},
-	{Value: imagePurposeLLMInference, Label: "大模型推理", Note: "vLLM / Ollama / SGLang 等推理服务"},
-	{Value: imagePurposeImageVideo, Label: "图像/视频生成", Note: "ComfyUI / SD-WebUI / 图生视频等应用"},
-	{Value: imagePurposeSystem, Label: "普通系统", Note: "Ubuntu / Windows 系统镜像"},
-	{Value: imagePurposePlatformApp, Label: "平台应用镜像", Note: "Dify / RAGFlow / Docker Compose / Isaac 等平台应用"},
-	{Value: imagePurposeCommunity, Label: "社区镜像", Note: "来自社区镜像市场的真实镜像，默认展示使用较多的候选"},
-}
-
-func imagePurposeFormOptions() []ConfirmFormOption {
-	opts := make([]ConfirmFormOption, len(createImagePurposeOptions))
-	copy(opts, createImagePurposeOptions)
-	return opts
-}
-
-func imagePurposeValue(params map[string]any) string {
-	return normalizeImagePurpose(paramStr(params, "ImagePurpose", ""))
-}
-
-func normalizeImagePurpose(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case imagePurposeLLMInference:
-		return imagePurposeLLMInference
-	case imagePurposeImageVideo:
-		return imagePurposeImageVideo
-	case imagePurposeSystem:
-		return imagePurposeSystem
-	case imagePurposePlatformApp, imagePurposeAppCommunity:
-		return imagePurposePlatformApp
-	case imagePurposeCommunity:
-		return imagePurposeCommunity
-	default:
-		return imagePurposeDeepLearning
-	}
 }
 
 func hasExplicitImageIntent(params map[string]any) bool {
@@ -2386,8 +1834,8 @@ func guidedStepSkipped(wfCtx *Context, logical int) bool {
 		skip, err = shouldSkipGuidedGPUCountStep(wfCtx)
 	case guidedStepCPUMemory:
 		skip, err = shouldSkipGuidedCPUMemoryStep(wfCtx)
-	case guidedStepImagePurpose:
-		skip, err = shouldSkipGuidedImagePurposeStep(wfCtx)
+	case guidedStepImageFacets:
+		skip, err = shouldSkipGuidedImageFacetsStep(wfCtx)
 	case guidedStepImage:
 		skip, err = shouldSkipGuidedImageStep(wfCtx)
 	case guidedStepFinal:
@@ -2478,7 +1926,7 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 	return selected == current && enabledOptionExists(opts, current), nil
 }
 
-func shouldSkipGuidedImagePurposeStep(wfCtx *Context) (bool, error) {
+func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
 	return hasExplicitImageIntent(wfCtx.Params), nil
 }
 
@@ -2492,21 +1940,26 @@ func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
 	if strings.TrimSpace(paramStr(wfCtx.InitialParams, "ImageName", "")) != "" {
 		return true, nil
 	}
-	isCommunity := imagePurposeValue(wfCtx.Params) == imagePurposeCommunity ||
-		strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")), "community")
+	// The concrete image step is the community picker; platform images are chosen in
+	// the final form. It shows only when the source is community (source is the single
+	// authority now — the deleted ImagePurpose enum no longer switches it).
+	isCommunity := strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")), "community")
 	if !isCommunity {
 		return true, nil
 	}
 	return false, nil
 }
 
-func shouldSkipCommunityPurposeImageQuery(wfCtx *Context) (bool, error) {
-	if imagePurposeValue(wfCtx.Params) != imagePurposeCommunity {
+func shouldSkipCommunityImageQuery(wfCtx *Context) (bool, error) {
+	if !strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")), "community") {
 		return true, nil
 	}
 	if initialParamSet(wfCtx, "CompShareImageId") {
 		return true, nil
 	}
+	// When community was the source from the start, the first 查询镜像 step already
+	// queried community — this after-facets re-query is only for a source SWITCHED to
+	// community mid-flow.
 	if strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.InitialParams, "ImageSource", "")), "community") {
 		return true, nil
 	}
@@ -2711,24 +2164,163 @@ func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
 	}, nil
 }
 
-func buildGuidedImagePurposeForm(wfCtx *Context) (*ConfirmForm, error) {
-	current := imagePurposeValue(wfCtx.Params)
-	index, total := guidedStepPosition(wfCtx, guidedStepImagePurpose)
+// imageSourceFacetOptions lists the image sources the create flow really supports.
+// custom/shared are deliberately absent — create forbids them (the tool schema enum
+// is platform/community), so the facet never offers a source that would be rejected.
+func imageSourceFacetOptions() []ConfirmFormOption {
+	return []ConfirmFormOption{
+		{Value: "platform", Label: "平台镜像", Note: "优云算力官方镜像"},
+		{Value: "community", Label: "社区镜像", Note: "社区镜像市场的真实镜像"},
+	}
+}
+
+// imageTypeFacetOptions returns the distinct real ImageType values among the current
+// candidates, in catalog order. It is a REAL facet: the options come straight from
+// each candidate's ImageType field, never from a purpose keyword table. Returns nil
+// (facet omitted) when fewer than two types are present — a single-type list is no
+// choice.
+func imageTypeFacetOptions(snap *deployment.ImageCatalogSnapshot) []ConfirmFormOption {
+	seen := map[string]bool{}
+	var opts []ConfirmFormOption
+	for _, e := range snap.Entries() {
+		t := strings.TrimSpace(e.ImageType)
+		if t == "" || seen[strings.ToLower(t)] {
+			continue
+		}
+		seen[strings.ToLower(t)] = true
+		opts = append(opts, ConfirmFormOption{Value: t, Label: imageTypeFacetLabel(t)})
+	}
+	if len(opts) < 2 {
+		return nil
+	}
+	return append([]ConfirmFormOption{{Value: "", Label: "全部类型"}}, opts...)
+}
+
+// imageTagFacetOptions returns the distinct real Tags among the current candidates.
+// The values are REAL catalog tags (镜像标签), never synthesized purpose keys, so a
+// tag membership filter is exact. Returns nil (facet OMITTED — never a default, never
+// a blocker) when no candidate carries a tag or the catalog is unavailable: an absent
+// tag facet must never exclude any image.
+func imageTagFacetOptions(snap *deployment.ImageCatalogSnapshot) []ConfirmFormOption {
+	seen := map[string]bool{}
+	var opts []ConfirmFormOption
+	for _, e := range snap.Entries() {
+		for _, tag := range e.Tags {
+			t := strings.TrimSpace(tag)
+			if t == "" || seen[strings.ToLower(t)] {
+				continue
+			}
+			seen[strings.ToLower(t)] = true
+			opts = append(opts, ConfirmFormOption{Value: t, Label: t})
+		}
+	}
+	if len(opts) == 0 {
+		return nil
+	}
+	return append([]ConfirmFormOption{{Value: "", Label: "不限标签"}}, opts...)
+}
+
+func imageTypeFacetLabel(t string) string {
+	switch strings.ToLower(t) {
+	case "system":
+		return "系统镜像"
+	case "app":
+		return "应用镜像"
+	case "custom":
+		return "自制镜像"
+	case "community":
+		return "社区镜像"
+	default:
+		return t
+	}
+}
+
+// filterImagesByFacets narrows a ranked selection list by the optional ImageType and
+// ImageTag facets. A facet filters ONLY when explicitly set: an empty facet is "no
+// filter", NEVER "match nothing" — so an unset tag never excludes an image, and an
+// image with no Tags is dropped only when a tag WAS asked for (it genuinely lacks
+// it). Membership is exact against the real catalog Tags — no keyword table.
+func filterImagesByFacets(snap *deployment.ImageCatalogSnapshot, ranked []deployment.ImageSelection, params map[string]any) []deployment.ImageSelection {
+	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
+	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
+	if wantType == "" && wantTag == "" {
+		return ranked
+	}
+	out := make([]deployment.ImageSelection, 0, len(ranked))
+	for _, sel := range ranked {
+		if imageSelectionMatchesFacets(snap, sel.ID, wantType, wantTag) {
+			out = append(out, sel)
+		}
+	}
+	return out
+}
+
+// imageSelectionMatchesFacets reports whether one image id satisfies the explicitly
+// set ImageType / ImageTag facets. With NO facet set it is unconstrained and returns
+// true even for an id absent from this snapshot (an externally-threaded selection is
+// still honored) — a facet only ever constrains when the user actually picked one.
+// Under an active facet, an id we cannot verify against the catalog is dropped, and a
+// set tag is exact membership against the image's real Tags.
+func imageSelectionMatchesFacets(snap *deployment.ImageCatalogSnapshot, id, wantType, wantTag string) bool {
+	if wantType == "" && wantTag == "" {
+		return true
+	}
+	entry, ok := snap.ByID(id)
+	if !ok {
+		return false
+	}
+	if wantType != "" && !strings.EqualFold(strings.TrimSpace(entry.ImageType), wantType) {
+		return false
+	}
+	if wantTag != "" && !containsFold(entry.Tags, wantTag) {
+		return false
+	}
+	return true
+}
+
+// buildGuidedImageFacetsForm is the guided image-filter step that replaced the
+// deleted ImagePurpose enum. It offers THREE independent, real dimensions — never a
+// conflated purpose keyword: ImageSource (only the sources create supports),
+// ImageType (the distinct real types among candidates) and ImageTag (the distinct
+// real catalog tags among candidates). ImageType/ImageTag are shown only when they
+// offer a genuine choice; an absent tag facet never filters anything. Natural-language
+// intent ("大模型推理" / "深度学习") is NOT handled here — the central Agent maps it to a
+// real image before the workflow runs; this step is the click-through fallback.
+func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
+	snap := createImageCatalog(wfCtx)
+	index, total := guidedStepPosition(wfCtx, guidedStepImageFacets)
+	source := paramStr(wfCtx.Params, "ImageSource", "platform")
+	if source != "community" {
+		source = "platform"
+	}
+	fields := []ConfirmFormField{{
+		Key: "ImageSource", Label: "镜像来源", Type: "select",
+		Value: source, Render: "cards", Editable: true, Options: imageSourceFacetOptions(),
+	}}
+	if opts := imageTypeFacetOptions(snap); len(opts) > 0 {
+		fields = append(fields, ConfirmFormField{
+			Key: "ImageType", Label: "镜像类型", Type: "select",
+			Value: paramStr(wfCtx.Params, "ImageType", ""), Editable: true, Options: opts,
+		})
+	}
+	if opts := imageTagFacetOptions(snap); len(opts) > 0 {
+		fields = append(fields, ConfirmFormField{
+			Key: "ImageTag", Label: "镜像标签", Type: "select",
+			Value: paramStr(wfCtx.Params, "ImageTag", ""), Editable: true, Options: opts,
+		})
+	}
 	return &ConfirmForm{
 		Version: 2,
 		Step: &ConfirmFormStep{
 			Index:          index,
 			Total:          total,
-			Title:          guidedStepTitle(index, "请选择主要用途"),
-			Description:    "用途会影响推荐镜像范围。选择后只展示相关真实镜像，避免把系统镜像、框架镜像和应用镜像混在一起。",
+			Title:          guidedStepTitle(index, "请选择镜像来源与筛选"),
+			Description:    "镜像来源、类型和标签都来自真实镜像目录。标签留空表示不按标签筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。",
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
 			Skippable:      true,
 		},
-		Fields: []ConfirmFormField{{
-			Key: "ImagePurpose", Label: "主要用途", Type: "select",
-			Value: current, Render: "cards", Editable: true, Options: imagePurposeFormOptions(),
-		}},
+		Fields: fields,
 	}, nil
 }
 
@@ -2923,27 +2515,32 @@ func applyGuidedCpuMemoryOverrides(wfCtx *Context, overrides map[string]string) 
 	return nil
 }
 
-func applyGuidedImagePurposeOverrides(wfCtx *Context, overrides map[string]string) error {
+func applyGuidedImageFacetsOverrides(wfCtx *Context, overrides map[string]string) error {
 	for k, v := range overrides {
 		switch k {
-		case "ImagePurpose":
-			old := paramStr(wfCtx.Params, "ImagePurpose", "")
-			purpose := normalizeImagePurpose(v)
-			wfCtx.Params["ImagePurpose"] = purpose
-			if purpose == imagePurposeCommunity {
-				wfCtx.Params["ImageSource"] = "community"
-			} else {
-				wfCtx.Params["ImageSource"] = "platform"
+		case "ImageSource":
+			source := strings.ToLower(strings.TrimSpace(v))
+			if source != "community" {
+				source = "platform"
 			}
-			if !strings.EqualFold(old, v) {
-				delete(wfCtx.Params, "CompShareImageId")
-				delete(wfCtx.Params, "ImageName")
-			}
+			wfCtx.Params["ImageSource"] = source
+		case "ImageType":
+			wfCtx.Params["ImageType"] = strings.TrimSpace(v)
+		case "ImageTag":
+			wfCtx.Params["ImageTag"] = strings.TrimSpace(v)
 		default:
 			return fmt.Errorf("不支持修改字段 %s", k)
 		}
 	}
-	markGuidedStepReached(wfCtx, guidedStepImagePurpose)
+	// Any facet change invalidates a previously-picked concrete image: the refreshed
+	// image step re-picks from the newly-scoped candidates rather than carrying a
+	// stale id/name that may not match the new source/type/tag. A source change also
+	// re-queries (platform vs community are different listings) via the community
+	// query step + revalidation. Nothing is silent: the user re-confirms the refreshed
+	// card before anything is created.
+	delete(wfCtx.Params, "CompShareImageId")
+	delete(wfCtx.Params, "ImageName")
+	markGuidedStepReached(wfCtx, guidedStepImageFacets)
 	return nil
 }
 
@@ -3756,135 +3353,71 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 	if images == nil {
 		return "", nil
 	}
-	current := pickImageId(params, images)
+	snap := formImageCatalog(images, paramStr(params, "ImageSource", "platform"))
+	zoneIsPod := paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false)
+	ranked := deployment.RankImages(snap, deployment.ImageRequest{
+		Name:         paramStr(params, "ImageName", ""),
+		RequestedGPU: gpuType,
+		Zone:         deployment.ZoneConstraint{Zone: paramStr(params, "Zone", ""), IsPod: zoneIsPod},
+	})
+	// Narrow by the optional ImageType / ImageTag facets. An unset facet is no filter
+	// (never excludes an image); a set tag is exact membership against real Tags.
+	ranked = filterImagesByFacets(snap, ranked, params)
+	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
+	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
+
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
-
-	appendOpt := func(id, label string, warnings []string) {
+	appendOpt := func(id, label string, supported []string) {
 		if id == "" || seen[id] || len(opts) >= maxGuidedImageOptions {
 			return
 		}
 		seen[id] = true
-		note := ""
+		note, reason := "", ""
 		disabled := false
-		reason := ""
-		if containsString(warnings, deployment.WarningSupportedGPUMismatch) {
+		// A GPU-recommendation mismatch is shown DISABLED (not hidden), so the user
+		// sees why an image they might name is not selectable for this card.
+		if gpuType != "" && len(supported) > 0 && !containsFold(supported, gpuType) {
 			note = "所选镜像不支持当前 GPU"
 			reason = "镜像不支持当前 GPU"
 			disabled = true
 		}
 		opts = append(opts, ConfirmFormOption{
-			Value:    id,
-			Label:    label,
-			Note:     note,
-			Reason:   reason,
-			Disabled: disabled,
-			Meta:     map[string]string{"ImageId": id},
+			Value: id, Label: label, Note: note, Reason: reason, Disabled: disabled,
+			Meta: map[string]string{"ImageId": id},
 		})
 	}
 
-	if current != "" {
-		label := imageNameByID(images, current)
-		if label == "" {
-			label = pickImageName(params, images)
-		}
-		appendOpt(current, label, imageMismatchWarnings(gpuType, imageSupportedByID(images, current)))
-	}
-	if groups, ok := images["CompshareImageGroup"].([]any); ok {
-		candidates, labels := communityImageCandidates(groups)
-		selected := deployment.SelectImageCandidates(deployment.ImageSelectionInput{
-			Images:       candidates,
-			RequestedGPU: gpuType,
-			Zone: deployment.ZoneConstraint{
-				Zone:  paramStr(params, "Zone", ""),
-				IsPod: paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false),
-			},
-		})
-		for _, viable := range selected.Viable {
-			appendOpt(viable.Image.ID, labels[viable.Image.ID], viable.Warnings)
+	// The current/threaded selection leads — but only if it survives the active
+	// facets (a selection that no longer matches a just-picked tag/type must not lead
+	// the list; it is re-picked from the facet-scoped candidates below).
+	current := pickImageId(params, images)
+	if current != "" && imageSelectionMatchesFacets(snap, current, wantType, wantTag) {
+		if entry, ok := snap.ByID(current); ok {
+			appendOpt(entry.ID, entry.Name, entry.SupportedGPUTypes)
+		} else {
+			// A threaded id absent from this result: still offer it as current; its
+			// GPU state is unknown here, so it is not disabled.
+			label := imageNameByID(images, current)
+			if label == "" {
+				label = pickImageName(params, images)
+			}
+			appendOpt(current, label, nil)
 		}
 	} else {
-		var maps []map[string]any
-		imageSet, _ := images["ImageSet"].([]any)
-		for _, item := range imageSet {
-			if img, _ := item.(map[string]any); img != nil {
-				maps = append(maps, img)
-			}
-		}
-		if ranked, narrowed := platformImagesForIntent(params, maps); narrowed {
-			maps = ranked
-		}
-		candidates, byID := platformImageCandidates(maps)
-		selected := deployment.SelectImageCandidates(deployment.ImageSelectionInput{
-			Images:       candidates,
-			RequestedGPU: gpuType,
-			Zone: deployment.ZoneConstraint{
-				Zone:  paramStr(params, "Zone", ""),
-				IsPod: paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false),
-			},
-		})
-		for _, viable := range selected.Viable {
-			img := byID[viable.Image.ID]
-			if img == nil {
-				continue
-			}
-			name, _ := img["Name"].(string)
-			appendOpt(viable.Image.ID, name, viable.Warnings)
-		}
+		current = ""
+	}
+	for _, sel := range ranked {
+		entry, _ := snap.ByID(sel.ID)
+		appendOpt(sel.ID, sel.Name, entry.SupportedGPUTypes)
 	}
 	if len(opts) == 0 {
 		return "", nil
 	}
-	if !seen[current] || !enabledOptionExists(opts, current) {
+	if current == "" || !seen[current] || !enabledOptionExists(opts, current) {
 		current = firstEnabledValue(opts)
 	}
 	return current, opts
-}
-
-func imageMismatchWarnings(gpuType string, supported []string) []string {
-	if gpuType != "" && len(supported) > 0 && !containsFold(supported, gpuType) {
-		return []string{deployment.WarningSupportedGPUMismatch}
-	}
-	return nil
-}
-
-func communityImageCandidates(groups []any) ([]deployment.ImageCandidate, map[string]string) {
-	var candidates []deployment.ImageCandidate
-	labels := map[string]string{}
-	for i, g := range groups {
-		gm, _ := g.(map[string]any)
-		if gm == nil {
-			continue
-		}
-		groupName, _ := gm["ImageName"].(string)
-		data, _ := gm["Data"].([]any)
-		for j, d := range data {
-			dm, _ := d.(map[string]any)
-			if dm == nil {
-				continue
-			}
-			id, _ := dm["CompShareImageId"].(string)
-			if id == "" {
-				id = fmt.Sprintf("__community_%d_%d", i, j)
-			}
-			label := groupName
-			if label == "" {
-				label, _ = dm["Name"].(string)
-			}
-			status, _ := dm["Status"].(string)
-			candidates = append(candidates, deployment.ImageCandidate{
-				ID:                id,
-				Name:              label,
-				ImageType:         deployment.ImageTypeCommunity,
-				Container:         paramBool(dm, "Container", false) || paramBool(dm, "IsContainer", false),
-				Status:            status,
-				SupportedGPUTypes: formStringSlice(dm["SupportedGpuTypes"]),
-			})
-			labels[id] = label
-			break
-		}
-	}
-	return candidates, labels
 }
 
 // gpuFormOptions lists selectable GPU types: sellable types from the catalog,
@@ -3986,69 +3519,55 @@ func imageFormOptions(params map[string]any, images map[string]any, gpuType stri
 	if current == "" || images == nil {
 		return "", nil
 	}
+	snap := formImageCatalog(images, paramStr(params, "ImageSource", "platform"))
+	zoneIsPod := paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false)
+	ranked := deployment.RankImages(snap, deployment.ImageRequest{
+		Name:         paramStr(params, "ImageName", ""),
+		RequestedGPU: gpuType,
+		Zone:         deployment.ZoneConstraint{Zone: paramStr(params, "Zone", ""), IsPod: zoneIsPod},
+	})
+	// Narrow by the optional ImageType / ImageTag facets (unset facet = no filter).
+	ranked = filterImagesByFacets(snap, ranked, params)
+	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
+	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
+
 	opts := []ConfirmFormOption{}
 	seen := map[string]bool{}
-	zoneIsPod := paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false)
-
-	allowed := func(supported []string, container bool) bool {
-		if zoneIsPod && !container {
-			return false
-		}
-		if len(supported) > 0 && !containsFold(supported, gpuType) {
-			return false
-		}
-		return true
-	}
+	// Unlike the guided form (which disables mismatches), this list FILTERS out
+	// GPU-mismatch / non-container-in-pod images — it only offers selectable ones.
 	appendOpt := func(id, label string, supported []string, container bool) {
 		if id == "" || seen[id] || len(opts) >= maxFormImageOptions {
 			return
 		}
-		if !allowed(supported, container) {
+		if zoneIsPod && !container {
+			return
+		}
+		if len(supported) > 0 && !containsFold(supported, gpuType) {
 			return
 		}
 		seen[id] = true
 		opts = append(opts, ConfirmFormOption{Value: id, Label: label})
 	}
-	if allowed(imageSupportedByID(images, current), imageContainerByID(images, current)) {
-		currentLabel := imageNameByID(images, current)
-		if currentLabel == "" {
-			currentLabel = pickImageName(params, images)
-		}
-		appendOpt(current, currentLabel, imageSupportedByID(images, current), imageContainerByID(images, current))
+
+	// Current selection first (from the raw result, so a threaded id absent from the
+	// ranked pool is still honored) — but only when it survives the active facets.
+	if !imageSelectionMatchesFacets(snap, current, wantType, wantTag) {
+		current = ""
+	} else if entry, ok := snap.ByID(current); ok {
+		appendOpt(entry.ID, entry.Name, entry.SupportedGPUTypes, entry.Container)
 	} else {
+		label := imageNameByID(images, current)
+		if label == "" {
+			label = pickImageName(params, images)
+		}
+		appendOpt(current, label, imageSupportedByID(images, current), imageContainerByID(images, current))
+	}
+	if current != "" && !seen[current] {
 		current = ""
 	}
-
-	if groups, ok := images["CompshareImageGroup"].([]any); ok {
-		for _, g := range groups {
-			gm, _ := g.(map[string]any)
-			if gm == nil {
-				continue
-			}
-			data, _ := gm["Data"].([]any)
-			if len(data) == 0 {
-				continue
-			}
-			d0, _ := data[0].(map[string]any)
-			id, _ := d0["CompShareImageId"].(string)
-			name, _ := gm["ImageName"].(string)
-			appendOpt(id, name, formStringSlice(d0["SupportedGpuTypes"]), paramBool(d0, "Container", false) || paramBool(d0, "IsContainer", false))
-		}
-		if current == "" && len(opts) > 0 {
-			current = opts[0].Value
-		}
-		return current, opts
-	}
-
-	imageSet, _ := images["ImageSet"].([]any)
-	maps := platformImageMaps(imageSet)
-	if ranked, narrowed := platformImagesForIntent(params, maps); narrowed {
-		maps = ranked
-	}
-	for _, img := range maps {
-		id, _ := img["CompShareImageId"].(string)
-		name, _ := img["Name"].(string)
-		appendOpt(id, name, formStringSlice(img["SupportedGpuTypes"]), paramBool(img, "Container", false) || paramBool(img, "IsContainer", false))
+	for _, sel := range ranked {
+		entry, _ := snap.ByID(sel.ID)
+		appendOpt(sel.ID, sel.Name, entry.SupportedGPUTypes, entry.Container)
 	}
 	if current == "" && len(opts) > 0 {
 		current = opts[0].Value

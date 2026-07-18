@@ -18,6 +18,8 @@ func platformImageResult() map[string]any {
 				"Size":              float64(51200),
 				"CreateTime":        float64(1700000000),
 				"PubTime":           float64(1700000100),
+				"Description":       "PyTorch 深度学习基础镜像",
+				"Tags":              []any{"深度学习", "PyTorch"},
 				"SupportedGpuTypes": []any{"4090", "5090"},
 				"Softwares": map[string]any{
 					"Framework":             "PyTorch",
@@ -74,6 +76,15 @@ func TestParsePlatformImageEntries_CapturesSoftwaresAndContainer(t *testing.T) {
 	if torch.SizeMB != 51200 {
 		t.Errorf("SizeMB mismatch: %v", torch.SizeMB)
 	}
+	// P1: the platform's own Tags (镜像标签) and Description are captured as the
+	// structured, real data the Agent reasons over — a real tag is Chinese
+	// ("深度学习"), never the synthetic "deep_learning" the deleted keyword table used.
+	if got := torch.Tags; len(got) != 2 || got[0] != "深度学习" || got[1] != "PyTorch" {
+		t.Errorf("Tags not captured: %v", got)
+	}
+	if torch.Description != "PyTorch 深度学习基础镜像" {
+		t.Errorf("Description not captured: %q", torch.Description)
+	}
 }
 
 func TestParsePlatformImageEntries_HonestAbsenceForBareImage(t *testing.T) {
@@ -89,6 +100,15 @@ func TestParsePlatformImageEntries_HonestAbsenceForBareImage(t *testing.T) {
 	}
 	if ubuntu.Software.Framework != "" || ubuntu.Software.CUDAVersion != "" {
 		t.Errorf("absent software must stay zero-valued, got %+v", ubuntu.Software)
+	}
+	// A bare image carries no Tags: nil is honest absence (unknown), which a consumer
+	// must NEVER read as "matches no tag" and use to exclude the image. Absent
+	// Description is the empty string.
+	if ubuntu.Tags != nil {
+		t.Errorf("absent Tags must be nil (honest absence, not empty-match), got %v", ubuntu.Tags)
+	}
+	if ubuntu.Description != "" {
+		t.Errorf("absent Description must be empty, got %q", ubuntu.Description)
 	}
 }
 
@@ -187,5 +207,32 @@ func TestImageCatalogSnapshot_EntriesReturnsFreshCopy(t *testing.T) {
 	fresh := snap.Entries()
 	if fresh[0].SupportedGPUTypes[0] == "mutated" {
 		t.Errorf("Entries must return a fresh copy; mutation leaked into snapshot")
+	}
+}
+
+// TestImageCatalogSnapshot_TagsDeepCopiedFromEveryAccessor pins the P1 immutability
+// contract for Tags specifically, through BOTH read paths (Entries and ByID): a
+// caller mutating a returned entry's Tags slice must not reach the snapshot's stored
+// row. Without the deep copy, the []string header would be shared and one consumer's
+// edit would silently corrupt the catalog every later reader sees.
+func TestImageCatalogSnapshot_TagsDeepCopiedFromEveryAccessor(t *testing.T) {
+	snap := NewImageCatalogSnapshot(true, ParsePlatformImageEntries(platformImageResult(), "platform"))
+
+	got := snap.Entries()
+	if len(got) == 0 || len(got[0].Tags) == 0 {
+		t.Fatalf("expected an entry with tags")
+	}
+	got[0].Tags[0] = "mutated"
+	if snap.Entries()[0].Tags[0] == "mutated" {
+		t.Errorf("Entries() must deep-copy Tags; mutation leaked into snapshot")
+	}
+
+	byID, ok := snap.ByID("img-torch")
+	if !ok || len(byID.Tags) == 0 {
+		t.Fatalf("ByID must return the torch row with tags")
+	}
+	byID.Tags[0] = "mutated"
+	if fresh, _ := snap.ByID("img-torch"); fresh.Tags[0] == "mutated" {
+		t.Errorf("ByID() must deep-copy Tags; mutation leaked into snapshot")
 	}
 }
