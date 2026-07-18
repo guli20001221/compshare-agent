@@ -2445,12 +2445,12 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	}
 
 	// Diagnosis meta-tools → delegate to diagnosis engine. Keys on chainRegistry
-	// (IsDiagnosisTool), which is a superset of the advertised set: the dormant
-	// GPU/image/port chains stay dispatchable so their Chat-integration tests keep
-	// exercising them until the SSH-ops harness migration (follow-up) deletes them.
-	// Production cannot reach them (not in the tool registry / text-router / card);
-	// the only residual path is a hallucinated or replayed de-advertised tool name,
-	// which runs a READ-ONLY dormant chain — harmless and short-lived.
+	// (IsDiagnosisTool), which since the pre-P7 convergence is EQUAL to the
+	// advertised set {DiagnoseSSH, DiagnoseBilling} — no dormant superset. The
+	// GPU/image/port/init chains were deleted outright, so a hallucinated or
+	// replayed de-advertised diagnosis name no longer resolves to a chain here; it
+	// falls through to the normal unknown/mutating-tool handling below. Enforced by
+	// diagnosis.TestDiagnosisRegistryHasNoUnadvertisedChains.
 	if diagnosis.IsDiagnosisTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
 		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args)})
