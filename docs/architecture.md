@@ -1,290 +1,189 @@
 # CompShare Copilot 架构设计
 
-> 优云算力共享平台 AI 助手。本文描述系统整体架构、各组件职责与关键设计取舍。
+> 优云算力共享平台 AI 助手。本文描述**当前**系统架构、各组件职责与关键设计取舍。
+>
+> 历史说明:早期版本按 `fast / knowledge / agent` 三个 tier 分流,并用一个 Planner 语义路由 + 渐进式加载的 `internal/skills` playbook。该三层路由栈(`internal/routing`、`cmd/routegen`、route manifests、`internal/skills`、`cmd/skillgen`)已在 **P6 物理删除**。当前是单一中心 Agent 循环 + typed capability。旧设计参见 `docs/adr/` 下标记 superseded 的 ADR。
 
 ## 1. 概述
 
-CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,帮用户查实例 / 价格 / 库存 / 规格、回答平台知识问题、以及完成部署和排障这类多步任务。系统是一个 Go 单二进制,支持两种接入:命令行(CLI)和 HTTP SSE 流式。
+CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,帮用户查实例 / 价格 / 库存 / 规格、回答平台知识问题、以及完成部署和排障这类多步任务。系统是一个 Go 单二进制,支持两种接入:命令行(CLI,`cmd/agent.go`)和 HTTP SSE 流式(`cmd/server.go`)。两条接入都通过 `engine.NewSession` 创建**同一个中心 AgentRuntime**;`cmd/trace.go` 只负责检索、渲染和 trace 等运行依赖的接线,不再有独立的 Router。
 
-用户请求的复杂度差异极大,这是整个架构的出发点:
+用户请求的复杂度差异极大,但都由同一个中心 Agent 处理——它按需选择只读能力、检索知识、或提出写操作:
 
-| 请求示例 | 本质 |
+| 请求示例 | Agent 怎么处理 |
 |---|---|
-| "我有哪些实例" / "4090 多少钱" / "现在有货吗" | 一次 API 查询 |
-| "怎么用 SecurityToken 签名" / "Qwen 和 DeepSeek 有什么区别" | 文档问答 |
-| "帮我部署 Qwen32B" / "SSH 进去看 GPU 为什么不识别" | 多步规划 + 副作用 |
-
-用一套逻辑和一个模型档位扛这三类负载是行不通的:简单查询不该烧强模型的钱和延迟,复杂任务又扛不住弱模型的发挥不稳和缺少规划 / 回滚能力。所以系统按复杂度把请求分流。
+| "我有哪些实例" / "4090 多少钱" / "现在有货吗" | 选一个 typed **read capability**,拿确定性证据 |
+| "怎么用 SecurityToken 签名" / "Qwen 和 DeepSeek 有什么区别" | 在循环内调 `SearchKnowledge` 工具检索、带引用合成 |
+| "帮我部署 Qwen32B" / "帮我关掉 train-a" | 经 **Action Resolver** 定目标,提出 **Sealed Workflow** 写操作,过确认门 |
 
 ## 2. 核心理念
 
-- **按任务复杂度分三路。** 请求分成 `fast` / `knowledge` / `agent` 三个 tier,每一路是独立的执行管线,用不同档位的模型。简单查询走确定性逻辑 + 快模型秒回;复杂任务走完整的规划—执行循环 + 强模型。
-- **能力拆成 Skill 和 Tool 两个正交维度。** Skill 是教模型"怎么做一类任务"的 playbook(markdown);Tool 是模型实际调用的 typed function。两者都能跨 tier 复用,互不绑定。
-- **read-only 默认。** 变更类操作(创建 / 开关机 / 重启)默认关闭,需显式开启;任何写操作都要经过人工确认。
-- **证据驱动。** 回答基于工具返回的事实或检索到的文档,没有证据就明说,不凭记忆编造。
+- **单一中心 Agent。** 不再按 tier 分三套执行管线。一个 ReAct 风格的循环(`internal/engine/`)接收编译好的 `AgentContext`,每轮要么选一个只读 capability、要么调知识检索工具、要么提出一个写操作,并在同一循环里观察工具结果。
+- **能力是 typed capability,不是 route manifest。** 模型可见的只读能力在 `internal/capability/read_*.go`,每个能力自带 typed 请求结构、字段合同(`field_contract.go` 的 `schemaNode` 是工具 schema、运行时校验、一致性测试的**单一来源**)、handler 和 renderer。没有独立的路由注册表。
+- **read-only 默认,写操作密封。** 变更类操作(创建 / 开关机 / 重启 / 重置密码 / 改名)默认关闭(`COMPSHARE_ENABLE_MUTATING_TOOLS=1` 才开);写操作先经 Action Resolver 确定性定目标,再进 Sealed Workflow,过 resolver / 确认 / 权限 / action-journal 四道门。删除、注销等 L2 破坏性动作无论如何都拒(`internal/tools/safe_executor.go`)。
+- **证据驱动。** 回答基于工具返回的事实或检索到的文档。RAG 不是一条独立管线,而是中心 Agent 在循环内调用的 `SearchKnowledge` 工具;没有证据必须拒答,不凭记忆编造。
+- **确定性渲染。** 精确的标识、数量、价格、库存、规格、状态由代码渲染成 typed observation,Agent 在最终回答里插入 `render_ref` 占位,由 Response Gateway 替换成确定性结果,防止模型改写数字或截断列表。
 - **分层安全。** 输入守卫、工具执行管控、输出脱敏三层独立实施。
 
 ## 3. 整体架构
 
-理解全部代码只需要两个正交维度。
+一次请求的主链路是一条固定的确定性流水线,中心 Agent 是唯一的推理点,两侧是确定性的取证 / 定目标 / 渲染:
 
-**维度 A — Task Tier(选其一,决定执行管线 + 模型档位):**
+```
+接入(CLI / HTTP)
+  → 输入守卫(inputguard / guardrails)
+  → 中心 Agent 循环(engine):每轮选一项
+       ├─ Typed Read Capability  ── 只读取证,返回 Typed Observation
+       ├─ SearchKnowledge 工具    ── 循环内 RAG 取证
+       └─ 提出写操作 → Action Resolver(定目标/spec)→ Sealed Workflow(确认门)
+  → Response Gateway(把 render_ref 换成确定性渲染)
+  → 输出守卫(sanitizer / policy 引用泄漏)
+  → SSE / CLI 输出
+```
 
-| 维度 A | fast | knowledge | agent |
-|---|---|---|---|
-| **触发** | 单 API 查询 / 读类 | 平台知识问答 / FAQ / 概念 | 多步任务 / 部署 / 排障 |
-| **执行管线** | 确定性 handler + 模板渲染 | 检索 + grounded 生成 | orchestrator + tool loop + HITL |
-| **模型档位** | 快模型 | 快模型 | 强模型 |
+```mermaid
+graph TD
+    CLI[CLI<br/>cmd/agent.go] --> RT
+    HTTP[HTTP 网关<br/>cmd/server.go SSE] --> Pool[Session Pool<br/>agentpool LRU / idle 过期] --> RT
+    RT[engine.NewSession<br/>中心 AgentRuntime]
 
-三路是三套**不同的执行模型**,不是一套代码的 if-else 分支。Tier 是路由器的一等输出,trace 按 tier 分桶,计费、限流、可观测性都按 tier 统计。
+    subgraph Loop[中心 Agent 单轮循环]
+        IG[输入守卫<br/>inputguard / guardrails] -->|pass| AG
+        AG[中心 Agent<br/>选 read capability / 提写操作 / 调 SearchKnowledge]
+        AG -->|read| CAP[Typed Read Capability<br/>internal/capability]
+        AG -->|write| AR[Action Resolver<br/>internal/actionresolver]
+        AG -->|knowledge| KB[(SearchKnowledge<br/>internal/knowledge)]
+        CAP --> OBS[Typed Observation<br/>render_ref 占位]
+        AR --> WF[Sealed Workflow<br/>internal/workflow + 确认门]
+        WF --> OBS
+        KB --> OBS
+        OBS --> AG
+        AG -->|终答| GW[Response Gateway<br/>render_ref 替换成确定性渲染]
+        GW --> OG[输出守卫<br/>sanitizer / policy]
+    end
 
-**维度 B — 可复用资产(三路按需引用):**
+    OG --> OUT([SSE / CLI 输出])
+    RT -. per-turn .-> TR[(Trace / observability)]
+    WF -. STS / AK-SK .-> API[(平台 OpenAPI)]
+    RT -. session .-> DB[(PostgreSQL)]
+```
 
-| 维度 B | 形态 | 例子 |
-|---|---|---|
-| **Skills** | playbook,markdown,渐进式加载 | `safety_warning` / `deploy_model` / `diagnose_*` |
-| **Tools** | typed callable,Function Calling spec | `DescribeCompShareInstance` / `RAGRetrieve` |
-
-同一个 `safety_warning` skill 可以同时被 fast 的开关机流程和 agent 的部署流程引用;同一个 `DescribeCompShareInstance` tool 可以同时被 fast 和 agent 调用。各维护一份,不重复。
-
-**主链路(一条线):**
-
-接入(CLI / HTTP 网关)→ 输入守卫 → Planner 路由 →（fast｜knowledge｜agent 三选一)→ 输出守卫 → 返回输出。
-
-**主链路之外的依赖:**
-
-| 环节 | 依赖 |
-|---|---|
-| Planner 路由 | 模型路由 `internal/llm`(按 tier 选模型) |
-| agent tier | Skill Loader(触发后才拉 body) |
-| fast / agent | Tool Registry |
-| knowledge | 知识库 `deploy/kb` |
-| Engine(每轮) | Trace / 可观测性;平台 OpenAPI(STS / AK-SK);MySQL(会话 / 历史) |
+主链路是确定性的:模型只在 Agent 循环里做判断(选能力、写自然语言),控制流、取证、定目标、渲染都在代码里,不让模型直接决定副作用。
 
 ## 4. 一次请求怎么走
 
-不论哪个 tier,一轮请求都走同一外层骨架。这是一条 short-circuit 链,优先级从高到低,前一层命中就直接返回:
+一轮请求走同一外层骨架,这是一条 short-circuit 链,前一层命中就直接返回:
 
-1. **输入守卫** — 命中拦截规则 → 直接返回固定话术
-2. **资源选择恢复** — 有未决的实例选择 → 恢复上下文,不重新分类
-3. **Planner 路由** — 语义分类 → `{tier, agent_subtype?, skills[], slots, tool_calls?}`
-4. **按 tier 分发:**
-   - fast → 确定性 handler → 调 tool → envelope → 模板渲染
-   - knowledge → 检索 → RRF 融合 → rerank → 引用合成
-   - agent → orchestrator 循环(可中途暂停等用户确认,见 §8)
-5. **输出守卫** — 脱敏 + 引用泄漏检查
+1. **输入守卫** — 命中拦截规则(越狱 / off-topic / 特定关键词)→ 直接返回固定话术,不进 LLM。
+2. **上下文装配** — 恢复未决的实例选择、注入近端事实缓存与压缩历史,编译成 `AgentContext`。
+3. **中心 Agent 循环**(`maxReActRounds=10`,`maxHistoryMessages=40`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=20`),每轮:
+   - 选一个 **read capability** → `executeConcreteReadCapability` → `capability.MigratedRead(action)` → `RegisteredRead.Run` → 返回 Typed Observation(见 §5、§7)。
+   - 调 **`SearchKnowledge`** → 在循环内检索平台知识 / 排障资料作为证据(见 §8)。
+   - 提出**写操作** → Action Resolver 确定性定目标 → Sealed Workflow 暂停等确认(见 §6)。
+4. **Response Gateway** — 把 Agent 最终回答里的 `render_ref` 占位换成对应 Typed Observation 的确定性渲染;历史监控无数据时整答覆盖为"无法确认"(never-0%/healthy 不变量)。
+5. **输出守卫** — 凭证脱敏(IP / UUID / AK-SK / token)+ PII 过滤 + 引用泄漏检查。
 
-三路分发是 first-class 的,彼此不互相 fallback——fast 的渲染问题不会污染 agent,agent 的不稳定不会拖慢 fast。
+## 5. Read capabilities — typed 只读能力
 
-## 5. 路由层
+模型可见的只读能力都在 `internal/capability/read_*.go`。每个能力是一条**垂直**:
 
-路由分两件独立的事:**走哪一路**(语义分类)和**用哪个模型**(模型路由)。
+- **typed 请求结构** + **字段合同**:`field_contract.go` 的 `schemaNode` 是**单一来源**,同时产出模型看到的工具 schema、运行时 enum/最小值校验、和一致性测试。加字段只改一处,三处不漂移。
+- **handler**:调平台 OpenAPI,做确定性过滤 / 归一。
+- **renderer**:把结果渲染成强约束的 envelope(结构化事实集),逐字段渲染,不经 LLM。
+- `ReadDefinitions()`(`read_catalog.go`)是能力目录;引擎经 `executeConcreteReadCapability` 分发,**没有独立路由注册表**。
 
-### 5.1 Planner — 语义分类
+覆盖:实例列表 / 当前 & 历史监控 / GPU 规格 / 库存 / 价格 / 各类镜像列表 / 计费查询等。让 LLM 参与渲染只会引入不确定性,而这些答案本就是确定的——所以渲染走代码,不走模型。
 
-`internal/intent/planner.go`。输入是用户消息加上**结构化压缩的上下文信号**(上一轮意图、选中的实例、必要的短摘要,而不是把整段历史灌进去),输出一个结构化的路由决策:
+## 6. 写操作 — Action Resolver + Sealed Workflow
 
-```jsonc
-{
-  "task_tier": "fast | knowledge | agent",      // 走哪一路
-  "agent_subtype": "mutating | diagnosis",      // 仅 agent tier
-  "skills": ["safety_warning", "deploy_model"], // 粗筛 1-3 个候选 skill
-  "slots": { },                                 // 抽取的结构化参数
-  "tool_calls": [ ],                            // 标准 tool_calls 格式
-  "tier_reason": "..."                          // 分类理由,落 trace 便于复盘
-}
+写操作是产品里风险最高的部分,拆成"定目标"和"执行"两段,都不让模型直接决定:
+
+- **Action Resolver(`internal/actionresolver/`)** — 确定性解析写操作的目标实例与 spec(如镜像 catalog 是否需要重查由 `SpecNeedsImageCatalog` 决定)。写目标只在用户回复能确定性解析到某实例时才授权,不用模型"理解候选表"代替确定性选目标。
+- **Sealed Workflow(`internal/workflow/`)** — 多步变更流程(创建 / 开关机 / 重启 / 重置密码 / 改名 / 挂盘)以 `*Workflow` 类型存在,步骤序列硬编码,不允许模型自由发 mutating tool。确认经 `engine.ConfirmFunc` 回调(CLI 实现见 `cmd/agent.go::cliConfirm`),Web 端支持暂停 / 恢复。
+- **四道门**:mutating 默认关(`COMPSHARE_ENABLE_MUTATING_TOOLS=1` 才开,生产 `config.yaml` 里 `agent.features.mutating_tools: true`),写操作须过 resolver / confirmation / permission / action-journal;删除、注销等 L2 破坏性动作无论如何都拒。密封执行合同(`SealedActionContract`)把确认过的动作与运行元数据分离,镜像等易变字段在执行前重确认。
+
+## 7. Typed Observation + Response Gateway
+
+工具结果不是自由文本,而是 typed observation:
+
+- read capability 返回 `ReadCapabilityObservation`,`Status=Handled` 且有 envelope 时带一个 `render_ref` 占位(`{{READ_OBSERVATION_N}}`)+ 一段 `RenderContract` 指令,告诉 Agent"要展示精确标识 / 数量 / 价格 / 库存 / 规格 / 状态时,在最终回答里原样插入 render_ref,服务端会替换为确定性结果"。
+- **Response Gateway**(`engine` 的 `finalizeResponse` / `substituteReadObservationBlocks`)在终答里把 Agent 放置的 `render_ref` 替换成对应 observation 的确定性渲染。Agent 可以自然解释,但精确字段由代码渲染。
+- **never-0% 不变量**:历史监控若各实例全无数据,整答覆盖为"无法确认",绝不把缺数据说成 0% / 健康(`guardMonitorNoDataFinalReply`)。
+
+> 说明:`render_ref` 由 Agent 自行插入,`RenderContract` 是给模型的指令、不是机器保证。"精确值一定进最终回答"目前尚未机器强制,是 P7 的硬验收项(若 Agent 漏插 / 写错窗口则验收失败,再收紧出口合同)。
+
+## 8. Knowledge / RAG — 循环内证据,不是独立管线
+
+RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不是一条会终结请求的独立管线。
+
+**检索管线**(`internal/knowledge/`,默认 `qwen3_rrf`):
+
+```
+用户问题 / Agent 的检索 query
+  → BM25 关键词 top-50  ⊕  qwen3-embedding-8b 向量 top-50   (hybrid 召回)
+  → Reciprocal Rank Fusion 融合 (k=60)
+  → qwen3-reranker-8b cross-encoder 精排 top-3
+  → 命中片段作为证据,交给带引用的合成
 ```
 
-Planner 做的是分类和 slot 抽取,它的输出是建议性的;真正的分发由代码按 tier 确定性执行,不让模型直接决定控制流。
+- 关键词召回和向量召回各有盲区,hybrid + RRF + cross-encoder 精排比单一召回稳;embedder 和 reranker 用同族(qwen3)比跨族混搭可靠。
+- **cite-or-refuse**:合成带引用的中文回答,**没有证据必须拒答**;引用是否泄漏到最终文本由输出守卫兜底。
+- **知识库**:`deploy/kb/stage2b_w0.jsonl` + 两份预计算 embedding sidecar,三件套用 LF 归一 SHA256 字节锁定(`internal/knowledge/corpus_digest.go`),对不上直接拒绝启动。外部工具 / 运维语料(`external_w0.jsonl`)默认合入索引。
+- 系统提示由 `internal/prompt/segments.go` 的 Go 段组装,**没有** Go/Python 共用的 prompt 目录(旧的 terminal-RAG `rag_system_segments` 已删)。
 
-三分类的边界有时会模糊,比如"我有 4090 4 卡机器吗"既可能是查询(fast),也可能是部署任务的第一步(agent)。处理办法是 Planner 只看当前这句话不带太多上下文偏向,且 fallback 倾向 `fast > knowledge > agent`——误判成 agent 是浪费算力,误判成 fast 是降级体验,前者代价更高。
+## 9. Diagnosis — 只读诊断
 
-### 5.2 模型路由
+`internal/diagnosis/` 是只读诊断链,当前只广告**两条**:`DiagnoseSSH` 和 `DiagnoseBilling`(hand-written registry,非 codegen)。init-failure / GPU-not-detected / image-issue / port-firewall 链在 pre-P7 收敛中删除(无诊断价值,或改由中心 Agent 经 `SearchKnowledge` + `DescribeCompShareInstance` 取证)。`chainRegistry` 恒等于广告集,未广告的诊断名无法 resolve(`TestDiagnosisRegistryHasNoUnadvertisedChains` 强制:model 看不见 ≠ 不可达)。边界规则:只读自检命令可作为用户动作建议,改环境的命令须标"可选修复",绝不自动执行。
 
-`internal/llm/router.go`。按 tier 返回对应的 LLM 客户端:
+## 10. 横切关注点
 
-```go
-router.For(llm.TierFast)      // 快模型
-router.For(llm.TierKnowledge) // 快模型
-router.For(llm.TierAgent)     // 强模型(必要时可升到更强的模型兜底)
-```
+- **可观测性**(`internal/observability/`)— 每轮写一条 JSONL trace;要确认某条路径是否真触发,读 trace 字段,别靠延迟猜。
+- **守卫** — 输入侧在调 LLM 前拦截(`internal/inputguard`、`internal/guardrails`:越狱、off-topic、特定错误码、历史监控等,关键词集不相交);输出侧凭证脱敏 + PII 过滤 + 引用泄漏检查(`internal/sanitizer`、`internal/policy`)。中文场景安全正则须覆盖全角分隔符和中文关键词。
+- **限流**(`internal/governance/`)— 按租户(`top_organization_id` / `organization_id` 对)做 QPS + 每日额度,分 LLM / 写操作 / 重读操作三类。
+- **安全边界归属** — 密钥 / 权限边界放 `internal/security`;产品级能力拦截(某类请求不支持)放 `internal/policy` 或 engine,两者不混。脱敏逻辑集中,不在各 tool 里内联。
+- **截图理解**(`internal/ocr/`,server / WS-only)— `SendCSAgentChat` 带 `Image` 时,Qwen3-VL 把截图解读成结构化文本作为**不可信参考上下文**注入(经 `WrapScreenshotContext` 围栏 + `RedactPII`),原图不进主模型,绝不自动驱动写操作。
 
-档位映射写在 `agent.yaml` 的 `tier_routing` 里。这个配置为空时所有 tier 回退到同一个基础模型——这保证了在还没做精细分流前,行为是确定且可回退的。fast / knowledge 这种分类 + 组装的活快模型够用;agent 的多步规划必须上强模型,弱模型在长链路上发挥不稳。
+## 11. 状态与服务
 
-## 6. Fast tier — 确定性 handler + 模板渲染
+- **接入** — CLI 单进程单 Engine;HTTP `POST /`(Action 路由)+ `GET /healthz`,身份从请求 body 取(`top_organization_id` / `organization_id` / `request_uuid`,snake_case,网关注入),不走 header。Phase-1 Actions:`GetSession` / `CreateSession` / `Chat`(SSE)/ `GetMeta` / `Feedback`。
+- **会话** — HTTP 路径用 `internal/agentpool` 的 LRU 池(200 / 30min idle)维护 per-session Engine,miss 时从 PostgreSQL 经 `RehydrateHistory` 重建历史;同一会话并发请求串行化。
+- **持久化** — PostgreSQL(`database/sql` + `lib/pq`;从 MySQL/TiDB 迁移,`store.OpenMySQL` 符号、`mysql` 配置键、`MYSQL_DSN` 环境变量名为兼容保留但连的是 postgres)。`messages` 每轮 INSERT 两次(用户即时、assistant 占位)、SSE done 时 UPDATE 一次,不逐 token 写。DDL 由 ops 跑,不是二进制。
+- **配置** — YAML(`deploy/conf/config.yaml`),typed 字段在 `agent.features` / `agent.retrieval` / `agent.trace`(见 `internal/config/runtime.go`);不再走 `.env` / `*.example`。
+- **凭证** — 生产用 STS AssumeRole 换临时 token,本地开发用静态 AK / SK 直接签名。`SecurityToken` 须先进签名参数再算 HMAC-SHA1。
 
-**定位**:一次 API 查询就能答的读类请求,要求低延迟、结果稳定。
+## 12. 未来方向
 
-**管线:**
-
-1. Planner 输出 `tier=fast` + intent + slots
-2. 确定性 Go handler:按 slots 取过滤条件 → 调 tool → 确定性过滤 / 格式化
-3. 整理成 envelope(结构化事实集)
-4. 模板渲染(逐字渲染,不经过 LLM)
-
-关键点是 **fast 的渲染不走 LLM**。handler 把结果整理成一个强约束的 envelope,模板按字段逐条渲染。这样列表不会被模型擅自截断、数字和单位不会被改写、提示文案逐字可控。让 LLM 参与这一步只会引入不确定性,而这类请求的答案本就是确定的。
-
-覆盖的意图:实例列表 / 当前监控 / GPU 规格 / 库存 / 价格 / 各类镜像列表 / 计费查询等。这些都是"问一个事实、答一个事实"的场景。
-
-## 7. Knowledge tier — 检索 + grounded 生成
-
-**定位**:平台知识问答——计费规则、操作教程、概念对比、FAQ。答案在文档里,不在某个 API 里。
-
-**检索管线**(`internal/knowledge/`):
-
-1. 用户问题
-2. BM25 关键词 top-50 ⊕ qwen3-embedding-8b 向量 top-50(hybrid 检索,两路并行召回)
-3. Reciprocal Rank Fusion 融合(k=60)
-4. qwen3-reranker-8b cross-encoder 精排,取 top-3
-5. 命中片段作为证据,交给引用合成
-
-要点:
-
-- 关键词召回和向量召回各有盲区,hybrid + RRF 把两路结果融合后再用 cross-encoder 精排,比单一召回稳。embedder 和 reranker 用同族模型(都是 qwen3)比跨族混搭更可靠。
-- **引用合成**:接收证据片段,LLM 生成带引用的中文回答,**没有证据必须拒答**,不允许凭模型知识补。引用标记是否泄漏到最终文本由输出守卫兜底检查。
-- 知识库是 `deploy/kb/stage2b_w0.jsonl` 加预计算的 embedding sidecar,三件套用 SHA256 字节锁定,对不上直接拒绝启动,保证线上跑的语料就是验证过的那份。
-
-## 8. Agent tier — orchestrator + tool loop + HITL
-
-**定位**:多步规划 + 有副作用的任务。两个典型场景:"部署 Qwen32B"(推荐 GPU → 创建实例 → 配置)、"SSH 进去排障"。这一路延迟长、有暂停点、跑强模型,是产品的核心能力所在。
-
-执行循环是自己写的 Go orchestrator,不引入外部编排框架——因为每一步的 trace、确认、回滚都要精确可控,框架的抽象层反而碍事。
-
-**单步循环:**
-
-1. 强模型规划下一步
-2. 记录这一步:决策理由 + 工具 + 结果(step trace)
-3. 判断是不是写操作:
-   - **读操作** → 直接执行
-   - **写操作** → 暂停等用户确认(PauseToken 持久化);用户同意 → 附幂等键后执行;用户拒绝 / 超时 → 中止并回滚已执行的步
-4. 看执行结果:
-   - 成功且还有下一步 → 回到第 1 步
-   - 成功且无下一步 → 聚合结论返回
-   - 失败 → Saga 补偿回滚(不可逆步标记跳过)后返回结论
-
-这一路有几条不能省的要求:
-
-1. **步骤可见 + 可审计(step trace)** — 每一步的决策理由、调了什么工具、拿到什么结果都记下来,用户能看到进度,事后能回放。
-2. **回滚(Saga)** — 多步任务中途失败时,对已执行的步做补偿动作,best-effort 回滚。不可逆的操作(密码已重置、实例已扣费创建)在 schema 上标 `irreversible`,靠提前确认而不是事后补偿。
-3. **人工确认(HITL)** — 创建、计费、SSH 执行这些动作前必须用户确认。确认点支持暂停整个流程并持久化状态(PauseToken),Web 端可以通过单独的回调端点恢复,实现真正的 interrupt / resume。
-4. **SSH 沙箱** — 按命令**类别**而不是字面量来管控(只读检查 / 看日志 / 查进程 / 网络诊断),每类里是 typed tool + 模型填参数,写操作走确认 + 全命令审计。按类别管比维护一张命令白名单更不容易僵化。
-5. **强模型** — 这一路必须 `router.For(TierAgent)`,弱模型在长链路上不可靠。
-6. **幂等键(idempotency key)** — 每个写操作步带 `hash(step_id + tool + args)`,重试不会重复扣费。
-
-agent tier 内部分两条子路径(由 `agent_subtype` 区分):
-
-- **mutating 子路径** — 部署 / 扩容 / 重建这类闭合的、有副作用的流程,走上面整套 orchestrator + saga + 步级确认。
-- **diagnosis 子路径** — 排障这类以只读探索为主、步骤无法预先写死的开放推理。它不需要 saga(没有"撤销一次诊断"的概念),确认是命令级的。执行器藏在一个 `SubAgent` interface 后面,具体实现暂不锁死(自写 ReAct 子循环,或委派一个外部 agent 子进程),等积累足够真机故障 case 再定。诊断用到的方法论以 skill 形式沉淀(见 §9),没经过真机验证的会带 caution 标记。
-
-## 9. Skills — playbook
-
-Skill 是教模型"怎么用工具做一类任务"的 markdown playbook,**它本身不是 callable**,只是被注入到 prompt 里指导模型思考。
-
-**渐进式加载(progressive disclosure)** 是这里的核心机制:
-
-- **启动** — 扫描目录,只解析 frontmatter 建索引(每条约 80 tokens),body 不读
-- **路由** — Planner 的 prompt 只放 metadata 列表,几十个 skill 也就几 k tokens
-- **触发** — Planner 选中某些 skill → 这时才按名字 lazy 读取它们的 body 注入
-- **fast / knowledge** — 只看 metadata 路由,从不读 body
-
-如果把所有 skill 的完整内容都灌进 prompt,system prompt 会随 skill 数量线性膨胀,这是弱模型发挥不稳的一大诱因。渐进式加载把它压成"常驻一份精简索引 + 按需拉取正文"。
-
-**目录结构**:一个 skill 一个目录 `internal/skills/<name>/skill.md`(可选附带 `examples.jsonl` / `runbook.md`)。frontmatter 关键字段:
-
-- `applicable_tiers` — 声明跨 tier 复用(`safety_warning` 同时给 fast 和 agent 用)。
-- `required_tools` — 只引用工具名字,不绑定实现。
-- `verification_status` — 这份方法论的可信度(见 §12.4)。
-
-几条约束(都是为了不让 prompt 失控):
-
-- body 默认上限 100 行(约 500-800 tokens),单个 skill 可在 frontmatter 调高,硬顶 200 行,超出直接 build 失败,不静默截断。
-- name 用 snake_case,且必须和目录名一致。
-- 一次最多触发 2 个 skill(硬上限 3),所有 body 总和不超过约 2K tokens,先到先得,超了的被拒并告警。
-
-skill 索引由 codegen 从目录扫描生成,加 / 改 skill 不用手写注册代码,避免"目录"和"注册表"两份数据漂移。
-
-## 10. Tools — typed callable
-
-Tool 是模型实际调用的 typed function,格式是标准 Function Calling spec(JSON Schema)加一段自定义扩展:
-
-```jsonc
-{
-  "name": "DescribeCompShareInstance",
-  "parameters": { "type": "object", "properties": {  } },
-  "x-compshare": {
-    "class": "read | mutating",        // 读还是写
-    "requires_acceptance": false,      // 是否要人工确认
-    "idempotent": true,                // 重试是否安全
-    "tier_eligible": ["fast", "agent"] // 哪些 tier 可以调
-  }
-}
-```
-
-把"是不是写操作、要不要确认"放在 tool spec 自己身上,而不是在 engine 里硬编码一张表——加新工具时它的安全语义跟着定义走,不会漏。tool 注册同样用 codegen 从目录生成,单一数据源。
-
-## 11. MCP server / client
-
-MCP(Model Context Protocol)是连接协议,不是 agent 层、tool 层或 workflow 层。项目后续按方向拆成两类适配器:
-
-- **MCP server**:把本项目允许外部使用的 tools / resources / prompts 暴露出去,候选目录为 `internal/mcp/server`。
-- **MCP client**:让本项目作为 host 消费外部 MCP server 暴露的 tools / resources / prompts,候选目录为 `internal/mcp/client`。
-
-内部进程内调用仍然直接使用 Go 注册表和安全执行器,不绕一层 MCP。Function Calling spec 和 MCP tool spec 字段基本同构,加一层薄 adapter 就能转换,不构成锁定。
-
-有两件契约要提前定好:
-
-- **命名空间**:内部 Go API 保留 CamelCase(`DescribeCompShareInstance`);对外用 `provider/category/action` 风格(`compshare/instance/describe`),映射规则集中在一处。
-- **字段可见性**:`x-compshare` 里 `class` / `requires_acceptance` / `idempotent` 对外暴露(外部客户端做确认和重试要用);`tier_eligible`(内部路由概念)和底层 API action 名对外隐藏(后者暴露会扩大攻击面)。MCP server 投影层做这个过滤。
-
-## 12. 横切关注点
-
-### 12.1 可观测性
-`internal/observability/` 每轮写一条 trace(JSONL 和 / 或 MySQL)。除了 planner / 检索 / 渲染 / token 用量,还按 **tier 分桶**统计,agent 这一路额外记录每一步的 step trace。要确认某条路由是否真的触发,看 trace 里的字段,别靠延迟去猜。
-
-### 12.2 守卫(guardrails)
-输入侧在调 LLM 之前拦截(越狱、off-topic、账户计费、特定错误码、历史监控等,各规则关键词集不相交);输出侧做凭证脱敏(IP / UUID / AK-SK / token)、PII 过滤、引用泄漏检查。中文场景的安全正则要覆盖全角分隔符和中文关键词,不能只匹配 ASCII。
-
-### 12.3 限流
-`internal/governance/` 按租户(组织 ID 对)做 QPS + 每日额度,分 LLM / 写操作 / 重读操作三类计。agent tier 单价高,限得更紧。
-
-### 12.4 内容可信度
-skill 是给模型当方法论用的,如果一份方法论本身只是当初的设计草稿、没真机跑过,把它当事实注入会让模型把假设当结论输出。所以每个 skill 标三级状态:`production_validated`(真实流量验证过)/ `spike_validated`(故障 case 跑通过)/ `unverified`(只是设计意图)。加载 `unverified` 的 skill 时在 body 前面加一行 `[CAUTION: 方法论未验证,步骤仅供参考]`,降低模型把它当事实的风险。升级要靠真实 case + review。
-
-### 12.5 安全边界归属
-密钥 / 权限边界放在 `internal/security`;产品级的能力拦截(比如某类请求不支持)放在 `internal/policy` 或 engine,两者不混在一起。
-
-## 13. 状态与服务
-
-- **接入**:CLI 是单进程单 Engine;HTTP 是 Gin + SSE,身份从请求 body 取(组织 ID 等),不走 header。
-- **会话**:HTTP 路径用一个 LRU 池维护 per-session 的 Engine(满了 / 空闲过期淘汰),miss 时从 MySQL 重建对话历史;同一会话的并发请求串行化。
-- **持久化**:MySQL。对话历史和结构化的 SessionState(选中实例、上一轮意图、累积事实等)落库,SessionState 用版本号做乐观锁。agent 的步骤记录和 PauseToken 也持久化,支撑 Web 端的暂停 / 恢复。
-- **凭证**:生产用 STS AssumeRole 换临时 token,本地开发用静态 AK / SK 直接签名。
-
-## 14. 未来方向
-
-- **更丰富的 agent 场景** — 当前一个 agent 单线程跑;像"并行拉 Prometheus + 日志 + GPU 监控再综合分析"这种需要多个子 agent 协作的场景,以后再评估。
-- **诊断子路径定型** — `SubAgent` 接口已经在,自写循环还是委派子进程,等真机故障数据够了再拍板。
-- **检索增强** — corpus 目前自管,citation 自己写,后续可以在召回质量和引用粒度上继续打磨。
-- **更多写操作端到端** — workflow 框架已具备,逐个把生命周期操作在 Web 端跑通(SSE 确认链路)。
+- **P7 真实端到端验收** — 真实 HTTP / WebSocket / 前端 / 双标签页 / 逐出 / 重启 / DB 故障;含历史监控终答必含实际时间窗的硬验收(见 §7)。
+- **写操作端到端** — workflow 框架已具备,逐个把生命周期操作在 Web 端跑通(SSE 确认链路)。
+- **诊断能力** — 未来的 in-instance SSH-ops 能力须在 typed-capability 架构里重建,不复活旧诊断链。
+- **MCP** — 若对外暴露 tools / resources,按 server / client 方向拆薄 adapter,只读优先、破坏性动作默认不暴露。
 
 ## 附录:`internal/` 包职责
 
 | 包 | 职责 |
 |---|---|
-| `llm/` | 模型路由(按 tier 选客户端) |
-| `intent/` | Planner 语义分类 + fast tier 确定性 handler |
-| `skills/` | Skill bundle + 渐进式加载 loader + codegen(含 5 个 `diagnose_*` 诊断方法论) |
-| `tools/` | Tool spec(Function Calling + x-compshare)+ codegen + handler |
-| `knowledge/` | hybrid 检索 + RRF + rerank |
-| `engine/` | 外层骨架 + 三路 dispatch |
-| `orchestrator/` | agent 循环 + saga 回滚 + HITL 确认 |
-| `diagnosis/` | 诊断 SubAgent 接口 + registry |
-| `security/` | 密钥边界 + SSH 沙箱(按类别) |
-| `mcp/server/` | 对外暴露 tools / resources / prompts 的 MCP server 适配器 |
-| `mcp/client/` | 消费外部 MCP server 的 MCP client 适配器 |
-| `workflow/` | 写操作 workflow 定义 |
+| `engine/` | 中心 Agent 循环 + 分发 + Response Gateway |
+| `agentruntime/` | 中心 AgentRuntime(CLI / HTTP / 冷建 / rehydrate 共用) |
+| `capability/` | typed read/action capability 目录 + 字段合同(单一来源 schema) |
+| `actionresolver/` | 写操作确定性定目标 / spec 解析 |
+| `workflow/` | Sealed 写操作 workflow 定义 + 确认 |
+| `intent/` | 共享 intent / 生命周期动作类型 + 结构化信号 |
+| `knowledge/` | hybrid 检索 + RRF + rerank(`SearchKnowledge` 工具后端) |
+| `prompt/` | 系统提示段(`segments.go`)组装 |
+| `readprojection/` | 只读结果投影 / 截断 / GPU 家族匹配 / 渲染 |
+| `envelope/` | 结构化事实 envelope |
+| `diagnosis/` | 只读诊断链(SSH / billing)+ registry |
+| `tools/` | tool spec + 安全执行器(read/mutating 策略、L2 拒绝) |
+| `llm/` | 模型客户端 + capability(如 `supportsObjectToolChoice`) |
+| `inputguard/`、`guardrails/` | 输入侧拦截 |
+| `sanitizer/`、`security/`、`policy/` | 输出脱敏 / 密钥边界 / 引用泄漏 & 产品拦截 |
 | `governance/` | 限流(按租户、按类别) |
-| `observability/` | trace(tier 分桶 + step 记录) |
-| `policy/` | 引用泄漏 / 产品级拦截 |
-| `entity/` | 实例解析 |
+| `observability/`、`turntrace/`、`turncoord/` | trace / 每轮记录 / 轮次协调 |
+| `ocr/` | 截图理解(server / WS-only,Qwen3-VL) |
+| `httpapi/`(含 `ws/`) | HTTP / WebSocket 接入 |
 | `agentpool/` | per-session Engine 池 |
+| `store/` | PostgreSQL 持久化 |
+| `platform/`、`entity/`、`zones/` | 平台类型 / 实例解析 / 可用区 |
+| `embedding/`、`reranker/` | 检索侧 embedder / cross-encoder |
+| `config/` | YAML 配置 + runtime flag |
+| `refusal/`、`deployment/`、`textutil/`、`architectureguard/` | 拒答话术 / 部署匹配 / 文本工具 / 架构守卫 |
