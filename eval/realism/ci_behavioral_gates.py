@@ -46,11 +46,13 @@ READ_TOOLS = {
     "GetCompShareInstanceMonitor":          ["监控","利用率","getcompshareinstancemonitor","gpu/显存/cpu"],
     "GetCompShareInstanceUserPrice":        ["价格","价目","getcompshareinstanceuserprice","getcompshareinstanceprice","真值"],
 }
+# Only DiagnoseBilling survives as a dedicated diagnosis chain (DiagnoseSSH is
+# advertised too but has no golden probe in this set). The GPU / init /
+# port-firewall / image chains were deleted in the pre-P7 convergence; their
+# symptoms now assert diagnose_grounded (evidence via the central Agent) in gen(),
+# never a dead tool name.
 DIAG_TOOLS = {
-    "DiagnosePortOrFirewall": ["diagnoseportorfirewall","端口","防火墙","连接被拒","comfyui","err_connection"],
-    "DiagnoseGPU":            ["diagnosegpu","显卡","识别","多卡","nvidia"],
-    "DiagnoseInitFailure":    ["diagnoseinitfailure","启动中","初始化","开机失败","init"],
-    "DiagnoseBilling":        ["diagnosebilling","费率"],
+    "DiagnoseBilling": ["diagnosebilling","费率"],
 }
 CONFIRM_WF = {
     "StopInstanceWorkflow":       ["关机","stop","已 stopped","stopinstance"],
@@ -87,10 +89,17 @@ def gen():
                               params=dict(actions=forbid), note="未误路由到无关 mutating 流程",
                               reply_semantic=not any(k in s for k in ["创建","Terminate","删除实例","注销","Coding"])))
         if "route_to_diagnosis" in a:
-            tool = pick(DIAG_TOOLS, s, default=None)
-            actions = [tool] if tool else list(DIAG_TOOLS.keys())
-            specs.append(dict(case_id=cid, gate="route_to_diagnosis", kind="require_step_action",
-                              params=dict(actions=actions), note="进入对应诊断"))
+            # DiagnoseBilling is the only surviving dedicated chain → keep its route.
+            # Every other symptom (GPU / init / port / image — chains deleted) is now
+            # handled by the central Agent gathering evidence, so assert grounding
+            # (real instance state OR knowledge retrieval) instead of a dead tool name.
+            if pick(DIAG_TOOLS, s, default=None) == "DiagnoseBilling":
+                specs.append(dict(case_id=cid, gate="route_to_diagnosis", kind="require_step_action",
+                                  params=dict(actions=["DiagnoseBilling"]), note="进入对应诊断"))
+            else:
+                specs.append(dict(case_id=cid, gate="diagnose_grounded", kind="require_step_action",
+                                  params=dict(actions=["DescribeCompShareInstance","SearchKnowledge"]),
+                                  note="排障须先取证:查询实例真实状态或检索排障知识后再诊断(专用诊断链已删,改由中央 Agent 取证)"))
         if "read_truth" in a:
             tool = pick(READ_TOOLS, s, default="DescribeCompShareInstance")
             actions = [tool]
