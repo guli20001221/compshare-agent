@@ -216,19 +216,107 @@ func TestImageListEnvelope_HonestAbsenceNoTagFabrication(t *testing.T) {
 
 func TestImageListEnvelope_CommunitySortsByDeployCount(t *testing.T) {
 	raw := map[string]any{"CompshareImageGroup": []any{
-		map[string]any{"ImageName": "Low", "CreatedCount": float64(10), "Data": []any{}},
-		map[string]any{"ImageName": "High", "CreatedCount": float64(900), "Data": []any{}},
+		map[string]any{"ImageName": "Low", "CreatedCount": float64(10), "Data": []any{
+			map[string]any{"CompShareImageId": "cimg-low", "Name": "v1"},
+		}},
+		map[string]any{"ImageName": "High", "CreatedCount": float64(900), "Data": []any{
+			map[string]any{"CompShareImageId": "cimg-high", "Name": "v1"},
+		}},
 	}}
 	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
 	require.Len(t, env.Subjects, 2)
-	assert.Equal(t, "image_group:High", env.Subjects[0].ID, "most-deployed group must sort first")
+	assert.Equal(t, "image:cimg-high", env.Subjects[0].ID, "most-deployed group's image must sort first")
+	assert.Equal(t, envelope.SubjectImage, env.Subjects[0].Type, "community images are flattened to individually-citable image subjects")
+}
+
+// TestImageListEnvelope_CommunityFlattensStructuredFacts is the F1 gate: every community
+// version is a SubjectImage carrying the SAME discrete structured facts the platform
+// path emits (real Tags []string, container bool, supported_gpu_types, image_type,
+// source=community) plus group provenance (author/version/deploy_count) — so the
+// central Agent can semantically pick and CITE a specific community image, not just a
+// group blob. Reverting to group subjects (dropping appendStructuredImageFacts) turns
+// this red.
+func TestImageListEnvelope_CommunityFlattensStructuredFacts(t *testing.T) {
+	raw := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName": "LTX 视频生成合集", "Author": "creator-a", "CreatedCount": float64(320),
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  "cimg-ltx",
+					"Name":              "v26.0529",
+					"ImageType":         "App",
+					"Status":            "Available",
+					"Container":         true,
+					"Description":       "文生视频/图生视频",
+					"Tags":              []any{"图像生成", "视频"},
+					"SupportedGpuTypes": []any{"A800"},
+				},
+			},
+		},
+	}}
+	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
+	require.Len(t, env.Subjects, 1)
+	require.Equal(t, "image:cimg-ltx", env.Subjects[0].ID)
+	assert.Equal(t, envelope.SubjectImage, env.Subjects[0].Type)
+	assert.Equal(t, "LTX 视频生成合集", env.Subjects[0].Name, "subject name is the recognizable family name")
+
+	facts := map[string]any{}
+	for _, f := range env.Facts {
+		if f.SubjectID == "image:cimg-ltx" {
+			facts[f.Key] = f.Value
+		}
+	}
+	tags, ok := facts["tags"].([]string)
+	require.True(t, ok, "community tags must be a structured []string, got %T", facts["tags"])
+	assert.Equal(t, []string{"图像生成", "视频"}, tags)
+	gpus, ok := facts["supported_gpu_types"].([]string)
+	require.True(t, ok, "supported_gpu_types must be a structured []string, got %T", facts["supported_gpu_types"])
+	assert.Equal(t, []string{"A800"}, gpus)
+	assert.Equal(t, "community", facts["source"])
+	assert.Equal(t, "App", facts["image_type"])
+	assert.Equal(t, "Available", facts["status"])
+	assert.Equal(t, true, facts["container"])
+	assert.Equal(t, "文生视频/图生视频", facts["description"])
+	assert.Equal(t, "creator-a", facts["author"], "group author attached as per-subject provenance")
+	assert.Equal(t, "v26.0529", facts["version"], "version label distinct from the family name")
+	assert.Equal(t, 320, facts["deploy_count"], "group popularity attached as per-subject provenance")
+}
+
+// TestImageListEnvelope_CommunityHonestAbsence: a bare community version with no Tags
+// and no Softwares emits NO tags/framework facts — honest absence, never an empty value
+// the Agent could read as "matches no tag". id-less version rows are dropped, never
+// given a synthetic subject.
+func TestImageListEnvelope_CommunityHonestAbsence(t *testing.T) {
+	raw := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "Bare", "Data": []any{
+			map[string]any{"CompShareImageId": "cimg-bare", "Name": "v1", "Status": "Available"},
+			map[string]any{"Name": "no-id-row"}, // id-less → honest drop, no subject
+		}},
+	}}
+	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
+	require.Len(t, env.Subjects, 1, "id-less version rows are dropped, never given a synthetic subject")
+	require.Equal(t, "image:cimg-bare", env.Subjects[0].ID)
+	for _, f := range env.Facts {
+		if f.SubjectID != "image:cimg-bare" {
+			continue
+		}
+		switch f.Key {
+		case "tags", "description", "framework", "framework_version", "cuda_version", "os_version", "python_version":
+			t.Errorf("bare community image must emit no %q fact (honest absence), got %v", f.Key, f.Value)
+		}
+	}
 }
 
 // --- handler source-facet dispatch ----------------------------------------------
 
 func TestImageListHandle_SourceFacetDispatch(t *testing.T) {
 	imageSet := map[string]any{"ImageSet": []any{map[string]any{"CompShareImageId": "i1", "Name": "img"}}}
-	group := map[string]any{"CompshareImageGroup": []any{map[string]any{"ImageName": "G", "CreatedCount": float64(1), "Data": []any{}}}}
+	// A real community group carries at least one version row; the envelope now flattens
+	// each version into an image subject, so a zero-version group is (correctly) a
+	// structured Empty read — use a realistic one-version group to exercise dispatch.
+	group := map[string]any{"CompshareImageGroup": []any{map[string]any{"ImageName": "G", "CreatedCount": float64(1), "Data": []any{
+		map[string]any{"CompShareImageId": "cg-1", "Name": "v1"},
+	}}}}
 
 	cases := []struct {
 		name         string

@@ -497,6 +497,8 @@ func renderCommunityImageReply(raw map[string]any, searchQuery string, mode plat
 func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode platform.ListMode) envelope.Envelope {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
+		// Some community responses use the flat ImageSet shape; the shared builder
+		// already flattens those per-image with structured facts.
 		return buildImageListEnvelope(raw, "ImageSet",
 			[]string{"Name", "Author", "CompShareImageId"}, searchQuery, mode,
 			"DescribeCommunityImages", "community")
@@ -509,12 +511,25 @@ func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode pl
 		}
 		filtered = append(filtered, entry)
 	}
-	// Surface genuinely-popular images first: live API order is recommend-weighted,
-	// so sort subjects by CreatedCount (部署次数) desc — subjects are presented
-	// in envelope order.
+	// Surface genuinely-popular images first: live API order is recommend-weighted, so
+	// present the most-deployed groups' images first (subjects are shown in envelope
+	// order).
 	sort.SliceStable(filtered, func(i, j int) bool {
 		return communityDeployCount(filtered[i]) > communityDeployCount(filtered[j])
 	})
+
+	// Flatten every community version into its OWN image subject carrying the same
+	// discrete, structured per-candidate facts the platform path emits — so the central
+	// Agent, which owns semantic image selection, sees each community image's real Tags,
+	// Description, ImageType, Container and SupportedGpuTypes and can cite it by id,
+	// exactly as it sees a platform image. The typed catalog parses the real per-version
+	// fields (honest absence for whatever a community row omits — usually the Softwares
+	// block); group popularity/author/version are attached as per-subject provenance,
+	// never a filter.
+	byID := map[string]deployment.ImageCatalogEntry{}
+	for _, e := range deployment.ParseCommunityImageEntries(raw) {
+		byID[strings.ToLower(e.ID)] = e
+	}
 
 	env := envelope.Envelope{
 		Kind:          envelope.KindImageList,
@@ -526,78 +541,93 @@ func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode pl
 	}
 	env.Computed = append(env.Computed,
 		envelope.Fact{Key: "image_category", Label: "Image category", Value: "community", Source: envelope.FactSourceComputed},
-		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(filtered), Source: envelope.FactSourceComputed},
+		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(byID), Source: envelope.FactSourceComputed},
 	)
-	lineBudget := communityImageGroupLimit
-	for _, entry := range filtered {
-		if lineBudget <= 0 {
+
+	seen := map[string]bool{}
+	shown := 0
+	for _, group := range filtered {
+		if shown >= imageListDisplayCap {
 			break
 		}
-		name := communityGroupName(entry)
-		if name == "" {
-			continue
-		}
-		subjectID := "image_group:" + name
-		env.Subjects = append(env.Subjects, envelope.Subject{
-			ID: subjectID, Name: name, Type: envelope.SubjectImageGroup,
-		})
-		env.Facts = append(env.Facts, envelope.Fact{
-			SubjectID: subjectID, Key: "group_name", Label: "名称", Value: name, Source: envelope.FactSourceAPI,
-		})
-		if author := safeString(entry, "Author"); author != "" {
-			env.Facts = append(env.Facts, envelope.Fact{
-				SubjectID: subjectID, Key: "author", Label: "作者", Value: author, Source: envelope.FactSourceAPI,
-			})
-		}
-		versions := mapSliceAt(entry, "Data")
-		env.Facts = append(env.Facts, envelope.Fact{
-			SubjectID: subjectID, Key: "version_count", Label: "版本数", Value: len(versions), Source: envelope.FactSourceAPI,
-		})
-		if dc := communityDeployCount(entry); dc > 0 {
-			env.Facts = append(env.Facts, envelope.Fact{
-				SubjectID: subjectID, Key: "deploy_count", Label: "部署次数", Value: int(dc), Source: envelope.FactSourceAPI,
-			})
-		}
-		lineBudget--
-		shown := 0
-		for _, v := range versions {
-			if lineBudget <= 0 || shown >= communityVersionPerGroup {
+		groupName := communityGroupName(group)
+		groupAuthor := safeString(group, "Author")
+		deployCount := communityDeployCount(group)
+		for _, v := range mapSliceAt(group, "Data") {
+			if shown >= imageListDisplayCap {
 				break
 			}
 			ver, ok := v.(map[string]any)
 			if !ok {
 				continue
 			}
-			parts := []string{}
-			for _, key := range []string{"CompShareImageId", "Name", "VersionName", "Version"} {
-				if val := safeString(ver, key); val != "" {
-					parts = append(parts, imageFieldLabel(key)+"="+val)
-				}
+			id := safeString(ver, "CompShareImageId")
+			if id == "" {
+				continue // honest drop — no synthetic id for an id-less version row
 			}
-			if len(parts) == 0 {
+			key := strings.ToLower(id)
+			if seen[key] {
 				continue
 			}
-			env.Facts = append(env.Facts, envelope.Fact{
-				SubjectID: subjectID,
-				Key:       fmt.Sprintf("version_%d", shown+1),
-				Label:     fmt.Sprintf("版本%d", shown+1),
-				Value:     strings.Join(parts, ", "),
-				Source:    envelope.FactSourceAPI,
+			catalogEntry, ok := byID[key]
+			if !ok {
+				continue
+			}
+			seen[key] = true
+			subjectID := "image:" + id
+			name := catalogEntry.Name
+			if name == "" {
+				name = groupName
+			}
+			env.Subjects = append(env.Subjects, envelope.Subject{
+				ID: subjectID, Name: name, Type: envelope.SubjectImage,
 			})
-			lineBudget--
+			appendStructuredImageFacts(&env, subjectID, catalogEntry)
+			// Group provenance, attached per subject (never a filter): author, the
+			// family's 部署次数 popularity, and the version's own label (distinct from
+			// the family name that became the subject name).
+			if author := safeString(ver, "Author"); author != "" {
+				env.Facts = append(env.Facts, envelope.Fact{
+					SubjectID: subjectID, Key: "author", Label: "作者", Value: author, Source: envelope.FactSourceAPI,
+				})
+			} else if groupAuthor != "" {
+				env.Facts = append(env.Facts, envelope.Fact{
+					SubjectID: subjectID, Key: "author", Label: "作者", Value: groupAuthor, Source: envelope.FactSourceAPI,
+				})
+			}
+			if label := communityVersionLabel(ver); label != "" {
+				env.Facts = append(env.Facts, envelope.Fact{
+					SubjectID: subjectID, Key: "version", Label: "版本", Value: label, Source: envelope.FactSourceAPI,
+				})
+			}
+			if deployCount > 0 {
+				env.Facts = append(env.Facts, envelope.Fact{
+					SubjectID: subjectID, Key: "deploy_count", Label: "部署次数", Value: int(deployCount), Source: envelope.FactSourceAPI,
+				})
+			}
 			shown++
 		}
-		if len(versions) > shown {
-			env.Facts = append(env.Facts, envelope.Fact{
-				SubjectID: subjectID,
-				Key:       "versions_truncated",
-				Label:     "版本截断",
-				Value:     fmt.Sprintf("共 %d 个版本，仅展示 %d 个", len(versions), shown),
-				Source:    envelope.FactSourceComputed,
-			})
-		}
+	}
+	if len(byID) > shown {
+		env.Computed = append(env.Computed, envelope.Fact{
+			Key: "display_truncated", Label: "Display truncated",
+			Value:  fmt.Sprintf("showing %d of %d community images; ask with a keyword to narrow", shown, len(byID)),
+			Source: envelope.FactSourceComputed,
+		})
 	}
 	return env
+}
+
+// communityVersionLabel returns the version-specific label (e.g. "v26.0529",
+// "latest") from a community version row — distinct from the family (group) name that
+// becomes the subject name. Absent → "" (no fact emitted; honest absence).
+func communityVersionLabel(ver map[string]any) string {
+	for _, key := range []string{"VersionName", "Version", "Name"} {
+		if v := safeString(ver, key); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // renderSharedImageListReply returns the reply and whether the shared-image list

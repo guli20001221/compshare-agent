@@ -615,7 +615,7 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 	}
 }
 
-func TestCreateInstanceGuided_CommunityPurposeRequiresConcreteImageSelectionBeforeCapacity(t *testing.T) {
+func TestCreateInstanceGuided_CommunitySourceRequiresConcreteImageSelectionBeforeCapacity(t *testing.T) {
 	executor := formMockExecutor()
 	executor.results["DescribeAvailableCompShareInstanceTypes"] = formSingle4090CatalogFixture()
 	executor.results["DescribeCommunityImages"] = map[string]any{"CompshareImageGroup": []any{
@@ -1094,7 +1094,69 @@ func TestGuidedImageFacetsOverrideCommunitySwitchesSource(t *testing.T) {
 	assert.NotContains(t, wfCtx.Params, "ImageName")
 }
 
-func TestCreateInstanceGuided_CommunityPurposeQueriesCommunityImages(t *testing.T) {
+// TestGuidedImageFacetsSourceChangeClearsStaleTypeTag is the F2 gate: an ImageType /
+// ImageTag chosen against the PREVIOUS source's catalog must be cleared when the source
+// changes, so it cannot filter the new source's candidates against foreign values (a
+// platform "System" type / platform tag would otherwise empty the community listing).
+// Cleared = absent = "no filter" (honest absence). Would go red if the source switch
+// carried the stale facets through.
+func TestGuidedImageFacetsSourceChangeClearsStaleTypeTag(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":     "4090",
+		"ImageSource": "platform",
+		"ImageType":   "System",
+		"ImageTag":    "深度学习",
+	})
+
+	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
+
+	assert.Equal(t, "community", wfCtx.Params["ImageSource"])
+	assert.NotContains(t, wfCtx.Params, "ImageType", "a source change must clear the previous source's type facet")
+	assert.NotContains(t, wfCtx.Params, "ImageTag", "a source change must clear the previous source's tag facet")
+}
+
+// TestGuidedImageFacetsSourceChangeClearsResubmittedType covers the reachable combined
+// edit: the facets form shows source+type together, so a single submit can carry the
+// old platform ImageType alongside ImageSource=community. The post-loop clear must win
+// regardless of map iteration order — the foreign type must not survive.
+func TestGuidedImageFacetsSourceChangeClearsResubmittedType(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":     "4090",
+		"ImageSource": "platform",
+		"ImageType":   "App",
+	})
+
+	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{
+		"ImageSource": "community",
+		"ImageType":   "App",
+	}))
+
+	assert.Equal(t, "community", wfCtx.Params["ImageSource"])
+	assert.NotContains(t, wfCtx.Params, "ImageType", "a resubmitted foreign type must be cleared on source change, not re-applied")
+}
+
+// TestGuidedImageFacetsSameSourceEditPreservesTypeTag is the negative half: the clear
+// fires ONLY on an actual source change. A same-source type edit must be preserved —
+// otherwise the fix would wipe a deliberate facet selection.
+func TestGuidedImageFacetsSameSourceEditPreservesTypeTag(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":     "4090",
+		"ImageSource": "platform",
+		"ImageType":   "App",
+		"ImageTag":    "深度学习",
+	})
+
+	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{
+		"ImageSource": "platform",
+		"ImageType":   "System",
+	}))
+
+	assert.Equal(t, "platform", wfCtx.Params["ImageSource"])
+	assert.Equal(t, "System", wfCtx.Params["ImageType"], "a same-source type edit must be preserved")
+	assert.Equal(t, "深度学习", wfCtx.Params["ImageTag"], "an untouched tag on a same-source edit must be preserved")
+}
+
+func TestCreateInstanceGuided_CommunitySourceQueriesCommunityImages(t *testing.T) {
 	executor := formMockExecutor()
 	var finalImageOptions []string
 
@@ -1143,7 +1205,7 @@ func TestCreateInstanceGuided_CommunityPurposeQueriesCommunityImages(t *testing.
 	assert.Equal(t, false, sortCondition["ASC"])
 }
 
-func TestCreateInstanceGuided_CommunityPurposeOverridesInitialPlatformSource(t *testing.T) {
+func TestCreateInstanceGuided_CommunitySourceOverridesInitialPlatformSource(t *testing.T) {
 	executor := formMockExecutor()
 	var finalImageOptions []string
 

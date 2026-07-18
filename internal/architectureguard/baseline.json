@@ -538,30 +538,6 @@
       "value": "(?i)(status|status code)\\D*(\\d{3})"
     },
     {
-      "id": "ef63f43dfc0edf1e",
-      "kind": "regex",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)cuda[_-]?(\\d{2,4})"
-    },
-    {
-      "id": "c412f7eceeb0043c",
-      "kind": "regex",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)torch[_-]?(\\d{2,4})"
-    },
-    {
-      "id": "f7f8f14d6fcae86c",
-      "kind": "regex",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "\\d+(?:\\.\\d+)*"
-    },
-    {
       "id": "57159e23460ed400",
       "kind": "string_heuristic",
       "path": "internal/capability/read_catalog_helpers.go",
@@ -606,30 +582,6 @@
       "symbol": "pricingKindIsCatalog",
       "callee": "strings.Contains",
       "value": "目录价"
-    },
-    {
-      "id": "26314cc657e4cb3c",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_stock.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "cuda"
-    },
-    {
-      "id": "0bea534907cf0db6",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_stock.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "nvidia"
-    },
-    {
-      "id": "35cc58f764c82143",
-      "kind": "string_heuristic",
-      "path": "internal/capability/read_stock.go",
-      "symbol": "selectCapacityPrecheckImageID",
-      "callee": "strings.Contains",
-      "value": "ubuntu"
     },
     {
       "id": "865b869432ab8276",
@@ -817,20 +769,6 @@
       "symbol": "isImageUnavailableError",
       "callee": "strings.Contains",
       "value": "CompShareImageId"
-    },
-    {
-      "id": "531361c698090585",
-      "kind": "string_heuristic",
-      "path": "internal/engine/create_image_recovery.go",
-      "symbol": "rankCreateImageCandidates",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "6603bfd091c0e8da",
-      "kind": "string_heuristic",
-      "path": "internal/engine/create_image_recovery.go",
-      "symbol": "sharesSubstringFold",
-      "callee": "strings.Contains"
     },
     {
       "id": "8589fb9c1302aef7",
@@ -1952,74 +1890,6 @@
       "value": "token"
     },
     {
-      "id": "39ca1182d37151e3",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "packedVersionFromRegex",
-      "callee": "strings.Contains",
-      "value": "."
-    },
-    {
-      "id": "baa5f49c7faf8293",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "platformImagePurposeRelevance",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "f7f73e5f52ae6418",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "platformImageRelevance",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "bf79c76ed9c6ec62",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "platformImageRelevance",
-      "callee": "strings.Contains",
-      "value": "nvidia"
-    },
-    {
-      "id": "ea649a76f66ddf71",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "platformImageRelevance",
-      "callee": "strings.Contains",
-      "value": "torch"
-    },
-    {
-      "id": "1e713ea8f9fa3ac6",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "platformImageVersionKey",
-      "callee": "strings.Contains",
-      "value": "cuda"
-    },
-    {
-      "id": "9d695529f2cb44be",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "platformImageVersionKey",
-      "callee": "strings.Contains",
-      "value": "torch"
-    },
-    {
-      "id": "c2ec903d6a465d42",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "sharesImageSubstring",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "7e8482f8e32dae0a",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/create_instance.go",
-      "symbol": "versionAfterToken",
-      "callee": "strings.Index"
-    },
-    {
       "id": "03a11410d5c96b00",
       "kind": "string_heuristic",
       "path": "internal/workflow/instance_shape.go",
@@ -2034,13 +1904,6 @@
       "symbol": "regionFromZone",
       "callee": "strings.LastIndex",
       "value": "-"
-    },
-    {
-      "id": "5d3deca58360348a",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/reinstall_instance.go",
-      "symbol": "reinstallImageMatches",
-      "callee": "strings.Contains"
     },
     {
       "id": "f58f082100cd71a6",

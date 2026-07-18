@@ -2516,12 +2516,17 @@ func applyGuidedCpuMemoryOverrides(wfCtx *Context, overrides map[string]string) 
 }
 
 func applyGuidedImageFacetsOverrides(wfCtx *Context, overrides map[string]string) error {
+	prevSource := paramStr(wfCtx.Params, "ImageSource", "platform")
+	sourceChanged := false
 	for k, v := range overrides {
 		switch k {
 		case "ImageSource":
 			source := strings.ToLower(strings.TrimSpace(v))
 			if source != "community" {
 				source = "platform"
+			}
+			if source != prevSource {
+				sourceChanged = true
 			}
 			wfCtx.Params["ImageSource"] = source
 		case "ImageType":
@@ -2531,6 +2536,17 @@ func applyGuidedImageFacetsOverrides(wfCtx *Context, overrides map[string]string
 		default:
 			return fmt.Errorf("不支持修改字段 %s", k)
 		}
+	}
+	// A source change invalidates the ImageType/ImageTag facets: those options were
+	// derived from the PREVIOUS source's catalog (platform types/tags differ from a
+	// community listing's), so carrying them would filter the new source's candidates
+	// against foreign values and can empty the list. Clear to absent = "no filter"
+	// (honest absence, never "match nothing"), so the re-queried source lists all its
+	// candidates; the user re-picks from that source's real facets. Fire ONLY on an
+	// actual source change so a same-source type/tag edit is preserved.
+	if sourceChanged {
+		delete(wfCtx.Params, "ImageType")
+		delete(wfCtx.Params, "ImageTag")
 	}
 	// Any facet change invalidates a previously-picked concrete image: the refreshed
 	// image step re-picks from the newly-scoped candidates rather than carrying a

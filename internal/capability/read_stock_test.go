@@ -172,3 +172,31 @@ func TestStockHandle_UpstreamError(t *testing.T) {
 	assert.Equal(t, platform.ReadFailureGenericRead, result.FailureClass)
 	assert.Equal(t, stockCapabilityLabel+": "+FriendlyReadFailureReply, result.Reply)
 }
+
+// TestSelectCapacityPrecheckImageID_KeywordFree is the F3 gate: the capacity-probe
+// image pick must NOT prefer a name containing ubuntu/nvidia/cuda over the first
+// Available image. The probe only needs SOME valid System image to satisfy the API's
+// required CompShareImageId param; the deleted keyword scorer would have returned the
+// ubuntu/cuda row here, so this would go red if the second image interpreter came back.
+func TestSelectCapacityPrecheckImageID_KeywordFree(t *testing.T) {
+	raw := map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-plain", "Name": "Base System", "ImageType": "System", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04 CUDA", "ImageType": "System", "Status": "Available"},
+	}}
+	assert.Equal(t, "img-plain", selectCapacityPrecheckImageID(raw),
+		"probe must pick the first Available image, never prefer an ubuntu/cuda name (keyword scorer deleted)")
+}
+
+// TestSelectCapacityPrecheckImageID_SkipsUnusableAndEmpty pins the preserved contract:
+// blank ids and non-Available/Normal statuses are skipped, and an empty set returns ""
+// (honest — the caller then reports 容量预检未执行, never a defaulted image).
+func TestSelectCapacityPrecheckImageID_SkipsUnusableAndEmpty(t *testing.T) {
+	raw := map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-busy", "Name": "X", "Status": "Creating"},
+		map[string]any{"CompShareImageId": "", "Name": "Y", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-ok", "Name": "Z", "Status": "Normal"},
+	}}
+	assert.Equal(t, "img-ok", selectCapacityPrecheckImageID(raw), "first usable id after skipping busy + blank-id rows")
+	assert.Equal(t, "", selectCapacityPrecheckImageID(map[string]any{"ImageSet": []any{}}),
+		"no usable row must return \"\" (honest absence, never a default image)")
+}

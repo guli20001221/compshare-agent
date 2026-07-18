@@ -517,11 +517,18 @@ func stockRegionFromZone(zone string) string {
 	return zone[:idx]
 }
 
+// selectCapacityPrecheckImageID returns any usable image id to satisfy the capacity
+// API's REQUIRED CompShareImageId param (CheckCompShareResourceCapacity returns RetCode
+// 230 without it). The image only seeds the probe (and its boot-disk sizing) — it never
+// drives the GPU-capacity conclusion the Agent reports — so the pick is deterministic
+// and keyword-free: the caller already scoped the query to ImageType=System, so the
+// first Available row is representative. There is deliberately NO name interpretation
+// (ubuntu/nvidia/cuda scoring): that was a second image interpreter the image
+// convergence removed everywhere else, and a stock turn carries no user image request
+// to resolve. Returns "" when no usable row — the caller then surfaces an honest
+// 容量预检未执行 message rather than defaulting to some image.
 func selectCapacityPrecheckImageID(raw map[string]any) string {
-	items := mapSliceAt(raw, "ImageSet")
-	bestID := ""
-	bestScore := -1
-	for _, item := range items {
+	for _, item := range mapSliceAt(raw, "ImageSet") {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
@@ -534,30 +541,9 @@ func selectCapacityPrecheckImageID(raw map[string]any) string {
 		if status != "" && !strings.EqualFold(status, "Available") && !strings.EqualFold(status, "Normal") {
 			continue
 		}
-		text := strings.ToLower(strings.Join([]string{
-			safeString(entry, "Name"),
-			safeString(entry, "ImageName"),
-			safeString(entry, "CompShareImageName"),
-		}, " "))
-		score := 0
-		if strings.EqualFold(safeString(entry, "ImageType"), "System") {
-			score += 4
-		}
-		if strings.Contains(text, "ubuntu") {
-			score += 4
-		}
-		if strings.Contains(text, "nvidia") || strings.Contains(text, "cuda") {
-			score += 3
-		}
-		if status != "" {
-			score++
-		}
-		if score > bestScore {
-			bestScore = score
-			bestID = id
-		}
+		return id
 	}
-	return bestID
+	return ""
 }
 
 func summarizeStockCapacity(entry stockInstanceTypeEntry, raw map[string]any) stockCapacityCheck {
