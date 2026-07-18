@@ -515,11 +515,13 @@ func TestThreadedCommunityIdResolvesNameFromAnyGroup(t *testing.T) {
 		"ImageSource": "community", "CompShareImageId": "cimg-003", "ImageName": "陈旧的名字",
 	}
 
-	selected := selectCreateImage(params, result)
+	wfCtx := NewContext(params)
+	wfCtx.StepResults["查询镜像"] = result
+	selected := selectCreateImage(wfCtx)
 
 	assert.Equal(t, "cimg-003", selected.ID)
 	assert.Equal(t, "社区-第三组", selected.Name,
-		"the id IS in the catalog — only groups[0] blindness could make this fall back to the threaded name")
+		"the id IS in the catalog — its name must come from the catalog, not the stale threaded name")
 }
 
 // TestCommunityImageIdAndNameComeFromTheSameGroup: the two community pickers read
@@ -537,7 +539,9 @@ func TestCommunityImageIdAndNameComeFromTheSameGroup(t *testing.T) {
 		},
 	}}
 
-	selected := selectCreateImage(map[string]any{"ImageSource": "community"}, result)
+	wfCtx := NewContext(map[string]any{"ImageSource": "community"})
+	wfCtx.StepResults["查询镜像"] = result
+	selected := selectCreateImage(wfCtx)
 
 	assert.Equal(t, "cimg-001", selected.ID)
 	assert.Equal(t, "社区-ComfyUI", selected.Name, "name and id must come from the same group")

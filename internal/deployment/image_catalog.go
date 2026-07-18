@@ -199,7 +199,11 @@ func ParseCommunityImageEntries(result map[string]any) []ImageCatalogEntry {
 			if !ok {
 				continue
 			}
-			if e.Name == "" {
+			// The group (family) name is the recognizable image name a user refers to
+			// and the create card shows ("Stable Diffusion WebUI"), not the per-version
+			// row name ("SD WebUI v1.9"). Prefer it; fall back to the row name only when
+			// the group carries none.
+			if groupName != "" {
 				e.Name = groupName
 			}
 			out = append(out, e)

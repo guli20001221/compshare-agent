@@ -92,7 +92,7 @@ func TestParsePlatformImageEntries_HonestAbsenceForBareImage(t *testing.T) {
 	}
 }
 
-func TestParseCommunityImageEntries_GroupedShapeAndNameBackfill(t *testing.T) {
+func TestParseCommunityImageEntries_GroupNameIsDisplayName(t *testing.T) {
 	result := map[string]any{
 		"CompshareImageGroup": []any{
 			map[string]any{
@@ -104,7 +104,7 @@ func TestParseCommunityImageEntries_GroupedShapeAndNameBackfill(t *testing.T) {
 						"Container":        "True",
 					},
 					map[string]any{
-						// Version row with no Name — group name backfills it.
+						// Version row with no Name.
 						"CompShareImageId": "img-sd-v2",
 					},
 				},
@@ -118,8 +118,11 @@ func TestParseCommunityImageEntries_GroupedShapeAndNameBackfill(t *testing.T) {
 	if entries[0].Source != "community" {
 		t.Errorf("community source not tagged: %q", entries[0].Source)
 	}
-	if entries[1].Name != "Stable Diffusion WebUI" {
-		t.Errorf("group name must backfill a version row with no Name, got %q", entries[1].Name)
+	// The group (family) name is the recognizable display name — for a version row
+	// with its own name AND a nameless one, both show the family name, not the
+	// per-version "SD WebUI v1".
+	if entries[0].Name != "Stable Diffusion WebUI" || entries[1].Name != "Stable Diffusion WebUI" {
+		t.Errorf("group name must be the display name for every version row, got %q / %q", entries[0].Name, entries[1].Name)
 	}
 }
 

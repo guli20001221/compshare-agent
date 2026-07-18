@@ -1105,7 +1105,7 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	image := selectCreateImage(wfCtx.Params, wfCtx.Result("查询镜像"))
+	image := selectCreateImage(wfCtx)
 	imageId := image.ID
 	if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" && imageId == "" {
 		return nil, fmt.Errorf("社区镜像未返回有效的镜像 ID，无法创建实例（请确认社区镜像名称是否正确）")
@@ -1518,84 +1518,88 @@ type SelectedImage struct {
 	Source string `json:"source"`
 }
 
-// selectCreateImage resolves the image ONCE. It is the only image decision in the
-// create flow; the draft carries the result whole, so the confirm card renders
-// Name and the create sends ID without either re-selecting.
-func selectCreateImage(params map[string]any, result map[string]any) SelectedImage {
+// selectCreateImage resolves the image ONCE, through the single deterministic
+// interpreter (deployment.ResolveImage) on the turn's image catalog. It is the only
+// image decision in the create flow; the draft carries the result whole, so the
+// confirm card renders Name and the create sends ID without either re-selecting.
+//
+// It replaces the old matchPlatformImage / selectCommunityImage / catalogImageName
+// trio and the two invariants they violated:
+//   - An explicitly threaded CompShareImageId (a 230-recovery re-run or a form
+//     override) is VERIFIED against the catalog; only a verified id is sealed, with
+//     its catalog name. An unverified id is NOT sealed under the caller's ImageName
+//     (the deleted catalogImageName fail-soft) — it falls through to name resolution,
+//     which may recommend a real image instead.
+//   - A named request with no exact catalog match is not silently swapped: the
+//     resolver returns a ranked candidate whose REAL catalog name the confirm card
+//     shows, and the user confirms it (the acceptance gate). Community no longer
+//     blindly takes groups[0].Data[0].
+func selectCreateImage(wfCtx *Context) SelectedImage {
+	params := wfCtx.Params
 	source := paramStr(params, "ImageSource", "platform")
+	snap := createImageCatalog(wfCtx)
+
 	if id := paramStr(params, "CompShareImageId", ""); id != "" {
-		// The id is already a decision (threaded in by the deploy_model handler or
-		// a form override). Prefer the name the catalog gives for THAT id over the
-		// ImageName that travelled alongside it: when the two disagree the catalog
-		// describes the image that will actually be built.
-		return SelectedImage{ID: id, Name: catalogImageName(result, id, params), Source: source}
+		if res := deployment.ResolveImage(snap, deployment.ImageRequest{ID: id}); res.Status == deployment.ResolutionResolved {
+			return selectedImageFrom(res.Selection, source)
+		}
+		// Unverified id: fall through to name-based resolution rather than sealing
+		// the caller's ImageName over an id the catalog cannot confirm (invariant 1).
 	}
-	if source == "community" {
-		return selectCommunityImage(result)
+
+	res := deployment.ResolveImage(snap, deployment.ImageRequest{
+		Name:         paramStr(params, "ImageName", ""),
+		RequestedGPU: paramStr(params, "GpuType", ""),
+		Zone: deployment.ZoneConstraint{
+			Zone:  paramStr(params, "Zone", ""),
+			IsPod: paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false),
+		},
+		Source: source,
+		// The 查询镜像 step already filtered by name (platform Name= / community
+		// FuzzySearch=), so a non-exact request recommends the best of the returned
+		// rows instead of re-rejecting the API's own hits.
+		Prefiltered: true,
+	})
+	if res.Status == deployment.ResolutionResolved {
+		return selectedImageFrom(res.Selection, source)
 	}
-	img := matchPlatformImage(params, result)
-	if img == nil {
-		return SelectedImage{Source: source}
+	if len(res.Candidates) > 0 {
+		// A recommendation for a not_found/ambiguous named request. It carries the
+		// real catalog name, and the create's confirm gate makes the user confirm it,
+		// so this is never a silent swap.
+		return selectedImageFrom(res.Candidates[0], source)
 	}
-	id, _ := img["CompShareImageId"].(string)
-	name, _ := img["Name"].(string)
+	return SelectedImage{Source: source}
+}
+
+// createImageCatalog is the workflow's single view of the image catalog for
+// selection: the engine-threaded snapshot when present (the same one the resolver
+// canonicalized against), otherwise one built from this run's 查询镜像 result — so
+// the selection reads the SAME images the compatibility / boot-disk checks read,
+// never a second source.
+func createImageCatalog(wfCtx *Context) *deployment.ImageCatalogSnapshot {
+	if snap := wfCtx.ImageCatalog(); snap.Available() {
+		return snap
+	}
+	result := wfCtx.Result("查询镜像")
+	if result == nil {
+		return deployment.NewImageCatalogSnapshot(false, nil)
+	}
+	if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
+		return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(result))
+	}
+	return deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(result, "platform"))
+}
+
+// selectedImageFrom projects a resolver ImageSelection onto the create flow's
+// SelectedImage, keeping the declared source. A missing name shows as 未知 (the
+// selection came from the catalog, so this is reached only for a truly nameless row).
+func selectedImageFrom(sel deployment.ImageSelection, source string) SelectedImage {
+	name := sel.Name
 	if name == "" {
 		name = "未知"
 	}
-	return SelectedImage{ID: id, Name: name, Source: source}
-}
-
-// catalogImageName returns the catalog's display name for an already-chosen id.
-//
-// It delegates to imageNameByID, which walks EVERY community group and the whole
-// platform ImageSet. The first version of this function grew its own community
-// lookup off selectCommunityImage — which only reads groups[0] — so an id living
-// in the second group or later was reported "not in the catalog" and fell back to
-// the threaded name, breaking the very contract this function exists to keep. One
-// id→name lookup, not two.
-//
-// The fallback is only reached when the id is genuinely absent from this response
-// (a community id against a platform query, a cached id, an empty result). What it
-// returns is a name NOT confirmed against the catalog — the caller is trusting the
-// pair it was handed. A future typed image capability should distinguish resolved
-// / not-found / catalog-unavailable instead of flattening all three into a string.
-func catalogImageName(result map[string]any, id string, params map[string]any) string {
-	if name := imageNameByID(result, id); name != "" {
-		return name
-	}
-	return paramStr(params, "ImageName", "")
-}
-
-// selectCommunityImage reads the id and the display name off the SAME group, so
-// the pair cannot drift apart the way two independent walks could.
-func selectCommunityImage(result map[string]any) SelectedImage {
-	selected := SelectedImage{Name: "未知", Source: "community"}
-	if result == nil {
-		return selected
-	}
-	groups, ok := result["CompshareImageGroup"].([]any)
-	if !ok || len(groups) == 0 {
-		return selected
-	}
-	group, ok := groups[0].(map[string]any)
-	if !ok {
-		return selected
-	}
-	if name, ok := group["ImageName"].(string); ok && name != "" {
-		selected.Name = name
-	}
-	data, ok := group["Data"].([]any)
-	if !ok || len(data) == 0 {
-		return selected
-	}
-	first, ok := data[0].(map[string]any)
-	if !ok {
-		return selected
-	}
-	if id, ok := first["CompShareImageId"].(string); ok {
-		selected.ID = id
-	}
-	return selected
+	return SelectedImage{ID: sel.ID, Name: name, Source: source}
 }
 
 func pickImageId(params map[string]any, result map[string]any) string {

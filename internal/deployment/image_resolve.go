@@ -75,6 +75,15 @@ type ImageRequest struct {
 	RequestedGPU string
 	Zone         ZoneConstraint
 	Source       string
+
+	// Prefiltered marks a request whose Name was ALREADY applied by the upstream
+	// query (the create flow queries DescribeCompShareImages with Name= / community
+	// with FuzzySearch=, so every returned row is a legitimate name match). When set,
+	// a non-exact request recommends the best of the viable rows rather than applying
+	// a second, stricter client-side name filter that would reject the API's own
+	// hits. It never turns a not_found into a resolved — the recommendation still
+	// rides the confirm gate.
+	Prefiltered bool
 }
 
 // ImageResolution is the resolver's typed answer. Selection is populated only when
@@ -142,7 +151,10 @@ func ResolveImage(snap *ImageCatalogSnapshot, req ImageRequest) ImageResolution 
 	if !hasSpecificRequest(req) {
 		return ImageResolution{Status: ResolutionResolved, Selection: selectionFrom(viable[0], ProvenanceStructuredRecommendation)}
 	}
-	ranked := rankRelatedCandidates(viable, req)
+	// keepAll when the upstream query already filtered by name: every viable row is a
+	// legitimate hit, so recommend the best rather than drop rows a stricter
+	// client-side similarity would reject.
+	ranked := rankRecommendations(viable, req, req.Prefiltered)
 	return ImageResolution{Status: ResolutionNotFound, Candidates: selections(ranked, ProvenanceStructuredRecommendation)}
 }
 
@@ -228,14 +240,18 @@ func crossFrameworkCollision(a, b ImageCatalogEntry) bool {
 	return a.Software.Present && b.Software.Present && !strings.EqualFold(a.Software.Framework, b.Software.Framework)
 }
 
-// rankRelatedCandidates scores every viable entry by general name similarity plus
-// structured-field match plus a GPU-recommendation bump, keeps those with any
-// relation, and orders them by (score, version ladder, catalog order). It uses NO
-// domain keyword table — similarity is generic substring/token overlap, and the
-// structured signal reads the catalog's real SoftwareFacts. An entry that relates to
-// the request in no way is dropped, so a recommendation is never a wholly unrelated
-// image.
-func rankRelatedCandidates(entries []ImageCatalogEntry, req ImageRequest) []ImageCatalogEntry {
+// rankRecommendations scores every viable entry by general name similarity plus
+// structured-field match plus a GPU-recommendation bump, and orders them by (score,
+// version ladder, catalog order). It uses NO domain keyword table — similarity is
+// generic substring/token overlap, and the structured signal reads the catalog's
+// real SoftwareFacts.
+//
+// keepAll=false (the default, un-prefiltered path) drops entries that relate to the
+// request in no way, so a recommendation is never a wholly unrelated image. keepAll=
+// true (a Prefiltered request, where the upstream query already applied the name)
+// keeps every viable row, since the API already judged them relevant — the score
+// only orders them.
+func rankRecommendations(entries []ImageCatalogEntry, req ImageRequest, keepAll bool) []ImageCatalogEntry {
 	type scored struct {
 		e     ImageCatalogEntry
 		score int
@@ -245,7 +261,7 @@ func rankRelatedCandidates(entries []ImageCatalogEntry, req ImageRequest) []Imag
 	var out []scored
 	for i, e := range entries {
 		s := nameSimilarity(want, e.Name) + structuredScore(req, e.Software) + gpuBump(req.RequestedGPU, e.SupportedGPUTypes)
-		if s <= 0 {
+		if s <= 0 && !keepAll {
 			continue
 		}
 		out = append(out, scored{e: e, score: s, idx: i})
