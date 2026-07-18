@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/compshare-agent/internal/deployment"
 )
 
 func ReinstallInstanceDef() *Definition {
@@ -236,9 +238,15 @@ func reinstallSelectedImageSource(wfCtx *Context) string {
 	}
 }
 
+// targetReinstallImage resolves the reinstall target through the ONE image
+// interpreter (deployment.ResolveImage), against each candidate source's query
+// result in turn. It replaces the reinstall-specific matcher (exact-id OR
+// name==want||Contains) — the third image interpreter the convergence removes. The
+// snapshot carries the image size too, so the disk-fit check reads it from the same
+// resolved row rather than a parallel walk of the response.
 func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
-	want := paramStr(wfCtx.Params, "CompShareImageId", "")
-	wantName := paramStr(wfCtx.Params, "ImageName", "")
+	id := paramStr(wfCtx.Params, "CompShareImageId", "")
+	name := paramStr(wfCtx.Params, "ImageName", "")
 	for _, item := range []struct {
 		step   string
 		source string
@@ -251,102 +259,56 @@ func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
 		if reinstallShouldSkipSource(wfCtx, item.source) {
 			continue
 		}
-		if img, ok := findReinstallImage(wfCtx.Result(item.step), want, wantName, item.source); ok {
-			return img, true
+		result := wfCtx.Result(item.step)
+		if result == nil {
+			continue
 		}
+		snap := reinstallSnapshot(result, item.source)
+		res := deployment.ResolveImage(snap, deployment.ImageRequest{
+			ID:     id,
+			Name:   name,
+			Source: item.source,
+			// The platform and community reinstall queries filter by name (Name= /
+			// FuzzySearch=), so a non-exact request recommends the best returned row;
+			// the custom/sharing queries return the full list, so client-side name
+			// relevance still applies there.
+			Prefiltered: item.source == "platform" || item.source == "community",
+		})
+		sel, ok := reinstallSelection(res)
+		if !ok {
+			continue
+		}
+		entry, _ := snap.ByID(sel.ID)
+		return reinstallImageInfo{
+			ID:        sel.ID,
+			Name:      sel.Name,
+			Source:    item.source,
+			Container: sel.Container,
+			SizeMB:    entry.SizeMB,
+		}, true
 	}
 	return reinstallImageInfo{}, false
 }
 
-func findReinstallImage(result map[string]any, wantID, wantName, source string) (reinstallImageInfo, bool) {
-	if result == nil {
-		return reinstallImageInfo{}, false
+// reinstallSelection picks the resolved image, or the top recommended candidate for
+// a not_found/ambiguous named request, or nothing when the source has no match.
+func reinstallSelection(res deployment.ImageResolution) (deployment.ImageSelection, bool) {
+	if res.Status == deployment.ResolutionResolved {
+		return res.Selection, true
 	}
-	for _, img := range imageSetMaps(result) {
-		if info, ok := reinstallImageFromMap(img, source); ok && reinstallImageMatches(info, wantID, wantName) {
-			return info, true
-		}
+	if len(res.Candidates) > 0 {
+		return res.Candidates[0], true
 	}
-	for _, img := range communityImageMaps(result) {
-		if info, ok := reinstallImageFromMap(img, source); ok && reinstallImageMatches(info, wantID, wantName) {
-			return info, true
-		}
-	}
-	return reinstallImageInfo{}, false
+	return deployment.ImageSelection{}, false
 }
 
-func reinstallImageMatches(info reinstallImageInfo, wantID, wantName string) bool {
-	if strings.TrimSpace(wantID) != "" {
-		return imageIDMatches(info.ID, wantID)
+// reinstallSnapshot builds the turn's image catalog for one reinstall source from
+// its query result, parsing the grouped community shape or the flat ImageSet shape.
+func reinstallSnapshot(result map[string]any, source string) *deployment.ImageCatalogSnapshot {
+	if source == "community" {
+		return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(result))
 	}
-	want := strings.ToLower(strings.TrimSpace(wantName))
-	if want == "" {
-		return false
-	}
-	name := strings.ToLower(strings.TrimSpace(info.Name))
-	return name == want || strings.Contains(name, want)
-}
-
-func imageSetMaps(result map[string]any) []map[string]any {
-	raw, ok := result["ImageSet"].([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]map[string]any, 0, len(raw))
-	for _, item := range raw {
-		if m, ok := item.(map[string]any); ok {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
-func communityImageMaps(result map[string]any) []map[string]any {
-	groups, ok := result["CompshareImageGroup"].([]any)
-	if !ok {
-		return nil
-	}
-	out := []map[string]any{}
-	for _, rawGroup := range groups {
-		group, ok := rawGroup.(map[string]any)
-		if !ok {
-			continue
-		}
-		groupName, _ := group["ImageName"].(string)
-		data, ok := group["Data"].([]any)
-		if !ok {
-			continue
-		}
-		for _, rawData := range data {
-			img, ok := rawData.(map[string]any)
-			if !ok {
-				continue
-			}
-			if _, ok := img["ImageName"]; !ok && groupName != "" {
-				img["ImageName"] = groupName
-			}
-			out = append(out, img)
-		}
-	}
-	return out
-}
-
-func reinstallImageFromMap(img map[string]any, source string) (reinstallImageInfo, bool) {
-	id := firstStringValue(img, "CompShareImageId", "ImageId", "Id")
-	if id == "" {
-		return reinstallImageInfo{}, false
-	}
-	name := firstStringValue(img, "Name", "CompShareImageName", "ImageName")
-	if name == "" {
-		name = id
-	}
-	return reinstallImageInfo{
-		ID:        id,
-		Name:      name,
-		Source:    source,
-		Container: paramBool(img, "Container", false) || paramBool(img, "IsContainer", false),
-		SizeMB:    diskNumber(img, "Size", "ActualSize", "ImageSize"),
-	}, true
+	return deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(result, source))
 }
 
 func currentSystemDiskGB(result map[string]any) float64 {
@@ -356,38 +318,4 @@ func currentSystemDiskGB(result map[string]any) float64 {
 		}
 	}
 	return 0
-}
-
-func firstStringValue(m map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if v, ok := m[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func imageIDMatches(got, want string) bool {
-	return want == "" || strings.EqualFold(got, want)
-}
-
-func extractImageName(result map[string]any) string {
-	if result == nil {
-		return ""
-	}
-	imageSet, ok := result["ImageSet"].([]any)
-	if !ok || len(imageSet) == 0 {
-		return ""
-	}
-	first, ok := imageSet[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	if name, ok := first["Name"].(string); ok && name != "" {
-		return name
-	}
-	if name, ok := first["CompShareImageName"].(string); ok && name != "" {
-		return name
-	}
-	return ""
 }
