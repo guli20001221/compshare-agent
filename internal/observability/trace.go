@@ -122,11 +122,11 @@ type TraceRecord struct {
 	// turn (no-tool ReAct answer, hard-block / canned reply) — empty means
 	// "tier not known", never default-to-agent (attribution-observable-only).
 	ActualExecutionTier string `json:"actual_execution_tier,omitempty"`
-	// ActualExecutionPath is the runtime-form axis: the coarse runtime architecture
-	// form that actually handled this turn. It is derived from observed execution
-	// signals, not from planner output: routing / terminal_rag / agent. This is a
-	// DIFFERENT axis from ActualExecutionTier and may diverge from it by design (see the
-	// ExecutionPath* consts). Empty means not observable.
+	// ActualExecutionPath is the LEGACY runtime-form axis (routing / terminal_rag /
+	// agent) — see the ExecutionPath* const note. It is retained for trace/dashboard
+	// continuity across the P6 cutover, NOT the current architecture (which has one
+	// execution form, the central Agent loop). Derived from observed signals, not
+	// from any planner (the planner was deleted). Empty means not observable.
 	ActualExecutionPath string               `json:"actual_execution_path,omitempty"`
 	Runtime             RuntimeTrace         `json:"runtime"`
 	IntentRouter        RouterTrace          `json:"intent_router"`
@@ -266,9 +266,10 @@ func traceContinuityObserved(trace ContinuityTrace) bool {
 //
 //   - Work-tier axis (TaskTier predicted / ActualExecutionTier realized): WHAT KIND of
 //     work the turn did, on the ADR-001 complexity scale fast < knowledge < agent.
-//   - Runtime-form axis (PlannedExecutionPath / ActualExecutionPath): WHICH runtime
-//     architecture executed — routing (deterministic handler) / terminal_rag
-//     (final-answer retrieval workflow) / agent (ReAct loop).
+//   - Runtime-form axis (PlannedExecutionPath / ActualExecutionPath): the LEGACY
+//     runtime-form label — routing / terminal_rag / agent (see the ExecutionPath*
+//     const note). Retained for trace continuity; the current runtime has one form
+//     (the central Agent loop), so this axis is legacy trace-compat, not current.
 //
 // The axes correspond only loosely (fast↔routing, knowledge↔terminal_rag,
 // agent↔agent): a turn can do knowledge-tier WORK on the agent FORM — a

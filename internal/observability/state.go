@@ -43,7 +43,9 @@ type StateTrace struct {
 	// a metric label never carries unbounded cardinality. Empty when no fresh
 	// fact was injected this turn.
 	FactCacheOldestAgeBucket string `json:"fact_cache_oldest_age_bucket,omitempty"`
-	// ContextDecision* records the global context-decision layer's safe summary.
+	// ContextDecision* recorded the pre-P6 global context-decision layer's safe summary. That layer
+	// was deleted in P6; these are LEGACY trace-compat fields, retained for
+	// trace-schema continuity.
 	// It deliberately omits the raw user message and concrete API params; this is
 	// for debugging continuation decisions without leaking zone_id / az_group /
 	// tokens / passwords or model-proposed untrusted parameters.

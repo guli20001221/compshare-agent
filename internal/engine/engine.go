@@ -84,8 +84,8 @@ const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机
 
 // monitor_history refusal text moved to internal/refusal/templates.go in the
 // C2 hard-block 归一 refactor. Call sites import refusal directly; this file no
-// longer declares it. (account_billing canned reply removed 2026-06-10 — the
-// planner's semantic billing routing replaced the keyword hard-block.)
+// longer declares it. (account_billing canned reply removed 2026-06-10 — that
+// intent now dispatches to the central Agent loop, not a keyword hard-block.)
 
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
@@ -271,13 +271,12 @@ type Engine struct {
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
 	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn sent into the shared
-	// ReAct loop. A first-turn question forces retrieval;
-	// a follow-up may reuse sufficient visible conversation. Set
-	// in tryPlannerDispatch;
-	// read by the ReAct loop, executeSearchKnowledge / the semantic evidence
-	// verifier, and
-	// emitPlannerTrace (projects PlannedExecutionPath=agent so planned==actual).
-	// Reset per turn.
+	// ReAct loop. A first-turn question forces retrieval; a follow-up may reuse
+	// sufficient visible conversation. Set when the engine routes a knowledge_qa
+	// turn into the agent loop; read by the ReAct loop, executeSearchKnowledge /
+	// the semantic evidence verifier. The legacy PlannedExecutionPath=agent trace
+	// projection is emitted for trace continuity (see the ExecutionPath* legacy
+	// note). Reset per turn.
 	knowledgeQAAgentLoopThisTurn bool
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
@@ -919,8 +918,9 @@ func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryT
 	}
 }
 
-// RegistrySnapshot returns an immutable entity snapshot for shadow planner
-// validation. It does not expose the registry object, maps, or lock to callers.
+// RegistrySnapshot returns an immutable entity snapshot for the central Agent's
+// reference resolution / action-proposal validation (the pre-P6 shadow planner
+// is gone). It does not expose the registry object, maps, or lock to callers.
 func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 	if e == nil || e.registry == nil {
 		return entity.RegistrySnapshot{SyncEvent: string(entity.SyncEventUnavailable)}
@@ -1250,9 +1250,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// before we stop. This preserves the WS protocol invariant that
 		// every tool_call is followed by a tool_result on the wire —
 		// breaking mid-pair would leave the client with an orphan
-		// tool_call frame. First iteration (round 0) sees consumed
-		// pre-loaded with any planner LLM call (accumulateTokenUsage
-		// in callPlannerOnce) and triggers if that already blew budget.
+		// tool_call frame. (Historically round 0 also saw token usage
+		// pre-loaded from a separate planner LLM call; that planner was
+		// deleted in P6, so the central Agent's first LLM call is in-loop.)
 		if e.tokenBudgetExceeded() {
 			// PR2 budget policy: if a prior round's SearchKnowledge already
 			// gathered evidence this turn, write the final answer from it
@@ -1282,10 +1282,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled)
 		req := llm.ChatRequest{
 			Messages: messages,
-			// The dispatch tool window is derived solely from the planner intent
-			// via this seam; the planner-emitted RequiredTools is validation/
-			// trace-only and never authorizes dispatch (see
-			// visibleRegistryForIntentRoute + TestPlannerRequiredToolsDoNotAuthorizeDispatch).
+			// The central Agent's tool window comes from centralAgentToolWindow
+			// (dispatch_window.go), gated only by whether mutating tools are
+			// enabled — there is no planner intent or per-route RequiredTools
+			// authorizing dispatch (that intent-route stack was deleted in P6).
 			Tools: toolWindow,
 		}
 		// Once the bounded search budget is exhausted, remove the capability. The
@@ -1816,10 +1816,9 @@ func (e *Engine) emitTokenUsage(usage llm.TokenUsage) {
 	if total > 0 {
 		// Track regardless of observer wiring so the per-turn budget
 		// check sees every LLM call's usage, not just turns that happen
-		// to have an observer attached. Planner LLM calls are not
-		// routed through emitTokenUsage (they're observed via
-		// emitPlannerTrace) and add to the same counter via
-		// accumulateTokenUsage below.
+		// to have an observer attached. (The pre-P6 planner made a separate
+		// LLM call observed outside emitTokenUsage; that planner is gone, so
+		// all current LLM usage flows through here via accumulateTokenUsage.)
 		e.turnTokensConsumed += total
 	}
 	if e.tokenUsageObserver == nil || total == 0 {

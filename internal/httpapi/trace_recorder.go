@@ -282,8 +282,9 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 	}
 }
 
-// EmitStep accumulates one agent-tier saga StepTrace into THIS turn's record
-// (B6.2). The orchestrator saga runner uses the recorder as its StepSink. Steps
+// EmitStep accumulates one agent-tier StepTrace into THIS turn's record (B6.2).
+// (The pre-P6 orchestrator saga runner used the recorder as its StepSink; that
+// orchestrator/saga runner was removed.) Steps
 // are folded into record.Steps in memory and persisted ONCE at Finish via
 // Enqueue/Append → prepareForPersist (which redacts Args/Result) — never a
 // per-step INSERT (a per-step INSERT would collide uk_request_uuid: one

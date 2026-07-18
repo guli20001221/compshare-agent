@@ -19,7 +19,7 @@ const (
 	// RouteStatusDispatchedAgent marks a turn the agent-tier dispatch handler
 	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier route
 	// dispatch) so DeriveActualExecutionTier maps it to the agent tier rather than fast
-	// — the deploy handler runs a TierAgent LLM match + the orchestrator saga.
+	// — the deploy handler runs a TierAgent LLM match, then the deploy_model Workflow (the separate orchestrator saga was removed).
 	RouteStatusDispatchedAgent RouteStatus = "dispatched_agent"
 	// RouteStatusDispatchedKnowledgeAgentLoop marks a knowledge_qa turn that the
 	// knowledge_qa route sent into the shared context-aware
@@ -30,7 +30,8 @@ const (
 	// agent (the turn runs the agent loop) while DeriveActualExecutionTier maps it to
 	// knowledge (it answers a knowledge question via retrieval — keeping the realized
 	// knowledge-work attribution stable across the terminal→agent-loop migration).
-	// Trace-only; emitted by the engine's tryPlannerDispatch, no planner prompt / SHA impact.
+	// Trace-only; emitted by the engine when it routes a knowledge_qa turn into the
+	// agent loop (the pre-P6 tryPlannerDispatch that named this is gone), no prompt / SHA impact.
 	RouteStatusDispatchedKnowledgeAgentLoop RouteStatus = "dispatched_knowledge_agent_loop"
 	RouteStatusFallbackInvalid              RouteStatus = "fallback_invalid"
 	RouteStatusFallbackLowConfidence        RouteStatus = "fallback_low_confidence"

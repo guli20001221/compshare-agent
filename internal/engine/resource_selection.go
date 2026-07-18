@@ -32,7 +32,7 @@ type pendingResourceSelection struct {
 
 // findExplicitInstanceRef scans a raw user message for an explicit instance ID and
 // resolves it against the snapshot. This is the deterministic backstop for the
-// intent router intermittently NOT extracting a literal ID into Slots.TargetRefs
+// central Agent intermittently NOT surfacing a literal ID as a resolved target
 // (Rule 5: a regex-matchable literal is resolved by code, not the LLM). Returns
 // the matched instance when an ID resolves; otherwise returns the first
 // unresolved ID-shaped token so the caller can say "未找到 X".

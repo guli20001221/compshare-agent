@@ -118,7 +118,7 @@ Read-only diagnostic tools. Only **SSH failure** and **billing anomaly** are adv
 
 ## HTTP service
 
-`compshare-agent server` runs the HTTP gateway alongside the CLI; both share the engine/knowledge/planner core.
+`compshare-agent server` runs the HTTP gateway alongside the CLI; both create the same central AgentRuntime via `engine.NewSession` and share the engine/knowledge core (the standalone Planner/intent-router was deleted in P6).
 
 - Entry: `cmd/server.go`. Routes: `POST /` (Action-routed) + `GET /healthz`.
 - Identity is taken from the request body (gateway-injected), not headers: `top_organization_id` / `organization_id` (uint32, snake_case) and `request_uuid` (string, snake_case, auto-generated if missing). Business fields stay PascalCase (`Action`, `SessionId`, `Message`).
@@ -133,5 +133,5 @@ Read-only diagnostic tools. Only **SSH failure** and **billing anomaly** are adv
 - The runtime is **read-only by default in Go code** (the binary refuses mutating tools unless the runtime parser sees `COMPSHARE_ENABLE_MUTATING_TOOLS=1`). The production `deploy/conf/config.yaml` sets `agent.features.mutating_tools: true`, and `RuntimeGetenv` maps that YAML field to the parser. Destructive / L2 actions (delete, terminate) stay refused regardless (`internal/tools/safe_executor.go`). Never set the flag in tests; mutating tests use the workflow registry directly.
 - Static FAQ text was removed from the ReAct prompt — platform knowledge flows only through the RAG retriever. Do not reintroduce `FAQContent` / `ReadOnlyFAQContent` injection (`internal/prompt/builder_test.go` has reverse assertions).
 - Shadow QA per-round configs under `eval/shadow_qa/**/agent.yaml` and `.env` files are git-ignored and contain real keys — never commit anything matching those globs.
-- When adding planner examples, group by intent and record a one-line source for each example; tests in `internal/intent/planner_prompt_test.go` enforce grouping/tool/intercept consistency.
+- The intent-router Planner and its grouped prompt examples were removed in P6 (`internal/intent/planner.go` and `planner_prompt_test.go` no longer exist). The central Agent's system prompt is assembled from `internal/prompt/segments.go`; change it behind the prompt-snapshot tests (see `docs/dev/prompt-change-checklist.md`).
 - `SecurityToken` must be included in API signing params before computing the HMAC-SHA1 signature. See `internal/tools/README.md` §6 for the six common pitfalls.
