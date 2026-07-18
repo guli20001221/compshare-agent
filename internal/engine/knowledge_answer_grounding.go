@@ -13,13 +13,18 @@ import (
 // Large enough to preserve every evidence item shown during one bounded turn.
 const searchKnowledgeLedgerTurnMaxItems = 256
 
-// searchKnowledgeCiteRetryNote is the single bounded cite-or-drop nudge appended
-// to the Agent's OWN context for one same-model retry. There is no second verifier
+// searchKnowledgeCiteRetryNote is the single bounded cite-or-drop nudge appended to
+// the Agent's OWN context for one same-model retry. There is no second verifier
 // persona: the central Agent rewrites its own answer with citations, or drops the
-// claim it cannot cite. The wording separates material facts (must cite) from
-// general knowledge (need not cite) so the retry never degrades a correct
-// stable-general answer into a refusal.
-const searchKnowledgeCiteRetryNote = `你上一条回答里有来自本轮资料的事实没有标注引用编号。请重写这条回答：每条来自本轮资料的事实都用 [1]、[2] 这样的编号标注（编号对应本轮证据条目的顺序）；属于通用常识、不来自本轮资料的内容可以不标；既无法从本轮资料引用、又不是通用常识的那一句，请删掉或改成不声称它是事实。不要整段复制资料原文，用自己的话概括。`
+// claim it cannot cite. It owns only its STATE — the framing and the general-knowledge
+// carve-out (general knowledge may stay uncited; the one claim that is neither citable
+// nor general knowledge is dropped) so the retry never degrades a correct
+// stable-general answer into a refusal — while the citation rule itself is the shared
+// buildRAGAnswerStrategyNote source.
+var searchKnowledgeCiteRetryNote = buildRAGAnswerStrategyNote(
+	`你上一条回答里有来自本轮资料的事实没有标注引用编号。请重写这条回答：`,
+	`属于通用常识、不来自本轮资料的内容可以不标；既无法从本轮资料引用、又不是通用常识的那一句，请删掉或改成不声称它是事实；`,
+)
 
 // resolvedKnowledgeQuestion is the single question used after retrieval. The
 // SearchKnowledge query is already the agent's history-aware rewrite; using the

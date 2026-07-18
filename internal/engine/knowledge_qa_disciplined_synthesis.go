@@ -9,11 +9,16 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// searchKnowledgeBudgetSynthNote asks the central Agent to write its final answer
-// NOW from the evidence it already gathered, for the case where the turn ran out
-// of token budget or ReAct rounds before it produced one. Single central-Agent
-// model call, same context, no verifier / repair persona.
-const searchKnowledgeBudgetSynthNote = `本轮已经检索到资料但还没有给出最终回答。请立即根据本轮已检索到的资料写出最终回答：每条来自本轮资料的事实用 [1]、[2] 这样的编号标注（编号对应本轮证据条目的顺序）；只写有资料支撑的内容，无法支撑的不要写；不要整段复制资料原文。`
+// searchKnowledgeBudgetSynthNote asks the central Agent to write its final answer NOW
+// from the evidence it already gathered, for the case where the turn ran out of token
+// budget or ReAct rounds before it produced one. Single central-Agent model call, same
+// context, no verifier / repair persona. It owns only its STATE — the framing and the
+// scope clause (write only evidence-supported content) — while the citation rule itself
+// is the shared buildRAGAnswerStrategyNote source.
+var searchKnowledgeBudgetSynthNote = buildRAGAnswerStrategyNote(
+	`本轮已经检索到资料但还没有给出最终回答。请立即根据本轮已检索到的资料写出最终回答：`,
+	`只写有资料支撑的内容，无法支撑的不要写；`,
+)
 
 // synthesizeOnBudgetExceeded writes a final answer from the evidence SearchKnowledge
 // already gathered this turn, for the budget / round-ceiling recovery paths: when

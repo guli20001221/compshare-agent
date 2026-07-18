@@ -61,6 +61,26 @@ func syntheticGroundedEngine(t *testing.T, retryResponses ...llm.ChatResponse) (
 	return eng, mock
 }
 
+// The citation rule has ONE source (buildRAGAnswerStrategyNote): both the cite-retry
+// and budget-recovery nudges must carry the exact shared numbering + no-verbatim
+// directive, while each keeps its own framing (state). Re-inlining a divergent rule
+// into either note — the drift this consolidation removes — makes this red.
+func TestRAGAnswerStrategyNote_SingleCitationRuleSource(t *testing.T) {
+	const citeRule = `每条来自本轮资料的事实用 [1]、[2] 这样的编号标注（编号对应本轮证据条目的顺序）；`
+	const noVerbatim = `不要整段复制资料原文，用自己的话概括。`
+	for name, note := range map[string]string{
+		"cite-retry":      searchKnowledgeCiteRetryNote,
+		"budget-recovery": searchKnowledgeBudgetSynthNote,
+	} {
+		assert.Contains(t, note, citeRule, name+": citation numbering rule must come from the shared source")
+		assert.Contains(t, note, noVerbatim, name+": no-verbatim rule must come from the shared source")
+	}
+	// State stays distinct: each exit still addresses its own situation.
+	assert.Contains(t, searchKnowledgeCiteRetryNote, "请重写这条回答", "cite-retry keeps its rewrite framing")
+	assert.Contains(t, searchKnowledgeBudgetSynthNote, "请立即根据本轮已检索到的资料写出最终回答", "budget-recovery keeps its write-now framing")
+	assert.NotEqual(t, searchKnowledgeCiteRetryNote, searchKnowledgeBudgetSynthNote, "the two states remain distinct notes")
+}
+
 // A validly-cited answer is accepted deterministically: markers stripped, no second
 // model, and the pure-RAG answer is remembered.
 func TestKnowledgeGrounding_ValidCitationAccepted(t *testing.T) {
