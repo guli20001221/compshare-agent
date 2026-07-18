@@ -85,4 +85,12 @@ func TestMatchesGPUTypeFilterUsesNarrowFamilyRules(t *testing.T) {
 	assert.False(t, matchesGPUTypeFilter("4090", "4090_48G"))
 	assert.False(t, matchesGPUTypeFilter("A100", "A10"))
 	assert.False(t, matchesGPUTypeFilter("P400", "P40"))
+
+	// The family relationship is derived from token structure, not a hardcoded 4090:
+	// a base fans out to its variants for ANY card, and the narrow rule (a shorter
+	// number is not a prefix of a longer one) holds for card pairs other than A10/A100.
+	assert.True(t, matchesGPUTypeFilter("4090Pro", "4090"), "another real 4090 variant is family")
+	assert.True(t, matchesGPUTypeFilter("V100S", "V100"), "a non-4090 base fans out to its variant")
+	assert.False(t, matchesGPUTypeFilter("V100", "V100S"), "a base does not match a specific-variant filter")
+	assert.False(t, matchesGPUTypeFilter("H200", "H20"), "H20 must not match H200, same narrow rule as A10/A100")
 }

@@ -126,22 +126,75 @@ func ApplyResourceFilters(instances []entity.InstanceSnapshot, filters ResourceF
 }
 
 func MatchesGPUTypeFilter(actual, filter string) bool {
-	actual = normalizeGPUType(actual)
-	filter = normalizeGPUType(filter)
-	if filter == "" {
+	if normalizeGPUType(filter) == "" {
 		return false
 	}
-	// The "4090" family fans out into several catalog cards (4090, 4090Pro,
-	// 4090_48G) that all normalize to contain a "4090" substring, so a plain
-	// "4090" filter is treated as a family match. Every other GPU stays
-	// exact-match to avoid false positives (e.g. "A10" must not match "A100",
-	// "P40" not "P400"). See TestMatchesGPUTypeFilterUsesNarrowFamilyRules.
-	// TODO: derive the family relationship from the live catalog instead of
-	// hardcoding the one card that currently has sub-variants.
-	if filter == "4090" {
-		return strings.Contains(actual, filter)
+	if normalizeGPUType(actual) == normalizeGPUType(filter) {
+		return true
 	}
-	return actual == filter
+	// Family match, derived from the card-name structure the live catalog produces
+	// rather than a hardcoded card: a base model matches its catalog variants because
+	// the base's token run appears intact inside the variant's — "4090" matches the
+	// cards "4090_48G", "4090Pro" and the brand-prefixed "RTX4090"; "V100" matches
+	// "V100S". Tokens split on separators AND letter↔digit transitions, so a shorter
+	// number can never masquerade as a prefix of a longer one: "A10" ([a 10]) is not a
+	// token run of "A100" ([a 100]), keeping A10≠A100, P40≠P400 and H20≠H200 without
+	// naming any card. A filter that already carries a variant suffix ("4090_48G")
+	// stays exact — its longer token run is absent from the bare base.
+	return containsTokenRun(gpuTypeTokens(actual), gpuTypeTokens(filter))
+}
+
+// gpuTypeTokens splits a GPU name into ordered alphanumeric tokens, breaking on
+// separators (_ - . space) and on every letter↔digit transition. So "4090_48G" →
+// [4090 48 g], "RTX4090" → [rtx 4090], "A100" → [a 100] and "A10" → [a 10]. Keeping
+// numbers as whole tokens is what lets a family match tell "4090" inside "4090_48G"
+// (a real sub-token) from "A10" inside "A100" (a truncated number, not a token).
+func gpuTypeTokens(value string) []string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var tokens []string
+	var cur []rune
+	var curDigit bool
+	flush := func() {
+		if len(cur) > 0 {
+			tokens = append(tokens, string(cur))
+			cur = cur[:0]
+		}
+	}
+	for _, r := range value {
+		isDigit := r >= '0' && r <= '9'
+		isLetter := r >= 'a' && r <= 'z'
+		if !isDigit && !isLetter {
+			flush() // separator
+			continue
+		}
+		if len(cur) > 0 && isDigit != curDigit {
+			flush() // letter↔digit transition
+		}
+		curDigit = isDigit
+		cur = append(cur, r)
+	}
+	flush()
+	return tokens
+}
+
+// containsTokenRun reports whether sub appears as a contiguous run inside seq.
+func containsTokenRun(seq, sub []string) bool {
+	if len(sub) == 0 || len(sub) > len(seq) {
+		return false
+	}
+	for i := 0; i+len(sub) <= len(seq); i++ {
+		matched := true
+		for j := range sub {
+			if seq[i+j] != sub[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeGPUType(value string) string {
