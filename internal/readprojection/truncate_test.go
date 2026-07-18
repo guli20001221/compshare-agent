@@ -1,4 +1,4 @@
-package intent
+package readprojection
 
 import (
 	"testing"

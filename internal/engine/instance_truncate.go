@@ -9,7 +9,7 @@ import (
 )
 
 // truncateDescribeResultForReAct caps the UHostSet length of a raw
-// DescribeCompShareInstance result map to intent.DefaultMaxInstancesPerDisplay
+// DescribeCompShareInstance result map to readprojection.DefaultMaxInstancesPerDisplay
 // when the LLM did a full-account list (i.e. no specific UHostIds were
 // pinned in the call args). Mutates result in place, adding "Shown" and
 // "Truncated" fields so the LLM sees the pagination signal.

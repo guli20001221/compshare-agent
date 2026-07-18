@@ -1,4 +1,4 @@
-package intent
+package readprojection
 
 import (
 	"strings"
@@ -45,8 +45,8 @@ func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *test
 	assert.Contains(t, first, "train-a")
 	assert.Contains(t, first, "Running")
 	assert.Contains(t, first, "A100")
-	assert.Contains(t, first, resourceLabelInstanceID)
-	assert.Contains(t, first, resourceLabelName)
+	assert.Contains(t, first, ResourceLabelInstanceID)
+	assert.Contains(t, first, ResourceLabelName)
 	assert.NotContains(t, first, "Name=")
 	assert.NotContains(t, first, "State=")
 	assert.NotContains(t, first, strings.Repeat("b", 25))
