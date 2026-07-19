@@ -922,6 +922,7 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     react_result_projection: true
     react_history_compaction: true
     unified_create: true
+    forced_first_decision: true
     skill_executor_diagnosis_pilots:
       - diagnose-ssh
       - diagnose-billing
@@ -942,6 +943,8 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	assert.True(t, *f.MutatingTools)
 	require.NotNil(t, f.UnifiedCreate)
 	assert.True(t, *f.UnifiedCreate)
+	require.NotNil(t, f.ForcedFirstDecision)
+	assert.True(t, *f.ForcedFirstDecision)
 	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
 	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
@@ -956,9 +959,10 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	cfg := &Config{Agent: AgentConfig{
 		LLM: LLMConfig{APIKey: "resolved-llm-key"},
 		Features: FeaturesConfig{
-			MutatingTools: boolPtr(true), // YAML true → "1"
-			DurableTurns:  boolPtr(true),
-			UnifiedCreate: boolPtr(false),
+			MutatingTools:       boolPtr(true), // YAML true → "1"
+			DurableTurns:        boolPtr(true),
+			UnifiedCreate:       boolPtr(false),
+			ForcedFirstDecision: boolPtr(true), // deploy enables the create/write first-hop
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
@@ -986,6 +990,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
 	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "0", getenv("COMPSHARE_UNIFIED_CREATE"), "YAML false wins over env on")
+	assert.Equal(t, "1", getenv("COMPSHARE_FORCED_FIRST_DECISION"), "deploy YAML enables the forced first-decision")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")
