@@ -547,7 +547,9 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 		// before it creates; it never executes straight from intake.
 		if resolved.action.ReadyForIntake && e.guidedCreate && e.confirmEditsFn != nil {
 			onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案进入引导式表单收集"})
-			return e.executeResolvedWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData)
+			// ReadyForIntake established just above, so the constructor accepts it.
+			ca, _ := newConfirmableAction(resolved)
+			return e.executeResolvedWorkflow(ctx, ca, onStep)
 		}
 		e.rememberPendingResolvedAction(resolved.action)
 		return resolvedActionForModel(resolved.action)
@@ -555,8 +557,10 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案已验证，进入统一确认与执行门"})
 	// Thread the SAME zone snapshot the resolver canonicalized Zone against into the
 	// workflow, so the create runs against exactly one catalog for the turn rather
-	// than building a second one that could disagree (gate 1).
-	reply := e.executeResolvedWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData)
+	// than building a second one that could disagree (gate 1). ReadyForConfirmation
+	// was established at the top of this branch, so the constructor accepts it.
+	ca, _ := newConfirmableAction(resolved)
+	reply := e.executeResolvedWorkflow(ctx, ca, onStep)
 	// Record the target as a genuine user selection ONLY when the confirmation gate
 	// was ACCEPTED — the confirmation IS the SelectionProof for an Agent-inferred
 	// target. Gating on acceptance (not full workflow success) is deliberate: a

@@ -1278,7 +1278,7 @@ func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *
 	eng.rateLimitSubject = "sha256:subject"
 	eng.readExpensiveCallsThisTurn = maxReadExpensiveCallsPerTurn
 
-	reply := eng.executeResolvedWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, noopStep, zoneRefData(nil))
+	reply := eng.executeResolvedWorkflow(context.Background(), mustConfirmable("StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, zoneRefData(nil)), noopStep)
 
 	assert.Contains(t, reply, "执行关机", "successful stop returns a deterministic final reply")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
@@ -1308,7 +1308,7 @@ func TestWorkflowInternalReadExpensiveQuotaDenialReturnsFriendlyMessage(t *testi
 	eng.rateLimitSubject = "sha256:subject"
 	onStep, events := collectSteps()
 
-	reply := eng.executeResolvedWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, onStep, zoneRefData(nil))
+	reply := eng.executeResolvedWorkflow(context.Background(), mustConfirmable("StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, zoneRefData(nil)), onStep)
 
 	assert.Equal(t, finalReplyPrefix+rateLimitQPSMessage, reply)
 	assert.Empty(t, executor.calls, "workflow internal quota denial must stop before API execution")

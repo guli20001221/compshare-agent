@@ -40,8 +40,8 @@ func TestExecuteWorkflow_ZoneCatalogFailureAbortsCreateBeforeConfirm(t *testing.
 	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { confirmCalls++; return true })
 	eng.zoneCatalog = zones.NewCatalog(0) // fresh: the failing fetch is not masked by a shared cache
 
-	reply := eng.executeResolvedWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
-		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx())))
+	reply := eng.executeResolvedWorkflow(zoneUserCtx(),
+		mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx()))), noopStep)
 
 	if confirmCalls != 0 {
 		t.Errorf("the create must be refused before the confirmation gate, got %d confirm calls", confirmCalls)

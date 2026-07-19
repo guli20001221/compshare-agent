@@ -45,7 +45,7 @@ func TestExecuteWorkflow_GuidedCreateLocksExplicitGPU(t *testing.T) {
 		return workflow.ConfirmResolution{Confirmed: false}
 	}
 
-	_ = eng.executeResolvedWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(context.Background())))
+	_ = eng.executeResolvedWorkflow(context.Background(), mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)
 
 	assert.Equal(t, []string{"4090"}, gpuOptions)
 }
@@ -99,7 +99,7 @@ func TestExecuteWorkflow_GuidedCreateDoesNotOverrideResolvedGPUFromUserText(t *t
 		return workflow.ConfirmResolution{Confirmed: false}
 	}
 
-	_ = eng.executeResolvedWorkflow(context.Background(), "CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(context.Background())))
+	_ = eng.executeResolvedWorkflow(context.Background(), mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)
 
 	assert.NotEmpty(t, seenGpuArgs)
 	assert.Equal(t, "4090", seenGpuArgs[0])

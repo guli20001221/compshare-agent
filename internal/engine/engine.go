@@ -3409,6 +3409,42 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
+// confirmableAction is the ONLY input executeResolvedWorkflow accepts. Its fields
+// are unexported and its sole constructor (newConfirmableAction) takes a
+// resolver-produced resolvedProposal that is already gate-eligible
+// (ReadyForConfirmation, or ReadyForIntake for the guided form) — so no caller can
+// hand the workflow-execution entry a bare action name + args it invented. The
+// guarantee is a compile-time one: bare (action string, args map) can no longer
+// reach execution.
+//
+// The human confirmation gate fires INSIDE executeResolvedWorkflow
+// (workflow.Engine.Run → confirmFn), so this carrier is pre-confirmation
+// (Confirmable), not yet authorized; the post-confirm seal
+// (workflow.SealedActionContract) is a separate, deeper guarantee produced further
+// down in the run.
+type confirmableAction struct {
+	operation string
+	args      map[string]any
+	refData   workflow.ReferenceData
+}
+
+// newConfirmableAction builds the typed execution entry from a resolved proposal.
+// It returns ok=false unless the resolver adjudicated the action to a gate-eligible
+// state (ReadyForConfirmation or ReadyForIntake), so the only path to
+// executeResolvedWorkflow runs through the resolver. The two production callers have
+// already established readiness before calling, so they may ignore ok; re-checking
+// here makes the invariant a property of the type rather than of each call site.
+func newConfirmableAction(rp resolvedProposal) (confirmableAction, bool) {
+	if !rp.action.ReadyForConfirmation && !rp.action.ReadyForIntake {
+		return confirmableAction{}, false
+	}
+	return confirmableAction{
+		operation: rp.action.Operation,
+		args:      rp.action.Arguments,
+		refData:   rp.referenceData,
+	}, true
+}
+
 // executeResolvedWorkflow runs a predefined workflow whose action the Resolver
 // has already verified — including, for any write TARGET, the dual proof of
 // selection AND existence — and returns the result as a JSON string for the LLM
@@ -3416,16 +3452,18 @@ func uniqueStrings(values []string) []string {
 // target-authorization here. The Resolver is the sole authority for WHICH
 // instance a write acts on, and the account's single-instance completion happens
 // on the Resolver path (ContextCompiler's account_registry_single hint +
-// deriveProposalProvenance), never in this layer.
+// deriveProposalProvenance), never in this layer. Its only parameter carrying the
+// action is a confirmableAction, so a bare action name + args cannot reach here.
 //
-// refData is the turn's zone/image catalog, supplied by the caller — this
-// function never builds one itself. The action-proposal path builds exactly one
-// snapshot per turn (zoneCatalogSnapshotForSpec) and threads it here, so the
+// refData (act.refData) is the turn's zone/image catalog, supplied by the caller —
+// this function never builds one itself. The action-proposal path builds exactly
+// one snapshot per turn (zoneCatalogSnapshotForSpec) and threads it here, so the
 // resolver and the workflow can never see different zone lists (gate 1). A nil
 // snapshot is the honest "this operation has no zone" signal; a zone-needing
 // workflow handed nil (or an unavailable snapshot) fails closed rather than
 // guessing.
-func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData) string {
+func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAction, onStep func(StepEvent)) string {
+	action, args, refData := act.operation, act.args, act.refData
 	e.lastConfirmationAcceptedThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage

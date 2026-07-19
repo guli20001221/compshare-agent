@@ -90,8 +90,8 @@ func TestExecuteWorkflow_SealedParamsIgnoreContradictoryLastUserMsg(t *testing.T
 	eng := NewWithDeps(&mockLLM{}, exec, confirmFn)
 	eng.lastUserMsg = "算了我其实要一台 5090，不要 4090" // contradictory; must not leak into the contract
 
-	reply := eng.executeResolvedWorkflow(context.Background(), "CreateInstanceWorkflow",
-		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(context.Background())))
+	reply := eng.executeResolvedWorkflow(context.Background(),
+		mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)
 
 	assert.Equal(t, "4090", cardGpu, "the confirm card must show the resolved GPU, not the one named in lastUserMsg")
 	assert.NotContains(t, reply, "5090", "lastUserMsg must not reach the confirmed/executed contract")
@@ -135,8 +135,8 @@ func TestExecuteWorkflow_FailureNarrationUsesSealedNotPreEditParams(t *testing.T
 	eng := NewWithDeps(&mockLLM{}, exec, nil)
 	eng.confirmEditsFn = editsFn
 
-	reply := eng.executeResolvedWorkflow(context.Background(), "CreateInstanceWorkflow",
-		map[string]any{"GpuType": "4090", "ImageName": "PyTorch", "Zone": "cn-wlcb-01"}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(context.Background())))
+	reply := eng.executeResolvedWorkflow(context.Background(),
+		mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090", "ImageName": "PyTorch", "Zone": "cn-wlcb-01"}, zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)
 
 	assert.Equal(t, 1, confirmCalls, "the edit to a sold-out GPU fails on revalidation, before any second card")
 	assert.NotEqual(t, "A100", exec.createArgs["GpuType"],

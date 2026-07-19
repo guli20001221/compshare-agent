@@ -54,9 +54,9 @@ func TestExecuteWorkflow_RunsAgainstThreadedSnapshotNotASelfBuild(t *testing.T) 
 	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { confirmCalls++; return true })
 	eng.zoneCatalog = zones.NewCatalog(0)
 
-	reply := eng.executeResolvedWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
-		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep,
-		zoneRefData(deployment.NewZoneCatalogSnapshot(false, nil)))
+	reply := eng.executeResolvedWorkflow(zoneUserCtx(),
+		mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090", "ImageName": "PyTorch"},
+			zoneRefData(deployment.NewZoneCatalogSnapshot(false, nil))), noopStep)
 
 	assert.Contains(t, reply, "可用区目录当前不可用",
 		"executeWorkflow must run against the THREADED (unavailable) snapshot, not self-build a healthy one")

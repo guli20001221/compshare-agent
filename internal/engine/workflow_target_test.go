@@ -563,11 +563,11 @@ func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {
 	// action resolver's CodecZone (tested in internal/actionresolver), not in the
 	// workflow. executeResolvedWorkflow receives a canonical zone and resolves its
 	// Pod-zone internal ids (zone_id/az_group) from the turn's catalog snapshot.
-	_ = eng.executeResolvedWorkflow(zoneUserCtx(), "CreateCFSWorkflow", map[string]any{
+	_ = eng.executeResolvedWorkflow(zoneUserCtx(), mustConfirmable("CreateCFSWorkflow", map[string]any{
 		"Name": "shared-train",
 		"Size": float64(50),
 		"Zone": "cn-bj2-03",
-	}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx())))
+	}, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx()))), noopStep)
 
 	require.NotNil(t, priceArgs)
 	require.NotNil(t, createArgs)
@@ -591,11 +591,11 @@ func TestExecuteWorkflowCreateCFSRejectsNonPodZoneDeterministically(t *testing.T
 	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
 	eng.lastUserMsg = "帮我在 cn-wlcb-01 创建一个 50GB 的 CFS"
 
-	reply := eng.executeResolvedWorkflow(zoneUserCtx(), "CreateCFSWorkflow", map[string]any{
+	reply := eng.executeResolvedWorkflow(zoneUserCtx(), mustConfirmable("CreateCFSWorkflow", map[string]any{
 		"Name": "shared-train",
 		"Size": float64(50),
 		"Zone": "cn-wlcb-01",
-	}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx())))
+	}, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx()))), noopStep)
 
 	assert.Contains(t, reply, "CFS 创建没有成功")
 	assert.Contains(t, reply, "只支持 Pod")
@@ -622,9 +622,9 @@ func TestExecuteWorkflowEnableNetOptimizerResolvesAzGroup(t *testing.T) {
 	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
 	eng.lastUserMsg = "帮我开启华北一C网络加速"
 
-	_ = eng.executeResolvedWorkflow(zoneUserCtx(), "EnableNetOptimizerWorkflow", map[string]any{
+	_ = eng.executeResolvedWorkflow(zoneUserCtx(), mustConfirmable("EnableNetOptimizerWorkflow", map[string]any{
 		"Zone": "cn-bj2-03",
-	}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx())))
+	}, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx()))), noopStep)
 
 	require.NotNil(t, syncArgs)
 	assert.Equal(t, uint32(3003), syncArgs["az_group"])
