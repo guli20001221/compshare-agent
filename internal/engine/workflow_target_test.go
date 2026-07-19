@@ -64,11 +64,13 @@ func syncTwoInstances(t *testing.T, eng *Engine) {
 	}, "test"))
 }
 
-// An Agent-inferred target with NO deterministic binding and NO active same-id
-// verification this turn (only a bare fresh-registry hit) is refused, not carded.
-// Existence for an inferred id must be actively verified ("已核实") — a background
-// registry hit is exactly how a model would self-elect an arbitrary existing id.
-func TestProposalRejectsExistentButUnselectedTarget(t *testing.T) {
+// Under the uniform model, a concrete target the Agent proposes is existence-verified
+// and — if it exists — reaches the confirmation card, whether or not the user
+// referenced it deterministically. The card is the SelectionProof: the human confirms
+// the exact id shown. (Whether the Agent SHOULD propose a stop for an info question
+// like "怎么关机" is a P7 behavioral concern — the Agent ought to answer, not tool-call —
+// not the target-authorization layer's job; nothing executes without the confirm.)
+func TestInferredExistentTargetReachesConfirmationCard(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.lastUserMsg = "怎么关机"
@@ -79,14 +81,17 @@ func TestProposalRejectsExistentButUnselectedTarget(t *testing.T) {
 	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-unselected", "uhost-a"))
 
 	require.NoError(t, err)
-	require.False(t, resolved.action.ReadyForConfirmation,
-		"an existent instance the model picked without a user reference or active verification must not be authorized")
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Equal(t, "uhost-a", resolved.action.Arguments["UHostId"],
+		"an existent inferred target reaches the card; the user's confirm is the SelectionProof")
 }
 
-// Read-only observation cannot authorize: a SelectedInstanceID recorded from a read
-// (observed) is not a user selection and populates no same-id-verified evidence, so
-// a pronoun ("关机它") that would inherit it is refused on a multi-instance account.
-func TestProposalRejectsObservedSelectedInstanceTarget(t *testing.T) {
+// An OBSERVED referent (recorded from a read) is no longer refused: with a genuine
+// human confirm gate, the Agent proposing the observed instance's id is existence-
+// verified and reaches the card. "Observed vs chosen" collapses at the card — the
+// distinction that mattered when card DISPLAY was treated as authorization is moot now
+// that the user's confirm is what authorizes.
+func TestObservedReferentTargetReachesConfirmationCard(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:          SessionStateSchemaCurrent,
@@ -103,8 +108,8 @@ func TestProposalRejectsObservedSelectedInstanceTarget(t *testing.T) {
 	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-observed-pronoun", "uhost-a"))
 
 	require.NoError(t, err)
-	require.False(t, resolved.action.ReadyForConfirmation,
-		"a tool-observed selected instance is not a user selection, even under a pronoun")
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Equal(t, "uhost-a", resolved.action.Arguments["UHostId"])
 }
 
 // Positive control — an explicit id the user typed this turn is a SelectionProof,
@@ -274,6 +279,143 @@ func TestPointQueryFailureIsDependencyFailure(t *testing.T) {
 	require.NotEmpty(t, resolved.action.DependencyFailures,
 		"an existence-check outage is a dependency failure, not a rejected target")
 	require.Empty(t, resolved.action.Rejected)
+}
+
+// --- Cross-resource-kind existence verification (review finding 3) ---
+// A write target is verified by the ExactTargetVerifier for its KIND, never a single
+// instance verifier. A CFS is verified against DescribeCFS echoing the same CfsId; a
+// disk against its already-verified parent instance's DiskSet — both BEFORE the card.
+
+func resizeCFSProposal(turnID, cfsID string) map[string]any {
+	return map[string]any{
+		"turn_id": turnID, "operation": "ResizeCFSWorkflow",
+		"slots": []any{
+			map[string]any{"name": "CfsId", "value": cfsID},
+			map[string]any{"name": "Size", "value": float64(200)},
+		},
+	}
+}
+
+// A CFS target is verified against DescribeCFS echoing the same CfsId — the instance
+// registry never carries a CfsId, so the pre-fix instance verifier could only ever
+// (falsely) refuse it. A DescribeCFS response echoing the id cards the resize.
+func TestResizeCFSTargetVerifiedByDescribeCFS(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCFS" {
+			return map[string]any{"CFSSet": []any{map[string]any{"CfsId": "cfs-a", "Name": "shared", "Size": float64(100)}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.lastUserMsg = "把 cfs-a 扩到 200G"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cfs", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeCFSProposal("turn-cfs", "cfs-a"))
+
+	require.NoError(t, err)
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Equal(t, "cfs-a", resolved.action.Arguments["CfsId"])
+	require.Contains(t, exec.calls, "DescribeCFS", "a CFS target must be verified via DescribeCFS")
+	require.NotContains(t, exec.calls, "DescribeCompShareInstance", "a CFS target must not be verified against the instance registry")
+}
+
+// A DescribeCFS response that does NOT echo the requested CfsId is not existence.
+func TestResizeCFSRefusedWhenDescribeCFSDoesNotEcho(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCFS" {
+			return map[string]any{"CFSSet": []any{map[string]any{"CfsId": "cfs-other"}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.lastUserMsg = "把 cfs-a 扩到 200G"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cfs-miss", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeCFSProposal("turn-cfs-miss", "cfs-a"))
+
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation, "a DescribeCFS response that does not echo the id is not existence")
+}
+
+// A failed DescribeCFS is a dependency failure (our outage), never a false NotFound.
+func TestResizeCFSDependencyFailureOnDescribeCFSError(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCFS" {
+			return nil, fmt.Errorf("upstream 503")
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.lastUserMsg = "把 cfs-a 扩到 200G"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cfs-fail", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeCFSProposal("turn-cfs-fail", "cfs-a"))
+
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation)
+	require.NotEmpty(t, resolved.action.DependencyFailures, "a DescribeCFS outage is a dependency failure, not a rejected target")
+	require.Empty(t, resolved.action.Rejected)
+}
+
+func resizeDiskProposal(turnID, uHostID, diskID string) map[string]any {
+	return map[string]any{
+		"turn_id": turnID, "operation": "ResizeDiskWorkflow",
+		"slots": []any{
+			map[string]any{"name": "UHostId", "value": uHostID},
+			map[string]any{"name": "DiskId", "value": diskID},
+			map[string]any{"name": "Size", "value": float64(120)},
+		},
+	}
+}
+
+// A disk has no standalone describe; existence = the exact disk id is present in its
+// (already-verified) parent instance's DiskSet, checked HERE before the card — not
+// deferred to the workflow's execution stage (which would be a second verifier).
+func TestResizeDiskTargetVerifiedAgainstParentDiskSet(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareInstance" {
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-a", "Name": "alpha", "State": "Running",
+				"DiskSet": []any{map[string]any{"DiskId": "disk-1", "Size": float64(60)}},
+			}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.lastUserMsg = "把 uhost-a 的 disk-1 扩到 120G"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-disk", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeDiskProposal("turn-disk", "uhost-a", "disk-1"))
+
+	require.NoError(t, err)
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Equal(t, "disk-1", resolved.action.Arguments["DiskId"])
+}
+
+// A disk id absent from the parent instance's DiskSet is refused before the card.
+func TestResizeDiskRefusedWhenDiskNotInParentDiskSet(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareInstance" {
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-a", "Name": "alpha", "State": "Running",
+				"DiskSet": []any{map[string]any{"DiskId": "disk-other"}},
+			}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.lastUserMsg = "把 uhost-a 的 disk-1 扩到 120G"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-disk-miss", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeDiskProposal("turn-disk-miss", "uhost-a", "disk-1"))
+
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation, "a disk id absent from the parent's DiskSet is not existence")
 }
 
 // Single-instance completion is subject to registry completeness (I): the sole

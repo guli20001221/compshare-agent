@@ -108,26 +108,6 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 	}
 }
 
-// targetSelectionProof reports whether the SERVER can independently show the user
-// SELECTED this exact target value — a deterministic binding to it, or the user
-// typing it verbatim this turn. It reads only server-owned context, never the
-// network, and gates the existence point-query: an id the user genuinely
-// referenced is worth an upstream Describe, an id the model merely inferred is not.
-func targetSelectionProof(candidate actionresolver.SlotCandidate, value string, view AgentContext, spec actionresolver.OperationSpec, binding selectionBinding) bool {
-	// (1) the deterministic binder resolved the user's reference to this id.
-	if binding.bound() && binding.id == value {
-		return true
-	}
-	// (2) the user typed this id verbatim this turn (a literal-span quote), which
-	// carries a cold / typo'd id the binder could not resolve; existence decides.
-	if candidate.Source == actionresolver.SourceUserExplicit && candidate.Evidence != nil {
-		if verifyCurrentQuestionEvidence(view, candidate, spec.Fields[candidate.Name].Codec) {
-			return true
-		}
-	}
-	return false
-}
-
 func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolver.SlotCandidate, codec actionresolver.SlotCodecKind) bool {
 	evidence := candidate.Evidence
 	if evidence.MessageID == "" || evidence.MessageID != context.TurnID || evidence.Start < 0 || evidence.End <= evidence.Start {
@@ -228,7 +208,7 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	proposal = e.deriveProposalProvenance(proposal, view, spec, binding)
 	proposal = completeCurrentTurnEvidence(proposal, view, spec)
 	proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
-	targetEvidence := e.targetEvidenceForProposal(ctx, proposal, spec, view, binding)
+	targetEvidence := e.targetEvidenceForProposal(ctx, proposal, spec)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
 	zoneCatalog := e.zoneCatalogSnapshotForSpec(ctx, spec)
 	imageCatalog := e.imageCatalogSnapshotForSpec(ctx, spec, proposalSlotString(proposal, "ImageSource"))
@@ -242,11 +222,14 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 // targetEvidenceForProposal builds an existence verdict for every distinct
 // write-target value in the proposal, before the (pure) resolver runs. The engine
 // owns any point-query so a Resolve stays replayable from a trace. Existence is
-// established for BOTH a deterministically-selected target and an Agent-inferred
-// one (either may reach the confirmation card), but only a SELECTED target may
-// spend an upstream point-query — an inferred id is verified from the fresh
-// registry / a same-id-verified read only, never by querying an unselected id.
-func (e *Engine) targetEvidenceForProposal(ctx context.Context, proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec, view AgentContext, binding selectionBinding) map[string]targetEvidence {
+// established UNIFORMLY for every concrete target — a deterministic binding, a
+// carried referent and a fresh inference all get the same server-side point-query;
+// the confirmation card + the user's confirm is the SelectionProof, so there is no
+// source-based gate before verification. The verifier is chosen by resource kind;
+// a disk is scoped to the proposal's instance target (its parent) because a disk
+// exists only inside an instance's DiskSet.
+func (e *Engine) targetEvidenceForProposal(ctx context.Context, proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) map[string]targetEvidence {
+	instanceID := proposalInstanceTargetValue(proposal, spec)
 	var out map[string]targetEvidence
 	for _, candidate := range proposal.Slots {
 		field, ok := spec.Fields[candidate.Name]
@@ -263,10 +246,25 @@ func (e *Engine) targetEvidenceForProposal(ctx context.Context, proposal actionr
 		if out == nil {
 			out = map[string]targetEvidence{}
 		}
-		allowPointQuery := targetSelectionProof(candidate, value, view, spec, binding)
-		out[value] = e.verifyTargetExistence(ctx, value, allowPointQuery)
+		out[value] = e.verifyTargetExistence(ctx, field.TargetKind, value, instanceID)
 	}
 	return out
+}
+
+// proposalInstanceTargetValue returns the value of the proposal's instance target
+// field (UHostId), used to scope a disk target to its parent instance. Empty when
+// the proposal names no instance target.
+func proposalInstanceTargetValue(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) string {
+	for _, candidate := range proposal.Slots {
+		field, ok := spec.Fields[candidate.Name]
+		if !ok || !field.Target || field.TargetKind != "instance" {
+			continue
+		}
+		if value, ok := candidate.Value.(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // recordUserSelectedTargets persists a CONFIRMED write target as a genuine user
@@ -334,27 +332,12 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 				continue
 			}
 		}
-		if !field.Target || !isString {
-			continue
-		}
-		// An Agent-inferred target that names a fresh context entity (an id/name the
-		// user referred to earlier). Existence adjudication and the confirmation card
-		// are the real gates now, so this only labels provenance and canonicalizes a
-		// referenced name to its id — it never authorizes on its own.
-		for _, ent := range view.SelectedEntities {
-			if ent.ID == value && ent.Freshness != ContinuityFreshnessExpired {
-				candidate.Source = actionresolver.SourceVerifiedContext
-				candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "selected_entities"}
-				break
-			}
-		}
-		if candidate.Source == actionresolver.SourceAgentInference {
-			if selected, ok := uniqueSelectedEntity(view, field.TargetKind); ok {
-				candidate.Value = selected.ID
-				candidate.Source = actionresolver.SourceVerifiedContext
-				candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "selected_entities"}
-			}
-		}
+		// A concrete target the user did not reference deterministically this turn is
+		// left as the Agent's honest inference. The server does NOT canonicalize it
+		// against SelectedEntities or override it with the sole selected entity: that
+		// would make candidate-set membership a trust signal again (the P0 bug class).
+		// Existence is proven uniformly by ExactTargetVerifier and the confirmation
+		// card is the SelectionProof — neither reads this source label.
 	}
 	// A missing instance target is completed ONLY from a deterministic binding (the
 	// sole account instance, or a prior explicit pick). A bare command with no
@@ -375,20 +358,6 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 		}
 	}
 	return proposal
-}
-
-func uniqueSelectedEntity(view AgentContext, kind string) (SemanticEntityHint, bool) {
-	var selected SemanticEntityHint
-	for _, entity := range view.SelectedEntities {
-		if entity.Kind != kind || strings.TrimSpace(entity.ID) == "" || entity.Freshness == ContinuityFreshnessExpired {
-			continue
-		}
-		if selected.ID != "" && selected.ID != entity.ID {
-			return SemanticEntityHint{}, false
-		}
-		selected = entity
-	}
-	return selected, selected.ID != ""
 }
 
 // machineTypeCatalogSnapshot fetches the live machine-type names and hands them

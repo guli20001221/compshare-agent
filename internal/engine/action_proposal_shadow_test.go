@@ -134,10 +134,14 @@ func TestCentralAgentProposalExecutesOnlyThroughExistingWorkflowGate(t *testing.
 	require.Contains(t, executor.calls, "StopCompShareInstance")
 }
 
-func TestCentralAgentProposalCannotExecuteWithoutVerifiedSource(t *testing.T) {
-	executor := &mockExecutor{}
+// A concrete target the Agent proposes but the server cannot confirm EXISTS (a
+// point-query that echoes no matching id) is refused before the confirmation card —
+// the human gate is never reached and nothing mutates. The point-query itself is a
+// legitimate, expected existence check under the uniform model.
+func TestNonexistentProposedTargetIsRefusedBeforeConfirmation(t *testing.T) {
+	executor := &mockExecutor{} // DescribeCompShareInstance echoes no matching UHostSet
 	eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool {
-		t.Fatal("unverified proposal must not reach confirmation")
+		t.Fatal("a target the server cannot confirm exists must not reach the confirmation card")
 		return true
 	})
 	eng.SetMutatingToolsEnabled(true)
@@ -148,8 +152,8 @@ func TestCentralAgentProposalCannotExecuteWithoutVerifiedSource(t *testing.T) {
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
 		`{"turn_id":"turn-unverified","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"uhost-invented","source":"agent_inference"}]}`), noopStep)
 
-	require.Contains(t, out, "not verified")
-	require.Empty(t, executor.calls)
+	require.Contains(t, out, "target existence could not be confirmed")
+	require.NotContains(t, executor.calls, "StopCompShareInstance", "a nonexistent target must not mutate")
 }
 
 func TestCentralAgentProposalCannotWriteWithoutRequiredJournal(t *testing.T) {
@@ -175,28 +179,25 @@ func TestCentralAgentProposalCannotWriteWithoutRequiredJournal(t *testing.T) {
 	require.NotContains(t, executor.calls, "StopCompShareInstance")
 }
 
-// TestUnverifiedReadSubjectIsNotExistenceForWrite: a read whose subject was NOT
-// same-id-verified this turn (a Monitor pre-query reads the id from the registry
-// snapshot, not the response) supplies no write ExistenceProof. verifiedInstance
-// EvidenceThisTurn stays empty, the registry is cold, and the inferred "停止它"
-// target has nothing to card — so the write is refused. Existence must come from a
-// same-id-verified resource read or a fresh registry, never a bare observation
-// (concern #5/#6: Monitor subjects must not authorize a write).
-func TestUnverifiedReadSubjectIsNotExistenceForWrite(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+// TestInferredTargetPointQueriedRefusedWhenResponseDoesNotEcho: an inferred target
+// with no same-id-verified read this turn and a cold registry is POINT-QUERIED for
+// existence (uniform verification — no source gate). A point-query whose response
+// echoes no matching id is NotFound, so the write is refused: existence comes only
+// from a response that echoes the exact id, never from a bare inference.
+func TestInferredTargetPointQueriedRefusedWhenResponseDoesNotEcho(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil) // Describe echoes no matching UHostSet
 	eng.lastUserMsg = "停止它"
-	// No resource_info response echoed uhost-1 this turn.
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-read-only", time.Now())
 	eng.turnContextViewReady = true
 
 	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
 		"turn_id": "turn-read-only", "operation": "StopInstanceWorkflow",
-		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "agent_inference"}},
 	})
 
 	require.NoError(t, err)
-	require.False(t, resolved.action.ReadyForConfirmation, "an unverified read subject is not existence for a write")
-	require.Contains(t, resolved.action.Rejected, "UHostId: target source is not verified")
+	require.False(t, resolved.action.ReadyForConfirmation, "a point-query that echoes no id is not existence")
+	require.Contains(t, resolved.action.Rejected, "UHostId: target existence could not be confirmed")
 }
 
 // TestSameIdVerifiedReadIsExistenceForInferredTarget is the counterpart: once a
@@ -273,15 +274,16 @@ func TestPointQueryRejectsTargetTheResponseDoesNotContain(t *testing.T) {
 	require.False(t, resolved.action.ReadyForConfirmation, "a point-query that does not echo the id is not existence")
 }
 
-// TestObservedSelectedInstanceIsNotSelectionProof: a SelectedInstanceID recorded
-// from a read (observed) — even fresh and existing in the background registry — is
-// neither a deterministic selection nor an actively-verified existence, so a bare
-// "确认关机" that would inherit it is refused. A read-written SelectedInstanceID must
-// never become a SelectionProof, and a background-registry hit must never be the
-// existence proof for an unselected id.
-func TestObservedSelectedInstanceIsNotSelectionProof(t *testing.T) {
+// TestBareContextNameIsNotAutoResolvedToInstanceID: the server verifies the EXACT
+// value the Agent proposes as the id — it never canonicalizes a bare context name to
+// an instance id (only an explicit in-message id/name reference is bound). So an Agent
+// that puts an instance NAME in the id slot, against a complete registry that has no
+// instance whose UHostId literally equals that name, is refused as NotFound. The Agent
+// must propose the resolved id (which then existence-verifies and reaches the card);
+// a context name is not a substitute for that.
+func TestBareContextNameIsNotAutoResolvedToInstanceID(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	// Two instances, so the account-single selection does not apply.
+	// Two instances, so the account-single completion does not apply.
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(2), "UHostSet": []any{
 		map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running"},
 		map[string]any{"UHostId": "uhost-2", "Name": "other", "State": "Running"},
@@ -302,7 +304,7 @@ func TestObservedSelectedInstanceIsNotSelectionProof(t *testing.T) {
 		"slots":     []any{map[string]any{"name": "UHostId", "value": "host"}},
 	})
 	require.NoError(t, err)
-	require.False(t, resolved.action.ReadyForConfirmation, "an observed referent is not a user selection")
+	require.False(t, resolved.action.ReadyForConfirmation, "a bare context name in the id slot is not auto-resolved to an id")
 }
 
 // TestAuthoritativeRegistryAbsentTargetRejectedWithoutPointQuery: the user typed

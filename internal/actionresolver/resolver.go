@@ -117,7 +117,11 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 				adjudicated[name] = struct{}{}
 				continue
 			default: // TargetReject
-				result.Rejected = append(result.Rejected, fmt.Sprintf("%s: target source is not verified", name))
+				// Under the uniform model a target is rejected when the server could
+				// not confirm it EXISTS (a point-query that echoed no matching id, or a
+				// fresh+complete registry that authoritatively lacks it) — not a source
+				// problem: the confirmation card, not a source label, is the SelectionProof.
+				result.Rejected = append(result.Rejected, fmt.Sprintf("%s: target existence could not be confirmed", name))
 				adjudicated[name] = struct{}{}
 				continue
 			}
