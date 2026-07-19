@@ -67,6 +67,15 @@ type ChatResponse struct {
 	Content   string
 	ToolCalls []openai.ToolCall
 	Usage     TokenUsage
+	// ForcedToolChoiceDegraded is true when the request carried a forced
+	// tool_choice ("required" or an object) that the provider rejected in
+	// thinking mode, so Chat silently retried with auto (see Chat). The tool
+	// calls (if any) then come from an UNFORCED call — callers that depend on
+	// the forcing being honored (e.g. the engine's forced first-decision) must
+	// treat this response as non-authoritative and degrade, never score it as a
+	// structural guarantee. Callers that only used forcing as an advisory
+	// optimization (SearchKnowledge / monitor) can ignore it.
+	ForcedToolChoiceDegraded bool
 }
 
 type TokenUsage struct {
@@ -99,6 +108,11 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		resp, err = c.chat(ctx, auto, true)
 		if err != nil && isUsageUnsupportedChatError(err) {
 			resp, err = c.chat(ctx, auto, false)
+		}
+		// Signal the silent degrade so a caller that relied on the forcing being
+		// honored can fall back instead of trusting an unforced response.
+		if err == nil && resp != nil {
+			resp.ForcedToolChoiceDegraded = true
 		}
 	}
 	return resp, err

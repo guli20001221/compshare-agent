@@ -531,6 +531,42 @@ func TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported(t *testing.T) 
 	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Function.Name != "SearchKnowledge" {
 		t.Fatalf("expected SearchKnowledge tool call after auto fallback, got %#v", resp.ToolCalls)
 	}
+	// The degrade must be observable: the response came from an UNFORCED retry,
+	// so ForcedToolChoiceDegraded lets a caller that required the forcing (the
+	// engine's forced first-decision) fall back instead of trusting it.
+	if !resp.ForcedToolChoiceDegraded {
+		t.Fatal("ForcedToolChoiceDegraded must be true after the auto fallback fired")
+	}
+}
+
+// TestClientChatForcedToolChoiceHonoredIsNotDegraded pins the negative: when the
+// provider honors the forced tool_choice on the first try, the response must NOT
+// be flagged degraded (only the silent auto retry sets it).
+func TestClientChatForcedToolChoiceHonoredIsNotDegraded(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"SearchKnowledge\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "deepseek-v4-flash"})
+	resp, err := client.Chat(context.Background(), ChatRequest{
+		Messages:   []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hi"}},
+		Tools:      []openai.Tool{{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{Name: "SearchKnowledge", Parameters: map[string]any{"type": "object"}}}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (forced honored, no retry)", got)
+	}
+	if resp.ForcedToolChoiceDegraded {
+		t.Fatal("ForcedToolChoiceDegraded must be false when the forced choice was honored")
+	}
 }
 
 func TestForcedToolChoiceClassifiers(t *testing.T) {
