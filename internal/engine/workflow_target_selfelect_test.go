@@ -3,40 +3,27 @@ package engine
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/tools"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestExecuteWorkflowBlocksModelSelfElectedTargetViaSingleDescribe is the
-// regression pin for the mid-turn self-election bypass: workflowTargetIsTrusted
-// must NOT trust a target the MODEL elected mid-turn via a single-host describe.
+// TestProposalRejectsModelSelfElectedTargetViaSingleDescribe pins the mid-turn
+// self-election vector through the real Resolver path. The workflow-layer trust
+// gate that used to catch it (workflowTargetIsTrusted) is gone; authority now
+// lives only in the Resolver's dual proof.
 //
-// Chain: a single-host DescribeCompShareInstance issued by the model in ReAct is
-// an OriginDirectLLM tool call (plannerHandlerExecutor.Execute, engine.go:3567)
-// -> recordToolFacts (engine.go:4290) -> recordInstanceStateFacts (len==1,
-// engine.go:4549) -> recordSelectedInstanceID sets sessionState.SelectedInstanceID
-// (engine.go:4821). The guard's live-field branch (engine.go:5420) then treats
-// that model-written value as user-intended and lets the stop through.
-//
-// staleStateNote (engine.go:6059) actively instructs the model to call
-// DescribeCompShareInstance before executing an instance change, so describe-one-
-// then-stop is a realistic flash path, not a contrived one.
-func TestExecuteWorkflowBlocksModelSelfElectedTargetViaSingleDescribe(t *testing.T) {
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareInstance":
-			return map[string]any{"UHostSet": []any{
-				map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01"},
-			}}, nil
-		case "StopCompShareInstance":
-			return map[string]any{"RetCode": 0}, nil
-		default:
-			return map[string]any{"RetCode": 0}, nil
-		}
-	}}
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+// Chain: a single-host DescribeCompShareInstance the model issues in-loop is an
+// OriginDirectLLM tool call -> recordToolFacts -> recordInstanceStateFacts
+// (len==1) -> recordObservedInstanceID, which sets sessionState.SelectedInstanceID
+// with source OBSERVED. staleStateNote actively nudges the model to describe
+// before mutating, so describe-one-then-stop is a realistic flash path, not a
+// contrived one. The user's "怎么关机" referenced no instance, so the observed
+// referent supplies no SelectionProof and the resolver refuses to make the stop
+// ready — it can never reach executeResolvedWorkflow.
+func TestProposalRejectsModelSelfElectedTargetViaSingleDescribe(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.lastUserMsg = "怎么关机"               // zero-target request on a multi-instance account
 	eng.selectedInstanceIDAtTurnStart = "" // nothing selected before this turn
@@ -57,12 +44,17 @@ func TestExecuteWorkflowBlocksModelSelfElectedTargetViaSingleDescribe(t *testing
 	require.Equal(t, "uhost-a", eng.sessionState.SelectedInstanceID,
 		"precondition: a single-host describe self-elects the target mid-turn")
 	require.Equal(t, SelectedInstanceSourceObserved, eng.sessionState.SelectedInstanceSource,
-		"precondition: single-host tool observations must not be trusted as user-selected targets")
+		"precondition: single-host tool observations are recorded as observed, not user-selected")
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, zoneRefData(nil))
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-selfelect", time.Now())
+	eng.turnContextViewReady = true
 
-	// The user never referenced uhost-a; the model picked it. It must be blocked.
-	assert.Contains(t, reply, "请先确认要操作的实例",
-		"model self-elected target (via single describe) must NOT be trusted")
-	assert.Empty(t, exec.calls, "self-elected stop must be blocked before workflow tools run")
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-selfelect", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-a"}},
+	})
+
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation,
+		"a model self-elected target (via a single describe) supplies no user selection and must be refused")
 }

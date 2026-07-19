@@ -40,7 +40,7 @@ func TestExecuteWorkflow_ZoneCatalogFailureAbortsCreateBeforeConfirm(t *testing.
 	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { confirmCalls++; return true })
 	eng.zoneCatalog = zones.NewCatalog(0) // fresh: the failing fetch is not masked by a shared cache
 
-	reply := eng.executeWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
+	reply := eng.executeResolvedWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
 		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx())))
 
 	if confirmCalls != 0 {

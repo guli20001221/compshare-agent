@@ -57,6 +57,16 @@ func TestProductionCannotReEnableLegacySemanticRuntime(t *testing.T) {
 		// against the symbol / package returning as live prompt input.
 		"boundarypacks",
 		"BoundaryPromptFragments",
+		// P9 second-authorization deletion (2026-07): write-target authority is the
+		// Resolver's dual proof (selection AND existence) alone. The workflow-layer
+		// re-authorization center and its migration bridge were deleted; guard
+		// against either returning to launder a target the Resolver never verified.
+		"func (e *Engine) workflowTargetIsTrusted(",
+		"func workflowTargetNameMentioned(",
+		"executeWorkflowWithAuthority",
+		"resolverAuthorized",
+		"trustedWorkflowFrameActionThisTurn",
+		"trustedWorkflowFrameTargetThisTurn",
 	}
 	for _, top := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d fs.DirEntry, walkErr error) error {

@@ -54,7 +54,7 @@ func TestExecuteWorkflow_RunsAgainstThreadedSnapshotNotASelfBuild(t *testing.T) 
 	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { confirmCalls++; return true })
 	eng.zoneCatalog = zones.NewCatalog(0)
 
-	reply := eng.executeWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
+	reply := eng.executeResolvedWorkflow(zoneUserCtx(), "CreateInstanceWorkflow",
 		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep,
 		zoneRefData(deployment.NewZoneCatalogSnapshot(false, nil)))
 

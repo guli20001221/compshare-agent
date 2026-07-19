@@ -183,7 +183,7 @@ func TestCreateZoneRecovery_SwapsToAvailableImage(t *testing.T) {
 	}
 
 	eng := NewWithDeps(&mockLLM{}, exec, confirmFn)
-	reply := eng.executeWorkflow(context.Background(), "CreateInstanceWorkflow",
+	reply := eng.executeResolvedWorkflow(context.Background(), "CreateInstanceWorkflow",
 		map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(context.Background())))
 
 	// The cryptic upstream error must never reach the user.

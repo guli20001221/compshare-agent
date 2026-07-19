@@ -26,16 +26,17 @@ is **deliberate, not unfinished convergence**:
   It must **never** resolve a mutating target from a model-supplied reference.
 
 Why the asymmetry: routing mutating resolution through the model's free
-reference resolution reintroduces the phantom-instance class of bug. Even when
-`workflowTargetIsTrusted` correctly blocks a model-picked target on the current
-turn, the resolver still records it as the user-selected instance, poisoning the
-**next** turn's turn-start trust check — a two-turn phantom-target vector
-(confirmed by an executable regression test). The mutating paths therefore use
-`ordinalTargetFromPending`, which mirrors the trust guard's own pending branch
-(`pendingResourceSelectionFromSession` + `matchResourceSelectionReference` over
-the live user message) exactly, so anything it resolves is guaranteed to pass
-the guard and can never be blocked-then-recorded. It has no free-registry-name
-fallback.
+reference resolution reintroduces the phantom-instance class of bug. The write
+path therefore treats the model's target reference as advisory only: the server
+re-derives, for every write target, a **dual proof** — a SelectionProof (the user
+genuinely chose it: a current-turn literal id span, a card/ordinal pick, or the
+account's sole fresh instance) AND an ExistenceProof (it exists in this account
+this turn: a fresh-complete registry hit, a this-turn read, or a this-turn point
+`DescribeCompShareInstance` whose response echoes the same id). An observed
+referent is never a selection. This dual proof is the single write-target
+authority (`internal/engine/target_evidence.go` + the resolver evidence
+verifier); the former workflow-layer re-authorization center was deleted, so a
+target the resolver never verified can no longer be laundered into execution.
 
 ## Unified Paths
 

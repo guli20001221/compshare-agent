@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
@@ -32,170 +33,189 @@ func TestWorkflowRequiresInstanceTarget(t *testing.T) {
 	}
 }
 
-func TestExecuteWorkflowBlocksUntrustedModelChosenInstanceTarget(t *testing.T) {
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		return map[string]any{"RetCode": 0}, nil
-	}}
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+// Write-target authority no longer lives in a workflow-layer trust gate — the
+// second authorization center (workflowTargetIsTrusted) was deleted in the P9
+// cutover. It lives ONLY in the Resolver's dual proof: a target is authorized
+// exactly when the server can independently show the user SELECTED it AND that it
+// EXISTS in this account this turn. Every case below therefore enters through
+// resolveActionProposalShadow — the real production path — and asserts the
+// resolver's ReadyForConfirmation verdict. A refused target is never made ready,
+// so it can never reach executeResolvedWorkflow.
+
+// stopInstanceProposal is a minimal StopInstanceWorkflow proposal naming a target
+// by id, with no source label — the server re-derives provenance, so the model's
+// label is irrelevant to authority.
+func stopInstanceProposal(turnID, uHostID string) map[string]any {
+	return map[string]any{
+		"turn_id": turnID, "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": uHostID}},
+	}
+}
+
+func syncTwoInstances(t *testing.T, eng *Engine) {
+	t.Helper()
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
+		},
+	}, "test"))
+}
+
+// Agent self-selected target is rejected: an id the model chose without any user
+// reference has no SelectionProof, even though it genuinely exists in the account.
+// Existence is not selection.
+func TestProposalRejectsExistentButUnselectedTarget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.lastUserMsg = "怎么关机"
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
-			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
-		},
-	}, "test"))
-	onStep, events := collectSteps()
+	syncTwoInstances(t, eng)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-unselected", time.Now())
+	eng.turnContextViewReady = true
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, onStep, zoneRefData(nil))
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-unselected", "uhost-a"))
 
-	assert.Contains(t, reply, "请先确认要操作的实例")
-	assert.Empty(t, exec.calls, "untrusted target must be blocked before workflow tools run")
-	assertStepWithType(t, *events, StepBlocked, "StopInstanceWorkflow", "请先确认")
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation,
+		"an existent instance the model picked without user reference must not be authorized")
 }
 
-func TestExecuteWorkflowBlocksUntrustedTargetWithoutHydratedSession(t *testing.T) {
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		return map[string]any{"RetCode": 0}, nil
-	}}
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
-	eng.lastUserMsg = "怎么关机"
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
-			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
-		},
-	}, "test"))
-
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, zoneRefData(nil))
-
-	assert.Contains(t, reply, "请先确认要操作的实例")
-	assert.Empty(t, exec.calls, "untrusted target must be blocked even without hydrated session state")
-}
-
-func TestExecuteWorkflowDoesNotTrustContextFrameUnlessResumed(t *testing.T) {
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		return map[string]any{"RetCode": 0}, nil
-	}}
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+// Read-only observation cannot authorize: a SelectedInstanceID recorded from a
+// read (observed) is not a user selection, so a pronoun ("关机它") that would
+// inherit it is refused on a multi-instance account.
+func TestProposalRejectsObservedSelectedInstanceTarget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		ContextFrame: ContextFrame{
-			Kind:     ContextFrameKindWorkflowTask,
-			Workflow: "CreateDiskWorkflow",
-			Slots:    map[string]string{"instance_id": "uhost-a", "size_gb": "200"},
-		},
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-a",
+		SelectedInstanceName:   "alpha",
+		SelectedInstanceSource: SelectedInstanceSourceObserved,
+		SelectedInstanceAtUnix: time.Now().Unix(),
 	}, 1)
-	eng.lastUserMsg = "200G"
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
-			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
-		},
-	}, "test"))
+	eng.lastUserMsg = "帮我关机它"
+	syncTwoInstances(t, eng)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-observed-pronoun", time.Now())
+	eng.turnContextViewReady = true
 
-	reply := eng.executeWorkflow(context.Background(), "CreateDiskWorkflow", map[string]any{"UHostId": "uhost-a", "Size": float64(200)}, noopStep, zoneRefData(nil))
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-observed-pronoun", "uhost-a"))
 
-	assert.Contains(t, reply, "请先确认要操作的实例")
-	assert.Empty(t, exec.calls, "context frame alone must not let a direct model workflow call pick a target")
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation,
+		"a tool-observed selected instance is not a user selection, even under a pronoun")
 }
 
-func TestExecuteWorkflowAllowsExplicitIDTarget(t *testing.T) {
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareInstance":
-			return map[string]any{"UHostSet": []any{
-				map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01"},
-			}}, nil
-		case "StopCompShareInstance":
-			return map[string]any{"RetCode": 0}, nil
-		default:
-			return map[string]any{"RetCode": 0}, nil
-		}
-	}}
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+// Positive control — an explicit id the user typed this turn is a SelectionProof,
+// and a registry hit is its ExistenceProof: the write is authorized.
+func TestProposalAuthorizesExplicitIDTarget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.lastUserMsg = "帮我关机 uhost-a"
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
-			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
-		},
-	}, "test"))
+	syncTwoInstances(t, eng)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-explicit", time.Now())
+	eng.turnContextViewReady = true
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, zoneRefData(nil))
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-explicit", "uhost-a"))
 
-	assert.Contains(t, reply, "执行关机")
-	assert.Contains(t, exec.calls, "StopCompShareInstance")
+	require.NoError(t, err)
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
 }
 
-func TestExecuteWorkflowAllowsOrdinalPendingSelectionTarget(t *testing.T) {
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareInstance":
-			return map[string]any{"UHostSet": []any{
-				map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01"},
-			}}, nil
-		case "StopCompShareInstance":
-			return map[string]any{"RetCode": 0}, nil
-		default:
-			return map[string]any{"RetCode": 0}, nil
-		}
-	}}
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+// Positive control — an ordinal against a displayed candidate list ("第1台")
+// resolves to a genuine user selection (pending_selection), which the resolver
+// accepts once the id also exists in the account.
+func TestProposalAuthorizesOrdinalPendingSelectionTarget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.lastUserMsg = "帮我关机第1台"
 	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
 		testInstance("uhost-a", "alpha", "Running"),
 		testInstance("uhost-b", "beta", "Running"),
 	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
-			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
-		},
-	}, "test"))
+	syncTwoInstances(t, eng)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-ordinal", time.Now())
+	eng.turnContextViewReady = true
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, zoneRefData(nil))
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-ordinal", "uhost-a"))
 
-	assert.Contains(t, reply, "执行关机")
-	assert.Contains(t, exec.calls, "StopCompShareInstance")
+	require.NoError(t, err)
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
 }
 
-// A carried SelectedInstance binding never authorizes a write, whatever its
-// source. This used to be true only for source=observed; the source=user branch
-// that let a carried binding through was deleted once its writers were gone, so a
-// bare pronoun against a multi-instance account now always asks. The binding stays
-// available for understanding — it just is not authorization.
-func TestExecuteWorkflowBlocksObservedSelectedInstanceTarget(t *testing.T) {
-	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+// Single-instance completion is subject to registry completeness (I): the sole
+// fresh instance in a complete registry is auto-filled from context and
+// authorized even when the user names no id ("关机").
+func TestProposalCompletesSoleFreshInstanceTarget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.lastUserMsg = "关机"
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(1),
+		"UHostSet":   []any{map[string]any{"UHostId": "uhost-1", "Name": "solo", "State": "Running"}},
+	}, "test"))
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-solo", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-solo", "operation": "StopInstanceWorkflow", "slots": []any{},
+	})
+
+	require.NoError(t, err)
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Equal(t, "uhost-1", resolved.action.Arguments["UHostId"],
+		"the account's sole fresh instance is completed from context, not guessed")
+}
+
+// Single-instance completion is subject to registry completeness (II): an
+// ambiguous (multi-instance) account never auto-fills a bare "关机"; the resolver
+// leaves the target missing rather than pick one.
+func TestProposalDoesNotCompleteTargetOnAmbiguousAccount(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.lastUserMsg = "关机"
+	syncTwoInstances(t, eng)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-ambiguous", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-ambiguous", "operation": "StopInstanceWorkflow", "slots": []any{},
+	})
+
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation,
+		"a multi-instance account must not silently complete a bare stop to one host")
+}
+
+// Single-instance completion is subject to registry completeness (III): the sole
+// instance never OVERRIDES a different id the user explicitly typed. A user-typed
+// uhost-x that does not exist is refused (absence is authoritative), and it is
+// never swapped for the account's only host.
+func TestProposalSoleInstanceDoesNotOverrideExplicitDifferentTarget(t *testing.T) {
+	describeCalls := 0
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareInstance" {
+			describeCalls++
+		}
 		return map[string]any{"RetCode": 0}, nil
 	}}
-	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
-	eng.SetSessionState(SessionState{
-		SchemaVersion:          SessionStateSchemaCurrent,
-		SelectedInstanceID:     "uhost-a",
-		SelectedInstanceName:   "alpha",
-		SelectedInstanceSource: SelectedInstanceSourceObserved,
-	}, 1)
-	eng.selectedInstanceIDAtTurnStart = "uhost-a"
-	eng.lastUserMsg = "帮我关机它"
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.lastUserMsg = "关闭 uhost-x"
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
-			map[string]any{"UHostId": "uhost-b", "Name": "beta", "State": "Running"},
-		},
+		"TotalCount": float64(1),
+		"UHostSet":   []any{map[string]any{"UHostId": "uhost-1", "Name": "solo", "State": "Running"}},
 	}, "test"))
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-explicit-other", time.Now())
+	eng.turnContextViewReady = true
 
-	reply := eng.executeWorkflow(context.Background(), "StopInstanceWorkflow", map[string]any{"UHostId": "uhost-a"}, noopStep, zoneRefData(nil))
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-explicit-other", "uhost-x"))
 
-	assert.Contains(t, reply, "请先确认要操作的实例")
-	assert.Empty(t, exec.calls, "tool-observed selected instance must not authorize a mutating workflow")
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation,
+		"a user-typed id absent from a complete registry is refused, not swapped for the sole host")
+	require.NotEqual(t, "uhost-1", resolved.action.Arguments["UHostId"],
+		"the account's only instance must never override the explicit target the user named")
+	require.Zero(t, describeCalls,
+		"a complete registry can assert absence, so no point-query is spent on the phantom id")
 }
 
 func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {
@@ -227,9 +247,9 @@ func TestExecuteWorkflowCreateCFSResolvesPodZone(t *testing.T) {
 
 	// Zone is already the canonical id: display-name → id resolution now lives in the
 	// action resolver's CodecZone (tested in internal/actionresolver), not in the
-	// workflow. executeWorkflow receives a canonical zone and resolves its Pod-zone
-	// internal ids (zone_id/az_group) from the turn's catalog snapshot.
-	_ = eng.executeWorkflow(zoneUserCtx(), "CreateCFSWorkflow", map[string]any{
+	// workflow. executeResolvedWorkflow receives a canonical zone and resolves its
+	// Pod-zone internal ids (zone_id/az_group) from the turn's catalog snapshot.
+	_ = eng.executeResolvedWorkflow(zoneUserCtx(), "CreateCFSWorkflow", map[string]any{
 		"Name": "shared-train",
 		"Size": float64(50),
 		"Zone": "cn-bj2-03",
@@ -257,7 +277,7 @@ func TestExecuteWorkflowCreateCFSRejectsNonPodZoneDeterministically(t *testing.T
 	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
 	eng.lastUserMsg = "帮我在 cn-wlcb-01 创建一个 50GB 的 CFS"
 
-	reply := eng.executeWorkflow(zoneUserCtx(), "CreateCFSWorkflow", map[string]any{
+	reply := eng.executeResolvedWorkflow(zoneUserCtx(), "CreateCFSWorkflow", map[string]any{
 		"Name": "shared-train",
 		"Size": float64(50),
 		"Zone": "cn-wlcb-01",
@@ -288,7 +308,7 @@ func TestExecuteWorkflowEnableNetOptimizerResolvesAzGroup(t *testing.T) {
 	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
 	eng.lastUserMsg = "帮我开启华北一C网络加速"
 
-	_ = eng.executeWorkflow(zoneUserCtx(), "EnableNetOptimizerWorkflow", map[string]any{
+	_ = eng.executeResolvedWorkflow(zoneUserCtx(), "EnableNetOptimizerWorkflow", map[string]any{
 		"Zone": "cn-bj2-03",
 	}, noopStep, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx())))
 

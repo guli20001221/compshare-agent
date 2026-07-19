@@ -412,11 +412,9 @@ type Engine struct {
 	//   - factCacheOldestAgeSecondsThisTurn: age of the oldest still-fresh fact
 	//     injected this turn, or -1 when none. Bucketed before it leaves the
 	//     recorder.
-	selectedInstanceIDAtTurnStart      string
-	instanceResolutionSourceThisTurn   string
-	factCacheOldestAgeSecondsThisTurn  int
-	trustedWorkflowFrameActionThisTurn string
-	trustedWorkflowFrameTargetThisTurn string
+	selectedInstanceIDAtTurnStart     string
+	instanceResolutionSourceThisTurn  string
+	factCacheOldestAgeSecondsThisTurn int
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -1189,8 +1187,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
 	e.instanceResolutionSourceThisTurn = ""
 	e.factCacheOldestAgeSecondsThisTurn = -1
-	e.trustedWorkflowFrameActionThisTurn = ""
-	e.trustedWorkflowFrameTargetThisTurn = ""
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -2866,8 +2862,8 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 	// Exactly one host in the result = the turn unambiguously concerns that
 	// instance for read-only follow-up context. A multi-host (list-all) result
 	// is ambiguous and must NOT set it. Tool-observed selections are not trusted
-	// as write targets; workflowTargetIsTrusted only trusts user-selected
-	// sources.
+	// as write targets; the write-target dual-proof verifier only accepts a
+	// genuine user selection (observed != chosen).
 	if len(hosts) == 1 {
 		if row, ok := hosts[0].(map[string]any); ok {
 			if snap := entity.InstanceFromMap(row); snap.UHostId != "" {
@@ -3142,9 +3138,10 @@ const selectedInstanceTTLSeconds = 1800
 // expireStaleSelectedInstance clears the carried instance binding when it has
 // gone untouched longer than selectedInstanceTTLSeconds. Runs at turn entry,
 // before the turn-start snapshot is frozen, so a stale binding is never carried
-// into workflowTargetIsTrusted. A zero SelectedInstanceAtUnix is a legacy row
-// whose age cannot be proven. Keep its id/name for conversational continuity,
-// but remove the user-trusted provenance so it cannot authorize a write.
+// into the write-target dual-proof verifier as a selection. A zero
+// SelectedInstanceAtUnix is a legacy row whose age cannot be proven. Keep its
+// id/name for conversational continuity, but remove the user-trusted provenance
+// so it cannot authorize a write.
 func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
 		return
@@ -3409,51 +3406,36 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-// executeWorkflow runs a predefined workflow and returns the result as a JSON string
-// for the LLM to narrate.
+// executeResolvedWorkflow runs a predefined workflow whose action the Resolver
+// has already verified — including, for any write TARGET, the dual proof of
+// selection AND existence — and returns the result as a JSON string for the LLM
+// to narrate. It is the SINGLE workflow-execution entry: there is no second
+// target-authorization here. The Resolver is the sole authority for WHICH
+// instance a write acts on, and the account's single-instance completion happens
+// on the Resolver path (ContextCompiler's account_registry_single hint +
+// deriveProposalProvenance), never in this layer.
 //
-// zoneCat is the turn's zone catalog, supplied by the caller — executeWorkflow
-// never builds one itself. The action-proposal path builds exactly one snapshot
-// per turn (zoneCatalogSnapshotForSpec) and threads it here, so the resolver and
-// the workflow can never see different zone lists (gate 1). A nil snapshot is the
-// honest "this operation has no zone" signal; a zone-needing workflow handed nil
-// (or an unavailable snapshot) fails closed rather than guessing.
+// refData is the turn's zone/image catalog, supplied by the caller — this
+// function never builds one itself. The action-proposal path builds exactly one
+// snapshot per turn (zoneCatalogSnapshotForSpec) and threads it here, so the
+// resolver and the workflow can never see different zone lists (gate 1). A nil
+// snapshot is the honest "this operation has no zone" signal; a zone-needing
+// workflow handed nil (or an unavailable snapshot) fails closed rather than
+// guessing.
 func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData) string {
-	return e.executeWorkflowWithAuthority(ctx, action, args, onStep, refData, true)
-}
-
-func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData) string {
-	return e.executeWorkflowWithAuthority(ctx, action, args, onStep, refData, false)
-}
-
-func (e *Engine) executeWorkflowWithAuthority(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData, resolverAuthorized bool) string {
 	e.lastWorkflowSucceededThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
 		return finalReplyPrefix + msg
 	}
-	// Hard guard — instance-operation workflows MUST have a non-empty UHostId.
-	// Account/storage creation workflows do not target an existing instance and
-	// are listed in workflowRequiresInstanceTarget. The default remains fail-safe.
+	// Hard guard (fail-safe) — instance-operation workflows MUST arrive with a
+	// non-empty UHostId. A resolved write always carries its dual-proof-verified
+	// target, so an empty one here means no target was ever authorized; refuse
+	// rather than guess. Account/storage creation workflows do not target an
+	// existing instance and are listed in workflowRequiresInstanceTarget.
 	if workflowRequiresInstanceTarget(action) {
-		uHostId, _ := args["UHostId"].(string)
-		targetAutoFilled := false
-		if uHostId == "" {
-			if single, _ := e.singleRegistryInstance(); single != "" {
-				args["UHostId"] = single
-				uHostId = single
-				targetAutoFilled = true
-			}
-		}
-		if uHostId == "" {
-			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-			guardResult := map[string]any{"success": false, "message": msg}
-			b, _ := json.Marshal(guardResult)
-			return string(b)
-		}
-		if !resolverAuthorized && !e.workflowTargetIsTrusted(action, uHostId, targetAutoFilled) {
+		if uHostId, _ := args["UHostId"].(string); strings.TrimSpace(uHostId) == "" {
 			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			guardResult := map[string]any{"success": false, "message": msg}
@@ -3695,55 +3677,6 @@ func (e *Engine) executeWorkflowWithAuthority(ctx context.Context, action string
 
 	b, _ := json.Marshal(result)
 	return string(b)
-}
-
-func (e *Engine) workflowTargetIsTrusted(action, uHostId string, targetAutoFilled bool) bool {
-	uHostId = strings.TrimSpace(uHostId)
-	if uHostId == "" {
-		return false
-	}
-	if targetAutoFilled {
-		return true
-	}
-	if strings.TrimSpace(e.lastUserMsg) == "" {
-		return true
-	}
-	// The carried-binding branch is gone. It trusted the turn-start
-	// SelectedInstance* when its source was "user", and nothing in this binary
-	// produces that source any more: the User-source writers were fed by the
-	// direct-dispatch lane P6 deleted, so the branch could only ever fire on a row
-	// an older binary wrote. Deleting it is a runtime no-op. A user-referenced
-	// target is still trusted via the explicit-ID / pending-selection /
-	// name-mention branches below.
-	if strings.TrimSpace(e.trustedWorkflowFrameActionThisTurn) == action &&
-		strings.TrimSpace(e.trustedWorkflowFrameTargetThisTurn) == uHostId {
-		return true
-	}
-	if strings.Contains(strings.TrimSpace(e.lastUserMsg), uHostId) {
-		return true
-	}
-	if pending, ok := e.pendingResourceSelectionFromSession(); ok {
-		if match, _ := matchResourceSelectionReference(e.lastUserMsg, *pending); match.ok && match.instance.UHostId == uHostId {
-			return true
-		}
-		if match := matchResourceSelection(e.lastUserMsg, *pending); match.ok && !match.ambiguous && match.instance.UHostId == uHostId {
-			return true
-		}
-	}
-	snapshot := e.RegistrySnapshot()
-	if snapshot.TotalCount == 1 && !snapshot.Truncated && len(snapshot.Instances) == 1 {
-		if _, ok := snapshot.Instances[uHostId]; ok {
-			return true
-		}
-	}
-	if inst, res := snapshot.ResolveByID(uHostId); res.Status == entity.ResolveHit && inst != nil {
-		return workflowTargetNameMentioned(e.lastUserMsg, inst.Name)
-	}
-	return false
-}
-
-func workflowTargetNameMentioned(userMsg, name string) bool {
-	return entity.TextExplicitlyMentionsName(userMsg, name)
 }
 
 func workflowRequiresInstanceTarget(action string) bool {

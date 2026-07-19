@@ -34,14 +34,6 @@
       "value": "\\n{3,}"
     },
     {
-      "id": "7dfcdbd9b11fbf33",
-      "kind": "regex",
-      "path": "internal/engine/engine.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?:(\\d{4}-\\d{2}-\\d{2})[\\s,，]*)?((?:\\b\\d{1,2}:\\d{2}\\b|\\d{1,2}点(?:\\d{1,2}分)?)\\s*(?:~|-|到|至)\\s*(?:\\b\\d{1,2}:\\d{2}\\b|\\d{1,2}点(?:\\d{1,2}分)?))"
-    },
-    {
       "id": "7d2a2e0c5ebfcc81",
       "kind": "regex",
       "path": "internal/engine/engine.go",
@@ -883,13 +875,6 @@
       "symbol": "resourceSelectionNameVisibleInTableLine",
       "callee": "strings.Contains",
       "value": "|"
-    },
-    {
-      "id": "6642a83763038761",
-      "kind": "string_heuristic",
-      "path": "internal/engine/engine.go",
-      "symbol": "workflowTargetIsTrusted",
-      "callee": "strings.Contains"
     },
     {
       "id": "a5adf5c70eefbf4b",
