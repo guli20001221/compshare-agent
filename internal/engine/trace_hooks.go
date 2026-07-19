@@ -12,15 +12,16 @@ import (
 // Engine turn. Durable coordination uses this single seam rather than reaching
 // into HTTP's recorder or depending on every individual Engine setter.
 type TraceHooks struct {
-	Retrieval  func(observability.RetrievalTrace)
-	Freshness  func(observability.FreshnessTrace)
-	Diagnosis  func(observability.DiagnosisTrace)
-	Outcome    func(observability.OutcomeTrace)
-	Renderer   func(observability.RendererTrace)
-	HardBlock  func(observability.EngineHardBlockTrace)
-	Completion func(observability.TurnCompletionTrace)
-	RateLimit  func(governance.Decision)
-	TokenUsage func(llm.TokenUsage)
+	Retrieval     func(observability.RetrievalTrace)
+	Freshness     func(observability.FreshnessTrace)
+	Diagnosis     func(observability.DiagnosisTrace)
+	Outcome       func(observability.OutcomeTrace)
+	Renderer      func(observability.RendererTrace)
+	HardBlock     func(observability.EngineHardBlockTrace)
+	Completion    func(observability.TurnCompletionTrace)
+	RateLimit     func(governance.Decision)
+	TokenUsage    func(llm.TokenUsage)
+	Authorization func(observability.AuthorizationTrace)
 }
 
 // TraceSnapshot is the final, content-free engine state needed to finish a
@@ -58,6 +59,7 @@ func (e *Engine) AttachTraceHooks(h TraceHooks) {
 	e.SetTurnCompletionObserver(h.Completion)
 	e.SetRateLimitObserver(h.RateLimit)
 	e.SetTokenUsageObserver(h.TokenUsage)
+	e.SetAuthorizationTraceObserver(h.Authorization)
 }
 
 func (e *Engine) TraceSnapshot(now time.Time) TraceSnapshot {

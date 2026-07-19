@@ -91,7 +91,20 @@ func (r *Recorder) Hooks() engine.TraceHooks {
 		Renderer: r.SetRendererTrace, HardBlock: r.SetEngineHardBlock,
 		Completion: r.SetTurnCompletionTrace,
 		RateLimit:  r.SetRateLimitDecision, TokenUsage: r.AddTokenUsage,
+		Authorization: r.AddAuthorizationTrace,
 	}
+}
+
+// AddAuthorizationTrace appends one write target's dual-proof audit record. The
+// engine calls it once per verified target, so the records accumulate across a
+// multi-target write.
+func (r *Recorder) AddAuthorizationTrace(trace observability.AuthorizationTrace) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.record.Authorizations = append(r.record.Authorizations, trace)
 }
 
 func (r *Recorder) SetContinuity(update func(*observability.ContinuityTrace)) {
@@ -116,7 +129,6 @@ func (r *Recorder) SetUserMessage(message string) {
 	defer r.mu.Unlock()
 	r.record.UserMsgHash = hash
 }
-
 
 func (r *Recorder) SetPlannerTrace(trace observability.RouterTrace) {
 	if r == nil {

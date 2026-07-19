@@ -183,6 +183,12 @@ func decodeActionProposal(args map[string]any) (actionresolver.ActionProposal, e
 type resolvedProposal struct {
 	action        actionresolver.ResolvedAction
 	referenceData workflow.ReferenceData
+	// targetEvidence is the per-(field,kind,id) existence proof the engine
+	// established for this proposal's write targets before Resolve. The verifier
+	// consumes only its Verdict; it is carried here so executeActionProposal can
+	// emit the dual-proof audit (emitWriteAuthorizationTraces) instead of discarding
+	// it. Empty for the no-spec path and for non-target proposals.
+	targetEvidence map[targetEvidenceKey]targetEvidence
 }
 
 func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[string]any) (resolvedProposal, error) {
@@ -225,7 +231,7 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
-	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog}}, nil
+	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog}, targetEvidence: targetEvidence}, nil
 }
 
 // targetEvidenceForProposal builds an existence verdict for every distinct
@@ -561,6 +567,11 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	// was established at the top of this branch, so the constructor accepts it.
 	ca, _ := newConfirmableAction(resolved)
 	reply := e.executeResolvedWorkflow(ctx, ca, onStep)
+	// Persist the dual-proof audit for this write's verified targets: the
+	// ExistenceProof the resolver established (which oracle / when / account /
+	// verdict) plus whether the confirmation authorized execution. Fires for both
+	// authorized and declined writes — executionAuthorized carries the distinction.
+	e.emitWriteAuthorizationTraces(resolved, e.lastConfirmationAcceptedThisCall)
 	// Record the target as a genuine user selection ONLY when the confirmation gate
 	// was ACCEPTED — the confirmation IS the SelectionProof for an Agent-inferred
 	// target. Gating on acceptance (not full workflow success) is deliberate: a

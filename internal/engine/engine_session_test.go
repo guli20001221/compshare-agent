@@ -364,15 +364,16 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"rendererTraceObserver":             true,
 		// Per-session: whether this session's history was ever trimmed/compacted.
 		// Leaking it across sessions would report a fresh session as already-trimmed.
-		"historyTrimmedThisSession": true,
-		"retrievalTraceObserver":    true,
-		"freshnessTraceObserver":    true,
-		"diagnosisTraceObserver":    true,
-		"outcomeTraceObserver":      true,
-		"tokenUsageObserver":        true,
-		"rateLimitObserver":         true,
-		"hardBlockObserver":         true,
-		"turnCompletionObserver":    true,
+		"historyTrimmedThisSession":  true,
+		"retrievalTraceObserver":     true,
+		"freshnessTraceObserver":     true,
+		"diagnosisTraceObserver":     true,
+		"outcomeTraceObserver":       true,
+		"authorizationTraceObserver": true,
+		"tokenUsageObserver":         true,
+		"rateLimitObserver":          true,
+		"hardBlockObserver":          true,
+		"turnCompletionObserver":     true,
 		// Runtime lifecycle evidence is turn/session-local. Sharing either the
 		// event buffer or its observer would mix two tenants' reasoning traces.
 		"agentRuntimeEventsThisTurn": true,
@@ -413,12 +414,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 9, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 77, len(perSessionFields); want != got {
+	if want, got := 78, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 86, typ.NumField(); want != got {
+	if want, got := 87, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

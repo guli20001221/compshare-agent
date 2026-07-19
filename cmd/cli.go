@@ -263,6 +263,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		eng.SetDiagnosisTraceObserver(nil)
 		eng.SetOutcomeTraceObserver(nil)
 		eng.SetRendererTraceObserver(nil)
+		eng.SetAuthorizationTraceObserver(nil)
 		eng.SetTokenUsageObserver(nil)
 		if traceEnabled {
 			traceRecorder = newCLITraceRecorder(traceWriter, "", turnIndex, input, turnStart)
@@ -279,6 +280,7 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				eng.SetOutcomeTraceObserver(traceRecorder.SetOutcomeTrace)
 			}
 			eng.SetRendererTraceObserver(traceRecorder.SetRendererTrace)
+			eng.SetAuthorizationTraceObserver(traceRecorder.AddAuthorizationTrace)
 		}
 
 		onStep := func(ev engine.StepEvent) {

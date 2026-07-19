@@ -695,6 +695,15 @@ func (r *cliTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
 	r.record.Outcome.KBConflictCount = trace.KBConflictCount
 }
 
+// AddAuthorizationTrace appends one write target's dual-proof audit record; the
+// engine calls it once per verified target of a mutating action.
+func (r *cliTraceRecorder) AddAuthorizationTrace(trace observability.AuthorizationTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Authorizations = append(r.record.Authorizations, trace)
+}
+
 func (r *cliTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {
 	if r == nil {
 		return

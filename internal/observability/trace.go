@@ -146,6 +146,11 @@ type TraceRecord struct {
 	// omitempty for all non-agent turns, so trace output stays byte-identical
 	// until a producer exists (same reserved-slot precedent as TaskTier in B1).
 	Steps []StepTrace `json:"steps,omitempty"`
+	// Authorizations holds the per-target dual-proof audit record for each write a
+	// mutating action authorized this turn. Empty / omitempty for every non-mutating
+	// turn, so trace output stays byte-identical until a write target is proven
+	// (same reserved-slot precedent as Steps).
+	Authorizations []AuthorizationTrace `json:"authorizations,omitempty"`
 }
 
 type traceRecordJSON struct {
@@ -173,6 +178,7 @@ type traceRecordJSON struct {
 	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Steps               []StepTrace           `json:"steps,omitempty"`
+	Authorizations      []AuthorizationTrace  `json:"authorizations,omitempty"`
 }
 
 func (r TraceRecord) MarshalJSON() ([]byte, error) {
@@ -231,6 +237,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if len(r.Steps) > 0 {
 		out.Steps = r.Steps
+	}
+	if len(r.Authorizations) > 0 {
+		out.Authorizations = r.Authorizations
 	}
 	return json.Marshal(out)
 }
@@ -570,6 +579,43 @@ type ToolCallTrace struct {
 	ExecutedTargets  int    `json:"executed_targets"`
 	WindowSeconds    int    `json:"window_seconds"`
 	Projected        bool   `json:"projected,omitempty"`
+}
+
+// AuthorizationTrace is the per-write-target dual-proof audit record: for each
+// target a mutating action acted on this turn, it captures WHICH read interface
+// (oracle) established the target's existence, WHEN, for WHICH account, with what
+// VERDICT (the ExistenceProof), plus whether the user's confirmation authorized
+// execution (the SelectionProof outcome). It exists so a post-hoc audit can answer
+// "由哪个接口、在什么时间、为哪个账户证明了这个目标存在" — which the target's
+// existence evidence (engine.targetEvidence) established but which was previously
+// consumed only as a resolver gate and then discarded.
+//
+// Content-free by the same rule as the rest of the trace: the target id and the
+// account are HASHED (never raw uhost-/cfs-/disk- ids or org ids), the kind /
+// oracle / verdict are closed-set enums, and the user email is deliberately not
+// carried. So it is safe to persist to the cross-tenant analytics trace.
+type AuthorizationTrace struct {
+	// Operation is the mutating workflow (e.g. StopInstanceWorkflow) — a closed set.
+	Operation string `json:"operation"`
+	// TargetKind is the resource kind proven: instance | cfs | disk.
+	TargetKind string `json:"target_kind"`
+	// TargetIDHash is a hash of the exact target id — correlatable, never raw.
+	TargetIDHash string `json:"target_id_hash,omitempty"`
+	// ExistenceVerdict is the closed-set verdict: verified | not_found | unavailable.
+	ExistenceVerdict string `json:"existence_verdict"`
+	// ExistenceOracle names the read interface that established existence:
+	// DescribeCompShareInstance | DescribeCFS | DescribeCompShareInstance#DiskSet.
+	ExistenceOracle string `json:"existence_oracle,omitempty"`
+	// ObservedUnix is when the existence check ran (server clock, unix seconds).
+	ObservedUnix int64 `json:"observed_unix,omitempty"`
+	// AccountHash is a hash of the (top_organization_id/organization_id) the proof
+	// was scoped to — correlatable to the turn's tenant, never the raw ids or email.
+	AccountHash string `json:"account_hash,omitempty"`
+	// ExecutionAuthorized is the SelectionProof outcome: true when the user confirmed
+	// the target on the card (authorizing execution — even if the upstream write then
+	// failed), false when the card was declined / never resolved. The confirmation
+	// card IS the SelectionProof, so this records whether that human gate was passed.
+	ExecutionAuthorized bool `json:"execution_authorized"`
 }
 
 type RendererTrace struct {

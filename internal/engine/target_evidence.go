@@ -2,11 +2,15 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
 )
 
@@ -38,11 +42,34 @@ import (
 // established the target's existence verdict. The model can neither forge it nor
 // promote it — it is server-owned.
 type targetEvidence struct {
-	AccountKey   string                  `json:"account_key,omitempty"`
-	UserEmail    string                  `json:"user_email,omitempty"`
-	ObservedUnix int64                   `json:"observed_unix,omitempty"`
-	ExactID      string                  `json:"exact_id,omitempty"`
-	Verdict      entity.ExistenceVerdict `json:"verdict"`
+	AccountKey   string `json:"account_key,omitempty"`
+	UserEmail    string `json:"user_email,omitempty"`
+	ObservedUnix int64  `json:"observed_unix,omitempty"`
+	ExactID      string `json:"exact_id,omitempty"`
+	// Kind is the resource kind (instance/cfs/disk) this evidence is for; Oracle is
+	// the read interface that established it. Both are carried so a downstream
+	// journal/trace entry can name WHICH interface proved WHICH kind of target
+	// existed — the "由哪个接口" half of the existence-proof audit.
+	Kind    string                  `json:"kind,omitempty"`
+	Oracle  string                  `json:"oracle,omitempty"`
+	Verdict entity.ExistenceVerdict `json:"verdict"`
+}
+
+// existenceOracleForKind names the read interface that establishes a target kind's
+// existence, for the authorization audit trace. A disk has no standalone describe —
+// it is proven inside its parent instance's DiskSet — so its oracle is annotated
+// as such. An unknown kind has no oracle.
+func existenceOracleForKind(kind string) string {
+	switch kind {
+	case "instance":
+		return "DescribeCompShareInstance"
+	case "cfs":
+		return "DescribeCFS"
+	case "disk":
+		return "DescribeCompShareInstance#DiskSet"
+	default:
+		return ""
+	}
 }
 
 func (e targetEvidence) confirmed() bool { return e.Verdict == entity.ExistenceVerified }
@@ -78,7 +105,7 @@ type targetEvidenceKey struct {
 // A failed query yields Unavailable so the caller reports a dependency failure, never
 // a false "the target does not exist".
 func (e *Engine) verifyTargetExistence(ctx context.Context, kind, id, parentInstanceID string) targetEvidence {
-	ev := targetEvidence{ExactID: id, ObservedUnix: time.Now().Unix(), Verdict: entity.ExistenceNotFound}
+	ev := targetEvidence{ExactID: id, ObservedUnix: time.Now().Unix(), Verdict: entity.ExistenceNotFound, Kind: kind, Oracle: existenceOracleForKind(kind)}
 	if u, ok := tools.UserFrom(ctx); ok {
 		ev.AccountKey = fmt.Sprintf("%d/%d", u.TopOrganizationID, u.OrganizationID)
 		ev.UserEmail = u.UserEmail
@@ -214,4 +241,68 @@ func describeInstanceDiskSetHasID(raw map[string]any, instanceID, diskID string)
 		}
 	}
 	return false
+}
+
+// emitWriteAuthorizationTraces records the dual-proof audit for every write target
+// the resolver verified this turn: the ExistenceProof it established (which oracle,
+// when, which account, what verdict — from targetEvidence, previously consumed only
+// as a resolver gate and then discarded) plus whether the user's confirmation
+// authorized execution (executionAuthorized — the SelectionProof outcome). It fires
+// for BOTH authorized and declined writes, so the audit shows what existence was
+// proven regardless of the final human decision. Emissions are sorted by
+// (kind, id-hash) so a multi-target write (e.g. disk resize: instance + disk) has a
+// deterministic order. Ids and the account are hashed — no raw uhost-/cfs-/disk- id
+// or org id reaches the trace.
+func (e *Engine) emitWriteAuthorizationTraces(resolved resolvedProposal, executionAuthorized bool) {
+	if e.authorizationTraceObserver == nil || len(resolved.targetEvidence) == 0 {
+		return
+	}
+	traces := make([]observability.AuthorizationTrace, 0, len(resolved.targetEvidence))
+	for _, ev := range resolved.targetEvidence {
+		traces = append(traces, observability.AuthorizationTrace{
+			Operation:           resolved.action.Operation,
+			TargetKind:          ev.Kind,
+			TargetIDHash:        hashTraceValue(ev.ExactID),
+			ExistenceVerdict:    existenceVerdictString(ev.Verdict),
+			ExistenceOracle:     ev.Oracle,
+			ObservedUnix:        ev.ObservedUnix,
+			AccountHash:         hashTraceValue(ev.AccountKey),
+			ExecutionAuthorized: executionAuthorized,
+		})
+	}
+	sort.Slice(traces, func(i, j int) bool {
+		if traces[i].TargetKind != traces[j].TargetKind {
+			return traces[i].TargetKind < traces[j].TargetKind
+		}
+		return traces[i].TargetIDHash < traces[j].TargetIDHash
+	})
+	for _, tr := range traces {
+		e.authorizationTraceObserver(tr)
+	}
+}
+
+// hashTraceValue is the content-free projection for an audit id/account: a stable
+// sha256 hex of the trimmed value, or "" for empty input. It keeps raw ids and org
+// ids out of the cross-tenant analytics trace while staying correlatable, exactly
+// as ToolCallTrace.ArgsHash / RateLimitTrace.SubjectHash do.
+func hashTraceValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+// existenceVerdictString renders a three-state existence verdict as the closed-set
+// trace enum (entity.ExistenceVerdict has no String()).
+func existenceVerdictString(v entity.ExistenceVerdict) string {
+	switch v {
+	case entity.ExistenceVerified:
+		return "verified"
+	case entity.ExistenceUnavailable:
+		return "unavailable"
+	default:
+		return "not_found"
+	}
 }

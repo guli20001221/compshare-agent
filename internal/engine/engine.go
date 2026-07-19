@@ -238,6 +238,7 @@ type Engine struct {
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
 	turnCompletionObserver           func(observability.TurnCompletionTrace)
 	outcomeTraceObserver             func(observability.OutcomeTrace)
+	authorizationTraceObserver       func(observability.AuthorizationTrace)
 	tokenUsageObserver               func(llm.TokenUsage)
 	rateLimiter                      governance.RateLimiter
 	rateLimitSubject                 string
@@ -677,6 +678,13 @@ func (e *Engine) SetDiagnosisTraceObserver(observer func(observability.Diagnosis
 
 func (e *Engine) SetOutcomeTraceObserver(observer func(observability.OutcomeTrace)) {
 	e.outcomeTraceObserver = observer
+}
+
+// SetAuthorizationTraceObserver wires the per-turn write-authorization audit sink;
+// the engine calls it once per verified write target with that target's dual-proof.
+// nil disables it (default), so a turn that never authorizes a write emits nothing.
+func (e *Engine) SetAuthorizationTraceObserver(observer func(observability.AuthorizationTrace)) {
+	e.authorizationTraceObserver = observer
 }
 
 // ReactRoundsThisTurn returns the number of ReAct loop rounds entered in the most

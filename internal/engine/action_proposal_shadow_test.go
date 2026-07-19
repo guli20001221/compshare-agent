@@ -11,6 +11,7 @@ import (
 	"github.com/compshare-agent/internal/actionresolver"
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -419,6 +420,66 @@ func TestConfirmedTargetRecordedEvenWhenUpstreamWriteFails(t *testing.T) {
 		_ = eng.executeActionProposal(context.Background(), proposal, noopStep)
 		require.Empty(t, eng.sessionState.SelectedInstanceID,
 			"a declined target must never be recorded as a user selection")
+	})
+}
+
+// TestWriteAuthorizationDualProofReachesTrace encodes the B3 invariant: the
+// existence proof the resolver establishes for a write target (which oracle, when,
+// which account, what verdict) — previously consumed only as a resolver gate and
+// then discarded — now reaches the trace as an AuthorizationTrace, paired with
+// whether the user's confirmation authorized execution. The target id and account
+// are HASHED, never raw.
+func TestWriteAuthorizationDualProofReachesTrace(t *testing.T) {
+	run := func(confirm bool) []observability.AuthorizationTrace {
+		executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running", "Zone": "cn-wlcb-01"}}}, nil
+			case "DescribeCompShareSupportZone":
+				return map[string]any{"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false}}}, nil
+			default:
+				return map[string]any{"RetCode": float64(0)}, nil
+			}
+		}}
+		eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return confirm })
+		eng.SetMutatingToolsEnabled(true)
+		eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+		require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running", "Zone": "cn-wlcb-01"}}}, "test"))
+		var traces []observability.AuthorizationTrace
+		eng.SetAuthorizationTraceObserver(func(tr observability.AuthorizationTrace) { traces = append(traces, tr) })
+		eng.lastUserMsg = "停止 uhost-1"
+		eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-b3", time.Now())
+		eng.turnContextViewReady = true
+		// A user context so the account-scoped existence proof (AccountHash) is exercised.
+		ctx := tools.WithUser(context.Background(), tools.UserContext{TopOrganizationID: 1, OrganizationID: 2})
+		_ = eng.executeActionProposal(ctx, map[string]any{
+			"turn_id": "turn-b3", "operation": "StopInstanceWorkflow",
+			"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
+		}, noopStep)
+		return traces
+	}
+
+	t.Run("confirmed_write_emits_verified_dual_proof", func(t *testing.T) {
+		traces := run(true)
+		require.Len(t, traces, 1)
+		tr := traces[0]
+		require.Equal(t, "StopInstanceWorkflow", tr.Operation)
+		require.Equal(t, "instance", tr.TargetKind)
+		require.Equal(t, "verified", tr.ExistenceVerdict)
+		require.Equal(t, "DescribeCompShareInstance", tr.ExistenceOracle)
+		require.True(t, tr.ExecutionAuthorized, "a confirmed write is execution-authorized")
+		require.NotZero(t, tr.ObservedUnix)
+		// Ids and account are hashed, never raw.
+		require.Equal(t, hashTraceValue("uhost-1"), tr.TargetIDHash)
+		require.NotContains(t, tr.TargetIDHash, "uhost-1")
+		require.Equal(t, hashTraceValue("1/2"), tr.AccountHash)
+	})
+
+	t.Run("declined_write_still_records_existence_proof_unauthorized", func(t *testing.T) {
+		traces := run(false)
+		require.Len(t, traces, 1)
+		require.Equal(t, "verified", traces[0].ExistenceVerdict, "existence was proven before the card")
+		require.False(t, traces[0].ExecutionAuthorized, "a declined write is not execution-authorized")
 	})
 }
 

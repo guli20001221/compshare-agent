@@ -805,6 +805,61 @@ func TestTraceRecord_TaskTier_Serialization(t *testing.T) {
 	})
 }
 
+// Authorizations (the write-target dual-proof audit) must be absent from the wire
+// for every non-mutating turn (omitempty + the len>0 marshal gate, same reserved-
+// slot contract as Steps/TaskTier) and round-trip its hashed/enum fields when a
+// write is authorized. The "empty" branch keeps the trace byte-identical for the
+// overwhelming majority of turns that authorize no write.
+func TestTraceRecord_Authorizations_Serialization(t *testing.T) {
+	base := TraceRecord{
+		SchemaVersion: SchemaVersion,
+		TraceID:       "trace-1",
+		TurnID:        "turn-1",
+		TurnIndex:     1,
+		Timestamp:     "2026-05-29T00:00:00Z",
+		UserMsgHash:   "sha256:user",
+	}
+
+	t.Run("empty Authorizations is omitted", func(t *testing.T) {
+		data, err := json.Marshal(base)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(data), `"authorizations"`) {
+			t.Fatalf("empty Authorizations should be omitted, got: %s", data)
+		}
+	})
+
+	t.Run("populated Authorizations round-trips its hashed dual-proof", func(t *testing.T) {
+		rec := base
+		rec.Authorizations = []AuthorizationTrace{{
+			Operation:           "StopInstanceWorkflow",
+			TargetKind:          "instance",
+			TargetIDHash:        "sha-target",
+			ExistenceVerdict:    "verified",
+			ExistenceOracle:     "DescribeCompShareInstance",
+			ObservedUnix:        1748476800,
+			AccountHash:         "sha-account",
+			ExecutionAuthorized: true,
+		}}
+		data, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(data), `"existence_oracle":"DescribeCompShareInstance"`) ||
+			!strings.Contains(string(data), `"execution_authorized":true`) {
+			t.Fatalf("populated Authorizations should serialize its fields, got: %s", data)
+		}
+		var round TraceRecord
+		if err := json.Unmarshal(data, &round); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(round.Authorizations) != 1 || round.Authorizations[0] != rec.Authorizations[0] {
+			t.Fatalf("Authorizations did not round-trip: %#v", round.Authorizations)
+		}
+	})
+}
+
 // ActualExecutionTier (B4a derived dispatch tier) must serialize when populated and
 // stay absent when empty (omitempty), same contract as TaskTier. The "empty"
 // branch protects consumers parsing pre-B4a traces from an unexpected

@@ -76,6 +76,7 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 	agent.SetTurnCompletionObserver(recorder.SetTurnCompletionTrace)
 	agent.SetRateLimitObserver(recorder.SetRateLimitDecision)
 	agent.SetTokenUsageObserver(recorder.AddTokenUsage)
+	agent.SetAuthorizationTraceObserver(recorder.AddAuthorizationTrace)
 }
 
 func clearChatTraceObservers(agent *engine.Engine) {
@@ -91,6 +92,7 @@ func clearChatTraceObservers(agent *engine.Engine) {
 	agent.SetTurnCompletionObserver(nil)
 	agent.SetRateLimitObserver(nil)
 	agent.SetTokenUsageObserver(nil)
+	agent.SetAuthorizationTraceObserver(nil)
 }
 
 func (r *chatTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) observability.EntityRegistryTrace) {
@@ -168,6 +170,15 @@ func (r *chatTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
 	r.record.Outcome.AttemptedHallucinatedCount = trace.AttemptedHallucinatedCount
 	r.record.Outcome.EscapedHallucinatedCount = trace.EscapedHallucinatedCount
 	r.record.Outcome.KBConflictCount = trace.KBConflictCount
+}
+
+// AddAuthorizationTrace appends one write target's dual-proof audit record; the
+// engine calls it once per verified target of a mutating action.
+func (r *chatTraceRecorder) AddAuthorizationTrace(trace observability.AuthorizationTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Authorizations = append(r.record.Authorizations, trace)
 }
 
 func (r *chatTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {
