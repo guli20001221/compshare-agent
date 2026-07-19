@@ -156,9 +156,11 @@ func (e *Engine) runForcedFirstDecision(ctx context.Context, opts ChatOptions, o
 		ToolChoice: "required",
 	}
 	resp, err := e.llmClient.Chat(ctx, req)
-	if err != nil {
-		// The probe failed outright. Degrade to the normal loop (full window); the
-		// answer path surfaces any genuine LLM outage through its own recovery.
+	if err != nil || resp == nil {
+		// The probe failed outright (or returned no response). Degrade to the normal
+		// loop (full window); the answer path surfaces any genuine LLM outage through
+		// its own recovery. The resp==nil guard keeps observeFirstDecisionTokens /
+		// interpretFirstDecision below from dereferencing a nil response.
 		e.firstDecisionOutcomeThisTurn = firstDecisionDegradedError
 		return false, ""
 	}
