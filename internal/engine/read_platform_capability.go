@@ -63,11 +63,13 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabilityLabel string, reg capability.RegisteredRead, request platform.ReadRequest, args map[string]any, onStep func(StepEvent)) string {
 	onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
 
+	now := time.Now()
 	snapshot := e.RegistrySnapshot()
 	rt := capability.ReadRuntime{
 		Executor:         plannerHandlerExecutor{engine: e, onStep: onStep},
 		Resolver:         snapshot,
-		FallbackGPUModel: e.fallbackStockGpuModel(time.Now()),
+		Now:              now,
+		FallbackGPUModel: e.fallbackStockGpuModel(now),
 	}
 	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
 		rt.FallbackInstanceID = e.sessionState.SelectedInstanceID
@@ -77,7 +79,9 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 	if readResult.Status == platform.ReadStatusUnavailable {
 		return e.buildUnavailableObservation(action, capabilityLabel, readResult, onStep)
 	}
-	return e.buildReadObservation(action, capabilityLabel, readResult, snapshot.CanAssertAbsence(), onStep)
+	// Absence is asserted only against a registry still fresh as of `now`: a
+	// stale-but-complete snapshot must not tell the model "you have none".
+	return e.buildReadObservation(action, capabilityLabel, readResult, snapshot.CanAssertAbsenceAt(now), onStep)
 }
 
 // UnavailableCapabilityObservation is the structured result of an Unavailable

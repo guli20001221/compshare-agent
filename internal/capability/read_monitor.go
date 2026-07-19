@@ -143,7 +143,7 @@ func resolveMonitorTargets(targets []platform.TargetRef, rt ReadRuntime) ([]enti
 	// allowColdExactID=false: monitor's envelope subjects come from these pre-query
 	// snapshots, not the monitor response, so a cold id must not pass through here
 	// or it would render as a confirmed subject monitor never verified.
-	instances, ids, reason := resolveReadTargetSnapshots(targets, rt.Resolver, false)
+	instances, ids, reason := resolveReadTargetSnapshots(targets, rt.Resolver, false, rt.Now)
 	if reason != nil {
 		return nil, nil, readTargetFallbackResult(*reason)
 	}

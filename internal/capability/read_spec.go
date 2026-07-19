@@ -9,6 +9,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
@@ -31,20 +32,26 @@ type EntityResolver interface {
 	ResolveByID(id string) (*entity.InstanceSnapshot, entity.ResolveResult)
 	ResolveByName(name string) ([]*entity.InstanceSnapshot, entity.ResolveResult)
 	InstanceIDTokensInText(text string) []string
-	// CanAssertAbsence reports whether the registry is fresh, complete and
-	// untruncated enough to say an id is genuinely NOT in the account. A cold,
-	// never-synced or truncated registry returns false: a miss then means
-	// "unverifiable locally", not "absent", so a user-typed exact id may be
-	// point-queried upstream rather than refused.
-	CanAssertAbsence() bool
+	// CanAssertAbsenceAt reports whether the registry is fresh AS OF `at`, complete
+	// and untruncated enough to say an id is genuinely NOT in the account. A cold,
+	// never-synced, STALE (older than the freshness TTL), invalidated or truncated
+	// registry returns false: a miss then means "unverifiable locally", not
+	// "absent", so a user-typed exact id may be point-queried upstream rather than
+	// refused. The non-time-aware CanAssertAbsence would trust a stale-but-complete
+	// snapshot and refuse a just-created instance before any upstream call.
+	CanAssertAbsenceAt(at time.Time) bool
 }
 
 // ReadRuntime carries the server-owned dependencies a read handler needs. None
 // of these is a model parameter: the handler never receives UserText, QueryText
 // or an intent route, and never re-parses natural language.
 type ReadRuntime struct {
-	Executor           ReadExecutor
-	Resolver           EntityResolver
+	Executor ReadExecutor
+	Resolver EntityResolver
+	// Now is the turn's reference clock for freshness/absence decisions. It is
+	// server-owned, never a model parameter; a zero value means the caller did not
+	// wire it and the freshness check defaults to time.Now().
+	Now                time.Time
 	FallbackInstanceID string
 	FallbackGPUModel   string
 }

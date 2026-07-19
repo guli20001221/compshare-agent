@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/stretchr/testify/assert"
@@ -191,6 +193,33 @@ func TestResourceHandle_FreshCompleteAbsentExactIDFallsBack(t *testing.T) {
 	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
 	assert.Equal(t, platform.ReadFallbackUnresolvedTarget, result.FallbackReason)
 	assert.Empty(t, exec.calls, "an authoritative registry that can assert absence must not point-query")
+}
+
+// TestResourceHandle_StaleCompleteExactIDPointQueries is the freshness half of the
+// absence-authority contract (review finding 1): a registry that was complete and
+// untruncated but synced longer ago than the freshness TTL has LOST standing to
+// assert absence — a just-created instance can be missing from it, or a released
+// one can linger. So a user-typed exact id absent from a STALE snapshot must
+// point-query upstream, exactly like a cold one, rather than be refused before the
+// call. This fails on the pre-fix code, where CanAssertAbsence() ignored the TTL
+// and a stale-but-complete snapshot answered "not in your account" with 0 calls.
+func TestResourceHandle_StaleCompleteExactIDPointQueries(t *testing.T) {
+	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-new", "just-created", "Running"))}
+	// A fresh, complete resolver — but observed 2×TTL in the future, so as of `now`
+	// it is stale and can no longer assert absence.
+	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
+	staleNow := time.Now().Add(2 * entity.DefaultRegistryFreshnessTTL)
+
+	reg := NewReadCapability(resourceReadSpec())
+	result := reg.Run(context.Background(), ResourceInfoRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-new", Source: platform.SourceUserText}},
+	}, ReadRuntime{Executor: exec, Resolver: resolver, Now: staleNow})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1, "a stale registry cannot assert absence, so it must point-query")
+	assert.Equal(t, []string{"uhost-new"}, exec.calls[0].args["UHostIds"],
+		"the exact id must be point-queried upstream, not refused against a stale cache")
+	assert.Contains(t, result.Reply, "uhost-new")
 }
 
 // TestResourceHandle_ColdIDResponseMismatchIsEmpty is the same-id contract on the

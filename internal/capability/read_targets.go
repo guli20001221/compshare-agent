@@ -2,6 +2,7 @@ package capability
 
 import (
 	"sort"
+	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/platform"
@@ -29,12 +30,21 @@ import (
 // rendered as a confirmed subject it never verified. A registry WITH standing to
 // assert absence stays authoritative — a real miss is a real "not in your
 // account", no upstream call.
-func resolveReadTargetSnapshots(refs []platform.TargetRef, resolver EntityResolver, allowColdExactID bool) ([]entity.InstanceSnapshot, []string, *platform.ReadFallbackReason) {
+//
+// `now` is the freshness reference clock: absence is asserted only against a
+// registry still fresh as of `now`, so a stale-but-complete snapshot no longer
+// refuses a just-created id before the upstream call.
+func resolveReadTargetSnapshots(refs []platform.TargetRef, resolver EntityResolver, allowColdExactID bool, now time.Time) ([]entity.InstanceSnapshot, []string, *platform.ReadFallbackReason) {
 	if len(refs) == 0 {
 		return nil, nil, nil
 	}
 	if resolver == nil {
 		return nil, nil, fallbackReason(platform.ReadFallbackUnresolvedTarget)
+	}
+	if now.IsZero() {
+		// A caller that forgot to wire the clock must not silently re-open the
+		// stale-trust hole: default to real time so absence stays freshness-gated.
+		now = time.Now()
 	}
 
 	ids := make([]string, 0, len(refs))
@@ -44,7 +54,7 @@ func resolveReadTargetSnapshots(refs []platform.TargetRef, resolver EntityResolv
 		case platform.TargetRefUHostIDUserInput:
 			inst, res := resolver.ResolveByID(ref.Value)
 			if res.Status != entity.ResolveHit || inst == nil {
-				if allowColdExactID && !resolver.CanAssertAbsence() {
+				if allowColdExactID && !resolver.CanAssertAbsenceAt(now) {
 					// Unverifiable locally, not absent: pass the exact id through so
 					// the caller's DescribeCompShareInstance point-query decides. The
 					// synthesized snapshot carries only the id; the caller derives the
