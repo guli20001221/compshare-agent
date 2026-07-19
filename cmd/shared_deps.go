@@ -59,6 +59,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if domainMatchGuard {
 		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
 	}
+	forcedFirstDecision, unknownForcedFirstDecision := forcedFirstDecisionEnabledFromEnv(getenv)
+	if unknownForcedFirstDecision != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_FORCED_FIRST_DECISION value %q", unknownForcedFirstDecision)
+	}
+	engine.SetForcedFirstDecisionEnabled(forcedFirstDecision)
+	if forcedFirstDecision {
+		log.Printf("runtime: HTTP forced first-decision enabled (COMPSHARE_FORCED_FIRST_DECISION=1; create/write first-hop determinism)")
+	}
 	return deps, mutating, nil
 }
 

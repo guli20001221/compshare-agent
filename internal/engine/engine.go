@@ -295,6 +295,15 @@ type Engine struct {
 	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
 	reactRoundsThisTurn     int
 	reactCeilingHitThisTurn bool
+	// Forced first-decision (create-first-hop fix). writeWindowClosedThisTurn is
+	// set once the first hop has committed (a Request* proposal ran OR
+	// continue-without-write was chosen); subsequent rounds then run with every
+	// Request* tool removed, so a write proposal can only ever be the first
+	// decision. firstDecisionOutcomeThisTurn records the outcome
+	// (continue / request:<tool> / a fail_* / a degraded_* / skipped) for the
+	// trace and the structural acceptance gates. Both reset at the top of Chat.
+	writeWindowClosedThisTurn    bool
+	firstDecisionOutcomeThisTurn string
 	// Context-assembler observability (P2). Peak raw history size and peak
 	// assembled request size across this turn's rounds, plus whether the
 	// conservative message cap ever shed anything. Content-free; reset at the top
@@ -1162,6 +1171,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readExpensiveCallsThisTurn = 0
 	e.turnTokensConsumed = 0
 	e.reactRoundsThisTurn = 0
+	e.writeWindowClosedThisTurn = false
+	e.firstDecisionOutcomeThisTurn = ""
 	e.reactCeilingHitThisTurn = false
 	e.promptMessagesRawPeakThisTurn = 0
 	e.promptMessagesAssembledPeakThisTurn = 0
@@ -1286,14 +1297,39 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
 		messages := e.buildMessagesForLLM()
-		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled)
+		// Forced first-decision (create-first-hop fix, first_decision.go): on the
+		// FIRST hop, when mutating is enabled and the model supports
+		// tool_choice=required, restrict the window to the catalog Request* tools +
+		// ContinueWithoutWrite and force a choice — the Agent cannot free-roll reads
+		// before deciding whether this is a write. Degrades (marked, not a
+		// structural guarantee) when required tool_choice is unsupported. Once the
+		// first decision is made, later rounds drop every Request* tool so a write
+		// proposal can only ever be the first decision.
+		firstDecision := forcedFirstDecisionOn && round == 0 && e.mutatingToolsEnabled && e.supportsRequiredToolChoice
+		if forcedFirstDecisionOn && round == 0 && !firstDecision {
+			if e.mutatingToolsEnabled {
+				e.firstDecisionOutcomeThisTurn = firstDecisionDegradedUnsupported
+			} else {
+				e.firstDecisionOutcomeThisTurn = firstDecisionSkippedReadOnly
+			}
+		}
+		var toolWindow []openai.Tool
+		switch {
+		case firstDecision:
+			toolWindow = firstDecisionToolWindow()
+		case e.writeWindowClosedThisTurn:
+			toolWindow = toolWindowWithoutProposals(centralAgentToolWindow(e.mutatingToolsEnabled))
+		default:
+			toolWindow = centralAgentToolWindow(e.mutatingToolsEnabled)
+		}
 		req := llm.ChatRequest{
 			Messages: messages,
-			// The central Agent's tool window comes from centralAgentToolWindow
-			// (dispatch_window.go), gated only by whether mutating tools are
-			// enabled — there is no planner intent or per-route RequiredTools
-			// authorizing dispatch (that intent-route stack was deleted in P6).
-			Tools: toolWindow,
+			Tools:    toolWindow,
+		}
+		if firstDecision {
+			// required: the Agent MUST call exactly one first-decision tool; it may
+			// not answer in prose or call a read here.
+			req.ToolChoice = "required"
 		}
 		// Once the bounded search budget is exhausted, remove the capability. The
 		// observations already in the conversation are sufficient for the Agent's
@@ -1361,6 +1397,23 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// call, but it must not erase a complete answer that is already in hand.
 		// The next loop iteration still enforces the cap before any further call.
 		runtimeRound.ModelStep(len(resp.ToolCalls), len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "")
+
+		// Forced first-decision: interpret the required tool choice. A single
+		// Request* proposal falls through to normal execution below; continue-
+		// without-write and fail-closed are handled here. The Agent's raw first-
+		// decision content is never streamed to the user.
+		if firstDecision {
+			cont, final, finalReply := e.applyFirstDecision(resp, onStep)
+			if final {
+				if opts.OnTextDelta != nil {
+					opts.OnTextDelta(finalReply)
+				}
+				return agentruntime.Final(finalReply, agentruntime.FinishDeterministicReply), nil
+			}
+			if cont {
+				return agentruntime.Continue(), nil
+			}
+		}
 
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {

@@ -7,14 +7,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The Agent proposes a write through a per-operation Request<Operation> tool; the
-// legacy ProposeAction_<Operation> alias was retired. This pins the first hop a
-// create turn takes (RequestCreateInstance) and guards the alias from returning
-// to the advertised window or the tool->operation mapping.
-func TestProposalToolFirstHopIsRequestNotLegacyAlias(t *testing.T) {
+// TestProposalToolExposureAndMapping asserts ONLY that the catalog exposes the
+// per-operation Request<Operation> tool and maps it back to its operation, and
+// that the retired ProposeAction_<Operation> alias is gone. It does NOT — and its
+// old name "FirstHopIsRequest" misleadingly implied it did — assert that the real
+// model actually calls RequestCreateInstance first on a create turn; that is a
+// model-behavior property, proven by the forced-first-decision structural gates
+// (first_decision_test.go) and the real-model create acceptance, not by the tool
+// list. Renamed to stop it manufacturing false safety about first-hop behavior.
+func TestProposalToolExposureAndMapping(t *testing.T) {
 	names := centralAgentToolNames(true)
 	require.Contains(t, names, "RequestCreateInstance",
-		"the create proposal tool the Agent calls first must be RequestCreateInstance")
+		"the create proposal tool must be advertised as RequestCreateInstance")
 	require.NotContains(t, names, "ProposeAction_CreateInstanceWorkflow",
 		"the retired ProposeAction_* alias must not be advertised to the model")
 

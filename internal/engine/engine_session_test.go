@@ -349,6 +349,8 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
 		"reactRoundsThisTurn":           true,
 		"reactCeilingHitThisTurn":       true,
+		"writeWindowClosedThisTurn":     true,
+		"firstDecisionOutcomeThisTurn":  true,
 		"turnModelCallsThisTurn":        true,
 		"turnCompletionClassHint":       true,
 		"turnCompletionReasonHint":      true,
@@ -414,12 +416,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 9, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 78, len(perSessionFields); want != got {
+	if want, got := 80, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 87, typ.NumField(); want != got {
+	if want, got := 89, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

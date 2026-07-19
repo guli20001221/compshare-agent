@@ -221,6 +221,26 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// forcedFirstDecisionEnabledFromEnv gates the forced first-decision
+// (COMPSHARE_FORCED_FIRST_DECISION). DEFAULT OFF — restores a deterministic
+// create/write first hop (a write proposal can only be the first decision; reads
+// cannot jump ahead) by forcing the central Agent, on its first ReAct round, to
+// call one of the catalog Request* tools or ContinueWithoutWrite with
+// tool_choice=required. Kept off until a flag-on real-model acceptance proves the
+// create/consult/image-rec first-hop behavior. ""/0/off/... => off; 1/true/yes/on
+// => on; unknown => off + non-empty warn string (CLAUDE.md: never silently coerce).
+func forcedFirstDecisionEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_FORCED_FIRST_DECISION"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 // unifiedCreateEnabledFromEnv gates the R2b first-class create_instance route.
 // DEFAULT ON: the router prompt/schema expose create_instance by default. Set
 // COMPSHARE_UNIFIED_CREATE=0/off/false to roll back during soak.
