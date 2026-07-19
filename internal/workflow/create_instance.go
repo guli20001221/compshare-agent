@@ -279,6 +279,10 @@ func CreateInstanceDef() *Definition {
 		},
 		ResultData:   createInstanceResultData,
 		FailureDraft: createFailureDraft,
+		// This workflow offers a guided multi-step selection form
+		// (CreateInstanceGuidedDef) for an incomplete proposal; the catalog reads
+		// this to expose IntakeGuided instead of the engine switching on the name.
+		GuidedIntake: true,
 	}
 }
 

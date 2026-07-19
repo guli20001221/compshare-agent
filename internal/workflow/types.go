@@ -142,6 +142,13 @@ type Definition struct {
 	// nil for a workflow that resolves no candidate; its failures then carry the
 	// failed step and its arguments and nothing more, which is honest.
 	FailureDraft func(wfCtx *Context) map[string]any
+	// GuidedIntake declares that this workflow offers a guided, multi-step
+	// selection form for an incomplete-but-well-formed proposal (see
+	// CreateInstanceGuidedDef) instead of a prose back-and-forth. The action
+	// catalog reads this to surface the operation as IntakeGuided, so whether an
+	// operation supports guided intake is a property the workflow declares here —
+	// not a workflow-name switch in the catalog. Default false = prose-only intake.
+	GuidedIntake bool
 }
 
 // FailureReason classifies a failure for callers that must DO something different
