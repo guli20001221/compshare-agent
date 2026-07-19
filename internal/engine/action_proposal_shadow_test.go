@@ -175,32 +175,172 @@ func TestCentralAgentProposalCannotWriteWithoutRequiredJournal(t *testing.T) {
 	require.NotContains(t, executor.calls, "StopCompShareInstance")
 }
 
-func TestCurrentTurnReadBecomesProposalEvidenceOnlyAfterItWasObserved(t *testing.T) {
+// TestCurrentTurnReadIsExistenceNotSelection: a current-turn read proves the
+// target EXISTS, but existence is not selection. An id the Agent merely read —
+// the user only said "停止它", never chose this instance — must not authorize a
+// write on read-existence alone (dual-proof acceptance #3). Contrast with a
+// genuine selection (typed id / card pick / sole account instance).
+func TestCurrentTurnReadIsExistenceNotSelection(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.lastUserMsg = "停止它"
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-read-source", time.Now())
-	eng.turnContextViewReady = true
-	args := map[string]any{
-		"turn_id": "turn-read-source", "operation": "StopInstanceWorkflow",
-		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "tool_observation", "evidence": map[string]any{"context_field": "current_turn_read"}}},
-	}
-
-	before, err := eng.resolveActionProposalShadow(context.Background(), args)
-	require.NoError(t, err)
-	require.False(t, before.action.ReadyForConfirmation)
 	eng.readCapabilitySubjectsThisTurn = map[string]struct{}{"uhost-1": {}}
-	after, err := eng.resolveActionProposalShadow(context.Background(), args)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-read-only", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-read-only", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
+	})
+
 	require.NoError(t, err)
-	require.True(t, after.action.ReadyForConfirmation)
+	require.False(t, resolved.action.ReadyForConfirmation, "read existence alone is not user selection")
+	require.Contains(t, resolved.action.Rejected, "UHostId: target source is not verified")
 }
 
-func TestConfirmedFollowUpInheritsOneFreshSelectedTarget(t *testing.T) {
+// TestUserExplicitTargetTrustedByPointQueryWhenRegistryCold: the user typed the
+// exact id (SelectionProof), the registry is cold, and a this-turn point Describe
+// returns that same id (ExistenceProof) — the write is authorized (acceptance #1),
+// even though the registry never confirmed it.
+func TestUserExplicitTargetTrustedByPointQueryWhenRegistryCold(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareInstance" {
+			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "train-a", "State": "Running"}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "停止 uhost-1"
+	// registry never synced -> cold, cannot assert absence.
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cold", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-cold", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
+	})
+
+	require.NoError(t, err)
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Contains(t, executor.calls, "DescribeCompShareInstance", "a cold selected target must be existence-verified by a point-query")
+}
+
+// TestPointQueryRejectsTargetTheResponseDoesNotContain: the user typed an id and
+// the cold-registry point Describe returns a DIFFERENT id — no ExistenceProof, so
+// the write is refused (acceptance #2). Existence comes only from the response
+// echoing the same id, never from having asked for it.
+func TestPointQueryRejectsTargetTheResponseDoesNotContain(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareInstance" {
+			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-other"}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "停止 uhost-1"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-mismatch", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-mismatch", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
+	})
+
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation, "a point-query that does not echo the id is not existence")
+}
+
+// TestObservedSelectedInstanceIsNotSelectionProof: a SelectedInstanceID recorded
+// from a read (observed) — even fresh and existing — is NOT a selection, so a
+// bare "确认关机" that would inherit it is refused. This is the new acceptance:
+// a read-written SelectedInstanceID must never become a SelectionProof.
+func TestObservedSelectedInstanceIsNotSelectionProof(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	// Two instances, so the account-single selection does not apply.
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(2), "UHostSet": []any{
+		map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running"},
+		map[string]any{"UHostId": "uhost-2", "Name": "other", "State": "Running"},
+	}}, "test"))
 	eng.SetSessionState(SessionState{
 		SchemaVersion:          SessionStateSchemaCurrent,
 		SelectedInstanceID:     "uhost-1",
 		SelectedInstanceName:   "host",
 		SelectedInstanceSource: SelectedInstanceSourceObserved,
+		SelectedInstanceAtUnix: time.Now().Unix(),
+	}, 1)
+	eng.lastUserMsg = "确认关机"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-observed", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"operation": "StopInstanceWorkflow",
+		"slots":     []any{map[string]any{"name": "UHostId", "value": "host"}},
+	})
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation, "an observed referent is not a user selection")
+}
+
+// TestAuthoritativeRegistryAbsentTargetRejectedWithoutPointQuery: the user typed
+// an id not in a fresh, complete registry. Absence is authoritative, so the write
+// is refused WITHOUT a wasted point-query (acceptance #5, write path).
+func TestAuthoritativeRegistryAbsentTargetRejectedWithoutPointQuery(t *testing.T) {
+	describeCalls := 0
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareInstance" {
+			describeCalls++
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running"}}}, "test"))
+	eng.lastUserMsg = "停止 uhost-ghost"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-absent", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-absent", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-ghost"}},
+	})
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation)
+	require.Zero(t, describeCalls, "an authoritative registry that can assert absence must not point-query")
+}
+
+// TestAuthorizedTargetIsRecordedAsUserSelection: once a write target passes the
+// dual proof this turn, it is persisted as a genuine user selection so a later
+// "关掉它" can inherit it — the writer that keeps the confirm-follow-up fixture
+// non-vacuous. The workflow's own re-observation must not downgrade it.
+func TestAuthorizedTargetIsRecordedAsUserSelection(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		return map[string]any{"RetCode": 0, "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running"}}}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return true })
+	eng.SetMutatingToolsEnabled(true)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running"}}}, "test"))
+	eng.lastUserMsg = "停止 uhost-1"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-record", time.Now())
+	eng.turnContextViewReady = true
+
+	_ = eng.executeActionProposal(context.Background(), map[string]any{
+		"turn_id": "turn-record", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
+	}, noopStep)
+
+	require.Equal(t, "uhost-1", eng.sessionState.SelectedInstanceID)
+	require.Equal(t, SelectedInstanceSourceUser, eng.sessionState.SelectedInstanceSource, "an authorized target must persist as a user selection, undowngraded by the workflow's observation")
+}
+
+func TestConfirmedFollowUpInheritsOneFreshSelectedTarget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	// A prior turn recorded a genuine USER selection (not a mere observation), and
+	// the instance still exists in a fresh registry — both proofs the dual-proof
+	// requires for the "确认关机" follow-up to inherit the target.
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running"}}}, "test"))
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceName:   "host",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 		SelectedInstanceAtUnix: time.Now().Unix(),
 	}, 1)
 	eng.lastUserMsg = "确认关机"
@@ -235,7 +375,7 @@ func TestConfirmedFollowUpExecutesThroughResolvedTargetAuthority(t *testing.T) {
 		SchemaVersion:          SessionStateSchemaCurrent,
 		SelectedInstanceID:     "uhost-1",
 		SelectedInstanceName:   "host",
-		SelectedInstanceSource: SelectedInstanceSourceObserved,
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 		SelectedInstanceAtUnix: time.Now().Unix(),
 	}, 1)
 	eng.lastUserMsg = "确认关机"
@@ -351,11 +491,13 @@ func TestSealedPasswordIsInjectedWithoutEnteringModelArguments(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.secretInputsThisTurn = map[string]string{"Password": "SecurePass123!"}
 	eng.readCapabilitySubjectsThisTurn = map[string]struct{}{"uhost-1": {}}
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "重置密码为[已脱敏:凭据]", "turn-secret", time.Now())
+	// The user names the instance (span SelectionProof); the this-turn read supplies
+	// the ExistenceProof — a valid target, so the sealed-password path runs.
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "给 uhost-1 重置密码为[已脱敏:凭据]", "turn-secret", time.Now())
 	eng.turnContextViewReady = true
 	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
 		"turn_id": "turn-secret", "operation": "ResetPasswordWorkflow",
-		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "tool_observation", "evidence": map[string]any{"context_field": "current_turn_read"}}},
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
 	})
 	require.NoError(t, err)
 	require.Equal(t, "SecurePass123!", resolved.action.Arguments["Password"])

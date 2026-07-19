@@ -135,7 +135,15 @@ type VerifiedKnowledgeTurn struct {
 }
 
 const (
+	// SelectedInstanceSourceObserved marks a current-instance binding recorded
+	// from a tool observation (a read saw it). It is understanding-only — it helps
+	// resolve who "它" is — and is NEVER a selection proof for a write target.
 	SelectedInstanceSourceObserved = "observed"
+	// SelectedInstanceSourceUser marks a binding the user genuinely established
+	// this session — an explicit id they typed, or a pick from a shown selection
+	// card. Only this (and a shown-card pick / the account's sole instance) is a
+	// SelectionProof; a later turn's "关掉它" may re-verify its existence and act.
+	SelectedInstanceSourceUser = "user_selected"
 
 	ContextFrameKindCreate       = "create_instance"
 	ContextFrameKindDeploy       = "deploy_model"

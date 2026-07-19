@@ -33,51 +33,82 @@ type agentContextEvidenceVerifier struct {
 	context AgentContext
 	engine  *Engine
 	spec    actionresolver.OperationSpec
+	// targetEvidence is the engine-produced existence snapshot for each proposed
+	// write-target value, keyed by value. It is built BEFORE Resolve (the network
+	// point-query lives in the engine), so VerifyCandidate stays a pure read of
+	// server-owned evidence.
+	targetEvidence map[string]targetEvidence
 }
 
+// VerifyCandidate is the single authority over a candidate's provenance. For a
+// write TARGET it requires BOTH proofs — the user chose it AND it exists in this
+// account this turn — so neither the model's source label, nor mere existence,
+// nor a mere prior observation can authorize a write. Non-target fields carry
+// only a current-turn literal span as verifiable provenance.
 func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.SlotCandidate) bool {
 	if candidate.Evidence == nil {
 		return false
 	}
-	switch candidate.Source {
-	case actionresolver.SourceUserExplicit:
-		field, known := v.spec.Fields[candidate.Name]
-		if !known || !verifyCurrentQuestionEvidence(v.context, candidate, field.Codec) {
-			return false
-		}
-		if !known || !field.Target {
-			return known
-		}
-		value, _ := candidate.Value.(string)
-		if v.engine != nil {
-			_, ok := v.engine.RegistrySnapshot().Instances[value]
-			return ok
-		}
+	field, known := v.spec.Fields[candidate.Name]
+	if !known {
 		return false
-	case actionresolver.SourceVerifiedContext:
-		if candidate.Evidence.ContextField != "selected_entities" {
+	}
+	if field.Target {
+		value, ok := candidate.Value.(string)
+		if !ok || value == "" {
 			return false
 		}
-		value, _ := candidate.Value.(string)
-		for _, entity := range v.context.SelectedEntities {
-			if entity.ID == value && entity.Freshness != ContinuityFreshnessExpired {
-				return true
-			}
+		return v.targetHasSelectionProof(candidate, value) && v.targetHasExistenceProof(value)
+	}
+	if candidate.Source == actionresolver.SourceUserExplicit {
+		return verifyCurrentQuestionEvidence(v.context, candidate, field.Codec)
+	}
+	return false
+}
+
+// targetHasSelectionProof: why the server believes the USER chose this target.
+// The model source label is advisory; selection is re-derived from context.
+func (v agentContextEvidenceVerifier) targetHasSelectionProof(candidate actionresolver.SlotCandidate, value string) bool {
+	return targetSelectionProof(candidate, value, v.context, v.spec)
+}
+
+// targetSelectionProof is the pure SelectionProof: it reads only server-owned
+// context, never the network, so both the verifier and the engine's evidence
+// builder use it. Existence is only worth establishing for a SELECTED target, so
+// the engine gates its point-query on this.
+func targetSelectionProof(candidate actionresolver.SlotCandidate, value string, view AgentContext, spec actionresolver.OperationSpec) bool {
+	// (1) current-turn literal span: the user typed the id verbatim this turn.
+	if candidate.Source == actionresolver.SourceUserExplicit && candidate.Evidence != nil {
+		if verifyCurrentQuestionEvidence(view, candidate, spec.Fields[candidate.Name].Codec) {
+			return true
 		}
-	case actionresolver.SourceToolObservation:
-		value, _ := candidate.Value.(string)
-		if candidate.Evidence.ContextField == "current_turn_read" && v.engine != nil {
-			_, ok := v.engine.readCapabilitySubjectsThisTurn[value]
-			return ok
+	}
+	// (2) a fresh entity the user genuinely selected (typed id / card pick) or the
+	// account's sole instance. An OBSERVED referent (recorded from a read) is NOT
+	// a selection — observed != chosen.
+	for _, entity := range view.SelectedEntities {
+		if entity.ID == value && entity.Freshness != ContinuityFreshnessExpired && isUserSelectionSource(entity.Source) {
+			return true
 		}
-		if candidate.Evidence.ContextField != "recent_observations" {
-			return false
-		}
-		for _, observation := range v.context.RecentObservations {
-			if observation.SubjectID == value && !observation.RefreshRequired {
-				return true
-			}
-		}
+	}
+	return false
+}
+
+// targetHasExistenceProof: why the server believes it exists in this account,
+// verified THIS turn — a fresh registry hit, a this-turn read, or a this-turn
+// point Describe (pre-computed engine-side).
+func (v agentContextEvidenceVerifier) targetHasExistenceProof(value string) bool {
+	if v.engine == nil {
+		return false
+	}
+	if _, ok := v.engine.RegistrySnapshot().Instances[value]; ok {
+		return true
+	}
+	if _, ok := v.engine.readCapabilitySubjectsThisTurn[value]; ok {
+		return true
+	}
+	if ev, ok := v.targetEvidence[value]; ok && ev.confirmed() {
+		return true
 	}
 	return false
 }
@@ -177,14 +208,69 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	proposal = e.deriveProposalProvenance(proposal, view, spec)
 	proposal = completeCurrentTurnEvidence(proposal, view, spec)
 	proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
+	targetEvidence := e.targetEvidenceForProposal(ctx, proposal, spec, view)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
 	zoneCatalog := e.zoneCatalogSnapshotForSpec(ctx, spec)
 	imageCatalog := e.imageCatalogSnapshotForSpec(ctx, spec, proposalSlotString(proposal, "ImageSource"))
-	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec}, machineTypes).
+	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec, targetEvidence: targetEvidence}, machineTypes).
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
 	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog}}, nil
+}
+
+// targetEvidenceForProposal builds the existence snapshot for each distinct
+// write-target value in the proposal, before the (pure) resolver runs. The
+// engine owns the point-query so a Resolve stays replayable from a trace.
+func (e *Engine) targetEvidenceForProposal(ctx context.Context, proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec, view AgentContext) map[string]targetEvidence {
+	var out map[string]targetEvidence
+	for _, candidate := range proposal.Slots {
+		field, ok := spec.Fields[candidate.Name]
+		if !ok || !field.Target {
+			continue
+		}
+		value, ok := candidate.Value.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, done := out[value]; done {
+			continue
+		}
+		// Only establish existence for a target the user actually selected. An id
+		// the model merely inferred has no selection proof and must be refused
+		// without spending an upstream point-query on it.
+		if !targetSelectionProof(candidate, value, view, spec) {
+			continue
+		}
+		if out == nil {
+			out = map[string]targetEvidence{}
+		}
+		out[value] = e.verifyTargetExistence(ctx, value)
+	}
+	return out
+}
+
+// recordUserSelectedTargets persists an authorized write target as a genuine
+// user selection so a later turn's "关掉它" resolves to it (and re-verifies its
+// existence). It fires only for a target that already passed the dual-proof, so
+// it never promotes an observed-only referent into a selection.
+func (e *Engine) recordUserSelectedTargets(resolved actionresolver.ResolvedAction) {
+	catalog, err := defaultActionCatalog()
+	if err != nil {
+		return
+	}
+	spec, ok := catalog.Lookup(resolved.Operation)
+	if !ok {
+		return
+	}
+	for name, field := range spec.Fields {
+		if !field.Target {
+			continue
+		}
+		if value, ok := resolved.Arguments[name].(string); ok && strings.TrimSpace(value) != "" {
+			e.recordSelectedInstanceIDWithSource(value, "", SelectedInstanceSourceUser)
+		}
+	}
 }
 
 // deriveProposalProvenance keeps write authority out of model-authored
@@ -445,6 +531,9 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 		e.rememberPendingResolvedAction(resolved.action)
 		return resolvedActionForModel(resolved.action)
 	}
+	// The target passed the dual proof — record it as a genuine user selection so
+	// a later "关掉它" resolves to it (and re-verifies its existence next turn).
+	e.recordUserSelectedTargets(resolved.action)
 	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案已验证，进入统一确认与执行门"})
 	// Thread the SAME zone snapshot the resolver canonicalized Zone against into the
 	// workflow, so the create runs against exactly one catalog for the turn rather

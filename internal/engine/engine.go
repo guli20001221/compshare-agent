@@ -3107,6 +3107,17 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	if !e.sessionStateHydrated || id == "" {
 		return
 	}
+	// Observing the instance the user already chose does not un-choose it: an
+	// observed record of the SAME id must not downgrade a genuine user selection
+	// (the workflow's own Describe step would otherwise erase it mid-turn). Keep
+	// the stronger provenance, just refresh its freshness.
+	if source == SelectedInstanceSourceObserved &&
+		e.sessionState.SelectedInstanceID == id &&
+		e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
+		e.sessionState.SelectedInstanceAtUnix = time.Now().Unix()
+		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessFresh
+		return
+	}
 	if name == "" {
 		if inst, res := e.RegistrySnapshot().ResolveByID(id); res.Status == entity.ResolveHit && inst != nil {
 			name = inst.Name

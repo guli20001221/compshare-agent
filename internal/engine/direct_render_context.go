@@ -110,10 +110,14 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		}
 	}
 	if id := strings.TrimSpace(e.sessionState.SelectedInstanceID); id != "" {
+		// Carry the binding's provenance (observed vs user_selected) so the write
+		// verifier can tell an OBSERVED referent — read-only, never a selection —
+		// from an instance the user genuinely chose.
 		view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
 			Kind:      "instance",
 			ID:        id,
 			Name:      e.sessionState.SelectedInstanceName,
+			Source:    e.sessionState.SelectedInstanceSource,
 			Freshness: normalizedSelectedInstanceFreshness(e.sessionState),
 		})
 	}
