@@ -54,10 +54,11 @@ type agentContextEvidenceVerifier struct {
 	// be asked, never picked.
 	binding selectionBinding
 	// targetEvidence is the engine-produced existence verdict for each proposed
-	// write-target value, keyed by value. It is built BEFORE Resolve (the network
-	// point-query lives in the engine), so target adjudication stays a pure read of
-	// server-owned evidence.
-	targetEvidence map[string]targetEvidence
+	// write target, keyed by (field, kind, id) — never a bare id, so an instance's
+	// proof cannot authorize a same-id disk/CFS. It is built BEFORE Resolve (the
+	// network point-query lives in the engine), so target adjudication stays a pure
+	// read of server-owned evidence.
+	targetEvidence map[targetEvidenceKey]targetEvidence
 }
 
 // VerifyCandidate is the trust boundary for NON-target fields (a current-turn
@@ -91,10 +92,18 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 	if !ok || strings.TrimSpace(value) == "" {
 		return actionresolver.TargetReject
 	}
-	if field, known := v.spec.Fields[candidate.Name]; known && field.TargetKind == "instance" && v.binding.conflict {
+	field, known := v.spec.Fields[candidate.Name]
+	if !known || field.TargetKind == "" {
+		// Not a known target field (or a field with no resource kind): refuse rather
+		// than fall through to a stale/foreign evidence entry.
+		return actionresolver.TargetReject
+	}
+	if field.TargetKind == "instance" && v.binding.conflict {
 		return actionresolver.TargetConflict
 	}
-	ev, ok := v.targetEvidence[value]
+	// Look up evidence by the SAME (field, kind, id) key it was built under, so an
+	// instance proof can never be reused for a same-id disk/CFS target.
+	ev, ok := v.targetEvidence[targetEvidenceKey{field: candidate.Name, kind: field.TargetKind, id: strings.TrimSpace(value)}]
 	if !ok {
 		return actionresolver.TargetReject
 	}
@@ -228,25 +237,30 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 // source-based gate before verification. The verifier is chosen by resource kind;
 // a disk is scoped to the proposal's instance target (its parent) because a disk
 // exists only inside an instance's DiskSet.
-func (e *Engine) targetEvidenceForProposal(ctx context.Context, proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) map[string]targetEvidence {
+func (e *Engine) targetEvidenceForProposal(ctx context.Context, proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) map[targetEvidenceKey]targetEvidence {
 	instanceID := proposalInstanceTargetValue(proposal, spec)
-	var out map[string]targetEvidence
+	var out map[targetEvidenceKey]targetEvidence
 	for _, candidate := range proposal.Slots {
 		field, ok := spec.Fields[candidate.Name]
 		if !ok || !field.Target {
 			continue
 		}
 		value, ok := candidate.Value.(string)
-		if !ok || strings.TrimSpace(value) == "" {
+		if !ok {
 			continue
 		}
-		if _, done := out[value]; done {
+		id := strings.TrimSpace(value)
+		if id == "" {
+			continue
+		}
+		key := targetEvidenceKey{field: candidate.Name, kind: field.TargetKind, id: id}
+		if _, done := out[key]; done {
 			continue
 		}
 		if out == nil {
-			out = map[string]targetEvidence{}
+			out = map[targetEvidenceKey]targetEvidence{}
 		}
-		out[value] = e.verifyTargetExistence(ctx, field.TargetKind, value, instanceID)
+		out[key] = e.verifyTargetExistence(ctx, field.TargetKind, id, instanceID)
 	}
 	return out
 }
@@ -282,7 +296,12 @@ func (e *Engine) recordUserSelectedTargets(resolved actionresolver.ResolvedActio
 		return
 	}
 	for name, field := range spec.Fields {
-		if !field.Target {
+		// Only an INSTANCE target may become the session's SelectedInstanceID. A CFS or
+		// disk id must never be written there — a ResizeCFS/ResizeDisk success would
+		// otherwise poison the next turn's "关掉它" with a CfsId/DiskId (worse for a disk
+		// resize, whose UHostId+DiskId targets race on Go's nondeterministic map order).
+		// CFS/disk cross-turn memory, if ever needed, gets its own typed selection state.
+		if !field.Target || field.TargetKind != "instance" {
 			continue
 		}
 		if value, ok := resolved.Arguments[name].(string); ok && strings.TrimSpace(value) != "" {

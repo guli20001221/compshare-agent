@@ -418,6 +418,43 @@ func TestResizeDiskRefusedWhenDiskNotInParentDiskSet(t *testing.T) {
 	require.False(t, resolved.action.ReadyForConfirmation, "a disk id absent from the parent's DiskSet is not existence")
 }
 
+// An instance existence proof must NOT authorize a disk that happens to share the same
+// id STRING (review round-2 finding 1): evidence is keyed by (field, kind, id), never
+// the bare value. Here an instance "same-id" exists but its DiskSet lacks "same-id", so
+// the disk resize is refused — the instance's Verified verdict is never reused.
+func TestSameIdInstanceEvidenceDoesNotAuthorizeDisk(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareInstance" {
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "same-id", "Name": "alpha", "State": "Running",
+				"DiskSet": []any{map[string]any{"DiskId": "disk-other"}},
+			}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, exec, nil)
+	eng.lastUserMsg = "扩盘"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-same-id", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeDiskProposal("turn-same-id", "same-id", "same-id"))
+
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation,
+		"an instance proof must not authorize a same-id disk that is absent from the DiskSet")
+}
+
+// An unknown target kind has no verifier and must be refused, never silently verified
+// as an instance (which would wrongly accept any existing instance id).
+func TestUnknownTargetKindIsRefusedNotVerifiedAsInstance(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+
+	ev := eng.verifyTargetExistence(context.Background(), "network", "net-1", "")
+
+	require.Equal(t, entity.ExistenceNotFound, ev.Verdict, "an unknown kind cannot be confirmed to exist")
+	require.False(t, ev.confirmed())
+}
+
 // Single-instance completion is subject to registry completeness (I): the sole
 // fresh instance in a complete registry is auto-filled from context and
 // authorized even when the user names no id ("关机").

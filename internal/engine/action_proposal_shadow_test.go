@@ -367,6 +367,30 @@ func TestAuthorizedTargetIsRecordedAsUserSelection(t *testing.T) {
 	require.Equal(t, SelectedInstanceSourceUser, eng.sessionState.SelectedInstanceSource, "an authorized target must persist as a user selection, undowngraded by the workflow's observation")
 }
 
+// recordUserSelectedTargets persists ONLY an instance target as the session's
+// SelectedInstanceID (review round-2 finding 2). A CFS or disk id must never land
+// there, or a later "关掉它" would resolve to a CfsId/DiskId as if it were an instance.
+func TestRecordUserSelectedTargetsPersistsOnlyInstanceKind(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	// A successful CFS resize must not write its CfsId into the instance selection.
+	eng.recordUserSelectedTargets(actionresolver.ResolvedAction{
+		Operation: "ResizeCFSWorkflow",
+		Arguments: map[string]any{"CfsId": "cfs-a", "Size": float64(200)},
+	})
+	require.Empty(t, eng.sessionState.SelectedInstanceID, "a CFS id must never become the selected instance")
+
+	// A disk resize carries BOTH UHostId and DiskId; only the parent instance is
+	// persisted — deterministically, never the disk id (which Go's map iteration order
+	// could otherwise pick).
+	eng.recordUserSelectedTargets(actionresolver.ResolvedAction{
+		Operation: "ResizeDiskWorkflow",
+		Arguments: map[string]any{"UHostId": "uhost-a", "DiskId": "disk-1", "Size": float64(120)},
+	})
+	require.Equal(t, "uhost-a", eng.sessionState.SelectedInstanceID, "a disk resize persists the parent instance, never the disk id")
+}
+
 func TestConfirmedFollowUpInheritsOneFreshSelectedTarget(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	// A prior turn recorded a genuine USER selection (not a mere observation), and

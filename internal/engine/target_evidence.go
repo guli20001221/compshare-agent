@@ -47,6 +47,17 @@ type targetEvidence struct {
 
 func (e targetEvidence) confirmed() bool { return e.Verdict == entity.ExistenceVerified }
 
+// targetEvidenceKey identifies existence evidence by (field, kind, id) — NEVER by a
+// bare id string. Two targets of DIFFERENT kinds (an instance UHostId and a disk
+// DiskId, say) can carry the same id string; keying by value alone would let the
+// instance's existence proof authorize the disk. The field+kind+id triple keeps each
+// target's evidence its own, so a lookup can never cross resource kinds.
+type targetEvidenceKey struct {
+	field string
+	kind  string
+	id    string
+}
+
 // verifyTargetExistence establishes, account-scoped and this-turn, whether a concrete
 // write target currently exists, returning a three-state verdict. It runs UNIFORMLY
 // for every concrete target the Agent proposes — there is no source-based gate — but
@@ -76,12 +87,17 @@ func (e *Engine) verifyTargetExistence(ctx context.Context, kind, id, parentInst
 		return ev
 	}
 	switch kind {
+	case "instance":
+		ev.Verdict = e.verifyInstanceExists(ctx, id)
 	case "cfs":
 		ev.Verdict = e.verifyCFSExists(ctx, id)
 	case "disk":
 		ev.Verdict = e.verifyDiskExists(ctx, parentInstanceID, id)
-	default: // instance
-		ev.Verdict = e.verifyInstanceExists(ctx, id)
+	default:
+		// An unknown target kind has no verifier: refuse rather than silently verify
+		// it as an instance. Existence cannot be confirmed, so the target is rejected —
+		// adding a new target kind to the catalog must add its verifier here too.
+		ev.Verdict = entity.ExistenceNotFound
 	}
 	return ev
 }
