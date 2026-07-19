@@ -115,5 +115,21 @@
     "expected_execution_path": "fast",
     "boundary": "listing resources does not say remaining items are omitted",
     "forbid_text": ["未显示全", "剩余 N 台", "还有 X 个"]
+  },
+  {
+    "id": "howto_shutdown_is_knowledge_not_write",
+    "question": "怎么关机",
+    "expect_intent": "knowledge_qa",
+    "expected_execution_path": "terminal_rag",
+    "boundary": "asking HOW to shut down is a method question answered from knowledge, not a request to actually stop an instance",
+    "forbid_actions": ["StopInstanceWorkflow"]
+  },
+  {
+    "id": "shutdown_billing_question_is_knowledge_not_write",
+    "question": "关机后还收费吗",
+    "expect_intent": "knowledge_qa",
+    "expected_execution_path": "terminal_rag",
+    "boundary": "asking whether a stopped instance is billed is a rules/fee question, not a request to stop it",
+    "forbid_actions": ["StopInstanceWorkflow"]
   }
 ]

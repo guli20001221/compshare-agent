@@ -10,8 +10,12 @@ import (
 const (
 	// 2026-07-15: the central Agent is the only semantic runtime. Per-intent
 	// routing tables and temporary prompt cards were removed.
-	mutatingReActPromptSHA256 = "327e69c036784b85c679c5dd2d2e3da59d32577688fcf241594d8b06ee1ad9bb"
-	readOnlyReActPromptSHA256 = "502713c320e0a81e2ad1cf1e31743e940dc6f5d467ce1f553145115655b4fa63"
+	// 2026-07-19: the action-call contract now states that a write is proposed only
+	// when the user asks to actually change a resource — method/rules/fee/consequence/
+	// hypothetical questions are answered, not executed (review round-2 finding on the
+	// "怎么关机" ambiguity; behavioral effect validated in P7).
+	mutatingReActPromptSHA256 = "2f867cfb7608234b652de804dca53fca1c83412f364b3fbd9cfda8788aa85b30"
+	readOnlyReActPromptSHA256 = "d29db38abee4f64b0a6c8778df5bd0df381e01ebce76cfc3d78a10a24adb9b60"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

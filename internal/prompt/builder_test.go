@@ -107,7 +107,8 @@ func TestBuildSystem_ContainsCentralAgentContract(t *testing.T) {
 	for _, text := range []string{
 		"本轮唯一的业务判断者",
 		"先阅读完整对话",
-		"用户要求写操作时调用对应的动作建议能力",
+		"只有用户明确要求实际改变资源",
+		"动作建议本身不会执行操作",
 		"相同条件没有新信息时不要重复调用",
 	} {
 		if !strings.Contains(prompt, text) {

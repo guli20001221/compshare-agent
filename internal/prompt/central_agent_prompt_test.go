@@ -16,5 +16,6 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 	}
 	require.Equal(t, 1, strings.Count(text, "需要平台文档或新的技术证据时再检索"))
 	require.Contains(t, text, "本轮唯一的业务判断者")
-	require.Contains(t, text, "用户要求写操作时调用对应的动作建议能力")
+	require.Contains(t, text, "只有用户明确要求实际改变资源")
+	require.Contains(t, text, "动作建议本身不会执行操作")
 }
