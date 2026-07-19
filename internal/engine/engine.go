@@ -3436,7 +3436,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, arg
 	// non-empty UHostId. A resolved write always carries its dual-proof-verified
 	// target, so an empty one here means no target was ever authorized; refuse
 	// rather than guess. Account/storage creation workflows do not target an
-	// existing instance and are listed in workflowRequiresInstanceTarget.
+	// existing instance, so they derive false from workflowRequiresInstanceTarget.
 	if workflowRequiresInstanceTarget(action) {
 		if uHostId, _ := args["UHostId"].(string); strings.TrimSpace(uHostId) == "" {
 			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
@@ -3682,16 +3682,33 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, arg
 	return string(b)
 }
 
+// workflowRequiresInstanceTarget reports whether an action's mutating step
+// operates on an EXISTING instance and so must arrive carrying a non-empty
+// UHostId (enforced by the fail-safe guard in executeResolvedWorkflow). The
+// answer is DERIVED from the action catalog — an operation requires an instance
+// target iff its OperationSpec has a Required field whose TargetKind is
+// "instance" — rather than hand-maintained as a workflow-name switch that must
+// be kept in sync every time a workflow is added (the declarative-from-spec
+// convergence; mirrors operationSupportsGuidedIntake). Account/storage creation
+// workflows (create/CFS/net-optimizer) require no existing instance, so they have
+// no required instance-target field and derive false. On a catalog build error or
+// an unknown action it fails CLOSED (returns true → require target), preserving
+// the old switch's `default: true` fail-safe.
 func workflowRequiresInstanceTarget(action string) bool {
-	switch action {
-	case "CreateInstanceWorkflow",
-		"EnableNetOptimizerWorkflow",
-		"CreateCFSWorkflow",
-		"ResizeCFSWorkflow":
-		return false
-	default:
+	catalog, err := defaultActionCatalog()
+	if err != nil {
 		return true
 	}
+	spec, ok := catalog.Lookup(action)
+	if !ok {
+		return true
+	}
+	for _, field := range spec.Fields {
+		if field.Required && field.TargetKind == "instance" {
+			return true
+		}
+	}
+	return false
 }
 
 // deterministicWorkflowReply returns a fixed success reply for lifecycle
