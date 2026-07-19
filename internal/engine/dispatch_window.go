@@ -42,19 +42,21 @@ func centralAgentToolWindow(mutatingEnabled bool) []openai.Tool {
 
 const proposalToolPrefix = "ProposeAction_"
 
-func proposalToolName(operation string) string { return proposalToolPrefix + operation }
+func proposalToolName(operation string) string {
+	return "Request" + strings.TrimSuffix(operation, "Workflow")
+}
 
 func proposalOperationForTool(name string) (string, bool) {
-	operation, ok := strings.CutPrefix(name, proposalToolPrefix)
-	if !ok {
-		return "", false
-	}
 	catalog, err := defaultActionCatalog()
 	if err != nil {
 		return "", false
 	}
-	_, ok = catalog.Lookup(operation)
-	return operation, ok
+	for _, operation := range catalog.Operations() {
+		if name == proposalToolName(operation) || name == proposalToolPrefix+operation {
+			return operation, true
+		}
+	}
+	return "", false
 }
 
 // proposalToolsFromCatalog gives every write operation one discoverable,
@@ -78,77 +80,46 @@ func proposalToolsFromCatalog(base openai.Tool) []openai.Tool {
 func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpec) openai.Tool {
 	tool := base
 	function := *base.Function
-	root, ok := cloneSchemaObject(function.Parameters)
+	capability, ok := tools.DefaultCapabilityRegistry().Lookup(spec.Operation)
+	if !ok || capability.Tool.Function == nil {
+		return base
+	}
+	root, ok := cloneSchemaObject(capability.Tool.Function.Parameters)
 	if !ok {
 		return base
 	}
 	properties, _ := root["properties"].(map[string]any)
-	delete(properties, "operation")
-	root["required"] = []string{"slots"}
-	fields := actionresolver.SortedFieldNames(spec)
-	if slots, ok := properties["slots"].(map[string]any); ok {
-		if items, ok := slots["items"].(map[string]any); ok {
-			if slotProperties, ok := items["properties"].(map[string]any); ok {
-				slotProperties["name"] = map[string]any{"type": "string", "enum": fields}
-			}
+	for name, field := range spec.Fields {
+		if field.Codec == actionresolver.CodecSensitiveText {
+			delete(properties, name)
 		}
 	}
+	// A proposal may be intentionally incomplete: Resolver returns the exact
+	// missing fields and the Agent then asks only for those. Requiring workflow
+	// fields in the model schema makes the model ask in prose before it can call.
+	root["required"] = []string{}
 	function.Name = proposalToolName(spec.Operation)
-	function.Description = strings.TrimSpace(spec.Description) + " 只提出候选，不直接执行。"
+	function.Description = "提交本操作的结构化候选，参数可不完整；服务端负责缺失字段、来源核验、确认和执行。" +
+		" " + strings.TrimSpace(spec.Description) + " 本工具不直接执行。"
 	function.Parameters = root
 	tool.Function = &function
 	return tool
 }
 
-func proposalToolFromCatalog(base openai.Tool) openai.Tool {
-	catalog, err := defaultActionCatalog()
-	if err != nil || base.Function == nil {
-		return base
+func proposalArgsForOperation(operation string, direct map[string]any) map[string]any {
+	if slots, ok := direct["slots"]; ok {
+		return map[string]any{"operation": operation, "slots": slots}
 	}
-	tool := base
-	function := *base.Function
-	root, ok := cloneSchemaObject(function.Parameters)
-	if !ok {
-		return base
+	names := make([]string, 0, len(direct))
+	for name := range direct {
+		names = append(names, name)
 	}
-	properties, ok := root["properties"].(map[string]any)
-	if !ok {
-		return base
+	sort.Strings(names)
+	slots := make([]any, 0, len(names))
+	for _, name := range names {
+		slots = append(slots, map[string]any{"name": name, "value": direct[name]})
 	}
-	operations := catalog.Operations()
-	properties["operation"] = map[string]any{"type": "string", "enum": operations}
-	fieldSet := map[string]struct{}{}
-	var contracts []string
-	for _, operation := range operations {
-		spec, _ := catalog.Lookup(operation)
-		fields := actionresolver.SortedFieldNames(spec)
-		for _, field := range fields {
-			fieldSet[field] = struct{}{}
-		}
-		var required []string
-		for _, field := range fields {
-			if spec.Fields[field].Required && spec.Fields[field].Codec != actionresolver.CodecSensitiveText {
-				required = append(required, field)
-			}
-		}
-		contracts = append(contracts, operation+"["+strings.Join(required, ",")+"]")
-	}
-	fieldNames := make([]string, 0, len(fieldSet))
-	for field := range fieldSet {
-		fieldNames = append(fieldNames, field)
-	}
-	sort.Strings(fieldNames)
-	if slots, ok := properties["slots"].(map[string]any); ok {
-		if items, ok := slots["items"].(map[string]any); ok {
-			if slotProperties, ok := items["properties"].(map[string]any); ok {
-				slotProperties["name"] = map[string]any{"type": "string", "enum": fieldNames}
-			}
-		}
-	}
-	function.Description += " 合法操作及非敏感必填字段由工作流注册表生成：" + strings.Join(contracts, "；") + "。敏感值由服务端密封通道注入，不得在 slots 中回显。"
-	function.Parameters = root
-	tool.Function = &function
-	return tool
+	return map[string]any{"operation": operation, "slots": slots}
 }
 
 func cloneSchemaObject(value any) (map[string]any, bool) {

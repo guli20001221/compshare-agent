@@ -2419,7 +2419,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		return e.executeConcreteReadCapability(ctx, action, args, onStep)
 	}
 	if operation, ok := proposalOperationForTool(action); ok {
-		args["operation"] = operation
+		args = proposalArgsForOperation(operation, args)
 		args = e.safeExecutor.FilterArgs(tools.ProposeActionName, args)
 		return e.executeActionProposal(ctx, args, onStep)
 	}
@@ -3407,7 +3407,15 @@ func uniqueStrings(values []string) []string {
 // the workflow can never see different zone lists (gate 1). A nil snapshot is the
 // honest "this operation has no zone" signal; a zone-needing workflow handed nil
 // (or an unavailable snapshot) fails closed rather than guessing.
+func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData) string {
+	return e.executeWorkflowWithAuthority(ctx, action, args, onStep, refData, true)
+}
+
 func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData) string {
+	return e.executeWorkflowWithAuthority(ctx, action, args, onStep, refData, false)
+}
+
+func (e *Engine) executeWorkflowWithAuthority(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData, resolverAuthorized bool) string {
 	e.lastWorkflowSucceededThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
@@ -3434,7 +3442,7 @@ func (e *Engine) executeWorkflow(ctx context.Context, action string, args map[st
 			b, _ := json.Marshal(guardResult)
 			return string(b)
 		}
-		if !e.workflowTargetIsTrusted(action, uHostId, targetAutoFilled) {
+		if !resolverAuthorized && !e.workflowTargetIsTrusted(action, uHostId, targetAutoFilled) {
 			msg := "请先确认要操作的实例。当有多个实例时，请列出实例列表让用户选择后再执行操作。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			guardResult := map[string]any{"success": false, "message": msg}
@@ -3769,7 +3777,10 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	case "ResetPasswordWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 重置密码。出于安全考虑，密码不会在对话中回显。", uhost), true
 	case "ReinstallInstanceWorkflow":
-		return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。出于安全考虑，新密码不会在对话中回显；请使用你刚设置的密码登录。", uhost), true
+		if len(workflowSecretValues(args)) > 0 {
+			return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。出于安全考虑，新密码不会在对话中回显；请使用你刚设置的密码登录。", uhost), true
+		}
+		return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。本次未设置新密码，请继续使用原登录凭据。", uhost), true
 	default:
 		return "", false
 	}

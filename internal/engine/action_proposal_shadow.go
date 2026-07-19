@@ -174,6 +174,7 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}, actionresolver.MachineTypeCatalog{}).Resolve(proposal)
 		return resolvedProposal{action: resolved}, nil
 	}
+	proposal = e.deriveProposalProvenance(proposal, view, spec)
 	proposal = completeCurrentTurnEvidence(proposal, view, spec)
 	proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
@@ -184,6 +185,100 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
 	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog}}, nil
+}
+
+// deriveProposalProvenance keeps write authority out of model-authored
+// arguments. The Agent proposes semantic field values; the server decides
+// whether each value is present in the current user text, a verified entity, or
+// a current/recent read observation. A model cannot promote its own inference
+// into a trusted write target by choosing a source label.
+func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal, view AgentContext, spec actionresolver.OperationSpec) actionresolver.ActionProposal {
+	present := make(map[string]struct{}, len(proposal.Slots))
+	for index := range proposal.Slots {
+		candidate := &proposal.Slots[index]
+		present[candidate.Name] = struct{}{}
+		candidate.Source = actionresolver.SourceAgentInference
+		candidate.Evidence = nil
+
+		field, known := spec.Fields[candidate.Name]
+		if !known {
+			continue
+		}
+		value, isString := candidate.Value.(string)
+		if isString && strings.TrimSpace(value) != "" {
+			if start, end, ok := uniqueQuoteForCodec([]rune(view.CurrentQuestion), []rune(value), field.Codec); ok {
+				candidate.Source = actionresolver.SourceUserExplicit
+				candidate.Evidence = &actionresolver.SourceEvidence{
+					MessageID: view.TurnID,
+					Start:     start,
+					End:       end,
+					Quote:     value,
+				}
+				continue
+			}
+		}
+		if !field.Target || !isString {
+			continue
+		}
+		if _, ok := e.readCapabilitySubjectsThisTurn[value]; ok {
+			candidate.Source = actionresolver.SourceToolObservation
+			candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "current_turn_read"}
+			continue
+		}
+		for _, entity := range view.SelectedEntities {
+			if entity.ID == value && entity.Freshness != ContinuityFreshnessExpired {
+				candidate.Source = actionresolver.SourceVerifiedContext
+				candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "selected_entities"}
+				break
+			}
+		}
+		if candidate.Source != actionresolver.SourceAgentInference {
+			continue
+		}
+		for _, observation := range view.RecentObservations {
+			if observation.SubjectID == value && !observation.RefreshRequired {
+				candidate.Source = actionresolver.SourceToolObservation
+				candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "recent_observations"}
+				break
+			}
+		}
+		if candidate.Source == actionresolver.SourceAgentInference {
+			if selected, ok := uniqueSelectedEntity(view, field.TargetKind); ok {
+				candidate.Value = selected.ID
+				candidate.Source = actionresolver.SourceVerifiedContext
+				candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "selected_entities"}
+			}
+		}
+	}
+	for name, field := range spec.Fields {
+		if !field.Target {
+			continue
+		}
+		if _, exists := present[name]; exists {
+			continue
+		}
+		if selected, ok := uniqueSelectedEntity(view, field.TargetKind); ok {
+			proposal.Slots = append(proposal.Slots, actionresolver.SlotCandidate{
+				Name: name, Value: selected.ID, Source: actionresolver.SourceVerifiedContext,
+				Evidence: &actionresolver.SourceEvidence{ContextField: "selected_entities"},
+			})
+		}
+	}
+	return proposal
+}
+
+func uniqueSelectedEntity(view AgentContext, kind string) (SemanticEntityHint, bool) {
+	var selected SemanticEntityHint
+	for _, entity := range view.SelectedEntities {
+		if entity.Kind != kind || strings.TrimSpace(entity.ID) == "" || entity.Freshness == ContinuityFreshnessExpired {
+			continue
+		}
+		if selected.ID != "" && selected.ID != entity.ID {
+			return SemanticEntityHint{}, false
+		}
+		selected = entity
+	}
+	return selected, selected.ID != ""
 }
 
 // machineTypeCatalogSnapshot fetches the live machine-type names and hands them
@@ -354,7 +449,7 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	// Thread the SAME zone snapshot the resolver canonicalized Zone against into the
 	// workflow, so the create runs against exactly one catalog for the turn rather
 	// than building a second one that could disagree (gate 1).
-	return e.executeWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData)
+	return e.executeResolvedWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData)
 }
 
 // rememberPendingResolvedAction parks a half-finished write as a task frame so a

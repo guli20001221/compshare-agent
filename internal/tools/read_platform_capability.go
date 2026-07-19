@@ -14,7 +14,7 @@ var ShadowCapabilityDefinitions = []CapabilityDefinition{
 		Stage: CapabilityStageShadow,
 		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
 			Name:        ProposeActionName,
-			Description: "用户要求写操作时直接提出结构化候选；不要先检索文档来猜必填参数。服务端会返回缺失项。user_explicit 候选的 value 和 quote 必须是用户原文中的同一段文字，类型和单位由 Resolver 转换；内部轮次标识和原文位置由运行时补齐。参数归并通过后仍必须经过权限、确认、日志和执行门。",
+			Description: "用户要求写操作时直接提出结构化候选；不要先检索文档来猜必填参数。只提交字段名和值，来源和证据由服务端根据当前原文、已验证上下文和工具结果确定。服务端会返回缺失项。参数归并通过后仍必须经过权限、确认、日志和执行门。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -24,15 +24,10 @@ var ShadowCapabilityDefinitions = []CapabilityDefinition{
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"name":   map[string]any{"type": "string"},
-								"value":  map[string]any{},
-								"source": map[string]any{"type": "string", "enum": []string{"user_explicit", "verified_context", "tool_observation", "user_confirmation", "agent_inference"}},
-								"evidence": map[string]any{"type": "object", "properties": map[string]any{
-									"message_id": map[string]any{"type": "string"}, "context_field": map[string]any{"type": "string"},
-									"start": map[string]any{"type": "integer"}, "end": map[string]any{"type": "integer"}, "quote": map[string]any{"type": "string"},
-								}},
+								"name":  map[string]any{"type": "string"},
+								"value": map[string]any{},
 							},
-							"required": []string{"name", "value", "source"},
+							"required": []string{"name", "value"},
 						},
 					},
 				},

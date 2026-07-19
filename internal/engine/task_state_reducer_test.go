@@ -71,6 +71,23 @@ func TestCentralToolWindowSeparatesUnderstandingFromWriteAuthority(t *testing.T)
 	require.Contains(t, mutating, proposalToolName("StopInstanceWorkflow"))
 	require.Contains(t, mutating, proposalToolName("CreateDiskWorkflow"))
 	require.NotContains(t, mutating, "StopInstanceWorkflow")
+	require.Contains(t, mutating, "RequestStopInstance")
+	require.Contains(t, mutating, "RequestCreateInstance")
+}
+
+func TestGeneratedProposalToolsPreserveTheActionFirstContract(t *testing.T) {
+	registry := tools.DefaultCapabilityRegistry()
+	base, ok := registry.Lookup(tools.ProposeActionName)
+	require.True(t, ok)
+	require.NotNil(t, base.Tool.Function)
+
+	generated := proposalToolsFromCatalog(base.Tool)
+	require.NotEmpty(t, generated)
+	for _, tool := range generated {
+		require.NotNil(t, tool.Function)
+		require.Contains(t, tool.Function.Description, "参数可不完整")
+		require.Contains(t, tool.Function.Description, "来源核验、确认和执行")
+	}
 }
 
 func TestUpdateTaskStateRejectsUnstructuredInputAndRunsOnTheOnlyRuntime(t *testing.T) {

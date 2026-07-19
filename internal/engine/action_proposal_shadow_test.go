@@ -194,6 +194,77 @@ func TestCurrentTurnReadBecomesProposalEvidenceOnlyAfterItWasObserved(t *testing
 	require.True(t, after.action.ReadyForConfirmation)
 }
 
+func TestConfirmedFollowUpInheritsOneFreshSelectedTarget(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceName:   "host",
+		SelectedInstanceSource: SelectedInstanceSourceObserved,
+		SelectedInstanceAtUnix: time.Now().Unix(),
+	}, 1)
+	eng.lastUserMsg = "确认关机"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-confirm", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"operation": "StopInstanceWorkflow",
+		"slots":     []any{map[string]any{"name": "UHostId", "value": "host"}},
+	})
+
+	require.NoError(t, err)
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Equal(t, "uhost-1", resolved.action.Arguments["UHostId"])
+	require.Equal(t, actionresolver.SourceVerifiedContext, resolved.action.Provenance["UHostId"].Source)
+}
+
+func TestConfirmedFollowUpExecutesThroughResolvedTargetAuthority(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "host", "State": "Running", "Zone": "cn-wlcb-01",
+			}}}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return true })
+	eng.SetMutatingToolsEnabled(true)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceName:   "host",
+		SelectedInstanceSource: SelectedInstanceSourceObserved,
+		SelectedInstanceAtUnix: time.Now().Unix(),
+	}, 1)
+	eng.lastUserMsg = "确认关机"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-confirm-execute", time.Now())
+	eng.turnContextViewReady = true
+
+	out := eng.executeActionProposal(context.Background(), map[string]any{
+		"operation": "StopInstanceWorkflow",
+		"slots":     []any{map[string]any{"name": "UHostId", "value": "host"}},
+	}, noopStep)
+
+	require.Contains(t, out, "执行关机")
+	require.Contains(t, executor.calls, "StopCompShareInstance")
+}
+
+func TestDeterministicReinstallReplyDoesNotInventANewPassword(t *testing.T) {
+	withoutPassword, ok := deterministicWorkflowReply("ReinstallInstanceWorkflow", map[string]any{"UHostId": "uhost-1"})
+	require.True(t, ok)
+	require.Contains(t, withoutPassword, "未设置新密码")
+	require.NotContains(t, withoutPassword, "刚设置")
+
+	withPassword, ok := deterministicWorkflowReply("ReinstallInstanceWorkflow", map[string]any{
+		"UHostId": "uhost-1", "Password": "secret",
+	})
+	require.True(t, ok)
+	require.Contains(t, withPassword, "刚设置")
+	require.NotContains(t, withPassword, "secret")
+}
+
 func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.lastUserMsg = "给 uhost-1 加200G数据盘"
@@ -239,13 +310,13 @@ func TestCentralAgentProposalSchemaComesFromWorkflowCatalog(t *testing.T) {
 	require.NotNil(t, cfsTool)
 	properties := stopTool["properties"].(map[string]any)
 	require.NotContains(t, properties, "operation", "the selected proposal tool fixes the operation server-side")
-	slots := properties["slots"].(map[string]any)
-	items := slots["items"].(map[string]any)
-	fields := items["properties"].(map[string]any)["name"].(map[string]any)["enum"].([]string)
-	require.Contains(t, fields, "UHostId")
-	require.NotContains(t, fields, "Size")
-	cfsFields := cfsTool["properties"].(map[string]any)["slots"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["name"].(map[string]any)["enum"].([]string)
+	require.Contains(t, properties, "UHostId")
+	require.NotContains(t, properties, "Size")
+	require.NotContains(t, properties, "slots")
+	require.Empty(t, stopTool["required"], "an incomplete proposal must still be callable")
+	cfsFields := cfsTool["properties"].(map[string]any)
 	require.Contains(t, cfsFields, "Size")
+	require.NotContains(t, cfsFields, "slots")
 }
 
 func TestCentralAgentReadSchemaComesFromCapabilityRegistry(t *testing.T) {

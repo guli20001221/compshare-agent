@@ -24,8 +24,9 @@ const (
 	maxNarrativeRunes = 1200
 )
 
-// SemanticEntityHint is identity-only conversational context. The execution
-// path never reads it to authorize a write.
+// SemanticEntityHint is identity-only conversational context. A fresh,
+// unambiguous entity may become a Resolver candidate, but it never bypasses the
+// normal confirmation, sealing, permission or journal gates.
 type SemanticEntityHint struct {
 	Kind      string `json:"kind,omitempty"`
 	ID        string `json:"id,omitempty"`
