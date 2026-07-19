@@ -193,6 +193,40 @@ func TestResourceHandle_FreshCompleteAbsentExactIDFallsBack(t *testing.T) {
 	assert.Empty(t, exec.calls, "an authoritative registry that can assert absence must not point-query")
 }
 
+// TestResourceHandle_ColdIDResponseMismatchIsEmpty is the same-id contract on the
+// read path (bug #4): the user asks for uhost-requested, the cold-registry point-
+// query returns a DIFFERENT instance (uhost-other). The response is filtered to the
+// requested id — which is absent — so the read is a structured Empty, never a
+// Handled answer that renders the wrong instance as if it were the one asked about.
+func TestResourceHandle_ColdIDResponseMismatchIsEmpty(t *testing.T) {
+	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-other", "someone-else", "Running"))}
+
+	result := runResource(t, exec, coldRegistrySnapshot(), ResourceInfoRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-requested", Source: platform.SourceUserText}},
+	})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status,
+		"a response that does not echo the requested id yields Empty, not a wrong-instance Handled")
+	assert.NotContains(t, result.Reply, "uhost-other")
+	assert.Empty(t, result.Effects, "a mismatched response verifies no instance existence")
+}
+
+// TestResourceHandle_EmitsVerifiedInstancesEffect: a same-id-verified response
+// declares its echoed ids as write-path existence evidence via RememberVerified
+// Instances — the only read channel that authorizes existence for a later write.
+func TestResourceHandle_EmitsVerifiedInstancesEffect(t *testing.T) {
+	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-a", "train-a", "Running"))}
+	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"}, [2]string{"uhost-b", "train-b"})
+
+	result := runResource(t, exec, resolver, ResourceInfoRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a", Source: platform.SourceUserText}},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Equal(t, []ReadEffect{RememberVerifiedInstances{IDs: []string{"uhost-a"}}}, result.Effects,
+		"the echoed id is declared as same-id-verified existence evidence")
+}
+
 func TestResourceHandle_UpstreamError(t *testing.T) {
 	result := runResource(t, errReadExec{err: errors.New("boom")}, nil, ResourceInfoRequest{})
 

@@ -79,7 +79,11 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			result.Rejected = append(result.Rejected, fmt.Sprintf("unknown slot %s", name))
 			continue
 		}
-		if candidate.Source == SourceUserExplicit && (candidate.Evidence == nil || r.verifier == nil || !r.verifier.VerifyCandidate(candidate)) {
+		// Non-target user_explicit fields are span-verified here; TARGET fields defer
+		// entirely to the target adjudicator below, which weighs selection AND
+		// existence and routes an outage / conflict to the right channel rather than
+		// a blanket "not verified".
+		if !field.Target && candidate.Source == SourceUserExplicit && (candidate.Evidence == nil || r.verifier == nil || !r.verifier.VerifyCandidate(candidate)) {
 			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: user-explicit source is not verified", name))
 			adjudicated[name] = struct{}{}
 			continue
@@ -100,10 +104,23 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			continue
 		}
 		candidate.Name, candidate.Value = name, value
-		if field.Target && !r.trustedTarget(candidate) {
-			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: target source is not verified", name))
-			adjudicated[name] = struct{}{}
-			continue
+		if field.Target {
+			switch r.adjudicateTarget(candidate) {
+			case TargetAccept:
+				// exists this turn, no conflict — may reach the confirmation card.
+			case TargetConflict:
+				result.Conflicts = append(result.Conflicts, Conflict{Slot: name, Reason: "目标引用不唯一，请明确指定要操作的实例"})
+				adjudicated[name] = struct{}{}
+				continue
+			case TargetDependencyFailure:
+				result.DependencyFailures = append(result.DependencyFailures, fmt.Sprintf("%s: 目标存在性暂时无法验证，请稍后再试", name))
+				adjudicated[name] = struct{}{}
+				continue
+			default: // TargetReject
+				result.Rejected = append(result.Rejected, fmt.Sprintf("%s: target source is not verified", name))
+				adjudicated[name] = struct{}{}
+				continue
+			}
 		}
 		grouped[name] = append(grouped[name], candidate)
 	}
@@ -189,6 +206,20 @@ func knownSource(source CandidateSource) bool {
 	default:
 		return false
 	}
+}
+
+// adjudicateTarget decides a write target's disposition. It prefers the verifier's
+// TargetAdjudicator (the engine, which owns the selection binding and existence
+// network); a verifier that implements only the plain bool verify keeps the prior
+// accept/reject behaviour.
+func (r *Resolver) adjudicateTarget(candidate SlotCandidate) TargetVerdict {
+	if adj, ok := r.verifier.(TargetAdjudicator); ok {
+		return adj.AdjudicateTarget(candidate)
+	}
+	if r.trustedTarget(candidate) {
+		return TargetAccept
+	}
+	return TargetReject
 }
 
 func (r *Resolver) trustedTarget(candidate SlotCandidate) bool {

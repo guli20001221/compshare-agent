@@ -341,10 +341,13 @@ type Engine struct {
 	// L1 mutating API actions are exposed and executable. Production defaults
 	// to read-only until these operations are product-ready.
 	mutatingToolsEnabled bool
-	// readCapabilitySubjectsThisTurn is current-turn server evidence for the
-	// ActionProposal target verifier. It never persists and never carries values
-	// other than exact resource IDs returned by a read capability.
-	readCapabilitySubjectsThisTurn map[string]struct{}
+	// verifiedInstanceEvidenceThisTurn is current-turn existence evidence for the
+	// ActionProposal target verifier: exact instance IDs a resource read confirmed
+	// THIS turn by the upstream response echoing the SAME id. Only a same-id-verified
+	// resource_info response populates it — a Monitor/refund subject taken from the
+	// pre-query registry snapshot does NOT, so an observed-but-unverified id can never
+	// serve as a write ExistenceProof. It never persists.
+	verifiedInstanceEvidenceThisTurn map[string]struct{}
 	// actionProposalRanThisTurn distinguishes a mixed write turn from a pure
 	// knowledge answer. Knowledge evidence may support an action, but must not
 	// claim ownership of the final clarification or confirmation text.
@@ -1169,7 +1172,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
-	e.readCapabilitySubjectsThisTurn = map[string]struct{}{}
+	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
 	e.readResponseEvidenceThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
 	e.actionProposalRanThisTurn = false

@@ -5,92 +5,67 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/tools"
 )
 
 // Dual-proof write-target authority.
 //
-// A write TARGET (the instance a stop/start/reboot/rename/reset acts on) is
-// authorized only when the server independently establishes BOTH:
+// A write TARGET (the instance a stop/start/reboot/rename/reset acts on) reaches
+// the server confirmation card only when the server independently establishes that
+// it EXISTS in this account this turn (ExistenceProof), and it is authorized to
+// EXECUTE only after the user confirms the card. Two ways a target earns the card:
 //
-//   SelectionProof  — why we believe the USER chose this target
-//   ExistenceProof  — why we believe it currently exists in THIS account
+//   - the SelectionBinder deterministically bound the user's reference (a typed id,
+//     an ordinal against a shown list, a unique instance name, a prior explicit
+//     pick) — a server-derived SelectionProof; or
+//   - the Agent inferred a concrete existing target from context — no deterministic
+//     SelectionProof, so the user-confirm event on the card IS the SelectionProof.
 //
-// These are orthogonal. "The Agent queried an instance" proves it exists, not
-// that the user chose it; "the user typed an id" proves selection, not that it
-// still exists. The model-supplied source label is advisory (trace only) and
-// never authorizes: deriveProposalProvenance recomputes provenance server-side,
-// and the verifier requires both proofs. Network to establish existence lives in
-// the engine (verifyTargetExistence), so the actionresolver stays a pure,
-// replayable function of its inputs.
-
-// selection sources carried on a SemanticEntityHint. Only a genuine user
-// selection (typed id / card pick) or the account's sole fresh instance is a
-// SelectionProof. An OBSERVED referent (recorded from a read) is not.
-const (
-	selectionSourceAccountSingle = "account_registry_single"
-	selectionSourcePendingCard   = "pending_selection"
-)
-
-// isUserSelectionSource reports whether a SemanticEntityHint.Source represents a
-// genuine user selection (or the unambiguous account-single instance), the only
-// entity provenance that supplies a SelectionProof. SelectedInstanceSourceObserved
-// deliberately returns false: observed != chosen.
-func isUserSelectionSource(source string) bool {
-	switch source {
-	case SelectedInstanceSourceUser, selectionSourcePendingCard, selectionSourceAccountSingle:
-		return true
-	default:
-		return false
-	}
-}
-
-// existenceKind classifies why a write target is believed to exist in this
-// account, verified THIS turn.
-type existenceKind int
-
-const (
-	existenceNone existenceKind = iota
-	// existenceFreshRegistry: the id is in a fresh, complete (absence-authoritative)
-	// registry snapshot.
-	existenceFreshRegistry
-	// existenceCurrentTurnRead: a read capability's response this turn surfaced the
-	// id as a subject.
-	existenceCurrentTurnRead
-	// existenceCurrentTurnDescribe: a point DescribeCompShareInstance(id) this turn
-	// returned that same id.
-	existenceCurrentTurnDescribe
-)
+// Either way, existence is required and network to establish it lives HERE, in the
+// engine (verifyTargetExistence), so the actionresolver stays a pure, replayable
+// function of its inputs. The model-supplied source label is advisory (trace only)
+// and never authorizes: deriveProposalProvenance recomputes provenance server-side.
 
 // targetEvidence is the bound existence snapshot the engine produces for a write
-// target BEFORE the pure resolver runs. It binds the account, the observation
-// time and the exact id so a journal/trace entry can show which account and when
-// established that the target really existed. The model can neither forge it nor
+// target BEFORE the pure resolver runs. It binds the account, the observation time
+// and the exact id so a journal/trace entry can show which account and when
+// established the target's existence verdict. The model can neither forge it nor
 // promote it — it is server-owned.
 type targetEvidence struct {
-	AccountKey   string        `json:"account_key,omitempty"`
-	UserEmail    string        `json:"user_email,omitempty"`
-	ObservedUnix int64         `json:"observed_unix,omitempty"`
-	ExactID      string        `json:"exact_id,omitempty"`
-	Existence    existenceKind `json:"existence"`
+	AccountKey   string                  `json:"account_key,omitempty"`
+	UserEmail    string                  `json:"user_email,omitempty"`
+	ObservedUnix int64                   `json:"observed_unix,omitempty"`
+	ExactID      string                  `json:"exact_id,omitempty"`
+	Verdict      entity.ExistenceVerdict `json:"verdict"`
 }
 
-func (e targetEvidence) confirmed() bool { return e.Existence != existenceNone }
+func (e targetEvidence) confirmed() bool { return e.Verdict == entity.ExistenceVerified }
 
-// verifyTargetExistence establishes, account-scoped and this-turn, whether an
-// exact instance id currently exists. The network call lives HERE, not in the
-// resolver:
+// verifyTargetExistence establishes, account-scoped and this-turn, whether an exact
+// instance id currently exists, returning a three-state verdict. It draws a hard
+// line between a SELECTED target and an Agent-INFERRED one:
 //
-//	fresh+complete registry hit         -> existenceFreshRegistry (no upstream)
-//	this-turn read already saw the id   -> existenceCurrentTurnRead (no upstream)
-//	fresh+complete registry, id absent  -> existenceNone, NO upstream (authoritative)
-//	cold / failed / truncated registry  -> DescribeCompShareInstance(id); the
-//	                                       response must carry the SAME id
+//	same-id-verified read this turn      -> Verified   (ANY target: the Agent
+//	                                        actively confirmed existence this turn)
+//	inferred target, nothing verified    -> NotFound   (a bare background-registry
+//	                                        hit does NOT authorize an unselected id —
+//	                                        that is how a model self-elects a target;
+//	                                        it must be actively verified or bound)
+//	selected + fresh+complete hit        -> Verified   (no network)
+//	selected + fresh+complete, absent    -> NotFound   (authoritative, no network)
+//	selected + cold/stale                -> point Describe(id); response must echo
+//	                                        the SAME id (Verified) else NotFound; a
+//	                                        failed query is Unavailable.
 //
-// The point-query runs under the ctx credentials, so a confirmed existence is
-// inherently scoped to the caller's account.
-func (e *Engine) verifyTargetExistence(ctx context.Context, id string) targetEvidence {
-	ev := targetEvidence{ExactID: id, ObservedUnix: time.Now().Unix()}
+// allowPointQuery marks the SelectionProof: an id the user genuinely referenced may
+// use the fresh registry / a point-query for existence. An inferred id may not —
+// its ONLY existence path is a same-id-verified read this turn ("已核实"), so a
+// model naming an arbitrary existing id neither point-queries nor rides the
+// background registry into the card. A failed point-query yields Unavailable so the
+// caller reports a dependency failure, never a false "the instance does not exist".
+func (e *Engine) verifyTargetExistence(ctx context.Context, id string, allowPointQuery bool) targetEvidence {
+	ev := targetEvidence{ExactID: id, ObservedUnix: time.Now().Unix(), Verdict: entity.ExistenceNotFound}
 	if u, ok := tools.UserFrom(ctx); ok {
 		ev.AccountKey = fmt.Sprintf("%d/%d", u.TopOrganizationID, u.OrganizationID)
 		ev.UserEmail = u.UserEmail
@@ -98,44 +73,29 @@ func (e *Engine) verifyTargetExistence(ctx context.Context, id string) targetEvi
 	if id == "" {
 		return ev
 	}
+	// A same-id-verified read this turn is existence for ANY target — the only way an
+	// Agent-inferred (unselected) target earns the confirmation card.
+	if _, ok := e.verifiedInstanceEvidenceThisTurn[id]; ok {
+		ev.Verdict = entity.ExistenceVerified
+		return ev
+	}
+	if !allowPointQuery {
+		// Inferred target, not actively verified: refuse. NOT an outage, and NOT
+		// authorized by a bare background-registry hit (self-election guard).
+		return ev
+	}
+	now := time.Now()
 	snap := e.RegistrySnapshot()
-	if _, ok := snap.Instances[id]; ok {
-		ev.Existence = existenceFreshRegistry
+	if snap.FreshAndCompleteAt(now) {
+		if _, ok := snap.Instances[id]; ok {
+			ev.Verdict = entity.ExistenceVerified
+		} else {
+			ev.Verdict = entity.ExistenceNotFound // authoritative absence, no point-query
+		}
 		return ev
 	}
-	if _, ok := e.readCapabilitySubjectsThisTurn[id]; ok {
-		ev.Existence = existenceCurrentTurnRead
-		return ev
-	}
-	if snap.CanAssertAbsence() {
-		// A registry with standing to assert absence says this id is genuinely not
-		// in the account — a real "not found", never a wasted point-query.
-		return ev
-	}
-	raw := e.querySafeRead(ctx, "DescribeCompShareInstance", map[string]any{"UHostIds": []string{id}})
-	if describeResponseHasID(raw, id) {
-		ev.Existence = existenceCurrentTurnDescribe
-	}
+	ev.Verdict = entity.VerifyExactTarget(snap, id, now, func(qid string) (map[string]any, bool) {
+		return e.querySafeReadResult(ctx, "DescribeCompShareInstance", map[string]any{"UHostIds": []string{qid}})
+	})
 	return ev
-}
-
-// describeResponseHasID reports whether a DescribeCompShareInstance response
-// really carries the exact id. Existence is proven only by the upstream RESPONSE
-// echoing the same UHostId — never by the request having asked for it (the API
-// could ignore an unknown filter and return an empty or unrelated set).
-func describeResponseHasID(raw map[string]any, id string) bool {
-	if raw == nil || id == "" {
-		return false
-	}
-	set, _ := raw["UHostSet"].([]any)
-	for _, row := range set {
-		m, _ := row.(map[string]any)
-		if m == nil {
-			continue
-		}
-		if got, _ := m["UHostId"].(string); got == id {
-			return true
-		}
-	}
-	return false
 }

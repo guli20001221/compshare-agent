@@ -116,16 +116,6 @@ func (e *Engine) buildUnavailableObservation(action, capabilityLabel string, r c
 // the platform status vocabulary; RouteStatus is the one derived field.
 func (e *Engine) buildReadObservation(action, capabilityLabel string, result capability.ReadResult, canAssertAbsence bool, onStep func(StepEvent)) string {
 	result = e.contextEnvelopeForPlainDirectReply(result)
-	if result.Envelope != nil {
-		if e.readCapabilitySubjectsThisTurn == nil {
-			e.readCapabilitySubjectsThisTurn = map[string]struct{}{}
-		}
-		for _, subject := range result.Envelope.Subjects {
-			if subject.ID != "" {
-				e.readCapabilitySubjectsThisTurn[subject.ID] = struct{}{}
-			}
-		}
-	}
 	observation := ReadCapabilityObservation{
 		Capability:       capabilityLabel,
 		Status:           result.Status,
@@ -172,6 +162,18 @@ func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
 			// mode-gated internally, so a subject-eliding stock follow-up resolves.
 			e.recordResolvedStockGpuFact(eff.GPUModel)
 			e.recordLastStockGpuModel(eff.GPUModel)
+		case capability.RememberVerifiedInstances:
+			// Same-id-verified existence evidence for the write path (concern #6):
+			// only a resource_info response echoing the exact id lands here, so a
+			// later write on that id has a real ExistenceProof without re-querying.
+			if e.verifiedInstanceEvidenceThisTurn == nil {
+				e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
+			}
+			for _, id := range eff.IDs {
+				if id != "" {
+					e.verifiedInstanceEvidenceThisTurn[id] = struct{}{}
+				}
+			}
 		}
 	}
 }

@@ -86,6 +86,16 @@ type RememberStockReferent struct{ GPUModel string }
 
 func (RememberStockReferent) readEffect() {}
 
+// RememberVerifiedInstances records the exact instance IDs a resource read
+// confirmed THIS turn by the upstream DescribeCompShareInstance response echoing
+// the same id. It is the only channel that supplies a write ExistenceProof from a
+// read: a capability whose subjects come from the pre-query registry snapshot
+// (monitor, refund) declares no such effect, so an observed-but-unverified id can
+// never authorize a write.
+type RememberVerifiedInstances struct{ IDs []string }
+
+func (RememberVerifiedInstances) readEffect() {}
+
 // ReadUnavailable marks a deliberately-unsupported capability: a deterministic
 // "not available in real time" answer plus the supported alternatives, produced
 // without any upstream call.

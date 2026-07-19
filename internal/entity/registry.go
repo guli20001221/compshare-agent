@@ -87,6 +87,12 @@ type RegistrySnapshot struct {
 	LastSyncError string
 	TotalCount    int
 	Truncated     bool
+	// Invalidated mirrors the source registry's invalidated flag: a successful
+	// state-changing action ran after this snapshot's sync, so the snapshot's
+	// inventory/state can no longer be trusted for freshness decisions. Carried on
+	// the copy so a consumer can judge freshness from the snapshot alone, without
+	// reaching back into the live EntityRegistry.
+	Invalidated bool
 }
 
 // RegistryTraceState is the compact entity registry block written into trace.
@@ -182,6 +188,7 @@ func (r *EntityRegistry) Snapshot() RegistrySnapshot {
 		LastSyncError: r.LastSyncError,
 		TotalCount:    r.TotalCount,
 		Truncated:     r.Truncated,
+		Invalidated:   r.invalidated,
 	}
 }
 
@@ -251,13 +258,46 @@ func (r *EntityRegistry) WarmRefresh(ctx context.Context, exec Executor) <-chan 
 func (r *EntityRegistry) NeedsRefresh(at time.Time) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.invalidated || r.LastFullSync.IsZero() {
+	return needsRefresh(r.LastFullSync, r.LastSyncEvent, r.invalidated, at)
+}
+
+// needsRefresh is the single freshness rule shared by the live registry and its
+// snapshot copy, so no caller re-assembles the TTL / failed / invalidated / never-
+// synced conditions by hand.
+func needsRefresh(lastFullSync time.Time, syncEvent string, invalidated bool, at time.Time) bool {
+	if invalidated || lastFullSync.IsZero() {
 		return true
 	}
-	if r.LastSyncEvent == string(SyncEventFailed) {
+	if SyncEvent(syncEvent) == SyncEventFailed {
 		return true
 	}
-	return at.Sub(r.LastFullSync) > DefaultRegistryFreshnessTTL
+	return at.Sub(lastFullSync) > DefaultRegistryFreshnessTTL
+}
+
+// NeedsRefreshAt is NeedsRefresh for an immutable snapshot: stale, failed, never-
+// synced, or invalidated by a successful state-changing action after the copy.
+func (s RegistrySnapshot) NeedsRefreshAt(at time.Time) bool {
+	return needsRefresh(s.LastFullSync, s.SyncEvent, s.Invalidated, at)
+}
+
+// FreshAndCompleteAt reports whether the snapshot may be trusted as an existence
+// oracle at `at`: it is fresh (not stale/failed/invalidated/never-synced) AND
+// complete (not truncated). A hit in such a snapshot proves the id exists; a miss
+// (with CanAssertAbsenceAt) proves it does not — no point-query needed. A stale or
+// truncated snapshot is neither: it must be re-verified upstream.
+func (s RegistrySnapshot) FreshAndCompleteAt(at time.Time) bool {
+	return !s.NeedsRefreshAt(at) && !s.Truncated
+}
+
+// CanAssertAbsenceAt is CanAssertAbsence with freshness: only a fresh, complete
+// snapshot may say an id is genuinely NOT in the account. A stale-but-complete
+// registry (bug: a released instance can linger, or a new one be missing) can no
+// longer assert absence — a miss there is "unverified", not "absent".
+func (s RegistrySnapshot) CanAssertAbsenceAt(at time.Time) bool {
+	if !s.FreshAndCompleteAt(at) {
+		return false
+	}
+	return len(s.Instances) > 0 || s.TotalCount == 0
 }
 
 // MarkInvalidated records that a successful action changed instance inventory

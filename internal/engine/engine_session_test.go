@@ -400,7 +400,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"sessionFactContextEnabled":           true,
 		"reactResultProjectionEnabled":        true,
 		"reactHistoryCompactionEnabled":       true,
-		"readCapabilitySubjectsThisTurn":      true,
+		"verifiedInstanceEvidenceThisTurn":    true,
 		"readResponseEvidenceThisTurn":        true,
 		"toolResultsByCallThisTurn":           true,
 		"actionProposalRanThisTurn":           true,

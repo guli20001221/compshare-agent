@@ -33,6 +33,10 @@ func (ResourceInfoRequest) MissingFields() []platform.MissingField { return nil 
 type ResourceInfoResponse struct {
 	Instances []entity.InstanceSnapshot
 	Meta      readprojection.ResourceEnvelopeMeta
+	// VerifiedInstanceIDs are the exact ids the upstream DescribeCompShareInstance
+	// response echoed this turn — the same-id-verified existence evidence the write
+	// path may trust. Derived from the RESPONSE, never from the request.
+	VerifiedInstanceIDs []string
 }
 
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
@@ -42,6 +46,7 @@ func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResp
 		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
 		Handle:      resourceHandle,
 		Render:      resourceRender,
+		Observe:     resourceObserve,
 	}
 }
 
@@ -80,6 +85,19 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 
 	instances := describeData.Instances
 	totalCount := describeData.TotalCount
+	if len(ids) > 0 {
+		// Same-id contract, shared with the write path's ExactTargetVerifier: keep
+		// only instances the response ACTUALLY echoed for the requested ids. An
+		// upstream that ignores the filter and returns a different instance must not
+		// be rendered as the one the user asked about (it would claim a resource
+		// exists, or show the wrong one's state).
+		instances = filterInstancesByRequestedID(instances, ids)
+	}
+	// Existence evidence for the write path: exactly the ids present in this
+	// response. Captured BEFORE display filters/truncation, which are presentation
+	// concerns — an instance the account really has still exists whether or not it
+	// matches a state filter or fits in the display window.
+	verifiedIDs := instanceIDsOf(instances)
 	if hasFilters {
 		instances = readprojection.ApplyResourceFilters(instances, filters)
 	}
@@ -104,7 +122,7 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 		// The Agent pairs this with CanAssertAbsence to state "you have none".
 		return ResourceInfoResponse{}, ReadEmpty(readprojection.RenderResourceSummary(nil, envMeta))
 	}
-	return ResourceInfoResponse{Instances: instances, Meta: envMeta}, ReadResult{}
+	return ResourceInfoResponse{Instances: instances, Meta: envMeta, VerifiedInstanceIDs: verifiedIDs}, ReadResult{}
 }
 
 func resourceRender(resp ResourceInfoResponse) ReadResult {
@@ -113,4 +131,43 @@ func resourceRender(resp ResourceInfoResponse) ReadResult {
 	env := readprojection.BuildResourceEnvelopeWithMeta(resp.Instances, resp.Meta)
 	r.Envelope = &env
 	return r
+}
+
+// resourceObserve declares the same-id-verified instance ids as the write path's
+// existence evidence. resource_info is the ONLY read that emits it: its subjects
+// come from the upstream response, not a pre-query snapshot.
+func resourceObserve(resp ResourceInfoResponse) []ReadEffect {
+	if len(resp.VerifiedInstanceIDs) == 0 {
+		return nil
+	}
+	return []ReadEffect{RememberVerifiedInstances{IDs: append([]string(nil), resp.VerifiedInstanceIDs...)}}
+}
+
+// filterInstancesByRequestedID keeps only instances whose UHostId is one of the
+// requested ids — the response-echo half of the same-id contract.
+func filterInstancesByRequestedID(instances []entity.InstanceSnapshot, requested []string) []entity.InstanceSnapshot {
+	if len(requested) == 0 {
+		return instances
+	}
+	want := make(map[string]struct{}, len(requested))
+	for _, id := range requested {
+		want[id] = struct{}{}
+	}
+	out := make([]entity.InstanceSnapshot, 0, len(instances))
+	for _, inst := range instances {
+		if _, ok := want[inst.UHostId]; ok {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
+func instanceIDsOf(instances []entity.InstanceSnapshot) []string {
+	ids := make([]string, 0, len(instances))
+	for _, inst := range instances {
+		if inst.UHostId != "" {
+			ids = append(ids, inst.UHostId)
+		}
+	}
+	return ids
 }

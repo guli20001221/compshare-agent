@@ -158,15 +158,28 @@ func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID stri
 // raw result map, or nil on error (matching degrades gracefully — the matcher still
 // has the other source + the user message + the static-table GPU fallback).
 func (e *Engine) querySafeRead(ctx context.Context, action string, args map[string]any) map[string]any {
+	raw, _ := e.querySafeReadResult(ctx, action, args)
+	return raw
+}
+
+// querySafeReadResult is querySafeRead that preserves the failure/empty
+// distinction the plain form collapses. ok=false means the CALL failed (transport
+// error / upstream error) — a dependency failure; ok=true means it completed,
+// whether the raw result is populated or empty. Existence verification needs this:
+// a failed DescribeCompShareInstance must not read as "the instance is absent".
+func (e *Engine) querySafeReadResult(ctx context.Context, action string, args map[string]any) (map[string]any, bool) {
 	res, err := e.executeSafeTool(ctx, tools.SafeToolRequest{
 		Action: action,
 		Args:   args,
 		Origin: tools.OriginWorkflowInternal,
 	})
-	if err != nil || res == nil {
-		return nil
+	if err != nil {
+		return nil, false
 	}
-	return res.RawResult
+	if res == nil {
+		return nil, true
+	}
+	return res.RawResult, true
 }
 
 // ── small pure helpers ──

@@ -174,3 +174,31 @@ type EvidenceVerifier interface {
 type EvidenceVerifierFunc func(SlotCandidate) bool
 
 func (f EvidenceVerifierFunc) VerifyCandidate(candidate SlotCandidate) bool { return f(candidate) }
+
+// TargetVerdict is the disposition of a write TARGET, decided by the engine (which
+// owns the selection binding and the existence network) and consumed by the pure
+// resolver. It keeps the resolver's four refusal channels honest: a target that
+// cannot be verified is not uniformly "rejected" — an outage is a DependencyFailure
+// and a genuine ambiguity is a Conflict.
+type TargetVerdict int
+
+const (
+	// TargetReject: no verifiable existence — refuse (an unselected/absent id).
+	TargetReject TargetVerdict = iota
+	// TargetAccept: exists in the account this turn, no conflict — the target may
+	// reach the confirmation card (the user-confirm event authorizes execution).
+	TargetAccept
+	// TargetConflict: the user's own references disagree — the agent must ask.
+	TargetConflict
+	// TargetDependencyFailure: existence could not be verified (upstream outage) —
+	// a server-side failure, never the user's target being invalid.
+	TargetDependencyFailure
+)
+
+// TargetAdjudicator, when implemented by the resolver's verifier, decides a write
+// target's disposition. The resolver uses it INSTEAD of the plain bool verify for
+// target fields, so existence outages and reference conflicts land in the right
+// channel. A verifier that does not implement it falls back to VerifyCandidate.
+type TargetAdjudicator interface {
+	AdjudicateTarget(SlotCandidate) TargetVerdict
+}
