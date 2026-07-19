@@ -1,0 +1,192 @@
+package main
+
+// Live forced-first-decision gate (review step #7: "增加真实 HTTP/WS 自动门").
+//
+// Drives the REAL engine wired identically to the HTTP server
+// (configureSharedDepsFromEnv, real ds-v4-flash, real CompShare executor from
+// deploy/conf/config.yaml) with the forced first-decision forced ON, over the
+// create / consult / image-rec probes, and asserts the OBSERVABLE first-hop
+// contract:
+//
+//   - a write request ("帮我创建…") → the forced first decision is a write
+//     proposal (outcome starts with "request:") AND a confirmation card / form is
+//     reached — structurally NO read or natural-language answer precedes the card,
+//     because the proposal is seeded as round 0 with no prior model answer call.
+//   - a method consult / image recommendation (no execute intent) → the forced
+//     first decision is continue-without-write (outcome == "continue"), NO card is
+//     shown, and a non-empty answer is produced.
+//
+// It is the durable encoding of the manual N=3 acceptance: a degraded_* outcome
+// (the deployment key can't honor forced tool_choice) FAILS the gate, so "card
+// precedes NL" can never silently regress to a research-first turn.
+//
+// Run (never in `go test ./...` — flag-gated + self-skips without an LLM key):
+//   go test ./cmd -run TestForcedFirstDecisionGate -first-decision-gate -v \
+//       [-first-decision-n 3] [-first-decision-min-pass 3]
+
+import (
+	"context"
+	"flag"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/workflow"
+)
+
+var (
+	firstDecisionGate    = flag.Bool("first-decision-gate", false, "run the live forced-first-decision gate (real model + executor); off = skip")
+	firstDecisionN       = flag.Int("first-decision-n", 3, "repetitions per probe")
+	firstDecisionMinPass = flag.Int("first-decision-min-pass", 0, "minimum passing reps per probe to not fail; 0 = require all N (strict)")
+	firstDecisionTimeout = flag.Duration("first-decision-timeout", 240*time.Second, "per-turn engine timeout")
+)
+
+type firstDecisionProbe struct {
+	name      string
+	message   string
+	wantWrite bool // true → expect a seeded write proposal + card; false → expect continue + answer, no card
+}
+
+// firstDecisionProbes covers both directions the review named, plus the lead's
+// zoned/newest-image create variant.
+var firstDecisionProbes = []firstDecisionProbe{
+	{"create_plain", "帮我创建一台4090的Ubuntu虚拟机，按量计费", true},
+	{"create_zoned_newest_image", "在华北一C用最新的 PyTorch 镜像帮我开一台 4090", true},
+	{"consult_method", "怎么创建一台实例？", false},
+	{"image_recommendation", "推荐一个适合跑 PyTorch 的 4090 镜像", false},
+}
+
+func TestForcedFirstDecisionGate(t *testing.T) {
+	if !*firstDecisionGate {
+		t.Skip("set -first-decision-gate to run (real model + CompShare executor; nightly / manual only)")
+	}
+
+	root := behavioralRepoRoot(t)
+	if orig, err := os.Getwd(); err == nil {
+		if err := os.Chdir(root); err != nil {
+			t.Fatalf("chdir repo root %s: %v", root, err)
+		}
+		t.Cleanup(func() { _ = os.Chdir(orig) })
+	}
+	if os.Getenv("COMPSHARE_PROJECT_ID") == "" {
+		os.Setenv("COMPSHARE_PROJECT_ID", "test-project")
+	}
+
+	cfgPath := filepath.Join(root, "deploy", "conf", "config.yaml")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load(%s): %v", cfgPath, err)
+	}
+	if cfg.Agent.LLM.APIKey == "" {
+		t.Skip("agent.llm.api_key is empty; cannot run the real-model first-decision gate")
+	}
+
+	getenv := cfg.RuntimeGetenv(os.Getenv)
+	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv)
+	if err != nil {
+		t.Fatalf("configureSharedDepsFromEnv: %v", err)
+	}
+	if !mutating {
+		t.Skip("mutating tools disabled in config; the forced first-decision has no write path to gate")
+	}
+	// Force the flag ON for the gate even if deploy/conf/config.yaml has not yet
+	// flipped forced_first_decision (that flip is the separate post-acceptance
+	// step). Restore afterward so other package-main tests are unaffected.
+	prevForced := engine.ForcedFirstDecisionEnabled()
+	engine.SetForcedFirstDecisionEnabled(true)
+	t.Cleanup(func() { engine.SetForcedFirstDecisionEnabled(prevForced) })
+	t.Logf("wiring: model=%s mutating=%t forced_first_decision=ON n=%d", cfg.Agent.LLM.Model, mutating, *firstDecisionN)
+
+	minPass := *firstDecisionMinPass
+	if minPass <= 0 {
+		minPass = *firstDecisionN // strict: every rep must pass
+	}
+
+	for _, p := range firstDecisionProbes {
+		pass := 0
+		for i := 0; i < *firstDecisionN; i++ {
+			outcome, cardReached, firstAction, reply := runFirstDecisionProbe(deps, mutating, p.message, *firstDecisionTimeout)
+			ok, why := judgeFirstDecision(p, outcome, cardReached, reply)
+			if ok {
+				pass++
+			}
+			t.Logf("[%s %d/%d] pass=%t outcome=%q card=%t first_action=%q reply_len=%d %s",
+				p.name, i+1, *firstDecisionN, ok, outcome, cardReached, firstAction, len(reply), why)
+		}
+		if pass < minPass {
+			t.Errorf("probe %s: %d/%d passed, want >= %d", p.name, pass, *firstDecisionN, minPass)
+		} else {
+			t.Logf("probe %s: %d/%d passed (floor %d) OK", p.name, pass, *firstDecisionN, minPass)
+		}
+	}
+}
+
+// runFirstDecisionProbe runs one probe on a fresh production-shaped session
+// (guided create + editable confirm form opted in, every confirmation DECLINED so
+// no real write happens) and returns the observable first-decision signals.
+func runFirstDecisionProbe(deps *engine.SharedDeps, mutating bool, message string, timeout time.Duration) (outcome string, cardReached bool, firstAction string, reply string) {
+	eng := engine.NewSession(deps, engine.SessionOptions{
+		Subject:              governance.AnonymousSubjectKey,
+		ConfirmFn:            func(string, map[string]any) bool { return false },
+		MutatingToolsEnabled: mutating,
+	})
+	eng.RehydrateHistory(nil) // fresh session: system prompt + empty history
+
+	onStep := func(ev engine.StepEvent) {
+		if firstAction == "" && ev.Type == engine.StepToolCall && ev.Action != "" {
+			firstAction = ev.Action
+		}
+		if ev.Type == engine.StepConfirmNeeded {
+			cardReached = true
+		}
+	}
+	confirmFn := func(string, map[string]any) bool { cardReached = true; return false }
+	confirmEdits := func(string, map[string]any, *workflow.ConfirmForm) workflow.ConfirmResolution {
+		cardReached = true
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	reply, _ = eng.ChatWithOptions(ctx, message, onStep, engine.ChatOptions{
+		ConfirmFunc:      confirmFn,
+		ConfirmEditsFunc: confirmEdits,
+		GuidedCreate:     true,
+	})
+	outcome = eng.FirstDecisionOutcomeThisTurn()
+	return outcome, cardReached, firstAction, reply
+}
+
+// judgeFirstDecision encodes the observable contract. A degraded_* outcome fails
+// either direction: the gate's premise is that this deployment can honor forced
+// tool_choice, and a silent auto-fallback is exactly the regression to catch.
+func judgeFirstDecision(p firstDecisionProbe, outcome string, cardReached bool, reply string) (bool, string) {
+	if strings.HasPrefix(outcome, "degraded") {
+		return false, "FAIL: deployment could not honor forced tool_choice (forcing degraded)"
+	}
+	if p.wantWrite {
+		if !strings.HasPrefix(outcome, "request:") {
+			return false, "FAIL: write intent did not produce a first-hop write proposal"
+		}
+		if !cardReached {
+			return false, "FAIL: write proposal never reached a confirmation card/form"
+		}
+		return true, "OK: write proposal + card precede any NL"
+	}
+	// non-write direction: must continue-without-write, show no card, and answer.
+	if outcome != "continue" {
+		return false, "FAIL: non-write turn did not continue-without-write"
+	}
+	if cardReached {
+		return false, "FAIL: non-write turn wrongly reached a confirmation card"
+	}
+	if strings.TrimSpace(reply) == "" {
+		return false, "FAIL: non-write turn produced an empty answer"
+	}
+	return true, "OK: continue + non-empty answer, no card"
+}
