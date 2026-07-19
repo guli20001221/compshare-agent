@@ -68,6 +68,11 @@ type FinishSignals struct {
 	// non-empty canned reply and no hard-block — so the budget terminus is
 	// otherwise underivable from the record.
 	RoundCeilingHit bool
+	// FirstDecisionOutcome is how the forced first-decision resolved this turn
+	// (engine.FirstDecisionOutcomeThisTurn): "" when it did not run, else
+	// continue / request:<Tool> / a fail_* / a degraded_* / skipped. Recorded
+	// verbatim onto OutcomeTrace so degrade cases are visibly non-structural.
+	FirstDecisionOutcome string
 }
 
 // FinalizeOutcome stamps the four outcome-attribution axes (plus react_rounds /
@@ -81,6 +86,9 @@ func (r *TraceRecord) FinalizeOutcome(s FinishSignals) {
 	r.Outcome.Resolution = r.DeriveResolution(s, tb)
 	if s.ReactRounds > 0 {
 		r.Outcome.ReactRounds = s.ReactRounds
+	}
+	if s.FirstDecisionOutcome != "" {
+		r.Outcome.FirstDecisionOutcome = s.FirstDecisionOutcome
 	}
 	r.Outcome.BudgetHit = r.budgetExhausted(s)
 }

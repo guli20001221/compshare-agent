@@ -193,6 +193,31 @@ func TestFinalizeOutcome_StampsAllAxes(t *testing.T) {
 	}
 }
 
+// TestFinalizeOutcome_StampsFirstDecisionOutcome pins that the forced
+// first-decision result reaches the trace (finding #4a): the recorder threads
+// FirstDecisionOutcome through FinishSignals, and an empty one leaves the field
+// omitted (SHA-stable for non-forced turns).
+func TestFinalizeOutcome_StampsFirstDecisionOutcome(t *testing.T) {
+	rec := TraceRecord{}
+	rec.FinalizeOutcome(FinishSignals{ReactRounds: 1, FirstDecisionOutcome: "request:RequestCreateInstance"})
+	if rec.Outcome.FirstDecisionOutcome != "request:RequestCreateInstance" {
+		t.Fatalf("first_decision_outcome = %q, want request:RequestCreateInstance", rec.Outcome.FirstDecisionOutcome)
+	}
+	// A degraded outcome must be visible so dashboards can exclude it from the
+	// structural-guarantee numerator.
+	deg := TraceRecord{}
+	deg.FinalizeOutcome(FinishSignals{FirstDecisionOutcome: "degraded_provider_fallback"})
+	if deg.Outcome.FirstDecisionOutcome != "degraded_provider_fallback" {
+		t.Fatalf("degraded outcome not recorded: %q", deg.Outcome.FirstDecisionOutcome)
+	}
+	// Empty stays empty (omitempty → no byte drift for turns where it never ran).
+	none := TraceRecord{}
+	none.FinalizeOutcome(FinishSignals{ReactRounds: 2})
+	if none.Outcome.FirstDecisionOutcome != "" {
+		t.Fatalf("first_decision_outcome must stay empty when unset, got %q", none.Outcome.FirstDecisionOutcome)
+	}
+}
+
 func TestFinalizeOutcome_RoundCeilingBudget(t *testing.T) {
 	rec := TraceRecord{}
 	rec.FinalizeOutcome(FinishSignals{RoundCeilingHit: true, ReactRounds: 10})

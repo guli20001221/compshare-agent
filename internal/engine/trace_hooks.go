@@ -30,6 +30,7 @@ type TraceSnapshot struct {
 	Registry                  observability.EntityRegistryTrace
 	ReactRounds               int
 	RoundCeilingHit           bool
+	FirstDecisionOutcome      string
 	SessionState              SessionState
 	ContextVersion            int
 	SessionStateHydrated      bool
@@ -71,6 +72,7 @@ func (e *Engine) TraceSnapshot(now time.Time) TraceSnapshot {
 		Registry:                  e.RegistryTraceState(now),
 		ReactRounds:               e.ReactRoundsThisTurn(),
 		RoundCeilingHit:           e.ReactCeilingHitThisTurn(),
+		FirstDecisionOutcome:      e.FirstDecisionOutcomeThisTurn(),
 		SessionState:              state,
 		ContextVersion:            version,
 		SessionStateHydrated:      hydrated,

@@ -375,9 +375,10 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			return
 		}
 		traceRecorder.SetTerminalSignals(observability.FinishSignals{
-			ReplyEmpty:      strings.TrimSpace(reply) == "",
-			ReactRounds:     agent.ReactRoundsThisTurn(),
-			RoundCeilingHit: agent.ReactCeilingHitThisTurn(),
+			ReplyEmpty:           strings.TrimSpace(reply) == "",
+			ReactRounds:          agent.ReactRoundsThisTurn(),
+			RoundCeilingHit:      agent.ReactCeilingHitThisTurn(),
+			FirstDecisionOutcome: agent.FirstDecisionOutcomeThisTurn(),
 		})
 		sessState, _, hydrated := agent.SessionStateSnapshot()
 		traceRecorder.SetStateTrace(observability.StateTrace{

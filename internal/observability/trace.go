@@ -976,13 +976,19 @@ type OutcomeTrace struct {
 	// ReactRounds is the number of ReAct loop rounds entered this turn; BudgetHit
 	// is true when the turn hit the token budget or the round ceiling. Both feed
 	// the D7 (per-turn budget exhaustion) analysis and the budget terminus.
-	ReactRounds                int   `json:"react_rounds,omitempty"`
-	BudgetHit                  bool  `json:"budget_hit,omitempty"`
-	TotalLatencyMS             int64 `json:"total_latency_ms,omitempty"`
-	TotalTokens                int   `json:"total_tokens,omitempty"`
-	PromptTokens               int   `json:"prompt_tokens,omitempty"`
-	CompletionTokens           int   `json:"completion_tokens,omitempty"`
-	AttemptedHallucinatedCount int   `json:"attempted_hallucinated_count,omitempty"`
+	ReactRounds int  `json:"react_rounds,omitempty"`
+	BudgetHit   bool `json:"budget_hit,omitempty"`
+	// FirstDecisionOutcome records how the forced first-decision (create/write
+	// first-hop determinism) resolved this turn: "" when it did not run (flag off),
+	// else continue / request:<Tool> / a fail_* / a degraded_* / skipped. Lets a
+	// dashboard prove the forcing fired, which write was proposed, and — crucially
+	// — that a degraded_* turn was NOT scored as a structural guarantee.
+	FirstDecisionOutcome       string `json:"first_decision_outcome,omitempty"`
+	TotalLatencyMS             int64  `json:"total_latency_ms,omitempty"`
+	TotalTokens                int    `json:"total_tokens,omitempty"`
+	PromptTokens               int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens           int    `json:"completion_tokens,omitempty"`
+	AttemptedHallucinatedCount int    `json:"attempted_hallucinated_count,omitempty"`
 	// EscapedHallucinatedCount counts turns where the cited-contract
 	// retry was skipped or failed. Note: turns aborted by the per-turn
 	// token budget (refused_reason="token_budget") also bump this
@@ -1252,7 +1258,8 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		trace.ResponseContract != "" ||
 		len(trace.PromptSectionIDs) > 0 ||
 		trace.MemoryUpdateSource != "" ||
-		trace.GroundingOutcome != ""
+		trace.GroundingOutcome != "" ||
+		trace.FirstDecisionOutcome != ""
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {

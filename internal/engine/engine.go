@@ -713,6 +713,11 @@ func (e *Engine) ReactRoundsThisTurn() int { return e.reactRoundsThisTurn }
 // hard-block, so this is the only signal for terminated_by=budget on it.
 func (e *Engine) ReactCeilingHitThisTurn() bool { return e.reactCeilingHitThisTurn }
 
+// FirstDecisionOutcomeThisTurn returns how the forced first-decision resolved in
+// the most recent Chat turn ("" when it did not run). Read post-turn by the trace
+// recorder to populate outcome.first_decision_outcome.
+func (e *Engine) FirstDecisionOutcomeThisTurn() string { return e.firstDecisionOutcomeThisTurn }
+
 // PromptMessagesRawPeak / PromptMessagesAssembledPeak return the peak raw
 // history size and peak assembled-request size observed while assembling LLM
 // requests this turn; PromptMessagesCapApplied reports whether the conservative

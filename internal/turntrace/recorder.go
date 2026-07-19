@@ -366,6 +366,7 @@ func (r *Recorder) Finish(chatErr, attemptErr error, reply string, snapshot engi
 	r.terminalSignals.ReplyEmpty = strings.TrimSpace(reply) == ""
 	r.terminalSignals.ReactRounds = snapshot.ReactRounds
 	r.terminalSignals.RoundCeilingHit = snapshot.RoundCeilingHit
+	r.terminalSignals.FirstDecisionOutcome = snapshot.FirstDecisionOutcome
 	r.terminalSignals.ChatErr = attemptErr
 	if r.terminalSignals.ChatErr == nil {
 		r.terminalSignals.ChatErr = chatErr
