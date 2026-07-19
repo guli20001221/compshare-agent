@@ -120,10 +120,6 @@ func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error)
 			}
 		}
 	}
-	projectID := base.ProjectID
-	if projectID == "" {
-		projectID = fmt.Sprintf("%d", base.Owner.OrganizationID)
-	}
 	return tools.UserContext{
 		TopOrganizationID: base.Owner.TopOrganizationID,
 		OrganizationID:    base.Owner.OrganizationID,
@@ -132,7 +128,10 @@ func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error)
 		Channel:           base.Channel,
 		RoleUrn:           roleUrn,
 		SessionName:       fmt.Sprintf("%d-%d", base.Owner.TopOrganizationID, base.Owner.OrganizationID),
-		ProjectId:         projectID,
+		// ProjectId is an upstream project identifier, not an organization ID.
+		// Keep it empty when the gateway did not provide one so CompShare can
+		// apply its account-level default behavior.
+		ProjectId:         base.ProjectID,
 		Region:            h.cfg.Agent.Region,
 		UserEmail:         base.UserEmail,
 		ClientIP:          base.ClientIP,

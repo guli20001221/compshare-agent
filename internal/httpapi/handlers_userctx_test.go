@@ -19,7 +19,7 @@ func TestBuildUserContext(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ucs:iam::123:role/test", u.RoleUrn)
 	assert.Equal(t, "123-456", u.SessionName)
-	assert.Equal(t, "456", u.ProjectId)
+	assert.Empty(t, u.ProjectId)
 	assert.Equal(t, "cn-wlcb", u.Region)
 	assert.Equal(t, uint32(123), u.TopOrganizationID)
 	assert.Equal(t, uint32(456), u.OrganizationID)
