@@ -37,6 +37,7 @@ func BuildCatalog() (*Catalog, error) {
 			Risk:             capability.Policy.SecurityLevel,
 			Execution:        workflow.ExecutionContract(definition),
 			ValidateResolved: operationValidator(operation),
+			Intake:           intakeSpecForOperation(operation, fields),
 		}
 	}
 	return catalog, nil
@@ -168,6 +169,34 @@ func operationValidator(operation string) func(map[string]any) error {
 	default:
 		return nil
 	}
+}
+
+// intakeSpecForOperation declares, per operation, whether an incomplete-but-
+// well-formed proposal may open a guided selection form instead of a prose
+// back-and-forth. It is the single declarative source the engine reads instead
+// of hardcoding a workflow name; it follows the same per-operation switch shape
+// as operationValidator. CollectableFields is the operation's own non-secret,
+// non-target fields — the values a whitelist form can offer as picks (a secret
+// like a password cannot be a select option; a target does not apply to create).
+func intakeSpecForOperation(operation string, fields map[string]FieldSpec) IntakeSpec {
+	switch operation {
+	case "CreateInstanceWorkflow":
+		return IntakeSpec{Mode: IntakeGuided, CollectableFields: collectableFieldNames(fields)}
+	default:
+		return IntakeSpec{}
+	}
+}
+
+func collectableFieldNames(fields map[string]FieldSpec) []string {
+	out := make([]string, 0, len(fields))
+	for name, field := range fields {
+		if field.Target || field.Codec == CodecSensitiveText {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func stringSet(value any) map[string]bool {

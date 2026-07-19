@@ -3450,7 +3450,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, arg
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
-	if action == "CreateInstanceWorkflow" && e.guidedCreate && e.confirmEditsFn != nil {
+	if e.guidedCreate && e.confirmEditsFn != nil && operationSupportsGuidedIntake(action) {
 		wf = workflow.CreateInstanceGuidedDef()
 	}
 

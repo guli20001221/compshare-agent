@@ -76,6 +76,29 @@ type FieldSpec struct {
 	TargetKind string
 }
 
+// IntakeMode declares how an operation handles a proposal that is well-formed but
+// incomplete (only Missing required fields, no conflicts/rejections/outages).
+type IntakeMode string
+
+const (
+	// IntakeNone: an incomplete proposal has no guided form; the agent must ask in
+	// prose (the resolver reports Missing and the model re-proposes). This is the
+	// default for every operation.
+	IntakeNone IntakeMode = ""
+	// IntakeGuided: an incomplete proposal whose Missing fields are all collectable
+	// may open a guided selection form (whitelist picks) instead of a prose
+	// back-and-forth. The form collects the missing fields, then confirms.
+	IntakeGuided IntakeMode = "guided"
+)
+
+// IntakeSpec is the declarative replacement for the engine hardcoding a specific
+// operation name to trigger the guided card. It states whether an operation
+// supports guided intake and which of its fields the guided form may collect.
+type IntakeSpec struct {
+	Mode              IntakeMode
+	CollectableFields []string
+}
+
 type OperationSpec struct {
 	Operation        string
 	Description      string
@@ -84,6 +107,7 @@ type OperationSpec struct {
 	Risk             security.Level
 	Execution        []workflow.ExecutionStepContract
 	ValidateResolved func(map[string]any) error
+	Intake           IntakeSpec
 }
 
 type GateContract struct {
@@ -134,6 +158,7 @@ type ResolvedAction struct {
 	DependencyFailures   []string                         `json:"dependency_failures,omitempty"`
 	NeedsConfirm         bool                             `json:"needs_confirm"`
 	ReadyForConfirmation bool                             `json:"ready_for_confirmation"`
+	ReadyForIntake       bool                             `json:"ready_for_intake"`
 	Confirmation         *ConfirmationPreview             `json:"confirmation,omitempty"`
 	Gate                 GateContract                     `json:"gate"`
 	Execution            []workflow.ExecutionStepContract `json:"execution"`

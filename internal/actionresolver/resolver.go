@@ -141,6 +141,14 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	sort.Slice(result.Conflicts, func(i, j int) bool { return result.Conflicts[i].Slot < result.Conflicts[j].Slot })
 	result.ReadyForConfirmation = len(result.Missing) == 0 && len(result.Conflicts) == 0 &&
 		len(result.Rejected) == 0 && len(result.DependencyFailures) == 0
+	// ReadyForIntake: the proposal is well-formed but incomplete — only Missing
+	// fields remain (no conflicts, rejections or dependency failures), and every one
+	// is collectable by the operation's guided form. It is the "open the guided
+	// form" signal, mutually exclusive with ReadyForConfirmation. The engine still
+	// decides whether a guided form is actually available this turn.
+	result.ReadyForIntake = !result.ReadyForConfirmation &&
+		len(result.Conflicts) == 0 && len(result.Rejected) == 0 && len(result.DependencyFailures) == 0 &&
+		spec.Intake.Mode == IntakeGuided && allMissingCollectable(result.Missing, spec.Intake.CollectableFields)
 	if result.ReadyForConfirmation {
 		arguments := make(map[string]any, len(result.Arguments))
 		for name, value := range result.Arguments {
@@ -153,6 +161,25 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		result.Confirmation = &ConfirmationPreview{Operation: result.Operation, Arguments: arguments}
 	}
 	return result
+}
+
+// allMissingCollectable reports whether every Missing field is one the guided
+// intake form can collect. Missing must be non-empty — an empty Missing means the
+// proposal is complete (ReadyForConfirmation territory), not an intake candidate.
+func allMissingCollectable(missing, collectable []string) bool {
+	if len(missing) == 0 {
+		return false
+	}
+	set := make(map[string]struct{}, len(collectable))
+	for _, name := range collectable {
+		set[name] = struct{}{}
+	}
+	for _, name := range missing {
+		if _, ok := set[name]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func knownSource(source CandidateSource) bool {

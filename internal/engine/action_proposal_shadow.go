@@ -29,6 +29,20 @@ func defaultActionCatalog() (*actionresolver.Catalog, error) {
 	return actionCatalog, actionCatalogErr
 }
 
+// operationSupportsGuidedIntake reports whether the catalog declares guided
+// intake for an operation. It is the declarative replacement for the engine
+// hardcoding "CreateInstanceWorkflow" as the guided-card trigger: both the
+// complete-proposal guided swap and the incomplete-proposal intake route ask
+// this instead of naming the workflow.
+func operationSupportsGuidedIntake(action string) bool {
+	catalog, err := defaultActionCatalog()
+	if err != nil {
+		return false
+	}
+	spec, ok := catalog.Lookup(action)
+	return ok && spec.Intake.Mode == actionresolver.IntakeGuided
+}
+
 type agentContextEvidenceVerifier struct {
 	context AgentContext
 	engine  *Engine
@@ -528,6 +542,15 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 		return string(payload)
 	}
 	if !resolved.action.ReadyForConfirmation {
+		// An incomplete-but-collectable proposal opens the guided intake form
+		// instead of a prose back-and-forth — but only when a guided form is
+		// actually available this turn (the client opted in). The guided workflow
+		// collects the missing fields through its own confirm gates and confirms
+		// before it creates; it never executes straight from intake.
+		if resolved.action.ReadyForIntake && e.guidedCreate && e.confirmEditsFn != nil {
+			onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案进入引导式表单收集"})
+			return e.executeResolvedWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData)
+		}
 		e.rememberPendingResolvedAction(resolved.action)
 		return resolvedActionForModel(resolved.action)
 	}
