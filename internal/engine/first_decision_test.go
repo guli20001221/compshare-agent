@@ -154,6 +154,11 @@ func TestFirstDecisionRequestClassifiedAndClosesWindow(t *testing.T) {
 	if got := eng.firstDecisionOutcomeThisTurn; got != "request:RequestStopInstance" {
 		t.Errorf("outcome = %q, want request:RequestStopInstance", got)
 	}
+	// GATE (Request → immediately Resolver): the seeded proposal runs straight
+	// through the action-proposal resolver, not a prose back-and-forth.
+	if !eng.actionProposalRanThisTurn {
+		t.Errorf("Request first-decision must dispatch straight to the action-proposal resolver")
+	}
 	if !eng.writeWindowClosedThisTurn {
 		t.Errorf("write window must be closed after the first-decision write proposal")
 	}
@@ -201,6 +206,83 @@ func TestFirstDecisionUnknownToolFailsClosed(t *testing.T) {
 	}
 	if eng.firstDecisionOutcomeThisTurn != firstDecisionFailUnknown {
 		t.Errorf("outcome = %q, want %q", eng.firstDecisionOutcomeThisTurn, firstDecisionFailUnknown)
+	}
+}
+
+// GATE (finding #1 + #2): continue-without-write must NOT pollute conversation
+// history (no ContinueWithoutWrite tool_call / ack reaches e.messages, so the
+// answer round reuses the identical pre-decision snapshot and hot == cold), and
+// the probe must NOT be charged to the normal ReAct round count or the per-turn
+// answer token budget.
+func TestFirstDecisionContinueDoesNotPolluteHistoryOrBudget(t *testing.T) {
+	withForcedFirstDecision(t)
+	llmc := &capturingLLM{resps: []*llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("c1", continueWithoutWriteName, "{}")}, Usage: llm.TokenUsage{TotalTokens: 100}},
+		{Content: "这是最终回答。", Usage: llm.TokenUsage{TotalTokens: 50}},
+	}}
+	eng := NewWithDeps(llmc, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 0)
+
+	reply, err := eng.Chat(context.Background(), "怎么创建一台实例？", noopStep)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if reply != "这是最终回答。" {
+		t.Fatalf("reply = %q, want the answer-round reply", reply)
+	}
+	// #1: no first-decision control message may have entered history — not the
+	// ContinueWithoutWrite tool_call, not a tool response for it. A pure
+	// continue→answer turn is exactly [user, assistant-final] with no tool traffic.
+	for _, m := range eng.messages {
+		if m.Role == openai.ChatMessageRoleTool {
+			t.Errorf("continue turn leaked a tool message into history: %+v", m)
+		}
+		for _, tc := range m.ToolCalls {
+			t.Errorf("continue turn leaked a tool_call (%s) into history", tc.Function.Name)
+		}
+	}
+	// #2: the probe's 100 tokens are excluded from the answer budget (only the
+	// answer round's 50 counts), and it did not consume a ReAct round.
+	if eng.turnTokensConsumed != 50 {
+		t.Errorf("turnTokensConsumed = %d, want 50 (the 100-token probe must be excluded)", eng.turnTokensConsumed)
+	}
+	if got := eng.ReactRoundsThisTurn(); got != 1 {
+		t.Errorf("react_rounds = %d, want 1 (the probe is not a ReAct round)", got)
+	}
+}
+
+// GATE (finding #3): when the provider silently drops the forcing and retries
+// auto (ForcedToolChoiceDegraded), the turn must degrade to the normal
+// full-window loop — NOT fail-closed a normal query — and record the fallback.
+func TestFirstDecisionProviderFallbackDegradesToNormalLoop(t *testing.T) {
+	withForcedFirstDecision(t)
+	llmc := &capturingLLM{resps: []*llm.ChatResponse{
+		{Content: "auto 兜底的自然语言", ForcedToolChoiceDegraded: true},
+		{Content: "这是正常回答。"},
+	}}
+	eng := NewWithDeps(llmc, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 0)
+
+	reply, err := eng.Chat(context.Background(), "帮我创建一台实例", noopStep)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if eng.firstDecisionOutcomeThisTurn != firstDecisionDegradedProviderFallback {
+		t.Errorf("outcome = %q, want %q", eng.firstDecisionOutcomeThisTurn, firstDecisionDegradedProviderFallback)
+	}
+	if reply == firstDecisionFailReply {
+		t.Fatalf("a provider-degraded turn must NOT be fail-closed refused")
+	}
+	if reply != "这是正常回答。" {
+		t.Errorf("reply = %q, want the normal answer-loop reply", reply)
+	}
+	if len(llmc.reqs) < 2 {
+		t.Fatalf("expected a normal answer round after the degrade; got %d requests", len(llmc.reqs))
+	}
+	// The degraded answer round runs the FULL window (as if the flag were off):
+	// reads present, and — mutating on — Request* proposals still available.
+	if !windowHasReadOrRAG(llmc.reqs[1].Tools) || !windowHasProposal(llmc.reqs[1].Tools) {
+		t.Errorf("degraded answer window must be the full un-forced window; got %v", windowNames(llmc.reqs[1].Tools))
 	}
 }
 

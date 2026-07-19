@@ -304,6 +304,13 @@ type Engine struct {
 	// trace and the structural acceptance gates. Both reset at the top of Chat.
 	writeWindowClosedThisTurn    bool
 	firstDecisionOutcomeThisTurn string
+	// seededFirstResponse carries the forced first-decision's chosen write
+	// proposal into ReAct round 0 so it runs through the normal tool-execution
+	// path (Resolver → intake/confirm) without a second LLM call. nil unless the
+	// pre-call chose a Request* proposal; consumed and cleared on round 0. Reset
+	// at the top of Chat. Per-turn by design — a shared value would replay one
+	// tenant's proposal into another's turn.
+	seededFirstResponse *llm.ChatResponse
 	// Context-assembler observability (P2). Peak raw history size and peak
 	// assembled request size across this turn's rounds, plus whether the
 	// conservative message cap ever shed anything. Content-free; reset at the top
@@ -1173,6 +1180,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.reactRoundsThisTurn = 0
 	e.writeWindowClosedThisTurn = false
 	e.firstDecisionOutcomeThisTurn = ""
+	e.seededFirstResponse = nil
 	e.reactCeilingHitThisTurn = false
 	e.promptMessagesRawPeakThisTurn = 0
 	e.promptMessagesAssembledPeakThisTurn = 0
@@ -1258,10 +1266,30 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorWindow = false
 	e.displayedResourceSelectionThisTurn = nil
 
+	// Forced first-decision (first_decision.go): a structural pre-hop BEFORE the
+	// ReAct loop. On a write turn it commits the first hop to a Request* proposal
+	// (seeded into round 0) instead of letting flash free-roll reads; on a
+	// non-write turn it continues without a write. It never consumes a normal
+	// ReAct round or the answer token budget. handled=true only for the terminal
+	// fail-closed refusal; every other outcome falls through to the loop.
+	if handled, forcedReply := e.runForcedFirstDecision(ctx, opts, onStep); handled {
+		return forcedReply, nil
+	}
+
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
 		round := runtimeRound.Index()
 		e.reactRoundsThisTurn = round + 1
+		// Seeded write proposal from the forced first-decision: the pre-call
+		// already made — and rate-limited + token-observed — this model call, so
+		// replay it as round 0's step and run the tool-execution path directly
+		// (Resolver → intake/confirm, including non-terminal error/prose
+		// continuations) without a second LLM call.
+		if seed := e.seededFirstResponse; seed != nil && round == 0 {
+			e.seededFirstResponse = nil
+			runtimeRound.ModelStep(len(seed.ToolCalls), false)
+			return e.runToolCallsRound(ctx, seed, runtimeRound, onStep)
+		}
 		// Per-turn token budget gate. Placed at the TOP of the loop so
 		// any tool_call → tool_result pair emitted in the previous
 		// iteration has already completed and been appended to history
@@ -1297,26 +1325,14 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
 		messages := e.buildMessagesForLLM()
-		// Forced first-decision (create-first-hop fix, first_decision.go): on the
-		// FIRST hop, when mutating is enabled and the model supports
-		// tool_choice=required, restrict the window to the catalog Request* tools +
-		// ContinueWithoutWrite and force a choice — the Agent cannot free-roll reads
-		// before deciding whether this is a write. Degrades (marked, not a
-		// structural guarantee) when required tool_choice is unsupported. Once the
-		// first decision is made, later rounds drop every Request* tool so a write
-		// proposal can only ever be the first decision.
-		firstDecision := forcedFirstDecisionOn && round == 0 && e.mutatingToolsEnabled && e.supportsRequiredToolChoice
-		if forcedFirstDecisionOn && round == 0 && !firstDecision {
-			if e.mutatingToolsEnabled {
-				e.firstDecisionOutcomeThisTurn = firstDecisionDegradedUnsupported
-			} else {
-				e.firstDecisionOutcomeThisTurn = firstDecisionSkippedReadOnly
-			}
-		}
+		// Once the forced first-decision (first_decision.go) has committed the turn
+		// to continue-without-write — or already ran its one write proposal via the
+		// round-0 seed above — every Request* tool is dropped so a write proposal
+		// can only ever be the first decision. The forcing itself happens in the
+		// pre-call BEFORE this loop, so no round here narrows the window to the
+		// first-decision set or sets tool_choice=required.
 		var toolWindow []openai.Tool
 		switch {
-		case firstDecision:
-			toolWindow = firstDecisionToolWindow()
 		case e.writeWindowClosedThisTurn:
 			toolWindow = toolWindowWithoutProposals(centralAgentToolWindow(e.mutatingToolsEnabled))
 		default:
@@ -1325,11 +1341,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		req := llm.ChatRequest{
 			Messages: messages,
 			Tools:    toolWindow,
-		}
-		if firstDecision {
-			// required: the Agent MUST call exactly one first-decision tool; it may
-			// not answer in prose or call a read here.
-			req.ToolChoice = "required"
 		}
 		// Once the bounded search budget is exhausted, remove the capability. The
 		// observations already in the conversation are sufficient for the Agent's
@@ -1398,23 +1409,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// The next loop iteration still enforces the cap before any further call.
 		runtimeRound.ModelStep(len(resp.ToolCalls), len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "")
 
-		// Forced first-decision: interpret the required tool choice. A single
-		// Request* proposal falls through to normal execution below; continue-
-		// without-write and fail-closed are handled here. The Agent's raw first-
-		// decision content is never streamed to the user.
-		if firstDecision {
-			cont, final, finalReply := e.applyFirstDecision(resp, onStep)
-			if final {
-				if opts.OnTextDelta != nil {
-					opts.OnTextDelta(finalReply)
-				}
-				return agentruntime.Final(finalReply, agentruntime.FinishDeterministicReply), nil
-			}
-			if cont {
-				return agentruntime.Continue(), nil
-			}
-		}
-
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
 			rawContent := resp.Content
@@ -1450,51 +1444,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(content, agentruntime.FinishFinalAnswer), nil
 		}
 
-		// Has tool calls → execute each and feed results back
-		assistantMsg := openai.ChatCompletionMessage{
-			Role:      openai.ChatMessageRoleAssistant,
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
-		}
-		e.messages = append(e.messages, assistantMsg)
-
-		for idx, tc := range resp.ToolCalls {
-			toolResult := e.executeTool(ctx, tc, onStep)
-			runtimeRound.Observation(tc.Function.Name)
-
-			// Deterministic final reply — return directly without LLM narration
-			if finalMsg, ok := isFinalReply(toolResult); ok {
-				finalMsg = security.RedactOperationalTokensInText(finalMsg)
-				// Append matching tool response for this tool call
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:       openai.ChatMessageRoleTool,
-					Content:    finalMsg,
-					ToolCallID: tc.ID,
-				})
-				// Pad remaining unprocessed tool calls with synthetic responses
-				// to keep the history well-formed (every tool_call needs a tool response)
-				for _, remaining := range resp.ToolCalls[idx+1:] {
-					e.messages = append(e.messages, openai.ChatCompletionMessage{
-						Role:       openai.ChatMessageRoleTool,
-						Content:    "skipped",
-						ToolCallID: remaining.ID,
-					})
-				}
-				// Append the final assistant message
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: finalMsg,
-				})
-				return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
-			}
-
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:       openai.ChatMessageRoleTool,
-				Content:    toolResult,
-				ToolCallID: tc.ID,
-			})
-		}
-		return agentruntime.Continue(), nil
+		// Has tool calls → execute each and feed results back (shared with the
+		// forced first-decision's round-0 seed path above).
+		return e.runToolCallsRound(ctx, resp, runtimeRound, onStep)
 	})
 	if runtimeErr == nil {
 		return runtimeResult.Reply, nil
@@ -1549,6 +1501,60 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	})
 	e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonReactRoundCeiling)
 	return reactCeilingRefusal, nil
+}
+
+// runToolCallsRound executes every tool call in resp, feeding results back into
+// history, and returns the round result. A deterministic final reply (a tool that
+// returns via isFinalReply — e.g. a confirmation card) terminates the turn; any
+// other tool result continues the loop. Shared verbatim by the normal ReAct round
+// and the forced first-decision's round-0 seed, so a seeded write proposal reaches
+// Resolver → intake/confirm exactly as a model-chosen one, including its
+// non-terminal (error / prose) continuations.
+func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, runtimeRound *agentruntime.Round, onStep func(StepEvent)) (agentruntime.Result, error) {
+	assistantMsg := openai.ChatCompletionMessage{
+		Role:      openai.ChatMessageRoleAssistant,
+		Content:   resp.Content,
+		ToolCalls: resp.ToolCalls,
+	}
+	e.messages = append(e.messages, assistantMsg)
+
+	for idx, tc := range resp.ToolCalls {
+		toolResult := e.executeTool(ctx, tc, onStep)
+		runtimeRound.Observation(tc.Function.Name)
+
+		// Deterministic final reply — return directly without LLM narration
+		if finalMsg, ok := isFinalReply(toolResult); ok {
+			finalMsg = security.RedactOperationalTokensInText(finalMsg)
+			// Append matching tool response for this tool call
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:       openai.ChatMessageRoleTool,
+				Content:    finalMsg,
+				ToolCallID: tc.ID,
+			})
+			// Pad remaining unprocessed tool calls with synthetic responses
+			// to keep the history well-formed (every tool_call needs a tool response)
+			for _, remaining := range resp.ToolCalls[idx+1:] {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:       openai.ChatMessageRoleTool,
+					Content:    "skipped",
+					ToolCallID: remaining.ID,
+				})
+			}
+			// Append the final assistant message
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: finalMsg,
+			})
+			return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
+		}
+
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:       openai.ChatMessageRoleTool,
+			Content:    toolResult,
+			ToolCallID: tc.ID,
+		})
+	}
+	return agentruntime.Continue(), nil
 }
 
 // lastAssistantContent returns the most recent assistant message's text from
