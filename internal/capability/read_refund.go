@@ -66,7 +66,9 @@ func refundReadSpec() ReadCapabilitySpec[RefundEstimateRequest, RefundEstimateRe
 }
 
 func refundHandle(ctx context.Context, req RefundEstimateRequest, rt ReadRuntime) (RefundEstimateResponse, ReadResult) {
-	instances, ids, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver)
+	// allowColdExactID=false: refund labels its reply from these pre-query
+	// snapshots, so a cold id must not pass through here.
+	instances, ids, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver, false)
 	if reason != nil {
 		// A single prior-turn reference that no longer resolves is a stale
 		// selection: answer (handled) instead of a bare fallback, matching the

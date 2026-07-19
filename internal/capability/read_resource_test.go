@@ -157,6 +157,42 @@ func TestResourceHandle_UnresolvedTargetFallsBack(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
+// TestResourceHandle_ColdRegistryExactIDPointQueries: a user-typed exact id that
+// misses a cold (never-synced) registry is unverifiable locally, not absent, so
+// resource_info passes it through to a DescribeCompShareInstance point-query
+// instead of refusing before the call. The upstream RESPONSE is what establishes
+// the instance really exists.
+func TestResourceHandle_ColdRegistryExactIDPointQueries(t *testing.T) {
+	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-cold", "train-cold", "Running"))}
+
+	result := runResource(t, exec, coldRegistrySnapshot(), ResourceInfoRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-cold", Source: platform.SourceUserText}},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, []string{"uhost-cold"}, exec.calls[0].args["UHostIds"], "a cold exact id must point-query, not be refused before the call")
+	assert.Contains(t, result.Reply, "uhost-cold")
+}
+
+// TestResourceHandle_FreshCompleteAbsentExactIDFallsBack: a synced, complete
+// registry HAS standing to assert absence, so a genuinely-absent exact id is a
+// real "not in your account" — refused before any upstream call, never a wasted
+// point-query. The cold-registry pass-through applies only when absence cannot
+// be asserted.
+func TestResourceHandle_FreshCompleteAbsentExactIDFallsBack(t *testing.T) {
+	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-a", "train-a", "Running"))}
+	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
+
+	result := runResource(t, exec, resolver, ResourceInfoRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-ghost", Source: platform.SourceUserText}},
+	})
+
+	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, platform.ReadFallbackUnresolvedTarget, result.FallbackReason)
+	assert.Empty(t, exec.calls, "an authoritative registry that can assert absence must not point-query")
+}
+
 func TestResourceHandle_UpstreamError(t *testing.T) {
 	result := runResource(t, errReadExec{err: errors.New("boom")}, nil, ResourceInfoRequest{})
 

@@ -102,6 +102,22 @@ func TestMonitorCurrentHandle_UnresolvedTarget(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
+// TestMonitorCurrentHandle_ColdExactIDStillFallsBack: monitor's envelope subjects
+// come from the pre-query registry snapshot, not the monitor response, so a cold
+// exact id must NOT pass through — it would render as a confirmed subject monitor
+// never verified. Unlike resource_info, monitor fails closed on a cold miss.
+func TestMonitorCurrentHandle_ColdExactIDStillFallsBack(t *testing.T) {
+	exec := &fakeReadExec{result: monitorFixture("uhost-cold")}
+
+	result := runMonitorCurrent(t, exec, coldRegistrySnapshot(), "", MonitorCurrentRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-cold", Source: platform.SourceUserText}},
+	})
+
+	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, platform.ReadFallbackUnresolvedTarget, result.FallbackReason)
+	assert.Empty(t, exec.calls, "monitor must not point-query a cold id; its subjects are pre-query")
+}
+
 func TestMonitorCurrentHandle_UpstreamError(t *testing.T) {
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
 

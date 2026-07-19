@@ -56,7 +56,10 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 		}
 		filters = parsed
 	} else {
-		_, resolvedIDs, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver)
+		// allowColdExactID=true: resource_info establishes existence from the
+		// DescribeCompShareInstance response (re-parsed below), so a user-typed exact
+		// id may point-query a cold registry rather than be refused before the call.
+		_, resolvedIDs, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver, true)
 		if reason != nil {
 			return ResourceInfoResponse{}, readTargetFallbackResult(*reason)
 		}

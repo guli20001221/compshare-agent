@@ -31,6 +31,12 @@ type EntityResolver interface {
 	ResolveByID(id string) (*entity.InstanceSnapshot, entity.ResolveResult)
 	ResolveByName(name string) ([]*entity.InstanceSnapshot, entity.ResolveResult)
 	InstanceIDTokensInText(text string) []string
+	// CanAssertAbsence reports whether the registry is fresh, complete and
+	// untruncated enough to say an id is genuinely NOT in the account. A cold,
+	// never-synced or truncated registry returns false: a miss then means
+	// "unverifiable locally", not "absent", so a user-typed exact id may be
+	// point-queried upstream rather than refused.
+	CanAssertAbsence() bool
 }
 
 // ReadRuntime carries the server-owned dependencies a read handler needs. None

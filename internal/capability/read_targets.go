@@ -18,7 +18,18 @@ import (
 // An empty ref list returns (nil, nil, nil): whether that is a fallback is
 // request-specific (monitor needs a target; resource_info lists everything), so
 // the decision is left to the caller.
-func resolveReadTargetSnapshots(refs []platform.TargetRef, resolver EntityResolver) ([]entity.InstanceSnapshot, []string, *platform.ReadFallbackReason) {
+//
+// allowColdExactID lets a user-typed exact id survive a cold-registry miss: when
+// the registry cannot assert absence (never-synced / cold / truncated), the id is
+// unverifiable LOCALLY, not absent, so it is passed through as a query id for the
+// caller's upstream point-query to confirm or deny. Only callers that establish
+// existence from the upstream RESPONSE (resource_info re-parses DescribeCompShare
+// Instance) may set this true; a caller whose subjects come from the pre-query
+// registry snapshot (monitor, refund) must keep it false, or a cold id would be
+// rendered as a confirmed subject it never verified. A registry WITH standing to
+// assert absence stays authoritative — a real miss is a real "not in your
+// account", no upstream call.
+func resolveReadTargetSnapshots(refs []platform.TargetRef, resolver EntityResolver, allowColdExactID bool) ([]entity.InstanceSnapshot, []string, *platform.ReadFallbackReason) {
 	if len(refs) == 0 {
 		return nil, nil, nil
 	}
@@ -33,6 +44,15 @@ func resolveReadTargetSnapshots(refs []platform.TargetRef, resolver EntityResolv
 		case platform.TargetRefUHostIDUserInput:
 			inst, res := resolver.ResolveByID(ref.Value)
 			if res.Status != entity.ResolveHit || inst == nil {
+				if allowColdExactID && !resolver.CanAssertAbsence() {
+					// Unverifiable locally, not absent: pass the exact id through so
+					// the caller's DescribeCompShareInstance point-query decides. The
+					// synthesized snapshot carries only the id; the caller derives the
+					// real instance (and any existence claim) from the response.
+					ids = append(ids, ref.Value)
+					instances = append(instances, entity.InstanceSnapshot{UHostId: ref.Value})
+					continue
+				}
 				return nil, nil, fallbackReason(platform.ReadFallbackUnresolvedTarget)
 			}
 			ids = append(ids, inst.UHostId)

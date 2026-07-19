@@ -37,6 +37,14 @@ func refundResolver(t *testing.T, rows ...[2]string) entity.RegistrySnapshot {
 	return reg.Snapshot()
 }
 
+// coldRegistrySnapshot is a never-synced registry snapshot: it holds no
+// instances and cannot assert absence, modelling a fresh HTTP session whose
+// registry was never warmed. A user-typed exact id that misses it is
+// unverifiable locally, not absent.
+func coldRegistrySnapshot() entity.RegistrySnapshot {
+	return entity.NewRegistry().Snapshot()
+}
+
 func runRefund(t *testing.T, exec ReadExecutor, resolver EntityResolver, req RefundEstimateRequest) ReadResult {
 	t.Helper()
 	reg := NewReadCapability(refundReadSpec())
