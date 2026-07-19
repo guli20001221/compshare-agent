@@ -370,6 +370,23 @@ type Result struct {
 	Err error `json:"-"`
 }
 
+// ConfirmationAccepted reports whether this run got PAST its confirmation gate —
+// i.e. the user authorized the mutating action. It is true on full success AND on
+// a post-confirmation execution failure (the upstream write was attempted on a
+// confirmed target and failed), and false when the run was cancelled, declined,
+// timed out, or stopped before its final confirm gate. This is the honest signal
+// for "was the user's selection authorized", deliberately distinct from Success
+// (did the whole workflow, including the upstream call, complete): a confirmed
+// target must be remembered even when the write then fails, so a retry resolves to
+// it. Built from Failure.ExecutionAuthorized — the single authority for "a gate
+// authorizing execution passed" (see confirmGateUnpassed).
+func (r *Result) ConfirmationAccepted() bool {
+	if r == nil {
+		return false
+	}
+	return r.Success || (r.Failure != nil && r.Failure.ExecutionAuthorized)
+}
+
 // StepSummary records one step's outcome.
 type StepSummary struct {
 	Name    string `json:"name"`

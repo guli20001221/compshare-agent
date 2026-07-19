@@ -557,11 +557,14 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	// workflow, so the create runs against exactly one catalog for the turn rather
 	// than building a second one that could disagree (gate 1).
 	reply := e.executeResolvedWorkflow(ctx, resolved.action.Operation, resolved.action.Arguments, onStep, resolved.referenceData)
-	// Record the target as a genuine user selection ONLY after the confirmation
-	// gate actually succeeded. The confirmation IS the SelectionProof for an
-	// Agent-inferred target, so a cancel / timeout / decline must persist nothing —
-	// otherwise an unconfirmed guess would resolve a later "关掉它".
-	if e.lastWorkflowSucceededThisCall {
+	// Record the target as a genuine user selection ONLY when the confirmation gate
+	// was ACCEPTED — the confirmation IS the SelectionProof for an Agent-inferred
+	// target. Gating on acceptance (not full workflow success) is deliberate: a
+	// confirmed target whose upstream write then fails is still a target the user
+	// chose, so it is remembered and a later "关掉它" resolves to it (its existence
+	// is re-verified next turn). A cancel / timeout / decline / pre-confirm stop
+	// persists nothing — an unconfirmed guess must never resolve a later reference.
+	if e.lastConfirmationAcceptedThisCall {
 		e.recordUserSelectedTargets(resolved.action)
 	}
 	return reply

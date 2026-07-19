@@ -226,25 +226,25 @@ type Engine struct {
 	// zoneCatalog resolves availability zones (incl. Chinese display names) from
 	// the live support-zone catalog. nil → falls back to the process-wide
 	// zones.Default(); tests inject a fresh catalog for isolation.
-	zoneCatalog                   *zones.Catalog
-	registry                      *entity.EntityRegistry
-	knowledgeRetriever            KnowledgeRetriever
-	agentRuntimeEventsThisTurn    []agentruntime.Event
-	agentRuntimeObserver          func(agentruntime.Event)
-	rendererTraceObserver         func(observability.RendererTrace)
-	historyTrimmedThisSession     bool
-	retrievalTraceObserver        func(observability.RetrievalTrace)
-	freshnessTraceObserver        func(observability.FreshnessTrace)
-	diagnosisTraceObserver        func(observability.DiagnosisTrace)
-	turnCompletionObserver        func(observability.TurnCompletionTrace)
-	outcomeTraceObserver          func(observability.OutcomeTrace)
-	tokenUsageObserver            func(llm.TokenUsage)
-	rateLimiter                   governance.RateLimiter
-	rateLimitSubject              string
-	rateLimitObserver             func(governance.Decision)
-	readExpensiveCallsThisTurn    int
-	lastWorkflowSucceededThisCall bool
-	deferTaskCarryThisTurn        bool
+	zoneCatalog                      *zones.Catalog
+	registry                         *entity.EntityRegistry
+	knowledgeRetriever               KnowledgeRetriever
+	agentRuntimeEventsThisTurn       []agentruntime.Event
+	agentRuntimeObserver             func(agentruntime.Event)
+	rendererTraceObserver            func(observability.RendererTrace)
+	historyTrimmedThisSession        bool
+	retrievalTraceObserver           func(observability.RetrievalTrace)
+	freshnessTraceObserver           func(observability.FreshnessTrace)
+	diagnosisTraceObserver           func(observability.DiagnosisTrace)
+	turnCompletionObserver           func(observability.TurnCompletionTrace)
+	outcomeTraceObserver             func(observability.OutcomeTrace)
+	tokenUsageObserver               func(llm.TokenUsage)
+	rateLimiter                      governance.RateLimiter
+	rateLimitSubject                 string
+	rateLimitObserver                func(governance.Decision)
+	readExpensiveCallsThisTurn       int
+	lastConfirmationAcceptedThisCall bool
+	deferTaskCarryThisTurn           bool
 	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the agentic
 	// SearchKnowledge tool (P3) so the final-answer no-raw-leak guard validates
 	// the synthesis against exactly the evidence the agent was shown. Reset per
@@ -3426,7 +3426,7 @@ func uniqueStrings(values []string) []string {
 // workflow handed nil (or an unavailable snapshot) fails closed rather than
 // guessing.
 func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, args map[string]any, onStep func(StepEvent), refData workflow.ReferenceData) string {
-	e.lastWorkflowSucceededThisCall = false
+	e.lastConfirmationAcceptedThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
@@ -3616,6 +3616,19 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, arg
 		}
 	}
 
+	// Record whether the user's target selection was AUTHORIZED this call — the
+	// confirmation gate is the SelectionProof, so acceptance (not full workflow
+	// success) is what gates recordUserSelectedTargets. Computed from the FINAL
+	// result (after any image-recovery re-run) at this single post-Run choke point,
+	// which runs on every path that reaches narration — unlike a set inside the
+	// `if result.Success` block below, which the cancelled / create-fail / cfs-fail
+	// early returns skip. A post-confirmation execution failure therefore still
+	// remembers the confirmed target (a later "关掉它" resolves to it), while a
+	// cancel / decline / timeout / pre-confirm stop remembers nothing. The Run
+	// Go-error early return above stays before this line, so an infrastructure
+	// error leaves the flag false (fail-closed).
+	e.lastConfirmationAcceptedThisCall = result.ConfirmationAccepted()
+
 	// After Run (and any image-recovery re-run), narrate and recover from the
 	// exact contract the user confirmed.
 	finalParams := workflowFinalParams(result, args)
@@ -3665,7 +3678,6 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, action string, arg
 	}
 
 	if result.Success {
-		e.lastWorkflowSucceededThisCall = true
 		e.markRegistryInvalidated(action)
 		// Successful no-return-data or password-bearing workflows return a
 		// deterministic final reply so the engine SKIPS the post-workflow LLM

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -365,6 +366,60 @@ func TestAuthorizedTargetIsRecordedAsUserSelection(t *testing.T) {
 
 	require.Equal(t, "uhost-1", eng.sessionState.SelectedInstanceID)
 	require.Equal(t, SelectedInstanceSourceUser, eng.sessionState.SelectedInstanceSource, "an authorized target must persist as a user selection, undowngraded by the workflow's observation")
+}
+
+// TestConfirmedTargetRecordedEvenWhenUpstreamWriteFails encodes the B2 invariant:
+// the confirmation gate IS the SelectionProof, so a target the user CONFIRMED is
+// remembered as a genuine user selection even when the subsequent upstream write
+// fails — otherwise a retry ("关掉它") forgets what the user just approved and
+// re-asks. A DECLINED confirmation still records nothing. This is distinct from
+// whole-workflow success (the old gate): a confirmed-then-failed Stop passed its
+// confirm gate (ExecutionAuthorized) but not full success, and must still persist.
+func TestConfirmedTargetRecordedEvenWhenUpstreamWriteFails(t *testing.T) {
+	newStopEngine := func(confirm bool, stopErr error) *Engine {
+		executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+			switch action {
+			case "DescribeCompShareInstance":
+				return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running", "Zone": "cn-wlcb-01"}}}, nil
+			case "DescribeCompShareSupportZone":
+				return map[string]any{"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(10027), "Describe": "华北二A", "IsPod": false}}}, nil
+			case "StopCompShareInstance":
+				if stopErr != nil {
+					return nil, stopErr
+				}
+				return map[string]any{"RetCode": float64(0)}, nil
+			default:
+				return map[string]any{"RetCode": float64(0)}, nil
+			}
+		}}
+		eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return confirm })
+		eng.SetMutatingToolsEnabled(true)
+		eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+		require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running", "Zone": "cn-wlcb-01"}}}, "test"))
+		eng.lastUserMsg = "停止 uhost-1"
+		eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-b2", time.Now())
+		eng.turnContextViewReady = true
+		return eng
+	}
+	proposal := map[string]any{
+		"turn_id": "turn-b2", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
+	}
+
+	t.Run("confirmed_but_upstream_write_fails_still_records", func(t *testing.T) {
+		eng := newStopEngine(true, errors.New("upstream 500"))
+		_ = eng.executeActionProposal(context.Background(), proposal, noopStep)
+		require.Equal(t, "uhost-1", eng.sessionState.SelectedInstanceID,
+			"a confirmed target must persist as a user selection even when the upstream write then fails")
+		require.Equal(t, SelectedInstanceSourceUser, eng.sessionState.SelectedInstanceSource)
+	})
+
+	t.Run("declined_confirmation_records_nothing", func(t *testing.T) {
+		eng := newStopEngine(false, nil)
+		_ = eng.executeActionProposal(context.Background(), proposal, noopStep)
+		require.Empty(t, eng.sessionState.SelectedInstanceID,
+			"a declined target must never be recorded as a user selection")
+	})
 }
 
 // recordUserSelectedTargets persists ONLY an instance target as the session's
