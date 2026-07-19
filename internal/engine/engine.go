@@ -3093,7 +3093,7 @@ func isAllAcceptedKeys(kind string, payload map[string]any) bool {
 // deleted, so nothing in this binary ever produced a "user" source. The field is
 // understanding-only — it helps resolve who "它" is, and is the default subject of
 // a read-only query. It grants NO execution authority: a write is authorized by
-// ProposeAction_* -> Resolver -> the confirmation gate, and the sealed contract
+// Request* -> Resolver -> the confirmation gate, and the sealed contract
 // guarantees what executes is what was confirmed.
 func (e *Engine) recordObservedInstanceID(id, name string) {
 	e.recordSelectedInstanceIDWithSource(id, name, SelectedInstanceSourceObserved)

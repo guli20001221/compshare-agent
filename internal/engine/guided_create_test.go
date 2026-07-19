@@ -59,8 +59,9 @@ func TestExecuteWorkflow_GuidedCreateLocksExplicitGPU(t *testing.T) {
 // It now happens in the resolver, before ReadyForConfirmation, against the live
 // machine-type catalog.
 //
-// So the test's INPUT is no longer producible: GpuType reaches executeWorkflow
-// only via ProposeAction_* -> Resolver, which means it is already canonical. The
+// So the test's INPUT is no longer producible: GpuType reaches
+// executeResolvedWorkflow only via Request* -> Resolver, which means it is
+// already canonical. The
 // test would have been asserting a hand-built state production cannot reach —
 // the same green-but-unreachable shape deleted in 77c9f5e9.
 //

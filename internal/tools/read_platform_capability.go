@@ -13,8 +13,13 @@ var ShadowCapabilityDefinitions = []CapabilityDefinition{
 	{
 		Stage: CapabilityStageShadow,
 		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
-			Name:        ProposeActionName,
-			Description: "用户要求写操作时直接提出结构化候选；不要先检索文档来猜必填参数。只提交字段名和值，来源和证据由服务端根据当前原文、已验证上下文和工具结果确定。服务端会返回缺失项。参数归并通过后仍必须经过权限、确认、日志和执行门。",
+			Name: ProposeActionName,
+			// Base template only — never shown to the model. The window exposes one
+			// Request<Operation> variant per write op (dispatch_window.go), each
+			// carrying the single model-visible contract (proposalInvocationContract)
+			// plus that operation's field schema. The high-level behavior rule lives
+			// once in the system prompt (segmentCentralAgentBehavior).
+			Description: "写操作动作建议的基础模板；每个写操作以 Request<Operation> 变体暴露并携带该操作的字段契约。本工具不直接执行。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
