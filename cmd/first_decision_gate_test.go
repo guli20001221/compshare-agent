@@ -1,12 +1,21 @@
 package main
 
-// Live forced-first-decision gate (review step #7: "增加真实 HTTP/WS 自动门").
+// Live forced-first-decision ENGINE gate (partial coverage of review step #7).
+//
+// SCOPE — read before trusting this as "the P7 gate": this drives the engine
+// IN-PROCESS (engine.NewSession + ChatWithOptions), NOT a WebSocket. It uses the
+// real model + real upstream, but it does NOT establish a WS, go through HTTP
+// auth / request parsing, inspect real frontend frames, or verify that the card
+// FRAME reaches the client before the text FRAME. It observes the engine's
+// StepEvents and confirm callbacks instead. The true end-to-end P7 WebSocket
+// frame-ordering acceptance (card frame precedes text frame on the wire) is still
+// owed and is NOT this test.
 //
 // Drives the REAL engine wired identically to the HTTP server
 // (configureSharedDepsFromEnv, real ds-v4-flash, real CompShare executor from
 // deploy/conf/config.yaml) with the forced first-decision forced ON, over the
-// create / consult / image-rec probes, and asserts the OBSERVABLE first-hop
-// contract:
+// create / consult / image-rec probes, and asserts the OBSERVABLE engine-level
+// first-hop contract:
 //
 //   - a write request ("帮我创建…") → the forced first decision is a write
 //     proposal (outcome starts with "request:") AND a confirmation card / form is

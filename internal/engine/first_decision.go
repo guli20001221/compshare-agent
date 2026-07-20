@@ -58,9 +58,11 @@ const (
 
 // forcedFirstDecisionOn gates the forced first-decision. Default OFF in Go code
 // so the bare test harness (NewWithDeps defaults mutating + required-tool-choice
-// on) keeps its free round-0 behavior; the deploy config ships it ON, and the
-// real-model acceptance gates enable it explicitly. Boot-only, frozen via
-// SetForcedFirstDecisionEnabled — never a per-session setter (process-global,
+// on) keeps its free round-0 behavior. It is NOT yet enabled in the deploy config
+// (deploy/conf/config.yaml leaves agent.features.forced_first_decision unset) —
+// production enablement is deferred until the create->card acceptance passes; the
+// real-model acceptance gates enable it explicitly for a run. Boot-only, frozen
+// via SetForcedFirstDecisionEnabled — never a per-session setter (process-global,
 // set once at boot, like unifiedCreateOn), so it cannot leak across sessions.
 var forcedFirstDecisionOn = false
 
