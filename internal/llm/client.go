@@ -70,11 +70,10 @@ type ChatResponse struct {
 	// ForcedToolChoiceDegraded is true when the request carried a forced
 	// tool_choice ("required" or an object) that the provider rejected in
 	// thinking mode, so Chat silently retried with auto (see Chat). The tool
-	// calls (if any) then come from an UNFORCED call — callers that depend on
-	// the forcing being honored (e.g. the engine's forced first-decision) must
-	// treat this response as non-authoritative and degrade, never score it as a
-	// structural guarantee. Callers that only used forcing as an advisory
-	// optimization (SearchKnowledge / monitor) can ignore it.
+	// calls (if any) then come from an UNFORCED call — a caller that depends on
+	// the forcing being honored must treat this response as non-authoritative and
+	// degrade, never score it as a structural guarantee. Callers that only used
+	// forcing as an advisory optimization (SearchKnowledge / monitor) can ignore it.
 	ForcedToolChoiceDegraded bool
 }
 

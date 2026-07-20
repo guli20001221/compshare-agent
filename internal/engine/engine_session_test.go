@@ -450,10 +450,9 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 	withDeps := NewWithDeps(llm, exec, confirm)
 
 	session := NewSession(&SharedDeps{
-		LLMClient:                  llm,
-		ExternalExecutor:           exec,
-		SupportsObjectToolChoice:   true,
-		SupportsRequiredToolChoice: true,
+		LLMClient:                llm,
+		ExternalExecutor:         exec,
+		SupportsObjectToolChoice: true,
 	}, SessionOptions{
 		ConfirmFn:            confirm,
 		MutatingToolsEnabled: true,

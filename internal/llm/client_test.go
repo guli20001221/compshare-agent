@@ -532,8 +532,8 @@ func TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported(t *testing.T) 
 		t.Fatalf("expected SearchKnowledge tool call after auto fallback, got %#v", resp.ToolCalls)
 	}
 	// The degrade must be observable: the response came from an UNFORCED retry,
-	// so ForcedToolChoiceDegraded lets a caller that required the forcing (the
-	// engine's forced first-decision) fall back instead of trusting it.
+	// so ForcedToolChoiceDegraded lets a caller that required the forcing fall
+	// back instead of trusting it.
 	if !resp.ForcedToolChoiceDegraded {
 		t.Fatal("ForcedToolChoiceDegraded must be true after the auto fallback fired")
 	}

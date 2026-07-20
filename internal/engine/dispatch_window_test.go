@@ -9,12 +9,10 @@ import (
 
 // TestProposalToolExposureAndMapping asserts ONLY that the catalog exposes the
 // per-operation Request<Operation> tool and maps it back to its operation, and
-// that the retired ProposeAction_<Operation> alias is gone. It does NOT — and its
-// old name "FirstHopIsRequest" misleadingly implied it did — assert that the real
-// model actually calls RequestCreateInstance first on a create turn; that is a
-// model-behavior property, proven by the forced-first-decision structural gates
-// (first_decision_test.go) and the real-model create acceptance, not by the tool
-// list. Renamed to stop it manufacturing false safety about first-hop behavior.
+// that the retired ProposeAction_<Operation> alias is gone. It deliberately does
+// NOT assert that the real model actually calls RequestCreateInstance first on a
+// create turn: under the free ReAct loop that is a probabilistic model-behavior
+// property to be measured from real-model traces, not guaranteed by the tool list.
 func TestProposalToolExposureAndMapping(t *testing.T) {
 	names := centralAgentToolNames(true)
 	require.Contains(t, names, "RequestCreateInstance",

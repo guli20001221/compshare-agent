@@ -443,11 +443,10 @@ type SharedDeps struct {
 	// keeps the router's TierAgent client instead of discarding it (the same
 	// router that yields LLMClient = For(TierFast)). Copied into every
 	// NewSession as Engine.agentLLMClient. Empty on the test path.
-	AgentLLMClient             LLMClient
-	KnowledgeRetriever         KnowledgeRetriever
-	RateLimiter                governance.RateLimiter
-	SupportsObjectToolChoice   bool
-	SupportsRequiredToolChoice bool
+	AgentLLMClient           LLMClient
+	KnowledgeRetriever       KnowledgeRetriever
+	RateLimiter              governance.RateLimiter
+	SupportsObjectToolChoice bool
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
@@ -528,11 +527,10 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 		// InMemoryRateLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
-		RateLimiter:                governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits()),
-		SupportsObjectToolChoice:   cap.SupportsObjectToolChoice,
-		SupportsRequiredToolChoice: cap.SupportsRequiredToolChoice,
-		MaxTokensPerTurn:           cfg.Agent.RateLimit.MaxTokensPerTurn,
-		ExternalExecutor:           tools.NewExternalExecutor(cfg.Agent),
+		RateLimiter:              governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits()),
+		SupportsObjectToolChoice: cap.SupportsObjectToolChoice,
+		MaxTokensPerTurn:         cfg.Agent.RateLimit.MaxTokensPerTurn,
+		ExternalExecutor:         tools.NewExternalExecutor(cfg.Agent),
 	}, nil
 }
 
@@ -1408,8 +1406,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(content, agentruntime.FinishFinalAnswer), nil
 		}
 
-		// Has tool calls → execute each and feed results back (shared with the
-		// forced first-decision's round-0 seed path above).
+		// Has tool calls → execute each and feed results back.
 		return e.runToolCallsRound(ctx, resp, runtimeRound, onStep)
 	})
 	if runtimeErr == nil {
@@ -1470,10 +1467,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 // runToolCallsRound executes every tool call in resp, feeding results back into
 // history, and returns the round result. A deterministic final reply (a tool that
 // returns via isFinalReply — e.g. a confirmation card) terminates the turn; any
-// other tool result continues the loop. Shared verbatim by the normal ReAct round
-// and the forced first-decision's round-0 seed, so a seeded write proposal reaches
-// Resolver → intake/confirm exactly as a model-chosen one, including its
-// non-terminal (error / prose) continuations.
+// other tool result continues the loop. A model-chosen write proposal reaches
+// Resolver → intake/confirm here, including its non-terminal (error / prose)
+// continuations.
 func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, runtimeRound *agentruntime.Round, onStep func(StepEvent)) (agentruntime.Result, error) {
 	assistantMsg := openai.ChatCompletionMessage{
 		Role:      openai.ChatMessageRoleAssistant,

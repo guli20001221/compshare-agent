@@ -67,6 +67,20 @@ func TestProductionCannotReEnableLegacySemanticRuntime(t *testing.T) {
 		"resolverAuthorized",
 		"trustedWorkflowFrameActionThisTurn",
 		"trustedWorkflowFrameTargetThisTurn",
+		// FirstDecision retirement (2026-07): the forced-first-decision hop was
+		// Codex's OFF-in-prod backfill that pre-called the model to seed a round-0
+		// write proposal, narrowed the tool window after the first hop, and replayed
+		// the seeded response. It never reliably carded a free-NL create and broke
+		// multi-turn continuation, so it was deleted — the free ReAct loop is the sole
+		// create path. Guard against any of its entry points returning to pre-empt the
+		// Agent's own in-loop tool choice.
+		"runForcedFirstDecision",
+		"interpretFirstDecision",
+		"SetForcedFirstDecisionEnabled",
+		"COMPSHARE_FORCED_FIRST_DECISION",
+		"seededFirstResponse",
+		"writeWindowClosedThisTurn",
+		"continueWithoutWriteTool",
 	}
 	for _, top := range []string{"cmd", "internal"} {
 		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d fs.DirEntry, walkErr error) error {
