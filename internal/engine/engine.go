@@ -304,6 +304,13 @@ type Engine struct {
 	// trace and the structural acceptance gates. Both reset at the top of Chat.
 	writeWindowClosedThisTurn    bool
 	firstDecisionOutcomeThisTurn string
+	// firstDecisionRetryFirstOutcome records the FIRST forced-probe outcome when a
+	// zero-tool response triggered the single bounded retry ("fail_no_tool_text" /
+	// "fail_no_tool_empty"), and is "" when no retry happened. Kept distinct from
+	// firstDecisionOutcomeThisTurn (which holds the FINAL outcome) so the acceptance
+	// measurement can count zero-tool events even when the retry recovered and the
+	// final outcome is a request:/continue. Per-turn; reset at the top of Chat.
+	firstDecisionRetryFirstOutcome string
 	// seededFirstResponse carries the forced first-decision's chosen write
 	// proposal into ReAct round 0 so it runs through the normal tool-execution
 	// path (Resolver → intake/confirm) without a second LLM call. nil unless the
@@ -717,6 +724,13 @@ func (e *Engine) ReactCeilingHitThisTurn() bool { return e.reactCeilingHitThisTu
 // the most recent Chat turn ("" when it did not run). Read post-turn by the trace
 // recorder to populate outcome.first_decision_outcome.
 func (e *Engine) FirstDecisionOutcomeThisTurn() string { return e.firstDecisionOutcomeThisTurn }
+
+// FirstDecisionRetryFirstOutcome returns the first forced-probe outcome when a
+// zero-tool response triggered the single bounded retry this turn
+// ("fail_no_tool_text" / "fail_no_tool_empty"), or "" when no retry happened. The
+// acceptance harness reads it to count zero-tool events masked by a successful
+// retry (the final outcome is then a request:/continue, not a fail_no_tool_*).
+func (e *Engine) FirstDecisionRetryFirstOutcome() string { return e.firstDecisionRetryFirstOutcome }
 
 // PromptMessagesRawPeak / PromptMessagesAssembledPeak return the peak raw
 // history size and peak assembled-request size observed while assembling LLM
@@ -1185,6 +1199,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.reactRoundsThisTurn = 0
 	e.writeWindowClosedThisTurn = false
 	e.firstDecisionOutcomeThisTurn = ""
+	e.firstDecisionRetryFirstOutcome = ""
 	e.seededFirstResponse = nil
 	e.reactCeilingHitThisTurn = false
 	e.promptMessagesRawPeakThisTurn = 0

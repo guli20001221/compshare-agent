@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 
@@ -50,7 +51,14 @@ const (
 	firstDecisionContinue                 = "continue"                   // model chose continue-without-write
 	firstDecisionFailMulti                = "fail_multi_tool"            // more than one tool call — fail closed
 	firstDecisionFailUnknown              = "fail_unknown_tool"          // an unexpected tool — fail closed
-	firstDecisionFailEmpty                = "fail_no_tool"               // required but zero tool calls — fail closed
+	// A zero-tool response under `required` is a known provider instability, not a
+	// semantic decision — runForcedFirstDecision retries it ONCE before failing
+	// closed (multi/unknown are semantic and are NOT retried). The two outcomes
+	// split the diagnosis for the acceptance measurement: _text = the model
+	// returned prose but no tool call (a soft refusal of the forcing); _empty = the
+	// provider dropped everything (a provider-side forcing failure).
+	firstDecisionFailNoToolText  = "fail_no_tool_text"  // zero tool calls, text present — fail closed
+	firstDecisionFailNoToolEmpty = "fail_no_tool_empty" // zero tool calls, empty content — fail closed
 	// a write proposal outcome is recorded as "request:<ToolName>".
 
 	firstDecisionFailReply = "抱歉，我没能确定这次要做的操作，请再说一次您的需求（例如查询实例、创建实例、或开关机某台实例）。"
@@ -99,7 +107,7 @@ func interpretFirstDecision(resp *llm.ChatResponse) firstDecisionResult {
 	if resp == nil || len(resp.ToolCalls) != 1 {
 		outcome := firstDecisionFailMulti
 		if resp == nil || len(resp.ToolCalls) == 0 {
-			outcome = firstDecisionFailEmpty
+			outcome = zeroToolOutcome(resp)
 		}
 		return firstDecisionResult{outcome: outcome, kind: firstDecisionKindFailClosed, reply: firstDecisionFailReply}
 	}
@@ -112,6 +120,67 @@ func interpretFirstDecision(resp *llm.ChatResponse) firstDecisionResult {
 	default:
 		return firstDecisionResult{outcome: firstDecisionFailUnknown, kind: firstDecisionKindFailClosed, reply: firstDecisionFailReply}
 	}
+}
+
+// zeroToolOutcome classifies a zero-tool forced response for the acceptance
+// measurement: a response that still carried natural-language text (the model
+// answered in prose instead of calling a tool — a soft refusal of the forcing)
+// vs a completely empty response (the provider dropped everything). Both fail
+// closed under `required`.
+func zeroToolOutcome(resp *llm.ChatResponse) string {
+	if resp != nil && strings.TrimSpace(resp.Content) != "" {
+		return firstDecisionFailNoToolText
+	}
+	return firstDecisionFailNoToolEmpty
+}
+
+// forcedProbeStatus is the disposition of ONE forced first-decision probe call.
+type forcedProbeStatus int
+
+const (
+	probeInterpretable  forcedProbeStatus = iota // resp is a valid forced response — interpret it
+	probeRateLimited                             // the LLM rate-limit class denied the call — the turn is terminal with the returned reply
+	probeDegradedToLoop                          // the probe errored or the provider auto-fell-back — degrade to the normal loop
+)
+
+// forcedFirstDecisionProbe makes ONE forced (`required`) first-decision LLM call
+// with full accounting, so the first call and the single bounded retry are
+// charged identically:
+//   - it charges the LLM rate-limit class (a seeded write turn makes no further
+//     model call in round 0, so an un-limited probe would otherwise bypass the
+//     limiter);
+//   - it records the probe's token cost for trace honesty WITHOUT adding it to
+//     the per-turn answer budget (observeFirstDecisionTokens).
+//
+// It records the degraded_* / rate-limit completion for the non-interpretable
+// dispositions itself; the caller owns interpretation and any history mutation.
+func (e *Engine) forcedFirstDecisionProbe(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, forcedProbeStatus, string) {
+	if decision, ok := e.allowRateLimited(governance.ClassLLM, "forced_first_decision"); !ok {
+		e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
+		content := rateLimitMessage(decision.Reason)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: content})
+		return nil, probeRateLimited, content
+	}
+	resp, err := e.llmClient.Chat(ctx, req)
+	if err != nil || resp == nil {
+		// The probe failed outright (or returned no response). Degrade to the normal
+		// loop (full window); the answer path surfaces any genuine LLM outage through
+		// its own recovery. The resp==nil guard keeps observeFirstDecisionTokens /
+		// interpretFirstDecision from dereferencing a nil response.
+		e.firstDecisionOutcomeThisTurn = firstDecisionDegradedError
+		return nil, probeDegradedToLoop, ""
+	}
+	// Record the probe's cost for trace honesty WITHOUT charging the per-turn
+	// answer token budget (turnTokensConsumed).
+	e.observeFirstDecisionTokens(resp.Usage)
+	if resp.ForcedToolChoiceDegraded {
+		// The provider silently dropped the forcing and retried auto: this response
+		// is not an authoritative first decision. Discard it and run the normal
+		// full-window loop (as if the flag were off). Marked, never structural.
+		e.firstDecisionOutcomeThisTurn = firstDecisionDegradedProviderFallback
+		return nil, probeDegradedToLoop, ""
+	}
+	return resp, probeInterpretable, ""
 }
 
 // runForcedFirstDecision performs the structural first hop BEFORE the ReAct loop.
@@ -146,35 +215,40 @@ func (e *Engine) runForcedFirstDecision(ctx context.Context, opts ChatOptions, o
 		e.firstDecisionOutcomeThisTurn = firstDecisionDegradedUnsupported
 		return false, ""
 	}
-	if decision, ok := e.allowRateLimited(governance.ClassLLM, "forced_first_decision"); !ok {
-		e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
-		content := rateLimitMessage(decision.Reason)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: content})
-		return true, content
-	}
 	req := llm.ChatRequest{
 		Messages:   e.buildMessagesForLLM(),
 		Tools:      firstDecisionToolWindow(),
 		ToolChoice: "required",
 	}
-	resp, err := e.llmClient.Chat(ctx, req)
-	if err != nil || resp == nil {
-		// The probe failed outright (or returned no response). Degrade to the normal
-		// loop (full window); the answer path surfaces any genuine LLM outage through
-		// its own recovery. The resp==nil guard keeps observeFirstDecisionTokens /
-		// interpretFirstDecision below from dereferencing a nil response.
-		e.firstDecisionOutcomeThisTurn = firstDecisionDegradedError
-		return false, ""
+	// First forced call (rate-limit + token accounting live inside the probe).
+	resp, status, rlReply := e.forcedFirstDecisionProbe(ctx, req)
+	switch status {
+	case probeRateLimited:
+		return true, rlReply
+	case probeDegradedToLoop:
+		return false, "" // degraded_* already recorded by the probe
 	}
-	// Record the probe's cost for trace honesty WITHOUT charging the per-turn
-	// answer token budget (turnTokensConsumed).
-	e.observeFirstDecisionTokens(resp.Usage)
-	if resp.ForcedToolChoiceDegraded {
-		// The provider silently dropped the forcing and retried auto: this response
-		// is not an authoritative first decision. Discard it and run the normal
-		// full-window loop (as if the flag were off). Marked, never structural.
-		e.firstDecisionOutcomeThisTurn = firstDecisionDegradedProviderFallback
-		return false, ""
+	// A zero-tool response under `required` is a known provider instability (the
+	// deployment intermittently returns no tool call to a forced request), NOT a
+	// semantic refusal — a multi/unknown tool choice IS semantic and is therefore
+	// NOT retried. Retry EXACTLY ONCE with the identical context + restricted
+	// window. Both calls count against cost and the LLM rate-limit class; the first
+	// response is never written to history or streamed, so the retry rebuilds the
+	// byte-identical snapshot. A second zero-tool fails CLOSED — it does NOT degrade
+	// to the free full-window loop, which would reopen the read-first research path
+	// this whole mechanism exists to prevent.
+	if len(resp.ToolCalls) == 0 {
+		e.firstDecisionRetryFirstOutcome = zeroToolOutcome(resp)
+		retryResp, retryStatus, retryRLReply := e.forcedFirstDecisionProbe(ctx, req)
+		switch retryStatus {
+		case probeRateLimited:
+			return true, retryRLReply
+		case probeDegradedToLoop:
+			// A genuine outage / provider auto-fallback on the retry (distinct from a
+			// second zero-tool): degrade to the normal loop, already recorded.
+			return false, ""
+		}
+		resp = retryResp
 	}
 	res := interpretFirstDecision(resp)
 	e.firstDecisionOutcomeThisTurn = res.outcome
