@@ -30,6 +30,10 @@ func BuildCatalog() (*Catalog, error) {
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
+		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, fields)
+		if err != nil {
+			return nil, fmt.Errorf("workflow %q: %w", operation, err)
+		}
 		catalog.ordered = append(catalog.ordered, operation)
 		catalog.specs[operation] = OperationSpec{
 			Operation: operation, Description: definition.Description, Fields: fields,
@@ -37,7 +41,7 @@ func BuildCatalog() (*Catalog, error) {
 			Risk:             capability.Policy.SecurityLevel,
 			Execution:        workflow.ExecutionContract(definition),
 			ValidateResolved: operationValidator(operation),
-			Intake:           intakeSpecForOperation(definition.GuidedIntake, fields),
+			Intake:           intake,
 		}
 	}
 	return catalog, nil
@@ -172,31 +176,36 @@ func operationValidator(operation string) func(map[string]any) error {
 }
 
 // intakeSpecForOperation maps a workflow's own guided-intake declaration
-// (workflow.Definition.GuidedIntake) to the catalog IntakeSpec: a guided workflow
-// may open a guided selection form for an incomplete-but-well-formed proposal
-// instead of a prose back-and-forth. Which workflow is guided is a property the
-// workflow declares on its Definition, NOT a workflow-name switch here — the
-// declarative-from-spec convergence, so adding a guided workflow needs no edit to
-// this catalog. CollectableFields is the operation's own non-secret, non-target
-// fields — the values a whitelist form can offer as picks (a secret like a
-// password cannot be a select option; a target does not apply to create).
-func intakeSpecForOperation(guidedIntake bool, fields map[string]FieldSpec) IntakeSpec {
-	if guidedIntake {
-		return IntakeSpec{Mode: IntakeGuided, CollectableFields: collectableFieldNames(fields)}
+// (workflow.Definition.GuidedIntake + GuidedIntakeFields) to the catalog
+// IntakeSpec: a guided workflow may open a guided selection form for an
+// incomplete-or-correctable proposal instead of a prose back-and-forth. Which
+// workflow is guided AND which of its fields the form can collect/correct are
+// both properties the workflow declares on its Definition, NOT a workflow-name
+// switch or an auto-derivation here. CollectableFields must be the EXPLICIT
+// declared set — never every non-secret/non-target field: a create schema
+// carries fields the form has no input for (e.g. Name), and a resolver problem on
+// such a field is not form-correctable. Errors when a declared field is not a
+// real field of the operation (a typo would silently disable correction) or when
+// a guided workflow declares no fields.
+func intakeSpecForOperation(guidedIntake bool, collectable []string, fields map[string]FieldSpec) (IntakeSpec, error) {
+	if !guidedIntake {
+		return IntakeSpec{}, nil
 	}
-	return IntakeSpec{}
-}
-
-func collectableFieldNames(fields map[string]FieldSpec) []string {
-	out := make([]string, 0, len(fields))
-	for name, field := range fields {
-		if field.Target || field.Codec == CodecSensitiveText {
-			continue
+	if len(collectable) == 0 {
+		return IntakeSpec{}, fmt.Errorf("guided intake declared with no GuidedIntakeFields")
+	}
+	for _, name := range collectable {
+		field, ok := fields[name]
+		if !ok {
+			return IntakeSpec{}, fmt.Errorf("GuidedIntakeFields names unknown field %q", name)
 		}
-		out = append(out, name)
+		if field.Target || field.Codec == CodecSensitiveText {
+			return IntakeSpec{}, fmt.Errorf("GuidedIntakeFields names a non-collectable field %q (target or secret)", name)
+		}
 	}
+	out := append([]string(nil), collectable...)
 	sort.Strings(out)
-	return out
+	return IntakeSpec{Mode: IntakeGuided, CollectableFields: out}, nil
 }
 
 func stringSet(value any) map[string]bool {

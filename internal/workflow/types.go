@@ -149,6 +149,15 @@ type Definition struct {
 	// operation supports guided intake is a property the workflow declares here —
 	// not a workflow-name switch in the catalog. Default false = prose-only intake.
 	GuidedIntake bool
+	// GuidedIntakeFields is the EXPLICIT set of proposal field names the guided
+	// form can collect AND correct — the only fields whose missing/invalid/
+	// conflicting values may open the form instead of bouncing to prose. It must
+	// be declared (not auto-derived from every non-secret schema field): a create
+	// schema carries fields the form has no input for (e.g. Name), and a resolver
+	// problem on such a field is NOT form-correctable. Required when GuidedIntake
+	// is true. Every name must be a real field of this workflow (BuildCatalog
+	// enforces it).
+	GuidedIntakeFields []string
 }
 
 // FailureReason classifies a failure for callers that must DO something different

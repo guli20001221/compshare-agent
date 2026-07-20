@@ -51,9 +51,16 @@ func (e ambiguityError) Error() string { return e.detail }
 
 func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	result := ResolvedAction{TurnID: proposal.TurnID, Operation: proposal.Operation, Arguments: map[string]any{}, Provenance: map[string]ResolvedSlot{}}
+	// reject records a rejection in BOTH the human-readable Rejected[] and the
+	// typed RejectedProblems[] in lockstep, so the guided-intake decision can
+	// classify the rejection by Kind without parsing the message string.
+	reject := func(slot string, kind RejectionKind, msg string) {
+		result.Rejected = append(result.Rejected, msg)
+		result.RejectedProblems = append(result.RejectedProblems, RejectedProblem{Slot: slot, Kind: kind})
+	}
 	spec, ok := r.catalog.Lookup(proposal.Operation)
 	if !ok {
-		result.Rejected = append(result.Rejected, "unknown operation")
+		reject("", RejectUnknownOperation, "unknown operation")
 		return result
 	}
 	result.NeedsConfirm = spec.NeedsConfirm
@@ -70,13 +77,13 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	for _, candidate := range proposal.Slots {
 		name := normalizeName(candidate.Name)
 		if !knownSource(candidate.Source) {
-			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: unknown candidate source", name))
+			reject(name, RejectUnknownSource, fmt.Sprintf("%s: unknown candidate source", name))
 			adjudicated[name] = struct{}{}
 			continue
 		}
 		field, exists := spec.Fields[name]
 		if !exists {
-			result.Rejected = append(result.Rejected, fmt.Sprintf("unknown slot %s", name))
+			reject(name, RejectUnknownField, fmt.Sprintf("unknown slot %s", name))
 			continue
 		}
 		// Non-target user_explicit fields are span-verified here; TARGET fields defer
@@ -84,7 +91,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		// existence and routes an outage / conflict to the right channel rather than
 		// a blanket "not verified".
 		if !field.Target && candidate.Source == SourceUserExplicit && (candidate.Evidence == nil || r.verifier == nil || !r.verifier.VerifyCandidate(candidate)) {
-			result.Rejected = append(result.Rejected, fmt.Sprintf("%s: user-explicit source is not verified", name))
+			reject(name, RejectUnverifiedSource, fmt.Sprintf("%s: user-explicit source is not verified", name))
 			adjudicated[name] = struct{}{}
 			continue
 		}
@@ -98,7 +105,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 					Slot: name, CatalogCandidates: typed.candidates, Reason: typed.Error(),
 				})
 			default:
-				result.Rejected = append(result.Rejected, fmt.Sprintf("%s: %v", name, err))
+				reject(name, RejectInvalidValue, fmt.Sprintf("%s: %v", name, err))
 			}
 			adjudicated[name] = struct{}{}
 			continue
@@ -121,7 +128,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 				// not confirm it EXISTS (a point-query that echoed no matching id, or a
 				// fresh+complete registry that authoritatively lacks it) — not a source
 				// problem: the confirmation card, not a source label, is the SelectionProof.
-				result.Rejected = append(result.Rejected, fmt.Sprintf("%s: target existence could not be confirmed", name))
+				reject(name, RejectTargetNotExist, fmt.Sprintf("%s: target existence could not be confirmed", name))
 				adjudicated[name] = struct{}{}
 				continue
 			}
@@ -153,23 +160,41 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	}
 	if len(result.Missing) == 0 && len(result.Conflicts) == 0 && len(result.Rejected) == 0 && len(result.DependencyFailures) == 0 && spec.ValidateResolved != nil {
 		if err := spec.ValidateResolved(result.Arguments); err != nil {
-			result.Rejected = append(result.Rejected, err.Error())
+			reject("", RejectOperationContract, err.Error())
 		}
 	}
 	sort.Strings(result.Missing)
 	sort.Strings(result.Rejected)
 	sort.Strings(result.DependencyFailures)
 	sort.Slice(result.Conflicts, func(i, j int) bool { return result.Conflicts[i].Slot < result.Conflicts[j].Slot })
+	sort.Slice(result.RejectedProblems, func(i, j int) bool {
+		if result.RejectedProblems[i].Slot != result.RejectedProblems[j].Slot {
+			return result.RejectedProblems[i].Slot < result.RejectedProblems[j].Slot
+		}
+		return result.RejectedProblems[i].Kind < result.RejectedProblems[j].Kind
+	})
 	result.ReadyForConfirmation = len(result.Missing) == 0 && len(result.Conflicts) == 0 &&
 		len(result.Rejected) == 0 && len(result.DependencyFailures) == 0
-	// ReadyForIntake: the proposal is well-formed but incomplete — only Missing
-	// fields remain (no conflicts, rejections or dependency failures), and every one
-	// is collectable by the operation's guided form. It is the "open the guided
-	// form" signal, mutually exclusive with ReadyForConfirmation. The engine still
-	// decides whether a guided form is actually available this turn.
+	// ReadyForIntake: the proposal is incomplete OR carries only FORM-CORRECTABLE
+	// problems, so opening the guided selection form beats a prose back-and-forth.
+	// A problem is form-correctable only when the field is a declared collectable
+	// (spec.Intake.CollectableFields) AND it is one of:
+	//   - Missing               → the form collects it;
+	//   - a Conflict on it       → the form makes the user pick (never guessed);
+	//   - Rejected/InvalidValue  → the resolver already dropped the bad value from
+	//     Arguments; the form re-collects a valid one (never silently swapped).
+	// A DependencyFailure (server outage) or any STRUCTURAL rejection — unknown
+	// field/source, unverified source, target-not-exist, operation contract — is
+	// NOT form-correctable and blocks the form (falls through to prose). Mutually
+	// exclusive with ReadyForConfirmation. The engine still decides whether a guided
+	// form is actually available this turn.
 	result.ReadyForIntake = !result.ReadyForConfirmation &&
-		len(result.Conflicts) == 0 && len(result.Rejected) == 0 && len(result.DependencyFailures) == 0 &&
-		spec.Intake.Mode == IntakeGuided && allMissingCollectable(result.Missing, spec.Intake.CollectableFields)
+		spec.Intake.Mode == IntakeGuided &&
+		len(result.DependencyFailures) == 0 &&
+		(len(result.Missing)+len(result.Rejected)+len(result.Conflicts)) > 0 &&
+		everyMissingCollectable(result.Missing, spec.Intake.CollectableFields) &&
+		everyRejectionFormCorrectable(result.RejectedProblems, spec.Intake.CollectableFields) &&
+		everyConflictCollectable(result.Conflicts, spec.Intake.CollectableFields)
 	if result.ReadyForConfirmation {
 		arguments := make(map[string]any, len(result.Arguments))
 		for name, value := range result.Arguments {
@@ -184,19 +209,53 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	return result
 }
 
-// allMissingCollectable reports whether every Missing field is one the guided
-// intake form can collect. Missing must be non-empty — an empty Missing means the
-// proposal is complete (ReadyForConfirmation territory), not an intake candidate.
-func allMissingCollectable(missing, collectable []string) bool {
-	if len(missing) == 0 {
-		return false
-	}
+func collectableSet(collectable []string) map[string]struct{} {
 	set := make(map[string]struct{}, len(collectable))
 	for _, name := range collectable {
 		set[name] = struct{}{}
 	}
+	return set
+}
+
+// everyMissingCollectable reports whether every Missing field is one the guided
+// form can collect. Vacuously true when Missing is empty — the caller enforces
+// "at least one problem" separately, so a rejection-only proposal still qualifies.
+func everyMissingCollectable(missing, collectable []string) bool {
+	set := collectableSet(collectable)
 	for _, name := range missing {
 		if _, ok := set[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// everyRejectionFormCorrectable reports whether every rejection is a
+// RejectInvalidValue on a declared collectable field — the only rejection the
+// form can fix (the bad value is already dropped from Arguments; the form
+// re-collects). Any other Kind, or a field outside the collectable set, is not
+// correctable. Vacuously true when there are no rejections.
+func everyRejectionFormCorrectable(problems []RejectedProblem, collectable []string) bool {
+	set := collectableSet(collectable)
+	for _, p := range problems {
+		if p.Kind != RejectInvalidValue {
+			return false
+		}
+		if _, ok := set[p.Slot]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// everyConflictCollectable reports whether every conflict is on a declared
+// collectable field (the form makes the user pick). A conflict on a
+// non-collectable field — e.g. a target-reference ambiguity — is not correctable
+// by the create form. Vacuously true when there are no conflicts.
+func everyConflictCollectable(conflicts []Conflict, collectable []string) bool {
+	set := collectableSet(collectable)
+	for _, c := range conflicts {
+		if _, ok := set[c.Slot]; !ok {
 			return false
 		}
 	}

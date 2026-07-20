@@ -283,6 +283,11 @@ func CreateInstanceDef() *Definition {
 		// (CreateInstanceGuidedDef) for an incomplete proposal; the catalog reads
 		// this to expose IntakeGuided instead of the engine switching on the name.
 		GuidedIntake: true,
+		// The exact fields the guided form collects/corrects (GPU / zone / count /
+		// CPU-memory / image source+selection / charge type). Deliberately excludes
+		// Name — the form has no instance-name input, so a bad Name must NOT open
+		// the form. Drives the resolver's form-correctable classification.
+		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
 	}
 }
 

@@ -123,6 +123,43 @@ type ConfirmationPreview struct {
 	Arguments map[string]any `json:"arguments"`
 }
 
+// RejectionKind is the TYPED reason a slot (or the whole proposal) was rejected.
+// It exists so the guided-intake decision can tell a form-correctable invalid
+// value apart from a structural rejection WITHOUT parsing the Rejected strings.
+// Only RejectInvalidValue is form-correctable (discard the bad value, let the
+// form re-collect it); every other kind must block the form.
+type RejectionKind int
+
+const (
+	// RejectInvalidValue: a supplied value failed its codec (bad zone/image/enum/
+	// integer, etc.). Form-correctable when the field is a declared collectable.
+	RejectInvalidValue RejectionKind = iota
+	// RejectUnknownOperation: the operation is not in the catalog. Never correctable.
+	RejectUnknownOperation
+	// RejectUnknownField: a slot names a field the operation does not have. Never
+	// correctable (the form has no such input).
+	RejectUnknownField
+	// RejectUnknownSource: the candidate's source label is not a known source.
+	RejectUnknownSource
+	// RejectUnverifiedSource: a user_explicit non-target slot failed span
+	// verification — a trust-boundary failure, never a "let the user re-pick" case.
+	RejectUnverifiedSource
+	// RejectTargetNotExist: a write target's existence could not be confirmed.
+	RejectTargetNotExist
+	// RejectOperationContract: the whole resolved argument set failed the
+	// operation's ValidateResolved contract.
+	RejectOperationContract
+)
+
+// RejectedProblem is the typed twin of one Rejected[] entry. Slot is the field
+// name ("" for operation-level rejections). Populated in lockstep with Rejected
+// so the two never diverge; internal to the resolver→engine intake decision, not
+// part of the model-facing JSON.
+type RejectedProblem struct {
+	Slot string
+	Kind RejectionKind
+}
+
 // Conflict is a slot the resolver refuses to decide. Two shapes reach it:
 // Candidates is set when sources disagree on a value; CatalogCandidates is set
 // when the value matched several live catalog entries. Both mean the same thing
@@ -148,13 +185,17 @@ type ResolvedSlot struct {
 // is a server-side outage — reporting it as a rejection would blame the user for
 // our own failed query, and reporting it as success would mean guessing.
 type ResolvedAction struct {
-	TurnID               string                           `json:"turn_id"`
-	Operation            string                           `json:"operation"`
-	Arguments            map[string]any                   `json:"arguments,omitempty"`
-	Provenance           map[string]ResolvedSlot          `json:"provenance,omitempty"`
-	Missing              []string                         `json:"missing,omitempty"`
-	Conflicts            []Conflict                       `json:"conflicts,omitempty"`
-	Rejected             []string                         `json:"rejected,omitempty"`
+	TurnID     string                  `json:"turn_id"`
+	Operation  string                  `json:"operation"`
+	Arguments  map[string]any          `json:"arguments,omitempty"`
+	Provenance map[string]ResolvedSlot `json:"provenance,omitempty"`
+	Missing    []string                `json:"missing,omitempty"`
+	Conflicts  []Conflict              `json:"conflicts,omitempty"`
+	Rejected   []string                `json:"rejected,omitempty"`
+	// RejectedProblems is the typed twin of Rejected (same entries, with a Kind),
+	// used only by the guided-intake decision. json:"-" — the model already gets
+	// the human-readable Rejected[]; this is an internal classification.
+	RejectedProblems     []RejectedProblem                `json:"-"`
 	DependencyFailures   []string                         `json:"dependency_failures,omitempty"`
 	NeedsConfirm         bool                             `json:"needs_confirm"`
 	ReadyForConfirmation bool                             `json:"ready_for_confirmation"`
