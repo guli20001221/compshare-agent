@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -541,10 +542,14 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	e.actionProposalRanThisTurn = true
 	resolved, err := e.resolveActionProposalShadow(ctx, args)
 	if err != nil {
+		e.actionProposalDispositionThisTurn = "resolve_error"
 		onStep(StepEvent{Type: StepError, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "ready_for_confirmation": false})
 		return string(payload)
 	}
+	// Classify what the resolver did with the proposal (value-free) for the
+	// acceptance measurement / trace: did it reach a card, and if not, why.
+	e.actionProposalDispositionThisTurn = resolvedProposalDisposition(resolved.action, e.guidedCreate && e.confirmEditsFn != nil)
 	if !resolved.action.ReadyForConfirmation {
 		// An incomplete-but-collectable proposal opens the guided intake form
 		// instead of a prose back-and-forth — but only when a guided form is
@@ -627,4 +632,72 @@ func resolvedActionForModel(resolved actionresolver.ResolvedAction) string {
 	_ = json.Unmarshal(raw, &wire)
 	payload, _ := json.Marshal(security.RedactForLLM(wire))
 	return string(payload)
+}
+
+// resolvedProposalDisposition is a compact, value-free classification of what the
+// resolver did with a write proposal, for the acceptance measurement and the
+// outcome trace: it answers "did the proposal reach a card, and if not, why". It
+// records only field names + typed rejection kinds — never slot VALUES — so it is
+// safe to persist. The order of the checks matches executeActionProposal's own
+// branch precedence (a card path wins; a server outage is reported before a
+// user-facing rejection). guidedFormAvailable is (guidedCreate && confirmEditsFn),
+// so an intake-eligible proposal that could not open a form (client did not opt
+// in) is distinguished from one that carded.
+func resolvedProposalDisposition(a actionresolver.ResolvedAction, guidedFormAvailable bool) string {
+	switch {
+	case a.ReadyForConfirmation:
+		return "confirmation"
+	case a.ReadyForIntake && guidedFormAvailable:
+		return "intake_form"
+	case a.ReadyForIntake:
+		return "intake_form_unavailable"
+	case len(a.DependencyFailures) > 0:
+		return "dependency_failure"
+	case len(a.RejectedProblems) > 0:
+		return "rejected:" + rejectionKindSummary(a.RejectedProblems)
+	case len(a.Rejected) > 0:
+		return "rejected"
+	case len(a.Conflicts) > 0:
+		return "conflict:" + conflictSlotSummary(a.Conflicts)
+	case len(a.Missing) > 0:
+		return "missing:" + strings.Join(a.Missing, ",")
+	default:
+		return "unresolved"
+	}
+}
+
+// rejectionKindSummary renders "<slot>=<kind>" pairs, deduped and sorted for a
+// stable trace. An operation-level rejection (empty slot) is rendered as "_op".
+func rejectionKindSummary(problems []actionresolver.RejectedProblem) string {
+	seen := map[string]bool{}
+	var parts []string
+	for _, p := range problems {
+		slot := p.Slot
+		if slot == "" {
+			slot = "_op"
+		}
+		item := slot + "=" + p.Kind.String()
+		if seen[item] {
+			continue
+		}
+		seen[item] = true
+		parts = append(parts, item)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+// conflictSlotSummary renders the conflicting slot names, deduped and sorted.
+func conflictSlotSummary(conflicts []actionresolver.Conflict) string {
+	seen := map[string]bool{}
+	var parts []string
+	for _, c := range conflicts {
+		if seen[c.Slot] {
+			continue
+		}
+		seen[c.Slot] = true
+		parts = append(parts, c.Slot)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }

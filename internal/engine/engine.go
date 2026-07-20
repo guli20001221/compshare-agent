@@ -376,6 +376,15 @@ type Engine struct {
 	// knowledge answer. Knowledge evidence may support an action, but must not
 	// claim ownership of the final clarification or confirmation text.
 	actionProposalRanThisTurn bool
+	// actionProposalDispositionThisTurn is a compact, value-free classification of
+	// what the resolver did with this turn's write proposal — "confirmation" /
+	// "intake_form" when it reached a card, else the reason it did not
+	// ("rejected:<slot>=<kind>", "missing:<fields>", "dependency_failure",
+	// "conflict:<slots>", "intake_form_unavailable", "resolve_error"). The
+	// acceptance measurement reads it (via ActionProposalDispositionThisTurn) to
+	// attribute why a create proposal did or did not card. "" when no proposal ran
+	// this turn. Per-turn; reset at the top of Chat.
+	actionProposalDispositionThisTurn string
 	// readResponseEvidenceThisTurn keeps server-rendered replies for successful
 	// central read capabilities. The Response Gateway can submit these facts
 	// without asking the model to retype identifiers, counts or measurements.
@@ -731,6 +740,14 @@ func (e *Engine) FirstDecisionOutcomeThisTurn() string { return e.firstDecisionO
 // acceptance harness reads it to count zero-tool events masked by a successful
 // retry (the final outcome is then a request:/continue, not a fail_no_tool_*).
 func (e *Engine) FirstDecisionRetryFirstOutcome() string { return e.firstDecisionRetryFirstOutcome }
+
+// ActionProposalDispositionThisTurn returns the compact, value-free classification
+// of what the resolver did with this turn's write proposal ("" when none ran).
+// The acceptance measurement reads it to attribute why a create proposal did or
+// did not reach a card.
+func (e *Engine) ActionProposalDispositionThisTurn() string {
+	return e.actionProposalDispositionThisTurn
+}
 
 // PromptMessagesRawPeak / PromptMessagesAssembledPeak return the peak raw
 // history size and peak assembled-request size observed while assembling LLM
@@ -1223,6 +1240,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readResponseEvidenceThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
 	e.actionProposalRanThisTurn = false
+	e.actionProposalDispositionThisTurn = ""
 	e.knowledgeQAAgentLoopThisTurn = false
 	continuityNow := time.Now()
 	e.expireContextFrame(continuityNow)

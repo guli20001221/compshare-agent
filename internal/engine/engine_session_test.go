@@ -265,7 +265,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 9 shared + 82 per-session = 91 fields. Any drift
+// Whitelist totals: 9 shared + 83 per-session = 92 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -409,6 +409,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"readResponseEvidenceThisTurn":        true,
 		"toolResultsByCallThisTurn":           true,
 		"actionProposalRanThisTurn":           true,
+		"actionProposalDispositionThisTurn":   true,
 		"imageContextThisTurn":                true,
 		"secretInputsThisTurn":                true,
 		"baseUserContext":                     true,
@@ -418,12 +419,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 9, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 82, len(perSessionFields); want != got {
+	if want, got := 83, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 91, typ.NumField(); want != got {
+	if want, got := 92, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

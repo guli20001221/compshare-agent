@@ -163,13 +163,18 @@ func TestForcedFirstDecisionGate(t *testing.T) {
 		}
 		pass := 0
 		for i := 0; i < *firstDecisionN; i++ {
-			outcome, cardReached, firstAction, reply := runFirstDecisionProbe(deps, mutating, userCtx, p.message, *firstDecisionTimeout)
-			ok, why := judgeFirstDecision(p, outcome, cardReached, reply)
+			res := runFirstDecisionProbe(deps, mutating, userCtx, p.message, *firstDecisionTimeout)
+			ok, why := judgeFirstDecision(p, res.outcome, res.cardReached, res.reply)
 			if ok {
 				pass++
 			}
-			t.Logf("[%s %d/%d] pass=%t outcome=%q card=%t first_action=%q reply_len=%d %s",
-				p.name, i+1, *firstDecisionN, ok, outcome, cardReached, firstAction, len(reply), why)
+			// disposition + retryFirst are the step-2/step-1 attribution signals: for a
+			// create proposal that did not card, disposition says WHY (rejected:<slot>=
+			// <kind> / missing / dependency_failure / conflict); retryFirst records a
+			// zero-tool event that a bounded retry then masked. Both feed the 5-run
+			// measurement's per-probe rates.
+			t.Logf("[%s %d/%d] pass=%t outcome=%q card=%t disposition=%q retryFirst=%q first_action=%q reply_len=%d %s",
+				p.name, i+1, *firstDecisionN, ok, res.outcome, res.cardReached, res.disposition, res.retryFirst, res.firstAction, len(res.reply), why)
 		}
 		if pass < floor {
 			t.Errorf("probe %s: %d/%d passed, want >= %d", p.name, pass, *firstDecisionN, floor)
@@ -179,10 +184,22 @@ func TestForcedFirstDecisionGate(t *testing.T) {
 	}
 }
 
+// firstDecisionProbeResult is the observable signal set for one probe run.
+type firstDecisionProbeResult struct {
+	outcome     string // engine.FirstDecisionOutcomeThisTurn — the forced first decision
+	cardReached bool   // a confirmation card / form was reached
+	firstAction string // first tool call the engine emitted
+	reply       string // final turn reply
+	disposition string // engine.ActionProposalDispositionThisTurn — resolver why-no-card
+	retryFirst  string // engine.FirstDecisionRetryFirstOutcome — a masked zero-tool event
+}
+
 // runFirstDecisionProbe runs one probe on a fresh production-shaped session
 // (guided create + editable confirm form opted in, every confirmation DECLINED so
 // no real write happens) and returns the observable first-decision signals.
-func runFirstDecisionProbe(deps *engine.SharedDeps, mutating bool, userCtx tools.UserContext, message string, timeout time.Duration) (outcome string, cardReached bool, firstAction string, reply string) {
+func runFirstDecisionProbe(deps *engine.SharedDeps, mutating bool, userCtx tools.UserContext, message string, timeout time.Duration) firstDecisionProbeResult {
+	var cardReached bool
+	var firstAction string
 	eng := engine.NewSession(deps, engine.SessionOptions{
 		Subject:              governance.AnonymousSubjectKey,
 		ConfirmFn:            func(string, map[string]any) bool { return false },
@@ -207,13 +224,19 @@ func runFirstDecisionProbe(deps *engine.SharedDeps, mutating bool, userCtx tools
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	ctx = tools.WithUser(ctx, userCtx) // resolver needs the STS identity to reach a real card
-	reply, _ = eng.ChatWithOptions(ctx, message, onStep, engine.ChatOptions{
+	reply, _ := eng.ChatWithOptions(ctx, message, onStep, engine.ChatOptions{
 		ConfirmFunc:      confirmFn,
 		ConfirmEditsFunc: confirmEdits,
 		GuidedCreate:     true,
 	})
-	outcome = eng.FirstDecisionOutcomeThisTurn()
-	return outcome, cardReached, firstAction, reply
+	return firstDecisionProbeResult{
+		outcome:     eng.FirstDecisionOutcomeThisTurn(),
+		cardReached: cardReached,
+		firstAction: firstAction,
+		reply:       reply,
+		disposition: eng.ActionProposalDispositionThisTurn(),
+		retryFirst:  eng.FirstDecisionRetryFirstOutcome(),
+	}
 }
 
 // judgeFirstDecision encodes the observable contract. A degraded_* outcome fails

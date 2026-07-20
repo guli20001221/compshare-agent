@@ -680,3 +680,57 @@ func TestSealedPasswordIsInjectedWithoutEnteringModelArguments(t *testing.T) {
 	require.Equal(t, "SecurePass123!", resolved.action.Arguments["Password"])
 	require.Equal(t, "[REDACTED]", resolved.action.Confirmation.Arguments["Password"])
 }
+
+// TestResolvedProposalDisposition pins the value-free classification the acceptance
+// measurement reads to attribute why a write proposal did or did not card. A card
+// path (confirmation / intake_form) wins; a server outage (dependency_failure) is
+// reported before a user-facing rejection; only field names + typed kinds appear
+// (never slot VALUES), so it is safe to persist in the trace.
+func TestResolvedProposalDisposition(t *testing.T) {
+	cases := []struct {
+		name   string
+		a      actionresolver.ResolvedAction
+		guided bool
+		want   string
+	}{
+		{"confirmation", actionresolver.ResolvedAction{ReadyForConfirmation: true}, true, "confirmation"},
+		{"confirmation_wins_over_intake", actionresolver.ResolvedAction{ReadyForConfirmation: true, ReadyForIntake: true}, true, "confirmation"},
+		{"intake_form", actionresolver.ResolvedAction{ReadyForIntake: true}, true, "intake_form"},
+		{"intake_form_unavailable", actionresolver.ResolvedAction{ReadyForIntake: true}, false, "intake_form_unavailable"},
+		{"dependency_failure_wins_over_reject", actionresolver.ResolvedAction{
+			DependencyFailures: []string{"zone_catalog"},
+			RejectedProblems:   []actionresolver.RejectedProblem{{Slot: "Zone", Kind: actionresolver.RejectInvalidValue}},
+		}, true, "dependency_failure"},
+		{"rejected_invalid_zone_no_value_leak", actionresolver.ResolvedAction{
+			// The human-readable Rejected string carries a value; the disposition must
+			// NOT — it reads the typed twin (slot + kind) only.
+			Rejected:         []string{"Zone: 华北九九九 is not a live zone"},
+			RejectedProblems: []actionresolver.RejectedProblem{{Slot: "Zone", Kind: actionresolver.RejectInvalidValue}},
+		}, true, "rejected:Zone=invalid_value"},
+		{"rejected_sorted_and_deduped", actionresolver.ResolvedAction{
+			RejectedProblems: []actionresolver.RejectedProblem{
+				{Slot: "Zone", Kind: actionresolver.RejectInvalidValue},
+				{Slot: "Cpu", Kind: actionresolver.RejectInvalidValue},
+				{Slot: "Zone", Kind: actionresolver.RejectInvalidValue}, // dup
+			},
+		}, true, "rejected:Cpu=invalid_value,Zone=invalid_value"},
+		{"rejected_op_level", actionresolver.ResolvedAction{
+			RejectedProblems: []actionresolver.RejectedProblem{{Slot: "", Kind: actionresolver.RejectOperationContract}},
+		}, true, "rejected:_op=operation_contract"},
+		{"rejected_untyped_defensive", actionresolver.ResolvedAction{Rejected: []string{"something"}}, true, "rejected"},
+		{"conflict", actionresolver.ResolvedAction{Conflicts: []actionresolver.Conflict{{Slot: "UHostId"}}}, true, "conflict:UHostId"},
+		{"missing", actionresolver.ResolvedAction{Missing: []string{"GpuType"}}, true, "missing:GpuType"},
+		{"unresolved", actionresolver.ResolvedAction{}, true, "unresolved"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolvedProposalDisposition(tc.a, tc.guided)
+			if got != tc.want {
+				t.Errorf("disposition = %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, "华北九九九") {
+				t.Errorf("disposition leaked a slot value: %q", got)
+			}
+		})
+	}
+}

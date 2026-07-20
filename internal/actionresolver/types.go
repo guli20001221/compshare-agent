@@ -151,6 +151,30 @@ const (
 	RejectOperationContract
 )
 
+// String renders the typed rejection kind as a stable, value-free code for the
+// disposition trace (the acceptance measurement reads it to attribute why a
+// create proposal did not reach a card). Never includes a slot value.
+func (k RejectionKind) String() string {
+	switch k {
+	case RejectInvalidValue:
+		return "invalid_value"
+	case RejectUnknownOperation:
+		return "unknown_operation"
+	case RejectUnknownField:
+		return "unknown_field"
+	case RejectUnknownSource:
+		return "unknown_source"
+	case RejectUnverifiedSource:
+		return "unverified_source"
+	case RejectTargetNotExist:
+		return "target_not_exist"
+	case RejectOperationContract:
+		return "operation_contract"
+	default:
+		return "unknown"
+	}
+}
+
 // RejectedProblem is the typed twin of one Rejected[] entry. Slot is the field
 // name ("" for operation-level rejections). Populated in lockstep with Rejected
 // so the two never diverge; internal to the resolver→engine intake decision, not

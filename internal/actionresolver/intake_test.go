@@ -160,3 +160,22 @@ func TestResolveNonGuidedOperationIsNeverReadyForIntake(t *testing.T) {
 	require.False(t, resolved.ReadyForConfirmation)
 	require.False(t, resolved.ReadyForIntake, "StopInstanceWorkflow declares no guided intake")
 }
+
+// TestRejectionKindString pins the value-free codes the disposition trace renders
+// for each typed rejection kind. An unknown value degrades to "unknown" rather
+// than an empty string (which would read as "no rejection" in a trace).
+func TestRejectionKindString(t *testing.T) {
+	cases := map[RejectionKind]string{
+		RejectInvalidValue:      "invalid_value",
+		RejectUnknownOperation:  "unknown_operation",
+		RejectUnknownField:      "unknown_field",
+		RejectUnknownSource:     "unknown_source",
+		RejectUnverifiedSource:  "unverified_source",
+		RejectTargetNotExist:    "target_not_exist",
+		RejectOperationContract: "operation_contract",
+	}
+	for k, want := range cases {
+		require.Equal(t, want, k.String())
+	}
+	require.Equal(t, "unknown", RejectionKind(999).String())
+}

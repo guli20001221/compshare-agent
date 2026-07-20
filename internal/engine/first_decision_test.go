@@ -361,6 +361,11 @@ func TestFirstDecisionZeroToolRetriesOnceThenSucceeds(t *testing.T) {
 	if !eng.writeWindowClosedThisTurn {
 		t.Errorf("write window must be closed after the recovered write proposal")
 	}
+	// The resolver disposition is recorded once the seeded proposal resolves (its
+	// value depends on the target's existence; here we only pin that it is wired).
+	if eng.ActionProposalDispositionThisTurn() == "" {
+		t.Errorf("action-proposal disposition must be recorded once a proposal resolves")
+	}
 	// No read/RAG preceded the proposal on either the first probe or the retry.
 	if windowHasReadOrRAG(llmc.reqs[0].Tools) || windowHasReadOrRAG(llmc.reqs[1].Tools) {
 		t.Errorf("no read/RAG may appear in the forced window; got %v / %v",
