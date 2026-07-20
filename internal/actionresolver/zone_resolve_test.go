@@ -149,6 +149,48 @@ func TestResolveReportsZoneAmbiguityAsConflict(t *testing.T) {
 	assert.Empty(t, resolved.Missing, "an ambiguous value was supplied — the question is which, not whether")
 }
 
+// TestResolveValidChineseZoneKeptOpensIntakeForm and its invalid twin exercise the
+// zone codec through the REAL CreateInstanceWorkflow spec (guided intake), the link
+// the zoneOnlySpec tests above (confirmation-only) do not cover: a VALID console
+// zone is canonicalized and KEPT while the form still collects the GPU; a
+// truly-INVALID zone is a form-correctable invalid value that opens the form to
+// re-collect it (variance #2 for the zone codec).
+func TestResolveValidChineseZoneKeptOpensIntakeForm(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{}).
+		WithZoneCatalog(twoZoneCatalog())
+
+	resolved := r.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "Zone", Value: "华北一C", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "华北一C"}},
+	}})
+
+	require.False(t, resolved.ReadyForConfirmation, "GpuType is still missing")
+	require.True(t, resolved.ReadyForIntake, "a valid zone + missing GPU opens the guided form")
+	require.Equal(t, "cn-bj2-03", resolved.Arguments["Zone"],
+		"华北一C is kept — canonicalized to its zone id, never dropped")
+	require.Contains(t, resolved.Missing, "GpuType", "the form still needs the GPU")
+	require.Empty(t, resolved.RejectedProblems, "a valid zone is not a rejection")
+}
+
+func TestResolveInvalidChineseZoneEntersIntakeForm(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true}).
+		WithZoneCatalog(twoZoneCatalog())
+
+	resolved := r.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "GpuType", Value: "4090", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "4090"}},
+		{Name: "Zone", Value: "华北一区", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "华北一区"}},
+	}})
+
+	require.False(t, resolved.ReadyForConfirmation)
+	require.True(t, resolved.ReadyForIntake, "a truly-invalid zone is form-correctable — the form re-collects it")
+	require.NotContains(t, resolved.Arguments, "Zone", "the invalid zone value is discarded, never carried forward")
+	require.Equal(t, []RejectedProblem{{Slot: "Zone", Kind: RejectInvalidValue}}, resolved.RejectedProblems,
+		"华北一区 is a partial name (an invalid value), not a live zone")
+}
+
 func TestSpecNeedsZoneCatalog(t *testing.T) {
 	withZone := OperationSpec{Fields: map[string]FieldSpec{
 		"Zone":    {Codec: CodecZone},
