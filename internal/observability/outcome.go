@@ -68,16 +68,9 @@ type FinishSignals struct {
 	// non-empty canned reply and no hard-block — so the budget terminus is
 	// otherwise underivable from the record.
 	RoundCeilingHit bool
-	// FirstDecisionOutcome is how the forced first-decision resolved this turn
-	// (engine.FirstDecisionOutcomeThisTurn): "" when it did not run, else
-	// continue / request:<Tool> / a fail_* / a degraded_* / skipped. Recorded
-	// verbatim onto OutcomeTrace so degrade cases are visibly non-structural.
-	FirstDecisionOutcome string
-	// FirstDecisionRetryOutcome (engine.FirstDecisionRetryFirstOutcome) and
-	// ActionProposalDisposition (engine.ActionProposalDispositionThisTurn) are
-	// stamped onto OutcomeTrace so a restart can still reconstruct a zero-tool event
-	// masked by a successful retry, and why a create did or did not reach a card.
-	FirstDecisionRetryOutcome string
+	// ActionProposalDisposition (engine.ActionProposalDispositionThisTurn) is
+	// stamped onto OutcomeTrace so a restart can reconstruct why a create did or
+	// did not reach a card without re-running the model.
 	ActionProposalDisposition string
 }
 
@@ -92,12 +85,6 @@ func (r *TraceRecord) FinalizeOutcome(s FinishSignals) {
 	r.Outcome.Resolution = r.DeriveResolution(s, tb)
 	if s.ReactRounds > 0 {
 		r.Outcome.ReactRounds = s.ReactRounds
-	}
-	if s.FirstDecisionOutcome != "" {
-		r.Outcome.FirstDecisionOutcome = s.FirstDecisionOutcome
-	}
-	if s.FirstDecisionRetryOutcome != "" {
-		r.Outcome.FirstDecisionRetryOutcome = s.FirstDecisionRetryOutcome
 	}
 	if s.ActionProposalDisposition != "" {
 		r.Outcome.ActionProposalDisposition = s.ActionProposalDisposition

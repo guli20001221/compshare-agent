@@ -378,8 +378,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			ReplyEmpty:                strings.TrimSpace(reply) == "",
 			ReactRounds:               agent.ReactRoundsThisTurn(),
 			RoundCeilingHit:           agent.ReactCeilingHitThisTurn(),
-			FirstDecisionOutcome:      agent.FirstDecisionOutcomeThisTurn(),
-			FirstDecisionRetryOutcome: agent.FirstDecisionRetryFirstOutcome(),
 			ActionProposalDisposition: agent.ActionProposalDispositionThisTurn(),
 		})
 		sessState, _, hydrated := agent.SessionStateSnapshot()

@@ -193,54 +193,23 @@ func TestFinalizeOutcome_StampsAllAxes(t *testing.T) {
 	}
 }
 
-// TestFinalizeOutcome_StampsFirstDecisionOutcome pins that the forced
-// first-decision result reaches the trace (finding #4a): the recorder threads
-// FirstDecisionOutcome through FinishSignals, and an empty one leaves the field
-// omitted (SHA-stable for non-forced turns).
-func TestFinalizeOutcome_StampsFirstDecisionOutcome(t *testing.T) {
-	rec := TraceRecord{}
-	rec.FinalizeOutcome(FinishSignals{ReactRounds: 1, FirstDecisionOutcome: "request:RequestCreateInstance"})
-	if rec.Outcome.FirstDecisionOutcome != "request:RequestCreateInstance" {
-		t.Fatalf("first_decision_outcome = %q, want request:RequestCreateInstance", rec.Outcome.FirstDecisionOutcome)
-	}
-	// A degraded outcome must be visible so dashboards can exclude it from the
-	// structural-guarantee numerator.
-	deg := TraceRecord{}
-	deg.FinalizeOutcome(FinishSignals{FirstDecisionOutcome: "degraded_provider_fallback"})
-	if deg.Outcome.FirstDecisionOutcome != "degraded_provider_fallback" {
-		t.Fatalf("degraded outcome not recorded: %q", deg.Outcome.FirstDecisionOutcome)
-	}
-	// Empty stays empty (omitempty → no byte drift for turns where it never ran).
-	none := TraceRecord{}
-	none.FinalizeOutcome(FinishSignals{ReactRounds: 2})
-	if none.Outcome.FirstDecisionOutcome != "" {
-		t.Fatalf("first_decision_outcome must stay empty when unset, got %q", none.Outcome.FirstDecisionOutcome)
-	}
-}
-
-// TestFinalizeOutcome_StampsRetryAndDisposition pins the two create-chain
-// attribution axes onto the persisted trace: a zero-tool event masked by a
-// successful retry (first_decision_retry_outcome) and the resolver disposition
-// (action_proposal_disposition), so a restart can reconstruct why a create did or
-// did not card. Both stay omitted when unset (SHA-stable for turns without them).
-func TestFinalizeOutcome_StampsRetryAndDisposition(t *testing.T) {
+// TestFinalizeOutcome_StampsDisposition pins the resolver disposition
+// (action_proposal_disposition) onto the persisted trace, so a restart can
+// reconstruct why a create did or did not card without re-running the model. It
+// stays omitted when unset (SHA-stable for turns without it).
+func TestFinalizeOutcome_StampsDisposition(t *testing.T) {
 	rec := TraceRecord{}
 	rec.FinalizeOutcome(FinishSignals{
-		FirstDecisionRetryOutcome: "fail_no_tool_empty",
 		ActionProposalDisposition: "rejected:Zone=invalid_value",
 	})
-	if rec.Outcome.FirstDecisionRetryOutcome != "fail_no_tool_empty" {
-		t.Errorf("first_decision_retry_outcome = %q, want fail_no_tool_empty", rec.Outcome.FirstDecisionRetryOutcome)
-	}
 	if rec.Outcome.ActionProposalDisposition != "rejected:Zone=invalid_value" {
 		t.Errorf("action_proposal_disposition = %q, want rejected:Zone=invalid_value", rec.Outcome.ActionProposalDisposition)
 	}
 
 	none := TraceRecord{}
 	none.FinalizeOutcome(FinishSignals{ReactRounds: 1})
-	if none.Outcome.FirstDecisionRetryOutcome != "" || none.Outcome.ActionProposalDisposition != "" {
-		t.Errorf("both must stay empty when unset; got retry=%q disposition=%q",
-			none.Outcome.FirstDecisionRetryOutcome, none.Outcome.ActionProposalDisposition)
+	if none.Outcome.ActionProposalDisposition != "" {
+		t.Errorf("disposition must stay empty when unset; got %q", none.Outcome.ActionProposalDisposition)
 	}
 }
 

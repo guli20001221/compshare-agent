@@ -21,12 +21,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The forced-first-decision create chain must surface the confirmation CARD
-// before any answer prose — a turn that streamed answer text before the card
-// would bury it. These two tests are the deterministic frame-ordering gate the
-// lead asked for: they exercise the REAL WS handler (HandleWS via httptest) in
-// BOTH transport modes and assert the same invariant each mode expresses
-// differently:
+// A create/write turn must surface the confirmation CARD before any answer prose
+// — a turn that streamed answer text before the card would bury it. These two
+// tests are the deterministic frame-ordering gate the lead asked for: they
+// exercise the REAL WS handler (HandleWS via httptest) in BOTH transport modes
+// and assert the same invariant each mode expresses differently:
 //
 //   - durable (real deploy path after the durable_turns cutover): the projected
 //     `confirmation` frame must precede the terminal `done` frame, and durable
@@ -38,8 +37,8 @@ import (
 // Neither test enables the global COMPSHARE_ENABLE_MUTATING_TOOLS (forbidden per
 // CLAUDE.md): the durable gate injects a controllable coordinator event stream,
 // and the legacy gate uses the per-engine SetMutatingToolsEnabled lever plus a
-// scripted LLM that drives the real forced-first-decision → resolver →
-// confirmation round-trip.
+// scripted LLM whose first round proposes a write, driving the real ReAct
+// proposal → resolver → confirmation round-trip.
 
 // indexOfEvent returns the position of the first frame whose "event" == name,
 // or -1 when absent.
@@ -124,10 +123,10 @@ func TestWSDurable_ConfirmationFramePrecedesDoneFrame(t *testing.T) {
 }
 
 // mutatingProposalLLM scripts the two model turns the legacy gate needs: the
-// forced-first-decision probe (call #1) returns exactly one Request* proposal
-// tool call; every later call (the answer round after the card is rejected)
-// returns plain text with no tool calls. It does not stream, so chatStream emits
-// the reply as a single `token` frame.
+// first ReAct round (call #1) returns exactly one Request* proposal tool call;
+// every later call (the answer round after the card is rejected) returns plain
+// text with no tool calls. It does not stream, so chatStream emits the reply as a
+// single `token` frame.
 type mutatingProposalLLM struct {
 	mu           sync.Mutex
 	calls        int
@@ -183,22 +182,16 @@ func readOneFrame(t *testing.T, ctx context.Context, conn *websocket.Conn) map[s
 }
 
 // TestWSLegacy_ConfirmationFramePrecedesTokenFrame is the legacy half of the
-// frame-order gate. It drives a per-engine mutating engine with forced
-// first-decision on through the REAL chatStream WS handler: the scripted LLM
-// proposes a write, the resolver verifies the instance and chatStream emits a
-// `confirmation` frame while blocking in WaitForConfirmation, the test client
-// rejects it, and the answer round then streams a `token` frame. The card MUST
-// precede the first answer token. START-on-Stopped is used because it reaches a
-// plain confirmation via ConfirmFunc (create may route to an intake form via a
-// different callback); the create card's own content ordering is covered by the
-// durable gate above and the live N=5.
+// frame-order gate. It drives a per-engine mutating engine through the REAL
+// chatStream WS handler: the scripted LLM's first round proposes a write, the
+// resolver verifies the instance and chatStream emits a `confirmation` frame
+// while blocking in WaitForConfirmation, the test client rejects it, and the
+// answer round then streams a `token` frame. The card MUST precede the first
+// answer token. START-on-Stopped is used because it reaches a plain confirmation
+// via ConfirmFunc (create may route to an intake form via a different callback);
+// the create card's own content ordering is covered by the durable gate above and
+// the live N=5.
 func TestWSLegacy_ConfirmationFramePrecedesTokenFrame(t *testing.T) {
-	// forced_first_decision is process-global (boot-only). Set + restore; this
-	// test must not run in parallel with anything reading the flag.
-	prevForced := engine.ForcedFirstDecisionEnabled()
-	engine.SetForcedFirstDecisionEnabled(true)
-	t.Cleanup(func() { engine.SetForcedFirstDecisionEnabled(prevForced) })
-
 	llmFake := &mutatingProposalLLM{
 		proposalTool: "RequestStartInstance",
 		proposalArgs: `{"UHostId":"uhost-1"}`,

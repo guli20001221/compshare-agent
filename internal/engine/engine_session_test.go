@@ -273,12 +273,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// agentLLMClient is the TierAgent (strong-model) client — shared like
 		// llmClient (a stateless client wrapper, pointer-equal across sessions).
 		// Used by the B8 deploy_model image-matching handler.
-		"agentLLMClient":             true,
-		"knowledgeRetriever":         true,
-		"rateLimiter":                true,
-		"supportsObjectToolChoice":   true,
-		"supportsRequiredToolChoice": true,
-		"maxTokensPerTurn":           true,
+		"agentLLMClient":           true,
+		"knowledgeRetriever":       true,
+		"rateLimiter":              true,
+		"supportsObjectToolChoice": true,
+		"maxTokensPerTurn":         true,
 		// externalExecutor is the RAW shared tool executor (same instance as the
 		// one safeExecutor wraps) — pointer-equal across sessions, used only for
 		// read-only L0 catalog calls. Shared like llmClient.
@@ -347,18 +346,14 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
-		"reactRoundsThisTurn":            true,
-		"reactCeilingHitThisTurn":        true,
-		"writeWindowClosedThisTurn":      true,
-		"firstDecisionOutcomeThisTurn":   true,
-		"firstDecisionRetryFirstOutcome": true,
-		"seededFirstResponse":            true,
-		"turnModelCallsThisTurn":         true,
-		"turnCompletionClassHint":        true,
-		"turnCompletionReasonHint":       true,
-		"turnCompletionEmittedThisTurn":  true,
-		"hardBlockStandingThisTurn":      true,
-		"hardBlockTraceThisTurn":         true,
+		"reactRoundsThisTurn":           true,
+		"reactCeilingHitThisTurn":       true,
+		"turnModelCallsThisTurn":        true,
+		"turnCompletionClassHint":       true,
+		"turnCompletionReasonHint":      true,
+		"turnCompletionEmittedThisTurn": true,
+		"hardBlockStandingThisTurn":     true,
+		"hardBlockTraceThisTurn":        true,
 		// Per-turn instance-binding observables (#3 StateTrace). Per-session/
 		// per-turn by design — sharing would attribute one tenant's bound
 		// instance / fact-cache age to another's turn. Reset every turn.
@@ -416,15 +411,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"displayedResourceSelectionThisTurn":  true,
 	}
 
-	if want, got := 9, len(sharedFields); want != got {
+	if want, got := 8, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 83, len(perSessionFields); want != got {
+	if want, got := 79, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 92, typ.NumField(); want != got {
+	if want, got := 87, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
@@ -470,10 +465,6 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 	if withDeps.supportsObjectToolChoice != session.supportsObjectToolChoice {
 		t.Errorf("supportsObjectToolChoice differs: NewWithDeps=%v NewSession=%v",
 			withDeps.supportsObjectToolChoice, session.supportsObjectToolChoice)
-	}
-	if withDeps.supportsRequiredToolChoice != session.supportsRequiredToolChoice {
-		t.Errorf("supportsRequiredToolChoice differs: NewWithDeps=%v NewSession=%v",
-			withDeps.supportsRequiredToolChoice, session.supportsRequiredToolChoice)
 	}
 	if withDeps.mutatingToolsEnabled != session.mutatingToolsEnabled {
 		t.Errorf("mutatingToolsEnabled differs: NewWithDeps=%v NewSession=%v",

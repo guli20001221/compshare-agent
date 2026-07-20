@@ -295,29 +295,6 @@ type Engine struct {
 	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
 	reactRoundsThisTurn     int
 	reactCeilingHitThisTurn bool
-	// Forced first-decision (create-first-hop fix). writeWindowClosedThisTurn is
-	// set once the first hop has committed (a Request* proposal ran OR
-	// continue-without-write was chosen); subsequent rounds then run with every
-	// Request* tool removed, so a write proposal can only ever be the first
-	// decision. firstDecisionOutcomeThisTurn records the outcome
-	// (continue / request:<tool> / a fail_* / a degraded_* / skipped) for the
-	// trace and the structural acceptance gates. Both reset at the top of Chat.
-	writeWindowClosedThisTurn    bool
-	firstDecisionOutcomeThisTurn string
-	// firstDecisionRetryFirstOutcome records the FIRST forced-probe outcome when a
-	// zero-tool response triggered the single bounded retry ("fail_no_tool_text" /
-	// "fail_no_tool_empty"), and is "" when no retry happened. Kept distinct from
-	// firstDecisionOutcomeThisTurn (which holds the FINAL outcome) so the acceptance
-	// measurement can count zero-tool events even when the retry recovered and the
-	// final outcome is a request:/continue. Per-turn; reset at the top of Chat.
-	firstDecisionRetryFirstOutcome string
-	// seededFirstResponse carries the forced first-decision's chosen write
-	// proposal into ReAct round 0 so it runs through the normal tool-execution
-	// path (Resolver → intake/confirm) without a second LLM call. nil unless the
-	// pre-call chose a Request* proposal; consumed and cleared on round 0. Reset
-	// at the top of Chat. Per-turn by design — a shared value would replay one
-	// tenant's proposal into another's turn.
-	seededFirstResponse *llm.ChatResponse
 	// Context-assembler observability (P2). Peak raw history size and peak
 	// assembled request size across this turn's rounds, plus whether the
 	// conservative message cap ever shed anything. Content-free; reset at the top
@@ -359,8 +336,7 @@ type Engine struct {
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
 	// run their detection logic but fall through to LLM auto routing.
-	supportsObjectToolChoice   bool
-	supportsRequiredToolChoice bool
+	supportsObjectToolChoice bool
 	// mutatingToolsEnabled controls whether instance-changing workflows and
 	// L1 mutating API actions are exposed and executable. Production defaults
 	// to read-only until these operations are product-ready.
@@ -575,13 +551,12 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	}
 	eng := &Engine{
 		// ── shared (pointer-equal across sessions) ──
-		llmClient:                  deps.LLMClient,
-		agentLLMClient:             deps.AgentLLMClient,
-		knowledgeRetriever:         deps.KnowledgeRetriever,
-		rateLimiter:                deps.RateLimiter,
-		supportsObjectToolChoice:   deps.SupportsObjectToolChoice,
-		supportsRequiredToolChoice: deps.SupportsRequiredToolChoice,
-		maxTokensPerTurn:           deps.MaxTokensPerTurn,
+		llmClient:                deps.LLMClient,
+		agentLLMClient:           deps.AgentLLMClient,
+		knowledgeRetriever:       deps.KnowledgeRetriever,
+		rateLimiter:              deps.RateLimiter,
+		supportsObjectToolChoice: deps.SupportsObjectToolChoice,
+		maxTokensPerTurn:         deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
 		confirmFn:                     opts.ConfirmFn,
@@ -632,15 +607,14 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 // need the model-feature-gated path can flip the field via setter.
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
-		llmClient:                  client,
-		confirmFn:                  confirmFn,
-		registry:                   entity.NewRegistry(),
-		rateLimitSubject:           governance.AnonymousSubjectKey,
-		lastInstanceQueryTurn:      -1,
-		lastMonitorTurn:            -1,
-		supportsObjectToolChoice:   true,
-		supportsRequiredToolChoice: true,
-		mutatingToolsEnabled:       true,
+		llmClient:                client,
+		confirmFn:                confirmFn,
+		registry:                 entity.NewRegistry(),
+		rateLimitSubject:         governance.AnonymousSubjectKey,
+		lastInstanceQueryTurn:    -1,
+		lastMonitorTurn:          -1,
+		supportsObjectToolChoice: true,
+		mutatingToolsEnabled:     true,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn, nil, false)
 	eng.externalExecutor = executor
@@ -728,18 +702,6 @@ func (e *Engine) ReactRoundsThisTurn() int { return e.reactRoundsThisTurn }
 // ReAct round ceiling without producing a final answer. That path emits no
 // hard-block, so this is the only signal for terminated_by=budget on it.
 func (e *Engine) ReactCeilingHitThisTurn() bool { return e.reactCeilingHitThisTurn }
-
-// FirstDecisionOutcomeThisTurn returns how the forced first-decision resolved in
-// the most recent Chat turn ("" when it did not run). Read post-turn by the trace
-// recorder to populate outcome.first_decision_outcome.
-func (e *Engine) FirstDecisionOutcomeThisTurn() string { return e.firstDecisionOutcomeThisTurn }
-
-// FirstDecisionRetryFirstOutcome returns the first forced-probe outcome when a
-// zero-tool response triggered the single bounded retry this turn
-// ("fail_no_tool_text" / "fail_no_tool_empty"), or "" when no retry happened. The
-// acceptance harness reads it to count zero-tool events masked by a successful
-// retry (the final outcome is then a request:/continue, not a fail_no_tool_*).
-func (e *Engine) FirstDecisionRetryFirstOutcome() string { return e.firstDecisionRetryFirstOutcome }
 
 // ActionProposalDispositionThisTurn returns the compact, value-free classification
 // of what the resolver did with this turn's write proposal ("" when none ran).
@@ -1214,10 +1176,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readExpensiveCallsThisTurn = 0
 	e.turnTokensConsumed = 0
 	e.reactRoundsThisTurn = 0
-	e.writeWindowClosedThisTurn = false
-	e.firstDecisionOutcomeThisTurn = ""
-	e.firstDecisionRetryFirstOutcome = ""
-	e.seededFirstResponse = nil
 	e.reactCeilingHitThisTurn = false
 	e.promptMessagesRawPeakThisTurn = 0
 	e.promptMessagesAssembledPeakThisTurn = 0
@@ -1304,30 +1262,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorWindow = false
 	e.displayedResourceSelectionThisTurn = nil
 
-	// Forced first-decision (first_decision.go): a structural pre-hop BEFORE the
-	// ReAct loop. On a write turn it commits the first hop to a Request* proposal
-	// (seeded into round 0) instead of letting flash free-roll reads; on a
-	// non-write turn it continues without a write. It never consumes a normal
-	// ReAct round or the answer token budget. handled=true only for the terminal
-	// fail-closed refusal; every other outcome falls through to the loop.
-	if handled, forcedReply := e.runForcedFirstDecision(ctx, opts, onStep); handled {
-		return forcedReply, nil
-	}
-
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
 		round := runtimeRound.Index()
 		e.reactRoundsThisTurn = round + 1
-		// Seeded write proposal from the forced first-decision: the pre-call
-		// already made — and rate-limited + token-observed — this model call, so
-		// replay it as round 0's step and run the tool-execution path directly
-		// (Resolver → intake/confirm, including non-terminal error/prose
-		// continuations) without a second LLM call.
-		if seed := e.seededFirstResponse; seed != nil && round == 0 {
-			e.seededFirstResponse = nil
-			runtimeRound.ModelStep(len(seed.ToolCalls), false)
-			return e.runToolCallsRound(ctx, seed, runtimeRound, onStep)
-		}
 		// Per-turn token budget gate. Placed at the TOP of the loop so
 		// any tool_call → tool_result pair emitted in the previous
 		// iteration has already completed and been appended to history
@@ -1363,19 +1301,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
 		messages := e.buildMessagesForLLM()
-		// Once the forced first-decision (first_decision.go) has committed the turn
-		// to continue-without-write — or already ran its one write proposal via the
-		// round-0 seed above — every Request* tool is dropped so a write proposal
-		// can only ever be the first decision. The forcing itself happens in the
-		// pre-call BEFORE this loop, so no round here narrows the window to the
-		// first-decision set or sets tool_choice=required.
-		var toolWindow []openai.Tool
-		switch {
-		case e.writeWindowClosedThisTurn:
-			toolWindow = toolWindowWithoutProposals(centralAgentToolWindow(e.mutatingToolsEnabled))
-		default:
-			toolWindow = centralAgentToolWindow(e.mutatingToolsEnabled)
-		}
+		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled)
 		req := llm.ChatRequest{
 			Messages: messages,
 			Tools:    toolWindow,

@@ -163,11 +163,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q\n", unknownUnifiedCreate)
 	}
 	engine.SetUnifiedCreateEnabled(unifiedCreate)
-	forcedFirstDecision, unknownForcedFirstDecision := forcedFirstDecisionEnabledFromEnv(getenv)
-	if unknownForcedFirstDecision != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_FORCED_FIRST_DECISION value %q\n", unknownForcedFirstDecision)
-	}
-	engine.SetForcedFirstDecisionEnabled(forcedFirstDecision)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)
@@ -315,8 +310,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 				ReplyEmpty:                strings.TrimSpace(reply) == "",
 				ReactRounds:               eng.ReactRoundsThisTurn(),
 				RoundCeilingHit:           eng.ReactCeilingHitThisTurn(),
-				FirstDecisionOutcome:      eng.FirstDecisionOutcomeThisTurn(),
-				FirstDecisionRetryOutcome: eng.FirstDecisionRetryFirstOutcome(),
 				ActionProposalDisposition: eng.ActionProposalDispositionThisTurn(),
 			})
 			sessState, _, hydrated := eng.SessionStateSnapshot()
