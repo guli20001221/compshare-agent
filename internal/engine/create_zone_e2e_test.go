@@ -63,3 +63,63 @@ func TestResolveCreateWithInvalidChineseZoneEntersFormEndToEnd(t *testing.T) {
 	require.Equal(t, []actionresolver.RejectedProblem{{Slot: "Zone", Kind: actionresolver.RejectInvalidValue}},
 		resolved.action.RejectedProblems, "华北一区 is a partial name (an invalid value), not a live zone")
 }
+
+// TestChineseCreateProvenanceReproduction is the reproduction gate the lead asked
+// for: settle empirically whether the Chinese create sentence can produce an
+// unverified_source rejection at HEAD. deriveProposalProvenance resets every
+// model-claimed source and re-derives it with the SAME matcher the resolver later
+// verifies with, so the expected outcome is that a value EITHER becomes
+// user_explicit-that-verifies OR stays agent_inference-that-bypasses — never
+// user_explicit-that-fails-verification. It records (value-free) the re-derived
+// source + rejection kind per slot for audit, and fails if unverified_source ever
+// appears. If a live gate later shows unverified_source, the model proposed a value
+// that does not match a standalone span (a proposal-shape issue), NOT this path.
+func TestChineseCreateProvenanceReproduction(t *testing.T) {
+	exec := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
+			}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	eng := newZoneEngine(exec, "")
+	const sentence = "在华北一C用最新的 PyTorch 镜像帮我开一台 4090"
+	eng.lastUserMsg = sentence
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, sentence, "turn-repro", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(zoneUserCtx(), map[string]any{
+		"turn_id": "turn-repro", "operation": "CreateInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "GpuType", "value": "4090", "source": "user_explicit", "evidence": map[string]any{"quote": "4090"}},
+			map[string]any{"name": "ImageName", "value": "PyTorch", "source": "user_explicit", "evidence": map[string]any{"quote": "PyTorch"}},
+			map[string]any{"name": "Zone", "value": "华北一C", "source": "user_explicit", "evidence": map[string]any{"quote": "华北一C"}},
+		},
+	})
+	require.NoError(t, err)
+
+	// Value-free audit: the re-derived source label + whether the value survived.
+	for _, slot := range []string{"GpuType", "ImageName", "Zone"} {
+		src := "<absent>"
+		if p, ok := resolved.action.Provenance[slot]; ok {
+			src = string(p.Source)
+		}
+		t.Logf("slot=%s re-derived_source=%s in_arguments=%t", slot, src, resolved.action.Arguments[slot] != nil)
+	}
+	for _, rp := range resolved.action.RejectedProblems {
+		t.Logf("rejected slot=%s kind=%s", rp.Slot, rp.Kind.String())
+	}
+
+	for _, rp := range resolved.action.RejectedProblems {
+		if rp.Kind == actionresolver.RejectUnverifiedSource {
+			t.Errorf("unverified_source reproduced on %s — the Chinese-boundary hypothesis would hold after all", rp.Slot)
+		}
+	}
+	require.True(t, resolved.action.ReadyForConfirmation || resolved.action.ReadyForIntake,
+		"the clean Chinese create sentence must reach a card, not a rejection dead-end")
+}
