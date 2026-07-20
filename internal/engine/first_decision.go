@@ -231,12 +231,20 @@ func (e *Engine) runForcedFirstDecision(ctx context.Context, opts ChatOptions, o
 	// A zero-tool response under `required` is a known provider instability (the
 	// deployment intermittently returns no tool call to a forced request), NOT a
 	// semantic refusal — a multi/unknown tool choice IS semantic and is therefore
-	// NOT retried. Retry EXACTLY ONCE with the identical context + restricted
-	// window. Both calls count against cost and the LLM rate-limit class; the first
-	// response is never written to history or streamed, so the retry rebuilds the
-	// byte-identical snapshot. A second zero-tool fails CLOSED — it does NOT degrade
-	// to the free full-window loop, which would reopen the read-first research path
-	// this whole mechanism exists to prevent.
+	// NOT retried. Retry EXACTLY ONCE by re-issuing the SAME req value (identical
+	// messages/tools/tool_choice — reused, not rebuilt, so byte-identical by
+	// construction); the first response is never written to history or streamed, and
+	// both probes count against cost and the LLM rate-limit class.
+	//
+	// The stop contract is deliberately narrow: ONLY a second ZERO-TOOL fails closed
+	// (the model declined to decide twice — do NOT reopen the free full-window loop,
+	// which would resurrect the read-first research path). An error or provider
+	// auto-fallback on the retry is an OUTAGE, not a declined decision, so — exactly
+	// like a first-call outage — it degrades to the normal loop (probeDegradedToLoop
+	// below). This is consistency with the first-call handling, NOT a blanket "any
+	// second failure stops"; a genuine LLM outage must still be recoverable by the
+	// answer path, and a zero-tool told us nothing about whether this was even a
+	// write turn.
 	if len(resp.ToolCalls) == 0 {
 		e.firstDecisionRetryFirstOutcome = zeroToolOutcome(resp)
 		retryResp, retryStatus, retryRLReply := e.forcedFirstDecisionProbe(ctx, req)

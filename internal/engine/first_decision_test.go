@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +12,28 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/llm"
 )
+
+// fdScriptedLLM replays a (response, error) sequence, so a test can script a
+// zero-tool probe followed by a retry that errors — a shape capturingLLM (which
+// never errors) cannot express.
+type fdScriptedLLM struct {
+	steps []fdStep
+	n     int
+}
+
+type fdStep struct {
+	resp *llm.ChatResponse
+	err  error
+}
+
+func (m *fdScriptedLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	i := m.n
+	m.n++
+	if i < len(m.steps) {
+		return m.steps[i].resp, m.steps[i].err
+	}
+	return &llm.ChatResponse{Content: "（脚本用尽）"}, nil
+}
 
 // capturingLLM records each request it receives and replays a scripted response
 // per round, so a structural test can assert the first-decision tool window,
@@ -410,6 +434,11 @@ func TestFirstDecisionConsecutiveZeroToolFailsClosed(t *testing.T) {
 			if len(llmc.reqs) != 2 {
 				t.Errorf("total LLM calls = %d, want 2 (fail-closed must NOT run a full-window answer round)", len(llmc.reqs))
 			}
+			// The retry re-issues the SAME request value — byte-identical context +
+			// window (reused, not rebuilt): messages, tools and tool_choice all match.
+			if len(llmc.reqs) == 2 && !reflect.DeepEqual(llmc.reqs[0], llmc.reqs[1]) {
+				t.Errorf("retry request differs from the first probe; the retry must reuse the identical req")
+			}
 			if eng.firstDecisionRetryFirstOutcome != tc.wantFirst {
 				t.Errorf("retry-first outcome = %q, want %q", eng.firstDecisionRetryFirstOutcome, tc.wantFirst)
 			}
@@ -435,6 +464,26 @@ func TestFirstDecisionConsecutiveZeroToolFailsClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// GATE: the model-visible RequestCreateInstance proposal tool must NOT expose a
+// Name property. A model-invented instance name that fails its codec would block
+// the guided card (Name is deliberately non-collectable), so the model must not be
+// able to propose one at all — the workflow keeps Name internally. Pins the fix for
+// the N=5 create_plain "rejected:Name=invalid_value" card block.
+func TestFirstDecisionCreateProposalDoesNotExposeName(t *testing.T) {
+	for _, tool := range firstDecisionToolWindow() {
+		if tool.Function == nil || tool.Function.Name != "RequestCreateInstance" {
+			continue
+		}
+		params, _ := tool.Function.Parameters.(map[string]any)
+		props, _ := params["properties"].(map[string]any)
+		if _, hasName := props["Name"]; hasName {
+			t.Errorf("RequestCreateInstance must not expose a model-fillable Name; got properties %v", props)
+		}
+		return
+	}
+	t.Fatal("RequestCreateInstance not found in the first-decision window")
 }
 
 // GATE (spec: both probes count cost + rate-limit): the retry is a SECOND real
@@ -520,5 +569,39 @@ func TestFirstDecisionRetryFirstOutcomeResetsAcrossTurns(t *testing.T) {
 	}
 	if got := eng.FirstDecisionRetryFirstOutcome(); got != "" {
 		t.Errorf("turn 2 retry-first outcome = %q, want \"\" (must reset each turn; stale value inflates the zero-tool count)", got)
+	}
+}
+
+// GATE (retry stop-contract): a zero-tool first probe followed by a retry that
+// ERRORS is an OUTAGE, not a second zero-tool — it degrades to the normal loop
+// (outcome=degraded_error), NOT fail-closed. This pins the deliberate asymmetry:
+// only a second ZERO-TOOL stops; an error/degrade on the retry stays recoverable
+// by the answer path, exactly like a first-call outage.
+func TestFirstDecisionRetryErrorDegradesToNormalLoop(t *testing.T) {
+	withForcedFirstDecision(t)
+	llmc := &fdScriptedLLM{steps: []fdStep{
+		{resp: &llm.ChatResponse{Content: ""}},      // probe 1: zero tools
+		{err: errors.New("upstream 503")},           // retry: outage, not a zero-tool
+		{resp: &llm.ChatResponse{Content: "正常回答。"}}, // normal answer round
+	}}
+	eng := NewWithDeps(llmc, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 0)
+
+	reply, err := eng.Chat(context.Background(), "帮我创建一台实例", noopStep)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if eng.firstDecisionOutcomeThisTurn != firstDecisionDegradedError {
+		t.Errorf("outcome = %q, want %q (a retry outage degrades, it does not fail closed)", eng.firstDecisionOutcomeThisTurn, firstDecisionDegradedError)
+	}
+	if reply == firstDecisionFailReply {
+		t.Fatalf("a retry-error turn must NOT be fail-closed refused")
+	}
+	if reply != "正常回答。" {
+		t.Errorf("reply = %q, want the normal answer-loop reply", reply)
+	}
+	// The zero-tool that triggered the retry is still recorded for the measurement.
+	if eng.firstDecisionRetryFirstOutcome != firstDecisionFailNoToolEmpty {
+		t.Errorf("retry-first outcome = %q, want %q", eng.firstDecisionRetryFirstOutcome, firstDecisionFailNoToolEmpty)
 	}
 }
