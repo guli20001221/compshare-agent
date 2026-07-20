@@ -102,20 +102,40 @@ func TestMonitorCurrentHandle_UnresolvedTarget(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
-// TestMonitorCurrentHandle_ColdExactIDStillFallsBack: monitor's envelope subjects
-// come from the pre-query registry snapshot, not the monitor response, so a cold
-// exact id must NOT pass through — it would render as a confirmed subject monitor
-// never verified. Unlike resource_info, monitor fails closed on a cold miss.
-func TestMonitorCurrentHandle_ColdExactIDStillFallsBack(t *testing.T) {
-	exec := &fakeReadExec{result: monitorFixture("uhost-cold")}
+// A cold exact ID is verified with a point Describe before monitoring. The
+// envelope therefore carries an upstream-confirmed subject rather than a
+// synthesized registry placeholder.
+func TestMonitorCurrentHandle_ColdExactIDIsPointVerified(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		resourceInfoAction: describeFixture(instanceRowMap("uhost-cold", "cold-host", "Running")),
+		monitorAction:      monitorFixture("uhost-cold"),
+	}}
 
 	result := runMonitorCurrent(t, exec, coldRegistrySnapshot(), "", MonitorCurrentRequest{
 		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-cold", Source: platform.SourceUserText}},
 	})
 
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Len(t, exec.calls, 2)
+	assert.Equal(t, resourceInfoAction, exec.calls[0].action)
+	assert.Equal(t, monitorAction, exec.calls[1].action)
+	require.NotNil(t, result.Envelope)
+	require.Len(t, result.Envelope.Subjects, 1)
+	assert.Equal(t, "uhost-cold", result.Envelope.Subjects[0].ID)
+	assert.Equal(t, "cold-host", result.Envelope.Subjects[0].Name)
+}
+
+func TestMonitorCurrentHandle_ColdExactIDAbsentStopsBeforeMonitor(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		resourceInfoAction: describeFixture(),
+	}}
+	result := runMonitorCurrent(t, exec, coldRegistrySnapshot(), "", MonitorCurrentRequest{
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-missing", Source: platform.SourceUserText}},
+	})
 	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
 	assert.Equal(t, platform.ReadFallbackUnresolvedTarget, result.FallbackReason)
-	assert.Empty(t, exec.calls, "monitor must not point-query a cold id; its subjects are pre-query")
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, resourceInfoAction, exec.calls[0].action)
 }
 
 func TestMonitorCurrentHandle_UpstreamError(t *testing.T) {
@@ -163,7 +183,7 @@ func runMonitorHistory(t *testing.T, exec ReadExecutor, resolver EntityResolver,
 
 func TestMonitorHistoryRequestRequiresTimeWindow(t *testing.T) {
 	require.Equal(t, []platform.MissingField{{Name: "time_window", Reason: "required"}}, MonitorHistoryRequest{}.MissingFields())
-	require.Nil(t, MonitorHistoryRequest{TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Value: "x"}}.MissingFields())
+	require.Nil(t, MonitorHistoryRequest{TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Start: "x"}}.MissingFields())
 }
 
 // TestMonitorHistoryHandle_ResolvesWindowAndCallsMonitor: a single resolved
@@ -175,7 +195,7 @@ func TestMonitorHistoryHandle_ResolvesWindowAndCallsMonitor(t *testing.T) {
 
 	result := runMonitorHistory(t, exec, resolver, MonitorHistoryRequest{
 		Targets:    []platform.TargetRef{{Type: platform.TargetRefName, Value: "train-a"}},
-		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Value: "2026-05-08 01:00 到 02:00"},
+		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Start: "2026-05-08 01:00", End: "2026-05-08 02:00"},
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
@@ -199,7 +219,7 @@ func TestMonitorHistoryHandle_MultiTargetRejected(t *testing.T) {
 			{Type: platform.TargetRefName, Value: "train-a"},
 			{Type: platform.TargetRefName, Value: "train-b"},
 		},
-		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Value: "2026-05-08 01:00 到 02:00"},
+		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Start: "2026-05-08 01:00", End: "2026-05-08 02:00"},
 	})
 
 	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
@@ -215,7 +235,7 @@ func TestMonitorHistoryHandle_InvalidWindowRejected(t *testing.T) {
 
 	result := runMonitorHistory(t, exec, resolver, MonitorHistoryRequest{
 		Targets:    []platform.TargetRef{{Type: platform.TargetRefName, Value: "train-a"}},
-		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Value: "2026-06-21 10:00 到 09:00"},
+		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Start: "2026-06-21 10:00", End: "2026-06-21 09:00"},
 	})
 
 	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)

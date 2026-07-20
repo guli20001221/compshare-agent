@@ -60,7 +60,7 @@ func monitorCurrentReadSpec() ReadCapabilitySpec[MonitorCurrentRequest, MonitorR
 }
 
 func monitorCurrentHandle(ctx context.Context, req MonitorCurrentRequest, rt ReadRuntime) (MonitorResponse, ReadResult) {
-	instances, ids, terminal := resolveMonitorTargets(req.Targets, rt)
+	instances, ids, terminal := resolveMonitorTargets(ctx, req.Targets, rt)
 	if terminal.Status != "" {
 		return MonitorResponse{}, terminal
 	}
@@ -102,7 +102,7 @@ func monitorHistoryReadSpec() ReadCapabilitySpec[MonitorHistoryRequest, MonitorR
 }
 
 func monitorHistoryHandle(ctx context.Context, req MonitorHistoryRequest, rt ReadRuntime) (MonitorResponse, ReadResult) {
-	instances, ids, terminal := resolveMonitorTargets(req.Targets, rt)
+	instances, ids, terminal := resolveMonitorTargets(ctx, req.Targets, rt)
 	if terminal.Status != "" {
 		return MonitorResponse{}, terminal
 	}
@@ -127,7 +127,7 @@ func monitorHistoryHandle(ctx context.Context, req MonitorHistoryRequest, rt Rea
 // empty target set falls back to the session's selected instance, otherwise it
 // is a missing-target fallback; a non-empty set is resolved through the shared
 // typed resolver. Returns a terminal ReadResult (non-empty Status) on fallback.
-func resolveMonitorTargets(targets []platform.TargetRef, rt ReadRuntime) ([]entity.InstanceSnapshot, []string, ReadResult) {
+func resolveMonitorTargets(ctx context.Context, targets []platform.TargetRef, rt ReadRuntime) ([]entity.InstanceSnapshot, []string, ReadResult) {
 	if len(targets) == 0 {
 		if rt.FallbackInstanceID != "" {
 			targets = []platform.TargetRef{{
@@ -140,14 +140,39 @@ func resolveMonitorTargets(targets []platform.TargetRef, rt ReadRuntime) ([]enti
 			return nil, nil, ReadFallbackBeforeTool(platform.ReadFallbackMissingTarget)
 		}
 	}
-	// allowColdExactID=false: monitor's envelope subjects come from these pre-query
-	// snapshots, not the monitor response, so a cold id must not pass through here
-	// or it would render as a confirmed subject monitor never verified.
-	instances, ids, reason := resolveReadTargetSnapshots(targets, rt.Resolver, false, rt.Now)
+	// A cold exact ID is locally unknown, not absent. Carry it to a point Describe,
+	// then build the monitor subject only from that upstream response. This keeps
+	// the envelope grounded while avoiding a model-driven ResourceInfo detour.
+	instances, ids, reason := resolveReadTargetSnapshots(targets, rt.Resolver, true, rt.Now)
 	if reason != nil {
 		return nil, nil, readTargetFallbackResult(*reason)
 	}
+	if monitorTargetsNeedVerification(instances) {
+		raw, err := rt.Executor.Execute(ctx, resourceInfoAction, readprojection.DescribeResourceArgs(ids))
+		if err != nil {
+			return nil, nil, ReadFailureAfterTool(resourceInfoAction, resourceCapabilityLabel, err)
+		}
+		describe, err := readprojection.InstancesFromDescribeResult(raw)
+		if err != nil {
+			return nil, nil, ReadFailureAfterTool(resourceInfoAction, resourceCapabilityLabel, err)
+		}
+		instances = filterInstancesByRequestedID(describe.Instances, ids)
+		if len(instances) != len(ids) {
+			return nil, nil, ReadFallbackBeforeTool(platform.ReadFallbackUnresolvedTarget)
+		}
+		ids = instanceIDsOf(instances)
+	}
 	return instances, ids, ReadResult{}
+}
+
+func monitorTargetsNeedVerification(instances []entity.InstanceSnapshot) bool {
+	for _, instance := range instances {
+		if instance.UHostId != "" && instance.Name == "" && instance.State == "" &&
+			instance.Zone == "" && instance.Region == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func monitorRender(resp MonitorResponse) ReadResult {

@@ -37,6 +37,9 @@ func stepQuerySourceInstanceForCustomImage() Step {
 				if _, _, ok := sourceCustomImagePlacement(result); !ok {
 					return CheckFailed("源实例缺少可用区或地域信息，无法安全创建自制镜像。")
 				}
+				if sourceCustomImageUnsupportedWithoutGPU(result) {
+					return CheckFailed("该虚机当前处于 2C/4GB 无卡模式；上游仅允许 8C/16GB 无卡虚机制作自制镜像。请先恢复有卡配置或切换到 8C/16GB 无卡档位。")
+				}
 				if sourceCustomImageRequiresRunning(result) && state != "Running" {
 					return CheckFailed("容器来源实例创建自制镜像需要先开机，请启动实例后再创建。")
 				}
@@ -48,6 +51,24 @@ func stepQuerySourceInstanceForCustomImage() Step {
 			}
 		},
 	}
+}
+
+func sourceCustomImageUnsupportedWithoutGPU(result map[string]any) bool {
+	if isContainerInstanceResult(result) {
+		return false
+	}
+	host := firstUHost(result)
+	if host == nil {
+		return false
+	}
+	if spec, ok := host["WithoutGpuSpec"].(map[string]any); ok {
+		if name, _ := spec["Spec"].(string); name != "" {
+			return name == "A"
+		}
+	}
+	return paramNum(host, "GPU", -1) == 0 &&
+		paramNum(host, "CPU", -1) == 2 &&
+		paramNum(host, "Memory", -1) == 4096
 }
 
 func stepConfirmCreateCustomImage() Step {

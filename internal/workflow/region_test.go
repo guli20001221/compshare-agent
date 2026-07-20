@@ -227,8 +227,8 @@ func TestSetStopScheduler_SetsRegion(t *testing.T) {
 	onStep, _ := collectEvents()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), SetStopSchedulerDef(), map[string]any{
-		"UHostId":      "uhost-x",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-x",
+		"Schedule": map[string]any{"mode": "after_minutes", "minutes": float64(60)},
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success, "SetStopScheduler should succeed; got %q", result.Message)

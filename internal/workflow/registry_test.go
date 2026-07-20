@@ -76,11 +76,11 @@ func TestGetWorkflow(t *testing.T) {
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 5)
 
-	// SetStopSchedulerWorkflow: 3 steps
+	// SetStopSchedulerWorkflow: query -> resolve one timestamp -> confirm -> set
 	def, ok = GetWorkflow("SetStopSchedulerWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 3)
+	assert.Len(t, def.Steps, 4)
 
 	// CancelStopSchedulerWorkflow: 3 steps
 	def, ok = GetWorkflow("CancelStopSchedulerWorkflow")

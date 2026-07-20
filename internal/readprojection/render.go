@@ -36,11 +36,15 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnv
 	// received so the user sees the operationally-relevant instances first.
 	lines := make([]string, 0, len(instances))
 	for _, inst := range instances {
+		gpuType := inst.GpuType
+		if inst.GPU == 0 {
+			gpuType = "无卡"
+		}
 		parts := []string{
 			resourceLabelInstanceID + "=" + safeValue(inst.UHostId),
 			resourceLabelName + "=" + safeValue(inst.Name),
 			resourceLabelState + "=" + safeValue(inst.State),
-			resourceLabelGPUType + "=" + safeValue(inst.GpuType),
+			resourceLabelGPUType + "=" + safeValue(gpuType),
 			fmt.Sprintf("%s=%d", resourceLabelGPU, inst.GPU),
 			fmt.Sprintf("%s=%d", resourceLabelCPU, inst.CPU),
 			fmt.Sprintf("%s=%d", resourceLabelMemory, inst.Memory),

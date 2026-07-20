@@ -93,7 +93,7 @@ var (
 	credentialAssignmentRegex = regexp.MustCompile(
 		`(?i)(["']?\b(?:access[_-]?key(?:[_-]?id|[_-]?secret)?|secret[_-]?key|api[_-]?key|x[_-]?api[_-]?key|ak|sk|access[_-]?token|security[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|password|passwd|pwd|private[_-]?key)\b["']?\s*[:=]\s*["']?)([^"'\s,;}&\]]+)`,
 	)
-	passwordAssignmentRegex    = regexp.MustCompile(`(?i)(?:密码|改密|password)\s*(为|成|是|:|：)\s*([^\s，。；;]+)`)
+	passwordAssignmentRegex    = regexp.MustCompile(`(?i)(?:(?:重置|修改|设置)?\s*(?:登录)?密码(?:重置|修改|设置)?|改密|password)\s*(为|成|是|:|：)\s*([^\s，。；;]+)`)
 	authorizationRegex         = regexp.MustCompile(`(?i)(\bauthorization\s*[:=]\s*)(?:(bearer|basic)[\s:=]+)?([^\s,;}\]]+)`)
 	privateKeyBlockRegex       = regexp.MustCompile(`(?is)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----`)
 	knownCredentialPrefixRegex = regexp.MustCompile(`(?i)\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bsk-[A-Za-z0-9_\-]{12,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{16,}\b`)
@@ -221,7 +221,10 @@ func explicitPasswordReset(text string, matchStart, connectorStart int) bool {
 	if strings.HasPrefix(head, "改密") {
 		return true
 	}
-	return strings.HasPrefix(head, "密码") && strings.HasSuffix(prefix, "重置") ||
+	compactHead := strings.ReplaceAll(head, " ", "")
+	return strings.Contains(compactHead, "密码") &&
+		(strings.HasPrefix(compactHead, "重置") || strings.HasSuffix(compactHead, "重置") ||
+			strings.HasSuffix(prefix, "重置")) ||
 		strings.HasPrefix(head, "password") && strings.HasSuffix(prefix, "reset")
 }
 

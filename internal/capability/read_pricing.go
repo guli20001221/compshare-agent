@@ -32,9 +32,11 @@ const (
 
 // PricingRequest is the pricing capability's own request contract.
 type PricingRequest struct {
-	GPUType  string             `json:"gpu_type"`
-	GPUCount int                `json:"gpu_count,omitempty"`
-	Kind     platform.PriceKind `json:"price_kind,omitempty"`
+	GPUType     string             `json:"gpu_type"`
+	GPUCount    int                `json:"gpu_count,omitempty"`
+	Kind        platform.PriceKind `json:"price_kind,omitempty"`
+	Zone        string             `json:"zone,omitempty"`
+	ChargeTypes []string           `json:"charge_types,omitempty"`
 }
 
 // MissingFields reports the required-but-absent request fields.
@@ -59,9 +61,11 @@ func pricingReadSpec() ReadCapabilitySpec[PricingRequest, PricingResponse] {
 		Label:       pricingCapabilityLabel,
 		Description: "查询指定 GPU 机型的账号价或目录价。",
 		Params: objectParam(map[string]schemaNode{
-			"gpu_type":   stringParam(),
-			"gpu_count":  integerParam(1),
-			"price_kind": enumParam(platform.PriceKindValues()...),
+			"gpu_type":     stringParam().described("真实 GPU 机型名称；精确名称不会自动替换成显存变体。"),
+			"gpu_count":    integerParam(1).described("卡数；省略时默认为 1。"),
+			"price_kind":   enumParam(platform.PriceKindValues()...).described("account=当前账号实付价（默认）；catalog=目录价。"),
+			"zone":         stringParam().described("可选的精确可用区 ID；省略时查询该机型全部可售区域。"),
+			"charge_types": arrayParam(enumParam("Postpay", "Spot", "Day", "Month")).described("所需计费方式；省略时返回上游提供的全部方式。"),
 		}, "gpu_type"),
 		Handle: pricingHandle,
 		Render: pricingRender,
@@ -85,7 +89,7 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 	}
 
 	search := strings.TrimSpace(req.GPUType)
-	matched := platform.MatchUserTextToInstanceTypeNames(search, items, true)
+	matched := platform.MatchUserTextToInstanceTypeNames(search, items, false)
 	if len(matched) == 0 {
 		// No actionable GPU named — clarify with the available models.
 		r := ReadClarification(pricingClarifyReply(items, ""))
@@ -95,35 +99,33 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 
 	supportZones, _ := zones.FetchSupportZones(ctx, rt.Executor, 0, 0)
 
-	// Stage 2: fetch price for each matched GPU model with a default spec.
+	// Stage 2: inspect every matching offering. Upstream row order is not a
+	// preference contract: one zone may expose Spot only while another exposes
+	// Postpay/Day/Month for the same GPU name.
 	priced := []gpuPriceRow{}
 	for _, name := range matched {
-		spec := pickDefaultPricingSpec(name, items, req.GPUCount)
-		if spec.Zone == "" || spec.Cpu == 0 || spec.Memory == 0 {
-			// Spec extraction failed — skip this GPU instead of an invalid call.
-			continue
+		for _, spec := range pricingSpecs(name, items, req.GPUCount, req.Zone) {
+			args := pricingPriceArgs(name, spec)
+			addPricingPlacementArgs(args, spec.Zone, supportZones)
+			priceRaw, errInner := rt.Executor.ExecuteInternal(ctx, pricingPriceAction, args)
+			if errInner != nil {
+				continue
+			}
+			bill := pricingBillingTableForKind(priceRaw, pricingKindForRequest(req))
+			if !billingTableMatchesRequestedTypes(bill, req.ChargeTypes) {
+				continue
+			}
+			priced = append(priced, gpuPriceRow{
+				Name:        name,
+				Zone:        spec.Zone,
+				GPU:         spec.GPU,
+				Cpu:         spec.Cpu,
+				Memory:      spec.Memory,
+				RawData:     priceRaw,
+				Kind:        pricingKindForRequest(req),
+				ChargeTypes: append([]string(nil), req.ChargeTypes...),
+			})
 		}
-		// spec.Memory is GB (Describe Collection[].Memory[]); price APIs expect MB.
-		// Convert once at the boundary so header ("GB") and API arg stay consistent.
-		// Pass only backend placement ids resolved from DescribeCompShareSupportZone;
-		// a bare non-default Zone can trigger RetCode=230.
-		args := pricingPriceArgs(name, spec)
-		addPricingPlacementArgs(args, spec.Zone, supportZones)
-		priceRaw, errInner := rt.Executor.ExecuteInternal(ctx, pricingPriceAction, args)
-		if errInner != nil {
-			// Tolerate per-GPU failure: a transient hiccup on one model shouldn't
-			// blank the whole reply.
-			continue
-		}
-		priced = append(priced, gpuPriceRow{
-			Name:    name,
-			Zone:    spec.Zone,
-			GPU:     spec.GPU,
-			Cpu:     spec.Cpu,
-			Memory:  spec.Memory,
-			RawData: priceRaw,
-			Kind:    pricingKindForRequest(req),
-		})
 	}
 
 	if len(priced) == 0 {
@@ -195,24 +197,25 @@ type pricingDefaultSpec struct {
 
 // gpuPriceRow bundles one (name, spec, raw-price-result) tuple for the renderer.
 type gpuPriceRow struct {
-	Name    string
-	Zone    string
-	GPU     int
-	Cpu     int
-	Memory  int
-	RawData map[string]any
-	Kind    string
+	Name        string
+	Zone        string
+	GPU         int
+	Cpu         int
+	Memory      int
+	RawData     map[string]any
+	Kind        string
+	ChargeTypes []string
 }
 
-// pickDefaultPricingSpec scans the Describe items for the first entry whose Name
-// matches gpuName, then drills MachineSizes.Collection[].Memory for the smallest
-// (CPU + Memory) combo at the requested GPU count. Returns zero-valued spec if
-// extraction fails — caller skips.
-func pickDefaultPricingSpec(gpuName string, items []any, requestedCounts ...int) pricingDefaultSpec {
+// pricingSpecs returns one deterministic minimum CPU/memory spec for every
+// matching zone. Missing zones are rejected instead of being replaced by a
+// hard-coded region.
+func pricingSpecs(gpuName string, items []any, requestedCount int, zoneFilter string) []pricingDefaultSpec {
 	requestedGPU := 1
-	if len(requestedCounts) > 0 && requestedCounts[0] > 0 {
-		requestedGPU = requestedCounts[0]
+	if requestedCount > 0 {
+		requestedGPU = requestedCount
 	}
+	byZone := map[string]pricingDefaultSpec{}
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
 		if !ok {
@@ -223,7 +226,10 @@ func pickDefaultPricingSpec(gpuName string, items []any, requestedCounts ...int)
 		}
 		zone := platform.SafeString(entry, "Zone")
 		if zone == "" {
-			zone = "cn-wlcb-01" // pricing API documents the format; default to wlcb
+			continue
+		}
+		if strings.TrimSpace(zoneFilter) != "" && !strings.EqualFold(zone, strings.TrimSpace(zoneFilter)) {
+			continue
 		}
 		best := pricingDefaultSpec{}
 		sizes := platform.MapSliceAt(entry, "MachineSizes")
@@ -264,9 +270,36 @@ func pickDefaultPricingSpec(gpuName string, items []any, requestedCounts ...int)
 				}
 			}
 		}
-		return best
+		if best.Cpu == 0 || best.Memory == 0 {
+			continue
+		}
+		if current, ok := byZone[zone]; !ok || best.Cpu < current.Cpu ||
+			(best.Cpu == current.Cpu && best.Memory < current.Memory) {
+			byZone[zone] = best
+		}
 	}
-	return pricingDefaultSpec{}
+	zonesSorted := make([]string, 0, len(byZone))
+	for zone := range byZone {
+		zonesSorted = append(zonesSorted, zone)
+	}
+	sort.Strings(zonesSorted)
+	out := make([]pricingDefaultSpec, 0, len(zonesSorted))
+	for _, zone := range zonesSorted {
+		out = append(out, byZone[zone])
+	}
+	return out
+}
+
+func billingTableMatchesRequestedTypes(table map[string]string, requested []string) bool {
+	if len(requested) == 0 {
+		return len(table) > 0
+	}
+	for _, chargeType := range requested {
+		if table[chargeType] != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // pricingNumericInt extracts an int from common JSON-numeric encodings. Returns
@@ -280,6 +313,10 @@ func pricingNumericInt(v any) int {
 	case int:
 		return t
 	case int64:
+		return int(t)
+	case uint32:
+		return int(t)
+	case uint64:
 		return int(t)
 	case string:
 		var n int
@@ -340,6 +377,9 @@ func renderPricingReply(rows []gpuPriceRow) string {
 			continue
 		}
 		for _, key := range []string{"Postpay", "Spot", "Day", "Month"} {
+			if len(row.ChargeTypes) > 0 && !containsExact(row.ChargeTypes, key) {
+				continue
+			}
 			label := pricingLabel(key)
 			val, ok := bill[key]
 			if !ok {
@@ -352,6 +392,15 @@ func renderPricingReply(rows []gpuPriceRow) string {
 		return noPricingReply
 	}
 	return strings.Join(lines, "\n")
+}
+
+func containsExact(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func pricingLabel(chargeType string) string {

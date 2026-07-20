@@ -8,107 +8,70 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMonitorHistoryWindowParserAcceptsChineseRangeExamples(t *testing.T) {
+func TestMonitorHistoryWindowAcceptsStructuredAbsoluteRange(t *testing.T) {
 	start, end, ok := ResolveMonitorHistoryWindow(&TimeWindow{
 		Type:  TimeWindowAbsolute,
-		Value: "2026-05-08 01:00 到 02:00",
+		Start: "2026-05-08 01:00",
+		End:   "2026-05-08 02:00",
 	})
-
 	require.True(t, ok)
 	assert.Equal(t, int64(1778173200), start)
 	assert.Equal(t, int64(1778176800), end)
 }
 
-func TestMonitorHistoryWindowParserAcceptsRelativeHoursSlot(t *testing.T) {
+func TestMonitorHistoryWindowAcceptsRelativeHours(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc
-	monitorNowFunc = func() time.Time {
-		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
-	}
+	monitorNowFunc = func() time.Time { return time.Date(2026, 6, 22, 12, 0, 0, 0, loc) }
 	t.Cleanup(func() { monitorNowFunc = orig })
 
 	start, end, ok := ResolveMonitorHistoryWindow(&TimeWindow{
-		Type:  TimeWindowRelative,
-		Value: "过去 3 小时",
+		Type: TimeWindowRelative, Amount: 3, Unit: "hour",
 	})
-
 	require.True(t, ok)
 	assert.Equal(t, time.Date(2026, 6, 22, 9, 0, 0, 0, loc).Unix(), start)
 	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
 }
 
-func TestMonitorHistoryWindowParserAcceptsRelativeMinutesSlot(t *testing.T) {
+func TestMonitorHistoryWindowAcceptsRelativeMinutes(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc
-	monitorNowFunc = func() time.Time {
-		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
-	}
+	monitorNowFunc = func() time.Time { return time.Date(2026, 6, 22, 12, 0, 0, 0, loc) }
 	t.Cleanup(func() { monitorNowFunc = orig })
 
 	start, end, ok := ResolveMonitorHistoryWindow(&TimeWindow{
-		Type:  TimeWindowRelative,
-		Value: "最近 30 分钟",
+		Type: TimeWindowRelative, Amount: 30, Unit: "minute",
 	})
-
 	require.True(t, ok)
 	assert.Equal(t, time.Date(2026, 6, 22, 11, 30, 0, 0, loc).Unix(), start)
 	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
 }
 
-func TestMonitorHistoryWindowParserAcceptsTodayPresetSlot(t *testing.T) {
+func TestMonitorHistoryWindowYesterdayIsComputedByServer(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc
-	monitorNowFunc = func() time.Time {
-		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
-	}
+	monitorNowFunc = func() time.Time { return time.Date(2026, 7, 20, 14, 0, 0, 0, loc) }
 	t.Cleanup(func() { monitorNowFunc = orig })
 
 	start, end, ok := ResolveMonitorHistoryWindow(&TimeWindow{
-		Type:  TimeWindowPreset,
-		Value: "today",
+		Type: TimeWindowPreset, Preset: "yesterday",
 	})
-
 	require.True(t, ok)
-	assert.Equal(t, time.Date(2026, 6, 22, 0, 0, 0, 0, loc).Unix(), start)
-	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
+	assert.Equal(t, time.Date(2026, 7, 19, 0, 0, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 7, 20, 0, 0, 0, 0, loc).Unix(), end)
 }
 
-func TestMonitorHistoryWindowParserRejectsUnsupportedRelativeSlots(t *testing.T) {
-	orig := monitorNowFunc
-	loc := monitorHistoryLoc
-	monitorNowFunc = func() time.Time {
-		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
+func TestMonitorHistoryWindowRejectsMixedOrInvalidContracts(t *testing.T) {
+	cases := []TimeWindow{
+		{Type: TimeWindowRelative, Amount: 3, Unit: "month"},
+		{Type: TimeWindowRelative, Amount: 0, Unit: "hour"},
+		{Type: TimeWindowRelative, Amount: 3, Unit: "hour", Preset: "yesterday"},
+		{Type: TimeWindowAbsolute, Start: "2026-06-21 10:00", End: "2026-06-21 09:00"},
+		{Type: TimeWindowPreset, Preset: "yesterday", Start: "2025-01-01 00:00"},
+		{Type: TimeWindowPreset, Preset: "yesterday", Timezone: "Mars/Base"},
 	}
-	t.Cleanup(func() { monitorNowFunc = orig })
-
-	cases := []string{
-		"上周",
-		"过去 3 months",
-		"3 hours",
+	for i := range cases {
+		_, _, ok := ResolveMonitorHistoryWindow(&cases[i])
+		assert.False(t, ok, "case %d", i)
 	}
-	for _, value := range cases {
-		t.Run(value, func(t *testing.T) {
-			_, _, ok := ResolveMonitorHistoryWindow(&TimeWindow{
-				Type:  TimeWindowRelative,
-				Value: value,
-			})
-			assert.False(t, ok)
-		})
-	}
-}
-
-func TestMonitorHistoryWindowParserRejectsInvalidAbsoluteClockRange(t *testing.T) {
-	orig := monitorNowFunc
-	loc := monitorHistoryLoc
-	monitorNowFunc = func() time.Time {
-		return time.Date(2026, 6, 22, 12, 0, 0, 0, loc)
-	}
-	t.Cleanup(func() { monitorNowFunc = orig })
-
-	_, _, ok := ResolveMonitorHistoryWindow(&TimeWindow{
-		Type:  TimeWindowAbsolute,
-		Value: "2026-06-21 10:00 到 09:00",
-	})
-
-	assert.False(t, ok, "invalid explicit range must not degrade to a whole-day range")
 }

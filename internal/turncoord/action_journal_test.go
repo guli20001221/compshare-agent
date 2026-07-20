@@ -27,6 +27,8 @@ type journalStoreStub struct {
 	startErr     error
 	reserveInput []store.ReserveActionInput
 	lastStatus   store.ActionStatus
+	lastResult   json.RawMessage
+	lastCode     *string
 }
 
 func (s *journalStoreStub) ListTurnActions(context.Context, store.Owner, string) ([]store.TurnAction, error) {
@@ -54,9 +56,14 @@ func (s *journalStoreStub) StartAction(context.Context, store.Owner, store.Conve
 	return store.TurnAction{TurnID: "turn", Index: 0, ExecutionToken: "token", Status: store.ActionStatusReserved, InFlight: true}, nil
 }
 
-func (s *journalStoreStub) RecordActionWithContext(_ context.Context, _ store.Owner, _ string, status store.ActionStatus, _ json.RawMessage, _ *string, _ *string, _ json.RawMessage) (store.TurnAction, error) {
+func (s *journalStoreStub) RecordActionWithContext(_ context.Context, _ store.Owner, _ string, status store.ActionStatus, result json.RawMessage, code *string, _ *string, _ json.RawMessage) (store.TurnAction, error) {
 	s.recordCalls++
 	s.lastStatus = status
+	s.lastResult = append(s.lastResult[:0], result...)
+	if code != nil {
+		copied := *code
+		s.lastCode = &copied
+	}
 	return store.TurnAction{}, nil
 }
 
@@ -127,6 +134,25 @@ func TestActionJournal_NonDefiniteExternalErrorsBecomeAmbiguous(t *testing.T) {
 			assert.Equal(t, store.ActionStatusAmbiguous, actions.lastStatus)
 		})
 	}
+}
+
+func TestActionJournal_UpstreamBusinessErrorIsRecordedAsDefiniteFailure(t *testing.T) {
+	actions := &journalStoreStub{}
+	journal := NewActionJournal(actions, store.Owner{}, store.ConversationLease{TurnID: "turn"})
+
+	_, err := journal.Execute(context.Background(), "CreateCFS", map[string]any{"Zone": "cn-bj2-03"}, func(context.Context, string, map[string]any) (map[string]any, error) {
+		return nil, tools.NewUpstreamAPIError(230, "CFS already exists")
+	})
+
+	var stored map[string]any
+	require.Error(t, err)
+	require.NoError(t, journal.Err(), "a completed RetCode response must not poison the whole turn")
+	require.Equal(t, store.ActionStatusFailed, actions.lastStatus)
+	require.NotNil(t, actions.lastCode)
+	assert.Equal(t, "upstream_api:230", *actions.lastCode)
+	require.NoError(t, json.Unmarshal(actions.lastResult, &stored))
+	assert.Equal(t, float64(230), stored["code"])
+	assert.Equal(t, "CFS already exists", stored["message"])
 }
 
 func TestActionJournal_PoisonsTurnAfterUnknownOutcome(t *testing.T) {

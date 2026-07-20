@@ -71,6 +71,20 @@ func TestBuildResourceEnvelopeIsStableAndCustomerSafe(t *testing.T) {
 	assert.NotContains(t, hash, strings.Repeat("b", 25))
 }
 
+func TestBuildResourceEnvelope_NoGPUDoesNotExposeTheStoredGPUModel(t *testing.T) {
+	env := BuildResourceEnvelope([]entity.InstanceSnapshot{{
+		UHostId: "uhost-a", State: "Running", GpuType: "4090", GPU: 0, CPU: 2, Memory: 4096,
+	}})
+	facts := map[string]any{}
+	for _, fact := range env.Facts {
+		facts[fact.Key] = fact.Value
+	}
+
+	assert.Equal(t, "0", facts["gpu_count"])
+	assert.Equal(t, "无卡", facts["gpu_mode"])
+	assert.NotContains(t, facts, "gpu_type")
+}
+
 func TestBuildResourceEnvelopeWithFilterMeta(t *testing.T) {
 	instances := []entity.InstanceSnapshot{{
 		UHostId: "uhost-a",

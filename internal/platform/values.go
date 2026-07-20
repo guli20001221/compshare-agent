@@ -81,8 +81,13 @@ func TimeWindowTypeValues() []string {
 
 // TimeWindow is a structured monitor-history window.
 type TimeWindow struct {
-	Type  TimeWindowType `json:"type"`
-	Value string         `json:"value"`
+	Type     TimeWindowType `json:"type"`
+	Preset   string         `json:"preset,omitempty"`
+	Amount   int            `json:"amount,omitempty"`
+	Unit     string         `json:"unit,omitempty"`
+	Start    string         `json:"start,omitempty"`
+	End      string         `json:"end,omitempty"`
+	Timezone string         `json:"timezone,omitempty"`
 }
 
 // ImageSource selects which image catalog an image-list capability queries.

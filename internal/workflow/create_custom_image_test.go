@@ -248,6 +248,57 @@ func TestCreateCustomImage_StoppedContainerSourceBlockedBeforeConfirmation(t *te
 	assert.False(t, created)
 }
 
+func TestCreateCustomImage_2C4GWithoutGpuVMBlockedBeforeConfirmation(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-no-gpu", "InstanceType": "UHost", "State": "Stopped",
+				"Region": "cn-sh2", "Zone": "cn-sh2-02", "GPU": float64(0),
+				"CPU": float64(2), "Memory": float64(4096),
+				"WithoutGpuSpec": map[string]any{"Spec": "A", "Cpu": float64(2), "Memory": float64(4096)},
+			}},
+		},
+	}}
+	confirmCalls := 0
+	eng := NewEngine(executor, func(_ string, _ map[string]any) bool {
+		confirmCalls++
+		return true
+	}, nil)
+	result, err := eng.Run(context.Background(), CreateCustomImageDef(), map[string]any{
+		"UHostId": "uhost-no-gpu", "Name": "snapshot",
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Contains(t, result.Message, "2C/4GB 无卡模式")
+	assert.Zero(t, confirmCalls)
+	_, created := findExecutorCall(executor.calls, "CreateCompShareCustomImage")
+	assert.False(t, created)
+}
+
+func TestCreateCustomImage_8C16GWithoutGpuVMMayReachConfirmation(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-no-gpu-b", "InstanceType": "UHost", "State": "Stopped",
+				"Region": "cn-sh2", "Zone": "cn-sh2-02", "GPU": float64(0),
+				"CPU": float64(8), "Memory": float64(16384),
+				"WithoutGpuSpec": map[string]any{"Spec": "B", "Cpu": float64(8), "Memory": float64(16384)},
+			}},
+		},
+	}}
+	confirmCalls := 0
+	eng := NewEngine(executor, func(_ string, _ map[string]any) bool {
+		confirmCalls++
+		return false
+	}, nil)
+	result, err := eng.Run(context.Background(), CreateCustomImageDef(), map[string]any{
+		"UHostId": "uhost-no-gpu-b", "Name": "snapshot",
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Equal(t, 1, confirmCalls)
+}
+
 func TestCreateCustomImage_ProgressFailureDoesNotHideCreatedImage(t *testing.T) {
 	executor := customImageMockExecutor()
 	executor.failOn = "GetCompShareImageCreateProgress"

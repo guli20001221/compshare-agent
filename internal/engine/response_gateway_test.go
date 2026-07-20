@@ -47,3 +47,12 @@ func TestResponseGatewaySubstitutesOnlyAgentSelectedObservationBlocks(t *testing
 	require.Equal(t, "结论如下：\n精确价格表", substituteReadObservationBlocks("结论如下：\n{{READ_OBSERVATION_2}}", evidence))
 	require.Equal(t, "只做解释，不展示精确表格。", substituteReadObservationBlocks("只做解释，不展示精确表格。", evidence))
 }
+
+func TestResponseGatewayNeverShipsToolProtocolMarkup(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	reply := eng.finalizeResponse(context.Background(), "给实例重置密码",
+		`<｜DSML｜invoke name="RequestResetPassword">{"Password":"Secret123!"}`)
+	require.Equal(t, malformedToolProtocolReply, reply)
+	require.NotContains(t, reply, "Secret123!")
+	require.NotContains(t, reply, "DSML")
+}

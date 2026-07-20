@@ -11,10 +11,9 @@ import (
 // per-operation Request<Operation> tool and maps it back to its operation, and
 // that the retired ProposeAction_<Operation> alias is gone. It does NOT — and its
 // old name "FirstHopIsRequest" misleadingly implied it did — assert that the real
-// model actually calls RequestCreateInstance first on a create turn; that is a
-// model-behavior property, proven by the forced-first-decision structural gates
-// (first_decision_test.go) and the real-model create acceptance, not by the tool
-// list. Renamed to stop it manufacturing false safety about first-hop behavior.
+// model actually calls RequestCreateInstance first on a create turn. That is a
+// model-behavior property for real acceptance, not something a tool-list test can
+// prove.
 func TestProposalToolExposureAndMapping(t *testing.T) {
 	names := centralAgentToolNames(true)
 	require.Contains(t, names, "RequestCreateInstance",
@@ -47,4 +46,20 @@ func TestRequestToolDescriptionUsesSingleContractSource(t *testing.T) {
 		"the per-op description must open with the single contract preamble")
 	require.True(t, strings.HasSuffix(desc, proposalInvocationContractSuffix),
 		"the per-op description must close with the single contract suffix")
+}
+
+func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {
+	var description string
+	var parameters any
+	for _, tool := range centralAgentToolWindow(true) {
+		if tool.Function != nil && tool.Function.Name == "RequestResetPassword" {
+			description = tool.Function.Description
+			parameters = tool.Function.Parameters
+			break
+		}
+	}
+	require.NotEmpty(t, description)
+	require.Contains(t, description, "敏感值已由服务端安全接收")
+	properties := parameters.(map[string]any)["properties"].(map[string]any)
+	require.NotContains(t, properties, "Password")
 }

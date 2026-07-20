@@ -560,7 +560,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "StartInstanceWorkflow",
-			Description: "开机工作流。用户要求开机时使用此工具。支持无卡模式（WithoutGpu=true）：不分配 GPU，仅用于数据拷贝或维护，费用更低。",
+			Description: "开机工作流。用户要求开机时使用此工具。需要无卡开机时提交上游真实档位 A（2C/4GB）或 B（8C/16GB）；普通开机不提交该字段。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -568,9 +568,10 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "要开机的实例 ID",
 					},
-					"WithoutGpu": map[string]any{
-						"type":        "boolean",
-						"description": "无卡模式开机，不分配 GPU，仅用于数据访问/维护，费用更低。默认 false（正常带卡开机）。",
+					"WithoutGpuSpec": map[string]any{
+						"type":        "string",
+						"enum":        []string{"A", "B"},
+						"description": "可选。无卡开机档位：A=2C/4GB，B=8C/16GB；容器实例仅支持 A。普通带卡开机时省略。",
 					},
 				},
 				"required": []string{"UHostId"},
@@ -649,16 +650,30 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "要设置定时关机的实例 ID",
 					},
-					"AfterMinutes": map[string]any{
-						"type":        "number",
-						"description": "几分钟后关机（正整数，最小 5）。与 ShutdownAt 二选一。如：60 表示 1 小时后关机。",
-					},
-					"ShutdownAt": map[string]any{
-						"type":        "string",
-						"description": "指定关机时间。支持格式：2026-04-16 23:00（按北京时间解析）或 RFC3339。与 AfterMinutes 二选一。",
+					"Schedule": map[string]any{
+						"type":        "object",
+						"description": "关机时间的结构化含义。用户说“今天/明天”时必须使用对应 mode，不要自行换算日期。",
+						"properties": map[string]any{
+							"mode": map[string]any{
+								"type": "string", "enum": []string{"after_minutes", "today", "tomorrow", "absolute"},
+							},
+							"minutes": map[string]any{
+								"type": "integer", "minimum": 5, "description": "仅 mode=after_minutes。",
+							},
+							"local_time": map[string]any{
+								"type": "string", "description": "仅 mode=today/tomorrow，格式 HH:MM。",
+							},
+							"at": map[string]any{
+								"type": "string", "description": "仅 mode=absolute，必须来自用户明确写出的完整日期时间。",
+							},
+							"timezone": map[string]any{
+								"type": "string", "enum": []string{"Asia/Shanghai", "UTC"},
+							},
+						},
+						"required": []string{"mode"},
 					},
 				},
-				"required": []string{"UHostId"},
+				"required": []string{"UHostId", "Schedule"},
 			},
 		},
 	},
