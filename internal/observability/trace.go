@@ -983,7 +983,19 @@ type OutcomeTrace struct {
 	// else continue / request:<Tool> / a fail_* / a degraded_* / skipped. Lets a
 	// dashboard prove the forcing fired, which write was proposed, and — crucially
 	// — that a degraded_* turn was NOT scored as a structural guarantee.
-	FirstDecisionOutcome       string `json:"first_decision_outcome,omitempty"`
+	FirstDecisionOutcome string `json:"first_decision_outcome,omitempty"`
+	// FirstDecisionRetryOutcome records the FIRST forced-probe outcome when a
+	// zero-tool response triggered the single bounded retry ("fail_no_tool_text" /
+	// "fail_no_tool_empty"), "" when no retry ran. Distinct from FirstDecisionOutcome
+	// (the FINAL outcome) so a dashboard counts zero-tool events even when the retry
+	// recovered to a request:/continue.
+	FirstDecisionRetryOutcome string `json:"first_decision_retry_outcome,omitempty"`
+	// ActionProposalDisposition records what the resolver did with a write proposal
+	// this turn — "confirmation"/"intake_form" when it carded, else the reason it did
+	// not ("rejected:<slot>=<kind>", "missing:<fields>", "dependency_failure", ...).
+	// "" when no proposal ran. Attributes why a create did or did not card without
+	// re-running the model.
+	ActionProposalDisposition  string `json:"action_proposal_disposition,omitempty"`
 	TotalLatencyMS             int64  `json:"total_latency_ms,omitempty"`
 	TotalTokens                int    `json:"total_tokens,omitempty"`
 	PromptTokens               int    `json:"prompt_tokens,omitempty"`
@@ -1259,7 +1271,9 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		len(trace.PromptSectionIDs) > 0 ||
 		trace.MemoryUpdateSource != "" ||
 		trace.GroundingOutcome != "" ||
-		trace.FirstDecisionOutcome != ""
+		trace.FirstDecisionOutcome != "" ||
+		trace.FirstDecisionRetryOutcome != "" ||
+		trace.ActionProposalDisposition != ""
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {

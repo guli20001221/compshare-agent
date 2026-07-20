@@ -312,10 +312,12 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		reply, err := eng.Chat(ctx, input, onStep)
 		if traceRecorder != nil {
 			traceRecorder.SetTerminalSignals(observability.FinishSignals{
-				ReplyEmpty:           strings.TrimSpace(reply) == "",
-				ReactRounds:          eng.ReactRoundsThisTurn(),
-				RoundCeilingHit:      eng.ReactCeilingHitThisTurn(),
-				FirstDecisionOutcome: eng.FirstDecisionOutcomeThisTurn(),
+				ReplyEmpty:                strings.TrimSpace(reply) == "",
+				ReactRounds:               eng.ReactRoundsThisTurn(),
+				RoundCeilingHit:           eng.ReactCeilingHitThisTurn(),
+				FirstDecisionOutcome:      eng.FirstDecisionOutcomeThisTurn(),
+				FirstDecisionRetryOutcome: eng.FirstDecisionRetryFirstOutcome(),
+				ActionProposalDisposition: eng.ActionProposalDispositionThisTurn(),
 			})
 			sessState, _, hydrated := eng.SessionStateSnapshot()
 			traceRecorder.SetStateTrace(observability.StateTrace{

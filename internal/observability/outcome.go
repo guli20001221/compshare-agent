@@ -73,6 +73,12 @@ type FinishSignals struct {
 	// continue / request:<Tool> / a fail_* / a degraded_* / skipped. Recorded
 	// verbatim onto OutcomeTrace so degrade cases are visibly non-structural.
 	FirstDecisionOutcome string
+	// FirstDecisionRetryOutcome (engine.FirstDecisionRetryFirstOutcome) and
+	// ActionProposalDisposition (engine.ActionProposalDispositionThisTurn) are
+	// stamped onto OutcomeTrace so a restart can still reconstruct a zero-tool event
+	// masked by a successful retry, and why a create did or did not reach a card.
+	FirstDecisionRetryOutcome string
+	ActionProposalDisposition string
 }
 
 // FinalizeOutcome stamps the four outcome-attribution axes (plus react_rounds /
@@ -89,6 +95,12 @@ func (r *TraceRecord) FinalizeOutcome(s FinishSignals) {
 	}
 	if s.FirstDecisionOutcome != "" {
 		r.Outcome.FirstDecisionOutcome = s.FirstDecisionOutcome
+	}
+	if s.FirstDecisionRetryOutcome != "" {
+		r.Outcome.FirstDecisionRetryOutcome = s.FirstDecisionRetryOutcome
+	}
+	if s.ActionProposalDisposition != "" {
+		r.Outcome.ActionProposalDisposition = s.ActionProposalDisposition
 	}
 	r.Outcome.BudgetHit = r.budgetExhausted(s)
 }

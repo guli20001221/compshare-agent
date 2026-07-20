@@ -367,6 +367,8 @@ func (r *Recorder) Finish(chatErr, attemptErr error, reply string, snapshot engi
 	r.terminalSignals.ReactRounds = snapshot.ReactRounds
 	r.terminalSignals.RoundCeilingHit = snapshot.RoundCeilingHit
 	r.terminalSignals.FirstDecisionOutcome = snapshot.FirstDecisionOutcome
+	r.terminalSignals.FirstDecisionRetryOutcome = snapshot.FirstDecisionRetryOutcome
+	r.terminalSignals.ActionProposalDisposition = snapshot.ActionProposalDisposition
 	r.terminalSignals.ChatErr = attemptErr
 	if r.terminalSignals.ChatErr == nil {
 		r.terminalSignals.ChatErr = chatErr

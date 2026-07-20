@@ -31,6 +31,8 @@ type TraceSnapshot struct {
 	ReactRounds               int
 	RoundCeilingHit           bool
 	FirstDecisionOutcome      string
+	FirstDecisionRetryOutcome string
+	ActionProposalDisposition string
 	SessionState              SessionState
 	ContextVersion            int
 	SessionStateHydrated      bool
@@ -73,6 +75,8 @@ func (e *Engine) TraceSnapshot(now time.Time) TraceSnapshot {
 		ReactRounds:               e.ReactRoundsThisTurn(),
 		RoundCeilingHit:           e.ReactCeilingHitThisTurn(),
 		FirstDecisionOutcome:      e.FirstDecisionOutcomeThisTurn(),
+		FirstDecisionRetryOutcome: e.FirstDecisionRetryFirstOutcome(),
+		ActionProposalDisposition: e.ActionProposalDispositionThisTurn(),
 		SessionState:              state,
 		ContextVersion:            version,
 		SessionStateHydrated:      hydrated,

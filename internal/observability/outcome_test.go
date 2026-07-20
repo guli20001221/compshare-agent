@@ -218,6 +218,32 @@ func TestFinalizeOutcome_StampsFirstDecisionOutcome(t *testing.T) {
 	}
 }
 
+// TestFinalizeOutcome_StampsRetryAndDisposition pins the two create-chain
+// attribution axes onto the persisted trace: a zero-tool event masked by a
+// successful retry (first_decision_retry_outcome) and the resolver disposition
+// (action_proposal_disposition), so a restart can reconstruct why a create did or
+// did not card. Both stay omitted when unset (SHA-stable for turns without them).
+func TestFinalizeOutcome_StampsRetryAndDisposition(t *testing.T) {
+	rec := TraceRecord{}
+	rec.FinalizeOutcome(FinishSignals{
+		FirstDecisionRetryOutcome: "fail_no_tool_empty",
+		ActionProposalDisposition: "rejected:Zone=invalid_value",
+	})
+	if rec.Outcome.FirstDecisionRetryOutcome != "fail_no_tool_empty" {
+		t.Errorf("first_decision_retry_outcome = %q, want fail_no_tool_empty", rec.Outcome.FirstDecisionRetryOutcome)
+	}
+	if rec.Outcome.ActionProposalDisposition != "rejected:Zone=invalid_value" {
+		t.Errorf("action_proposal_disposition = %q, want rejected:Zone=invalid_value", rec.Outcome.ActionProposalDisposition)
+	}
+
+	none := TraceRecord{}
+	none.FinalizeOutcome(FinishSignals{ReactRounds: 1})
+	if none.Outcome.FirstDecisionRetryOutcome != "" || none.Outcome.ActionProposalDisposition != "" {
+		t.Errorf("both must stay empty when unset; got retry=%q disposition=%q",
+			none.Outcome.FirstDecisionRetryOutcome, none.Outcome.ActionProposalDisposition)
+	}
+}
+
 func TestFinalizeOutcome_RoundCeilingBudget(t *testing.T) {
 	rec := TraceRecord{}
 	rec.FinalizeOutcome(FinishSignals{RoundCeilingHit: true, ReactRounds: 10})
