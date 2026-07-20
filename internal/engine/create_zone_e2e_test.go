@@ -71,9 +71,13 @@ func TestResolveCreateWithInvalidChineseZoneEntersFormEndToEnd(t *testing.T) {
 // verifies with, so the expected outcome is that a value EITHER becomes
 // user_explicit-that-verifies OR stays agent_inference-that-bypasses — never
 // user_explicit-that-fails-verification. It records (value-free) the re-derived
-// source + rejection kind per slot for audit, and fails if unverified_source ever
-// appears. If a live gate later shows unverified_source, the model proposed a value
-// that does not match a standalone span (a proposal-shape issue), NOT this path.
+// source + rejection kind per slot for audit, and asserts the EXACT re-derived
+// source of each field so an all-degrade-to-agent_inference regression cannot pass
+// silently. A non-standalone span does NOT reach unverified_source — it stays
+// agent_inference — so if a LIVE gate ever shows unverified_source, suspect the run
+// is not this commit, the process was not restarted, a different proposal entry was
+// taken, the source was re-modified after re-derivation, or the diagnostic is from
+// an older round — NOT this path.
 func TestChineseCreateProvenanceReproduction(t *testing.T) {
 	exec := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
 		switch action {
@@ -113,6 +117,28 @@ func TestChineseCreateProvenanceReproduction(t *testing.T) {
 	}
 	for _, rp := range resolved.action.RejectedProblems {
 		t.Logf("rejected slot=%s kind=%s", rp.Slot, rp.Kind.String())
+	}
+
+	// Assert the EXACT re-derived source per field, not just "no unverified_source":
+	// GpuType/ImageName are space-delimited standalone spans → user_explicit; Zone
+	// "华北一C" is CJK-adjacent → agent_inference (bypasses the span check, then
+	// catalog-resolves). Without this, a regression that degraded every field to
+	// agent_inference — or wrongly marked one user_explicit-that-fails — would still
+	// pass the no-unverified_source check.
+	wantSource := map[string]actionresolver.CandidateSource{
+		"GpuType":   actionresolver.SourceUserExplicit,
+		"ImageName": actionresolver.SourceUserExplicit,
+		"Zone":      actionresolver.SourceAgentInference,
+	}
+	for slot, want := range wantSource {
+		p, ok := resolved.action.Provenance[slot]
+		if !ok {
+			t.Errorf("slot %s absent from provenance; want source %s", slot, want)
+			continue
+		}
+		if p.Source != want {
+			t.Errorf("slot %s re-derived source = %s, want %s", slot, p.Source, want)
+		}
 	}
 
 	for _, rp := range resolved.action.RejectedProblems {
