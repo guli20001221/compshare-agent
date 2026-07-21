@@ -39,8 +39,17 @@ type ImageCatalogSnapshot struct {
 // from the "True/False" string field (pkg/api:77): a hard runtime-form constraint
 // (a pod cannot run a VM image), true only when explicitly "True".
 type ImageCatalogEntry struct {
-	ID                string
-	Name              string
+	ID   string
+	Name string
+	// FamilyName is the community group (series) name — the recognizable name a user
+	// refers to ("InfiniteTalk"). "" for platform rows, which carry no group.
+	FamilyName string
+	// VersionName is the per-version label upstream carries on a community version row
+	// ("v26.0201"); "" = honest absence, never a fabricated one. It exists because Name
+	// is NOT unique within a family: ParseCommunityImageEntries overwrites every version
+	// row's Name with the family name, so a picker labelled by Name alone renders N
+	// identical choices and the user selects a version blind.
+	VersionName       string
 	Source            string // platform | community | custom | sharing
 	ImageType         string // System | App | Custom | Community
 	Status            string // "" (unknown, treated usable) | Available | Offline | ...
@@ -62,6 +71,23 @@ type ImageCatalogEntry struct {
 	SizeMB      float64 // image size in MB (Size), for reinstall disk sizing
 	CreateTime  int64
 	PubTime     int64
+}
+
+// DisplayLabel is the label a picker/card must show for this row: the name plus the
+// version when one is known ("InfiniteTalk · v26.0201"). Every version row of a
+// community family shares one Name, so a caller that labels by Name alone offers the
+// user N indistinguishable choices — selecting a version becomes a blind guess. When
+// no version is known the label degrades to the plain name (honest, not fabricated).
+func (e ImageCatalogEntry) DisplayLabel() string {
+	name := strings.TrimSpace(e.Name)
+	version := strings.TrimSpace(e.VersionName)
+	if version == "" || strings.EqualFold(name, version) {
+		return name
+	}
+	if name == "" {
+		return version
+	}
+	return name + " · " + version
 }
 
 // SoftwareFacts mirrors upstream SoftwareDetail (pkg/api describe_compshare_images.go
@@ -231,7 +257,16 @@ func ParseCommunityImageEntries(result map[string]any) []ImageCatalogEntry {
 			// and the create card shows ("Stable Diffusion WebUI"), not the per-version
 			// row name ("SD WebUI v1.9"). Prefer it; fall back to the row name only when
 			// the group carries none.
+			//
+			// Overwriting Name erases the ONLY thing that distinguished two rows of the
+			// same family, so capture the version identity first: upstream's VersionName
+			// if it sent one, else the row's own name when it actually differs from the
+			// family name. Without this the picker shows N identical labels.
 			if groupName != "" {
+				e.FamilyName = groupName
+				if e.VersionName == "" && e.Name != "" && !strings.EqualFold(e.Name, groupName) {
+					e.VersionName = e.Name
+				}
 				e.Name = groupName
 			}
 			out = append(out, e)
@@ -255,9 +290,18 @@ func imageEntryFromMap(img map[string]any, source string) (ImageCatalogEntry, bo
 	if name == "" {
 		name = asString(img, "ImageName")
 	}
+	// The per-version label upstream sends on a community version row. Same key order
+	// the read capability already uses (communityVersionLabel), minus the "Name"
+	// fallback: Name is handled separately below so an absent version stays absent
+	// rather than silently echoing the family name.
+	version := asString(img, "VersionName")
+	if version == "" {
+		version = asString(img, "Version")
+	}
 	e := ImageCatalogEntry{
 		ID:                id,
 		Name:              name,
+		VersionName:       version,
 		Source:            source,
 		ImageType:         asString(img, "ImageType"),
 		Status:            asString(img, "Status"),

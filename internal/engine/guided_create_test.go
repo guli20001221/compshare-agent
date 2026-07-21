@@ -35,14 +35,16 @@ func TestExecuteWorkflow_GuidedCreateLocksExplicitGPU(t *testing.T) {
 	eng.confirmEditsFn = func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
-		if form.Step.Index == 1 {
-			gpu := form.Field("GpuType")
-			require.NotNil(t, gpu)
+		// Image-first reorder: the GPU step is no longer step 1 (the image SOURCE
+		// leads). Advance through the image steps until the GPU field appears, then
+		// capture its options and stop — position-independent.
+		if gpu := form.Field("GpuType"); gpu != nil {
 			for _, opt := range gpu.Options {
 				gpuOptions = append(gpuOptions, opt.Value)
 			}
+			return workflow.ConfirmResolution{Confirmed: false}
 		}
-		return workflow.ConfirmResolution{Confirmed: false}
+		return workflow.ConfirmResolution{Confirmed: true}
 	}
 
 	_ = eng.executeResolvedWorkflow(context.Background(), mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)
@@ -93,10 +95,13 @@ func TestExecuteWorkflow_GuidedCreateDoesNotOverrideResolvedGPUFromUserText(t *t
 	var seenGpuArgs []string
 	eng.confirmEditsFn = func(_ string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
 		require.NotNil(t, form)
+		// Image-first reorder: advance through the image steps until the resolved
+		// GpuType reaches the confirm args (the GPU step), then verify it and stop.
 		if gt, _ := args["GpuType"].(string); gt != "" {
 			seenGpuArgs = append(seenGpuArgs, gt)
+			return workflow.ConfirmResolution{Confirmed: false}
 		}
-		return workflow.ConfirmResolution{Confirmed: false}
+		return workflow.ConfirmResolution{Confirmed: true}
 	}
 
 	_ = eng.executeResolvedWorkflow(context.Background(), mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090"}, zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)

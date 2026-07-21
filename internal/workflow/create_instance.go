@@ -12,15 +12,23 @@ import (
 // defaultZone is the default availability zone per API docs (cn-wlcb-01, not cn-wlcb-a).
 const defaultZone = "cn-wlcb-01"
 
+// Guided wizard step order. Image is resolved BEFORE the hardware specs so that
+// (1) the GPU list can be constrained to the chosen image's SupportedGpuTypes and
+// (2) the 卡数量 / CPU-内存 options can be gated by a CheckCompShareResourceCapacity
+// call that requires the real image. When the image is already known (recommended
+// or explicitly named) the image steps skip and the flow starts at GPU. The
+// numeric values are wizard order only; guidedStepPosition derives the visible
+// "第N步" index from this order, so reordering here reorders the card.
 const (
-	guidedStepGPU = iota + 1
+	guidedStepImageSource = iota + 1
+	guidedStepImageFacets
+	guidedStepImage
+	guidedStepGPU
 	guidedStepZone
 	guidedStepGPUCount
 	guidedStepCPUMemory
-	guidedStepImageSource
-	guidedStepImageFacets
-	guidedStepImage
 	guidedStepFinal
+	guidedStepFirst = guidedStepImageSource
 )
 
 // resolveTargetSpec selects the target (gpu, cpu, memoryMB, zone) for instance
@@ -264,8 +272,13 @@ func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64,
 // the user sealed.
 func CreateInstanceDef() *Definition {
 	return &Definition{
-		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认 → 创建实例 → 查看状态",
+		Name: "CreateInstanceWorkflow",
+		// Model-facing: this string becomes the RequestCreateInstance tool description
+		// (actionresolver/catalog.go -> engine/dispatch_window.go). It states WHEN the
+		// operation applies so the trigger decision lives with the tool, not as rules in
+		// the shared behavior prompt. The internal step list was removed: it described
+		// the server's own pipeline and primed the Agent to re-run those reads itself.
+		Description: "适用场景：用户要你实际为他创建/开一台实例——此时提交本操作；用户问的是创建的方法、步骤或可行性时，直接回答即可。提交时带上此刻已明确的 GPU、镜像、可用区、计费方式等、其余留空；即使镜像或可用区还只是用户的口头说法、尚未确定，也照样提交，由确认卡和服务端去核对并与用户逐项确认，你不必先查清或替卡片问全。提交后不会直接执行——服务端会查镜像、配比、库存、价格，再走确认与创建。",
 		Steps: []Step{
 			stepQueryImages(false),
 			stepQueryInstanceTypes(),
@@ -302,14 +315,22 @@ func CreateInstanceGuidedDef() *Definition {
 			stepQueryImages(true),
 			stepQueryInstanceTypes(),
 			stepQueryGPUInventory(),
-			stepGuidedChooseGPU(),
-			stepGuidedChooseZone(),
-			stepGuidedChooseGPUCount(),
-			stepGuidedChooseCPUMemory(),
+			// Image is chosen first: the GPU list is then constrained to the
+			// selected image's SupportedGpuTypes, and 卡数量 / CPU-内存 are gated by a
+			// capacity check that needs the real image. Image steps skip when the
+			// image is already known, so those flows start at GPU.
 			stepGuidedChooseImageSource(),
 			stepReQuerySelectedSourceImages(),
 			stepGuidedChooseImageFacets(),
 			stepGuidedChooseImage(),
+			stepGuidedChooseGPU(),
+			stepGuidedChooseZone(),
+			// Real creatability (ResourceEnough) for the resolved image+GPU+zone,
+			// fetched before the count / CPU-memory steps so their options can be
+			// gated by it rather than the static catalog + raw inventory.
+			stepQueryCapacitySpecs(),
+			stepGuidedChooseGPUCount(),
+			stepGuidedChooseCPUMemory(),
 			// Runs while 选择镜像's seal is still live — hence the rule that a
 			// resolve step may not write Params, which would break that digest.
 			stepResolveCreateDraft(),
@@ -516,6 +537,70 @@ func stepCheckCapacity() Step {
 			return CheckFailed(fmt.Sprintf("库存中未找到 %s %.0f 卡 / %.0fC / %.0fGB 的规格组合，请确认配置是否正确。", gt, gpu, cpu, memGB))
 		},
 	}
+}
+
+const capacitySpecsStepName = "查询容量规格"
+
+// stepQueryCapacitySpecs fetches CheckCompShareResourceCapacity.Specs for the
+// resolved image + GPU + zone BEFORE the 卡数量 / CPU-内存 steps, so those option
+// builders can gate combinations by real creatability (ResourceEnough) instead of
+// the static legal catalog plus the unreliable raw GPU inventory. This is the same
+// signal the official CLI uses for "in stock"; the authoritative negative still
+// comes from the final 检查库存 re-check of the sealed config. Optional and skipped
+// until a concrete image is resolved — capacity depends on the image and must not
+// run before the user has one (asserted by TestCreateInstanceGuided_* timing tests).
+func stepQueryCapacitySpecs() Step {
+	return Step{
+		Name:     capacitySpecsStepName,
+		Type:     StepToolCall,
+		Tool:     "CheckCompShareResourceCapacity",
+		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			_, ok := guidedCapacityArgs(wfCtx)
+			return !ok, nil
+		},
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			args, ok := guidedCapacityArgs(wfCtx)
+			if !ok {
+				return nil, fmt.Errorf("容量规格查询缺少必要参数")
+			}
+			return args, nil
+		},
+	}
+}
+
+// guidedCapacityArgs builds the CheckCompShareResourceCapacity request from the
+// current params (image + GPU + zone + boot disk + placement), mirroring the
+// draft's UpstreamCapacityArgs but usable BEFORE the draft is formed. Returns
+// ok=false when a concrete image or GPU is not yet resolved or the zone/placement
+// cannot be determined — the caller then skips the fetch and the option builders
+// fall back to the legal catalog (absence of a capacity signal is never "no stock").
+func guidedCapacityArgs(wfCtx *Context) (map[string]any, bool) {
+	gpuType := paramStr(wfCtx.Params, "GpuType", "")
+	if gpuType == "" {
+		return nil, false
+	}
+	imageID := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
+	if imageID == "" {
+		return nil, false
+	}
+	_, _, _, zone, err := resolveTargetSpec(wfCtx)
+	if err != nil || zone == "" {
+		return nil, false
+	}
+	placement, err := workflowZonePlacement(wfCtx, zone)
+	if err != nil {
+		return nil, false
+	}
+	args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
+		Zone:               zone,
+		GPUType:            gpuType,
+		CompShareImageID:   imageID,
+		ChargeType:         createChargeType(wfCtx.Params),
+		Disks:              workflowSystemDisks(wfCtx, imageID, zone, gpuType),
+		MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gpuType, zone),
+	})
+	return deployment.ApplyCapacityPlacementArgs(args, placement), true
 }
 
 func stepGetPrice() Step {
@@ -1819,7 +1904,7 @@ func guidedStepLabel(wfCtx *Context, logical int) string {
 
 func guidedStepPosition(wfCtx *Context, logical int) (int, int) {
 	index, total := 0, 0
-	for step := guidedStepGPU; step <= guidedStepFinal; step++ {
+	for step := guidedStepFirst; step <= guidedStepFinal; step++ {
 		visible := guidedStepReached(wfCtx, step) || step == logical || !guidedStepSkipped(wfCtx, step)
 		if !visible {
 			continue
@@ -2009,16 +2094,23 @@ func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
 	if initialParamSet(wfCtx, "CompShareImageId") {
 		return true, nil
 	}
-	if strings.TrimSpace(paramStr(wfCtx.InitialParams, "ImageName", "")) != "" {
-		return true, nil
-	}
 	// The concrete image step is the community picker; platform images are chosen in
 	// the final form. It shows only when the source is community (source is the single
 	// authority now — the deleted ImagePurpose enum no longer switches it).
 	isCommunity := strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")), "community")
 	if !isCommunity {
+		// A platform ImageName resolves deterministically in the final form, so a
+		// named platform image needs no picker. (For platform, this branch already
+		// returns skip regardless of the name.)
 		return true, nil
 	}
+	// Community: a provided ImageName is NOT a concrete CompShareImageId and is usually
+	// ambiguous across versions, so the picker MUST run to resolve one — even when the
+	// user named the image. Skipping on the name (the old behavior) left the image
+	// unresolved: create then failed at materializeCreateDraft with "社区镜像未返回有效的
+	// 镜像 ID", and because there was no concrete image id the GPU list was never
+	// constrained by SupportedGpuTypes and the capacity precheck (guidedCapacityArgs)
+	// was skipped — so every card/spec showed as selectable regardless of the image.
 	return false, nil
 }
 
@@ -2988,11 +3080,17 @@ func (inv guidedInventory) total(zones []string, gpuType string) (float64, bool)
 	return total, known
 }
 
+// guidedStockNote renders the raw DescribeCompShareGpuInventory reading. That source is
+// a SNAPSHOT and is not authoritative — real creatability comes from
+// CheckCompShareResourceCapacity (which needs a GPU type + zone as input, so it cannot
+// gate this earlier step) and finally from 检查库存 on the sealed config. The wording
+// must therefore never read as a promise: a card that said a sold-out GPU was available
+// is exactly the reported failure.
 func guidedStockNote(count float64) string {
 	if count <= 0 {
 		return "库存快照为 0，待确认"
 	}
-	return fmt.Sprintf("库存约 %.0f 张 GPU", count)
+	return fmt.Sprintf("库存快照约 %.0f 张 GPU，待确认", count)
 }
 
 func guidedStockFitNote(free, requested float64) string {
@@ -3116,7 +3214,12 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 			if stockKnown {
 				noteParts = append(noteParts, guidedStockNote(stock))
 			} else {
-				noteParts = append(noteParts, "可售")
+				// Status==Normal means the model is ON SALE in the catalog — it is NOT
+				// evidence that stock exists right now, and no capacity reading is
+				// available at this step. Saying "可售" turned that catalog fact into an
+				// availability promise, which is how a sold-out GPU was offered as
+				// available. State the catalog fact and defer the verdict.
+				noteParts = append(noteParts, "在售，库存以最终确认为准")
 			}
 		}
 		if !ch.normal {
@@ -3285,6 +3388,7 @@ func guidedGPUCountFormOptions(wfCtx *Context, catalog map[string]any, gpuType, 
 		return 0, nil
 	}
 	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
+	capSpecs := parseCapacitySpecs(wfCtx.Result(capacitySpecsStepName))
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
 	types, _ := catalog["AvailableInstanceTypes"].([]any)
@@ -3324,6 +3428,13 @@ func guidedGPUCountFormOptions(wfCtx *Context, catalog map[string]any, gpuType, 
 				fit := guidedStockFitNote(free, gpu)
 				note = fmt.Sprintf("%s · %s · %s", gpuType, zoneLabel, fit)
 			}
+			// Gate by real creatability: disable a card count only when the capacity
+			// check enumerated it and found it short. Counts capacity never evaluated
+			// stay enabled — the final 检查库存 re-check is the authoritative negative.
+			if capacityHasSignal(capSpecs) && capacityKnowsGPUCount(capSpecs, int(gpu)) && !capacityGPUCountEnough(capSpecs, int(gpu)) {
+				disabled = true
+				disabledReason = "该卡数当前无可创建库存"
+			}
 			opt := ConfirmFormOption{
 				Value:    value,
 				Label:    fmt.Sprintf("%.0f 张 GPU", gpu),
@@ -3343,6 +3454,14 @@ func guidedGPUCountFormOptions(wfCtx *Context, catalog map[string]any, gpuType, 
 			}
 		}
 	}
+	// A capacity gate must never dead-end the flow: if it disabled every count,
+	// keep them selectable and let the authoritative 检查库存 report the shortage.
+	if firstEnabledValue(opts) == "" {
+		for i := range opts {
+			opts[i].Disabled = false
+			opts[i].Reason = ""
+		}
+	}
 	selected := current
 	if selected == 0 || !seen[fmt.Sprintf("%.0f", selected)] || !enabledOptionExists(opts, fmt.Sprintf("%.0f", selected)) {
 		if value := firstEnabledValue(opts); value != "" {
@@ -3359,6 +3478,7 @@ func guidedCpuMemoryFormOptions(wfCtx *Context, catalog map[string]any, gpuType,
 		return "", nil
 	}
 	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
+	capSpecs := parseCapacitySpecs(wfCtx.Result(capacitySpecsStepName))
 	current := ""
 	if _, hasCPU := params["Cpu"]; hasCPU {
 		if _, hasMem := params["Memory"]; hasMem {
@@ -3421,6 +3541,13 @@ func guidedCpuMemoryFormOptions(wfCtx *Context, catalog map[string]any, gpuType,
 						fit := guidedStockFitNote(free, gpu)
 						note = fmt.Sprintf("%s · %.0f 张 GPU · %s · %s", gpuType, gpu, zoneLabel, fit)
 					}
+					// Gate by real creatability: disable a CPU/内存 combo only when the
+					// capacity check enumerated it and found it short; combos it never
+					// evaluated stay enabled (the final 检查库存 is authoritative).
+					if capacityHasSignal(capSpecs) && capacityKnowsCombo(capSpecs, int(gpu), int(cpu), int(memGB)) && !capacityCPUMemEnough(capSpecs, int(gpu), int(cpu), int(memGB)) {
+						disabled = true
+						disabledReason = "该规格当前无可创建库存"
+					}
 					opts = append(opts, ConfirmFormOption{
 						Value:    key,
 						Label:    fmt.Sprintf("%.0f 核 CPU · %.0fGB 内存", cpu, memGB),
@@ -3441,6 +3568,14 @@ func guidedCpuMemoryFormOptions(wfCtx *Context, catalog map[string]any, gpuType,
 					}
 				}
 			}
+		}
+	}
+	// A capacity gate must never dead-end the flow: if it disabled every combo,
+	// keep them selectable and let the authoritative 检查库存 report the shortage.
+	if firstEnabledValue(opts) == "" {
+		for i := range opts {
+			opts[i].Disabled = false
+			opts[i].Reason = ""
 		}
 	}
 	if current != "" && (!seen[current] || !enabledOptionExists(opts, current)) {
@@ -3525,7 +3660,7 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 	current := pickImageId(params, images)
 	if current != "" && imageSelectionMatchesFacets(snap, current, wantType, wantTag) {
 		if entry, ok := snap.ByID(current); ok {
-			appendOpt(entry.ID, entry.Name, entry.SupportedGPUTypes)
+			appendOpt(entry.ID, entry.DisplayLabel(), entry.SupportedGPUTypes)
 		} else {
 			// A threaded id absent from this result: still offer it as current; its
 			// GPU state is unknown here, so it is not disabled.
@@ -3539,8 +3674,16 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 		current = ""
 	}
 	for _, sel := range ranked {
-		entry, _ := snap.ByID(sel.ID)
-		appendOpt(sel.ID, sel.Name, entry.SupportedGPUTypes)
+		entry, ok := snap.ByID(sel.ID)
+		// Label from the catalog row so two versions of one family are told apart by
+		// their version; the ranked candidate carries only the (shared) family name.
+		label := sel.Name
+		if ok {
+			if l := entry.DisplayLabel(); l != "" {
+				label = l
+			}
+		}
+		appendOpt(sel.ID, label, entry.SupportedGPUTypes)
 	}
 	if len(opts) == 0 {
 		return "", nil

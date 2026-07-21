@@ -395,12 +395,26 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 		assert.NotEmpty(t, form.Step.Description,
 			"guided step %d must carry guidance text", form.Step.Index)
 
+		// Image-first reorder: the image SOURCE step now leads, the hardware spec
+		// steps follow, and the final card carries the concrete ImageId. Every
+		// field's options/values and the created args are unchanged from the old
+		// GPU-first order — only the sequence moved (verified by observation).
 		switch form.Step.Index {
 		case 1:
+			// Image SOURCE leads: source-only facet, defaults platform, never the
+			// deleted ImagePurpose field. The type/tag facets step is skipped here
+			// because this fixture's images declare no distinct ImageType/Tags.
 			assert.Equal(t, 6, form.Step.Total)
 			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
 			assert.Equal(t, "跳过", form.Step.SecondaryLabel)
 			assert.True(t, form.Step.Skippable)
+			source := fieldByKey(t, form, "ImageSource")
+			assert.Equal(t, "platform", source.Value)
+			assert.Equal(t, []string{"platform", "community"}, optionValues(source))
+			assert.Nil(t, form.Field("ImagePurpose"))
+			assert.Nil(t, form.Field("ImageType"), "source step is source-only; type/tag is the next step")
+			return ConfirmResolution{Confirmed: true}
+		case 2:
 			gpu := fieldByKey(t, form, "GpuType")
 			assert.Equal(t, "cards", gpu.Render)
 			assert.Equal(t, []string{"4090", "4090_48G", "A800", "P40"}, optionValues(gpu))
@@ -408,33 +422,21 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.False(t, gpu.Options[0].Disabled)
 			assert.True(t, gpu.Options[3].Disabled)
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"GpuType": "A800"}}
-		case 2:
+		case 3:
 			zone := fieldByKey(t, form, "Zone")
 			assert.Equal(t, "cards", zone.Render)
 			assert.Equal(t, []string{"cn-wlcb-01"}, optionValues(zone))
 			return ConfirmResolution{Confirmed: true}
-		case 3:
+		case 4:
 			gpuCount := fieldByKey(t, form, "Gpu")
 			assert.Equal(t, "cards", gpuCount.Render)
 			assert.Equal(t, []string{"1"}, optionValues(gpuCount))
 			return ConfirmResolution{Confirmed: true}
-		case 4:
+		case 5:
 			spec := fieldByKey(t, form, "CpuMemory")
 			assert.Equal(t, "cards", spec.Render)
 			assert.Contains(t, optionValues(spec), "cn-wlcb-01|1|32|131072")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"CpuMemory": "cn-wlcb-01|1|32|131072"}}
-		case 5:
-			// Step 5 is now the image-SOURCE step (first of the two-stage image flow):
-			// it offers only the ImageSource facet, defaulting to platform, never the
-			// deleted ImagePurpose field. The type/tag facets step is skipped here
-			// because this fixture's images declare no distinct ImageType/Tags.
-			source := fieldByKey(t, form, "ImageSource")
-			assert.Equal(t, "platform", source.Value)
-			assert.Equal(t, []string{"platform", "community"}, optionValues(source))
-			assert.Nil(t, form.Field("ImagePurpose"))
-			assert.Nil(t, form.Field("ImageType"), "source step is source-only; type/tag is the next step")
-			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
-			return ConfirmResolution{Confirmed: true}
 		case 6:
 			assert.Equal(t, "A800", args["GpuType"])
 			assert.Equal(t, float64(1), args["Gpu"])
@@ -467,7 +469,11 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			created = c.args
 		}
 	}
-	assert.Equal(t, 1, capacityCalls, "GPU/spec selection steps should continue; stock is checked after the full spec is chosen")
+	// Capacity is checked twice, matching the official CLI (search --available runs
+	// CheckCompShareResourceCapacity to show creatable specs; create runs it again to
+	// validate before the write): once here to gate the 卡数量/CPU-内存 options by real
+	// creatability, once to validate the sealed spec at the create gate.
+	assert.Equal(t, 2, capacityCalls, "option-gating capacity check + authoritative create-time re-check")
 	assert.Equal(t, 1, priceCalls, "price is checked after the full spec is chosen")
 	require.NotNil(t, created)
 	assert.Equal(t, "A800", created["GpuType"])
@@ -827,7 +833,9 @@ func TestCreateInstanceGuided_ExplicitGPUStaysExact(t *testing.T) {
 	form, err := buildGuidedGPUForm(wfCtx)
 	require.NoError(t, err)
 	require.NotNil(t, form.Step)
-	assert.Equal(t, 1, form.Step.Index)
+	// GPU is the 2nd visible step now that the image SOURCE step leads (image-first
+	// reorder); no image is pinned here so the source step is not skipped.
+	assert.Equal(t, 2, form.Step.Index)
 	assert.Equal(t, 6, form.Step.Total)
 	gpu := fieldByKey(t, form, "GpuType")
 	assert.Equal(t, []string{"4090"}, optionValues(gpu))
@@ -1203,13 +1211,15 @@ func TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalo
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
+		// Image-first reorder: source is step 1; the four spec steps are 2-5; the
+		// final image picker is step 6.
 		switch form.Step.Index {
-		case 1, 2, 3, 4:
-			return ConfirmResolution{Confirmed: true}
-		case 5:
+		case 1:
 			source := fieldByKey(t, form, "ImageSource")
 			assert.Equal(t, "community", source.Value, "initial source is community")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "platform"}}
+		case 2, 3, 4, 5:
+			return ConfirmResolution{Confirmed: true}
 		case 6:
 			// Facets skipped (fixtures declare no types/tags) → step 6 is the platform
 			// image picker in the final form.
@@ -1247,14 +1257,15 @@ func TestCreateInstanceGuided_CommunitySourceQueriesCommunityImages(t *testing.T
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
+		// Image-first reorder: source is step 1. Choosing community (multiple images)
+		// gives the image its OWN picker step right after source, BEFORE the hardware
+		// specs — so the queried community images appear at step 2, not the final card.
 		switch form.Step.Index {
-		case 1, 2, 3, 4:
-			return ConfirmResolution{Confirmed: true}
-		case 5:
+		case 1:
 			source := fieldByKey(t, form, "ImageSource")
 			assert.Contains(t, optionValues(source), "community")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "community"}}
-		case 6:
+		case 2:
 			image := fieldByKey(t, form, "ImageId")
 			finalImageOptions = optionValues(image)
 			return ConfirmResolution{Confirmed: false}
@@ -1296,12 +1307,12 @@ func TestCreateInstanceGuided_CommunitySourceOverridesInitialPlatformSource(t *t
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
+		// Image-first reorder: community source gives the image its own picker step 2
+		// (before the specs); capture the community image options there.
 		switch form.Step.Index {
-		case 1, 2, 3, 4:
-			return ConfirmResolution{Confirmed: true}
-		case 5:
+		case 1:
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "community"}}
-		case 6:
+		case 2:
 			finalImageOptions = optionValues(fieldByKey(t, form, "ImageId"))
 			return ConfirmResolution{Confirmed: false}
 		default:
@@ -1393,7 +1404,11 @@ func TestCreateInstanceGuided_ZoneCardSnapshotZeroShowsPendingNotDisabled(t *tes
 	assert.Contains(t, wlcb.Note, "待确认")
 	assert.Empty(t, wlcb.Reason)
 	assert.False(t, sh2.Disabled)
-	assert.Contains(t, sh2.Note, "库存约 3 张 GPU")
+	assert.Contains(t, sh2.Note, "库存快照约 3 张 GPU")
+	// The raw inventory snapshot is not authoritative (real creatability comes from the
+	// capacity check and the final 检查库存), so a positive reading must not render as a
+	// promise either — a card that promised a sold-out GPU is the reported failure.
+	assert.Contains(t, sh2.Note, "待确认")
 }
 
 func TestApplyGuidedZoneOverridesRefreshesPodState(t *testing.T) {
@@ -1599,7 +1614,9 @@ func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T
 			created = c.args
 		}
 	}
-	assert.Equal(t, 2, capacityCalls)
+	// Option-gating capacity check + the create-time validation, and the final image
+	// edit re-runs the create-time validation once more (price re-checks on the edit).
+	assert.Equal(t, 3, capacityCalls)
 	assert.Equal(t, 2, priceCalls)
 	require.NotNil(t, created)
 	assert.Equal(t, "img-002", created["CompShareImageId"])
