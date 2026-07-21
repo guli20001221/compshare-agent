@@ -81,7 +81,7 @@ func TestTheSoldOutReplyReadsTheZoneTheWorkflowResolved(t *testing.T) {
 	require.False(t, result.Success)
 	require.Contains(t, result.Message, "库存不足", "this must be the sold-out path, not some other failure")
 
-	gpuType, zone := createFailureTarget(result.Failure)
+	gpuType, zone, _ := createFailureTarget(result.Failure)
 
 	assert.Equal(t, "4090", gpuType)
 	assert.Equal(t, "cn-sh2-02", zone,
@@ -105,7 +105,7 @@ func TestTheSoldOutReplyDoesNotTrustASelectionCard(t *testing.T) {
 	require.False(t, result.Failure.ExecutionAuthorized,
 		"…but none of them authorised a create, and the record says so")
 
-	gpuType, zone := createFailureTarget(result.Failure)
+	gpuType, zone, _ := createFailureTarget(result.Failure)
 	assert.Equal(t, "4090", gpuType)
 	assert.Equal(t, "cn-sh2-02", zone)
 }
@@ -310,7 +310,7 @@ func TestOnlyASoldOutOffersAlternatives(t *testing.T) {
 	require.Contains(t, result.Message, "未找到", "premise: the not-found branch, not sold-out")
 	require.NotNil(t, result.Failure)
 	require.Empty(t, result.Failure.Reason)
-	gpuType, zone := createFailureTarget(result.Failure)
+	gpuType, zone, _ := createFailureTarget(result.Failure)
 	require.NotEmpty(t, gpuType, "premise: the draft is fully readable, so a target exists")
 	require.NotEmpty(t, zone)
 
@@ -387,17 +387,17 @@ func TestNoTargetMeansNoSuggestionAtAll(t *testing.T) {
 // old every-zone search, instead of that being what happened whenever the user
 // did not type a zone.
 func TestAFailureWithNoDraftYieldsNothingRatherThanAGuess(t *testing.T) {
-	gpuType, zone := createFailureTarget(nil)
+	gpuType, zone, _ := createFailureTarget(nil)
 	assert.Empty(t, gpuType)
 	assert.Empty(t, zone)
 
-	gpuType, zone = createFailureTarget(&workflow.StepFailure{Step: "查询镜像"})
+	gpuType, zone, _ = createFailureTarget(&workflow.StepFailure{Step: "查询镜像"})
 	assert.Empty(t, gpuType)
 	assert.Empty(t, zone)
 
 	// A draft that is present but not decodable is corruption, not a licence to
 	// improvise a spec.
-	gpuType, zone = createFailureTarget(&workflow.StepFailure{
+	gpuType, zone, _ = createFailureTarget(&workflow.StepFailure{
 		Step:  "检查库存",
 		Draft: map[string]any{"args": "not a draft"},
 	})

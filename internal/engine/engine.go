@@ -3969,7 +3969,14 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 	if !isCreateStockShortage(failure) {
 		return reply
 	}
-	gpuType, zone := createFailureTarget(failure)
+	gpuType, zone, chargeType := createFailureTarget(failure)
+	// Spot draws from its own resource pool, so the FIRST thing to suggest is the
+	// pool that is not empty — a different GPU model in the same empty Spot pool is
+	// a worse bet than the same model on demand. This also stops the reply from
+	// implying the shortage is about the hardware when it is about the pool.
+	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
+		reply += "\n抢占式用的是独立的资源池，通常比按量付费更紧张。可以回复「用按量付费」用同样的配置再试一次。"
+	}
 	if gpuType == "" || zone == "" {
 		// No suggestion beats a wrong one. ParseAvailableGPUs reads an empty zone as
 		// "every zone" (gpu_live.go:63), so improvising here does not degrade to a
@@ -3979,7 +3986,15 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 		// not say what it was actually trying to build.
 		return reply
 	}
-	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", map[string]any{})
+	// Scope the catalog to the charge type that failed. The workflow's own query
+	// does this (stepQueryInstanceTypes passes InstanceType=spot); asking here
+	// without it listed the ON-DEMAND catalog as the remedy for a Spot shortage,
+	// so every card offered might be just as unavailable on Spot.
+	availArgs := map[string]any{}
+	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
+		availArgs["InstanceType"] = "spot"
+	}
+	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", availArgs)
 	alts := knowledge.FittingGPUAlternatives("", "", nil, knowledge.ParseAvailableGPUs(avail, zone), gpuType, 3)
 	if len(alts) == 0 {
 		return reply
@@ -4042,15 +4057,19 @@ func workflowFinalParams(result *workflow.Result, args map[string]any) map[strin
 // alternatives at all: an empty zone is not a weaker filter, it is no filter, and
 // the caller treating it as one is what produced cross-zone recommendations in the
 // first place. This function reports what it knows; it does not fill gaps.
-func createFailureTarget(failure *workflow.StepFailure) (gpuType, zone string) {
+// createFailureTarget reads what the failed create was actually trying to build.
+// ChargeType joins the GPU and the zone because availability is scoped by it:
+// Spot and on-demand are different resource pools, so a remedy computed without
+// it answers about the wrong one.
+func createFailureTarget(failure *workflow.StepFailure) (gpuType, zone, chargeType string) {
 	if failure == nil || len(failure.Draft) == 0 {
-		return "", ""
+		return "", "", ""
 	}
 	draft, err := workflow.ParseCreateExecutionDraft(failure.Draft)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
-	return draft.Args.GpuType, draft.Args.Zone
+	return draft.Args.GpuType, draft.Args.Zone, draft.Args.ChargeType
 }
 
 func cfsWorkflowFailureReply(message string) string {

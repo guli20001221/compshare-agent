@@ -310,9 +310,14 @@ func CreateInstanceDef() *Definition {
 func CreateInstanceGuidedDef() *Definition {
 	return &Definition{
 		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择 GPU → 选择可用区 → 选择卡数量 → 选择 CPU/内存 → 选择镜像来源 → 查询所选来源镜像 → 选择镜像筛选 → 选择镜像 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认镜像计费 → 创建实例 → 查看状态",
+		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择镜像来源 → 查询所选来源镜像 → 选择镜像筛选 → 选择镜像 → 选择 GPU → 查询各可用区容量 → 选择可用区 → 查询容量规格 → 选择卡数量 → 选择 CPU/内存 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认创建 → 创建实例 → 查看状态",
 		Steps: []Step{
 			stepQueryImages(true),
+			// Both availability queries are CHARGE-TYPE-SCOPED (the catalog by
+			// InstanceType=spot, the inventory by which pool it reads), as is every
+			// capacity call after them, so ChargeType must be settled before this
+			// point. It is: it arrives in the create args and is never asked as a
+			// card — see buildGuidedCreateConfirmForm for why it cannot be one.
 			stepQueryInstanceTypes(),
 			stepQueryGPUInventory(),
 			// Image is chosen first: the GPU list is then constrained to the
@@ -2013,12 +2018,17 @@ var createFormChargeTypes = []ConfirmFormOption{
 	{Value: "Month", Label: "包月"},
 }
 
+// createChargeTypeOptions gates Spot by zone for the PLAIN create's single
+// confirm card, which resolves its zone before it asks and therefore can. The
+// guided flow does the opposite — it asks the charge type first and gates the
+// ZONE card by it (spotUnavailableInZone) — because a charge type asked last
+// cannot inform the availability queries that already ran.
 func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 	opts := make([]ConfirmFormOption, len(createFormChargeTypes))
 	copy(opts, createFormChargeTypes)
-	// Display-only: the Spot option is disabled for a pod zone. If the zone can't
-	// be resolved here, show every charge type — the authoritative create gate
-	// (validateCreatePlacement) still refuses an unresolvable or pod+Spot pick.
+	// If the zone can't be resolved here, show every charge type — the
+	// authoritative create gate (validateCreatePlacement) still refuses an
+	// unresolvable or pod+Spot pick.
 	placement, err := workflowZonePlacement(wfCtx, zone)
 	if err != nil {
 		return opts
@@ -2034,6 +2044,21 @@ func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 		}
 	}
 	return opts
+}
+
+// spotUnavailableInZone reports whether the CURRENT charge type is Spot and the
+// given zone cannot serve it. Only a resolvable pod zone is a known no: an
+// unresolvable placement is not evidence, so the option stays enabled and
+// validateCreatePlacement remains the authoritative refusal.
+func spotUnavailableInZone(wfCtx *Context, zone string) bool {
+	if !strings.EqualFold(createChargeType(wfCtx.Params), deployment.ChargeTypeSpot) {
+		return false
+	}
+	placement, err := workflowZonePlacement(wfCtx, zone)
+	if err != nil {
+		return false
+	}
+	return placement.IsPod
 }
 
 func hasExplicitImageIntent(params map[string]any) bool {
@@ -2745,10 +2770,25 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 			Value: cur, Render: "cards", Editable: true, Options: opts,
 		})
 	}
-	fields = append(fields, ConfirmFormField{
-		Key: "ChargeType", Label: "计费方式", Type: "select",
-		Value: createChargeType(wfCtx.Params), Render: "cards", Editable: true, Options: createChargeTypeOptions(wfCtx, paramStr(wfCtx.Params, "Zone", "")),
-	})
+	// ChargeType is NOT editable here, and it is not a guided card either. Both
+	// halves of that are forced.
+	//
+	// Editable here was the hole: this card's edit re-runs only from 形成执行草稿,
+	// while the availability catalog, the GPU inventory pool, the per-zone capacity
+	// probe and the spec capacity check are ALL charge-type-scoped and had already
+	// run. Switching to Spot at the end therefore left every card the user had
+	// accepted describing the on-demand pool, and only 检查库存 re-checked — which is
+	// why a Spot create surfaced as a plain 库存不足 on a spec the cards had shown as
+	// available.
+	//
+	// A guided card would not fix it either: guidedStepPosition decides which later
+	// cards are skippable by reading 查询可用配比, so any card placed BEFORE that
+	// query reports a step count computed as if nothing downstream will be skipped
+	// (measured: "第1步，共5步" for a flow with two cards). The charge type has to be
+	// settled before the queries, and a card cannot be. It arrives in the create
+	// args instead — the model fills it from the user's own words ("用抢占式…") — so
+	// it is fixed before step one. The Summary still displays it; changing it means
+	// asking again, which re-runs the whole flow under the right pool.
 	index, total := guidedStepPosition(wfCtx, guidedStepFinal)
 	return &ConfirmForm{
 		Version: 2,
@@ -2756,7 +2796,7 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 			Index:          index,
 			Total:          total,
 			Title:          guidedStepTitle(index, "确认镜像与计费"),
-			Description:    "镜像决定开机即用的预装环境（框架与驱动），计费方式可选按量或包时。确认无误后点击下方按钮即开始创建。",
+			Description:    "镜像决定开机即用的预装环境（框架与驱动）。计费方式已在前面选定，如需更改请重新发起创建。确认无误后点击下方按钮即开始创建。",
 			PrimaryLabel:   "确认部署",
 			SecondaryLabel: "取消",
 			Final:          true,
@@ -3562,6 +3602,16 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 				disabledReason = "该可用区当前无可创建库存"
 				note = fmt.Sprintf("%s · %s", gpuType, disabledReason)
 			}
+		}
+		// Spot is unavailable in a pod zone. This gate used to point the other way —
+		// the charge-type card disabled Spot once a zone was known — which could not
+		// work while the charge type was chosen LAST. Now the charge type is known
+		// first, so the constraint runs in its natural direction and the user is
+		// never offered a zone their billing mode cannot use.
+		if !disabled && spotUnavailableInZone(wfCtx, zone) {
+			disabled = true
+			disabledReason = "该可用区不支持抢占式"
+			note = fmt.Sprintf("%s · %s", gpuType, disabledReason)
 		}
 		opt := ConfirmFormOption{
 			Value:    zone,
