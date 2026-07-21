@@ -317,7 +317,7 @@ func CreateInstanceGuidedDef() *Definition {
 			// InstanceType=spot, the inventory by which pool it reads), as is every
 			// capacity call after them, so ChargeType must be settled before this
 			// point. It is: it arrives in the create args and is never asked as a
-			// card — see buildGuidedCreateConfirmForm for why it cannot be one.
+			// card — see buildGuidedFinalForm for why it cannot be one.
 			stepQueryInstanceTypes(),
 			stepQueryGPUInventory(),
 			// Image is chosen first: the GPU list is then constrained to the
