@@ -8,6 +8,7 @@ import (
 
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/envelope"
+	"github.com/compshare-agent/internal/imagecatalogfetch"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
 )
@@ -111,7 +112,7 @@ func imageListRender(resp ImageListResponse) ReadResult {
 
 func platformImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
 	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	raw, err := imageExecute(ctx, rt, platformImageAction, map[string]any{})
+	raw, err := imageExecuteAll(ctx, rt, platformImageAction, "ImageSet", map[string]any{})
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(platformImageAction, imageListCapabilityLabel, err)
 	}
@@ -125,7 +126,7 @@ func platformImageListHandle(ctx context.Context, req ImageListRequest, rt ReadR
 
 func customImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
 	fieldOrder := []string{"CompShareImageId", "Name", "ImageName", "Status"}
-	raw, err := imageExecute(ctx, rt, customImageAction, map[string]any{})
+	raw, err := imageExecuteAll(ctx, rt, customImageAction, "ImageSet", map[string]any{})
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(customImageAction, imageListCapabilityLabel, err)
 	}
@@ -142,7 +143,7 @@ func communityImageListHandle(ctx context.Context, req ImageListRequest, rt Read
 	if query := strings.TrimSpace(req.Query); query != "" {
 		args["FuzzySearch"] = query
 	}
-	raw, err := imageExecute(ctx, rt, communityImageAction, args)
+	raw, err := imageExecuteAll(ctx, rt, communityImageAction, "CompshareImageGroup", args)
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(communityImageAction, imageListCapabilityLabel, err)
 	}
@@ -155,7 +156,7 @@ func communityImageListHandle(ctx context.Context, req ImageListRequest, rt Read
 }
 
 func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
-	raw, err := imageExecute(ctx, rt, sharedImageAction, map[string]any{"Limit": 20})
+	raw, err := imageExecuteAll(ctx, rt, sharedImageAction, "ImageSet", map[string]any{})
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(sharedImageAction, imageListCapabilityLabel, err)
 	}
@@ -172,8 +173,8 @@ func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRun
 
 // imageExecute runs an upstream image action, normalising a nil payload to an
 // empty map exactly as the legacy executeRouteAction did.
-func imageExecute(ctx context.Context, rt ReadRuntime, action string, args map[string]any) (map[string]any, error) {
-	raw, err := rt.Executor.Execute(ctx, action, args)
+func imageExecuteAll(ctx context.Context, rt ReadRuntime, action, listKey string, args map[string]any) (map[string]any, error) {
+	raw, err := imagecatalogfetch.FetchAll(ctx, rt.Executor.Execute, action, listKey, args)
 	if err != nil {
 		return nil, err
 	}

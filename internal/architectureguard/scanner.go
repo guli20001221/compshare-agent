@@ -133,6 +133,12 @@ func scanCalls(path, symbol string, node ast.Node, findings *[]Finding) {
 		if kind == "" {
 			return true
 		}
+		// Literal provenance is not semantic interpretation. Keep one explicit,
+		// reviewable primitive for source-span proof; every other Contains/Index
+		// site remains forbidden unless present in the reviewed baseline.
+		if path == "internal/platform/provenance.go" && symbol == "ContainsLiteralSpan" && callee == "strings.Contains" {
+			return true
+		}
 		value := ""
 		if len(call.Args) > 0 {
 			if literal, ok := call.Args[len(call.Args)-1].(*ast.BasicLit); ok && literal.Kind == token.STRING {

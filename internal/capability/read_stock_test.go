@@ -16,6 +16,8 @@ func stockSupportZonesFixture() map[string]any {
 	return map[string]any{"ZoneInfo": []any{
 		map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(1), "Describe": "华北二A"},
 		map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "RegionId": float64(3002), "ZoneId": float64(2), "Describe": "上海二B"},
+		map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C"},
+		map[string]any{"Zone": "cn-wlcb-03", "Region": "cn-wlcb", "RegionId": float64(1000039), "ZoneId": float64(10033), "Describe": "华北二C"},
 	}}
 }
 
@@ -208,6 +210,57 @@ func TestStockHandle_PrechecksEverySaleZone(t *testing.T) {
 	assert.Contains(t, result.Reply, "华北二A")
 	assert.Contains(t, result.Reply, "上海二B")
 	assert.NotContains(t, result.Reply, "原始 GPU 库存")
+}
+
+func TestStockHandle_MultipleNamedZonesAreExactAndNeverCrossZone(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-bj2-03", "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-wlcb-03", "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+			},
+		},
+		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-system", "Status": "Available", "ImageType": "System"},
+		}},
+		"CheckCompShareResourceCapacity": {"Specs": []any{
+			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+		}},
+	}}
+
+	result := runStock(t, exec, "", StockAvailabilityRequest{
+		GPUType: "4090", ZoneMentions: []string{"华北一C", "华北二C"},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "华北一C (cn-bj2-03)")
+	assert.Contains(t, result.Reply, "华北二C (cn-wlcb-03)")
+	assert.NotContains(t, result.Reply, "上海二B", "an unrequested zone must never re-enter the answer")
+	var zonesCalled []string
+	for _, call := range exec.calls {
+		if call.action == "CheckCompShareResourceCapacity" {
+			zonesCalled = append(zonesCalled, call.args["Zone"].(string))
+		}
+	}
+	assert.ElementsMatch(t, []string{"cn-bj2-03", "cn-wlcb-03"}, zonesCalled)
+}
+
+func TestStockHandle_UnresolvedNamedZoneFailsClosed(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+		}},
+		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+	}}
+
+	result := runStock(t, exec, "", StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{"华北九Z"}})
+	require.Equal(t, platform.ReadStatusConflict, result.Status)
+	for _, call := range exec.calls {
+		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action,
+			"an unresolved requested zone must never degrade into an all-zone precheck")
+	}
 }
 
 func TestStockHandle_UpstreamError(t *testing.T) {

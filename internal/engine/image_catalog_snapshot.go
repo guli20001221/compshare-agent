@@ -2,10 +2,12 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/compshare-agent/internal/actionresolver"
 	"github.com/compshare-agent/internal/deployment"
+	"github.com/compshare-agent/internal/imagecatalogfetch"
 )
 
 // imageCatalogSnapshotForSpec is the spec-gated builder the action-proposal resolver
@@ -35,8 +37,18 @@ func (e *Engine) imageCatalogSnapshot(ctx context.Context, source string) *deplo
 		return deployment.NewImageCatalogSnapshot(false, nil)
 	}
 	action, community, canonical := imageQueryForSource(source)
-	res := e.querySafeRead(ctx, action, imageCatalogQueryArgs(community))
-	if res == nil {
+	listKey := "ImageSet"
+	if community {
+		listKey = "CompshareImageGroup"
+	}
+	res, err := imagecatalogfetch.FetchAll(ctx, func(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+		result := e.querySafeRead(ctx, action, args)
+		if result == nil {
+			return nil, fmt.Errorf("%s query failed", action)
+		}
+		return result, nil
+	}, action, listKey, imageCatalogQueryArgs(community))
+	if err != nil {
 		return deployment.NewImageCatalogSnapshot(false, nil)
 	}
 	var entries []deployment.ImageCatalogEntry

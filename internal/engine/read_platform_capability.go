@@ -40,6 +40,10 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		return marshalReadCapabilityError(fmt.Errorf("invalid capability request: %w", err))
 	}
+	if err := capability.ValidateCurrentTurnGrounding(request, e.lastUserMsg); err != nil {
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
+		return marshalReadCapabilityError(fmt.Errorf("ungrounded capability request: %w", err))
+	}
 	if missing := request.MissingFields(); len(missing) > 0 {
 		observation := ReadCapabilityObservation{Capability: string(readIntent), Status: platform.ReadStatusNeedsInput, MissingFields: missing}
 		payload, _ := json.Marshal(observation)

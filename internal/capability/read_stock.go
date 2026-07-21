@@ -32,8 +32,8 @@ const (
 
 // StockAvailabilityRequest is the capability's own request contract.
 type StockAvailabilityRequest struct {
-	GPUType string `json:"gpu_type,omitempty"`
-	Zone    string `json:"zone,omitempty"`
+	GPUType      string   `json:"gpu_type,omitempty"`
+	ZoneMentions []string `json:"zone_mentions,omitempty"`
 }
 
 // MissingFields: none — an unfiltered stock listing is valid.
@@ -67,10 +67,13 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
 		Label:       stockCapabilityLabel,
 		Description: "查询 GPU 机型的实时可售性。",
-		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "zone": stringParam()}),
-		Handle:      stockHandle,
-		Render:      stockRender,
-		Observe:     stockObserve,
+		Params: objectParam(map[string]schemaNode{
+			"gpu_type":      stringParam(),
+			"zone_mentions": arrayParam(stringParam()).described("用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。"),
+		}),
+		Handle:  stockHandle,
+		Render:  stockRender,
+		Observe: stockObserve,
 	}
 }
 
@@ -291,11 +294,18 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 	if len(entries) == 0 {
 		return "", false, ReadResult{}
 	}
-	supportZones := stockSupportZones(ctx, rt)
-	if filter := stockZoneFilterFromSlot(req.Zone, supportZones); len(filter) > 0 {
+	supportZones, err := stockSupportZones(ctx, rt)
+	if err != nil {
+		return "", false, ReadFailureAfterTool("DescribeCompShareSupportZone", stockCapabilityLabel, err)
+	}
+	filter, unresolved := stockZoneFilterFromMentions(req.ZoneMentions, supportZones)
+	if len(unresolved) > 0 {
+		return "", false, ReadConflict(fmt.Sprintf("无法从平台实时可用区目录中精确确认这些区域：%s。请使用目录中的完整可用区名称或 ID。", strings.Join(unresolved, "、")))
+	}
+	if len(filter) > 0 {
 		entries = filterStockEntriesByZone(entries, filter)
 		if len(entries) == 0 {
-			return renderStockReply(stockRaw, strings.TrimSpace(req.GPUType)) + "\n未在你指定的可用区里找到该机型的开售信息。", true, ReadResult{}
+			return renderRequestedZonesNotOffered(req.GPUType, filter, supportZones), true, ReadResult{}
 		}
 	}
 	entriesByModel, modelOrder := groupStockEntriesByModel(entries)
@@ -365,36 +375,47 @@ func groupStockEntriesByModel(entries []stockInstanceTypeEntry) (map[string][]st
 	return entriesByModel, modelOrder
 }
 
-func stockSupportZones(ctx context.Context, rt ReadRuntime) []zones.ZoneInfo {
+func stockSupportZones(ctx context.Context, rt ReadRuntime) ([]zones.ZoneInfo, error) {
 	list, err := zones.FetchSupportZones(ctx, rt.Executor, 0, 0)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return list
+	if len(list) == 0 {
+		return nil, fmt.Errorf("平台可用区目录为空")
+	}
+	return list, nil
 }
 
-func stockZoneFilterFromSlot(zoneText string, supportZones []zones.ZoneInfo) map[string]struct{} {
-	if len(supportZones) == 0 {
-		return nil
+func stockZoneFilterFromMentions(mentions []string, supportZones []zones.ZoneInfo) (map[string]struct{}, []string) {
+	if len(mentions) == 0 {
+		return nil, nil
 	}
-	zoneText = strings.TrimSpace(zoneText)
-	if zoneText == "" {
-		return nil
-	}
-	if exact, ok := zones.ExactZone(supportZones, zoneText); ok {
-		return map[string]struct{}{strings.ToLower(exact): {}}
-	}
-	for _, z := range supportZones {
-		if z.Zone == "" {
+	filter := map[string]struct{}{}
+	var unresolved []string
+	for _, mention := range mentions {
+		mention = strings.TrimSpace(mention)
+		if mention == "" {
 			continue
 		}
-		if strings.EqualFold(zoneText, z.Zone) ||
-			(z.Describe != "" && strings.EqualFold(zoneText, z.Describe)) ||
-			(z.Region != "" && strings.EqualFold(zoneText, z.Region)) {
-			return map[string]struct{}{strings.ToLower(z.Zone): {}}
+		exact, ok := zones.ExactZone(supportZones, mention)
+		if !ok {
+			unresolved = append(unresolved, mention)
+			continue
+		}
+		filter[strings.ToLower(exact)] = struct{}{}
+	}
+	return filter, unresolved
+}
+
+func renderRequestedZonesNotOffered(gpuType string, filter map[string]struct{}, supportZones []zones.ZoneInfo) string {
+	labels := make([]string, 0, len(filter))
+	for _, zone := range supportZones {
+		if _, ok := filter[strings.ToLower(zone.Zone)]; ok {
+			labels = append(labels, zones.Label(supportZones, zone.Zone))
 		}
 	}
-	return nil
+	sort.Strings(labels)
+	return fmt.Sprintf("%s 未在指定可用区（%s）的开售目录中出现；未执行跨区容量预检，也不能据此推断其他区域库存。", strings.TrimSpace(gpuType), strings.Join(labels, "、"))
 }
 
 func filterStockEntriesByZone(entries []stockInstanceTypeEntry, filter map[string]struct{}) []stockInstanceTypeEntry {
@@ -637,10 +658,7 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 
 func stockZoneDisplay(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) string {
 	if entry.Zone != "" {
-		if describe := zones.DescribeFor(supportZones, entry.Zone); describe != "" {
-			return describe
-		}
-		return entry.Zone
+		return zones.Label(supportZones, entry.Zone)
 	}
 	return "未知可用区"
 }

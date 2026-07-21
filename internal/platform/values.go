@@ -88,6 +88,10 @@ type TimeWindow struct {
 	Start    string         `json:"start,omitempty"`
 	End      string         `json:"end,omitempty"`
 	Timezone string         `json:"timezone,omitempty"`
+	// SourceSpan is the exact current-user text that expressed the time window.
+	// The engine verifies it before dispatch, so a model cannot turn “昨天” into
+	// an invented absolute date while still producing a schema-valid request.
+	SourceSpan string `json:"source_span"`
 }
 
 // ImageSource selects which image catalog an image-list capability queries.

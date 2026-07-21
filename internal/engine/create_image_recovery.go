@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/compshare-agent/internal/deployment"
+	"github.com/compshare-agent/internal/imagecatalogfetch"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 )
@@ -79,8 +81,14 @@ func (e *Engine) resolveAvailableCreateImage(ctx context.Context, args map[strin
 	// alternatives to probe. It is NOT prefiltered — this pool is unfiltered, so
 	// the resolver's client-side name relevance still applies and recovery never
 	// swaps in a wholly unrelated image.
-	res := e.querySafeRead(ctx, "DescribeCompShareImages", map[string]any{"Limit": 100})
-	if res == nil {
+	res, err := imagecatalogfetch.FetchAll(ctx, func(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+		result := e.querySafeRead(ctx, action, args)
+		if result == nil {
+			return nil, fmt.Errorf("%s query failed", action)
+		}
+		return result, nil
+	}, "DescribeCompShareImages", "ImageSet", nil)
+	if err != nil {
 		return "", "", false
 	}
 	snap := deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(res, "platform"))
