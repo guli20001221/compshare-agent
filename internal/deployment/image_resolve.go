@@ -280,10 +280,17 @@ func rankRecommendations(entries []ImageCatalogEntry, req ImageRequest, keepAll 
 	}
 	want := strings.ToLower(strings.TrimSpace(req.Name))
 	var out []scored
+	// scoredByRequest records whether the request discriminated at all. When it did
+	// not, every score is 0 and any further ordering we apply is our invention
+	// rather than the user's preference — see the tiebreak below.
+	scoredByRequest := false
 	for i, e := range entries {
 		s := nameSimilarity(want, e.Name) + structuredScore(req, e.Software) + gpuBump(req.RequestedGPU, e.SupportedGPUTypes)
 		if s <= 0 && !keepAll {
 			continue
+		}
+		if s > 0 {
+			scoredByRequest = true
 		}
 		out = append(out, scored{e: e, score: s, idx: i})
 	}
@@ -295,7 +302,18 @@ func rankRecommendations(entries []ImageCatalogEntry, req ImageRequest, keepAll 
 		if sameFramework(a, b) && a.Software.FrameworkVersionIndex != b.Software.FrameworkVersionIndex {
 			return a.Software.FrameworkVersionIndex > b.Software.FrameworkVersionIndex
 		}
-		if a.PubTime != b.PubTime {
+		// Two entries the REQUEST could not tell apart are ordered by the catalog,
+		// not by publication date. Recency is our own opinion, and it overrode the
+		// caller's: the community browse explicitly asks upstream to sort by
+		// CreatedCount descending, and re-sorting equal scores by PubTime threw that
+		// away — a browse card showed the ten newest images instead of the ten most
+		// deployed, so "InfiniteTalk" (16.8k deploys, latest version February) lost
+		// its place to images with a fraction of the usage but a newer date.
+		//
+		// PubTime still breaks ties among entries the request DID discriminate,
+		// where the caller expressed a preference and the newest match is the right
+		// one of several equally-good matches.
+		if scoredByRequest && a.PubTime != b.PubTime {
 			return a.PubTime > b.PubTime
 		}
 		return out[i].idx < out[j].idx
