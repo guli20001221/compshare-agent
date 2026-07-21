@@ -96,6 +96,9 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "organization_id")
 		}
+		if actionAllowsInternalInstanceType(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "InstanceType")
+		}
 		policies[action] = policy
 	}
 
@@ -297,6 +300,21 @@ func actionAllowsBackendIsPod(action string) bool {
 	default:
 		return false
 	}
+}
+
+// actionAllowsInternalInstanceType lets server-side callers scope the
+// availability catalog to the Spot pool (InstanceType=spot). It is
+// internal-only, and deliberately not a model-visible parameter: which resource
+// pool to list follows from the charge type the create is already using, so it
+// is derived, never chosen by the model.
+//
+// It was missing, and the omission was silent. stepQueryInstanceTypes has set
+// args["InstanceType"] = "spot" for a Spot create since it was written, and
+// filterSafeArgs dropped it every time — the workflow believed it was reading
+// the Spot catalog and was reading the on-demand one. Nothing failed; the
+// answers were just about the wrong pool.
+func actionAllowsInternalInstanceType(action string) bool {
+	return action == "DescribeAvailableCompShareInstanceTypes"
 }
 
 func actionAllowsBackendZoneRegion(action string) bool {
