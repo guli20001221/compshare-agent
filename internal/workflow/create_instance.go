@@ -328,6 +328,10 @@ func CreateInstanceGuidedDef() *Definition {
 			stepGuidedChooseImageFacets(),
 			stepGuidedChooseImage(),
 			stepGuidedChooseGPU(),
+			// One capacity call per candidate zone, while image+GPU are settled and
+			// the zone is not: this is the only point in the flow where a zone the
+			// user cannot create in can be grayed out BEFORE they pick it.
+			stepProbeZoneCapacity(),
 			stepGuidedChooseZone(),
 			// Real creatability (ResourceEnough) for the resolved image+GPU+zone,
 			// fetched before the count / CPU-memory steps so their options can be
@@ -615,16 +619,26 @@ func stepQueryCapacitySpecs() Step {
 // cannot be determined — the caller then skips the fetch and the option builders
 // fall back to the legal catalog (absence of a capacity signal is never "no stock").
 func guidedCapacityArgs(wfCtx *Context) (map[string]any, bool) {
+	_, _, _, zone, err := resolveTargetSpec(wfCtx)
+	if err != nil || zone == "" {
+		return nil, false
+	}
+	return guidedCapacityArgsForZone(wfCtx, zone)
+}
+
+// guidedCapacityArgsForZone is guidedCapacityArgs with the zone supplied rather
+// than resolved from the current selection, so the same request can be asked
+// about a zone the user has NOT chosen. That is the whole difference between
+// reporting a sold-out zone after the fact and graying it out on the card:
+// creatability is a property of (image, GPU, zone), and the zone card is built
+// at the one moment where the first two are settled and the third is still open.
+func guidedCapacityArgsForZone(wfCtx *Context, zone string) (map[string]any, bool) {
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
-	if gpuType == "" {
+	if gpuType == "" || zone == "" {
 		return nil, false
 	}
 	imageID := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
 	if imageID == "" {
-		return nil, false
-	}
-	_, _, _, zone, err := resolveTargetSpec(wfCtx)
-	if err != nil || zone == "" {
 		return nil, false
 	}
 	placement, err := workflowZonePlacement(wfCtx, zone)
@@ -640,6 +654,136 @@ func guidedCapacityArgs(wfCtx *Context) (map[string]any, bool) {
 		MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gpuType, zone),
 	})
 	return deployment.ApplyCapacityPlacementArgs(args, placement), true
+}
+
+const zoneCapacityStepName = "查询各可用区容量"
+
+// stepProbeZoneCapacity asks, once per candidate zone, whether the resolved
+// image + GPU can actually be created there — BEFORE the zone card is built, so
+// a zone with no capacity is offered disabled instead of accepted and then
+// refused eight steps later at 检查库存.
+//
+// It cannot be one call. The capacity API takes the zone as INPUT, so a single
+// request only ever describes the zone already chosen; that is what
+// stepQueryCapacitySpecs does, and it is why the sold-out answer used to arrive
+// after the user had picked. This is also why the equivalent gate is impossible
+// one step earlier on the GPU card: there the zone is not yet chosen, so the
+// question would need N_gpu × N_zone calls to answer something weaker.
+//
+// Optional, and skipped until a concrete image is resolved: absence of a
+// capacity signal is never evidence of unavailability, so a probe that cannot
+// run must leave the card exactly as it was rather than gray anything out.
+func stepProbeZoneCapacity() Step {
+	return Step{
+		Name:     zoneCapacityStepName,
+		Type:     StepToolCall,
+		Tool:     "CheckCompShareResourceCapacity",
+		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			skipZone, err := shouldSkipGuidedZoneStep(wfCtx)
+			if err != nil {
+				return false, err
+			}
+			// Nothing to gray out if the user is never shown the card.
+			if skipZone {
+				return true, nil
+			}
+			return len(zoneCapacityProbeCalls(wfCtx)) == 0, nil
+		},
+		BuildArgsBatch: func(wfCtx *Context) ([]BatchCall, error) {
+			return zoneCapacityProbeCalls(wfCtx), nil
+		},
+	}
+}
+
+// zoneCapacityProbeCalls builds one capacity request per candidate zone of the
+// selected GPU. It returns nothing when the image or GPU is not yet resolved —
+// the step then skips, and the zone card keeps its ungated behavior.
+func zoneCapacityProbeCalls(wfCtx *Context) []BatchCall {
+	gpuType := paramStr(wfCtx.Params, "GpuType", "")
+	if gpuType == "" {
+		return nil
+	}
+	var calls []BatchCall
+	for _, zone := range guidedCandidateZones(wfCtx.Result("查询可用配比"), gpuType) {
+		args, ok := guidedCapacityArgsForZone(wfCtx, zone)
+		if !ok {
+			continue
+		}
+		calls = append(calls, BatchCall{Key: zone, Args: args})
+	}
+	return calls
+}
+
+// guidedCandidateZones lists the zones the catalog offers this GPU in, in
+// catalog order and deduplicated. It is the same enumeration guidedZoneFormOptions
+// renders, kept as one function so the probe cannot ask about a different set of
+// zones than the card shows — a zone present on the card but absent from the
+// probe would render as unknown forever.
+func guidedCandidateZones(catalog map[string]any, gpuType string) []string {
+	if catalog == nil || gpuType == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, t := range types {
+		mt, _ := t.(map[string]any)
+		if name, _ := mt["Name"].(string); name != gpuType {
+			continue
+		}
+		if status, _ := mt["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		zone, _ := mt["Zone"].(string)
+		if zone == "" {
+			zone = defaultZone
+		}
+		if seen[zone] {
+			continue
+		}
+		seen[zone] = true
+		out = append(out, zone)
+	}
+	return out
+}
+
+// zoneCreatability reports, per zone, what the probe established. A zone is
+// present ONLY when a call for it succeeded AND returned a usable Specs[]: a
+// failed call, a call the batch bound never made, and an empty spec list are all
+// "we do not know", and the caller must leave those zones alone.
+func zoneCreatability(result map[string]any) map[string]bool {
+	outcomes := BatchResults(result)
+	if len(outcomes) == 0 {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, o := range outcomes {
+		if !o.OK || o.Key == "" {
+			continue
+		}
+		specs := parseCapacitySpecs(o.Result)
+		if !capacityHasSignal(specs) {
+			continue
+		}
+		known[o.Key] = capacityCreatable(specs)
+	}
+	if len(known) == 0 {
+		return nil
+	}
+	return known
+}
+
+// anyZoneCreatable reports whether at least one CANDIDATE zone is known
+// creatable. It takes the candidate list rather than reading the map's values
+// alone so a stale entry for a zone no longer offered cannot keep the gate armed.
+func anyZoneCreatable(creatable map[string]bool, candidates []string) bool {
+	for _, zone := range candidates {
+		if creatable[zone] {
+			return true
+		}
+	}
+	return false
 }
 
 func stepGetPrice() Step {
@@ -3370,21 +3514,25 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 		return "", nil
 	}
 	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
+	// Real creatability per zone, when the probe managed to establish it. A zone
+	// missing from this map was never established and keeps its old behavior —
+	// the raw GPU inventory count is NOT a substitute (it reports 0 for zones
+	// that are in fact selling, which is why it may inform the note but never
+	// disable an option).
+	creatable := zoneCreatability(wfCtx.Result(zoneCapacityStepName))
+	// The gate steers; it does not refuse. Graying out every zone leaves a card
+	// that offers nothing, and ensureGuidedZone turns that into "暂无可选可用区" —
+	// a dead end raised BEFORE the draft exists, so the failure record would lose
+	// both the candidate draft and the typed capacity_sold_out reason that the
+	// sold-out reply is built from. When nothing is creatable there is nothing to
+	// steer toward, and the authoritative negative belongs to 检查库存, which
+	// raises it with a complete record. See stepCheckCapacity.
+	if !anyZoneCreatable(creatable, guidedCandidateZones(catalog, gpuType)) {
+		creatable = nil
+	}
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
-	types, _ := catalog["AvailableInstanceTypes"].([]any)
-	for _, t := range types {
-		mt, _ := t.(map[string]any)
-		if name, _ := mt["Name"].(string); name != gpuType {
-			continue
-		}
-		if status, _ := mt["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
-			continue
-		}
-		zone, _ := mt["Zone"].(string)
-		if zone == "" {
-			zone = defaultZone
-		}
+	for _, zone := range guidedCandidateZones(catalog, gpuType) {
 		if seen[zone] {
 			continue
 		}
@@ -3396,6 +3544,15 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 		disabledReason := ""
 		if stockKnown {
 			note = fmt.Sprintf("%s · %s", gpuType, guidedStockNote(count))
+		}
+		if ok, known := creatable[zone]; known {
+			if ok {
+				note = fmt.Sprintf("%s · 当前可创建", gpuType)
+			} else {
+				disabled = true
+				disabledReason = "该可用区当前无可创建库存"
+				note = fmt.Sprintf("%s · %s", gpuType, disabledReason)
+			}
 		}
 		opt := ConfirmFormOption{
 			Value:    zone,
