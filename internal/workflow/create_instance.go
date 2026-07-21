@@ -321,6 +321,10 @@ func CreateInstanceGuidedDef() *Definition {
 			// image is already known, so those flows start at GPU.
 			stepGuidedChooseImageSource(),
 			stepReQuerySelectedSourceImages(),
+			// A named community search that matched nothing must fall back to browsing:
+			// otherwise the facets/picker steps below inherit an empty catalog and the
+			// flow dead-ends on a name the user never typed.
+			stepBrowseCommunityWhenNameMatchedNothing(),
 			stepGuidedChooseImageFacets(),
 			stepGuidedChooseImage(),
 			stepGuidedChooseGPU(),
@@ -427,6 +431,41 @@ func stepReQuerySelectedSourceImages() Step {
 				args["Name"] = name
 			}
 			return args, nil
+		},
+	}
+}
+
+// stepBrowseCommunityWhenNameMatchedNothing rescues a named community create whose
+// upstream search matched nothing. ImageName is only the wording that happened to reach
+// us — the Agent rewrites it freely between turns — and stepQueryImages passes it
+// straight through as FuzzySearch, so a miss UPSTREAM leaves the catalog empty and the
+// picker dies with "未找到可选社区镜像" while the image sits on the platform. Observed
+// live 2026-07-21 on "用最强AI数字人 InfiniteTalk为我创建一台机器"; the same session's
+// "用 InfiniteTalk 镜像创建一台实例" returned 22 rows, so the miss is a property of the
+// wording, not of the catalog. A search miss must degrade to browsing, never to a dead
+// end — no local fallback can do this, because by then the catalog is already empty.
+//
+// It re-queries WITHOUT the name and overwrites 查询镜像 in place, the same overwrite
+// stepReQuerySelectedSourceImages performs. A narrowed-but-non-empty result is a useful
+// narrowing and is deliberately left alone.
+func stepBrowseCommunityWhenNameMatchedNothing() Step {
+	return Step{
+		Name: "查询镜像",
+		Type: StepToolCall,
+		Tool: "DescribeCommunityImages",
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			if normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) != "community" {
+				return true, nil
+			}
+			if strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", "")) == "" {
+				return true, nil // already browsing the whole catalog
+			}
+			// Rescue ONLY an empty catalog — parsed exactly the way the picker parses
+			// it, so this predicate cannot disagree with the card it protects.
+			return formImageCatalog(wfCtx.Result("查询镜像"), "community").Len() > 0, nil
+		},
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return communityImageBrowseArgs(""), nil
 		},
 	}
 }

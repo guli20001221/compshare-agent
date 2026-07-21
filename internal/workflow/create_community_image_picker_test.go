@@ -106,6 +106,77 @@ func TestGuidedGPU_ConcreteImageConstrainsGPUList(t *testing.T) {
 	}
 }
 
+// TestCommunityNameMissBrowsesInsteadOfDeadEnding guards the live regression where
+// "用最强AI数字人 InfiniteTalk为我创建一台机器" answered "未找到可选社区镜像，请换一个镜像
+// 来源或稍后再试". stepQueryImages passes ImageName through as the upstream FuzzySearch,
+// so a wording the platform does not match returns ZERO rows and the picker has nothing
+// to offer — the image is on the platform, only the phrasing missed. The rescue must run
+// exactly then, and must browse rather than re-apply the name that just failed.
+func TestCommunityNameMissBrowsesInsteadOfDeadEnding(t *testing.T) {
+	step := stepBrowseCommunityWhenNameMatchedNothing()
+	named := func(result map[string]any) *Context {
+		c := NewContext(map[string]any{"ImageSource": "community", "ImageName": "最强AI数字人 InfiniteTalk"})
+		c.StepResults["查询镜像"] = result
+		return c
+	}
+	oneRow := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "InfiniteTalk", "Data": []any{
+			map[string]any{"CompShareImageId": "compshareImage-hit", "Name": "InfiniteTalk", "VersionName": "v26.0201"},
+		}},
+	}}
+
+	// The regression: the named search came back empty → rescue must run.
+	skip, err := step.SkipIf(named(map[string]any{"CompshareImageGroup": []any{}}))
+	require.NoError(t, err)
+	require.False(t, skip, "an empty named community search must fall back to browsing, not dead-end")
+	args, err := step.BuildArgs(named(map[string]any{"CompshareImageGroup": []any{}}))
+	require.NoError(t, err)
+	assert.NotContains(t, args, "FuzzySearch",
+		"the rescue must browse — re-applying the name that just missed would return empty again")
+
+	// A narrowing that actually worked is useful and must be left alone.
+	skip, err = step.SkipIf(named(oneRow))
+	require.NoError(t, err)
+	assert.True(t, skip, "a non-empty narrowed catalog must not be widened")
+
+	// Platform source, and community browsing with no name, are both none of its business.
+	platform := NewContext(map[string]any{"ImageSource": "platform", "ImageName": "Ubuntu"})
+	platform.StepResults["查询镜像"] = map[string]any{"ImageSet": []any{}}
+	skip, err = step.SkipIf(platform)
+	require.NoError(t, err)
+	assert.True(t, skip, "platform creates resolve their image in the final form")
+
+	browsing := NewContext(map[string]any{"ImageSource": "community"})
+	browsing.StepResults["查询镜像"] = map[string]any{"CompshareImageGroup": []any{}}
+	skip, err = step.SkipIf(browsing)
+	require.NoError(t, err)
+	assert.True(t, skip, "a nameless community create is already browsing the whole catalog")
+}
+
+// TestGuidedCreateWiresCommunityNameMissRescue is the anti-orphan gate: the rescue must
+// sit IN the guided flow, after the source re-query and before the picker that consumes
+// the catalog it repairs.
+func TestGuidedCreateWiresCommunityNameMissRescue(t *testing.T) {
+	steps := CreateInstanceGuidedDef().Steps
+	// 查询镜像 is deliberately reused as a step name (each occurrence overwrites the
+	// previous result), so identify the rescue by its position among them.
+	var queryPositions []int
+	pickerAt := -1
+	for i, s := range steps {
+		switch s.Name {
+		case "查询镜像":
+			queryPositions = append(queryPositions, i)
+		case "选择镜像":
+			pickerAt = i
+		}
+	}
+	require.GreaterOrEqual(t, len(queryPositions), 3,
+		"the guided flow must carry the initial query, the source re-query AND the name-miss rescue")
+	require.NotEqual(t, -1, pickerAt)
+	assert.Less(t, queryPositions[len(queryPositions)-1], pickerAt,
+		"the rescue must run before the picker that consumes the catalog")
+}
+
 // TestGuidedImagePicker_MissingVersionDegradesToName holds the honest-absence line: an
 // upstream row with no version label must show the plain family name, never a
 // fabricated or empty version suffix.
