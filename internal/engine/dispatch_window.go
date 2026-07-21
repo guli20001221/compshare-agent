@@ -98,9 +98,11 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 		return base
 	}
 	properties, _ := root["properties"].(map[string]any)
+	hasSensitiveField := false
 	for name, field := range spec.Fields {
 		if field.Codec == actionresolver.CodecSensitiveText {
 			delete(properties, name)
+			hasSensitiveField = true
 		}
 	}
 	// A proposal may be intentionally incomplete: Resolver returns the exact
@@ -108,8 +110,11 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 	// fields in the model schema makes the model ask in prose before it can call.
 	root["required"] = []string{}
 	function.Name = proposalToolName(spec.Operation)
-	function.Description = proposalInvocationContractPrefix +
-		" " + strings.TrimSpace(spec.Description) + " " + proposalInvocationContractSuffix
+	function.Description = proposalInvocationContractPrefix + " " + strings.TrimSpace(spec.Description)
+	if hasSensitiveField {
+		function.Description += " 敏感值已由服务端安全接收并从参数结构中移除；不要追问或复述该值，直接提交其余已明确字段。"
+	}
+	function.Description += " " + proposalInvocationContractSuffix
 	function.Parameters = root
 	tool.Function = &function
 	return tool

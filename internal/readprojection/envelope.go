@@ -57,8 +57,12 @@ func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta Res
 		addStringFact(addInstanceFact, "name", resourceLabelName, inst.Name)
 		addStringFact(addInstanceFact, "state", resourceLabelState, inst.State)
 		addStringFact(addInstanceFact, "os_type", "OsType", inst.OsType)
-		addPositiveIntFact(addInstanceFact, "gpu_count", resourceLabelGPU, inst.GPU)
-		addStringFact(addInstanceFact, "gpu_type", resourceLabelGPUType, inst.GpuType)
+		addInstanceFact("gpu_count", resourceLabelGPU, inst.GPU)
+		if inst.GPU == 0 {
+			addInstanceFact("gpu_mode", "GPU运行模式", "无卡")
+		} else {
+			addStringFact(addInstanceFact, "gpu_type", resourceLabelGPUType, inst.GpuType)
+		}
 		addStringFact(addInstanceFact, "image_type", resourceLabelImageType, inst.ImageType)
 		addPositiveInt64Fact(addInstanceFact, "start_time", resourceLabelStartTime, inst.StartTime)
 		addPositiveIntFact(addInstanceFact, "cpu", resourceLabelCPU, inst.CPU)

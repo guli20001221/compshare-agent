@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fixedNow is a deterministic "current time" used across scheduler tests.
@@ -21,10 +22,14 @@ func withFixedNow(t *testing.T) {
 	t.Cleanup(func() { nowFunc = orig })
 }
 
+func scheduleAfter(minutes float64) map[string]any {
+	return map[string]any{"mode": "after_minutes", "minutes": minutes}
+}
+
 func TestResolveShutdownTime_AfterMinutes(t *testing.T) {
 	withFixedNow(t)
 
-	params := map[string]any{"AfterMinutes": float64(60)}
+	params := map[string]any{"Schedule": scheduleAfter(60)}
 	unix, display, err := resolveShutdownTime(params)
 
 	assert.NoError(t, err)
@@ -39,7 +44,7 @@ func TestResolveShutdownTime_ShutdownAt_WithTimezone(t *testing.T) {
 
 	// 2 hours from fixedNow, expressed in RFC3339.
 	target := fixedNow.Add(2 * time.Hour)
-	params := map[string]any{"ShutdownAt": target.Format(time.RFC3339)}
+	params := map[string]any{"Schedule": map[string]any{"mode": "absolute", "at": target.Format(time.RFC3339)}}
 	unix, display, err := resolveShutdownTime(params)
 
 	assert.NoError(t, err)
@@ -54,7 +59,7 @@ func TestResolveShutdownTime_ShutdownAt_NoTimezone(t *testing.T) {
 	// 2 hours from fixedNow in Beijing time: 2026-04-17 00:00
 	targetBeijing := fixedNow.Add(2 * time.Hour).In(shanghaiLoc)
 	plain := targetBeijing.Format("2006-01-02 15:04")
-	params := map[string]any{"ShutdownAt": plain}
+	params := map[string]any{"Schedule": map[string]any{"mode": "absolute", "at": plain}}
 	unix, display, err := resolveShutdownTime(params)
 
 	assert.NoError(t, err)
@@ -62,17 +67,16 @@ func TestResolveShutdownTime_ShutdownAt_NoTimezone(t *testing.T) {
 	assert.Contains(t, display, "北京时间")
 }
 
-func TestResolveShutdownTime_BothProvided_Error(t *testing.T) {
+func TestResolveShutdownTime_MixedModeFields_Error(t *testing.T) {
 	withFixedNow(t)
 
-	params := map[string]any{
-		"AfterMinutes": float64(30),
-		"ShutdownAt":   "2026-04-17T00:00:00+08:00",
-	}
+	params := map[string]any{"Schedule": map[string]any{
+		"mode": "after_minutes", "minutes": float64(30), "at": "2026-04-17T00:00:00+08:00",
+	}}
 	_, _, err := resolveShutdownTime(params)
 
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "不能同时指定")
+	assert.Contains(t, err.Error(), "不允许")
 }
 
 func TestResolveShutdownTime_NeitherProvided_Error(t *testing.T) {
@@ -88,7 +92,7 @@ func TestResolveShutdownTime_NeitherProvided_Error(t *testing.T) {
 func TestResolveShutdownTime_AfterMinutes_TooSmall(t *testing.T) {
 	withFixedNow(t)
 
-	params := map[string]any{"AfterMinutes": float64(3)}
+	params := map[string]any{"Schedule": scheduleAfter(3)}
 	_, _, err := resolveShutdownTime(params)
 
 	assert.Error(t, err)
@@ -98,7 +102,7 @@ func TestResolveShutdownTime_AfterMinutes_TooSmall(t *testing.T) {
 func TestResolveShutdownTime_AfterMinutes_Fractional_Error(t *testing.T) {
 	withFixedNow(t)
 
-	params := map[string]any{"AfterMinutes": 30.5}
+	params := map[string]any{"Schedule": scheduleAfter(30.5)}
 	_, _, err := resolveShutdownTime(params)
 
 	assert.Error(t, err)
@@ -110,7 +114,7 @@ func TestResolveShutdownTime_TooSoon_Error(t *testing.T) {
 
 	// 2 minutes from now — less than the 5-minute minimum.
 	target := fixedNow.Add(2 * time.Minute)
-	params := map[string]any{"ShutdownAt": target.Format(time.RFC3339)}
+	params := map[string]any{"Schedule": map[string]any{"mode": "absolute", "at": target.Format(time.RFC3339)}}
 	_, _, err := resolveShutdownTime(params)
 
 	assert.Error(t, err)
@@ -151,13 +155,13 @@ func TestSetStopScheduler_HappyPath(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-xxx",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-xxx",
+		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, result.Steps, 3)
+	assert.Len(t, result.Steps, 4)
 
 	// Verify UpdateCompShareStopScheduler was called with correct args.
 	assert.Len(t, executor.calls, 2)
@@ -186,8 +190,8 @@ func TestSetStopScheduler_NotFound(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, nil, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-nonexistent",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-nonexistent",
+		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)
@@ -213,8 +217,8 @@ func TestSetStopScheduler_NotRunning(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, nil, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-xxx",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-xxx",
+		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)
@@ -241,8 +245,8 @@ func TestSetStopScheduler_SpotRejected(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, nil, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-xxx",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-xxx",
+		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)
@@ -266,8 +270,8 @@ func TestSetStopScheduler_ConfirmShowsTime(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	_, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-xxx",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-xxx",
+		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)
@@ -276,6 +280,32 @@ func TestSetStopScheduler_ConfirmShowsTime(t *testing.T) {
 	shutdownTime, ok := capturedArgs["shutdownTime"].(string)
 	assert.True(t, ok, "shutdownTime should be a string")
 	assert.Contains(t, shutdownTime, "北京时间")
+}
+
+func TestSetStopScheduler_ExecutesExactlyTheConfirmedTimestamp(t *testing.T) {
+	withFixedNow(t)
+	fixed := fixedNow
+	executor := schedulerMockExecutor()
+	var confirmed string
+	confirmFn := func(_ string, args map[string]any) bool {
+		confirmed, _ = args["shutdownTime"].(string)
+		nowFunc = func() time.Time { return fixed.Add(30 * time.Minute) }
+		return true
+	}
+	onStep, _ := collectEvents()
+
+	result, err := NewEngine(executor, confirmFn, onStep).Run(
+		context.Background(),
+		SetStopSchedulerDef(),
+		map[string]any{"UHostId": "uhost-xxx", "Schedule": scheduleAfter(60)},
+	)
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Contains(t, confirmed, fixed.Add(time.Hour).In(shanghaiLoc).Format("2006-01-02 15:04"))
+	require.Len(t, executor.calls, 2)
+	assert.Equal(t, fixed.Add(time.Hour).Unix(), executor.calls[1].args["SchedulerStopTime"],
+		"execution must consume the sealed draft, not recompute a relative time after confirmation")
 }
 
 func TestSetStopScheduler_ConfirmDenied(t *testing.T) {
@@ -288,8 +318,8 @@ func TestSetStopScheduler_ConfirmDenied(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-xxx",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-xxx",
+		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)
@@ -307,8 +337,8 @@ func TestSetStopScheduler_BadTime(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-xxx",
-		"AfterMinutes": float64(3),
+		"UHostId":  "uhost-xxx",
+		"Schedule": scheduleAfter(3),
 	})
 
 	assert.NoError(t, err)
@@ -338,8 +368,8 @@ func TestSetStopScheduler_MissingZoneRejectedBeforeMutation(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-no-zone",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-no-zone",
+		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)
@@ -372,8 +402,8 @@ func TestSetStopScheduler_DerivesRegionFromInstanceZone(t *testing.T) {
 	def := SetStopSchedulerDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":      "uhost-no-region",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-no-region",
+		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)

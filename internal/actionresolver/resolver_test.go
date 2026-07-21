@@ -87,11 +87,12 @@ func TestOperationSpecificStructuredValidatorRejectsAmbiguity(t *testing.T) {
 	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
 	resolved := resolver.Resolve(ActionProposal{Operation: "SetStopSchedulerWorkflow", Slots: []SlotCandidate{
 		{Name: "UHostId", Value: "uhost-1", Source: SourceToolObservation, Evidence: &SourceEvidence{ContextField: "recent_observations"}},
-		{Name: "AfterMinutes", Value: 30, Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "30"}},
-		{Name: "ShutdownAt", Value: "2026-07-15 18:00", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "2026-07-15 18:00"}},
+		{Name: "Schedule", Value: map[string]any{
+			"mode": "today", "local_time": "23:00", "minutes": float64(30),
+		}, Source: SourceAgentInference},
 	}})
 	require.False(t, resolved.ReadyForConfirmation)
-	require.Contains(t, resolved.Rejected, "exactly one of AfterMinutes or ShutdownAt is required")
+	require.Contains(t, resolved.Rejected, "mode=today 不允许 minutes 或 at")
 }
 
 func TestCatalogMarksSensitiveAndResourceFields(t *testing.T) {

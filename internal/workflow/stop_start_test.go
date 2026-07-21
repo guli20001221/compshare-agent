@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // stopMockExecutor returns a mock with results for the StopInstance workflow.
@@ -384,8 +385,8 @@ func TestStartInstance_WithoutGpuSendsSpecOnStart(t *testing.T) {
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":    "uhost-yyy",
-		"WithoutGpu": true,
+		"UHostId":        "uhost-yyy",
+		"WithoutGpuSpec": "B",
 	})
 
 	assert.NoError(t, err)
@@ -400,7 +401,7 @@ func TestStartInstance_WithoutGpuSendsSpecOnStart(t *testing.T) {
 	startCall := executor.calls[1]
 	assert.Equal(t, "StartCompShareInstance", startCall.action)
 	assert.NotContains(t, startCall.args, "WithoutGpu", "the deprecated boolean must never be sent")
-	assert.Equal(t, "A", startCall.args["WithoutGpuSpec"])
+	assert.Equal(t, "B", startCall.args["WithoutGpuSpec"])
 }
 
 func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
@@ -435,13 +436,14 @@ func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	_, _ = eng.Run(context.Background(), def, map[string]any{
-		"UHostId":    "uhost-yyy",
-		"WithoutGpu": true,
+		"UHostId":        "uhost-yyy",
+		"WithoutGpuSpec": "B",
 	})
 
-	assert.Contains(t, capturedArgs, "mode", "Confirm summary must show mode when WithoutGpu=true")
-	assert.Equal(t, float64(2), capturedArgs["without_gpu_cpu"])
-	assert.Equal(t, float64(4096), capturedArgs["without_gpu_memory"])
+	assert.Contains(t, capturedArgs, "mode", "Confirm summary must show mode when WithoutGpuSpec is set")
+	assert.Equal(t, "B", capturedArgs["without_gpu_spec"])
+	assert.Equal(t, float64(8), capturedArgs["without_gpu_cpu"])
+	assert.Equal(t, float64(16384), capturedArgs["without_gpu_memory"])
 }
 
 func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T) {
@@ -471,8 +473,8 @@ func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T)
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":    "uhost-yyy",
-		"WithoutGpu": true,
+		"UHostId":        "uhost-yyy",
+		"WithoutGpuSpec": "A",
 	})
 
 	assert.NoError(t, err)
@@ -509,8 +511,8 @@ func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) 
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":    "uhost-yyy",
-		"WithoutGpu": true,
+		"UHostId":        "uhost-yyy",
+		"WithoutGpuSpec": "A",
 	})
 
 	assert.NoError(t, err)
@@ -518,4 +520,41 @@ func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) 
 	assert.False(t, confirmCalled)
 	assert.Len(t, executor.calls, 1)
 	assert.Contains(t, result.Message, "不支持无卡")
+}
+
+func TestStartInstance_PodRejectsWithoutGpuTierB(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":                "cpod-yyy",
+				"InstanceType":           "Container",
+				"State":                  "Stopped",
+				"Zone":                   "cn-bj2-04",
+				"Region":                 "cn-bj2",
+				"GpuType":                "4090",
+				"GPU":                    float64(1),
+				"ChargeType":             "Dynamic",
+				"SupportWithoutGpuStart": true,
+			},
+		},
+	}
+	confirmCalled := false
+	confirmFn := func(_ string, _ map[string]any) bool {
+		confirmCalled = true
+		return true
+	}
+	onStep, _ := collectEvents()
+
+	result, err := NewEngine(executor, confirmFn, onStep).Run(context.Background(), StartInstanceDef(), map[string]any{
+		"UHostId":        "cpod-yyy",
+		"WithoutGpuSpec": "B",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.False(t, confirmCalled)
+	assert.Contains(t, result.Message, "容器实例")
+	assert.Contains(t, result.Message, "A 档")
+	assert.Len(t, executor.calls, 1)
 }

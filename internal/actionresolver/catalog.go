@@ -122,9 +122,6 @@ func codecFromSchema(name string, schema map[string]any, sensitive bool) SlotCod
 	case "array", "object":
 		return CodecStructured
 	case "string":
-		if name == "ShutdownAt" {
-			return CodecTime
-		}
 		return CodecConstrainedText
 	default:
 		return CodecStructured
@@ -154,12 +151,11 @@ func operationValidator(operation string) func(map[string]any) error {
 	switch operation {
 	case "SetStopSchedulerWorkflow":
 		return func(args map[string]any) error {
-			_, relative := args["AfterMinutes"]
-			_, absolute := args["ShutdownAt"]
-			if relative == absolute {
-				return fmt.Errorf("exactly one of AfterMinutes or ShutdownAt is required")
+			schedule, exists := args["Schedule"]
+			if !exists {
+				return fmt.Errorf("schedule is required")
 			}
-			return nil
+			return workflow.ValidateShutdownSchedule(schedule)
 		}
 	case "ResizeInstanceWorkflow":
 		return func(args map[string]any) error {

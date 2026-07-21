@@ -33,12 +33,18 @@ const (
 // so an out-of-contract value (price_kind:"bogus", gpu_count:-1) silently fell
 // through to a handler default.
 type schemaNode struct {
-	kind    nodeKind
-	enum    []string              // string enum members (kind==nodeString); nil = free string
-	minimum *int                  // integer lower bound (kind==nodeInteger); nil = unbounded
-	props   map[string]schemaNode // object properties (kind==nodeObject)
-	req     []string              // object required keys (kind==nodeObject)
-	items   *schemaNode           // array element (kind==nodeArray)
+	kind        nodeKind
+	description string
+	enum        []string              // string enum members (kind==nodeString); nil = free string
+	minimum     *int                  // integer lower bound (kind==nodeInteger); nil = unbounded
+	props       map[string]schemaNode // object properties (kind==nodeObject)
+	req         []string              // object required keys (kind==nodeObject)
+	items       *schemaNode           // array element (kind==nodeArray)
+}
+
+func (n schemaNode) described(description string) schemaNode {
+	n.description = description
+	return n
 }
 
 func stringParam() schemaNode { return schemaNode{kind: nodeString} }
@@ -88,34 +94,46 @@ func metricsParam() schemaNode { return arrayParam(enumParam(platform.MetricValu
 
 func timeWindowParam() schemaNode {
 	return objectParam(map[string]schemaNode{
-		"type":  enumParam(platform.TimeWindowTypeValues()...),
-		"value": stringParam(),
-	}, "type", "value")
+		"type":        enumParam(platform.TimeWindowTypeValues()...).described("preset 表示今天/昨天；relative 表示最近 N 分钟/小时；absolute 表示用户明确给出的起止时间。"),
+		"preset":      enumParam("yesterday", "today").described("仅 type=preset 时填写；不要把今天或昨天换算为日期。"),
+		"amount":      integerParam(1).described("仅 type=relative 时填写的正整数。"),
+		"unit":        enumParam("minute", "hour").described("仅 type=relative 时填写。"),
+		"start":       stringParam().described("仅 type=absolute；必须来自用户明确写出的时间，格式为 RFC3339 或 YYYY-MM-DD HH:MM。"),
+		"end":         stringParam().described("仅 type=absolute；必须来自用户明确写出的时间，格式为 RFC3339 或 YYYY-MM-DD HH:MM。"),
+		"timezone":    enumParam("Asia/Shanghai", "UTC").described("可省略，默认 Asia/Shanghai。"),
+		"source_span": stringParam().described("用户本轮表达时间范围的原文字面子串；必须原样复制，不得改写或补日期。"),
+	}, "type", "source_span")
 }
 
 // jsonSchema renders the model-facing JSON parameter schema. Its output is
 // byte-equivalent to the previous hand-written objectSchema/enumSchema helpers,
 // so the tool the model sees is unchanged.
 func (n schemaNode) jsonSchema() map[string]any {
+	withDescription := func(out map[string]any) map[string]any {
+		if n.description != "" {
+			out["description"] = n.description
+		}
+		return out
+	}
 	switch n.kind {
 	case nodeString:
 		out := map[string]any{"type": "string"}
 		if len(n.enum) > 0 {
 			out["enum"] = append([]string(nil), n.enum...)
 		}
-		return out
+		return withDescription(out)
 	case nodeInteger:
 		out := map[string]any{"type": "integer"}
 		if n.minimum != nil {
 			out["minimum"] = *n.minimum
 		}
-		return out
+		return withDescription(out)
 	case nodeArray:
 		items := map[string]any{}
 		if n.items != nil {
 			items = n.items.jsonSchema()
 		}
-		return map[string]any{"type": "array", "items": items}
+		return withDescription(map[string]any{"type": "array", "items": items})
 	case nodeObject:
 		props := map[string]any{}
 		for name, child := range n.props {
@@ -125,7 +143,7 @@ func (n schemaNode) jsonSchema() map[string]any {
 		if len(n.req) > 0 {
 			out["required"] = append([]string(nil), n.req...)
 		}
-		return out
+		return withDescription(out)
 	}
 	return map[string]any{}
 }

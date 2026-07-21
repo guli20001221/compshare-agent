@@ -261,7 +261,7 @@ func TestActionJournal_KnownFailureCanBeConsumedAsAdvisoryWithoutReissuingWrite(
 	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
 }
 
-func TestActionJournal_UpstreamBusinessErrorIsAmbiguousAndNeverReissued(t *testing.T) {
+func TestActionJournal_UpstreamBusinessErrorIsDefiniteAndNeverReissued(t *testing.T) {
 	db := openActionJournalTestDB(t)
 	ctx, owner, turns, leaseA := newJournalTurn(t, db)
 	calls := 0
@@ -270,14 +270,16 @@ func TestActionJournal_UpstreamBusinessErrorIsAmbiguousAndNeverReissued(t *testi
 		calls++
 		return nil, tools.NewUpstreamAPIError(230, "capacity")
 	})
-	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
-	require.Error(t, jA.Err())
+	require.Error(t, err)
+	require.NoError(t, jA.Err())
 	leaseB := takeoverJournalLease(t, db, turns, ctx, owner, leaseA)
 	_, err = NewActionJournal(turns, owner, leaseB).Execute(ctx, "StopCompShareInstance", map[string]any{"UHostId": "uhost-1"}, func(context.Context, string, map[string]any) (map[string]any, error) {
 		calls++
 		return nil, nil
 	})
-	require.ErrorIs(t, err, tools.ErrActionOutcomeUncertain)
+	var apiErr *tools.UpstreamAPIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, 230, apiErr.Code)
 	assert.Equal(t, 1, calls)
 }
 

@@ -125,6 +125,21 @@ func RedactOperationalTokensInText(s string) string {
 	return redactOperationalTokens(s)
 }
 
+// ContainsToolProtocolMarkup detects provider/tool transport syntax that must
+// never be rendered as assistant prose. It does not infer user intent or parse
+// a tool call; malformed transport is failed closed at the response boundary.
+func ContainsToolProtocolMarkup(s string) bool {
+	for _, marker := range []string{
+		"<｜DSML｜invoke", "<|DSML|invoke", "<tool_call>", "</tool_call>",
+		"<function=", "<｜tool▁call｜>",
+	} {
+		if _, _, found := strings.Cut(s, marker); found {
+			return true
+		}
+	}
+	return false
+}
+
 // RedactKnownSecretsInText removes operational tokens plus explicit secret
 // values already known to the caller (for example a password submitted through a
 // workflow form). It is safe for user-visible text and ignores empty/very short

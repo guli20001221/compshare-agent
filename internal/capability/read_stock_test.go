@@ -16,6 +16,8 @@ func stockSupportZonesFixture() map[string]any {
 	return map[string]any{"ZoneInfo": []any{
 		map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "RegionId": float64(3001), "ZoneId": float64(1), "Describe": "华北二A"},
 		map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "RegionId": float64(3002), "ZoneId": float64(2), "Describe": "上海二B"},
+		map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "RegionId": float64(3003), "ZoneId": float64(5001), "Describe": "华北一C"},
+		map[string]any{"Zone": "cn-wlcb-03", "Region": "cn-wlcb", "RegionId": float64(1000039), "ZoneId": float64(10033), "Describe": "华北二C"},
 	}}
 }
 
@@ -125,9 +127,6 @@ func TestStockHandle_CapacityPrecheckForMatchedNormalGPU(t *testing.T) {
 			},
 		},
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
-		"DescribeCompShareGpuInventory": {
-			"GpuInventory": map[string]any{"Exclusive": map[string]any{"1": map[string]any{"4090": float64(0)}}},
-		},
 		"DescribeCompShareImages": {
 			"ImageSet": []any{
 				map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu-nvidia 22.04", "Status": "Available", "ImageType": "System"},
@@ -149,7 +148,7 @@ func TestStockHandle_CapacityPrecheckForMatchedNormalGPU(t *testing.T) {
 	// sim), so the reply must report the on-sale truth and the sample outcome WITHOUT
 	// generalizing to a global creation denial.
 	assert.Contains(t, result.Reply, "样本容量预检未通过")
-	assert.Contains(t, result.Reply, "机型状态：开售")
+	assert.Contains(t, result.Reply, "机型开售")
 	assert.NotContains(t, result.Reply, "暂时不能新建实例", "a sample all-false must not be generalized to a global creation denial")
 	assert.NotContains(t, result.Reply, "暂无可创建库存")
 	assert.NotContains(t, result.Reply, "ResourceEnough", "no implementation details leak")
@@ -157,17 +156,110 @@ func TestStockHandle_CapacityPrecheckForMatchedNormalGPU(t *testing.T) {
 		"single matched model is remembered as a typed RC017 effect, not a shared-result field")
 	assert.Nil(t, result.Envelope, "the capacity-precheck path carries no envelope (legacy parity)")
 
-	// Full deterministic 5-call sequence.
-	require.Len(t, exec.calls, 5)
+	// Raw GPU-count inventory is not an authority for user-facing creatability;
+	// the deterministic path uses the sale catalog plus a capacity precheck.
+	require.Len(t, exec.calls, 4)
 	wantSeq := []string{
 		"DescribeAvailableCompShareInstanceTypes",
 		"DescribeCompShareSupportZone",
-		"DescribeCompShareGpuInventory",
 		"DescribeCompShareImages",
 		"CheckCompShareResourceCapacity",
 	}
 	for i, want := range wantSeq {
 		assert.Equal(t, want, exec.calls[i].action, "call %d", i)
+	}
+}
+
+func TestStockHandle_PrechecksEverySaleZone(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{
+					"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal",
+					"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+				},
+				map[string]any{
+					"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal",
+					"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+				},
+			},
+		},
+		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+		"DescribeCompShareImages": {
+			"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-system", "Name": "Base System", "Status": "Available", "ImageType": "System"},
+			},
+		},
+		"CheckCompShareResourceCapacity": {
+			"Specs": []any{
+				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+			},
+		},
+	}}
+
+	result := runStock(t, exec, "", StockAvailabilityRequest{GPUType: "4090"})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	var capacityCalls int
+	for _, call := range exec.calls {
+		if call.action == "CheckCompShareResourceCapacity" {
+			capacityCalls++
+		}
+	}
+	assert.Equal(t, 2, capacityCalls, "each advertised zone must be checked; a first-zone success cannot stop the scan")
+	assert.Contains(t, result.Reply, "华北二A")
+	assert.Contains(t, result.Reply, "上海二B")
+	assert.NotContains(t, result.Reply, "原始 GPU 库存")
+}
+
+func TestStockHandle_MultipleNamedZonesAreExactAndNeverCrossZone(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "4090", "Zone": "cn-bj2-03", "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-wlcb-03", "Status": "Normal"},
+				map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+			},
+		},
+		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-system", "Status": "Available", "ImageType": "System"},
+		}},
+		"CheckCompShareResourceCapacity": {"Specs": []any{
+			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+		}},
+	}}
+
+	result := runStock(t, exec, "", StockAvailabilityRequest{
+		GPUType: "4090", ZoneMentions: []string{"华北一C", "华北二C"},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "华北一C (cn-bj2-03)")
+	assert.Contains(t, result.Reply, "华北二C (cn-wlcb-03)")
+	assert.NotContains(t, result.Reply, "上海二B", "an unrequested zone must never re-enter the answer")
+	var zonesCalled []string
+	for _, call := range exec.calls {
+		if call.action == "CheckCompShareResourceCapacity" {
+			zonesCalled = append(zonesCalled, call.args["Zone"].(string))
+		}
+	}
+	assert.ElementsMatch(t, []string{"cn-bj2-03", "cn-wlcb-03"}, zonesCalled)
+}
+
+func TestStockHandle_UnresolvedNamedZoneFailsClosed(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+		}},
+		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+	}}
+
+	result := runStock(t, exec, "", StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{"华北九Z"}})
+	require.Equal(t, platform.ReadStatusConflict, result.Status)
+	for _, call := range exec.calls {
+		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action,
+			"an unresolved requested zone must never degrade into an all-zone precheck")
 	}
 }
 
@@ -217,7 +309,7 @@ func TestRenderStockCapacity_AllPrecheckFailedIsUncertainNotSoldOut(t *testing.T
 		{Name: "4090", Zone: "cn-wlcb-01", Failed: true},
 		{Name: "4090", Zone: "cn-bj2-03", Failed: true},
 	}
-	reply := renderStockInventoryCapacityReply(checks, "原始 GPU 库存：接口未返回数量。")
+	reply := renderStockCapacityReply(checks)
 	assert.Contains(t, reply, "未完成")
 	assert.Contains(t, reply, "开售")
 	assert.NotContains(t, reply, "售罄")
@@ -235,7 +327,7 @@ func TestRenderStockCapacity_SuccessButAllFalseIsNotGlobalDenial(t *testing.T) {
 	checks := []stockCapacityCheck{
 		{Name: "4090", Zone: "cn-wlcb-01", CheckedSpec: 2}, // ran, no EnoughSpecs, not Failed
 	}
-	reply := renderStockInventoryCapacityReply(checks, "原始 GPU 库存：接口未返回数量。")
+	reply := renderStockCapacityReply(checks)
 	assert.Contains(t, reply, "开售")
 	assert.Contains(t, reply, "样本")
 	assert.NotContains(t, reply, "暂时不能新建实例", "an all-false sample must not become a global creation denial")

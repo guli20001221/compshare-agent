@@ -100,3 +100,14 @@ func TestStockReadAppliesRememberStockReferentEffect(t *testing.T) {
 	assert.Equal(t, "4090", eng.fallbackStockGpuModel(time.Now()),
 		"the stock read must remember the resolved model so a subject-eliding follow-up resolves to it")
 }
+
+func TestReadBoundaryRejectsUngroundedMonitorAbsoluteWindow(t *testing.T) {
+	executor := &mockExecutor{}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "查询昨天的CPU历史监控"
+	out := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.IntentMonitorHistory),
+		`{"time_window":{"type":"absolute","start":"2026-07-18 00:00","end":"2026-07-19 00:00","source_span":"昨天"}}`), noopStep)
+
+	assert.Contains(t, out, "ungrounded capability request")
+	require.Empty(t, executor.calls, "an invented absolute date must be rejected before any upstream query")
+}

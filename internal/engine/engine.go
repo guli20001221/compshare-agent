@@ -79,6 +79,8 @@ const (
 	maxSearchKnowledgeCallsPerTurn = 5
 )
 
+const actionOutcomeUncertainReply = "上游请求已发出，但本次没有收到可确认的结果。为避免重复操作，系统不会自动重试；请先查询资源当前状态，再决定下一步。"
+
 const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
 
@@ -2417,6 +2419,12 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "相同参数复用已有观察", TraceResult: map[string]any{"status": "reused_observation", "same_call_blocked": true}})
 				return result
 			}
+			if limit := maxUniqueAgentToolCalls(action); limit > 0 &&
+				uniqueAgentToolCalls(e.toolResultsByCallThisTurn, action) >= limit {
+				result := toolCallBudgetObservation(action, limit)
+				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "本轮该能力调用次数已达上限", TraceResult: map[string]any{"status": "call_budget_exhausted", "max_unique_calls": limit}})
+				return result
+			}
 			result := e.executeToolOnce(ctx, tc, onStep)
 			if _, final := isFinalReply(result); !final {
 				e.toolResultsByCallThisTurn[key] = result
@@ -3685,6 +3693,15 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
+	// Once a journaled write has an unknown external outcome, this turn must end
+	// immediately. Feeding the workflow failure back to the Agent can make it
+	// propose and confirm the same write again in the same turn. The journal
+	// prevents the duplicate API call, but a second confirmation card is still
+	// misleading and obscures the required reconciliation step.
+	if errors.Is(e.ActionJournalError(), tools.ErrActionOutcomeUncertain) {
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, actionOutcomeUncertainReply, tools.ErrActionOutcomeUncertain))
+		return finalReplyPrefix + actionOutcomeUncertainReply
+	}
 
 	// Create-zone recovery: a named platform image that isn't available in the
 	// resolved zone fails capacity with RetCode=230 ("Params [CompShareImageId]
@@ -3844,7 +3861,7 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	case "ResetPasswordWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 重置密码。出于安全考虑，密码不会在对话中回显。", uhost), true
 	case "ReinstallInstanceWorkflow":
-		if len(workflowSecretValues(args)) > 0 {
+		if configured, _ := args["PasswordConfigured"].(bool); configured {
 			return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。出于安全考虑，新密码不会在对话中回显；请使用你刚设置的密码登录。", uhost), true
 		}
 		return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。本次未设置新密码，请继续使用原登录凭据。", uhost), true

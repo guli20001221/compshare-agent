@@ -136,11 +136,14 @@ func (j *ActionJournal) Execute(ctx context.Context, action string, args map[str
 		return result, nil
 	}
 
-	// A non-zero upstream business response is not proof that the write did not
-	// happen. Gate/policy/argument/confirmation rejections occur before this
-	// journal boundary; every error returned after StartAction is therefore an
-	// unknown external outcome unless a future API supplies a verified upstream
-	// idempotency contract.
+	// A parsed non-zero RetCode is a completed upstream response and therefore a
+	// definite business failure. Persist it so the workflow can explain the
+	// failure and a takeover can replay the same outcome without issuing the
+	// write again. Transport errors remain ambiguous because no response proved
+	// whether the upstream accepted the request.
+	if apiErr, ok := tools.UpstreamAPIErrorFrom(callErr); ok {
+		return j.recordDefiniteFailure(ctx, started, action, apiErr)
+	}
 	return j.recordAmbiguous(ctx, started, action, callErr)
 }
 
@@ -308,6 +311,18 @@ func (j *ActionJournal) recordAmbiguous(ctx context.Context, started store.TurnA
 		return nil, j.poison(fmt.Errorf("%s failed and ambiguity could not be recorded: %w", action, err))
 	}
 	return nil, j.poison(fmt.Errorf("%s: %w", action, cause))
+}
+
+func (j *ActionJournal) recordDefiniteFailure(ctx context.Context, started store.TurnAction, action string, apiErr *tools.UpstreamAPIError) (map[string]any, error) {
+	detail, marshalErr := json.Marshal(map[string]any{"code": apiErr.Code, "message": apiErr.Message})
+	if marshalErr != nil {
+		return j.recordAmbiguous(ctx, started, action, fmt.Errorf("encode upstream failure: %w", marshalErr))
+	}
+	code := fmt.Sprintf("upstream_api:%d", apiErr.Code)
+	if _, err := j.store.RecordActionWithContext(ctx, j.owner, started.ExecutionToken, store.ActionStatusFailed, detail, &code, nil, started.ContextHint); err != nil {
+		return nil, j.poison(fmt.Errorf("%s failure was not durably recorded: %w", action, err))
+	}
+	return nil, apiErr
 }
 
 func actionContextHint(args, result map[string]any) json.RawMessage {

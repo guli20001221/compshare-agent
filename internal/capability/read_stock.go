@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/compshare-agent/internal/deployment"
@@ -17,7 +16,7 @@ import (
 // Stock-availability read capability (migrated from the legacy intent route).
 // This is the heaviest read capability: a plain listing renders the catalog
 // Normal/SoldOut status, but a matched-model turn runs a multi-call capacity
-// precheck (support zones + raw GPU inventory + a probe image + a per-model /
+// precheck (support zones + a probe image + a per-model /
 // per-zone CheckCompShareResourceCapacity) with graceful partial-failure
 // handling. The typed request carries the GPU name + zone; the RC017 referent
 // (a subject-eliding follow-up resolving to the prior stock turn's model) comes
@@ -33,8 +32,8 @@ const (
 
 // StockAvailabilityRequest is the capability's own request contract.
 type StockAvailabilityRequest struct {
-	GPUType string `json:"gpu_type,omitempty"`
-	Zone    string `json:"zone,omitempty"`
+	GPUType      string   `json:"gpu_type,omitempty"`
+	ZoneMentions []string `json:"zone_mentions,omitempty"`
 }
 
 // MissingFields: none — an unfiltered stock listing is valid.
@@ -68,10 +67,13 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
 		Label:       stockCapabilityLabel,
 		Description: "查询 GPU 机型的实时可售性。",
-		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "zone": stringParam()}),
-		Handle:      stockHandle,
-		Render:      stockRender,
-		Observe:     stockObserve,
+		Params: objectParam(map[string]schemaNode{
+			"gpu_type":      stringParam(),
+			"zone_mentions": arrayParam(stringParam()).described("用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。"),
+		}),
+		Handle:  stockHandle,
+		Render:  stockRender,
+		Observe: stockObserve,
 	}
 }
 
@@ -292,16 +294,21 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 	if len(entries) == 0 {
 		return "", false, ReadResult{}
 	}
-	supportZones := stockSupportZones(ctx, rt)
-	if filter := stockZoneFilterFromSlot(req.Zone, supportZones); len(filter) > 0 {
+	supportZones, err := stockSupportZones(ctx, rt)
+	if err != nil {
+		return "", false, ReadFailureAfterTool("DescribeCompShareSupportZone", stockCapabilityLabel, err)
+	}
+	filter, unresolved := stockZoneFilterFromMentions(req.ZoneMentions, supportZones)
+	if len(unresolved) > 0 {
+		return "", false, ReadConflict(fmt.Sprintf("无法从平台实时可用区目录中精确确认这些区域：%s。请使用目录中的完整可用区名称或 ID。", strings.Join(unresolved, "、")))
+	}
+	if len(filter) > 0 {
 		entries = filterStockEntriesByZone(entries, filter)
 		if len(entries) == 0 {
-			return renderStockReply(stockRaw, strings.TrimSpace(req.GPUType)) + "\n未在你指定的可用区里找到该机型的开售信息。", true, ReadResult{}
+			return renderRequestedZonesNotOffered(req.GPUType, filter, supportZones), true, ReadResult{}
 		}
 	}
 	entriesByModel, modelOrder := groupStockEntriesByModel(entries)
-	inventoryRaw, _ := rt.Executor.Execute(ctx, "DescribeCompShareGpuInventory", map[string]any{})
-	inventoryLine := renderRawGPUInventoryLine(modelOrder, entriesByModel, inventoryRaw, supportZones)
 	imageRaw, err := rt.Executor.Execute(ctx, "DescribeCompShareImages", map[string]any{
 		"ImageType": "System",
 		"Limit":     20,
@@ -314,42 +321,33 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 	}
 	imageID := selectCapacityPrecheckImageID(imageRaw)
 	if imageID == "" {
-		return renderStockInventoryCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder), inventoryLine) + "\n容量预检未执行：未获取到可用于预检的系统镜像。", true, ReadResult{}
+		return renderStockCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder)) + "\n容量预检未执行：未获取到可用于预检的系统镜像。", true, ReadResult{}
 	}
 
 	checks := make([]stockCapacityCheck, 0, len(entries))
 
 	for _, model := range modelOrder {
 		zoneEntries := entriesByModel[model]
-		var firstZone string
-		var success stockCapacityCheck
-		sawSuccess := false
 		for _, entry := range zoneEntries {
 			if entry.Zone == "" {
 				continue
 			}
-			if firstZone == "" {
-				firstZone = entry.Zone
-			}
+			zoneLabel := stockZoneDisplay(entry, supportZones)
 			args := capacityPrecheckArgs(entry, imageID, supportZones, stockRaw, imageRaw)
 			capacityRaw, err := stockExecuteCapacityPrecheck(ctx, rt, args)
 			if err != nil {
+				checks = append(checks, stockCapacityCheck{Name: model, Zone: zoneLabel, Failed: true})
 				continue
 			}
-			success = summarizeStockCapacity(entry, capacityRaw)
-			sawSuccess = true
-			break
-		}
-		if sawSuccess {
-			checks = append(checks, success)
-		} else if firstZone != "" {
-			checks = append(checks, stockCapacityCheck{Name: model, Zone: firstZone, Failed: true})
+			check := summarizeStockCapacity(entry, capacityRaw)
+			check.Zone = zoneLabel
+			checks = append(checks, check)
 		}
 	}
 	if len(checks) == 0 {
-		return renderStockInventoryCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder), inventoryLine) + "\n容量预检未执行：当前接口结果缺少可用区信息。", true, ReadResult{}
+		return renderStockCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder)) + "\n容量预检未执行：当前接口结果缺少可用区信息。", true, ReadResult{}
 	}
-	return renderStockInventoryCapacityReply(checks, inventoryLine), true, ReadResult{}
+	return renderStockCapacityReply(checks), true, ReadResult{}
 }
 
 func failedStockCapacityChecks(entriesByModel map[string][]stockInstanceTypeEntry, modelOrder []string) []stockCapacityCheck {
@@ -377,36 +375,47 @@ func groupStockEntriesByModel(entries []stockInstanceTypeEntry) (map[string][]st
 	return entriesByModel, modelOrder
 }
 
-func stockSupportZones(ctx context.Context, rt ReadRuntime) []zones.ZoneInfo {
+func stockSupportZones(ctx context.Context, rt ReadRuntime) ([]zones.ZoneInfo, error) {
 	list, err := zones.FetchSupportZones(ctx, rt.Executor, 0, 0)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return list
+	if len(list) == 0 {
+		return nil, fmt.Errorf("平台可用区目录为空")
+	}
+	return list, nil
 }
 
-func stockZoneFilterFromSlot(zoneText string, supportZones []zones.ZoneInfo) map[string]struct{} {
-	if len(supportZones) == 0 {
-		return nil
+func stockZoneFilterFromMentions(mentions []string, supportZones []zones.ZoneInfo) (map[string]struct{}, []string) {
+	if len(mentions) == 0 {
+		return nil, nil
 	}
-	zoneText = strings.TrimSpace(zoneText)
-	if zoneText == "" {
-		return nil
-	}
-	if exact, ok := zones.ExactZone(supportZones, zoneText); ok {
-		return map[string]struct{}{strings.ToLower(exact): {}}
-	}
-	for _, z := range supportZones {
-		if z.Zone == "" {
+	filter := map[string]struct{}{}
+	var unresolved []string
+	for _, mention := range mentions {
+		mention = strings.TrimSpace(mention)
+		if mention == "" {
 			continue
 		}
-		if strings.EqualFold(zoneText, z.Zone) ||
-			(z.Describe != "" && strings.EqualFold(zoneText, z.Describe)) ||
-			(z.Region != "" && strings.EqualFold(zoneText, z.Region)) {
-			return map[string]struct{}{strings.ToLower(z.Zone): {}}
+		exact, ok := zones.ExactZone(supportZones, mention)
+		if !ok {
+			unresolved = append(unresolved, mention)
+			continue
+		}
+		filter[strings.ToLower(exact)] = struct{}{}
+	}
+	return filter, unresolved
+}
+
+func renderRequestedZonesNotOffered(gpuType string, filter map[string]struct{}, supportZones []zones.ZoneInfo) string {
+	labels := make([]string, 0, len(filter))
+	for _, zone := range supportZones {
+		if _, ok := filter[strings.ToLower(zone.Zone)]; ok {
+			labels = append(labels, zones.Label(supportZones, zone.Zone))
 		}
 	}
-	return nil
+	sort.Strings(labels)
+	return fmt.Sprintf("%s 未在指定可用区（%s）的开售目录中出现；未执行跨区容量预检，也不能据此推断其他区域库存。", strings.TrimSpace(gpuType), strings.Join(labels, "、"))
 }
 
 func filterStockEntriesByZone(entries []stockInstanceTypeEntry, filter map[string]struct{}) []stockInstanceTypeEntry {
@@ -624,7 +633,7 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 	models := strings.Join(names, "、")
 	if len(enough) > 0 {
 		sort.Strings(enough)
-		reply := fmt.Sprintf("%s 当前有可创建库存，可以新建实例。", models)
+		reply := fmt.Sprintf("%s 当前有可创建库存，可以新建实例。已通过预检：%s。", models, strings.Join(enough, "、"))
 		return appendCapacityFailureNote(reply, failedZones)
 	}
 	if checkedSpecs == 0 {
@@ -638,7 +647,7 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 		// statement and be explicit that exact creatability was not verified this
 		// turn. (#3b graceful degradation — a precheck failure must not override
 		// the catalog answer.)
-		return fmt.Sprintf("%s 机型当前开售；本次容量预检未能确认具体配置的可创建性，精确库存请以控制台创建页为准。", models)
+		return fmt.Sprintf("%s 机型当前开售；本次容量预检未完成，尚未确认具体配置的可创建性，精确库存请以控制台创建页为准。", models)
 	}
 	// checkedSpecs>0 but nothing enough is a SAMPLE negative (the probe image's OS/disk
 	// feed the sim); it must not be generalized into a global creation denial. Keep the
@@ -647,255 +656,11 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 	return appendCapacityFailureNote(reply, failedZones)
 }
 
-func renderStockInventoryCapacityReply(checks []stockCapacityCheck, inventoryLine string) string {
-	reply := renderStockCapacityReply(checks)
-	names := uniqueStockCheckNames(checks)
-	if len(names) == 0 {
-		return reply
-	}
-	sort.Strings(names)
-	models := strings.Join(names, "、")
-	if inventoryLine == "" {
-		inventoryLine = fmt.Sprintf("原始 GPU 库存：接口未返回 %s 的库存数量。", models)
-	}
-	if len(checks) > 0 && anyStockCapacityEnough(checks) {
-		return fmt.Sprintf("%s 默认创建配置已通过容量预检，可以新建实例。\n%s\n机型状态：开售。", models, inventoryLine)
-	}
-	if allStockCapacityFailed(checks) {
-		return fmt.Sprintf("%s 默认创建配置容量预检未完成，暂不能确认默认配置是否可创建。\n%s\n机型状态：开售。", models, inventoryLine)
-	}
-	// A precheck that RAN but returned all ResourceEnough=false is a SAMPLE negative
-	// only: it used a placeholder probe image whose OS/boot-disk feed the scheduler sim,
-	// so an all-false sample does NOT prove the GPU has no creatable stock. Report the
-	// sample outcome and keep the real on-sale + inventory facts; never emit a global
-	// creation denial ("暂无可创建库存" / "暂时不能新建实例") — the authoritative negative
-	// comes only from the create workflow re-checking the user's final sealed config.
-	return fmt.Sprintf("%s 对默认配置做的样本容量预检未通过，但这不代表该机型无法创建（样本所用镜像/磁盘可能不适配），精确可创建性请在创建流程中以你最终选择的镜像与配置为准。\n%s\n机型状态：开售。", models, inventoryLine)
-}
-
-func uniqueStockCheckNames(checks []stockCapacityCheck) []string {
-	out := []string{}
-	seen := map[string]struct{}{}
-	for _, check := range checks {
-		if check.Name == "" {
-			continue
-		}
-		if _, ok := seen[check.Name]; ok {
-			continue
-		}
-		seen[check.Name] = struct{}{}
-		out = append(out, check.Name)
-	}
-	return out
-}
-
-func anyStockCapacityEnough(checks []stockCapacityCheck) bool {
-	for _, check := range checks {
-		if len(check.EnoughSpecs) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func allStockCapacityFailed(checks []stockCapacityCheck) bool {
-	if len(checks) == 0 {
-		return false
-	}
-	for _, check := range checks {
-		if !check.Failed {
-			return false
-		}
-	}
-	return true
-}
-
-func renderRawGPUInventoryLine(modelOrder []string, entriesByModel map[string][]stockInstanceTypeEntry, raw map[string]any, supportZones []zones.ZoneInfo) string {
-	if len(modelOrder) == 0 {
-		return ""
-	}
-	pool := stockInventoryPool(raw, "Exclusive")
-	if len(pool) == 0 {
-		return "原始 GPU 库存：库存接口未返回可用数据。"
-	}
-	lines := []string{}
-	for _, model := range modelOrder {
-		entries := entriesByModel[model]
-		known := []string{}
-		for _, entry := range entries {
-			zoneID := stockInventoryZoneID(entry, supportZones)
-			if zoneID == 0 {
-				continue
-			}
-			gpuCounts, ok := pool[zoneID]
-			if !ok {
-				continue
-			}
-			count, ok := gpuCounts[entry.Name]
-			if !ok {
-				continue
-			}
-			zone := stockZoneDisplay(entry, supportZones)
-			if count > 0 {
-				known = append(known, fmt.Sprintf("%s 库存约 %s 张 GPU", zone, trimFloat(count)))
-			} else {
-				known = append(known, fmt.Sprintf("%s 暂无原始 GPU 库存", zone))
-			}
-		}
-		if len(known) == 0 {
-			labels := stockEntryZoneLabels(entries, supportZones)
-			if len(labels) > 0 {
-				lines = append(lines, fmt.Sprintf("%s 接口未返回 %s 的库存数量", strings.Join(labels, "、"), model))
-			} else {
-				lines = append(lines, fmt.Sprintf("接口未返回 %s 的库存数量", model))
-			}
-			continue
-		}
-		sort.Strings(known)
-		lines = append(lines, strings.Join(known, "；"))
-	}
-	return "原始 GPU 库存：" + strings.Join(lines, "；") + "。"
-}
-
 func stockZoneDisplay(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) string {
 	if entry.Zone != "" {
-		if describe := zones.DescribeFor(supportZones, entry.Zone); describe != "" {
-			return describe
-		}
-		return entry.Zone
+		return zones.Label(supportZones, entry.Zone)
 	}
 	return "未知可用区"
-}
-
-func stockInventoryZoneID(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) uint32 {
-	if entry.Zone != "" {
-		for _, z := range supportZones {
-			if z.ZoneID != 0 && strings.EqualFold(z.Zone, entry.Zone) {
-				return z.ZoneID
-			}
-		}
-	}
-	return 0
-}
-
-func stockEntryZoneLabels(entries []stockInstanceTypeEntry, supportZones []zones.ZoneInfo) []string {
-	out := []string{}
-	seen := map[string]struct{}{}
-	for _, entry := range entries {
-		label := stockZoneDisplay(entry, supportZones)
-		if label == "" {
-			continue
-		}
-		if _, ok := seen[label]; ok {
-			continue
-		}
-		seen[label] = struct{}{}
-		out = append(out, label)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func stockInventoryPool(raw map[string]any, poolName string) map[uint32]map[string]float64 {
-	if raw == nil {
-		return nil
-	}
-	switch inv := raw["GpuInventory"].(type) {
-	case map[string]any:
-		return convertStockInventoryPool(inv[poolName])
-	case map[string]map[uint32]map[string]uint32:
-		return convertStockInventoryPool(inv[poolName])
-	case map[string]map[uint32]map[string]float64:
-		return convertStockInventoryPool(inv[poolName])
-	default:
-		return nil
-	}
-}
-
-func convertStockInventoryPool(raw any) map[uint32]map[string]float64 {
-	out := map[uint32]map[string]float64{}
-	switch pool := raw.(type) {
-	case map[string]any:
-		for rawZoneID, rawGPUCounts := range pool {
-			id, ok := parseUint32Loose(rawZoneID)
-			if !ok {
-				continue
-			}
-			if counts := convertGPUCountMap(rawGPUCounts); len(counts) > 0 {
-				out[id] = counts
-			}
-		}
-	case map[uint32]map[string]uint32:
-		for id, counts := range pool {
-			out[id] = map[string]float64{}
-			for gpu, count := range counts {
-				out[id][gpu] = float64(count)
-			}
-		}
-	case map[uint32]map[string]float64:
-		for id, counts := range pool {
-			out[id] = map[string]float64{}
-			for gpu, count := range counts {
-				out[id][gpu] = count
-			}
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func convertGPUCountMap(raw any) map[string]float64 {
-	out := map[string]float64{}
-	switch counts := raw.(type) {
-	case map[string]any:
-		for gpu, rawCount := range counts {
-			if count, ok := numericValue(rawCount); ok {
-				out[gpu] = count
-			}
-		}
-	case map[string]uint32:
-		for gpu, count := range counts {
-			out[gpu] = float64(count)
-		}
-	case map[string]float64:
-		for gpu, count := range counts {
-			out[gpu] = count
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func parseUint32Loose(v any) (uint32, bool) {
-	switch typed := v.(type) {
-	case string:
-		typed = strings.TrimSpace(typed)
-		if typed == "" {
-			return 0, false
-		}
-		n, err := strconv.ParseUint(typed, 10, 32)
-		if err != nil || n == 0 {
-			return 0, false
-		}
-		return uint32(n), true
-	default:
-		n, ok := numericValue(typed)
-		if !ok || n <= 0 || n != float64(uint32(n)) {
-			return 0, false
-		}
-		return uint32(n), true
-	}
-}
-
-func trimFloat(v float64) string {
-	if v == float64(int64(v)) {
-		return fmt.Sprintf("%d", int64(v))
-	}
-	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", v), "0"), ".")
 }
 
 func appendCapacityFailureNote(reply string, failedZones []string) string {

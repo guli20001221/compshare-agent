@@ -157,6 +157,10 @@ func stepConfirmReinstall() Step {
 			summary["target_image_name"] = image.Name
 			summary["target_image_source"] = image.Source
 			summary["target_image_container"] = image.Container
+			password, _ := wfCtx.Params["Password"].(string)
+			passwordConfigured := strings.TrimSpace(password) != ""
+			wfCtx.Params["PasswordConfigured"] = passwordConfigured
+			summary["password_will_change"] = passwordConfigured
 			summary["warning"] = "⚠️ 重装系统会清除系统盘上的所有数据，数据盘不受影响。请确保重要数据已备份。"
 			return summary, nil
 		},
@@ -180,6 +184,8 @@ func stepReinstallInstance() Step {
 			if pw, ok := wfCtx.Params["Password"].(string); ok && pw != "" {
 				args["Password"] = base64.StdEncoding.EncodeToString([]byte(pw))
 				args["LoginMode"] = "Password"
+			} else if configured, _ := wfCtx.Params["PasswordConfigured"].(bool); configured {
+				return nil, fmt.Errorf("已确认设置新密码，但安全密码输入已丢失，拒绝执行重装。")
 			}
 			return args, nil
 		},

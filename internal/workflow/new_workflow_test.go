@@ -1031,7 +1031,11 @@ func TestReinstall_PasswordBase64Encoded(t *testing.T) {
 		"DescribeCompShareImages":    {"ImageSet": []any{map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu"}}},
 		"ReinstallCompShareInstance": {"RetCode": 0},
 	}}
-	confirmFn := func(action string, args map[string]any) bool { return true }
+	var confirmed map[string]any
+	confirmFn := func(action string, args map[string]any) bool {
+		confirmed = args
+		return true
+	}
 	onStep, _ := collectEvents()
 
 	def := ReinstallInstanceDef()
@@ -1051,6 +1055,7 @@ func TestReinstall_PasswordBase64Encoded(t *testing.T) {
 	}
 	assert.Equal(t, "TXlQYXNzMTIzIQ==", reinstallCall.args["Password"], "password must be base64-encoded")
 	assert.Equal(t, "Password", reinstallCall.args["LoginMode"])
+	assert.Equal(t, true, confirmed["password_will_change"])
 }
 
 func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {

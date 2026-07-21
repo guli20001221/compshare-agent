@@ -44,3 +44,22 @@ func TestDifferentArgumentsRemainExecutableWhenResultsMatch(t *testing.T) {
 	require.Len(t, executor.calls, 2, "不同参数即使结果相同也必须真正执行")
 	require.Contains(t, toolNames(centralAgentToolWindow(false)), action)
 }
+
+func TestMonitorUniqueCallBudgetStopsThirdVariant(t *testing.T) {
+	executor := &mockExecutor{}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.toolResultsByCallThisTurn = map[string]string{}
+	action := capability.ReadToolName(intent.IntentMonitorHistory)
+
+	for index, args := range []string{
+		`{"time_window":{"type":"relative","amount":1,"unit":"hour"}}`,
+		`{"time_window":{"type":"relative","amount":2,"unit":"hour"}}`,
+	} {
+		result := eng.executeTool(context.Background(), toolCall("call", action, args), noopStep)
+		require.NotContains(t, result, "call_budget_exhausted", "call %d", index+1)
+	}
+	third := eng.executeTool(context.Background(), toolCall("third", action,
+		`{"time_window":{"type":"relative","amount":3,"unit":"hour"}}`), noopStep)
+	require.Contains(t, third, "call_budget_exhausted")
+	require.Equal(t, 2, uniqueAgentToolCalls(eng.toolResultsByCallThisTurn, action))
+}

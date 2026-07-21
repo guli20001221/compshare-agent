@@ -575,7 +575,7 @@ func TestDeterministicReinstallReplyDoesNotInventANewPassword(t *testing.T) {
 	require.NotContains(t, withoutPassword, "刚设置")
 
 	withPassword, ok := deterministicWorkflowReply("ReinstallInstanceWorkflow", map[string]any{
-		"UHostId": "uhost-1", "Password": "secret",
+		"UHostId": "uhost-1", "PasswordConfigured": true,
 	})
 	require.True(t, ok)
 	require.Contains(t, withPassword, "刚设置")

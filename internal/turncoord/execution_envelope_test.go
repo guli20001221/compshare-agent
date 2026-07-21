@@ -98,6 +98,7 @@ func TestExecutionEnvelope_SealsPasswordAndRestoresItOnlyToTheWorkflowChannel(t 
 	key := bytes.Repeat([]byte{0x5a}, 32)
 	for _, tc := range []struct{ name, message string }{
 		{name: "chinese", message: "重置 uhost-1 密码为 Aa123456!"},
+		{name: "chinese_natural_order", message: "请把测试实例 uhost-1 的登录密码重置为 Aa123456!"},
 		{name: "english", message: "reset uhost-1 pass" + "word: Aa123456!"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -170,12 +170,12 @@
       "value": "(扮演|假装|假设你是|现在你是|从现在(开始|起))"
     },
     {
-      "id": "ecf9ca300116c2cc",
+      "id": "3c6d733589954be3",
       "kind": "regex",
       "path": "internal/guardrails/output.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
-      "value": "(?i)(?:密码|改密|password)\\s*(为|成|是|:|：)\\s*([^\\s，。；;]+)"
+      "value": "(?i)(?:(?:重置|修改|设置)?\\s*(?:登录)?密码(?:重置|修改|设置)?|改密|password)\\s*(为|成|是|:|：)\\s*([^\\s，。；;]+)"
     },
     {
       "id": "110c3ba511f9c44a",
@@ -1270,12 +1270,20 @@
       "value": "password"
     },
     {
-      "id": "8236fccf4e943741",
+      "id": "60e560f918535b48",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.Contains",
+      "value": "密码"
+    },
+    {
+      "id": "26637632c48f5e6f",
       "kind": "string_heuristic",
       "path": "internal/guardrails/output.go",
       "symbol": "explicitPasswordReset",
       "callee": "strings.HasPrefix",
-      "value": "密码"
+      "value": "重置"
     },
     {
       "id": "ba4fe8e4419aaf9a",
@@ -1300,6 +1308,15 @@
       "symbol": "explicitPasswordReset",
       "callee": "strings.HasSuffix",
       "value": "重置"
+    },
+    {
+      "id": "544ce48ef5433cda",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.HasSuffix",
+      "value": "重置",
+      "ordinal": 2
     },
     {
       "id": "365eb449227914d6",

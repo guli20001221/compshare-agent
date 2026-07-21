@@ -1,26 +1,12 @@
 package readprojection
 
 import (
-	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
 
 func IsCurrentMonitorTimeWindow(window *TimeWindow) bool {
-	if window == nil {
-		return true
-	}
-	if window.Type != TimeWindowPreset {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(window.Value)) {
-	case "now", "current", "realtime":
-		return true
-	default:
-		return false
-	}
+	return window == nil
 }
 
 var monitorNowFunc = time.Now
@@ -28,42 +14,61 @@ var monitorNowFunc = time.Now
 var monitorHistoryLoc = func() *time.Location {
 	loc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
-		return time.FixedZone("CST", 8*3600)
+		return time.FixedZone("CST", 8*60*60)
 	}
 	return loc
 }()
 
-var relativeMonitorWindowRE = regexp.MustCompile(`(?i)(?:过去|最近|近|past|last|previous)\s*(\d+)\s*([a-z]+|分钟|分|小时|时)`)
-
+// ResolveMonitorHistoryWindow converts the typed tool contract into timestamps.
+// The model selects semantics; the server owns all calendar arithmetic.
 func ResolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 	if window == nil {
 		return 0, 0, false
 	}
-	now := monitorNowFunc().In(monitorHistoryLoc)
+	loc, ok := monitorLocation(window.Timezone)
+	if !ok {
+		return 0, 0, false
+	}
+	now := monitorNowFunc().In(loc)
 	var start, end time.Time
 	switch window.Type {
-	case TimeWindowAbsolute:
-		s, e, ok := parseAbsoluteMonitorWindow(window.Value)
-		if !ok {
+	case TimeWindowPreset:
+		if window.Amount != 0 || window.Unit != "" || window.Start != "" || window.End != "" {
 			return 0, 0, false
 		}
-		start, end = s, e
-	case TimeWindowPreset:
-		switch strings.ToLower(strings.TrimSpace(window.Value)) {
-		case "yesterday", "昨天":
-			day := startOfDay(now).AddDate(0, 0, -1)
-			start, end = day, day.Add(24*time.Hour)
-		case "today", "今天":
-			start, end = startOfDay(now), now
+		switch window.Preset {
+		case "yesterday":
+			start = startOfDayIn(now, loc).AddDate(0, 0, -1)
+			end = start.AddDate(0, 0, 1)
+		case "today":
+			start, end = startOfDayIn(now, loc), now
 		default:
 			return 0, 0, false
 		}
 	case TimeWindowRelative:
-		s, e, ok := parseRelativeMonitorWindow(window.Value, now)
-		if !ok {
+		if window.Preset != "" || window.Start != "" || window.End != "" || window.Amount <= 0 {
 			return 0, 0, false
 		}
-		start, end = s, e
+		var duration time.Duration
+		switch window.Unit {
+		case "minute":
+			duration = time.Duration(window.Amount) * time.Minute
+		case "hour":
+			duration = time.Duration(window.Amount) * time.Hour
+		default:
+			return 0, 0, false
+		}
+		start, end = now.Add(-duration), now
+	case TimeWindowAbsolute:
+		if window.Preset != "" || window.Amount != 0 || window.Unit != "" {
+			return 0, 0, false
+		}
+		var startOK, endOK bool
+		start, startOK = parseMonitorTimestamp(window.Start, loc)
+		end, endOK = parseMonitorTimestamp(window.End, loc)
+		if !startOK || !endOK {
+			return 0, 0, false
+		}
 	default:
 		return 0, 0, false
 	}
@@ -73,124 +78,34 @@ func ResolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 	return start.Unix(), end.Unix(), true
 }
 
-func atoiDefault(value string, fallback int) int {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
-func validClock(hour, minute int) bool {
-	return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
-}
-
-func parseAbsoluteMonitorWindow(value string) (time.Time, time.Time, bool) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return time.Time{}, time.Time{}, false
-	}
-	for _, sep := range []string{"/", "~", "～", "到", "至"} {
-		parts := strings.Split(value, sep)
-		if len(parts) != 2 {
-			continue
-		}
-		start, okStart := parseMonitorTime(parts[0])
-		end, okEnd := parseMonitorTimeWithDefaultDate(parts[1], start)
-		if okStart && okEnd {
-			return start, end, true
-		}
-	}
-	return time.Time{}, time.Time{}, false
-}
-
-func parseRelativeMonitorWindow(value string, now time.Time) (time.Time, time.Time, bool) {
-	lower := strings.ToLower(strings.TrimSpace(value))
-	if lower == "" {
-		return time.Time{}, time.Time{}, false
-	}
-	if strings.Contains(lower, "yesterday") || strings.Contains(lower, "昨天") {
-		day := startOfDay(now).AddDate(0, 0, -1)
-		return day, day.Add(24 * time.Hour), true
-	}
-	m := relativeMonitorWindowRE.FindStringSubmatch(lower)
-	if len(m) != 3 {
-		return time.Time{}, time.Time{}, false
-	}
-	n, err := strconv.Atoi(m[1])
-	if err != nil || n <= 0 {
-		return time.Time{}, time.Time{}, false
-	}
-	unit := strings.ToLower(strings.TrimSpace(m[2]))
-	d := time.Duration(n) * time.Minute
-	switch unit {
-	case "分钟", "分", "minute", "minutes", "min", "m":
-		d = time.Duration(n) * time.Minute
-	case "小时", "时", "hour", "hours", "h":
-		d = time.Duration(n) * time.Hour
+func monitorLocation(name string) (*time.Location, bool) {
+	switch strings.TrimSpace(name) {
+	case "", "Asia/Shanghai":
+		return monitorHistoryLoc, true
+	case "UTC":
+		return time.UTC, true
 	default:
-		return time.Time{}, time.Time{}, false
+		return nil, false
 	}
-	return now.Add(-d), now, true
 }
 
-func parseMonitorTime(value string) (time.Time, bool) {
+func parseMonitorTimestamp(value string, loc *time.Location) (time.Time, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return time.Time{}, false
 	}
-	if match := regexp.MustCompile(`(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?`).FindStringSubmatch(value); len(match) > 0 {
-		second := match[4]
-		if second == "" {
-			second = "00"
-		}
-		normalized := fmt.Sprintf("%s %02s:%02s:%02s", match[1], match[2], match[3], second)
-		if t, err := time.ParseInLocation("2006-01-02 15:04:05", normalized, monitorHistoryLoc); err == nil {
-			return t, true
-		}
-	}
-	if match := regexp.MustCompile(`(\d{4}-\d{2}-\d{2})T(\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2}))`).FindStringSubmatch(value); len(match) > 0 {
-		if t, err := time.Parse(time.RFC3339, match[1]+"T"+match[2]); err == nil {
-			return t, true
-		}
-	}
-	if t, err := time.Parse(time.RFC3339, value); err == nil {
-		return t, true
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, true
 	}
 	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04"} {
-		if t, err := time.ParseInLocation(layout, value, monitorHistoryLoc); err == nil {
-			return t, true
+		if parsed, err := time.ParseInLocation(layout, value, loc); err == nil {
+			return parsed, true
 		}
 	}
 	return time.Time{}, false
 }
 
-func parseMonitorTimeWithDefaultDate(value string, defaultDate time.Time) (time.Time, bool) {
-	if t, ok := parseMonitorTime(value); ok {
-		return t, true
-	}
-	value = strings.TrimSpace(value)
-	m := regexp.MustCompile(`(?:^|\D)(\d{1,2})(?:\s*(?::|点|时)\s*(\d{1,2})?)?`).FindStringSubmatch(value)
-	if len(m) == 0 || defaultDate.IsZero() {
-		return time.Time{}, false
-	}
-	hour, err := strconv.Atoi(m[1])
-	if err != nil {
-		return time.Time{}, false
-	}
-	minute := atoiDefault(m[2], 0)
-	if !validClock(hour, minute) {
-		return time.Time{}, false
-	}
-	base := defaultDate.In(monitorHistoryLoc)
-	y, mon, d := base.Date()
-	return time.Date(y, mon, d, hour, minute, 0, 0, monitorHistoryLoc), true
-}
-
-func startOfDay(t time.Time) time.Time {
-	y, m, d := t.In(monitorHistoryLoc).Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, monitorHistoryLoc)
+func startOfDayIn(value time.Time, loc *time.Location) time.Time {
+	year, month, day := value.In(loc).Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, loc)
 }

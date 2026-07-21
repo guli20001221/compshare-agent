@@ -118,3 +118,9 @@ func TestRedactKnownSecretsInText_RedactsWorkflowPasswords(t *testing.T) {
 	assert.NotContains(t, redacted, "SecurePass123")
 	assert.Contains(t, redacted, "[REDACTED]")
 }
+
+func TestContainsToolProtocolMarkup(t *testing.T) {
+	assert.True(t, ContainsToolProtocolMarkup(`<｜DSML｜invoke name="RequestResetPassword">`))
+	assert.True(t, ContainsToolProtocolMarkup(`<tool_call>{"name":"x"}</tool_call>`))
+	assert.False(t, ContainsToolProtocolMarkup("我会先查询实例，再显示确认卡。"))
+}

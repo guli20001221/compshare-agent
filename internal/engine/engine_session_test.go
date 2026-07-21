@@ -208,6 +208,21 @@ func TestEngine_ActionJournalErrorIsCommitBarrier(t *testing.T) {
 	}
 }
 
+func TestEngine_UncertainActionReplyRequiresReconciliation(t *testing.T) {
+	eng := &Engine{safeExecutor: &tools.SafeToolExecutor{}}
+	poisoned := &sessionActionJournal{err: tools.ErrActionOutcomeUncertain}
+	eng.safeExecutor = newSafeToolExecutor(&mockExecutor{}, nil, poisoned, true)
+
+	assert := func(condition bool, message string) {
+		t.Helper()
+		if !condition {
+			t.Fatal(message)
+		}
+	}
+	assert(errors.Is(eng.ActionJournalError(), tools.ErrActionOutcomeUncertain), "the engine must expose the poisoned journal")
+	assert(actionOutcomeUncertainReply != "", "the reconciliation reply must not be empty")
+}
+
 // TestSessionIsolation_SharedPointersEqual — P0-4.
 // Sibling assertion to the per-session checks: shared fields MUST be pointer-
 // equal across sessions. If a session refactor accidentally copies an LLM

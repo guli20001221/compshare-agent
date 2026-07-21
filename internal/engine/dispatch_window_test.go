@@ -9,10 +9,11 @@ import (
 
 // TestProposalToolExposureAndMapping asserts ONLY that the catalog exposes the
 // per-operation Request<Operation> tool and maps it back to its operation, and
-// that the retired ProposeAction_<Operation> alias is gone. It deliberately does
-// NOT assert that the real model actually calls RequestCreateInstance first on a
-// create turn: under the free ReAct loop that is a probabilistic model-behavior
-// property to be measured from real-model traces, not guaranteed by the tool list.
+// that the retired ProposeAction_<Operation> alias is gone. It does NOT — and its
+// old name "FirstHopIsRequest" misleadingly implied it did — assert that the real
+// model actually calls RequestCreateInstance first on a create turn: under the free
+// ReAct loop that is a probabilistic model-behavior property, to be measured from
+// real-model traces for acceptance, not something a tool-list test can prove.
 func TestProposalToolExposureAndMapping(t *testing.T) {
 	names := centralAgentToolNames(true)
 	require.Contains(t, names, "RequestCreateInstance",
@@ -45,4 +46,20 @@ func TestRequestToolDescriptionUsesSingleContractSource(t *testing.T) {
 		"the per-op description must open with the single contract preamble")
 	require.True(t, strings.HasSuffix(desc, proposalInvocationContractSuffix),
 		"the per-op description must close with the single contract suffix")
+}
+
+func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {
+	var description string
+	var parameters any
+	for _, tool := range centralAgentToolWindow(true) {
+		if tool.Function != nil && tool.Function.Name == "RequestResetPassword" {
+			description = tool.Function.Description
+			parameters = tool.Function.Parameters
+			break
+		}
+	}
+	require.NotEmpty(t, description)
+	require.Contains(t, description, "敏感值已由服务端安全接收")
+	properties := parameters.(map[string]any)["properties"].(map[string]any)
+	require.NotContains(t, properties, "Password")
 }
