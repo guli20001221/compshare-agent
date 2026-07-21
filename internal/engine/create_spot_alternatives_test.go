@@ -19,13 +19,39 @@ func (f toolExecutorFunc) Execute(_ context.Context, action string, args map[str
 	return f(action, args)
 }
 
+// catalogEntry is one AvailableInstanceTypes row in the shape ParseAvailableGPUs
+// reads (Zone / Name / Status / GraphicsMemory.Value are all load-bearing).
+func catalogEntry(name string, vramGB int) map[string]any {
+	return map[string]any{
+		"Name": name, "Zone": "cn-sh2-02", "Status": "Normal",
+		"GraphicsMemory": map[string]any{"Value": float64(vramGB)},
+		"Performance":    map[string]any{"Value": float64(vramGB)},
+		"MachineSizes":   []any{map[string]any{"Gpu": float64(1)}},
+	}
+}
+
 // engineWithCatalogSpy returns an Engine whose reads go to a spy, plus a pointer
 // to the availability-catalog arguments it was called with.
+//
+// The catalog it answers with is the FULL one, because that is what upstream
+// returns for every accepted InstanceType value — and the inventory carries the
+// real SpotUnsupportedGpuTypes list, so a test can tell "filtered for Spot" apart
+// from "asked the wrong catalog".
 func engineWithCatalogSpy() (*Engine, *[]map[string]any) {
 	seen := &[]map[string]any{}
 	spy := toolExecutorFunc(func(action string, args map[string]any) (map[string]any, error) {
-		if action == "DescribeAvailableCompShareInstanceTypes" {
+		switch action {
+		case "DescribeAvailableCompShareInstanceTypes":
 			*seen = append(*seen, args)
+			return map[string]any{"AvailableInstanceTypes": []any{
+				catalogEntry("4090_48G", 48),
+				catalogEntry("A800", 80),
+				catalogEntry("3090", 24),
+			}}, nil
+		case "DescribeCompShareGpuInventory":
+			return map[string]any{
+				"SpotUnsupportedGpuTypes": []any{"4090_48G", "H20", "P40", "2080"},
+			}, nil
 		}
 		return map[string]any{}, nil
 	})
@@ -83,24 +109,41 @@ func TestSpotShortageOffersTheOtherPoolFirst(t *testing.T) {
 		"an on-demand shortage must not advertise a switch the user did not make")
 }
 
-// TestSpotAlternativesAreQueriedFromTheSpotCatalog guards the concrete bug: the
-// remedy list was fetched with no arguments, i.e. from the ON-DEMAND catalog,
-// and then presented as what is creatable for a Spot create. stepQueryInstanceTypes
-// already scopes the same upstream action by InstanceType=spot; the two callers
-// have to agree or the reply recommends cards that may be just as unavailable.
-func TestSpotAlternativesAreQueriedFromTheSpotCatalog(t *testing.T) {
-	eng, seenPtr := engineWithCatalogSpy()
+// TestTheRemedyNeverScopesTheCatalogByPool guards a fix that was pointed the wrong
+// way. Scoping this query by InstanceType=spot reads as the careful thing to do —
+// ask about the pool that actually failed. Upstream accepts the value and answers
+// with NOTHING: DescribeAvailableCompShareInstanceTypes appends a row only for
+// uhost/all (uhost-compshare-api formatResponse), measured live 2026-07-22 at
+// rows=0 for spot against rows=19 for the others. So the scoped call does not
+// narrow the remedy, it deletes it — a Spot sold-out would offer no alternative at
+// all, which is indistinguishable from "there is nothing else".
+func TestTheRemedyNeverScopesTheCatalogByPool(t *testing.T) {
+	for _, chargeType := range []string{"Spot", "Postpay"} {
+		eng, seenPtr := engineWithCatalogSpy()
+		eng.createFailureReplyWithAlternatives(t.Context(), "售罄", nil, spotFailure(t, chargeType))
+		seen := *seenPtr
+		require.Len(t, seen, 1, "%s: the remedy must consult the catalog exactly once", chargeType)
+		assert.NotContains(t, seen[0], "InstanceType",
+			"%s: scoping this query by pool returns an empty catalog upstream", chargeType)
+	}
+}
 
-	eng.createFailureReplyWithAlternatives(t.Context(), "售罄", nil, spotFailure(t, "Spot"))
-	seen := *seenPtr
-	require.Len(t, seen, 1, "the remedy must consult the catalog exactly once")
-	assert.Equal(t, "spot", seen[0]["InstanceType"],
-		"a Spot failure must read the SPOT catalog; the on-demand list is a different question")
+// TestSpotRemedyDropsCardsNotSoldOnSpot is the half that scoping was reaching for,
+// done against a source that can actually answer it.
+//
+// A Spot create on 4090_48G does not fail because the pool ran dry — the platform
+// does not sell that card on Spot at all (SpotUnsupportedGpuTypes). It reaches the
+// capacity gate looking exactly like a shortage, so the sold-out reply is free to
+// recommend an equally impossible card and invite a retry that can never succeed.
+func TestSpotRemedyDropsCardsNotSoldOnSpot(t *testing.T) {
+	eng, _ := engineWithCatalogSpy()
+	spotReply := eng.createFailureReplyWithAlternatives(t.Context(), "售罄", nil, spotFailure(t, "Spot"))
+	assert.NotContains(t, spotReply, "4090_48G",
+		"a card the platform does not offer on Spot is not an alternative for a Spot create")
+	assert.Contains(t, spotReply, "A800", "the eligible cards still get offered")
 
-	*seenPtr = nil
-	eng.createFailureReplyWithAlternatives(t.Context(), "售罄", nil, spotFailure(t, "Postpay"))
-	seen = *seenPtr
-	require.Len(t, seen, 1)
-	assert.NotContains(t, seen[0], "InstanceType",
-		"an on-demand failure must not narrow to the spot catalog")
+	// The exclusion is Spot-only: on demand, 4090_48G is a perfectly good suggestion.
+	postpayReply := eng.createFailureReplyWithAlternatives(t.Context(), "售罄", nil, spotFailure(t, "Postpay"))
+	assert.Contains(t, postpayReply, "4090_48G",
+		"the Spot-only exclusion must not leak into an on-demand failure")
 }

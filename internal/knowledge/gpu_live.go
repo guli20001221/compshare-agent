@@ -184,6 +184,36 @@ func filterAvailableByNames(available []AvailableGPU, allowed []string) []Availa
 }
 
 
+// WithoutGPUTypes drops the named cards from a recommendation list.
+//
+// It exists because the availability catalog cannot express charge-type
+// eligibility. DescribeAvailableCompShareInstanceTypes answers InstanceType=spot
+// with an empty list rather than a Spot-scoped one, so "what can I offer instead
+// on Spot" has to be built as: take the full catalog, then subtract the cards
+// that upstream does not sell on Spot at all
+// (DescribeCompShareGpuInventory.SpotUnsupportedGpuTypes).
+//
+// Empty exclusions return the input unchanged — a missing inventory answer must
+// not silently empty the recommendation.
+func WithoutGPUTypes(available []AvailableGPU, exclude []string) []AvailableGPU {
+	if len(exclude) == 0 {
+		return available
+	}
+	set := make(map[string]bool, len(exclude))
+	for _, e := range exclude {
+		if n := strings.ToLower(strings.TrimSpace(e)); n != "" {
+			set[n] = true
+		}
+	}
+	var out []AvailableGPU
+	for _, g := range available {
+		if !set[strings.ToLower(strings.TrimSpace(g.Name))] {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 // availableStatus reports whether a machine-type Status means the card is sellable.
 // The upstream enum is exactly Normal(可售)/SoldOut(售罄)
 // (DescribeAvailableCompShareInstanceTypes spec). We ALLOW-LIST: only "normal" (or

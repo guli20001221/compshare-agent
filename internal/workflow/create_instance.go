@@ -499,9 +499,22 @@ func stepQueryInstanceTypes() Step {
 				args["Zone"] = z // honour an explicit zone (e.g. the deploy handler's ChosenZone)
 				addZoneRegionAndID(wfCtx, args, z)
 			}
-			if strings.EqualFold(createChargeType(wfCtx.Params), deployment.ChargeTypeSpot) {
-				args["InstanceType"] = "spot"
-			}
+			// Deliberately NOT scoped to the Spot pool. InstanceType=spot looks
+			// like the right way to ask "what can I buy on Spot", and upstream
+			// accepts it — then returns nothing. DescribeAvailableCompShareInstanceTypes
+			// appends a row only for InstanceType uhost/all (uhost-compshare-api,
+			// ucloud/describe_available_compshare_instance_types.go formatResponse),
+			// and its dispatcher has no Pod branch, so "spot" is a valid value with
+			// an empty answer.
+			//
+			// Measured live 2026-07-22: rows=19 / 12 GPU types for absent, "uhost"
+			// and "all"; rows=0 for "spot". An empty catalog makes resolveTargetSpec
+			// fail with "未找到 X × N 卡的可用配比" listing no GPU types at all, so
+			// sending it breaks every Spot create.
+			//
+			// Spot eligibility comes from DescribeCompShareGpuInventory instead: it
+			// carries BOTH pools plus SpotUnsupportedGpuTypes, and needs no charge
+			// type to ask.
 			return args, nil
 		},
 	}

@@ -3986,16 +3986,19 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 		// not say what it was actually trying to build.
 		return reply
 	}
-	// Scope the catalog to the charge type that failed. The workflow's own query
-	// does this (stepQueryInstanceTypes passes InstanceType=spot); asking here
-	// without it listed the ON-DEMAND catalog as the remedy for a Spot shortage,
-	// so every card offered might be just as unavailable on Spot.
-	availArgs := map[string]any{}
-	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
-		availArgs["InstanceType"] = "spot"
-	}
-	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", availArgs)
+	// The availability query is deliberately NOT scoped by charge type.
+	// InstanceType=spot is upstream-valid and answers with an empty catalog
+	// (measured live 2026-07-22: rows=0, vs 19 for uhost/all/absent), so scoping
+	// it here does not narrow the remedy — it deletes it.
+	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", nil)
 	alts := knowledge.FittingGPUAlternatives("", "", nil, knowledge.ParseAvailableGPUs(avail, zone), gpuType, 3)
+	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
+		// …so Spot eligibility is applied afterwards, from the source that does
+		// carry it. Offering a card that cannot be bought on Spot at all is worse
+		// than offering nothing: the user retries, hits the same wall, and the
+		// second failure still reads as a shortage.
+		alts = knowledge.WithoutGPUTypes(alts, e.spotUnsupportedGPUTypes(ctx))
+	}
 	if len(alts) == 0 {
 		return reply
 	}
@@ -4005,6 +4008,32 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 	}
 	return reply + fmt.Sprintf("\n当前可创建的其他机型：%s。回复机型名（如「用 %s」）我帮你换一个重建（实际是否有货以创建结果为准）。",
 		strings.Join(names, " / "), alts[0].Name)
+}
+
+// spotUnsupportedGPUTypes asks the platform which cards it does not sell on Spot
+// at all. The answer rides on the GPU-inventory call, which takes no charge type
+// and no zone — so this is the one availability fact about Spot that can be read
+// without having already committed to Spot.
+//
+// It is the difference between "sold out" and "not offered". A 4090_48G Spot
+// create fails the capacity gate exactly like a genuine shortage, and the sold-out
+// reply then invites the user to retry, which cannot ever work.
+//
+// Returns nil when the query fails or omits the field. Callers must treat nil as
+// "unknown", never as "everything is eligible".
+func (e *Engine) spotUnsupportedGPUTypes(ctx context.Context) []string {
+	inv := e.querySafeRead(ctx, "DescribeCompShareGpuInventory", nil)
+	if inv == nil {
+		return nil
+	}
+	raw, _ := inv["SpotUnsupportedGpuTypes"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, _ := v.(string); strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // workflowFinalParams returns the params to narrate and recover from: the
