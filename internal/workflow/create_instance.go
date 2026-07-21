@@ -2018,6 +2018,19 @@ var createFormChargeTypes = []ConfirmFormOption{
 	{Value: "Month", Label: "包月"},
 }
 
+// chargeTypeLabel renders a charge type for display, reusing the labels the
+// selectable options already carry so the two can never drift into naming the
+// same billing mode differently. An unknown value shows itself rather than being
+// silently relabelled.
+func chargeTypeLabel(chargeType string) string {
+	for _, opt := range createFormChargeTypes {
+		if strings.EqualFold(opt.Value, chargeType) {
+			return opt.Label
+		}
+	}
+	return chargeType
+}
+
 // createChargeTypeOptions gates Spot by zone for the PLAIN create's single
 // confirm card, which resolves its zone before it asks and therefore can. The
 // guided flow does the opposite — it asks the charge type first and gates the
@@ -2795,8 +2808,15 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 		Step: &ConfirmFormStep{
 			Index:          index,
 			Total:          total,
-			Title:          guidedStepTitle(index, "确认镜像与计费"),
-			Description:    "镜像决定开机即用的预装环境（框架与驱动）。计费方式已在前面选定，如需更改请重新发起创建。确认无误后点击下方按钮即开始创建。",
+			Title: guidedStepTitle(index, "确认镜像与计费"),
+			// The charge type is stated, not offered. It is settled before step one
+			// (see above) and there is no earlier card to point at, so saying "已在
+			// 前面选定" would send the user looking for a control that does not
+			// exist. Naming the current value and how to change it is the honest
+			// version — the Summary carries it too, alongside the price it produced.
+			Description: fmt.Sprintf(
+				"镜像决定开机即用的预装环境（框架与驱动）。当前计费方式为「%s」，价格按此计算；需要包日、包月或抢占式，请重新发起创建并直接说明（例如「用抢占式创建一台…」）。确认无误后点击下方按钮即开始创建。",
+				chargeTypeLabel(createChargeType(wfCtx.Params))),
 			PrimaryLabel:   "确认部署",
 			SecondaryLabel: "取消",
 			Final:          true,
