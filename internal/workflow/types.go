@@ -48,9 +48,33 @@ type Step struct {
 	Tool      string                      // API action name (for StepToolCall only)
 	ToolFunc  func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
 	BuildArgs func(wfCtx *Context) (map[string]any, error)
+	// BuildArgsBatch, when set on a StepToolCall, REPLACES BuildArgs: the step
+	// issues one call to the same Tool per returned BatchCall and stores every
+	// outcome under the step name (read it with BatchResults).
+	//
+	// It exists because some questions are only answerable per candidate.
+	// Creatability is a property of (image, GPU, zone) — the capacity API takes
+	// all three as input — so a card that must gray out the zones you cannot
+	// create in needs one call per candidate zone. The single-call alternative
+	// can only ask about the zone the user ALREADY picked, which reports the
+	// mistake instead of preventing it.
+	//
+	// One call failing does NOT fail the step. An unreachable candidate is
+	// UNKNOWN, and unknown must never render as unavailable — that is the same
+	// rule the option builders already follow for a missing capacity signal. The
+	// step fails only when EVERY call fails, which is indistinguishable from the
+	// upstream being down and is not a fact about any candidate.
+	//
+	// Calls beyond MaxBatchCalls are not made and are recorded as explicit
+	// unknowns rather than dropped: a bound that silently shortens the list would
+	// read downstream as "these candidates were checked and are fine".
+	BuildArgsBatch func(wfCtx *Context) ([]BatchCall, error)
 	// CheckResult inspects a SUCCESSFUL upstream response and decides whether the
 	// workflow may continue. Rejecting here is how a workflow says "the call
 	// worked and the answer is no" — the capacity gate's sold-out is the archetype.
+	//
+	// On a batch step it receives the collected result, so a check that wants to
+	// reject must decide over BatchResults, not over one response.
 	CheckResult func(wfCtx *Context, result map[string]any) CheckOutcome
 	// Resolve computes this step's result from the Context (StepResolve only); the
 	// result lands in StepResults exactly like a tool step's would.

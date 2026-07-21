@@ -294,6 +294,10 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 		toolName = step.ToolFunc(wfCtx)
 	}
 
+	if step.BuildArgsBatch != nil {
+		return e.runBatchToolStep(ctx, step, toolName, i, total, wfCtx, result)
+	}
+
 	args, err := step.BuildArgs(wfCtx)
 	if err != nil {
 		e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, err.Error())
@@ -350,6 +354,90 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 			// deciding what to DO never has to read the sentence a user reads.
 			recordFailureReason(result, outcome.Reason)
 			return toolStepFailed
+		}
+	}
+
+	e.emit(step.Name, i, total, StepToolCall, "success", toolName, nil, "")
+	result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})
+	return toolStepOK
+}
+
+// runBatchToolStep executes a StepToolCall that fans out over candidates (see
+// Step.BuildArgsBatch). It mirrors runToolStep's bookkeeping — same seal check,
+// same emit/append/Optional handling — and differs in exactly one judgement: a
+// call that fails is recorded as an unknown candidate rather than as a failed
+// step, because "we could not find out" is not "you cannot create here". Only a
+// batch in which nothing succeeded is reported as a step failure, since that
+// describes the upstream and not any candidate.
+func (e *Engine) runBatchToolStep(ctx context.Context, step Step, toolName string, i, total int, wfCtx *Context, result *Result) toolStepOutcome {
+	fail := func(message string, sentArgs map[string]any) toolStepOutcome {
+		e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, message)
+		result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: message})
+		if step.Optional {
+			return toolStepSkipped
+		}
+		result.StoppedAt = step.Name
+		result.Message = message
+		if sentArgs != nil {
+			recordFailedArgs(result, sentArgs)
+		}
+		return toolStepFailed
+	}
+
+	calls, err := step.BuildArgsBatch(wfCtx)
+	if err != nil {
+		outcome := fail(fmt.Sprintf("步骤「%s」参数构建失败: %v", step.Name, err), nil)
+		if outcome == toolStepFailed {
+			result.MissingSlots = MissingSlotsFromError(err)
+		}
+		return outcome
+	}
+
+	// The seal covers the whole fan-out: every call in it reads the same Params,
+	// so checking once before the first is checking the state they all execute on.
+	if !e.verifySealedContract(step, i, total, wfCtx, result) {
+		return toolStepFailed
+	}
+
+	e.emit(step.Name, i, total, StepToolCall, "running", toolName, map[string]any{"BatchSize": len(calls)}, "")
+
+	outcomes := make([]BatchOutcome, 0, len(calls))
+	sent := make([]any, 0, len(calls))
+	succeeded := 0
+	for idx, call := range calls {
+		if idx >= MaxBatchCalls {
+			outcomes = append(outcomes, BatchOutcome{Key: call.Key, Err: batchNotAttempted(MaxBatchCalls)})
+			continue
+		}
+		sent = append(sent, call.Args)
+		apiResult, err := e.executor.Execute(ctx, toolName, call.Args)
+		if err != nil {
+			outcomes = append(outcomes, BatchOutcome{Key: call.Key, Err: err.Error()})
+			continue
+		}
+		if apiResult == nil {
+			apiResult = map[string]any{}
+		}
+		succeeded++
+		outcomes = append(outcomes, BatchOutcome{Key: call.Key, OK: true, Result: apiResult})
+	}
+
+	// An empty batch is a legitimate "nothing to ask about" — there were no
+	// candidates — and must not be reported as an upstream failure.
+	if len(calls) > 0 && succeeded == 0 {
+		return fail(fmt.Sprintf("步骤「%s」执行失败: 批量查询全部失败", step.Name), map[string]any{"Batch": sent})
+	}
+
+	wfCtx.StepResults[step.Name] = encodeBatchOutcomes(outcomes)
+
+	if step.CheckResult != nil {
+		verdict := step.CheckResult(wfCtx, wfCtx.StepResults[step.Name])
+		if !verdict.OK {
+			outcome := fail(verdict.Message, map[string]any{"Batch": sent})
+			if outcome == toolStepFailed {
+				recordFailureReason(result, verdict.Reason)
+			}
+			return outcome
 		}
 	}
 
