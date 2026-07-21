@@ -227,7 +227,8 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	targetEvidence := e.targetEvidenceForProposal(ctx, proposal, spec)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
 	zoneCatalog := e.zoneCatalogSnapshotForSpec(ctx, spec)
-	imageCatalog := e.imageCatalogSnapshotForSpec(ctx, spec, proposalSlotString(proposal, "ImageSource"))
+	imageCatalog := e.imageCatalogSnapshotForSpec(ctx, spec,
+		proposalSlotString(proposal, "ImageSource"), proposalSlotString(proposal, "CompShareImageId"))
 	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec, binding: binding, targetEvidence: targetEvidence}, machineTypes).
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).

@@ -1912,27 +1912,36 @@ func formImageCatalog(images map[string]any, source string) *deployment.ImageCat
 }
 
 // createImageCatalog is the workflow's single view of the image catalog for
-// selection. For CreateInstanceWorkflow the engine threads NO image snapshot: create
-// carries no CompShareImageId/CodecImage field, so SpecNeedsImageCatalog is false and
-// ReferenceData.ImageCatalog stays nil — this therefore always reads THIS run's 查询镜像,
-// which the guided source step's re-query refreshes to the chosen source (so a
-// platform↔community switch is never shadowed by a stale proposal-time snapshot). The
-// engine-threaded branch is live only for an image-bearing op (reinstall, which resolves
-// an explicit CompShareImageId against that snapshot). Either way there is one source, so
-// the selection reads the SAME images the compatibility / boot-disk checks read, never a
-// second catalog.
+// selection. THIS RUN's 查询镜像 wins over any engine-threaded snapshot, and the
+// order is the point rather than a preference.
+//
+// The engine's snapshot is taken at PROPOSAL time, against the source the
+// proposal declared. The guided flow then lets the user change that source
+// (选择镜像来源 → 查询镜像 re-query) and, when a name matched nothing, widens to
+// the whole catalog (stepBrowseCommunityWhenNameMatchedNothing). Both produce a
+// catalog that is strictly newer and matches the CURRENT ImageSource; a
+// proposal-time snapshot that outranked them would silently show the user the
+// images of a source they just switched away from.
+//
+// The engine snapshot therefore serves as a fallback for a run that has not
+// queried yet, and its real job is elsewhere: it is what the RESOLVER verifies an
+// explicit CompShareImageId against, before the workflow starts. Verify at the
+// boundary, re-query inside — the two need different catalogs and this is where
+// they stop competing.
+//
+// Either way there is one source per run, so the selection reads the SAME images
+// the compatibility / boot-disk checks read, never a second catalog.
 func createImageCatalog(wfCtx *Context) *deployment.ImageCatalogSnapshot {
+	if result := wfCtx.Result("查询镜像"); result != nil {
+		if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
+			return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(result))
+		}
+		return deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(result, "platform"))
+	}
 	if snap := wfCtx.ImageCatalog(); snap.Available() {
 		return snap
 	}
-	result := wfCtx.Result("查询镜像")
-	if result == nil {
-		return deployment.NewImageCatalogSnapshot(false, nil)
-	}
-	if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
-		return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(result))
-	}
-	return deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(result, "platform"))
+	return deployment.NewImageCatalogSnapshot(false, nil)
 }
 
 // selectedImageFrom projects a resolver ImageSelection onto the create flow's

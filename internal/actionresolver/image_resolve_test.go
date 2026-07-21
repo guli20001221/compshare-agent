@@ -16,13 +16,25 @@ func twoImageCatalog() *deployment.ImageCatalogSnapshot {
 	})
 }
 
-// TestCodecImageActivatedForReinstall pins that the schema-derived codec for a real
-// CompShareImageId field is CodecImage (verify the explicit id against the live
-// catalog), not plain constrained text. Reinstall is the workflow that exposes an
-// explicit CompShareImageId; the create flow carries no id field (it resolves an
-// ImageName inside the workflow on the same snapshot — S4), so it is deliberately
-// NOT a CodecImage site, and a lifecycle op triggers no image fetch at all.
-func TestCodecImageActivatedForReinstall(t *testing.T) {
+// TestCodecImageActivatedForImageBearingOps pins that the schema-derived codec for
+// a real CompShareImageId field is CodecImage (verify the explicit id against the
+// live catalog), not plain constrained text. Both reinstall and create expose an
+// explicit id, so an id either flow receives is catalog-verified or refused —
+// invariant 1 holds at the same boundary for both.
+//
+// Create gained its id field deliberately. ImageName reaches upstream as
+// FuzzySearch, so a wording the platform does not match returns zero rows and the
+// flow dead-ends on an image that exists; the model sees real ids in a read
+// observation's evidence.subjects[] and can now pass one instead of a phrase.
+//
+// This test previously asserted the opposite, with a note that flipping it would
+// let a stale proposal-time snapshot shadow the guided re-query — "fix the flow
+// first". The flow was fixed first: workflow.createImageCatalog now prefers THIS
+// run's 查询镜像 over any engine-threaded snapshot, so the source switch and the
+// name-miss browse rescue can no longer be overridden. That behaviour is gated by
+// TestCreateImageCatalogPrefersThisRunsQueryOverAnInjectedSnapshot, which is where
+// the protection now lives — this assertion alone no longer carries it.
+func TestCodecImageActivatedForImageBearingOps(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
 
@@ -32,21 +44,14 @@ func TestCodecImageActivatedForReinstall(t *testing.T) {
 		"reinstall CompShareImageId must route through the live-catalog image codec, not plain text")
 	assert.True(t, SpecNeedsImageCatalog(reinstall), "reinstall must trigger the image-catalog fetch")
 
-	// The create flow has no explicit id field — its image is an ImageName the
-	// workflow resolves, so no CodecImage field and no resolver-side image fetch.
 	create, ok := catalog.Lookup("CreateInstanceWorkflow")
 	require.True(t, ok)
-	_, hasIDField := create.Fields["CompShareImageId"]
-	assert.False(t, hasIDField, "create carries no CompShareImageId field (image is resolved by name in the workflow)")
-	// This is the invariant the guided two-stage image flow depends on: because
-	// create needs no image catalog, the engine threads ReferenceData.ImageCatalog=nil
-	// (imageCatalogSnapshotForSpec returns nil), so workflow.createImageCatalog never
-	// takes the injected-snapshot branch and always reads this run's re-queried 查询镜像.
-	// A source switch mid-flow therefore cannot be shadowed by a stale proposal-time
-	// snapshot. If a future change gives create a CompShareImageId/CodecImage field,
-	// this flips true and the re-query would be silently overridden — fix the flow first.
-	assert.False(t, SpecNeedsImageCatalog(create),
-		"create must not trigger the resolver image fetch, or a stale proposal snapshot would shadow the guided re-query")
+	createField, hasIDField := create.Fields["CompShareImageId"]
+	require.True(t, hasIDField, "create must accept a concrete image id, not only a fuzzy name")
+	assert.Equal(t, CodecImage, createField.Codec,
+		"an id the model supplies must be verified against the live catalog, never passed through")
+	assert.True(t, SpecNeedsImageCatalog(create),
+		"…which requires the catalog, fetched only when a proposal actually names an id")
 
 	stop, ok := catalog.Lookup("StopInstanceWorkflow")
 	require.True(t, ok)

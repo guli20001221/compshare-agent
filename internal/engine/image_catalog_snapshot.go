@@ -17,8 +17,16 @@ import (
 // the resolver and the workflow share one image catalog (the single authority that
 // ends the three-interpreter image resolution). Non-image ops get nil, exactly as
 // zoneCatalogSnapshotForSpec returns nil for non-zone ops.
-func (e *Engine) imageCatalogSnapshotForSpec(ctx context.Context, spec actionresolver.OperationSpec, source string) *deployment.ImageCatalogSnapshot {
+func (e *Engine) imageCatalogSnapshotForSpec(ctx context.Context, spec actionresolver.OperationSpec, source, proposedImageID string) *deployment.ImageCatalogSnapshot {
 	if !actionresolver.SpecNeedsImageCatalog(spec) {
+		return nil
+	}
+	// The catalog exists to VERIFY an explicit id (canonicalImageValue), and the
+	// codec only runs on a slot the proposal actually carries. A create that names
+	// no image has nothing to verify, so fetching the full paginated catalog would
+	// be upstream cost paid on every create turn for an answer nobody reads. The
+	// workflow still reads its own 查询镜像 either way (createImageCatalog).
+	if strings.TrimSpace(proposedImageID) == "" {
 		return nil
 	}
 	return e.imageCatalogSnapshot(ctx, source)

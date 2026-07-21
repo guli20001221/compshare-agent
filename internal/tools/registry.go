@@ -534,6 +534,21 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "镜像名称关键词。平台镜像按 Name 精确/模糊匹配；社区镜像用于 FuzzySearch。如 PyTorch / Ubuntu / ComfyUI。",
 					},
+					// Preferred over ImageName whenever an id is known, because
+					// ImageName is passed upstream as FuzzySearch: a wording the
+					// platform does not match narrows the catalog to zero rows and
+					// the flow has no image left to offer. An id names one row and
+					// cannot miss.
+					//
+					// The value must come from a listing seen THIS turn (a read
+					// observation's evidence.subjects[].id, minus the "image:"
+					// prefix). CodecImage verifies it against the live catalog and
+					// REFUSES an id the catalog does not contain, so a remembered or
+					// invented id is rejected rather than created.
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "镜像 ID，如 compshareImage-xxxx。已经通过镜像查询看到具体镜像时，优先填这个而不是 ImageName——名称走模糊搜索，措辞不对会一个都搜不到；ID 精确指向一个版本。只能填本轮查询结果里真实出现过的 ID，不要凭记忆或推测填写。",
+					},
 				},
 				"required": []string{"GpuType"},
 			},
