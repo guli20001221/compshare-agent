@@ -441,6 +441,12 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		})
 		stepIndex++
 	}, engine.ChatOptions{
+		// Legacy (non-durable) transport turn identity. Durable turns carry a
+		// client/gateway turn id; this path has none, so pass the per-request uuid
+		// as a real correlation id for the engine's evidence-binding turn id. The
+		// engine backfills an ephemeral id if this is ever empty, so correctness
+		// never depends on this line — it only makes the id meaningful.
+		TurnID:       base.RequestUUID,
 		ImageContext: prep.ocrText,
 		OnTextDelta: func(s string) {
 			if firstToken.IsZero() {

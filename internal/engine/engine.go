@@ -1104,11 +1104,23 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 	return e.ChatWithOptions(ctx, userMsg, onStep, ChatOptions{})
 }
 
+// ephemeralTurnID returns a non-empty, turn-local identity for a turn whose
+// transport supplied none (legacy WS/HTTP, CLI, tests). userTurn is incremented
+// once per turn at ChatWithOptions entry, so it is unique within the session. The
+// value is trace / evidence-binding metadata only and grants no execution
+// authority (see ChatOptions.TurnID) — it exists so this turn's current-turn
+// evidence can be tied to this turn rather than stamped with an empty id the
+// verifier then rejects.
+func (e *Engine) ephemeralTurnID() string {
+	return fmt.Sprintf("local-turn-%d", e.userTurn)
+}
+
 // ChatWithOptions is like Chat but accepts streaming callbacks via opts.
 // OnTextDelta is buffered per-round and only replayed on the final text branch
 // (never on intermediate tool-call rounds). OnUsage is called once after the
 // final LLM reply. Canned-reply branches (monitor_history_unsupported, etc.)
 // skip the LLM and therefore never fire callbacks.
+
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
 	e.resetTurnCompletion()
@@ -1203,6 +1215,20 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.expireStaleSelectedInstance(continuityNow)
 	e.expireStaleToolFacts(continuityNow)
 	e.refreshConversationDigest(continuityNow)
+	// Every turn must carry a non-empty server-side turn identity. The durable
+	// transport supplies one (client turn id / request uuid, see ws_durable.go);
+	// the legacy WS/HTTP and CLI paths pass none. Without one,
+	// deriveProposalProvenance stamps this turn's current-turn evidence with an
+	// empty MessageID that verifyCurrentQuestionEvidence then rejects — the server
+	// disowning its own evidence — which surfaces as a bogus unverified_source
+	// rejection on any standalone user_explicit field (ImageName/GpuType/Zone/…)
+	// and dead-ends the create card. Backfill an ephemeral, turn-local id so the
+	// invariant never depends on which entry point remembered to pass one. It
+	// grants no execution authority (see ChatOptions.TurnID); it only binds this
+	// turn's evidence to this turn.
+	if strings.TrimSpace(opts.TurnID) == "" {
+		opts.TurnID = e.ephemeralTurnID()
+	}
 	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, opts.TurnID, continuityNow)
 	e.turnContextViewReady = true
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
