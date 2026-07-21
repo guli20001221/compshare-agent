@@ -39,7 +39,7 @@ func (h *Handlers) handleDurableWS(
 		}
 		frame, err := simplejson.NewJson(data)
 		if err != nil {
-			h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("invalid frame json"))
+			h.writeDurableStreamError(writer, "", ErrInvalidParam.WithMessage("invalid frame json"))
 			continue
 		}
 
@@ -60,7 +60,7 @@ func (h *Handlers) handleDurableWS(
 			}
 			input, apiErr := h.durableSubmitInput(ctx, base, frame)
 			if apiErr != nil {
-				h.writeDurableStreamError(writer, apiErr)
+				h.writeDurableStreamError(writer, base.RequestUUID, apiErr)
 				continue
 			}
 			submission, submitErr := h.turnCoordinator.Submit(ctx, input, nil)
@@ -83,12 +83,12 @@ func (h *Handlers) handleDurableWS(
 				continue
 			}
 			if err := requireDurableV2(frame); err != nil {
-				h.writeDurableStreamError(writer, err)
+				h.writeDurableStreamError(writer, base.RequestUUID, err)
 				continue
 			}
 			lastSeq := frame.Get("LastSeq").MustInt64(-1)
 			if lastSeq < 0 {
-				h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("LastSeq must be zero or greater"))
+				h.writeDurableStreamError(writer, base.RequestUUID, ErrInvalidParam.WithMessage("LastSeq must be zero or greater"))
 				continue
 			}
 			turn, lookupErr := h.findDurableTurn(ctx, base.Owner, frame)
@@ -117,7 +117,7 @@ func (h *Handlers) handleDurableWS(
 				continue
 			}
 			if err := requireDurableV2(frame); err != nil {
-				h.writeDurableStreamError(writer, err)
+				h.writeDurableStreamError(writer, base.RequestUUID, err)
 				continue
 			}
 			turn, lookupErr := h.findDurableTurn(ctx, base.Owner, frame)
@@ -174,13 +174,13 @@ func (h *Handlers) handleDurableWS(
 			// coordinator. Do not acknowledge and drop Value/Skipped.
 			if strings.TrimSpace(frame.Get("TurnId").MustString()) == "" ||
 				strings.TrimSpace(frame.Get("InteractionKey").MustString()) == "" {
-				h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("TurnId and InteractionKey are required"))
+				h.writeDurableStreamError(writer, base.RequestUUID, ErrInvalidParam.WithMessage("TurnId and InteractionKey are required"))
 				continue
 			}
-			h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("durable selections are not supported"))
+			h.writeDurableStreamError(writer, base.RequestUUID, ErrInvalidParam.WithMessage("durable selections are not supported"))
 
 		default:
-			h.writeDurableStreamError(writer, ErrInvalidParam.WithMessage("unsupported Action %s", base.Action))
+			h.writeDurableStreamError(writer, base.RequestUUID, ErrInvalidParam.WithMessage("unsupported Action %s", base.Action))
 		}
 	}
 }
@@ -367,8 +367,13 @@ func durableMetaFrame(turn store.Turn, clientTurnID string, disposition turncoor
 	}
 }
 
-func (h *Handlers) writeDurableStreamError(writer streamWriter, err error) {
+// writeDurableStreamError reports a rejected frame. requestID may be empty for a
+// frame that failed to parse before one was known; everywhere else it is what the
+// client sees, and it is the only handle an operator has on the cause an internal
+// error no longer prints to the user.
+func (h *Handlers) writeDurableStreamError(writer streamWriter, requestID string, err error) {
 	apiErr := AsAPIError(err)
+	logInternalCause("durable stream", requestID, apiErr)
 	h.writeDurableCode(writer, apiErr.Code, apiErr.Message)
 }
 

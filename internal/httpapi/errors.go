@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 )
 
@@ -17,6 +18,11 @@ type APIError struct {
 	RetCode int
 	Status  int
 	Message string
+	// cause is the unclassified error this one stands in for, kept for the SERVER
+	// only: it is unexported and never serialised, so it cannot reach a client
+	// through the JSON envelope or a stream frame. AsAPIError sets it; the
+	// response writers log it next to the request id.
+	cause error
 }
 
 func (e *APIError) Error() string {
@@ -24,6 +30,20 @@ func (e *APIError) Error() string {
 		return e.Message
 	}
 	return e.Code
+}
+
+// Unwrap exposes the wrapped cause so errors.Is/errors.As still see through a
+// converted error — dropping the text from the user-facing message must not also
+// drop the typed error from code that branches on it.
+func (e *APIError) Unwrap() error { return e.cause }
+
+// Cause returns the unclassified error behind an internal APIError, or nil.
+// Callers use it to LOG; putting it in a response is what this change removed.
+func (e *APIError) Cause() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 // WithMessage returns a copy of the error with a new formatted message.
@@ -51,7 +71,21 @@ var (
 
 // AsAPIError converts any error into an *APIError. Returns nil if err is nil.
 // If the error already is an *APIError (or wraps one), that value is returned.
-// Otherwise an ErrInternal copy carrying the original message is returned.
+// Otherwise an ErrInternal copy is returned with the original error attached as
+// its cause — NOT as its message.
+//
+// It used to be the message. An unclassified error here is whatever the process
+// happened to fail on, and that text is written for operators: a dead database
+// produced `get session: dial tcp <host>:<port>: connectex: No connection could
+// be made because the target machine actively refused it` verbatim in the chat
+// UI. That tells the user nothing they can act on and tells them where the
+// database lives. The condition is not exotic either — a pool exhausted, a
+// failover window, a restart all land here.
+//
+// The classified errors above already model what a user can be told; the default
+// branch is precisely the set of failures we have NOT decided how to explain, so
+// the honest answer is the generic one plus a request id to correlate with the
+// log. sql.ErrNoRows is canonicalized by writeError before it reaches this.
 func AsAPIError(err error) *APIError {
 	if err == nil {
 		return nil
@@ -60,5 +94,16 @@ func AsAPIError(err error) *APIError {
 	if errors.As(err, &apiErr) {
 		return apiErr
 	}
-	return ErrInternal.WithMessage("%s", err.Error())
+	cp := *ErrInternal
+	cp.cause = err
+	return &cp
+}
+
+// logInternalCause records the real error behind an internal APIError, keyed by
+// the request id the client was given. This is the other half of not echoing the
+// text: it is the only place the operator can still read it.
+func logInternalCause(context, requestID string, apiErr *APIError) {
+	if cause := apiErr.Cause(); cause != nil {
+		log.Printf("internal error: %s request_id=%s: %v", context, requestID, cause)
+	}
 }
