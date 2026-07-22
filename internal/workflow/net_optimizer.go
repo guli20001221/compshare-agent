@@ -7,8 +7,7 @@ import (
 
 func EnableNetOptimizerDef() *Definition {
 	return &Definition{
-		Name:        "EnableNetOptimizerWorkflow",
-		Description: "查询网络加速状态 -> 确认开启 -> 开启/同步网络加速 -> 回查状态",
+		Name: "EnableNetOptimizerWorkflow",
 		Steps: []Step{
 			stepQueryNetOptimizerStatus(),
 			stepConfirmEnableNetOptimizer(),

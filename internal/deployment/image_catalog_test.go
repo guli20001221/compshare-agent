@@ -236,3 +236,22 @@ func TestImageCatalogSnapshot_TagsDeepCopiedFromEveryAccessor(t *testing.T) {
 		t.Errorf("ByID() must deep-copy Tags; mutation leaked into snapshot")
 	}
 }
+
+func TestParseCustomImageEntryCarriesSourcePlacement(t *testing.T) {
+	raw := map[string]any{"ImageSet": []any{map[string]any{
+		"CompShareImageId": "cimg-source",
+		"Name":             "training-base",
+		"Status":           "Available",
+		"Zone":             "cn-wlcb-01",
+		"ImageSupportZone": []any{map[string]any{
+			"Zone": "cn-wlcb-01", "ZoneId": float64(10027),
+		}},
+	}}}
+	entries := ParsePlatformImageEntries(raw, "custom")
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].Zone != "cn-wlcb-01" || entries[0].ZoneID != 10027 {
+		t.Fatalf("source placement not preserved: %+v", entries[0])
+	}
+}

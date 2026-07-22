@@ -39,7 +39,7 @@ type ModelRepositoryResponse struct {
 func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelRepositoryResponse] {
 	return ReadCapabilitySpec[ModelRepositoryRequest, ModelRepositoryResponse]{
 		Label:       modelRepositoryCapabilityLabel,
-		Description: "浏览公共模型仓库。",
+		Description: "查询公共模型仓库中的模型和标签。用于判断模型是否存在或浏览某类模型；不是镜像目录。",
 		Params:      objectParam(map[string]schemaNode{"query": stringParam(), "mode": enumParam(platform.ListModeValues()...)}),
 		Handle:      modelRepositoryHandle,
 		Render:      modelRepositoryRender,

@@ -173,8 +173,9 @@ type HistoryMessage struct {
 // is returned verbatim, or as a single override chunk when engine guards
 // rewrite the reply.
 type ChatOptions struct {
-	// TurnID is the durable server turn identity. It is trace/context metadata
-	// only and grants no execution authority.
+	// TurnID is the durable server turn identity. When the transport does not
+	// provide one, ChatWithOptions creates an engine-local identity for this
+	// turn. It is trace/context metadata only and grants no execution authority.
 	TurnID string
 	// OnTextDelta, if non-nil, is called once per text token in order, but
 	// only for the final LLM reply (not for intermediate ReAct tool-call rounds).
@@ -1115,6 +1116,10 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // skip the LLM and therefore never fire callbacks.
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
+	turnID := strings.TrimSpace(opts.TurnID)
+	if turnID == "" {
+		turnID = fmt.Sprintf("engine-turn-%d", e.userTurn)
+	}
 	e.resetTurnCompletion()
 	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
 		e.turnModelCallsThisTurn++
@@ -1207,7 +1212,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.expireStaleSelectedInstance(continuityNow)
 	e.expireStaleToolFacts(continuityNow)
 	e.refreshConversationDigest(continuityNow)
-	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, opts.TurnID, continuityNow)
+	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, turnID, continuityNow)
 	e.turnContextViewReady = true
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
@@ -2017,6 +2022,7 @@ var friendlyActionNames = map[string]string{
 	"ReinstallInstanceWorkflow":   "重装系统",
 	"CreateDiskWorkflow":          "创建数据盘",
 	"CreateCustomImageWorkflow":   "创建自制镜像",
+	"CloneCustomImageWorkflow":    "克隆自制镜像",
 }
 
 func friendlyActionName(action string) string {
@@ -3775,7 +3781,6 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			return finalReplyPrefix + reply
 		}
 	}
-
 	b, _ := json.Marshal(result)
 	return string(b)
 }
@@ -4099,6 +4104,17 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 		}
 		b, _ := json.Marshal(result)
 		return string(b), intent.HandlerFailureGenericRead
+	}
+	if action == "DiagnoseBilling" {
+		// Billing amounts are server-rendered from structured upstream fields.
+		// Letting the model narrate this result previously re-summed periods,
+		// extrapolated hourly quotes to monthly spend and inferred a free quota
+		// from a zero price. Exact financial facts have one deterministic exit.
+		reply := strings.TrimSpace(result.Conclusion)
+		if suggestion := strings.TrimSpace(result.Suggestion); suggestion != "" {
+			reply += "\n\n" + suggestion
+		}
+		return finalReplyPrefix + reply, intent.HandlerFailureNone
 	}
 
 	b, _ := json.Marshal(result)

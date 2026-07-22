@@ -18,22 +18,20 @@ func TestBillingFactsRunningPostpayUsesInstancePrice(t *testing.T) {
 	assert.Equal(t, "Postpay", fact.ChargeType)
 	assert.Equal(t, "hour", fact.Period)
 	assert.Equal(t, 1.58, fact.ActualComputeCharge)
-	assert.Equal(t, 0.0, fact.RetainedStoppedCharge)
 	assert.InDelta(t, 1.63, summary.HourlyTotal, 0.0001)
 	assert.True(t, summary.HasDynamic)
 	assert.False(t, summary.HasPrepaid)
 	assert.Equal(t, 1, summary.RunningCount)
 }
 
-func TestBillingFactsStoppedPostpayRetainsDiskAndImageOnly(t *testing.T) {
+func TestBillingFactsStoppedPostpayRetainsOnlyUpstreamListedDisk(t *testing.T) {
 	summary := BuildBillingFacts([]any{billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.05, 0.30, "4090", 1)})
 
 	require.Len(t, summary.Instances, 1)
 	fact := summary.Instances[0]
 	assert.Equal(t, 0.0, fact.ActualComputeCharge)
-	assert.Equal(t, 0.35, fact.RetainedStoppedCharge)
-	assert.InDelta(t, 0.35, summary.HourlyTotal, 0.0001)
-	assert.InDelta(t, 0.35, summary.StoppedRetainedTotal, 0.0001)
+	assert.InDelta(t, 0.05, summary.HourlyTotal, 0.0001)
+	assert.InDelta(t, 0.05, summary.StoppedRetainedTotal, 0.0001)
 	assert.Equal(t, 1, summary.StoppedCount)
 	assert.True(t, summary.HasDynamic)
 }
@@ -47,7 +45,6 @@ func TestBillingFactsPrepaidPreservesChargeTypeAndDoesNotPretendStoppedFree(t *t
 	assert.Equal(t, "day", fact.Period)
 	assert.Equal(t, 5.00, fact.InstancePrice)
 	assert.Equal(t, 5.00, fact.ActualComputeCharge)
-	assert.InDelta(t, 0.10, fact.RetainedStoppedCharge, 0.0001)
 	assert.InDelta(t, 0.0, summary.HourlyTotal, 0.0001)
 	assert.True(t, summary.HasPrepaid)
 	assert.False(t, summary.HasDynamic)
@@ -61,8 +58,8 @@ func TestBillingFactsMixedInstancesComputesTotals(t *testing.T) {
 	})
 
 	require.Len(t, summary.Instances, 3)
-	assert.InDelta(t, 1.98, summary.HourlyTotal, 0.0001)
-	assert.InDelta(t, 0.45, summary.StoppedRetainedTotal, 0.0001)
+	assert.InDelta(t, 1.68, summary.HourlyTotal, 0.0001)
+	assert.InDelta(t, 0.05, summary.StoppedRetainedTotal, 0.0001)
 	assert.Equal(t, 1, summary.RunningCount)
 	assert.Equal(t, 2, summary.StoppedCount)
 	assert.True(t, summary.HasDynamic)
@@ -79,9 +76,9 @@ func TestBillingFactsMatchExistingSummaryForMixedInstances(t *testing.T) {
 	conclusion, suggestion := buildBillingSummary(hosts)
 
 	assert.Contains(t, conclusion, "3 个实例")
-	assert.Contains(t, conclusion, "按量/抢占式实例合计: ¥1.98/时")
-	assert.Contains(t, conclusion, "关机实例（2 个）仍在产生磁盘和镜像保留费用，合计 ¥0.45/时")
-	assert.Contains(t, conclusion, "包月/包日实例按预付费计费")
+	assert.Contains(t, conclusion, "可确定的当前费用合计：¥1.68/时")
+	assert.Contains(t, conclusion, "关机后仍计费")
+	assert.Contains(t, conclusion, "¥5.00/天")
 	assert.Contains(t, suggestion, "释放")
 }
 
@@ -117,6 +114,56 @@ func TestBillingFactsSpotDetectedViaIsSpotFlag(t *testing.T) {
 	assert.False(t, s3.HasPrepaid)
 }
 
+func TestBillingFactsKeepsDiskPeriodsAndRolesSeparate(t *testing.T) {
+	host := billingFactHost("uhost-mixed-disk", "mixed", "Running", "Postpay", 2, 999, 0, "A800", 1)
+	host["Region"] = "cn-bj2"
+	host["Zone"] = "cn-bj2-05"
+	host["DiskPriceInfo"] = []any{
+		diskPriceInfo("Postpay", 0.04, true),
+		diskPriceInfo("Month", 12.5, false),
+	}
+
+	summary := BuildBillingFacts([]any{host})
+	require.Len(t, summary.Instances, 1)
+	fact := summary.Instances[0]
+	assert.Equal(t, "cn-bj2", fact.Region)
+	assert.Equal(t, "cn-bj2-05", fact.Zone)
+	assert.InDelta(t, 2.04, summary.CurrentTotals["hour"], 0.0001)
+	assert.InDelta(t, 12.5, summary.CurrentTotals["month"], 0.0001)
+	assert.NotEqual(t, 14.54, summary.HourlyTotal, "monthly data-disk price must never be added to the hourly total")
+
+	text := formatInstanceFactCost(fact)
+	assert.Contains(t, text, "系统盘：¥0.04/时")
+	assert.Contains(t, text, "数据盘/CVolume：¥12.50/月")
+}
+
+func TestBillingFactsPodCVolumeUsesStructuredDiskPriceWithoutFlatDiskPrice(t *testing.T) {
+	host := map[string]any{
+		"UHostId": "cpod-1", "Name": "pod", "State": "Running",
+		"Region": "cn-wlcb", "Zone": "cn-wlcb-01", "InstanceType": "Container",
+		"GpuType": "4090", "GPU": float64(1), "ChargeType": "Postpay",
+		"InstancePrice": float64(1.8), "CompShareImagePrice": float64(0),
+		"DiskPriceInfo": []any{diskPriceInfo("Postpay", 0.12, true)},
+	}
+
+	summary := BuildBillingFacts([]any{host})
+	require.Len(t, summary.Instances, 1)
+	assert.False(t, summary.Instances[0].HasDiskPrice, "pod response legitimately omits flat DiskPrice")
+	assert.True(t, summary.Instances[0].HasDiskBreakdown)
+	assert.InDelta(t, 1.92, summary.HourlyTotal, 0.0001)
+}
+
+func TestBillingFactsStoppedDoesNotGuessRetentionWhenBreakdownMissing(t *testing.T) {
+	host := billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.08, 0.3, "4090", 1)
+	delete(host, "PostPayPowerOffBillingResource")
+
+	summary := BuildBillingFacts([]any{host})
+	assert.Zero(t, summary.StoppedRetainedTotal)
+	assert.True(t, summary.HasUnknownStoppedRetained)
+	assert.True(t, summary.HasUnknownCurrentCost)
+	assert.NotContains(t, formatInstanceFactCost(summary.Instances[0]), "关机后仍计费")
+}
+
 func billingFactHostSpot(id, name, state, chargeType string, isSpot bool, instancePrice, diskPrice, imagePrice float64, gpuType string, gpu float64) map[string]any {
 	h := billingFactHost(id, name, state, chargeType, instancePrice, diskPrice, imagePrice, gpuType, gpu)
 	h["IsSpot"] = isSpot
@@ -124,7 +171,7 @@ func billingFactHostSpot(id, name, state, chargeType string, isSpot bool, instan
 }
 
 func billingFactHost(id, name, state, chargeType string, instancePrice, diskPrice, imagePrice float64, gpuType string, gpu float64) map[string]any {
-	return map[string]any{
+	h := map[string]any{
 		"UHostId":             id,
 		"Name":                name,
 		"State":               state,
@@ -134,5 +181,10 @@ func billingFactHost(id, name, state, chargeType string, instancePrice, diskPric
 		"CompShareImagePrice": imagePrice,
 		"GpuType":             gpuType,
 		"GPU":                 gpu,
+		"DiskPriceInfo":       []any{diskPriceInfo(chargeType, diskPrice, true)},
 	}
+	if state == "Stopped" && (chargeType == "Postpay" || chargeType == "Dynamic") {
+		h["PostPayPowerOffBillingResource"] = []any{diskPriceInfo(chargeType, diskPrice, true)}
+	}
+	return h
 }

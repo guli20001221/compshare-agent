@@ -275,6 +275,18 @@ func TestChat_DirectReply(t *testing.T) {
 	assert.Len(t, mock.calls[0].Messages, 2) // system + user
 }
 
+func TestChat_AssignsTurnIdentityWhenTransportDoesNotProvideOne(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	_, err := eng.Chat(context.Background(), "把实例制作为镜像，名称 demo-image", noopStep)
+	require.NoError(t, err)
+	require.NotEmpty(t, eng.turnContextViewThisTurn.TurnID)
+	require.Equal(t, "engine-turn-1", eng.turnContextViewThisTurn.TurnID)
+}
 
 func TestChat_ExternalTool_L0(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -1357,6 +1369,7 @@ func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
 	reply := eng.executeDiagnosis(context.Background(), "DiagnoseBilling", map[string]any{}, noopStep)
 
 	assert.Contains(t, reply, "uhost-bill-001")
+	assert.True(t, strings.HasPrefix(reply, finalReplyPrefix), "billing facts must bypass model re-calculation")
 	var readExpensive []governance.Request
 	for _, req := range limiter.requests {
 		if req.Class == governance.ClassReadExpensiveTool {

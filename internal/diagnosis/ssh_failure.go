@@ -9,8 +9,7 @@ import (
 // Flow: check instance state/login command -> check resource usage -> fallback.
 func SSHFailureChain() *Chain {
 	return &Chain{
-		Name:        "DiagnoseSSH",
-		Description: "诊断 SSH 连接失败：检查实例状态与 SSH 登录入口 → 检查资源使用 → 兜底建议",
+		Name: "DiagnoseSSH",
 		Steps: []Step{
 			stepCheckInstanceState(),
 			stepCheckResourceUsage(),

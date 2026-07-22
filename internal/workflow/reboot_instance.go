@@ -4,8 +4,7 @@ package workflow
 // CompShare GPU instance: query state, confirm reboot, then reboot.
 func RebootInstanceDef() *Definition {
 	return &Definition{
-		Name:        "RebootInstanceWorkflow",
-		Description: "查询实例 → 确认重启 → 重启",
+		Name: "RebootInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForReboot(),
 			stepQuerySupportZones(),

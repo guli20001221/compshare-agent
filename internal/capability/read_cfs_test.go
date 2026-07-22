@@ -80,11 +80,14 @@ func TestCFSCreatePriceHandle_PodZone(t *testing.T) {
 	assert.Equal(t, "DescribeCompShareSupportZone", exec.calls[0].action)
 	assert.Equal(t, "GetCompShareCFSPrice", exec.calls[1].action)
 	assert.Equal(t, 50, exec.calls[1].args["Size"])
-	assert.Equal(t, "cn-bj2-03", exec.calls[1].args["Zone"])
+	assert.NotContains(t, exec.calls[1].args, "Zone", "Pod CFS API rejects the public zone name; placement is carried by zone_id")
+	assert.NotContains(t, exec.calls[1].args, "Region")
 	assert.Equal(t, "Month", exec.calls[1].args["ChargeType"], "default charge type")
 	assert.Equal(t, uint32(5001), exec.calls[1].args["zone_id"])
 	assert.Equal(t, uint32(3003), exec.calls[1].args["az_group"])
 	assert.Contains(t, result.Reply, "88.50")
+	assert.Contains(t, result.Reply, "包月")
+	assert.Contains(t, result.Reply, "不能从价格反推额度")
 	assert.NotContains(t, result.Reply, "CFS 共享文件存储（只读查询）")
 }
 

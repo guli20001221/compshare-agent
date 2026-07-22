@@ -4,8 +4,7 @@ package workflow
 // CompShare GPU instance: query state, confirm shutdown, then stop.
 func StopInstanceDef() *Definition {
 	return &Definition{
-		Name:        "StopInstanceWorkflow",
-		Description: "查询实例 → 确认关机 → 关机",
+		Name: "StopInstanceWorkflow",
 		Steps: []Step{
 			stepQueryInstance(),
 			stepQuerySupportZones(),

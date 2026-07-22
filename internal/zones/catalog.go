@@ -50,6 +50,14 @@ func FetchSupportZones(ctx context.Context, exec Executor, topOrg, org uint32) (
 	if err != nil {
 		return nil, err
 	}
+	return ParseSupportZones(res), nil
+}
+
+// ParseSupportZones converts one successful upstream response into the shared
+// typed zone catalog. It is exported so internal capability orchestrators can
+// make the same call through their internal-only execution boundary (which is
+// allowed to carry tenant identity fields) without duplicating response parsing.
+func ParseSupportZones(res map[string]any) []ZoneInfo {
 	raw, _ := res["ZoneInfo"].([]any)
 	out := make([]ZoneInfo, 0, len(raw))
 	for _, e := range raw {
@@ -70,7 +78,7 @@ func FetchSupportZones(ctx context.Context, exec Executor, topOrg, org uint32) (
 		}
 		out = append(out, zi)
 	}
-	return out, nil
+	return out
 }
 
 // Catalog is a process-wide TTL cache of the support-zone list. The Describe↔

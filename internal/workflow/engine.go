@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/compshare-agent/internal/tools"
 )
@@ -317,41 +318,89 @@ func (e *Engine) runToolStep(ctx context.Context, step Step, i, total int, wfCtx
 
 	e.emit(step.Name, i, total, StepToolCall, "running", toolName, args, "")
 
-	apiResult, err := e.executor.Execute(ctx, toolName, args)
-	if err != nil {
-		e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, err.Error())
-		result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})
-		if step.Optional {
-			return toolStepSkipped
+	var pollDeadline time.Time
+	if step.Poll != nil {
+		if step.Poll.Interval <= 0 || step.Poll.Timeout <= 0 {
+			msg := fmt.Sprintf("工作流定义错误：轮询步骤「%s」的间隔和超时必须为正数", step.Name)
+			e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, msg)
+			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
+			result.StoppedAt = step.Name
+			result.Message = msg
+			return toolStepFailed
 		}
-		result.StoppedAt = step.Name
-		result.Message = fmt.Sprintf("步骤「%s」执行失败: %v", step.Name, err)
-		// Keep the typed cause alongside the flattened sentence so callers can
-		// classify the failure by its fields instead of by substrings of Message.
-		result.Err = err
-		recordFailedArgs(result, args)
-		return toolStepFailed
+		pollDeadline = time.Now().Add(step.Poll.Timeout)
 	}
 
-	wfCtx.StepResults[step.Name] = apiResult
-
-	if step.CheckResult != nil {
-		outcome := step.CheckResult(wfCtx, apiResult)
-		if !outcome.OK {
-			e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, outcome.Message)
-			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: outcome.Message})
+	var apiResult map[string]any
+	for {
+		apiResult, err = e.executor.Execute(ctx, toolName, args)
+		if err != nil {
+			e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, err.Error())
+			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})
 			if step.Optional {
 				return toolStepSkipped
 			}
 			result.StoppedAt = step.Name
-			result.Message = outcome.Message
+			result.Message = fmt.Sprintf("步骤「%s」执行失败: %v", step.Name, err)
+			// Keep the typed cause alongside the flattened sentence so callers can
+			// classify the failure by its fields instead of by substrings of Message.
+			result.Err = err
 			recordFailedArgs(result, args)
-			// The reason travels with the rejection that declared it, so a caller
-			// deciding what to DO never has to read the sentence a user reads.
-			recordFailureReason(result, outcome.Reason)
 			return toolStepFailed
 		}
+
+		if step.CheckResult == nil {
+			break
+		}
+		outcome := step.CheckResult(wfCtx, apiResult)
+		if outcome.OK {
+			break
+		}
+		if outcome.Pending && step.Poll != nil {
+			if !time.Now().Before(pollDeadline) {
+				msg := outcome.Message
+				if msg == "" {
+					msg = fmt.Sprintf("步骤「%s」等待状态变化超时", step.Name)
+				}
+				e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, msg)
+				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: msg})
+				result.StoppedAt = step.Name
+				result.Message = msg
+				recordFailedArgs(result, args)
+				return toolStepFailed
+			}
+			select {
+			case <-time.After(step.Poll.Interval):
+				continue
+			case <-ctx.Done():
+				err = ctx.Err()
+				e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, err.Error())
+				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})
+				result.StoppedAt = step.Name
+				result.Message = fmt.Sprintf("步骤「%s」执行失败: %v", step.Name, err)
+				result.Err = err
+				recordFailedArgs(result, args)
+				return toolStepFailed
+			}
+		}
+		if outcome.Pending {
+			outcome.Message = fmt.Sprintf("工作流定义错误：步骤「%s」返回等待状态但未配置轮询", step.Name)
+		}
+		e.emit(step.Name, i, total, StepToolCall, "failed", toolName, nil, outcome.Message)
+		result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: outcome.Message})
+		if step.Optional {
+			return toolStepSkipped
+		}
+		result.StoppedAt = step.Name
+		result.Message = outcome.Message
+		recordFailedArgs(result, args)
+		// The reason travels with the rejection that declared it, so a caller
+		// deciding what to DO never has to read the sentence a user reads.
+		recordFailureReason(result, outcome.Reason)
+		return toolStepFailed
 	}
+
+	wfCtx.StepResults[step.Name] = apiResult
 
 	e.emit(step.Name, i, total, StepToolCall, "success", toolName, nil, "")
 	result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "success"})

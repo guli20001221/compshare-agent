@@ -11,8 +11,7 @@ import (
 
 func ReinstallInstanceDef() *Definition {
 	return &Definition{
-		Name:        "ReinstallInstanceWorkflow",
-		Description: "查询实例 → 查询目标镜像 → 确认重装 → 重装系统",
+		Name: "ReinstallInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForReinstall(),
 			stepQuerySupportZones(),

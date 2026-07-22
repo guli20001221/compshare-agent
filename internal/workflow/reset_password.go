@@ -12,8 +12,7 @@ import (
 // support online reset (Running or Stopped).
 func ResetPasswordDef() *Definition {
 	return &Definition{
-		Name:        "ResetPasswordWorkflow",
-		Description: "查询实例 → 确认重置 → 重置密码 → 确认完成",
+		Name: "ResetPasswordWorkflow",
 		Steps: []Step{
 			stepQueryForReset(),
 			stepQuerySupportZones(),

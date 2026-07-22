@@ -6,8 +6,7 @@ const resizeInstanceMissingSpecMessage = "变配请求必须至少指定 Cpu、G
 
 func ResizeInstanceDef() *Definition {
 	return &Definition{
-		Name:        "ResizeInstanceWorkflow",
-		Description: "查询实例 → 查询合法规格 → 查询变配价格 → 确认变配 → 变配",
+		Name: "ResizeInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForResize(),
 			stepQuerySupportZones(),

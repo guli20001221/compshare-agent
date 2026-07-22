@@ -23,8 +23,7 @@ const (
 // starting, so no separate client-side resize step is needed.
 func StartInstanceDef() *Definition {
 	return &Definition{
-		Name:        "StartInstanceWorkflow",
-		Description: "查询实例 → 确认开机 → 开机",
+		Name: "StartInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForStart(),
 			stepConfirmStart(),

@@ -260,6 +260,14 @@ func TestBackendPlacementAndIdentityFieldsAreInternalOnlyForCFSAndNetwork(t *tes
 		args   map[string]any
 	}{
 		{
+			action: "DescribeCompShareGpuInventory",
+			args: map[string]any{
+				"zone_id":             uint32(5001),
+				"top_organization_id": uint32(1001),
+				"organization_id":     uint32(1002),
+			},
+		},
+		{
 			action: "GetCompShareCFSPrice",
 			args: map[string]any{
 				"Size":                50,
@@ -315,6 +323,8 @@ func TestBackendPlacementAndIdentityFieldsAreInternalOnlyForCFSAndNetwork(t *tes
 				assert.Equal(t, tc.args["az_group"], internalInner.args[0]["az_group"])
 			case "CheckCompShareNetOptimizer":
 				assert.Equal(t, tc.args["az_group"], internalInner.args[0]["az_group"])
+			case "DescribeCompShareGpuInventory":
+				assert.Equal(t, tc.args["zone_id"], internalInner.args[0]["zone_id"])
 			}
 		})
 	}
@@ -1185,6 +1195,31 @@ func TestGetCompShareCFSUpgradePrice_PreResolvedZoneIDSkipsExtraDescribe(t *test
 	require.Len(t, inner.calls, 1, "a pre-resolved zone_id must not trigger a redundant DescribeCFS lookup")
 	assert.Equal(t, "GetCompShareCFSUpgradePrice", inner.calls[0].action)
 	assert.Equal(t, uint32(7777), inner.calls[0].args["zone_id"])
+}
+
+func TestCustomImageWorkflowInternalArgsSurvivePolicyBoundary(t *testing.T) {
+	inner := &routedExecutor{}
+	safe := NewSafeToolExecutor(inner)
+	args := map[string]any{
+		"UHostId": "uhost-src", "Name": "snapshot", "Description": "desc",
+		"Region": "cn-sh2", "Zone": "cn-sh2-02",
+		"zone_id": uint32(8200), "az_group": uint32(1000009),
+		"agent_only": "must-drop",
+	}
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CreateCompShareCustomImage",
+		Args:   args,
+		Origin: OriginWorkflowInternal,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 1)
+	got := inner.calls[0].args
+	for _, key := range []string{"UHostId", "Name", "Description", "Region", "Zone", "zone_id", "az_group"} {
+		assert.Equal(t, args[key], got[key], "%s must reach the upstream API", key)
+	}
+	assert.NotContains(t, got, "agent_only")
 }
 
 // TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance proves

@@ -38,7 +38,12 @@ func (e *Engine) Run(ctx context.Context, chain *Chain, params map[string]any) (
 
 		e.emit(step.Name, i, total, "running", step.Tool, args, "")
 
-		apiResult, err := e.executor.Execute(ctx, step.Tool, args)
+		var apiResult map[string]any
+		if step.Execute != nil {
+			apiResult, err = step.Execute(ctx, e.executor, args)
+		} else {
+			apiResult, err = e.executor.Execute(ctx, step.Tool, args)
+		}
 		if err != nil {
 			e.emit(step.Name, i, total, "failed", step.Tool, nil, err.Error())
 			result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "failed", Message: err.Error()})

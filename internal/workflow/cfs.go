@@ -17,8 +17,7 @@ const (
 
 func CreateCFSDef() *Definition {
 	return &Definition{
-		Name:        "CreateCFSWorkflow",
-		Description: "查询 CFS 价格 -> 确认创建 -> 创建 CFS -> 回查 CFS",
+		Name: "CreateCFSWorkflow",
 		Steps: []Step{
 			stepQueryCreateCFSPrice(),
 			stepConfirmCreateCFS(),
@@ -43,8 +42,7 @@ func CreateCFSDef() *Definition {
 
 func ResizeCFSDef() *Definition {
 	return &Definition{
-		Name:        "ResizeCFSWorkflow",
-		Description: "查询 CFS -> 查询扩容价格 -> 确认扩容 -> 扩容 CFS",
+		Name: "ResizeCFSWorkflow",
 		Steps: []Step{
 			stepQueryCFSForResize(),
 			stepQueryResizeCFSPrice(),
@@ -73,8 +71,6 @@ func stepQueryCreateCFSPrice() Step {
 			args := map[string]any{
 				"Name":       wfCtx.Params["Name"],
 				"Size":       wfCtx.Params["Size"],
-				"Zone":       wfCtx.Params["Zone"],
-				"Region":     wfCtx.Params["Region"],
 				"zone_id":    wfCtx.Params["CFSZoneId"],
 				"az_group":   wfCtx.Params["CFSAzGroup"],
 				"ChargeType": cfsChargeType(wfCtx.Params),
@@ -120,8 +116,6 @@ func stepCreateCFS() Step {
 			args := map[string]any{
 				"Name":       wfCtx.Params["Name"],
 				"Size":       wfCtx.Params["Size"],
-				"Zone":       wfCtx.Params["Zone"],
-				"Region":     wfCtx.Params["Region"],
 				"zone_id":    wfCtx.Params["CFSZoneId"],
 				"az_group":   wfCtx.Params["CFSAzGroup"],
 				"ChargeType": cfsChargeType(wfCtx.Params),

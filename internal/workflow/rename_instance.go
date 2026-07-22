@@ -6,8 +6,7 @@ import "fmt"
 // CompShare GPU instance: query instance, confirm rename, then execute.
 func RenameInstanceDef() *Definition {
 	return &Definition{
-		Name:        "RenameInstanceWorkflow",
-		Description: "查询实例 → 确认改名 → 修改名称",
+		Name: "RenameInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForRename(),
 			stepQuerySupportZones(),

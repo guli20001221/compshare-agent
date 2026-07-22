@@ -100,14 +100,18 @@ type IntakeSpec struct {
 }
 
 type OperationSpec struct {
-	Operation        string
-	Description      string
-	Fields           map[string]FieldSpec
-	NeedsConfirm     bool
-	Risk             security.Level
-	Execution        []workflow.ExecutionStepContract
-	ValidateResolved func(map[string]any) error
-	Intake           IntakeSpec
+	Operation string
+	// AgentDescription is the model-facing capability boundary: what the
+	// operation does and when it should (or should not) be requested. Workflow
+	// execution steps deliberately live only in workflow.Definition.
+	AgentDescription   string
+	Fields             map[string]FieldSpec
+	ImageCatalogSource string
+	NeedsConfirm       bool
+	Risk               security.Level
+	Execution          []workflow.ExecutionStepContract
+	ValidateResolved   func(map[string]any) error
+	Intake             IntakeSpec
 }
 
 type GateContract struct {

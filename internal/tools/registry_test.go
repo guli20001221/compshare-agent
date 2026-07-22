@@ -143,9 +143,12 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 		}
 	}
 	mustContain(t, descriptions["DescribeCompShareJupyterToken"], "不要明文展示")
-	mustContain(t, descriptions["EnableNetOptimizerWorkflow"], "确认")
-	mustContain(t, descriptions["CreateCFSWorkflow"], "确认")
-	mustContain(t, descriptions["ResizeCFSWorkflow"], "确认")
+	policies := DefaultToolExecutionPolicies()
+	for _, action := range []string{"EnableNetOptimizerWorkflow", "CreateCFSWorkflow", "ResizeCFSWorkflow"} {
+		if !policies[action].NeedsConfirm {
+			t.Fatalf("%s must require confirmation in the runtime policy", action)
+		}
+	}
 	if strings.Contains(descriptions["CreateCFSWorkflow"], "cn-pod-01") {
 		t.Fatal("CreateCFSWorkflow description must not suggest synthetic Pod zones; real zones come from DescribeCompShareSupportZone")
 	}
@@ -195,6 +198,8 @@ func TestCFSInternalZoneIDIsWorkflowOnly(t *testing.T) {
 	for _, action := range []string{
 		"CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"DescribeCompShareSupportZone",
+		"DescribeCompShareGpuInventory",
 		"DescribeCFS",
 		"GetCompShareCFSPrice",
 		"GetCompShareCFSUpgradePrice",
@@ -287,7 +292,7 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "Pod 区内部用 zone_id")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "不要手填 zone_id/az_group")
 
-	mustContain(t, descriptions["CreateInstanceWorkflow"], "Pod 区必须使用容器镜像")
+	mustContain(t, descriptions["CreateInstanceWorkflow"], "创建算力实例")
 	mustNotContain(t, descriptions["CreateInstanceWorkflow"], "必须使用此工具")
 }
 
@@ -309,10 +314,24 @@ func TestDescribeCompShareInstanceDoesNotExposeWithoutGpu(t *testing.T) {
 func TestCustomImageWorkflowIsUserFacingButRawImageCreateIsNot(t *testing.T) {
 	descriptions := registryDescriptions()
 
-	mustContain(t, descriptions["CreateCustomImageWorkflow"], "CreateCompShareCustomImage")
-	mustContain(t, descriptions["CreateCustomImageWorkflow"], "GetCompShareImageCreateProgress")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "从已有实例")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "自制镜像")
 	if _, ok := descriptions["CreateCompShareCustomImage"]; ok {
 		t.Fatal("raw CreateCompShareCustomImage must not be exposed as a user-facing tool")
+	}
+	mustContain(t, descriptions["CloneCustomImageWorkflow"], "另一个可用区")
+	if _, ok := descriptions["SyncCompShareCustomImage"]; ok {
+		t.Fatal("raw SyncCompShareCustomImage must not be exposed as a user-facing tool")
+	}
+}
+
+func TestCloneCustomImageTargetZonesAreWorkflowOnly(t *testing.T) {
+	policy := DefaultToolExecutionPolicies()["SyncCompShareCustomImage"]
+	if containsString(policy.AllowedParams, "TargetZoneIds") {
+		t.Fatal("the model must not choose numeric destination ids")
+	}
+	if !containsString(policy.InternalAllowedParams, "TargetZoneIds") {
+		t.Fatal("the workflow must be able to pass the resolver-verified destination")
 	}
 }
 

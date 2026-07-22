@@ -9,8 +9,7 @@ const resizeDiskMissingTargetMessage = "扩已有盘需要指定目标容量（G
 
 func ResizeDiskDef() *Definition {
 	return &Definition{
-		Name:        "ResizeDiskWorkflow",
-		Description: "查询实例 -> 检查扩盘条件 -> 查询扩盘价格 -> 确认扩盘 -> 扩已有盘",
+		Name: "ResizeDiskWorkflow",
 		Steps: []Step{
 			stepQueryForResizeDisk(),
 			stepQuerySupportZonesForResizeDisk(),

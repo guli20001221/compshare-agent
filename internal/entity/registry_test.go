@@ -33,6 +33,7 @@ func TestEveryWorkflowActionIsClassifiedForInvalidation(t *testing.T) {
 	deliberatelyNotInvalidating := map[string]string{
 		"ResetPasswordWorkflow":      "changes the login password; no InstanceSnapshot field holds it",
 		"CreateCustomImageWorkflow":  "creates a new image from the instance; the instance itself is unchanged",
+		"CloneCustomImageWorkflow":   "creates a custom image in another zone; the instance registry is unchanged",
 		"CreateDiskWorkflow":         "attaches a data disk; InstanceSnapshot carries no disk fields",
 		"ResizeDiskWorkflow":         "resizes a data disk; InstanceSnapshot carries no disk fields",
 		"EnableNetOptimizerWorkflow": "network accelerator state is not part of InstanceSnapshot",

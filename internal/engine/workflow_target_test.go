@@ -15,6 +15,7 @@ import (
 func TestWorkflowRequiresInstanceTarget(t *testing.T) {
 	for _, action := range []string{
 		"CreateInstanceWorkflow",
+		"CloneCustomImageWorkflow",
 		"EnableNetOptimizerWorkflow",
 		"CreateCFSWorkflow",
 		"ResizeCFSWorkflow",
