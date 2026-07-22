@@ -283,6 +283,14 @@ func CreateInstanceDef() *Definition {
 		Steps: []Step{
 			stepQueryImages(false),
 			stepQueryInstanceTypes(),
+			// The plain flow reads the same inventory the guided flow does, so
+			// createInventoryPoolSupport answers from live data on BOTH paths. Without
+			// these the purchase-mode gate had no fact to read here and defaulted to
+			// "supported", which is how a fully specified Spot create on a zone that
+			// does not sell Spot reached the create API to be refused there.
+			stepQueryOfficialGPUInventory(),
+			stepQueryPodGPUInventory(),
+			stepResolveGPUInventorySnapshot(),
 			stepResolveCreateDraft(),
 			stepCheckCapacity(),
 			stepGetPrice(),
@@ -316,11 +324,12 @@ func CreateInstanceGuidedDef() *Definition {
 		Name: "CreateInstanceWorkflow",
 		Steps: []Step{
 			stepQueryImages(true),
-			// Both availability queries are CHARGE-TYPE-SCOPED (the catalog by
-			// InstanceType=spot, the inventory by which pool it reads), as is every
-			// capacity call after them, so ChargeType must be settled before this
-			// point. It is: it arrives in the create args and is never asked as a
-			// card — see buildGuidedFinalForm for why it cannot be one.
+			// The catalog query is NOT charge-type scoped — see stepQueryInstanceTypes
+			// for the measurement that killed that idea. Charge type still has to be
+			// settled before this point because every capacity call after it is
+			// scoped, and because the pool-support gate reads it. It is: it arrives in
+			// the create args and is never asked as a card — see buildGuidedFinalForm
+			// for why it cannot be one.
 			stepQueryInstanceTypes(),
 			// GPU inventory comes from TWO upstream implementations: the request's
 			// zone_id selects the backend rather than filtering the result, so an
@@ -1172,19 +1181,66 @@ func workflowZonePlacement(wfCtx *Context, zone string) (deployment.ZonePlacemen
 
 func validateCreatePlacement(wfCtx *Context, placement deployment.ZonePlacement, purchase bool) error {
 	chargeType := createChargeType(wfCtx.Params)
-	if placement.IsPod && strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
-		return fmt.Errorf("%s 当前不支持抢占式实例，请改用按量、包日或包月", zoneDisplayLabel(wfCtx, placement.Zone))
-	}
-	if !placement.IsPod {
-		return nil
-	}
-	if placement.ZoneID == 0 {
+	if placement.IsPod && placement.ZoneID == 0 {
 		return fmt.Errorf("未获取到 %s 的内部可用区编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx, placement.Zone))
 	}
-	if purchase && placement.AzGroup == 0 {
+	if placement.IsPod && purchase && placement.AzGroup == 0 {
 		return fmt.Errorf("未获取到 %s 的内部地域编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx, placement.Zone))
 	}
+	if !purchase {
+		return nil
+	}
+	pool := createInventoryPool(chargeType)
+	// Only a KNOWN unsupported mode refuses. An unknown one does not: the same
+	// rule that stops a zero inventory count from becoming "sold out" applies
+	// here symmetrically — a missing observation is not a negative observation,
+	// and refusing on it would turn one flaky read of a supplementary API into a
+	// blocked create. The create API stays the authority for what it will accept.
+	if supported, known := createInventoryPoolSupport(wfCtx, placement, pool); known && !supported {
+		return fmt.Errorf("%s 的 %s 当前不支持%s购买方式，请选择其他计费方式或可用区",
+			zoneDisplayLabel(wfCtx, placement.Zone), paramStr(wfCtx.Params, "GpuType", "该机型"), createInventoryPoolLabel(pool))
+	}
 	return nil
+}
+
+func createInventoryPool(chargeType string) string {
+	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
+		return deployment.GPUInventoryPoolSpot
+	}
+	return deployment.GPUInventoryPoolExclusive
+}
+
+func createInventoryPoolLabel(pool string) string {
+	if pool == deployment.GPUInventoryPoolSpot {
+		return "抢占式"
+	}
+	return "独占"
+}
+
+// createInventoryPoolSupport is the SINGLE purchase-mode fact for this workflow.
+// Both create flows run the inventory steps, so the guided cards, the plain
+// confirm card and the authoritative create gate all read this one answer —
+// which is the whole point: a card must never offer a mode the gate will refuse,
+// nor hide one the gate would allow.
+//
+// A missing snapshot is deliberately NOT read as "supported". It used to be, on
+// the premise that the catalog query was already charge-type scoped; it is not
+// (see stepQueryInstanceTypes for the measurement), so that premise silently
+// disabled the gate on the plain path.
+func createInventoryPoolSupport(wfCtx *Context, placement deployment.ZonePlacement, pool string) (bool, bool) {
+	supported, known := deployment.InventoryPoolSupportFromResult(
+		wfCtx.Result(createGPUInventoryStep), placement, paramStr(wfCtx.Params, "GpuType", ""), pool,
+	)
+	if known {
+		return supported, true
+	}
+	// The official product contract always offers Postpay/Day/Month. Spot and
+	// Pod pool membership depend on the live inventory metadata and must not be
+	// guessed when that metadata is unavailable.
+	if !placement.IsPod && pool == deployment.GPUInventoryPoolExclusive {
+		return true, true
+	}
+	return false, false
 }
 
 func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placement deployment.ZonePlacement) error {
@@ -2190,20 +2246,22 @@ func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 	opts := make([]ConfirmFormOption, len(createFormChargeTypes))
 	copy(opts, createFormChargeTypes)
 	// If the zone can't be resolved here, show every charge type — the
-	// authoritative create gate (validateCreatePlacement) still refuses an
-	// unresolvable or pod+Spot pick.
+	// authoritative create gate (validateCreatePlacement) reads the same pool
+	// support fact and still refuses an unresolvable or unsupported pick.
 	placement, err := workflowZonePlacement(wfCtx, zone)
 	if err != nil {
 		return opts
 	}
 	for i := range opts {
-		if !strings.EqualFold(opts[i].Value, deployment.ChargeTypeSpot) {
-			continue
-		}
-		if placement.IsPod {
+		pool := createInventoryPool(opts[i].Value)
+		// Disable only on a KNOWN unsupported mode, matching validateCreatePlacement
+		// exactly. Greying out an option we merely failed to confirm would hide a
+		// mode the gate would have accepted — the mirror image of offering one it
+		// will refuse, and just as wrong.
+		if supported, known := createInventoryPoolSupport(wfCtx, placement, pool); known && !supported {
 			opts[i].Disabled = true
-			opts[i].Reason = "当前可用区不支持抢占式"
-			opts[i].Note = "Pod 可用区暂不支持抢占式"
+			opts[i].Reason = "当前可用区和机型不支持" + createInventoryPoolLabel(pool) + "购买方式"
+			opts[i].Note = opts[i].Reason
 		}
 	}
 	return opts

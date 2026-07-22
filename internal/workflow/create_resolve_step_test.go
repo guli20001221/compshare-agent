@@ -365,7 +365,8 @@ func TestFormEditRerunsFromTheDraftInDefinitionOrder(t *testing.T) {
 	// price quoted for the PREVIOUS GPU, silently.
 	assert.Equal(t,
 		[]string{
-			"查询镜像", "查询可用配比", createDraftStepName, "检查库存", "查询价格", createConfirmationStepName,
+			"查询镜像", "查询可用配比", createOfficialGPUInventoryStep, createPodGPUInventoryStep, createGPUInventoryStep,
+			createDraftStepName, "检查库存", "查询价格", createConfirmationStepName,
 			createDraftStepName, "检查库存", "查询价格", createConfirmationStepName,
 			"创建实例", "查看状态",
 		}, order,

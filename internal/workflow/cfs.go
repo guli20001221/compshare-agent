@@ -114,8 +114,14 @@ func stepCreateCFS() Step {
 		Tool: "CreateCFS",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{
-				"Name":       wfCtx.Params["Name"],
-				"Size":       wfCtx.Params["Size"],
+				"Name": wfCtx.Params["Name"],
+				"Size": wfCtx.Params["Size"],
+				// Region/Zone are still required by the deployed public gateway to
+				// route CreateCFS. zone_id/az_group remain the authoritative placement
+				// selected from the trusted zone snapshot; sending both is accepted by
+				// the upstream BaseRequest and prevents gateway/version skew.
+				"Zone":       wfCtx.Params["Zone"],
+				"Region":     wfCtx.Params["Region"],
 				"zone_id":    wfCtx.Params["CFSZoneId"],
 				"az_group":   wfCtx.Params["CFSAzGroup"],
 				"ChargeType": cfsChargeType(wfCtx.Params),

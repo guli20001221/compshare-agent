@@ -3,6 +3,7 @@ package workflow
 import (
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,20 +90,27 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	assert.Equal(t, "工作流执行完成", result.Message)
 	assert.Equal(t, []any{"uhost-new001"}, result.Data["UHostIds"])
 
-	// All 9 steps completed
-	assert.Len(t, result.Steps, 9)
-	expectedNames := []string{"查询镜像", "查询可用配比", "形成执行草稿", "检查库存", "查询价格", "形成确认快照", "确认创建", "创建实例", "查看状态"}
+	// All 12 steps completed. The three inventory steps are here so the plain
+	// flow's purchase-mode gate and its confirm card read the same live fact the
+	// guided flow does; without them createInventoryPoolSupport had nothing to
+	// read on this path and every charge type looked supported.
+	assert.Len(t, result.Steps, 12)
+	expectedNames := []string{"查询镜像", "查询可用配比", "查询官方GPU库存", "查询Pod GPU库存", "查询GPU库存", "形成执行草稿", "检查库存", "查询价格", "形成确认快照", "确认创建", "创建实例", "查看状态"}
 	for i, name := range expectedNames {
 		assert.Equal(t, name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	// 6 API calls in order — unchanged by the draft step, which is the point:
-	// neither the confirm gate NOR the resolve step calls the executor.
-	assert.Len(t, executor.calls, 6)
+	// 8 API calls in order. Two of them are the split GPU inventory read (the
+	// request's zone_id selects the backend rather than filtering the result, so
+	// the official and Pod pools need one call each). Still neither the confirm
+	// gate NOR any resolve step calls the executor, which is the point.
+	assert.Len(t, executor.calls, 8)
 	expectedActions := []string{
 		"DescribeCompShareImages",
 		"DescribeAvailableCompShareInstanceTypes",
+		"DescribeCompShareGpuInventory",
+		"DescribeCompShareGpuInventory",
 		"CheckCompShareResourceCapacity",
 		"GetCompShareInstanceUserPrice",
 		"CreateCompShareInstance",
@@ -127,7 +135,7 @@ func TestCreateInstance_DescribeFailureDoesNotHideCreatedInstance(t *testing.T) 
 	assert.NoError(t, err)
 	assert.True(t, result.Success, "CreateCompShareInstance returned UHostIds, so a not-ready describe must not flip create success")
 	assert.Empty(t, result.StoppedAt)
-	assert.Contains(t, executor.calls, executorCall{action: "CreateCompShareInstance", args: executor.calls[4].args})
+	assert.Contains(t, executor.calls, executorCall{action: "CreateCompShareInstance", args: executor.calls[6].args})
 	assert.Equal(t, "查看状态", result.Steps[len(result.Steps)-1].Name)
 	assert.Equal(t, "failed", result.Steps[len(result.Steps)-1].Status)
 }
@@ -148,8 +156,9 @@ func TestCreateInstance_ConfirmDenied(t *testing.T) {
 	assert.Equal(t, "确认创建", result.StoppedAt)
 	assert.Equal(t, "用户取消了操作", result.Message)
 
-	// Only 4 API calls before the confirm step; CreateCompShareInstance never called
-	assert.Len(t, executor.calls, 4)
+	// Only 6 API calls before the confirm step (2 images/catalog + 2 inventory
+	// backends + capacity + price); CreateCompShareInstance never called
+	assert.Len(t, executor.calls, 6)
 	for _, call := range executor.calls {
 		assert.NotEqual(t, "CreateCompShareInstance", call.action)
 	}
@@ -382,11 +391,14 @@ func TestCreateInstance_CapacityCheckFails(t *testing.T) {
 	assert.Equal(t, "检查库存", result.StoppedAt)
 	assert.Contains(t, result.Message, "检查库存")
 
-	// 3 API calls: DescribeCompShareImages + DescribeAvailableCompShareInstanceTypes + failed CheckCompShareResourceCapacity
-	assert.Len(t, executor.calls, 3)
+	// 5 API calls: images + catalog + the two inventory backends + the failed
+	// CheckCompShareResourceCapacity. Nothing runs after capacity fails.
+	assert.Len(t, executor.calls, 5)
 	assert.Equal(t, "DescribeCompShareImages", executor.calls[0].action)
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", executor.calls[1].action)
-	assert.Equal(t, "CheckCompShareResourceCapacity", executor.calls[2].action)
+	assert.Equal(t, "DescribeCompShareGpuInventory", executor.calls[2].action)
+	assert.Equal(t, "DescribeCompShareGpuInventory", executor.calls[3].action)
+	assert.Equal(t, "CheckCompShareResourceCapacity", executor.calls[4].action)
 }
 
 // --- Community image path tests ---
@@ -1019,8 +1031,18 @@ func TestCreateInstance_NormalZoneCapacityKeepsZoneAndRegion(t *testing.T) {
 	assert.Equal(t, uint32(2002), checkArgs["zone_id"])
 }
 
-func TestCreateInstance_PodZoneRejectsSpotBeforeCapacity(t *testing.T) {
+// The catalog query must NOT be scoped to the Spot pool. InstanceType=spot is a
+// value upstream accepts and then answers empty (measured live 2026-07-22:
+// rows=19 for absent/uhost/all, rows=0 for spot), and an empty catalog makes
+// resolveTargetSpec fail listing no GPU types at all — it breaks every Spot
+// create. ChargeType still has to reach the capacity call, which is the request
+// upstream actually validates it on. A mock returns rows either way, so this
+// asserts the ARGUMENT, not the mock's answer.
+func TestCreateInstance_FullySpecifiedPodSpotDoesNotScopeCatalogButScopesCapacity(t *testing.T) {
 	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-pod", "Name": "Pod CUDA", "Container": "True", "Size": float64(102400)},
+	}}
 	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
 
 	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
@@ -1030,15 +1052,20 @@ func TestCreateInstance_PodZoneRejectsSpotBeforeCapacity(t *testing.T) {
 	}, withPodZone("cn-newpod-03", "cn-newpod", 9103, 3103))
 
 	assert.NoError(t, err)
-	assert.False(t, result.Success)
-	// Placement is validated once, while the draft is formed — under the stricter
-	// purchase=true form that capacity's own check never applied.
-	assert.Equal(t, "形成执行草稿", result.StoppedAt)
-	assert.Contains(t, result.Message, "不支持抢占式")
+	assert.True(t, result.Success)
+	var catalogArgs, capacityArgs map[string]any
 	for _, call := range executor.calls {
-		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
-		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+		if call.action == "DescribeAvailableCompShareInstanceTypes" {
+			catalogArgs = call.args
+		}
+		if call.action == "CheckCompShareResourceCapacity" {
+			capacityArgs = call.args
+		}
 	}
+	assert.NotContains(t, catalogArgs, "InstanceType",
+		"scoping the catalog to the Spot pool returns an empty catalog and breaks every Spot create")
+	assert.Equal(t, deployment.ChargeTypeSpot, capacityArgs["ChargeType"],
+		"the capacity call is where upstream actually validates the charge type")
 }
 
 func TestCreateInstance_UnsupportedImageBlocksBeforeCapacity(t *testing.T) {

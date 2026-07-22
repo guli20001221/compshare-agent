@@ -40,11 +40,12 @@ func TestRegisteredWorkflowActionsMatchRegistry(t *testing.T) {
 }
 
 func TestGetWorkflow(t *testing.T) {
-	// CreateInstanceWorkflow: 9 steps
+	// CreateInstanceWorkflow: 12 steps (9 + the three GPU-inventory steps that
+	// feed the purchase-mode gate)
 	def, ok := GetWorkflow("CreateInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 9)
+	assert.Len(t, def.Steps, 12)
 
 	// StopInstanceWorkflow: query -> query support zones -> confirm -> stop
 	def, ok = GetWorkflow("StopInstanceWorkflow")

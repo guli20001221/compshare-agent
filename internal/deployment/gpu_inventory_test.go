@@ -90,3 +90,54 @@ func TestGPUInventorySnapshotPreservesSuccessfulExplicitZero(t *testing.T) {
 	assert.True(t, present)
 	assert.Zero(t, exclusive)
 }
+
+func TestGPUInventorySnapshotSeparatesPoolSupportFromObservedCount(t *testing.T) {
+	catalog := inventoryTestZoneCatalog()
+	official := map[string]any{
+		"GpuInventory": map[string]any{
+			"Exclusive": map[string]any{"10027": map[string]any{"4090": float64(0), "A100": float64(0)}},
+		},
+		"SpotUnsupportedGpuTypes": []any{"A100"},
+	}
+	pod := map[string]any{"GpuInventory": map[string]any{
+		"Exclusive": map[string]any{"5001": map[string]any{"4090": float64(0)}},
+		"Spot":      map[string]any{"10033": map[string]any{"4090": float64(0)}},
+	}}
+	snapshot := NewGPUInventorySnapshot(catalog, official, true, true, pod, true, true)
+
+	tests := []struct {
+		zone, gpu, pool string
+		supported       bool
+		known           bool
+	}{
+		{"cn-bj2-03", "4090", GPUInventoryPoolExclusive, true, true},
+		{"cn-bj2-03", "4090", GPUInventoryPoolSpot, false, true},
+		{"cn-wlcb-03", "4090", GPUInventoryPoolExclusive, false, true},
+		{"cn-wlcb-03", "4090", GPUInventoryPoolSpot, true, true},
+		{"cn-wlcb-01", "4090", GPUInventoryPoolExclusive, true, true},
+		{"cn-wlcb-01", "4090", GPUInventoryPoolSpot, true, true},
+		{"cn-wlcb-01", "A100", GPUInventoryPoolSpot, false, true},
+		{"cn-bj2-03", "missing", GPUInventoryPoolExclusive, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.zone+"/"+tt.gpu+"/"+tt.pool, func(t *testing.T) {
+			supported, known := snapshot.PoolSupported(tt.zone, tt.gpu, tt.pool)
+			assert.Equal(t, tt.supported, supported)
+			assert.Equal(t, tt.known, known)
+		})
+	}
+
+	result := snapshot.ToResultMap()
+	placement, ok := catalog.Placement("cn-wlcb-03")
+	require.True(t, ok)
+	supported, known := InventoryPoolSupportFromResult(result, placement, "4090", GPUInventoryPoolSpot)
+	assert.True(t, supported)
+	assert.True(t, known, "the workflow result must preserve the same support fact")
+}
+
+func TestGPUInventorySnapshotUnavailableSourceLeavesPoolSupportUnknown(t *testing.T) {
+	snapshot := NewGPUInventorySnapshot(inventoryTestZoneCatalog(), nil, true, false, nil, true, false)
+	supported, known := snapshot.PoolSupported("cn-bj2-03", "4090", GPUInventoryPoolExclusive)
+	assert.False(t, supported)
+	assert.False(t, known)
+}
