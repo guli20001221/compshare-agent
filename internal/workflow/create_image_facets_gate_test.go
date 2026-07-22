@@ -38,7 +38,7 @@ func facetGateImages() map[string]any {
 func TestImageFacetsGate_NoTagSelectedExcludesNothing(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
 	wfCtx.StepResults["查询镜像"] = facetGateImages()
-	_, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), "4090")
+	_, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), "4090", createImageTaxonomy(wfCtx))
 	assert.ElementsMatch(t, []string{"img-dl", "img-plain"}, facetGateOptionValues(opts),
 		"an unselected tag facet must never exclude an image, including the untagged one")
 }
@@ -62,7 +62,7 @@ func TestImageFacetsGate_TagFacetOmittedWhenCatalogHasNoTags(t *testing.T) {
 func TestImageFacetsGate_TagSelectedExcludesOnlyGenuineNonMembers(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageTag": "深度学习"})
 	wfCtx.StepResults["查询镜像"] = facetGateImages()
-	_, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), "4090")
+	_, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), "4090", createImageTaxonomy(wfCtx))
 	assert.Equal(t, []string{"img-dl"}, facetGateOptionValues(opts),
 		"only the image carrying the real tag survives; the untagged image is excluded because it genuinely lacks the tag")
 }

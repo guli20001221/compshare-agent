@@ -24,7 +24,7 @@ func TestGuidedImagePicker_VersionsOfOneFamilyAreDistinguishable(t *testing.T) {
 			map[string]any{"CompShareImageId": "compshareImage-v251130", "Name": "InfiniteTalk", "VersionName": "v25.1130"},
 		}},
 	}}
-	_, opts := guidedImageFormOptions(map[string]any{"ImageSource": "community"}, images, "")
+	_, opts := guidedImageFormOptions(map[string]any{"ImageSource": "community"}, images, "", nil)
 	require.Len(t, opts, 2, "both versions must be offered")
 
 	labels := map[string]string{} // label -> id
@@ -186,7 +186,7 @@ func TestGuidedImagePicker_MissingVersionDegradesToName(t *testing.T) {
 			map[string]any{"CompShareImageId": "compshareImage-solo", "Name": "LiveTalking"},
 		}},
 	}}
-	_, opts := guidedImageFormOptions(map[string]any{"ImageSource": "community"}, images, "")
+	_, opts := guidedImageFormOptions(map[string]any{"ImageSource": "community"}, images, "", nil)
 	require.Len(t, opts, 1)
 	assert.Equal(t, "LiveTalking", opts[0].Label)
 	assert.Equal(t, "compshareImage-solo", opts[0].Value)

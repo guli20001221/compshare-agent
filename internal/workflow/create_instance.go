@@ -330,6 +330,10 @@ func CreateInstanceGuidedDef() *Definition {
 			// otherwise the facets/picker steps below inherit an empty catalog and the
 			// flow dead-ends on a name the user never typed.
 			stepBrowseCommunityWhenNameMatchedNothing(),
+			// The platform's own category classification, fetched before the filter
+			// card so it can offer 用途 rather than the raw tag strings of whichever
+			// rows this page returned.
+			stepQueryImageTagCatalog(),
 			stepGuidedChooseImageFacets(),
 			stepGuidedChooseImage(),
 			stepGuidedChooseGPU(),
@@ -962,6 +966,39 @@ func stepGuidedChooseImageSource() Step {
 	}
 }
 
+const imageTaxonomyStepName = "查询镜像分类"
+
+// stepQueryImageTagCatalog fetches the platform's own image classification so the
+// filter card can offer 用途 categories instead of the raw tag strings that happen
+// to appear on this page of the catalog.
+//
+// Optional and parameterless. A missing classification must leave the card exactly
+// as it was — degrade to the flat tag facet — never gray out or hide an image,
+// because "we could not fetch the categories" says nothing about any image.
+//
+// Skipped once an image is already pinned: there is no browsing left to filter.
+func stepQueryImageTagCatalog() Step {
+	return Step{
+		Name:     imageTaxonomyStepName,
+		Type:     StepToolCall,
+		Tool:     "DescribeCompShareImageTags",
+		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return hasExplicitImageSelection(wfCtx.Params), nil
+		},
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			args := map[string]any{}
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
+			return args, nil
+		},
+	}
+}
+
+// createImageTaxonomy is the workflow's single view of the platform classification.
+func createImageTaxonomy(wfCtx *Context) *deployment.ImageTaxonomy {
+	return deployment.ParseImageTaxonomy(wfCtx.Result(imageTaxonomyStepName))
+}
+
 func stepGuidedChooseImageFacets() Step {
 	return Step{
 		Name:              "选择镜像筛选",
@@ -972,10 +1009,11 @@ func stepGuidedChooseImageFacets() Step {
 		ConfirmSubmitMode: ConfirmSubmitContinue,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			return map[string]any{
-				"workflow":  "CreateInstanceWorkflow",
-				"step":      guidedStepLabel(wfCtx, guidedStepImageFacets),
-				"ImageType": paramStr(wfCtx.Params, "ImageType", ""),
-				"ImageTag":  paramStr(wfCtx.Params, "ImageTag", ""),
+				"workflow":      "CreateInstanceWorkflow",
+				"step":          guidedStepLabel(wfCtx, guidedStepImageFacets),
+				"ImageType":     paramStr(wfCtx.Params, "ImageType", ""),
+				"ImageTag":      paramStr(wfCtx.Params, "ImageTag", ""),
+				"ImageCategory": paramStr(wfCtx.Params, "ImageCategory", ""),
 			}, nil
 		},
 	}
@@ -991,7 +1029,7 @@ func stepGuidedChooseImage() Step {
 		ConfirmSubmitMode: ConfirmSubmitContinue,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			gpuType := paramStr(wfCtx.Params, "GpuType", "")
-			current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType)
+			current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx))
 			if len(opts) == 0 {
 				return nil, fmt.Errorf("未找到可选社区镜像，请换一个镜像来源或稍后再试")
 			}
@@ -2015,10 +2053,25 @@ func createImageUnavailableError(params map[string]any) error {
 // ---------------------------------------------------------------------------
 
 const (
-	maxFormGPUOptions                 = 5
-	maxFormImageOptions               = 3
-	maxGuidedImageOptions             = 10
-	maxGuidedCommunityImageQueryLimit = 20
+	maxFormGPUOptions     = 5
+	maxFormImageOptions   = 3
+	maxGuidedImageOptions = 10
+	// maxGuidedCommunityImageQueryLimit sizes the community browse corpus.
+	//
+	// 20 groups could not populate a 用途 classification: measured live 2026-07-22 the
+	// community catalog holds TotalCount=821 groups, and one page of 100 already
+	// spans all 7 categories (219 version rows, 219 of them tagged, 37 distinct
+	// tags). Upstream tag filtering cannot narrow this for us — DescribeCommunityImages
+	// declares Tag []string but its task never parses the dotted Tag.N form the way
+	// DescribeAvailableCompShareInstanceTypes does for MachineTypes, so every Tag
+	// value (valid, category name, or garbage) returns the identical unfiltered
+	// result. Categorisation is therefore client-side over whatever this fetch
+	// returns, which is why the fetch has to be worth categorising.
+	//
+	// Rows are sorted by CreatedCount desc, so this is the 100 most-deployed image
+	// groups rather than an arbitrary page — and it costs no model tokens: workflow
+	// step results stay in wfCtx and only ResultData (UHostIds) leaves the workflow.
+	maxGuidedCommunityImageQueryLimit = 100
 	// maxPlatformImageQueryLimit asks for the whole platform catalog in one call.
 	//
 	// The previous value of 20 was not a page size the flow ever paged past: no
@@ -2145,7 +2198,7 @@ func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
 			Value: zone, Editable: true, Options: opts,
 		})
 	}
-	if cur, opts := imageFormOptions(wfCtx.Params, images, gpuType); cur != "" && len(opts) > 1 {
+	if cur, opts := imageFormOptions(wfCtx.Params, images, gpuType, createImageTaxonomy(wfCtx)); cur != "" && len(opts) > 1 {
 		fields = append(fields, ConfirmFormField{
 			Key: "ImageId", Label: "镜像", Type: "select",
 			Value: cur, Editable: true, Options: opts,
@@ -2345,7 +2398,9 @@ func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
 	// catalog (this run's 查询镜像, refreshed by the re-query) offers a real ImageType or
 	// ImageTag choice. An absent facet never filters, so skipping here excludes nothing.
 	snap := createImageCatalog(wfCtx)
-	return len(imageTypeFacetOptions(snap)) == 0 && len(imageTagFacetOptions(snap)) == 0, nil
+	return len(imageTypeFacetOptions(snap)) == 0 &&
+		len(imageTagFacetOptions(snap)) == 0 &&
+		len(imageCategoryFacetOptions(createImageTaxonomy(wfCtx), snap)) == 0, nil
 }
 
 func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
@@ -2643,6 +2698,45 @@ func imageTagFacetOptions(snap *deployment.ImageCatalogSnapshot) []ConfirmFormOp
 	return append([]ConfirmFormOption{{Value: "", Label: "不限标签"}}, opts...)
 }
 
+// imageCategoryFacetOptions offers the platform's 用途 categories, restricted to
+// the ones that actually contain an image in THIS catalog.
+//
+// It replaces the flat tag facet when it is available. The flat facet listed the
+// raw tag of every row on the page, so what the user could filter by depended on
+// which rows came back — and the labels were the tag strings themselves, including
+// the compound ones upstream stores. The categories are the platform's own, stable
+// across pages, and there are 7 of them rather than dozens.
+//
+// An empty category is never offered: a filter that can only produce an empty list
+// is worse than no filter. Fewer than two usable categories means there is no
+// choice to make, so the facet is omitted entirely rather than shown with one
+// option — the same rule imageTypeFacetOptions already follows.
+func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, snap *deployment.ImageCatalogSnapshot) []ConfirmFormOption {
+	if !taxonomy.Available() || snap == nil {
+		return nil
+	}
+	count := map[string]int{}
+	for _, e := range snap.Entries() {
+		for _, c := range taxonomy.CategoriesOf(e.Tags) {
+			count[c]++
+		}
+	}
+	var opts []ConfirmFormOption
+	for _, c := range taxonomy.Categories() {
+		n := count[c]
+		if n == 0 {
+			continue
+		}
+		opts = append(opts, ConfirmFormOption{
+			Value: c, Label: c, Note: fmt.Sprintf("%d 个镜像", n),
+		})
+	}
+	if len(opts) < 2 {
+		return nil
+	}
+	return append([]ConfirmFormOption{{Value: "", Label: "全部用途"}}, opts...)
+}
+
 func imageTypeFacetLabel(t string) string {
 	switch strings.ToLower(t) {
 	case "system":
@@ -2663,19 +2757,40 @@ func imageTypeFacetLabel(t string) string {
 // filter", NEVER "match nothing" — so an unset tag never excludes an image, and an
 // image with no Tags is dropped only when a tag WAS asked for (it genuinely lacks
 // it). Membership is exact against the real catalog Tags — no keyword table.
-func filterImagesByFacets(snap *deployment.ImageCatalogSnapshot, ranked []deployment.ImageSelection, params map[string]any) []deployment.ImageSelection {
+func filterImagesByFacets(snap *deployment.ImageCatalogSnapshot, ranked []deployment.ImageSelection, params map[string]any, taxonomy *deployment.ImageTaxonomy) []deployment.ImageSelection {
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
 	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
-	if wantType == "" && wantTag == "" {
+	wantCategory := strings.TrimSpace(paramStr(params, "ImageCategory", ""))
+	if wantType == "" && wantTag == "" && wantCategory == "" {
 		return ranked
 	}
 	out := make([]deployment.ImageSelection, 0, len(ranked))
 	for _, sel := range ranked {
-		if imageSelectionMatchesFacets(snap, sel.ID, wantType, wantTag) {
+		if imageSelectionMatchesFacets(snap, sel.ID, wantType, wantTag) &&
+			imageSelectionMatchesCategory(snap, taxonomy, sel.ID, wantCategory) {
 			out = append(out, sel)
 		}
 	}
 	return out
+}
+
+// imageSelectionMatchesCategory reports whether one image belongs to the selected
+// 用途 category. An unset category is no filter.
+//
+// A category the taxonomy cannot resolve (fetch failed, unknown name) also does
+// NOT filter: the alternative is excluding every image on the strength of a
+// classification we could not read, which turns a degraded read into an empty
+// picker. Absence of evidence is not evidence of a mismatch — the same rule the
+// tag facet follows for untagged images.
+func imageSelectionMatchesCategory(snap *deployment.ImageCatalogSnapshot, taxonomy *deployment.ImageTaxonomy, id, wantCategory string) bool {
+	if wantCategory == "" || !taxonomy.Available() {
+		return true
+	}
+	entry, ok := snap.ByID(id)
+	if !ok {
+		return false
+	}
+	return containsFold(taxonomy.CategoriesOf(entry.Tags), wantCategory)
 }
 
 // imageSelectionMatchesFacets reports whether one image id satisfies the explicitly
@@ -2720,11 +2835,33 @@ func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 			Value: paramStr(wfCtx.Params, "ImageType", ""), Editable: true, Options: opts,
 		})
 	}
-	if opts := imageTagFacetOptions(snap); len(opts) > 0 {
+	// 用途 supersedes the raw tag list when the platform's classification is
+	// available. They are the same axis at two resolutions, and offering both in
+	// one submit would let the user pick a contradictory pair (用途=LLM +
+	// 标签=数字人) that ANDs to an empty picker — this card submits once, so there
+	// is no re-render in which the tag options could narrow to the chosen 用途.
+	// The finer granularity is not lost: the next card lists the concrete images.
+	tagFacetLabel := "镜像标签"
+	tagFacetKey := "ImageTag"
+	categoryOpts := imageCategoryFacetOptions(createImageTaxonomy(wfCtx), snap)
+	if len(categoryOpts) > 0 {
 		fields = append(fields, ConfirmFormField{
-			Key: "ImageTag", Label: "镜像标签", Type: "select",
-			Value: paramStr(wfCtx.Params, "ImageTag", ""), Editable: true, Options: opts,
+			Key: "ImageCategory", Label: "用途", Type: "select",
+			Value: paramStr(wfCtx.Params, "ImageCategory", ""), Editable: true, Options: categoryOpts,
 		})
+		tagFacetKey = ""
+	}
+	if tagFacetKey != "" {
+		if opts := imageTagFacetOptions(snap); len(opts) > 0 {
+			fields = append(fields, ConfirmFormField{
+				Key: tagFacetKey, Label: tagFacetLabel, Type: "select",
+				Value: paramStr(wfCtx.Params, "ImageTag", ""), Editable: true, Options: opts,
+			})
+		}
+	}
+	description := "镜像类型和标签都来自所选来源的真实镜像目录。标签留空表示不按标签筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
+	if len(categoryOpts) > 0 {
+		description = "用途分类来自平台自己的镜像分类目录，每项后的数量是当前来源里真实匹配的镜像数。留空表示不按用途筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
 	}
 	return &ConfirmForm{
 		Version: 2,
@@ -2732,7 +2869,7 @@ func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 			Index:          index,
 			Total:          total,
 			Title:          guidedStepTitle(index, "请选择镜像筛选"),
-			Description:    "镜像类型和标签都来自所选来源的真实镜像目录。标签留空表示不按标签筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。",
+			Description:    description,
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
 			Skippable:      true,
@@ -2770,7 +2907,7 @@ func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
 
 func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
-	current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType)
+	current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx))
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("未找到可选社区镜像，请换一个镜像来源或稍后再试")
 	}
@@ -2805,7 +2942,7 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 
 	recommended := paramBool(wfCtx.Params, "GuidedRecommended", false)
 	var fields []ConfirmFormField
-	if cur, opts := guidedImageFormOptions(wfCtx.Params, images, gpuType); cur != "" && len(opts) > 0 {
+	if cur, opts := guidedImageFormOptions(wfCtx.Params, images, gpuType, createImageTaxonomy(wfCtx)); cur != "" && len(opts) > 0 {
 		if recommended {
 			markGuidedRecommendedOption(opts, cur)
 		}
@@ -2837,8 +2974,8 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 	return &ConfirmForm{
 		Version: 2,
 		Step: &ConfirmFormStep{
-			Index:          index,
-			Total:          total,
+			Index: index,
+			Total: total,
 			Title: guidedStepTitle(index, "确认镜像与计费"),
 			// The charge type is stated, not offered. It is settled before step one
 			// (see above) and there is no earlier card to point at, so saying "已在
@@ -2988,6 +3125,8 @@ func applyGuidedImageFacetsOverrides(wfCtx *Context, overrides map[string]string
 			wfCtx.Params["ImageType"] = strings.TrimSpace(v)
 		case "ImageTag":
 			wfCtx.Params["ImageTag"] = strings.TrimSpace(v)
+		case "ImageCategory":
+			wfCtx.Params["ImageCategory"] = strings.TrimSpace(v)
 		default:
 			return fmt.Errorf("不支持修改字段 %s", k)
 		}
@@ -3025,6 +3164,11 @@ func applyGuidedImageSourceOverrides(wfCtx *Context, overrides map[string]string
 	if sourceChanged {
 		delete(wfCtx.Params, "ImageType")
 		delete(wfCtx.Params, "ImageTag")
+		// The 用途 category is derived from the previous source's catalog too: the
+		// platform catalog barely intersects the classification (only ComfyUI of its
+		// tags is a taxonomy member) while community rows are fully classified, so a
+		// category carried across a source switch can silently match nothing.
+		delete(wfCtx.Params, "ImageCategory")
 		delete(wfCtx.Params, "CompShareImageId")
 		delete(wfCtx.Params, "ImageName")
 	}
@@ -3921,7 +4065,7 @@ func parseGuidedSpecKey(key string) (zone string, gpu, cpu, memoryMB float64, er
 	return zone, gpu, cpu, memoryMB, nil
 }
 
-func guidedImageFormOptions(params map[string]any, images map[string]any, gpuType string) (string, []ConfirmFormOption) {
+func guidedImageFormOptions(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy) (string, []ConfirmFormOption) {
 	if images == nil {
 		return "", nil
 	}
@@ -3934,7 +4078,7 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 	})
 	// Narrow by the optional ImageType / ImageTag facets. An unset facet is no filter
 	// (never excludes an image); a set tag is exact membership against real Tags.
-	ranked = filterImagesByFacets(snap, ranked, params)
+	ranked = filterImagesByFacets(snap, ranked, params, taxonomy)
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
 	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
 
@@ -4094,7 +4238,7 @@ func zoneDisplayLabel(wfCtx *Context, zone string) string {
 // maxFormImageOptions recommendations from the queried source (no cross-source
 // mixing), filtered to images that declare support for the current GPU type
 // (or declare no constraint). The current selection is always first.
-func imageFormOptions(params map[string]any, images map[string]any, gpuType string) (string, []ConfirmFormOption) {
+func imageFormOptions(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy) (string, []ConfirmFormOption) {
 	current := pickImageId(params, images)
 	if current == "" || images == nil {
 		return "", nil
@@ -4107,7 +4251,7 @@ func imageFormOptions(params map[string]any, images map[string]any, gpuType stri
 		Zone:         deployment.ZoneConstraint{Zone: paramStr(params, "Zone", ""), IsPod: zoneIsPod},
 	})
 	// Narrow by the optional ImageType / ImageTag facets (unset facet = no filter).
-	ranked = filterImagesByFacets(snap, ranked, params)
+	ranked = filterImagesByFacets(snap, ranked, params, taxonomy)
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
 	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
 

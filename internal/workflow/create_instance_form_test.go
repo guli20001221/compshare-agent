@@ -1347,7 +1347,7 @@ func TestGuidedImageFormOptionsShowsTopTenCommunityGroups(t *testing.T) {
 	params := map[string]any{"GpuType": "4090", "ImageSource": "community"}
 	images := formManyCommunityImagesFixture(12)
 
-	_, opts := guidedImageFormOptions(params, images, "4090")
+	_, opts := guidedImageFormOptions(params, images, "4090", nil)
 
 	require.Len(t, opts, 10)
 	assert.Equal(t, "cimg-hot-01", opts[0].Value)
