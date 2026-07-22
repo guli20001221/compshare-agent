@@ -404,7 +404,7 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			// Image SOURCE leads: source-only facet, defaults platform, never the
 			// deleted ImagePurpose field. The type/tag facets step is skipped here
 			// because this fixture's images declare no distinct ImageType/Tags.
-			assert.Equal(t, 6, form.Step.Total)
+			assert.Equal(t, 7, form.Step.Total)
 			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
 			assert.Equal(t, "跳过", form.Step.SecondaryLabel)
 			assert.True(t, form.Step.Skippable)
@@ -415,6 +415,14 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.Nil(t, form.Field("ImageType"), "source step is source-only; type/tag is the next step")
 			return ConfirmResolution{Confirmed: true}
 		case 2:
+			// Charge type is asked HERE, between the image and the GPU: everything
+			// after it is pool-scoped, and this is the earliest point where the
+			// catalog exists so guidedStepPosition can count the later cards.
+			charge := fieldByKey(t, form, "ChargeType")
+			assert.Equal(t, []string{"Postpay", "Spot", "Day", "Month"}, optionValues(charge))
+			assert.Equal(t, "Postpay", charge.Value)
+			return ConfirmResolution{Confirmed: true}
+		case 3:
 			gpu := fieldByKey(t, form, "GpuType")
 			assert.Equal(t, "cards", gpu.Render)
 			assert.Equal(t, []string{"4090", "4090_48G", "A800", "P40"}, optionValues(gpu))
@@ -422,22 +430,22 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.False(t, gpu.Options[0].Disabled)
 			assert.True(t, gpu.Options[3].Disabled)
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"GpuType": "A800"}}
-		case 3:
+		case 4:
 			zone := fieldByKey(t, form, "Zone")
 			assert.Equal(t, "cards", zone.Render)
 			assert.Equal(t, []string{"cn-wlcb-01"}, optionValues(zone))
 			return ConfirmResolution{Confirmed: true}
-		case 4:
+		case 5:
 			gpuCount := fieldByKey(t, form, "Gpu")
 			assert.Equal(t, "cards", gpuCount.Render)
 			assert.Equal(t, []string{"1"}, optionValues(gpuCount))
 			return ConfirmResolution{Confirmed: true}
-		case 5:
+		case 6:
 			spec := fieldByKey(t, form, "CpuMemory")
 			assert.Equal(t, "cards", spec.Render)
 			assert.Contains(t, optionValues(spec), "cn-wlcb-01|1|32|131072")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"CpuMemory": "cn-wlcb-01|1|32|131072"}}
-		case 6:
+		case 7:
 			assert.Equal(t, "A800", args["GpuType"])
 			assert.Equal(t, float64(1), args["Gpu"])
 			assert.Equal(t, float64(32), args["CPU"])
@@ -455,7 +463,7 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
-	assert.Equal(t, []int{1, 2, 3, 4, 5, 6}, seenSteps)
+	assert.Equal(t, []int{1, 2, 3, 4, 5, 6, 7}, seenSteps)
 
 	var capacityCalls, priceCalls int
 	var created map[string]any
@@ -592,9 +600,13 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
-		if form.Field("GpuType") != nil {
-			gpuForm = form
+		// Capture and stop at the GPU card; walk past anything before it. Declining
+		// unconditionally used to work only because the GPU card happened to come
+		// first — this test is about the GPU card appearing at all, not about where.
+		if form.Field("GpuType") == nil {
+			return ConfirmResolution{Confirmed: true}
 		}
+		gpuForm = form
 		return ConfirmResolution{Confirmed: false}
 	})
 
@@ -838,10 +850,11 @@ func TestCreateInstanceGuided_ExplicitGPUStaysExact(t *testing.T) {
 	form, err := buildGuidedGPUForm(wfCtx)
 	require.NoError(t, err)
 	require.NotNil(t, form.Step)
-	// GPU is the 2nd visible step now that the image SOURCE step leads (image-first
-	// reorder); no image is pinned here so the source step is not skipped.
-	assert.Equal(t, 2, form.Step.Index)
-	assert.Equal(t, 6, form.Step.Total)
+	// GPU is the 3rd visible step: image SOURCE leads, then the charge type (which
+	// scopes the pool this card gates on). No image is pinned here so the source
+	// step is not skipped, and no ChargeType is given so its card shows.
+	assert.Equal(t, 3, form.Step.Index)
+	assert.Equal(t, 7, form.Step.Total)
 	gpu := fieldByKey(t, form, "GpuType")
 	assert.Equal(t, []string{"4090"}, optionValues(gpu))
 }
@@ -1216,18 +1229,18 @@ func TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalo
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
-		// Image-first reorder: source is step 1; the four spec steps are 2-5; the
-		// final image picker is step 6.
+		// Image-first reorder: source is step 1, charge type is step 2, the four
+		// spec steps are 3-6, and the final image picker is step 7.
 		switch form.Step.Index {
 		case 1:
 			source := fieldByKey(t, form, "ImageSource")
 			assert.Equal(t, "community", source.Value, "initial source is community")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "platform"}}
-		case 2, 3, 4, 5:
+		case 2, 3, 4, 5, 6:
 			return ConfirmResolution{Confirmed: true}
-		case 6:
-			// Facets skipped (fixtures declare no types/tags) → step 6 is the platform
-			// image picker in the final form.
+		case 7:
+			// Facets skipped (fixtures declare no types/tags) → the last step is the
+			// platform image picker in the final form.
 			image := fieldByKey(t, form, "ImageId")
 			finalImageOptions = optionValues(image)
 			return ConfirmResolution{Confirmed: false}
@@ -1588,9 +1601,9 @@ func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
 		switch form.Step.Index {
-		case 1, 2, 3, 4, 5:
+		case 1, 2, 3, 4, 5, 6:
 			return ConfirmResolution{Confirmed: true}
-		case 6:
+		case 7:
 			finalRounds++
 			if finalRounds == 1 {
 				return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": "img-002"}}

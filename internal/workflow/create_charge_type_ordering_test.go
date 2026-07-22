@@ -7,29 +7,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestChargeTypeIsSettledBeforeAnyAvailabilityQuery is the ordering invariant the
-// Spot failure came down to.
+// TestChargeTypeIsSettledBeforeEveryPoolScopedStep is the ordering invariant the
+// Spot failure came down to, stated against what is ACTUALLY pool-scoped.
 //
-// Availability is per resource pool: guidedInventoryFrom reads the Spot pool
-// instead of Exclusive, the purchase-mode gate asks about one pool, and every
-// capacity call carries the charge type. (The catalog query is NOT pool-scoped —
-// see stepQueryInstanceTypes for the measurement that ruled that out — but the
-// rest still is.) All of it is decided by params before step one. If a step were
-// ever inserted that
-// ASKS for the charge type, it would have to sit before these queries, and the
-// answers they produced for the cards would describe a pool the user had not
-// chosen yet.
-func TestChargeTypeIsSettledBeforeAnyAvailabilityQuery(t *testing.T) {
+// It used to read "before any availability query" — two steps too strict, and
+// that strictness is what kept the charge type off a card for so long.
+// Measurement moved the line twice: the catalog query is not pool-scoped
+// (InstanceType=spot returns an empty catalog, so it is no longer sent) and the
+// inventory snapshot is not either (it carries BOTH pools and is fetched with no
+// charge type). What IS pool-scoped starts at the GPU card.
+//
+// Any card offering an editable ChargeType must precede every step that consumes
+// the pool. Placing one after them is the original bug: every card the user had
+// already accepted would describe the other pool, and only 检查库存 would
+// re-check — surfacing as a bare 库存不足 on a spec the cards showed as available.
+func TestChargeTypeIsSettledBeforeEveryPoolScopedStep(t *testing.T) {
 	steps := CreateInstanceGuidedDef().Steps
-	firstAvailabilityQuery := -1
+	// Named, not derived: adding a pool-scoped step means adding it here, and this
+	// list is exactly the prompt to think about where the new step goes.
+	poolScoped := map[string]bool{
+		"选择 GPU": true, zoneCapacityStepName: true, "选择可用区": true, "查询容量规格": true,
+	}
+	firstPoolScoped := -1
 	for i, s := range steps {
-		if s.Name == "查询可用配比" || s.Name == "查询GPU库存" {
-			firstAvailabilityQuery = i
+		if poolScoped[s.Name] {
+			firstPoolScoped = i
 			break
 		}
 	}
-	require.NotEqual(t, -1, firstAvailabilityQuery, "the guided flow must query availability")
+	require.NotEqual(t, -1, firstPoolScoped, "the guided flow must have a pool-scoped step")
 
+	editable := -1
 	for i, s := range steps {
 		if s.Type != StepConfirm || s.BuildForm == nil {
 			continue
@@ -39,12 +47,17 @@ func TestChargeTypeIsSettledBeforeAnyAvailabilityQuery(t *testing.T) {
 			continue // a card that cannot build here says nothing about ordering
 		}
 		if f := form.Field("ChargeType"); f != nil && f.Editable {
-			assert.Less(t, i, firstAvailabilityQuery,
-				"card %q lets the user change ChargeType at step %d, but availability was "+
-					"already queried at step %d for a different charge type",
-				s.Name, i, firstAvailabilityQuery)
+			assert.Less(t, i, firstPoolScoped,
+				"card %q lets the user change ChargeType at step %d, but the pool is first "+
+					"consumed at step %d", s.Name, i, firstPoolScoped)
+			if editable == -1 {
+				editable = i
+			}
 		}
 	}
+	assert.NotEqual(t, -1, editable,
+		"the charge type must be askable on a card; leaving it to the create args alone was a "+
+			"workaround for an ordering constraint that measurement has since removed")
 }
 
 // TestGuidedFinalCardDoesNotOfferChargeTypeEdit pins the specific hole. The final

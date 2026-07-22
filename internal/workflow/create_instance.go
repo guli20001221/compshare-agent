@@ -23,6 +23,18 @@ const (
 	guidedStepImageSource = iota + 1
 	guidedStepImageFacets
 	guidedStepImage
+	// Charge type sits between the image and the GPU because that is the only
+	// window where it is both askable and still early enough. Everything from the
+	// GPU card on is pool-scoped (the GPU and zone cards gate on purchase mode,
+	// the zone capacity probe and the spec check send ChargeType), so it must
+	// precede them. It could not be asked EARLIER than 查询可用配比 — guidedStepPosition
+	// decides which later cards are skippable by reading that catalog, so a card
+	// before it reports a step count computed as if nothing downstream is skipped.
+	// The window exists at all only because two things turned out not to be
+	// charge-scoped after measurement: the catalog query itself (InstanceType=spot
+	// returns an empty catalog — see stepQueryInstanceTypes) and the inventory
+	// snapshot (it carries BOTH pools, so it is fetched without a charge type).
+	guidedStepChargeType
 	guidedStepGPU
 	guidedStepZone
 	guidedStepGPUCount
@@ -359,6 +371,7 @@ func CreateInstanceGuidedDef() *Definition {
 			stepQueryImageTagCatalog(),
 			stepGuidedChooseImageFacets(),
 			stepGuidedChooseImage(),
+			stepGuidedChooseChargeType(),
 			stepGuidedChooseGPU(),
 			// One capacity call per candidate zone, while image+GPU are settled and
 			// the zone is not: this is the only point in the flow where a zone the
@@ -2286,16 +2299,52 @@ func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 // An unresolvable placement or an unanswered backend is not evidence: the option
 // stays enabled and validateCreatePlacement remains the authoritative refusal.
 func poolUnsupportedInZone(wfCtx *Context, zone, gpuType string) (bool, string) {
+	return poolUnsupportedInZoneForPool(wfCtx, zone, gpuType, createInventoryPool(createChargeType(wfCtx.Params)))
+}
+
+func poolUnsupportedInZoneForPool(wfCtx *Context, zone, gpuType, pool string) (bool, string) {
 	placement, err := workflowZonePlacement(wfCtx, zone)
 	if err != nil {
 		return false, ""
 	}
-	pool := createInventoryPool(createChargeType(wfCtx.Params))
 	supported, known := createInventoryPoolSupportFor(wfCtx, placement, gpuType, pool)
 	if !known || supported {
 		return false, ""
 	}
 	return true, "该可用区不支持" + createInventoryPoolLabel(pool) + "购买方式"
+}
+
+// chargeTypeUnsupportedInCatalog asks the widest version of the same question,
+// for the card that runs before any GPU is chosen: is there NO model/zone pair
+// in the whole catalog that sells this purchase mode?
+//
+// It has to be that weak. The charge type is a user preference, not a capability
+// answer, and the narrowing happens on the two cards after it — which now read
+// the chosen mode. Disabling here on anything less than "nowhere at all" would
+// remove a mode some later combination could still buy.
+func chargeTypeUnsupportedInCatalog(wfCtx *Context, chargeType string) bool {
+	rows, _ := wfCtx.Result("查询可用配比")["AvailableInstanceTypes"].([]any)
+	if len(rows) == 0 {
+		return false
+	}
+	pool := createInventoryPool(chargeType)
+	sawOne := false
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		name, _ := row["Name"].(string)
+		zone, _ := row["Zone"].(string)
+		if name == "" || zone == "" {
+			continue
+		}
+		if status, _ := row["Status"].(string); status != "" && !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		sawOne = true
+		if unsupported, _ := poolUnsupportedInZoneForPool(wfCtx, zone, name, pool); !unsupported {
+			return false
+		}
+	}
+	return sawOne
 }
 
 // poolUnsupportedEverywhere reports whether the current charge type's pool is
@@ -2460,6 +2509,8 @@ func guidedStepSkipped(wfCtx *Context, logical int) bool {
 		skip, err = shouldSkipGuidedImageFacetsStep(wfCtx)
 	case guidedStepImage:
 		skip, err = shouldSkipGuidedImageStep(wfCtx)
+	case guidedStepChargeType:
+		skip, err = shouldSkipGuidedChargeTypeStep(wfCtx)
 	case guidedStepFinal:
 		return false
 	default:
@@ -2647,6 +2698,117 @@ func containsString(list []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// guidedChargeTypeOptions is the charge-type card's option list. Unlike the
+// plain card's createChargeTypeOptions it cannot name a zone — none is chosen
+// yet — so it disables a mode only when nothing in the catalog sells it.
+func guidedChargeTypeOptions(wfCtx *Context) []ConfirmFormOption {
+	opts := make([]ConfirmFormOption, len(createFormChargeTypes))
+	copy(opts, createFormChargeTypes)
+	for i := range opts {
+		if chargeTypeUnsupportedInCatalog(wfCtx, opts[i].Value) {
+			opts[i].Disabled = true
+			opts[i].Reason = "当前没有任何机型和可用区支持" + createInventoryPoolLabel(createInventoryPool(opts[i].Value)) + "购买方式"
+			opts[i].Note = opts[i].Reason
+		}
+	}
+	return opts
+}
+
+func shouldSkipGuidedChargeTypeStep(wfCtx *Context) (bool, error) {
+	// The user already said it ("用抢占式创建一台…"), so asking again is asking them to
+	// repeat themselves. Same rule the GPU and zone cards use for an explicit value.
+	if initialParamSet(wfCtx, "ChargeType") {
+		return true, nil
+	}
+	// Nothing to choose between: one selectable mode is an answer, not a question.
+	selectable := 0
+	for _, opt := range guidedChargeTypeOptions(wfCtx) {
+		if !opt.Disabled {
+			selectable++
+		}
+	}
+	if selectable <= 1 {
+		return true, nil
+	}
+	// Don't turn a card-free flow into a one-card flow. A request that pinned
+	// everything else goes straight to the confirmation today; adding a question
+	// there would interrogate the one user who asked for nothing. The charge type
+	// keeps its default and the final card states it.
+	return guidedChargeTypeIsTheOnlyCard(wfCtx), nil
+}
+
+func guidedChargeTypeIsTheOnlyCard(wfCtx *Context) bool {
+	for step := guidedStepFirst; step < guidedStepFinal; step++ {
+		if step == guidedStepChargeType {
+			continue
+		}
+		if !guidedStepSkipped(wfCtx, step) {
+			return false
+		}
+	}
+	return true
+}
+
+func buildGuidedChargeTypeForm(wfCtx *Context) (*ConfirmForm, error) {
+	opts := guidedChargeTypeOptions(wfCtx)
+	current := createChargeType(wfCtx.Params)
+	if !enabledOptionExists(opts, current) {
+		current = firstEnabledValue(opts)
+	}
+	if current == "" {
+		return nil, fmt.Errorf("暂无可用的计费方式")
+	}
+	index, total := guidedStepPosition(wfCtx, guidedStepChargeType)
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index: index,
+			Total: total,
+			Title: guidedStepTitle(index, "请选择计费方式"),
+			// Say what changes downstream, because it genuinely does: the GPU and
+			// zone cards after this one are filtered by the mode chosen here.
+			Description: "计费方式决定后面能选哪些 GPU 和可用区：抢占式更便宜但可能被回收，且部分卡型和可用区只卖其中一种。按量付费适合先试跑，包日 / 包月适合长期占用。",
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "跳过",
+			Skippable:      true,
+		},
+		Fields: []ConfirmFormField{{
+			Key: "ChargeType", Label: "计费方式", Type: "select",
+			Value: current, Render: "cards", Editable: true, Options: opts,
+		}},
+	}, nil
+}
+
+func applyGuidedChargeTypeOverrides(wfCtx *Context, overrides map[string]string) error {
+	value, ok := overrides["ChargeType"]
+	if !ok {
+		return nil
+	}
+	if !enabledOptionExists(guidedChargeTypeOptions(wfCtx), value) {
+		return fmt.Errorf("暂不支持该计费方式")
+	}
+	wfCtx.Params["ChargeType"] = deployment.NormalizeChargeType(value)
+	return nil
+}
+
+func stepGuidedChooseChargeType() Step {
+	return Step{
+		Name:              "选择计费方式",
+		Type:              StepConfirm,
+		SkipIf:            shouldSkipGuidedChargeTypeStep,
+		BuildForm:         buildGuidedChargeTypeForm,
+		ApplyOverrides:    applyGuidedChargeTypeOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return map[string]any{
+				"workflow":   "CreateInstanceWorkflow",
+				"step":       guidedStepLabel(wfCtx, guidedStepChargeType),
+				"ChargeType": createChargeType(wfCtx.Params),
+			}, nil
+		},
+	}
 }
 
 func buildGuidedGPUForm(wfCtx *Context) (*ConfirmForm, error) {
@@ -3177,34 +3339,35 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 
 	recommended := paramBool(wfCtx.Params, "GuidedRecommended", false)
 	var fields []ConfirmFormField
+	// The image is EDITABLE here only when no earlier card asked for it. The
+	// platform path skips the dedicated image step by design (see
+	// shouldSkipGuidedImageStep — the concrete image step is the community
+	// picker), so for platform this is the only selector and must stay editable.
+	// The community path already picked a concrete version, and re-opening the
+	// same choice on the confirm card asked the same question twice.
 	if cur, opts := guidedImageFormOptions(wfCtx.Params, images, gpuType, createImageTaxonomy(wfCtx)); cur != "" && len(opts) > 0 {
-		if recommended {
-			markGuidedRecommendedOption(opts, cur)
+		if alreadyChosen := guidedStepReached(wfCtx, guidedStepImage); alreadyChosen {
+			fields = append(fields, ConfirmFormField{
+				Key: "ImageId", Label: "镜像", Type: "select", Value: cur, Editable: false,
+			})
+		} else {
+			if recommended {
+				markGuidedRecommendedOption(opts, cur)
+			}
+			fields = append(fields, ConfirmFormField{
+				Key: "ImageId", Label: "镜像", Type: "select",
+				Value: cur, Render: "cards", Editable: true, Options: opts,
+			})
 		}
-		fields = append(fields, ConfirmFormField{
-			Key: "ImageId", Label: "镜像", Type: "select",
-			Value: cur, Render: "cards", Editable: true, Options: opts,
-		})
 	}
-	// ChargeType is NOT editable here, and it is not a guided card either. Both
-	// halves of that are forced.
-	//
-	// Editable here was the hole: this card's edit re-runs only from 形成执行草稿,
-	// while the availability catalog, the GPU inventory pool, the per-zone capacity
-	// probe and the spec capacity check are ALL charge-type-scoped and had already
-	// run. Switching to Spot at the end therefore left every card the user had
-	// accepted describing the on-demand pool, and only 检查库存 re-checked — which is
-	// why a Spot create surfaced as a plain 库存不足 on a spec the cards had shown as
-	// available.
-	//
-	// A guided card would not fix it either: guidedStepPosition decides which later
-	// cards are skippable by reading 查询可用配比, so any card placed BEFORE that
-	// query reports a step count computed as if nothing downstream will be skipped
-	// (measured: "第1步，共5步" for a flow with two cards). The charge type has to be
-	// settled before the queries, and a card cannot be. It arrives in the create
-	// args instead — the model fills it from the user's own words ("用抢占式…") — so
-	// it is fixed before step one. The Summary still displays it; changing it means
-	// asking again, which re-runs the whole flow under the right pool.
+	// ChargeType is stated, not offered, on THIS card: its edit re-runs only from
+	// 形成执行草稿, while the GPU card, the zone card, the per-zone capacity probe
+	// and the spec capacity check are all pool-scoped and have already run.
+	// Switching to Spot at the end left every card the user had accepted
+	// describing the on-demand pool, and only 检查库存 re-checked — which is why a
+	// Spot create surfaced as a plain 库存不足 on a spec the cards had shown as
+	// available. It is asked earlier instead, on its own card
+	// (guidedStepChargeType), where changing it still re-runs everything it scopes.
 	index, total := guidedStepPosition(wfCtx, guidedStepFinal)
 	return &ConfirmForm{
 		Version: 2,
