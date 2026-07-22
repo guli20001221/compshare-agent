@@ -385,7 +385,7 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 				return map[string]any{"FuzzySearch": name}, nil
 			}
 			args := map[string]any{
-				"Limit": 20,
+				"Limit": maxPlatformImageQueryLimit,
 			}
 			if id := paramStr(wfCtx.Params, "CompShareImageId", ""); id != "" {
 				args["CompShareImageId"] = id
@@ -435,7 +435,7 @@ func stepReQuerySelectedSourceImages() Step {
 			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
 				return communityImageBrowseArgs(paramStr(wfCtx.Params, "ImageName", "")), nil
 			}
-			args := map[string]any{"Limit": 20}
+			args := map[string]any{"Limit": maxPlatformImageQueryLimit}
 			if name := paramStr(wfCtx.Params, "ImageName", ""); name != "" {
 				args["Name"] = name
 			}
@@ -2019,6 +2019,24 @@ const (
 	maxFormImageOptions               = 3
 	maxGuidedImageOptions             = 10
 	maxGuidedCommunityImageQueryLimit = 20
+	// maxPlatformImageQueryLimit asks for the whole platform catalog in one call.
+	//
+	// The previous value of 20 was not a page size the flow ever paged past: no
+	// Offset is sent, so whatever the first response held WAS the catalog for every
+	// downstream consumer — the facet options, the picker and the final card.
+	//
+	// Measured live 2026-07-22 (TotalCount=72 throughout):
+	//
+	//	Limit absent / 20   rows=40  rows carrying tags=7
+	//	Limit=100           rows=72  rows carrying tags=36
+	//	Limit=200           upstream RetCode=230 "Params [Limit] not available"
+	//
+	// So 20 hid 44% of the catalog and 80% of the tagged rows, which is why the
+	// tag facet looked nearly empty. 100 is also the practical ceiling — 200 is
+	// refused — so do NOT raise this further without re-probing. Should the catalog
+	// ever exceed 100, TotalCount in the response is the signal that the list is
+	// truncated; today 72 < 100 so it is complete.
+	maxPlatformImageQueryLimit = 100
 )
 
 // createFormChargeTypes are the selectable billing modes. Postpay is the

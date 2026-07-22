@@ -307,7 +307,7 @@ func imageEntryFromMap(img map[string]any, source string) (ImageCatalogEntry, bo
 		Status:            asString(img, "Status"),
 		Container:         parseContainerFlag(img["Container"]) || asBool(img, "IsContainer"),
 		SupportedGPUTypes: asStringSlice(img["SupportedGpuTypes"]),
-		Tags:              asStringSlice(img["Tags"]),
+		Tags:              normalizeImageTags(asStringSlice(img["Tags"])),
 		Description:       asString(img, "Description"),
 		SizeMB:            asFloat(img, "Size", "ActualSize", "ImageSize"),
 		CreateTime:        asInt64(img, "CreateTime"),
@@ -325,6 +325,50 @@ func imageEntryFromMap(img map[string]any, source string) (ImageCatalogEntry, bo
 		}
 	}
 	return e, true
+}
+
+// normalizeImageTags splits the compound tag strings upstream actually stores, so
+// every consumer sees one concept per tag.
+//
+// Measured live 2026-07-22 against the platform catalog: rows carry tags like
+// "pytorch，Pytorch" (17 rows), "comfyUI，ComfyUI" (8), "miniconda，Miniconda3" (5)
+// — two spellings of ONE tag joined by a full-width comma INSIDE a single tag
+// string. Left raw they do two kinds of damage: the facet card renders the literal
+// string as an option label, and an exact membership filter on "ComfyUI" fails to
+// match the very images that carry it.
+//
+// This is a split, never a rename: no tag text is invented, translated or mapped
+// through a keyword table. Spellings that differ only by case collapse (first one
+// wins) because the facet builder's own dedup is already case-insensitive, so a
+// second spelling could never have produced a distinct option anyway.
+//
+// Returns nil for an empty result, preserving the Tags contract: nil means "we
+// don't know this image's tags", never "matches no tag".
+func normalizeImageTags(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	splitTag := func(r rune) bool { return r == '，' || r == ',' }
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, t := range raw {
+		for _, part := range strings.FieldsFunc(t, splitTag) {
+			p := strings.TrimSpace(part)
+			if p == "" {
+				continue
+			}
+			k := strings.ToLower(p)
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // parseContainerFlag reads the upstream Container field, which is the string
