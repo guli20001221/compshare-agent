@@ -3,10 +3,18 @@ package workflow
 import "fmt"
 
 // MaxBatchCalls bounds one batch step's upstream fan-out. It is a guard against a
-// candidate list that grew unexpectedly (a new region, a catalog change), not a
-// tuning knob: today's largest real fan-out is the four zones a single GPU model
-// is offered in. Calls past the bound are recorded as unknown, never dropped.
-const MaxBatchCalls = 12
+// candidate list that grew unexpectedly (a runaway or a cross-product bug), not a
+// tuning knob. Its real consumer is the capacity probe (stepProbeZoneCapacity),
+// whose fan-out is one call per offered (model, zone) row of the catalog so both
+// hardware cards can be gated on real creatability — ~19 rows against the live
+// catalog today, not the four zones of a single model an earlier version of this
+// comment assumed. The bound MUST stay above that real fan-out: a bound below it
+// drops the tail, and a dropped capacity probe reads downstream as "unknown =
+// selectable" — which is how a sold-out model at the end of the list gets offered
+// as clickable (see TestGPUCardGraysASoldOutModelPastTheCapacityProbeFanOut). 40
+// leaves headroom for new regions while still catching a true explosion. Calls
+// past the bound are recorded as explicit unknowns, never silently dropped.
+const MaxBatchCalls = 40
 
 // batchResultsKey is where a batch step's collected outcomes live inside its
 // StepResults entry. It is deliberately not a bare list at the top level: the
