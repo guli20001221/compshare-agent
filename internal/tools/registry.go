@@ -518,13 +518,10 @@ var Registry = []openai.Tool{
 						"type":        "number",
 						"description": "内存大小，单位 MB（可选）。不指定时使用平台默认值。如 64GB = 65536。需与 Cpu 一起构成合法配比。",
 					},
-					// Name is deliberately NOT exposed to the model. The create form
-					// collects no instance name (see create_instance.go GuidedIntakeFields),
-					// so a model-invented Name that fails its codec would block the card with
-					// no way to correct it. The workflow still accepts a Name param
-					// internally (create_draft.go / create_instance.go read it, defaulting to
-					// empty → server-assigned); if custom naming becomes a product need, add
-					// Name back here AND as a real guided-form field, not as a free model slot.
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "实例名称（可选）。只在用户明确指定名称时填写并保持原文；未指定则省略，由平台生成。",
+					},
 					"ImageSource": map[string]any{
 						"type":        "string",
 						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）",

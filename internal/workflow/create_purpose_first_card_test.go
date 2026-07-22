@@ -47,8 +47,8 @@ func TestTheFirstCardAsksWhatTheUserWantsToDo(t *testing.T) {
 	}
 	require.Len(t, byValue, 2)
 
-	assert.Equal(t, "自己搭环境", byValue["platform"].Label)
-	assert.Equal(t, "跑现成的应用 / 模型", byValue["community"].Label)
+	assert.Equal(t, "平台镜像", byValue["platform"].Label)
+	assert.Equal(t, "社区镜像", byValue["community"].Label)
 	for _, v := range []string{"platform", "community"} {
 		assert.NotEmpty(t, byValue[v].Note,
 			"%s must still say which catalog it reads, so the reframe informs rather than hides", v)

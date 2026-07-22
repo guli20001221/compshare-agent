@@ -40,7 +40,7 @@ func TestChargeTypeCardIsNotAskedWhenThereIsNothingToAsk(t *testing.T) {
 	fullySpecified := formWfCtx(t, map[string]any{
 		"GpuType": "A800", "GuidedGpuLocked": true, "Zone": "cn-wlcb-01",
 		"Gpu": float64(1), "Cpu": float64(32), "Memory": float64(131072),
-		"GuidedRecommended": true, "ImageName": "PyTorch",
+		"GuidedRecommended": true, "CompShareImageId": "img-002", "ImageName": "PyTorch 2.4",
 	})
 	skip, err = shouldSkipGuidedChargeTypeStep(fullySpecified)
 	require.NoError(t, err)
@@ -52,7 +52,7 @@ func TestChargeTypeCardIsNotAskedWhenThereIsNothingToAsk(t *testing.T) {
 // platform path has no such card by design (shouldSkipGuidedImageStep: the
 // concrete image step IS the community picker), so there the final card is the
 // only selector and must stay editable.
-func TestFinalCardReopensTheImageOnlyWhenNoEarlierCardAskedForIt(t *testing.T) {
+func TestFinalCardNeverReopensTheResolvedImage(t *testing.T) {
 	params := map[string]any{
 		"GpuType": "4090", "Zone": "cn-wlcb-01", "Gpu": float64(1),
 		"Cpu": float64(16), "Memory": float64(65536),
@@ -62,9 +62,9 @@ func TestFinalCardReopensTheImageOnlyWhenNoEarlierCardAskedForIt(t *testing.T) {
 	form, err := buildGuidedFinalForm(platform)
 	require.NoError(t, err)
 	image := form.Field("ImageId")
-	require.NotNil(t, image, "the platform path has no earlier image card, so this is the selector")
-	assert.True(t, image.Editable)
-	assert.NotEmpty(t, image.Options)
+	require.NotNil(t, image)
+	assert.False(t, image.Editable)
+	assert.Empty(t, image.Options)
 
 	picked := formWfCtx(t, params)
 	markGuidedStepReached(picked, guidedStepImage)
@@ -72,6 +72,6 @@ func TestFinalCardReopensTheImageOnlyWhenNoEarlierCardAskedForIt(t *testing.T) {
 	require.NoError(t, err)
 	image = form.Field("ImageId")
 	require.NotNil(t, image, "the chosen image is still shown — just not re-asked")
-	assert.False(t, image.Editable, "an image card already ran; re-opening it asks twice")
+	assert.False(t, image.Editable, "the final card is confirmation-only")
 	assert.Empty(t, image.Options, "a stated value carries no option list")
 }

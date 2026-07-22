@@ -471,7 +471,7 @@ type ConfirmForm struct {
 // v1 forms and legacy clients keep the same JSON shape.
 type ConfirmFormStep struct {
 	Index          int    `json:"Index"`
-	Total          int    `json:"Total"`
+	Total          int    `json:"Total"` // 0 means unknown for a conditional wizard; clients show only Index.
 	Title          string `json:"Title,omitempty"`
 	Description    string `json:"Description,omitempty"`
 	PrimaryLabel   string `json:"PrimaryLabel,omitempty"`

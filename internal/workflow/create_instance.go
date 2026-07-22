@@ -275,8 +275,12 @@ func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64,
 	return candidates
 }
 
-// CreateInstanceDef returns the 8-step workflow definition for creating a
-// CompShare GPU instance.
+// CreateInstanceDef returns the plain workflow definition for creating a
+// CompShare GPU instance. Its exact step count is deliberately not part of the
+// contract; the important boundary is resolve -> validate -> confirm -> execute.
+// The create API is the final inventory authority; a second capacity preview
+// after confirmation would add latency and could reject a valid create on a
+// non-authoritative false negative.
 //
 // 形成执行草稿 sits between the queries and 检查库存 because everything after it
 // must describe ONE resolution: stock is checked for the draft, price is quoted
@@ -318,9 +322,9 @@ func CreateInstanceDef() *Definition {
 		// this to expose IntakeGuided instead of the engine switching on the name.
 		GuidedIntake: true,
 		// The exact fields the guided form collects/corrects (GPU / zone / count /
-		// CPU-memory / image source+selection / charge type). Deliberately excludes
-		// Name — the form has no instance-name input, so a bad Name must NOT open
-		// the form. Drives the resolver's form-correctable classification.
+		// CPU-memory / image source+selection / charge type). Name is accepted from
+		// an explicit user proposal and sealed below, but remains optional rather
+		// than turning the guided flow into an extra question for most users.
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
 	}
 }
@@ -336,12 +340,9 @@ func CreateInstanceGuidedDef() *Definition {
 		Name: "CreateInstanceWorkflow",
 		Steps: []Step{
 			stepQueryImages(true),
-			// The catalog query is NOT charge-type scoped — see stepQueryInstanceTypes
-			// for the measurement that killed that idea. Charge type still has to be
-			// settled before this point because every capacity call after it is
-			// scoped, and because the pool-support gate reads it. It is: it arrives in
-			// the create args and is never asked as a card — see buildGuidedFinalForm
-			// for why it cannot be one.
+			// The legal machine catalog is not charge-type scoped. It may therefore be
+			// fetched in the background before the user chooses billing; the capacity
+			// calls that actually depend on billing remain below the charge-type card.
 			stepQueryInstanceTypes(),
 			// GPU inventory comes from TWO upstream implementations: the request's
 			// zone_id selects the backend rather than filtering the result, so an
@@ -648,50 +649,42 @@ func stepCheckCapacity() Step {
 			return draft.UpstreamCapacityArgs(), nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
-			specs, _ := result["Specs"].([]any)
-			if len(specs) == 0 {
-				return CheckFailed("库存检查未返回任何规格信息，可能当前 GPU 型号不可用。")
-			}
-
 			draft, err := candidateCreateDraft(wfCtx)
 			if err != nil {
 				return CheckFailed(err.Error())
 			}
-			gpu := draft.Args.GPU
-			cpu := draft.Args.CPU
-			memGB := draft.Args.Memory / 1024 // Specs.Mem is in GB; the draft's Memory is MB
-			gt := draft.Args.GpuType
-			if gt == "" {
-				gt = "该 GPU"
-			}
-
-			// Match the exact GPU/CPU/Mem combination the workflow will create —
-			// read off the draft, so "will create" is a fact rather than a claim.
-			for _, s := range specs {
-				spec, _ := s.(map[string]any)
-				sGpu, _ := spec["Gpu"].(float64)
-				sCpu, _ := spec["Cpu"].(float64)
-				sMem, _ := spec["Mem"].(float64)
-				if sGpu == gpu && sCpu == cpu && sMem == memGB {
-					if enough, _ := spec["ResourceEnough"].(bool); enough {
-						return CheckPassed()
-					}
-					// The one rejection a caller acts on: this spec is real and
-					// upstream has none of it right now, so alternatives are worth
-					// offering. The reason is declared HERE, at the branch that knows
-					// it, which is what frees the sentence below to be reworded or
-					// translated without changing what the engine does.
-					return CheckFailedBecause(ReasonCapacitySoldOut,
-						fmt.Sprintf("%s %.0f 卡 / %.0fC / %.0fGB 当前库存不足（售罄），请换一个规格或稍后再试。", gt, gpu, cpu, memGB))
-				}
-			}
-
-			// Deliberately NOT capacity_sold_out: this combination does not exist at
-			// all. Offering "other cards in this zone" answers a question the user
-			// did not ask — they need their configuration corrected, not substituted.
-			return CheckFailed(fmt.Sprintf("库存中未找到 %s %.0f 卡 / %.0fC / %.0fGB 的规格组合，请确认配置是否正确。", gt, gpu, cpu, memGB))
+			return checkExactCreateCapacity(draft, result)
 		},
 	}
+}
+
+func checkExactCreateCapacity(draft CreateExecutionDraft, result map[string]any) CheckOutcome {
+	specs, _ := result["Specs"].([]any)
+	if len(specs) == 0 {
+		return CheckFailed("库存检查未返回任何规格信息，可能当前 GPU 型号不可用。")
+	}
+	gpu := draft.Args.GPU
+	cpu := draft.Args.CPU
+	memGB := draft.Args.Memory / 1024 // Specs.Mem is in GB; the draft's Memory is MB
+	gt := draft.Args.GpuType
+	if gt == "" {
+		gt = "该 GPU"
+	}
+	for _, s := range specs {
+		spec, _ := s.(map[string]any)
+		sGpu, _ := spec["Gpu"].(float64)
+		sCpu, _ := spec["Cpu"].(float64)
+		sMem, _ := spec["Mem"].(float64)
+		if sGpu != gpu || sCpu != cpu || sMem != memGB {
+			continue
+		}
+		if enough, _ := spec["ResourceEnough"].(bool); enough {
+			return CheckPassed()
+		}
+		return CheckFailedBecause(ReasonCapacitySoldOut,
+			fmt.Sprintf("%s %.0f 卡 / %.0fC / %.0fGB 当前库存不足（售罄），请换一个规格或稍后再试。", gt, gpu, cpu, memGB))
+	}
+	return CheckFailed(fmt.Sprintf("库存中未找到 %s %.0f 卡 / %.0fC / %.0fGB 的规格组合，请确认配置是否正确。", gt, gpu, cpu, memGB))
 }
 
 const capacitySpecsStepName = "查询容量规格"
@@ -1234,7 +1227,7 @@ func stepGuidedChooseImage() Step {
 			gpuType := paramStr(wfCtx.Params, "GpuType", "")
 			current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx))
 			if len(opts) == 0 {
-				return nil, fmt.Errorf("未找到可选社区镜像，请换一个镜像来源或稍后再试")
+				return nil, fmt.Errorf("未找到可选镜像，请换一个镜像来源或稍后再试")
 			}
 			if current == "" {
 				current = opts[0].Value
@@ -1952,7 +1945,7 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	// the frontend that renders this frame is not ours to relabel.
 	price := snapshot.EstimatedPrice.DisplayText
 	priceNote := createPriceNote
-	return map[string]any{
+	summary := map[string]any{
 		"workflow":   "CreateInstanceWorkflow",
 		"GpuType":    draft.Args.GpuType,
 		"Gpu":        draft.Args.GPU,
@@ -1973,7 +1966,11 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 		// approving. The key is always present (value "" when unset); the
 		// renderer (cli.go printCreateConfirmCard) skips it when empty.
 		"FallbackNote": paramStr(wfCtx.Params, "FallbackNote", ""),
-	}, nil
+	}
+	if name := strings.TrimSpace(draft.Args.Name); name != "" {
+		summary["Name"] = name
+	}
+	return summary, nil
 }
 
 // stepCreateInstance executes the sealed draft and nothing else.
@@ -2013,47 +2010,31 @@ func stepCreateInstance() Step {
 // A missing or unsealed draft is a hard error, never a re-derivation — silently
 // rebuilding the arguments here is precisely the drift the draft replaced.
 func createArgsFromSealedDraft(wfCtx *Context) (map[string]any, error) {
-	if wfCtx.sealed == nil || wfCtx.sealed.Operation != "CreateInstanceWorkflow" {
-		return nil, fmt.Errorf("创建实例缺少已确认的执行合同，拒绝以未经确认的参数创建")
-	}
-	stored, ok := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)
-	if !ok || len(stored) == 0 {
-		return nil, fmt.Errorf("已确认的执行合同中缺少创建参数，拒绝以重新推导的参数创建")
-	}
-	snapshot, err := ParseCreateConfirmationSnapshot(stored)
+	snapshot, err := sealedCreateConfirmation(wfCtx)
 	if err != nil {
-		return nil, fmt.Errorf("已确认的执行合同无法解析（%v），拒绝以重新推导的参数创建", err)
+		return nil, err
 	}
 	// A contract with no price cannot be a create anyone agreed to: the card that
-	// forms the agreement cannot be built without one (buildCreateConfirmArgs), so
-	// a sealed snapshot missing its estimate did not come from a user saying yes to
-	// a price.
-	//
-	// The codec deliberately allows a priceless snapshot — an absent quote is a
-	// real outcome and the encoder must be able to say so — so this is the create's
-	// rule, not the format's, and it belongs at the create's own entry. Here rather
-	// than at promoteCreateDraft because this is the last thing between a contract
-	// and an irreversible call: it catches a priceless contract however it was
-	// formed, not only one that came through promote.
-	//
-	// Unreachable by the current wiring, and that is the point. It is the guard
-	// against a future reordering or a second writer reintroducing the confirmed-
-	// without-a-price card that 85da9df6 removed from the front door.
+	// forms the agreement cannot be built without one.
 	if snapshot.EstimatedPrice == nil {
 		return nil, fmt.Errorf("已确认的执行合同中没有价格记录，拒绝创建：用户不可能确认过一个没有价格的下单")
 	}
-	// Only the execution half. The sealed snapshot also records the estimate the
-	// user was shown, which exists for audit and must never reach the API.
-	//
-	// The executor cannot reach into the frozen record the digest is computed over:
-	// the parse above copies the disks out of the sealed map and UpstreamCreateArgs
-	// copies them again into the request, so the two share nothing. Until those
-	// copies existed this comment was false — the request's disk list WAS the
-	// sealed one, and a write through it would have rewritten the audit record with
-	// verifyDigest none the wiser, since the digest covers the live Params rather
-	// than the frozen copy. It chooses the wire shape and nothing else — every
-	// value it uses was sealed.
 	return snapshot.Execution.UpstreamCreateArgs(), nil
+}
+
+func sealedCreateConfirmation(wfCtx *Context) (CreateConfirmationSnapshot, error) {
+	if wfCtx.sealed == nil || wfCtx.sealed.Operation != "CreateInstanceWorkflow" {
+		return CreateConfirmationSnapshot{}, fmt.Errorf("创建实例缺少已确认的执行合同，拒绝以未经确认的参数创建")
+	}
+	stored, ok := wfCtx.sealed.BusinessParams[createDraftKey].(map[string]any)
+	if !ok || len(stored) == 0 {
+		return CreateConfirmationSnapshot{}, fmt.Errorf("已确认的执行合同中缺少创建参数，拒绝以重新推导的参数创建")
+	}
+	snapshot, err := ParseCreateConfirmationSnapshot(stored)
+	if err != nil {
+		return CreateConfirmationSnapshot{}, fmt.Errorf("已确认的执行合同无法解析（%v），拒绝以重新推导的参数创建", err)
+	}
+	return snapshot, nil
 }
 
 func stepDescribeInstance() Step {
@@ -2547,24 +2528,39 @@ func guidedStepLabel(wfCtx *Context, logical int) string {
 }
 
 func guidedStepPosition(wfCtx *Context, logical int) (int, int) {
-	index, total := 0, 0
-	for step := guidedStepFirst; step <= guidedStepFinal; step++ {
-		visible := guidedStepReached(wfCtx, step) || step == logical || !guidedStepSkipped(wfCtx, step)
-		if !visible {
-			continue
-		}
-		total++
+	order := guidedReachedOrder(wfCtx)
+	for i, step := range order {
 		if step == logical {
-			index = total
+			return i + 1, 0
 		}
 	}
-	if index == 0 {
-		index = total
+	// The wizard is conditional: choosing a source/image/GPU can remove later
+	// cards, so its final total is unknowable at the first card. Expose a
+	// monotonic ordinal and Total=0 (unknown) instead of renumbering history from
+	// mutable skip predicates (the old 3/9 -> 3/8 and 6/6 -> 5/5 bug).
+	return len(order) + 1, 0
+}
+
+func guidedReachedOrder(wfCtx *Context) []int {
+	if wfCtx == nil || wfCtx.Params == nil {
+		return nil
 	}
-	if total == 0 {
-		total = 1
+	raw := wfCtx.Params["GuidedReachedOrder"]
+	var out []int
+	switch values := raw.(type) {
+	case []int:
+		out = append(out, values...)
+	case []any:
+		for _, value := range values {
+			switch n := value.(type) {
+			case int:
+				out = append(out, n)
+			case float64:
+				out = append(out, int(n))
+			}
+		}
 	}
-	return index, total
+	return out
 }
 
 func guidedStepReached(wfCtx *Context, logical int) bool {
@@ -2602,6 +2598,13 @@ func markGuidedStepReached(wfCtx *Context, logical int) {
 		wfCtx.Params["GuidedReachedSteps"] = steps
 	}
 	steps[key] = true
+	order := guidedReachedOrder(wfCtx)
+	for _, step := range order {
+		if step == logical {
+			return
+		}
+	}
+	wfCtx.Params["GuidedReachedOrder"] = append(order, logical)
 }
 
 func guidedStepSkipped(wfCtx *Context, logical int) bool {
@@ -2742,23 +2745,12 @@ func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
 	if initialParamSet(wfCtx, "CompShareImageId") {
 		return true, nil
 	}
-	// The concrete image step is the community picker; platform images are chosen in
-	// the final form. It shows only when the source is community (source is the single
-	// authority now — the deleted ImagePurpose enum no longer switches it).
-	isCommunity := strings.EqualFold(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")), "community")
-	if !isCommunity {
-		// A platform ImageName resolves deterministically in the final form, so a
-		// named platform image needs no picker. (For platform, this branch already
-		// returns skip regardless of the name.)
-		return true, nil
-	}
-	// Community: a provided ImageName is NOT a concrete CompShareImageId and is usually
-	// ambiguous across versions, so the picker MUST run to resolve one — even when the
-	// user named the image. Skipping on the name (the old behavior) left the image
-	// unresolved: create then failed at materializeCreateDraft with "社区镜像未返回有效的
-	// 镜像 ID", and because there was no concrete image id the GPU list was never
-	// constrained by SupportedGpuTypes and the capacity precheck (guidedCapacityArgs)
-	// was skipped — so every card/spec showed as selectable regardless of the image.
+	// Every source resolves a concrete image here, before charge type and hardware.
+	// Capacity depends on the image id, boot disk and container/VM shape, so letting
+	// platform defer its choice to the final card made the earlier GPU/zone cards
+	// describe an automatically-ranked image that the user could then replace.
+	// A provided ImageName is still not a concrete id and can be ambiguous, so it is
+	// presented as a ranked default rather than silently sealed.
 	return false, nil
 }
 
@@ -2884,7 +2876,7 @@ func buildGuidedChargeTypeForm(wfCtx *Context) (*ConfirmForm, error) {
 			Title: guidedStepTitle(index, "请选择计费方式"),
 			// Say what changes downstream, because it genuinely does: the GPU and
 			// zone cards after this one are filtered by the mode chosen here.
-			Description: "计费方式决定后面能选哪些 GPU 和可用区：抢占式更便宜但可能被回收，且部分卡型和可用区只卖其中一种。按量付费适合先试跑，包日 / 包月适合长期占用。",
+			Description:    "计费方式决定后面能选哪些 GPU 和可用区：抢占式更便宜但可能被回收，且部分卡型和可用区只卖其中一种。按量付费适合先试跑，包日 / 包月适合长期占用。",
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
 			Skippable:      true,
@@ -2905,6 +2897,7 @@ func applyGuidedChargeTypeOverrides(wfCtx *Context, overrides map[string]string)
 		return fmt.Errorf("暂不支持该计费方式")
 	}
 	wfCtx.Params["ChargeType"] = deployment.NormalizeChargeType(value)
+	markGuidedStepReached(wfCtx, guidedStepChargeType)
 	return nil
 }
 
@@ -3111,11 +3104,11 @@ func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
 func imageSourceFacetOptions() []ConfirmFormOption {
 	return []ConfirmFormOption{
 		{
-			Value: "platform", Label: "自己搭环境",
+			Value: "platform", Label: "平台镜像",
 			Note: "平台官方镜像：干净的系统镜像，或预装 PyTorch / TensorFlow 等框架的基础镜像",
 		},
 		{
-			Value: "community", Label: "跑现成的应用 / 模型",
+			Value: "community", Label: "社区镜像",
 			Note: "社区镜像：开箱即用的应用与模型，可按数字人、图像视频生成、语音、LLM 等用途挑选",
 		},
 	}
@@ -3421,7 +3414,7 @@ func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
 	current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx))
 	if len(opts) == 0 {
-		return nil, fmt.Errorf("未找到可选社区镜像，请换一个镜像来源或稍后再试")
+		return nil, fmt.Errorf("未找到可选镜像，请换一个镜像来源或稍后再试")
 	}
 	if current == "" {
 		current = opts[0].Value
@@ -3432,13 +3425,13 @@ func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 		Step: &ConfirmFormStep{
 			Index:          index,
 			Total:          total,
-			Title:          guidedStepTitle(index, "请选择社区镜像"),
-			Description:    "不同社区镜像支持的 GPU 不同。置灰的镜像不支持当前卡型，需要更换镜像或 GPU 后才能创建。",
+			Title:          guidedStepTitle(index, "请选择具体镜像"),
+			Description:    "先确定实际创建使用的镜像，后续 GPU、可用区和库存检查都以这一个镜像 ID 为准。",
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "取消",
 		},
 		Fields: []ConfirmFormField{{
-			Key: "ImageId", Label: "社区镜像", Type: "select",
+			Key: "ImageId", Label: "镜像", Type: "select",
 			Value: current, Render: "cards", Editable: true, Options: opts,
 		}},
 	}, nil
@@ -3452,28 +3445,15 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 	gpuType, _ := wfCtx.Params["GpuType"].(string)
 	images := wfCtx.Result("查询镜像")
 
-	recommended := paramBool(wfCtx.Params, "GuidedRecommended", false)
 	var fields []ConfirmFormField
-	// The image is EDITABLE here only when no earlier card asked for it. The
-	// platform path skips the dedicated image step by design (see
-	// shouldSkipGuidedImageStep — the concrete image step is the community
-	// picker), so for platform this is the only selector and must stay editable.
-	// The community path already picked a concrete version, and re-opening the
-	// same choice on the confirm card asked the same question twice.
+	// The concrete image was settled before any capacity card. The final card only
+	// states that decision: changing it here would invalidate GPU/zone/spec choices
+	// that were computed for a different image. A future "修改镜像" affordance must
+	// return to the image step and re-run the dependency chain, not edit in place.
 	if cur, opts := guidedImageFormOptions(wfCtx.Params, images, gpuType, createImageTaxonomy(wfCtx)); cur != "" && len(opts) > 0 {
-		if alreadyChosen := guidedStepReached(wfCtx, guidedStepImage); alreadyChosen {
-			fields = append(fields, ConfirmFormField{
-				Key: "ImageId", Label: "镜像", Type: "select", Value: cur, Editable: false,
-			})
-		} else {
-			if recommended {
-				markGuidedRecommendedOption(opts, cur)
-			}
-			fields = append(fields, ConfirmFormField{
-				Key: "ImageId", Label: "镜像", Type: "select",
-				Value: cur, Render: "cards", Editable: true, Options: opts,
-			})
-		}
+		fields = append(fields, ConfirmFormField{
+			Key: "ImageId", Label: "镜像", Type: "select", Value: cur, Editable: false,
+		})
 	}
 	// ChargeType is stated, not offered, on THIS card: its edit re-runs only from
 	// 形成执行草稿, while the GPU card, the zone card, the per-zone capacity probe
@@ -3716,7 +3696,6 @@ func applyGuidedImageOverrides(wfCtx *Context, overrides map[string]string) erro
 	if err := applyCreateOverrides(wfCtx, overrides); err != nil {
 		return err
 	}
-	wfCtx.Params["ImageSource"] = "community"
 	markGuidedStepReached(wfCtx, guidedStepImage)
 	return nil
 }

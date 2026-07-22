@@ -214,10 +214,10 @@ func TestShouldSkipGuidedImageStep_CommunityNamedRunsPicker(t *testing.T) {
 			map[string]any{"ImageSource": "community", "CompShareImageId": "cimg-abc"}, true},
 		{"community + no name → picker runs to browse",
 			map[string]any{"ImageSource": "community"}, false},
-		{"platform + a name → skip (resolved in the final form)",
-			map[string]any{"ImageSource": "platform", "ImageName": "Ubuntu-nvidia 22.04"}, true},
-		{"platform + nothing → skip",
-			map[string]any{"ImageSource": "platform"}, true},
+		{"platform + a name → picker resolves before hardware",
+			map[string]any{"ImageSource": "platform", "ImageName": "Ubuntu-nvidia 22.04"}, false},
+		{"platform + nothing → picker browses",
+			map[string]any{"ImageSource": "platform"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

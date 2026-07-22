@@ -94,9 +94,9 @@ func TestResolveNonCorrectableRejectionBlocksIntake(t *testing.T) {
 }
 
 // The create collectable set is the EXPLICIT declaration (the guided form's
-// fields), not an auto-derivation over the schema. In particular Name — a create
-// field with no form input — must NOT be collectable, so a bad Name blocks the
-// form rather than opening it on a field the user cannot edit.
+// fields), not an auto-derivation over the schema. Name is a valid optional
+// proposal field, but it is not a missing-input question: users who omit it keep
+// the platform-generated default.
 func TestCreateCollectableFieldsAreDeclaredNotDerived(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
@@ -106,7 +106,19 @@ func TestCreateCollectableFieldsAreDeclaredNotDerived(t *testing.T) {
 	require.ElementsMatch(t,
 		[]string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
 		spec.Intake.CollectableFields)
-	require.NotContains(t, spec.Intake.CollectableFields, "Name", "the form has no instance-name input")
+	require.NotContains(t, spec.Intake.CollectableFields, "Name", "an optional name must not become a guided question")
+}
+
+func TestCreateAcceptsExplicitOptionalName(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
+	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "GpuType", Value: "4090", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "4090"}},
+		{Name: "Name", Value: "p7-guided-pod-5090-0722", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "p7-guided-pod-5090-0722"}},
+	}})
+	require.True(t, resolved.ReadyForConfirmation)
+	require.Equal(t, "p7-guided-pod-5090-0722", resolved.Arguments["Name"])
 }
 
 // intakeSpecForOperation rejects a misdeclared collectable set at build time — a

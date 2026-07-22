@@ -121,6 +121,36 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	}
 }
 
+func TestCreateInstance_ExplicitNameIsConfirmedSealedAndExecuted(t *testing.T) {
+	executor := createMockExecutor()
+	var confirmed map[string]any
+	confirmFn := func(_ string, args map[string]any) bool {
+		confirmed = deepCopyParams(args)
+		return true
+	}
+
+	eng := NewEngine(executor, confirmFn, nil)
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090",
+		"Name":    "my-render-node",
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.NotNil(t, confirmed)
+	assert.Equal(t, "my-render-node", confirmed["Name"], "the confirmation must show the exact requested name")
+
+	var createArgs map[string]any
+	for _, call := range executor.calls {
+		if call.action == "CreateCompShareInstance" {
+			createArgs = call.args
+			break
+		}
+	}
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "my-render-node", createArgs["Name"], "the sealed name must be the name sent upstream")
+}
+
 func TestCreateInstance_DescribeFailureDoesNotHideCreatedInstance(t *testing.T) {
 	executor := createMockExecutor()
 	executor.failOn = "DescribeCompShareInstance"

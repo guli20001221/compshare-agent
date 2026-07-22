@@ -395,16 +395,14 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 		assert.NotEmpty(t, form.Step.Description,
 			"guided step %d must carry guidance text", form.Step.Index)
 
-		// Image-first reorder: the image SOURCE step now leads, the hardware spec
-		// steps follow, and the final card carries the concrete ImageId. Every
-		// field's options/values and the created args are unchanged from the old
-		// GPU-first order — only the sequence moved (verified by observation).
+		// Every source resolves a concrete image before charge type and hardware,
+		// so every capacity card below is about the image the user selected.
 		switch form.Step.Index {
 		case 1:
 			// Image SOURCE leads: source-only facet, defaults platform, never the
 			// deleted ImagePurpose field. The type/tag facets step is skipped here
 			// because this fixture's images declare no distinct ImageType/Tags.
-			assert.Equal(t, 7, form.Step.Total)
+			assert.Zero(t, form.Step.Total, "conditional workflows expose no mutable total")
 			assert.Equal(t, "确认选择", form.Step.PrimaryLabel)
 			assert.Equal(t, "跳过", form.Step.SecondaryLabel)
 			assert.True(t, form.Step.Skippable)
@@ -415,14 +413,16 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.Nil(t, form.Field("ImageType"), "source step is source-only; type/tag is the next step")
 			return ConfirmResolution{Confirmed: true}
 		case 2:
-			// Charge type is asked HERE, between the image and the GPU: everything
-			// after it is pool-scoped, and this is the earliest point where the
-			// catalog exists so guidedStepPosition can count the later cards.
+			image := fieldByKey(t, form, "ImageId")
+			assert.True(t, image.Editable)
+			assert.NotEmpty(t, image.Options)
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": "img-002"}}
+		case 3:
 			charge := fieldByKey(t, form, "ChargeType")
 			assert.Equal(t, []string{"Postpay", "Spot", "Day", "Month"}, optionValues(charge))
 			assert.Equal(t, "Postpay", charge.Value)
 			return ConfirmResolution{Confirmed: true}
-		case 3:
+		case 4:
 			gpu := fieldByKey(t, form, "GpuType")
 			assert.Equal(t, "cards", gpu.Render)
 			assert.Equal(t, []string{"4090", "4090_48G", "A800", "P40"}, optionValues(gpu))
@@ -430,22 +430,22 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.False(t, gpu.Options[0].Disabled)
 			assert.True(t, gpu.Options[3].Disabled)
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"GpuType": "A800"}}
-		case 4:
+		case 5:
 			zone := fieldByKey(t, form, "Zone")
 			assert.Equal(t, "cards", zone.Render)
 			assert.Equal(t, []string{"cn-wlcb-01"}, optionValues(zone))
 			return ConfirmResolution{Confirmed: true}
-		case 5:
+		case 6:
 			gpuCount := fieldByKey(t, form, "Gpu")
 			assert.Equal(t, "cards", gpuCount.Render)
 			assert.Equal(t, []string{"1"}, optionValues(gpuCount))
 			return ConfirmResolution{Confirmed: true}
-		case 6:
+		case 7:
 			spec := fieldByKey(t, form, "CpuMemory")
 			assert.Equal(t, "cards", spec.Render)
 			assert.Contains(t, optionValues(spec), "cn-wlcb-01|1|32|131072")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"CpuMemory": "cn-wlcb-01|1|32|131072"}}
-		case 7:
+		case 8:
 			assert.Equal(t, "A800", args["GpuType"])
 			assert.Equal(t, float64(1), args["Gpu"])
 			assert.Equal(t, float64(32), args["CPU"])
@@ -463,7 +463,7 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
-	assert.Equal(t, []int{1, 2, 3, 4, 5, 6, 7}, seenSteps)
+	assert.Equal(t, []int{1, 2, 3, 4, 5, 6, 7, 8}, seenSteps)
 
 	var capacityCalls, priceCalls int
 	var created map[string]any
@@ -488,8 +488,8 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 		combos += len(guidedCandidateZones(formCatalogFixture(), model))
 	}
 	require.Equal(t, 4, combos, "this fixture offers four sellable model/zone pairs")
-	assert.Equal(t, combos+2, capacityCalls,
-		"one combo fan-out + option-gating capacity check + authoritative create-time re-check")
+	assert.Equal(t, combos+1, capacityCalls,
+		"one combo fan-out + one exact option-gating capacity check before confirmation")
 	assert.Equal(t, 1, priceCalls, "price is checked after the full spec is chosen")
 	require.NotNil(t, created)
 	assert.Equal(t, "A800", created["GpuType"])
@@ -539,7 +539,7 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 		require.NotNil(t, form.Step)
 		seenSteps = append(seenSteps, form.Step.Index)
 		assert.Equal(t, 1, form.Step.Index)
-		assert.Equal(t, 1, form.Step.Total)
+		assert.Zero(t, form.Step.Total)
 		assert.True(t, form.Step.Final)
 		assert.Equal(t, "A800", args["GpuType"])
 		assert.Equal(t, float64(1), args["Gpu"])
@@ -557,6 +557,7 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 		"Cpu":               float64(32),
 		"Memory":            float64(131072),
 		"GuidedRecommended": true,
+		"CompShareImageId":  "img-002",
 		"ImageName":         "PyTorch",
 	})
 
@@ -856,8 +857,8 @@ func TestCreateInstanceGuided_ExplicitGPUStaysExact(t *testing.T) {
 	// GPU is the 3rd visible step: image SOURCE leads, then the charge type (which
 	// scopes the pool this card gates on). No image is pinned here so the source
 	// step is not skipped, and no ChargeType is given so its card shows.
-	assert.Equal(t, 3, form.Step.Index)
-	assert.Equal(t, 7, form.Step.Total)
+	assert.Equal(t, 1, form.Step.Index)
+	assert.Zero(t, form.Step.Total)
 	gpu := fieldByKey(t, form, "GpuType")
 	assert.Equal(t, []string{"4090"}, optionValues(gpu))
 }
@@ -998,7 +999,7 @@ func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
 	}}
 
-	form, err := buildGuidedFinalForm(wfCtx)
+	form, err := buildGuidedImageForm(wfCtx)
 	require.NoError(t, err)
 
 	img := fieldByKey(t, form, "ImageId")
@@ -1051,7 +1052,7 @@ func TestGuidedImageFacetsStepSkipsWhenImageIntentExists(t *testing.T) {
 	assert.True(t, skip)
 }
 
-func TestGuidedFinalFormTagNarrowsImages(t *testing.T) {
+func TestGuidedImageFormTagNarrowsImages(t *testing.T) {
 	// An ImageTag facet narrows the option list by EXACT membership against each
 	// image's REAL catalog Tags — not by a purpose keyword or the image name. Only
 	// img-torch carries the "深度学习" tag, so the vLLM/ComfyUI/Windows images are
@@ -1065,7 +1066,7 @@ func TestGuidedFinalFormTagNarrowsImages(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
 	}}
 
-	form, err := buildGuidedFinalForm(wfCtx)
+	form, err := buildGuidedImageForm(wfCtx)
 	require.NoError(t, err)
 
 	img := fieldByKey(t, form, "ImageId")
@@ -1073,7 +1074,7 @@ func TestGuidedFinalFormTagNarrowsImages(t *testing.T) {
 	assert.Equal(t, "img-torch", img.Value)
 }
 
-func TestGuidedFinalFormTagNarrowsLLMImages(t *testing.T) {
+func TestGuidedImageFormTagNarrowsLLMImages(t *testing.T) {
 	// The "大模型推理" tag is a REAL catalog tag carried by exactly the vLLM and
 	// Ollama images; the option list is those two, in catalog order, and nothing
 	// else. Name/framework play no part — only exact Tags membership.
@@ -1088,7 +1089,7 @@ func TestGuidedFinalFormTagNarrowsLLMImages(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
 	}}
 
-	form, err := buildGuidedFinalForm(wfCtx)
+	form, err := buildGuidedImageForm(wfCtx)
 	require.NoError(t, err)
 
 	img := fieldByKey(t, form, "ImageId")
@@ -1232,25 +1233,15 @@ func TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalo
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
-		// Image-first reorder: source is step 1, charge type is step 2, the four
-		// spec steps are 3-6, and the final image picker is step 7.
-		switch form.Step.Index {
-		case 1:
-			source := fieldByKey(t, form, "ImageSource")
+		if source := form.Field("ImageSource"); source != nil {
 			assert.Equal(t, "community", source.Value, "initial source is community")
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "platform"}}
-		case 2, 3, 4, 5, 6:
-			return ConfirmResolution{Confirmed: true}
-		case 7:
-			// Facets skipped (fixtures declare no types/tags) → the last step is the
-			// platform image picker in the final form.
-			image := fieldByKey(t, form, "ImageId")
+		}
+		if image := form.Field("ImageId"); image != nil && image.Editable {
 			finalImageOptions = optionValues(image)
 			return ConfirmResolution{Confirmed: false}
-		default:
-			t.Fatalf("unexpected guided form step %d", form.Step.Index)
-			return ConfirmResolution{}
 		}
+		return ConfirmResolution{Confirmed: true}
 	})
 
 	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090", "ImageSource": "community"})
@@ -1577,7 +1568,7 @@ func TestGuidedSpecOverrideSetsFullCreateParams(t *testing.T) {
 
 func TestCreateInstanceGuided_ImageOptionsDisableUnsupportedGPU(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
-	form, err := buildGuidedFinalForm(wfCtx)
+	form, err := buildGuidedImageForm(wfCtx)
 	require.NoError(t, err)
 
 	img := fieldByKey(t, form, "ImageId")
@@ -1595,58 +1586,51 @@ func TestCreateInstanceGuided_ImageOptionsDisableUnsupportedGPU(t *testing.T) {
 	assert.Contains(t, mismatch.Reason, "镜像不支持")
 }
 
-func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T) {
+func TestCreateInstanceGuided_ImageIsSelectedBeforeCapacityAndFinalIsReadOnly(t *testing.T) {
 	executor := formMockExecutor()
+	imageRounds := 0
 	finalRounds := 0
 
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
-		switch form.Step.Index {
-		case 1, 2, 3, 4, 5, 6:
-			return ConfirmResolution{Confirmed: true}
-		case 7:
-			finalRounds++
-			if finalRounds == 1 {
-				return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": "img-002"}}
-			}
-			return ConfirmResolution{Confirmed: true}
-		default:
-			t.Fatalf("unexpected guided form step %d", form.Step.Index)
-			return ConfirmResolution{}
+		if image := form.Field("ImageId"); image != nil && image.Editable {
+			imageRounds++
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": "img-002"}}
 		}
+		if form.Step.Final {
+			finalRounds++
+			image := form.Field("ImageId")
+			require.NotNil(t, image)
+			assert.False(t, image.Editable, "the final card cannot replace the image used by earlier capacity checks")
+		}
+		return ConfirmResolution{Confirmed: true}
 	})
 
 	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090"})
 	require.NoError(t, err)
 	require.True(t, result.Success)
-	assert.Equal(t, 2, finalRounds, "final image edit must refresh the final confirm card")
+	assert.Equal(t, 1, imageRounds)
+	assert.Equal(t, 1, finalRounds)
 
-	capacityCalls, priceCalls := 0, 0
+	var capacityImages, priceImages []string
 	var created map[string]any
 	for _, c := range executor.calls {
 		switch c.action {
 		case "CheckCompShareResourceCapacity":
-			capacityCalls++
+			capacityImages = append(capacityImages, paramStr(c.args, "CompShareImageId", ""))
 		case "GetCompShareInstanceUserPrice":
-			priceCalls++
+			priceImages = append(priceImages, paramStr(c.args, "CompShareImageId", ""))
 		case "CreateCompShareInstance":
 			created = c.args
 		}
 	}
-	// Per-zone probe (once, before the zone card) + option-gating capacity check +
-	// the create-time validation, and the final image edit re-runs the create-time
-	// validation once more (price re-checks on the edit). The zone probe must NOT
-	// re-run on the final edit — that edit changes the image, not the zone list, and
-	// a probe that re-fanned-out there would double the cost of every edit.
-	combos := 0
-	for _, model := range guidedCandidateGPUModels(formCatalogFixture()) {
-		combos += len(guidedCandidateZones(formCatalogFixture(), model))
+	require.NotEmpty(t, capacityImages)
+	for _, id := range capacityImages {
+		assert.Equal(t, "img-002", id, "every capacity check must use the selected concrete image")
 	}
-	require.Equal(t, 4, combos, "this fixture offers four sellable model/zone pairs")
-	assert.Equal(t, combos+3, capacityCalls)
-	assert.Equal(t, 2, priceCalls)
+	require.Equal(t, []string{"img-002"}, priceImages)
 	require.NotNil(t, created)
 	assert.Equal(t, "img-002", created["CompShareImageId"])
 }
