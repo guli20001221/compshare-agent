@@ -44,10 +44,7 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 	if len(ledger.Items) == 0 {
 		return "", false
 	}
-	client := e.agentLLMClient
-	if client == nil {
-		client = e.llmClient
-	}
+	client := e.llmClient
 	if client == nil {
 		return "", false
 	}

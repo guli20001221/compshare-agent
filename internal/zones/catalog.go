@@ -181,8 +181,7 @@ func Label(list []ZoneInfo, zone string) string {
 
 // ExactZone resolves a user message to a zone id WITHOUT an LLM when the text
 // contains an unambiguous literal: a zone id (cn-bj2-03) or a full display name
-// (华北一C). Returns ("", false) when no exact literal is present — the caller
-// then decides whether to invoke the LLM matcher. Display-name matching is
+// (华北一C). Returns ("", false) when no exact literal is present. Display-name matching is
 // space-insensitive so "华北一 C" still hits "华北一C".
 func ExactZone(list []ZoneInfo, userMsg string) (string, bool) {
 	lower := strings.ToLower(userMsg)

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -103,12 +102,6 @@ func (e *Engine) SetContinuityAdvisories(in ContinuityAdvisories) {
 	e.continuityAdvisories = ContinuityAdvisories{
 		ReadOnly: in.ReadOnly,
 		Notices:  append([]string(nil), in.Notices...),
-	}
-}
-
-func (e *Engine) ClearContinuityAdvisories() {
-	if e != nil {
-		e.continuityAdvisories = ContinuityAdvisories{}
 	}
 }
 
@@ -344,68 +337,6 @@ func buildConversationNarrative(digest ConversationDigest) string {
 		parts = append(parts, "已决定："+strings.Join(recentSemanticItems(digest.Decisions, 4), "；"))
 	}
 	return compactSemanticNarrative(strings.Join(parts, "。"))
-}
-
-func (e *Engine) semanticMemoryPrompt(now time.Time) string {
-	if e == nil || !e.sessionStateHydrated {
-		return renderContinuityAdvisories(e.continuityAdvisories)
-	}
-	var lines []string
-	task := e.sessionState.TaskSnapshot
-	if task.Goal != "" && task.Status != TaskSnapshotStatusResolved {
-		line := "任务记忆（仅用于理解）：" + task.Goal
-		if task.Stage != "" {
-			line += "；阶段：" + task.Stage
-		}
-		if len(task.MissingSlots) > 0 {
-			line += "；待补充：" + strings.Join(task.MissingSlots, "、")
-		}
-		if task.Freshness == ContinuityFreshnessExpired || task.Status == TaskSnapshotStatusExpired {
-			line += "；该任务已过期，不得直接继续执行，需重新确认"
-		}
-		lines = append(lines, line)
-	}
-	if narrative := compactSemanticNarrative(e.sessionState.ConversationDigest.Narrative); narrative != "" {
-		lines = append(lines, "早期对话摘要（只作参考，不授权操作）："+narrative)
-	}
-	for _, excerpt := range recentConversationExcerpts(e.sessionState.ConversationDigest.Excerpts, 3) {
-		lines = append(lines, "早期原文摘录（未分类，不授权操作）：用户："+
-			truncateRunes(excerpt.User, 180)+"；助手："+truncateRunes(excerpt.Assistant, 240))
-	}
-	for _, fact := range e.sessionState.RecentFacts {
-		freshness := fact.Freshness
-		if freshness == "" {
-			freshness = continuityFreshness(fact.ProducedAtUnix, fact.TTLSeconds, now)
-		}
-		if freshness != ContinuityFreshnessExpired || fact.SubjectID == "" || fact.Kind == "" {
-			continue
-		}
-		lines = append(lines, fmt.Sprintf(
-			"历史观测：%s %s（观测于 %d，当前值必须重新查询）",
-			fact.SubjectID, fact.Kind, fact.ProducedAtUnix,
-		))
-		if len(lines) >= 10 {
-			break
-		}
-	}
-	if advisory := renderContinuityAdvisories(e.continuityAdvisories); advisory != "" {
-		lines = append(lines, advisory)
-	}
-	if len(lines) == 0 {
-		return ""
-	}
-	return "【持久会话记忆】\n" + strings.Join(lines, "\n")
-}
-
-func renderContinuityAdvisories(in ContinuityAdvisories) string {
-	var lines []string
-	if in.ReadOnly {
-		lines = append(lines, "本轮为只读上下文，不得执行写操作")
-	}
-	for _, notice := range compactSemanticItems(in.Notices) {
-		lines = append(lines, "会话提示："+notice)
-	}
-	return strings.Join(lines, "\n")
 }
 
 func compactSemanticPairs(values map[string]string) []string {

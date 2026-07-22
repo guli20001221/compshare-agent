@@ -289,16 +289,6 @@ func safeHistoryStart(messages []openai.ChatCompletionMessage, candidateStart in
 	return -1
 }
 
-func recentConversationExcerpts(excerpts []ConversationExcerpt, limit int) []ConversationExcerpt {
-	if limit <= 0 || len(excerpts) == 0 {
-		return nil
-	}
-	if len(excerpts) > limit {
-		excerpts = excerpts[len(excerpts)-limit:]
-	}
-	return excerpts
-}
-
 func compactOldRetrievableToolResults(messages []openai.ChatCompletionMessage, keepRecent int) {
 	if keepRecent < 0 {
 		keepRecent = 0

@@ -16,10 +16,8 @@ type RouteStatus string
 const (
 	RouteStatusNone       RouteStatus = ""
 	RouteStatusDispatched RouteStatus = "dispatched"
-	// RouteStatusDispatchedAgent marks a turn the agent-tier dispatch handler
-	// owned (B8.3 deploy_model). Distinct from "dispatched" (fast-tier route
-	// dispatch) so DeriveActualExecutionTier maps it to the agent tier rather than fast
-	// — the deploy handler runs a TierAgent LLM match, then the deploy_model Workflow (the separate orchestrator saga was removed).
+	// RouteStatusDispatchedAgent is retained only for legacy trace compatibility.
+	// Runtime work now runs through the central Agent and typed workflows.
 	RouteStatusDispatchedAgent RouteStatus = "dispatched_agent"
 	// RouteStatusDispatchedKnowledgeAgentLoop marks a knowledge_qa turn that the
 	// knowledge_qa route sent into the shared context-aware
@@ -49,5 +47,3 @@ const (
 	RouteStatusFallbackRetrievalDisabled RouteStatus = "fallback_retrieval_disabled"
 	RouteStatusSelectionRequired         RouteStatus = "selection_required"
 )
-
-

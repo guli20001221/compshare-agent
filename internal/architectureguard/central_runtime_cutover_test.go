@@ -14,6 +14,26 @@ func TestProductionCannotReEnableLegacySemanticRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	forbidden := []string{
+		// The central Agent owns semantic decisions. The retired create switch and
+		// per-tier model router must not return as parallel routing centers.
+		"COMPSHARE_UNIFIED_CREATE",
+		"SetUnifiedCreateEnabled",
+		"createFamilyIntent",
+		"type ModelRouter struct",
+		"NewModelRouter",
+		"tier_routing",
+		"AgentLLMClient",
+		"agentLLMClient",
+		// These zero-call compatibility helpers were removed rather than kept alive
+		// by tests or comments.
+		"func (e *Engine) semanticMemoryPrompt(",
+		"func containsNormalizedKeyword(",
+		"func (e *Engine) ClearContinuityAdvisories(",
+		"func recentConversationExcerpts(",
+		"func renderContinuityAdvisories(",
+		"plannerTraceSupplier",
+		"SetPlannerTrace",
+		"plannerHandlerExecutor",
 		"COMPSHARE_INTENT_ROUTER_MODE",
 		"COMPSHARE_DIRECT_DISPATCH_INTENTS",
 		"COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT",

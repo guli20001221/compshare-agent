@@ -115,24 +115,6 @@ func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
 
-func TestUnifiedCreateEnabledFromEnv_DefaultOn(t *testing.T) {
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := unifiedCreateEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := unifiedCreateEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := unifiedCreateEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
 func TestMultiTraceWriterEnqueuePreservesTenantForMySQLLikeSink(t *testing.T) {
 	fileSink := &captureAppendWriter{}
 	mysqlSink := &captureEnqueueWriter{}
@@ -536,55 +518,6 @@ func TestKnowledgeRetrieverFromEnvHybridLoadsSidecar(t *testing.T) {
 	// with the stub key. Just verify the retriever was constructed.
 }
 
-func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
-	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	writer, err := observability.NewWriter(observability.WriterOptions{
-		Dir: t.TempDir(),
-		Now: func() time.Time { return start },
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	recorder := newCLITraceRecorder(writer, "", 1, "planner trace", start)
-	recorder.SetPlannerTraceSupplier(func() observability.RouterTrace {
-		return observability.RouterTrace{
-			Enabled:     true,
-			Model:       "deepseek-v4-flash",
-			SchemaValid: true,
-			Intent:      "monitor_query",
-			Slots: observability.PlannerSlots{
-				Metrics: []string{"gpu"},
-			},
-			Confidence: 0.8,
-		}
-	})
-	recorder.OnStep(engine.StepEvent{
-		Type:   engine.StepToolCall,
-		Action: "DescribeCompShareInstance",
-		Source: observability.ToolSourceMainReAct,
-		Args:   map[string]any{"Limit": 10},
-	})
-	recorder.OnStep(engine.StepEvent{
-		Type:        engine.StepToolResult,
-		Action:      "DescribeCompShareInstance",
-		Source:      observability.ToolSourceMainReAct,
-		TraceResult: map[string]any{"RetCode": 0},
-	})
-
-	if err := recorder.Finish(nil, start); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	record := readSingleTraceRecord(t, writer, start)
-	if !record.IntentRouter.Enabled || !record.IntentRouter.SchemaValid ||
-		record.IntentRouter.Model != "deepseek-v4-flash" || record.IntentRouter.Intent != "monitor_query" {
-		t.Fatalf("planner trace = %#v", record.IntentRouter)
-	}
-	if len(record.ToolCalls) != 1 || record.ToolCalls[0].Action != "DescribeCompShareInstance" {
-		t.Fatalf("tool calls changed by planner trace supplier: %#v", record.ToolCalls)
-	}
-}
-
 func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	writer, err := observability.NewWriter(observability.WriterOptions{
@@ -607,36 +540,6 @@ func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	record := readSingleTraceRecord(t, writer, start)
 	require.Equal(t, "shadow", record.Runtime.RouterMode)
 	require.Equal(t, []string{"resource", "monitor"}, record.Runtime.RouteIntents)
-}
-
-func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
-	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	writer, err := observability.NewWriter(observability.WriterOptions{
-		Dir: t.TempDir(),
-		Now: func() time.Time { return start },
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	recorder := newCLITraceRecorder(writer, "", 1, "cutover trace", start)
-	recorder.SetPlannerTrace(observability.RouterTrace{
-		Enabled:     true,
-		Model:       "deepseek-v4-flash",
-		SchemaValid: true,
-		Intent:      "resource_info",
-		Confidence:  0.9,
-		RouteStatus: "dispatched",
-	})
-
-	if err := recorder.Finish(nil, start); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	record := readSingleTraceRecord(t, writer, start)
-	if !record.IntentRouter.Enabled || record.IntentRouter.Intent != "resource_info" ||
-		record.IntentRouter.RouteStatus != "dispatched" {
-		t.Fatalf("planner trace = %#v", record.IntentRouter)
-	}
 }
 
 func TestCLITraceRecorderAcceptsRetrievalTrace(t *testing.T) {
@@ -788,35 +691,6 @@ func TestCLITraceRecorderWritesEngineHardBlockWithoutToolStep(t *testing.T) {
 	}
 }
 
-func TestCLITraceRecorderPlannerInvalidTraceStillWritesLine(t *testing.T) {
-	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	writer, err := observability.NewWriter(observability.WriterOptions{
-		Dir: t.TempDir(),
-		Now: func() time.Time { return start },
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	recorder := newCLITraceRecorder(writer, "", 3, "planner failure", start)
-	recorder.SetPlannerTraceSupplier(func() observability.RouterTrace {
-		return observability.RouterTrace{
-			Enabled:     true,
-			Model:       "deepseek-v4-flash",
-			SchemaValid: false,
-			Intent:      "unknown",
-		}
-	})
-
-	if err := recorder.Finish(nil, start); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	record := readSingleTraceRecord(t, writer, start)
-	if !record.IntentRouter.Enabled || record.IntentRouter.SchemaValid || record.IntentRouter.Intent != "unknown" {
-		t.Fatalf("planner failure trace = %#v", record.IntentRouter)
-	}
-}
-
 func TestCLITraceRecorderWritesOneRedactedTraceLine(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	end := start.Add(1500 * time.Millisecond)
@@ -915,25 +789,20 @@ func TestCLITraceRecorderWritesActualTotalTokens(t *testing.T) {
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "tokens", start)
 	recorder.AddTokenUsage(llm.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10})
-	recorder.SetPlannerTrace(observability.RouterTrace{
-		Enabled:      true,
-		InputTokens:  11,
-		OutputTokens: 5,
-	})
 
 	if err := recorder.Finish(nil, start); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 
 	record := readSingleTraceRecord(t, writer, start)
-	if record.Outcome.TotalTokens != 26 {
-		t.Fatalf("outcome.total_tokens = %d, want 26", record.Outcome.TotalTokens)
+	if record.Outcome.TotalTokens != 10 {
+		t.Fatalf("outcome.total_tokens = %d, want 10", record.Outcome.TotalTokens)
 	}
-	if record.Outcome.PromptTokens != 18 {
-		t.Fatalf("outcome.prompt_tokens = %d, want 18", record.Outcome.PromptTokens)
+	if record.Outcome.PromptTokens != 7 {
+		t.Fatalf("outcome.prompt_tokens = %d, want 7", record.Outcome.PromptTokens)
 	}
-	if record.Outcome.CompletionTokens != 8 {
-		t.Fatalf("outcome.completion_tokens = %d, want 8", record.Outcome.CompletionTokens)
+	if record.Outcome.CompletionTokens != 3 {
+		t.Fatalf("outcome.completion_tokens = %d, want 3", record.Outcome.CompletionTokens)
 	}
 }
 

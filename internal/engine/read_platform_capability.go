@@ -71,7 +71,7 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 	now := time.Now()
 	snapshot := e.RegistrySnapshot()
 	rt := capability.ReadRuntime{
-		Executor:         plannerHandlerExecutor{engine: e, onStep: onStep},
+		Executor:         capabilityHandlerExecutor{engine: e, onStep: onStep},
 		Resolver:         snapshot,
 		Now:              now,
 		FallbackGPUModel: e.fallbackStockGpuModel(now),

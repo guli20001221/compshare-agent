@@ -53,7 +53,7 @@ func TestProductionMutationPathsShareSafeExecutorJournalBoundary(t *testing.T) {
 		{
 			name: "planner routed handler",
 			run: func(eng *Engine) error {
-				_, err := (plannerHandlerExecutor{engine: eng}).Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-1"})
+				_, err := (capabilityHandlerExecutor{engine: eng}).Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-1"})
 				return err
 			},
 		},

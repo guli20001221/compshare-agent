@@ -132,16 +132,6 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	r.stateTrace = state
 }
 
-func (r *chatTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
-	if r == nil {
-		return
-	}
-	r.record.IntentRouter = trace
-	r.totalTokens += trace.InputTokens + trace.OutputTokens
-	r.promptTokens += trace.InputTokens
-	r.completionTokens += trace.OutputTokens
-}
-
 func (r *chatTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
 	if r == nil {
 		return
@@ -293,14 +283,11 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 	}
 }
 
-// EmitStep accumulates one agent-tier StepTrace into THIS turn's record (B6.2).
-// (The pre-P6 orchestrator saga runner used the recorder as its StepSink; that
-// orchestrator/saga runner was removed.) Steps
-// are folded into record.Steps in memory and persisted ONCE at Finish via
+// EmitStep accumulates one workflow step trace into this turn's record. Steps are
+// folded into record.Steps in memory and persisted once at Finish via
 // Enqueue/Append → prepareForPersist (which redacts Args/Result) — never a
 // per-step INSERT (a per-step INSERT would collide uk_request_uuid: one
-// agent_traces row per turn). This makes *chatTraceRecorder satisfy
-// orchestrator.StepSink. Per-step SSE event:step (live UI) is fanned separately
+// agent_traces row per turn). Per-step SSE event:step (live UI) is fanned separately
 // by the HTTP handler, reusing the existing sw.WriteEvent("step", ...) path.
 func (r *chatTraceRecorder) EmitStep(step observability.StepTrace) error {
 	if r == nil {

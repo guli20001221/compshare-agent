@@ -130,18 +130,6 @@ func (r *Recorder) SetUserMessage(message string) {
 	r.record.UserMsgHash = hash
 }
 
-func (r *Recorder) SetPlannerTrace(trace observability.RouterTrace) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.record.IntentRouter = trace
-	r.totalTokens += trace.InputTokens + trace.OutputTokens
-	r.promptTokens += trace.InputTokens
-	r.completionTokens += trace.OutputTokens
-}
-
 func (r *Recorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
 	if r == nil {
 		return

@@ -59,11 +59,7 @@ const (
 	// cap), leaving real headroom for a large tool-result burst. Counting messages
 	// rather than tokens is still the wrong unit; this raises the ceiling out of the
 	// way of real traffic without pretending to fix that.
-	maxHistoryMessages = 120
-	// maxPlannerPriorMessages bounds the user/assistant history copied into
-	// shadow-planner input. Tool and system messages are intentionally omitted.
-	maxPlannerPriorMessages      = 8
-	maxPlannerPriorTextRunes     = 2000
+	maxHistoryMessages           = 120
 	maxKnowledgeHistoryRunes     = 4000
 	maxReadExpensiveCallsPerTurn = 20
 	// maxSearchKnowledgeCallsPerTurn bounds how many times the knowledge_qa agent
@@ -212,15 +208,8 @@ type ChatOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient LLMClient
-	// agentLLMClient is the TierAgent (strong-model) client, used by the
-	// agent-tier dispatch handlers (B8 deploy_model image-matching) for semantic
-	// judgment that warrants the strong model rather than the fast planner
-	// model (ADR-002 high-freedom + strong-guardrail). Shared across sessions
-	// like llmClient. nil on the NewWithDeps test path — callers MUST guard
-	// (the deploy handler falls back to llmClient when nil).
-	agentLLMClient LLMClient
-	safeExecutor   *tools.SafeToolExecutor
+	llmClient    LLMClient
+	safeExecutor *tools.SafeToolExecutor
 	// externalExecutor is the RAW (unfiltered) shared executor. Used only for
 	// read-only L0 catalog calls that must pass gateway-identity args the
 	// SafeToolExecutor would strip (e.g. DescribeCompShareSupportZone needs
@@ -433,7 +422,7 @@ type Engine struct {
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
-// All fields here are either stateless wrappers (LLM/Planner/Renderer
+// All fields here are either stateless wrappers (LLM/Renderer
 // clients), read-only data (knowledge corpus), or internally-locked state
 // (RateLimiter has its own mutex). See plan §3.1 / §5 for the full
 // classification rationale.
@@ -441,12 +430,7 @@ type Engine struct {
 // KnowledgeRetriever is exported so server bootstrap
 // can assign it on immutable process-wide dependencies before sessions start.
 type SharedDeps struct {
-	LLMClient LLMClient
-	// AgentLLMClient is the TierAgent (strong-model) client. NewSharedDeps
-	// keeps the router's TierAgent client instead of discarding it (the same
-	// router that yields LLMClient = For(TierFast)). Copied into every
-	// NewSession as Engine.agentLLMClient. Empty on the test path.
-	AgentLLMClient           LLMClient
+	LLMClient                LLMClient
 	KnowledgeRetriever       KnowledgeRetriever
 	RateLimiter              governance.RateLimiter
 	SupportsObjectToolChoice bool
@@ -487,46 +471,19 @@ type SessionOptions struct {
 
 // NewSharedDeps assembles the always-shared engine dependencies from config.
 // Call once at process startup; share the result across every NewSession.
-// Planner / KnowledgeRetriever are NOT populated here —
-// they are env-driven and the caller assigns them on the returned struct
+// KnowledgeRetriever is NOT populated here — it is env-driven and the caller
+// assigns it on the returned struct
 // (server) or via Engine setters post-NewSession (CLI).
 func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	if cfg == nil {
 		return nil, errors.New("engine.NewSharedDeps: cfg is nil")
 	}
-	// B2a (ADR-002 Acceptance #3): build the main LLM client through the Router
-	// factory instead of constructing a bare client directly, so the Router is
-	// the single client-construction choke point. After this change the only
-	// non-test, non-OCR product code that still constructs a client directly is
-	// the Router factory itself (internal/llm/router.go) and the B4-deferred
-	// planner (cmd/cli.go:349). nil tier overrides → For(TierFast) is
-	// byte-identical to the base model: the main ReAct loop still handles every
-	// intent, so it stays pinned to the base model. Per-turn tier selection —
-	// and honoring tier_routing for the main loop — is B4 (ADR-002:79).
-	// The model identity for empty tier_routing is pinned by internal/llm/
-	// router_test.go::TestNewRouter_NilOverrides_AllTiersUseBaseModel; the full
-	// (BaseURL, Model, APIKey) equivalence follows from NewRouter copying
-	// `effective := base` whole-struct on the nil-override path (router.go:69).
-	//
-	// Allowed change (memory acceptance-invariant-with-allowed-change): NewRouter
-	// validates base.Model is non-empty, so a config with an empty model now
-	// fails loud here instead of at the first LLM call (the prior direct
-	// constructor tolerated it). config.Load does not itself require a model,
-	// but the shipped configs set one, so this only triggers on a model-less
-	// misconfig — and surfaces at boot rather than at the first LLM call.
-	router, err := llm.NewModelRouter(cfg.Agent.LLM, llm.TierOverridesFromConfig(cfg.Agent.TierRouting))
-	if err != nil {
-		return nil, fmt.Errorf("engine.NewSharedDeps: build LLM router: %w", err)
+	if strings.TrimSpace(cfg.Agent.LLM.Model) == "" {
+		return nil, errors.New("engine.NewSharedDeps: agent.llm.model is required")
 	}
-	cap := router.Capability(llm.TierFast)
+	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
 	return &SharedDeps{
-		LLMClient: router.For(llm.TierFast),
-		// Keep the router's TierAgent client for the agent-tier dispatch handlers
-		// (B8). With empty tier_routing this is byte-identical to the base
-		// model (router.go nil-override path), so it changes nothing until a
-		// config sets tier_routing.agent — at which point deploy_model
-		// image-matching uses the configured strong model.
-		AgentLLMClient: router.For(llm.TierAgent),
+		LLMClient: llm.NewClient(cfg.Agent.LLM),
 		// InMemoryRateLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
@@ -553,7 +510,6 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	eng := &Engine{
 		// ── shared (pointer-equal across sessions) ──
 		llmClient:                deps.LLMClient,
-		agentLLMClient:           deps.AgentLLMClient,
 		knowledgeRetriever:       deps.KnowledgeRetriever,
 		rateLimiter:              deps.RateLimiter,
 		supportsObjectToolChoice: deps.SupportsObjectToolChoice,
@@ -1571,21 +1527,6 @@ func (e *Engine) lastAssistantContent() string {
 	return ""
 }
 
-// isFastTierEnvelope reports whether an envelope kind is fast-tier catalog
-// data whose handler Reply is already complete deterministic prose, so B3 can
-// skip the LLM renderer for it. resource_info / monitor_query are also fast
-// tier (ADR-001) but stay on the LLM renderer for now — their output is
-// variable (entity resolution, multi-instance, selection prompts), so
-// templating them is a deferred follow-up, NOT a tier reclassification.
-func isFastTierEnvelope(kind envelope.Kind) bool {
-	switch kind {
-	case envelope.KindGPUSpecsQuery, envelope.KindStockAvailability, envelope.KindImageList:
-		return true
-	default:
-		return false
-	}
-}
-
 func evidencesFromRetrievalHits(items []knowledge.RetrievalHit, queryNormalized string) ([]envelope.Evidence, error) {
 	evidences := make([]envelope.Evidence, 0, len(items))
 	producedAt := time.Now().UTC()
@@ -1925,22 +1866,22 @@ func (e *Engine) emitRendererTrace(trace observability.RendererTrace) {
 	e.rendererTraceObserver(trace)
 }
 
-type plannerHandlerExecutor struct {
+type capabilityHandlerExecutor struct {
 	engine *Engine
 	onStep func(StepEvent)
 }
 
-func (x plannerHandlerExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+func (x capabilityHandlerExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	return x.execute(ctx, action, args, tools.OriginDirectLLM)
 }
 
-func (x plannerHandlerExecutor) ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+func (x capabilityHandlerExecutor) ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	return x.execute(ctx, action, args, tools.OriginDiagnosisInternal)
 }
 
-func (x plannerHandlerExecutor) execute(ctx context.Context, action string, args map[string]any, origin tools.ExecutionOrigin) (map[string]any, error) {
+func (x capabilityHandlerExecutor) execute(ctx context.Context, action string, args map[string]any, origin tools.ExecutionOrigin) (map[string]any, error) {
 	if x.engine == nil {
-		return nil, fmt.Errorf("planner handler engine is nil")
+		return nil, fmt.Errorf("capability handler engine is nil")
 	}
 	result, err := x.engine.executeSafeTool(ctx, tools.SafeToolRequest{
 		Action: action,
@@ -1972,19 +1913,19 @@ func (x plannerHandlerExecutor) execute(ctx context.Context, action string, args
 		Attempts:    result.Attempts,
 	}
 	if action == "GetCompShareInstanceMonitor" {
-		event.RendererInputToolArgHashes = hashPlannerHandlerArgs(args)
+		event.RendererInputToolArgHashes = hashCapabilityHandlerArgs(args)
 	}
 	x.emit(event)
 	return result.RawResult, nil
 }
 
-func (x plannerHandlerExecutor) emit(ev StepEvent) {
+func (x capabilityHandlerExecutor) emit(ev StepEvent) {
 	if x.onStep != nil {
 		x.onStep(ev)
 	}
 }
 
-func hashPlannerHandlerArgs(args map[string]any) []string {
+func hashCapabilityHandlerArgs(args map[string]any) []string {
 	hash, err := observability.HashTracePayload(args)
 	if err != nil {
 		return nil
@@ -3303,14 +3244,6 @@ func (e *Engine) fallbackStockGpuModel(now time.Time) string {
 	return e.sessionState.LastStockGpuModel
 }
 
-func createFamilyIntent(i intent.Intent) bool {
-	return i == intent.IntentDeployModel || i == intent.IntentCreateInstance
-}
-
-func createFamilyIntentString(s string) bool {
-	return s == string(intent.IntentDeployModel) || s == string(intent.IntentCreateInstance)
-}
-
 func (e *Engine) markRegistryInvalidated(action string) {
 	if e.registry == nil {
 		return
@@ -3684,11 +3617,10 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 	// match plus the four legacy zone maps) was removed in the zone convergence; the
 	// workflow validates the canonical zone against the snapshot.
 
-	// refData is the caller-supplied reference data for the turn — the zone catalog
-	// (and, for an image-bearing op like reinstall, the image catalog) the resolver
-	// already canonicalized against; nil for a field the op does not carry. Create
-	// carries no CompShareImageId, so refData.ImageCatalog is nil and the workflow
-	// reads its own 查询镜像. The ZONE catalog is the single snapshot shared by the
+	// refData is the caller-supplied reference data for the turn. The resolver uses
+	// it to verify typed zone and image identifiers. During guided create, a catalog
+	// re-query after changing image source remains authoritative over the proposal-time
+	// snapshot. The ZONE catalog is the single snapshot shared by the
 	// initial run, the 230 image-recovery re-run and recovery's stock check, so the
 	// create's zone can never disagree with the resolver's. The image-recovery re-run
 	// does NOT reuse an image snapshot — it re-queries a broad catalog and re-ranks
@@ -3782,7 +3714,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 	}
 
 	// Create failures must NOT be handed to the LLM narration round. When given a
-	// raw failure result the fast-tier narration has fabricated availability claims
+	// raw failure result, model narration has fabricated availability claims
 	// ("V100 下架") and invented GPU lists. The workflow's own message is already
 	// grounded — on a no-match it lists the REAL available types, and on sold-out it
 	// names the exact spec — so return it deterministically and skip narration.
@@ -3801,7 +3733,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		e.markRegistryInvalidated(action)
 		// Successful no-return-data or password-bearing workflows return a
 		// deterministic final reply so the engine SKIPS the post-workflow LLM
-		// narration round. That round runs on the fast tier and can stall; for
+		// narration round. That extra model call can stall; for
 		// reset/reinstall it also must not be allowed to restate user secrets.
 		// Data-bearing non-secret workflows still narrate so their IDs and next
 		// steps surface.
@@ -4449,10 +4381,6 @@ func containsAnyKeyword(normalized string, keywords []string) bool {
 		}
 	}
 	return false
-}
-
-func containsNormalizedKeyword(normalized string, keywords []string) bool {
-	return containsAnyKeyword(normalized, keywords)
 }
 
 // humanAgentTransferKeywords 是明确"转人工"意图的窄白名单短语。仅匹配这些

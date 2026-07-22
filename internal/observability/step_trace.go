@@ -20,8 +20,7 @@ const (
 	StepStateTimeout         StepState = "timeout"
 )
 
-// StepTrace is the per-step audit record for agent-tier saga execution
-// (ADR-006 §决策1). It is DEFINE-FRESH, intentionally NOT a reuse of
+// StepTrace is the per-step workflow audit record. It is intentionally not a reuse of
 // workflow.StepEvent (which is an 8-field, no-json-tag, CLI-display-only
 // type with a different field set). StepTrace serializes into the existing
 // per-turn trace_json as TraceRecord.Steps[] — zero DDL, no new table/column.

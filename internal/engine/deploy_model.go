@@ -11,16 +11,11 @@ import (
 	"github.com/compshare-agent/internal/zones"
 )
 
-// deploy_model.go now holds the zone-resolution and create-time stock helpers that
-// remain after the runtime convergence removed the dedicated "deploy_model" saga.
-// Its former role — a B8.3 agent-tier dispatch handler (tryDeployModel) that drove a
-// separate orchestrator saga (RunAgentSaga) — is gone: there is a single Workflow
-// execution entry (workflow.Engine.Run), and the instance-create path resolves the
-// zone/GPU here before the workflow runs. What remains is the write-path zone
+// deploy_model.go holds the zone-resolution and create-time stock helpers used by
+// the single workflow execution path. The instance-create path resolves the
+// zone/GPU here before the workflow runs. This file owns the write-path zone
 // catalog snapshot builder (the single reference the resolver and the workflow
-// share) and the create-time stock helpers. The old engine-side zone-resolution
-// chain — an alias table, a second LLM zone match, and the four zone-keyed maps —
-// was removed in the zone convergence: a user-named zone is now resolved once, by
+// share) and the create-time stock helpers. A user-named zone is resolved once, by
 // the action resolver's CodecZone against the live catalog.
 
 // supportZoneListStrict is the write-path support-zone fetch, without a serve-stale fallback: an

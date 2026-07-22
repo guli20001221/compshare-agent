@@ -1,6 +1,6 @@
 # 资源查询类列表渲染盘点 (③) + clean-display fix
 
-## Inventory — which fast-tier list renders cleanly vs "像镜像一样比较乱"
+## Inventory — which deterministic list renders cleanly vs "像镜像一样比较乱"
 | 列表 | renderer (internal/intent) | 标签 | 裸 ID? | 裁剪/上限 | 判定 |
 |---|---|---|---|---|---|
 | GPU 规格 | `buildGPUSpecLines` | 中文 (机型/性能/显存/状态) | 否 | 去重 by name | **clean** |

@@ -221,21 +221,6 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-// unifiedCreateEnabledFromEnv gates the R2b first-class create_instance route.
-// DEFAULT ON: the router prompt/schema expose create_instance by default. Set
-// COMPSHARE_UNIFIED_CREATE=0/off/false to roll back during soak.
-func unifiedCreateEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_UNIFIED_CREATE"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
 const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
 const defaultExternalKnowledgeCorpusPath = "deploy/kb/external_w0.jsonl"
 
@@ -607,7 +592,6 @@ type cliTraceRecorder struct {
 	completionTokens      int
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
-	plannerTraceSupplier  func() observability.RouterTrace
 	terminalSignals       observability.FinishSignals
 	stateTrace            observability.StateTrace
 }
@@ -647,22 +631,6 @@ func (r *cliTraceRecorder) SetRuntimeTrace(trace observability.RuntimeTrace) {
 		return
 	}
 	r.record.Runtime = trace
-}
-
-func (r *cliTraceRecorder) SetPlannerTraceSupplier(supplier func() observability.RouterTrace) {
-	if r == nil {
-		return
-	}
-	r.plannerTraceSupplier = supplier
-}
-
-func (r *cliTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
-	if r == nil {
-		return
-	}
-	r.record.IntentRouter = trace
-	r.addPlannerTokens(trace)
-	r.plannerTraceSupplier = nil
 }
 
 func (r *cliTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
@@ -818,12 +786,10 @@ func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 	}
 }
 
-// EmitStep accumulates one agent-tier saga StepTrace into THIS turn's record
-// (B6.2). The orchestrator saga runner uses the recorder as its StepSink. Steps
-// are folded into record.Steps in memory and persisted ONCE at Finish via
+// EmitStep accumulates one workflow step trace into this turn's record. Steps are
+// folded into record.Steps in memory and persisted once at Finish via
 // Append → prepareForPersist (which redacts Args/Result) — never a per-step
 // INSERT (a per-step INSERT would collide uk_request_uuid: one row per turn).
-// This makes *cliTraceRecorder satisfy orchestrator.StepSink.
 func (r *cliTraceRecorder) EmitStep(step observability.StepTrace) error {
 	if r == nil {
 		return nil
@@ -860,10 +826,6 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r.registryTraceSupplier != nil {
 		r.record.EntityRegistry = r.registryTraceSupplier(end)
 	}
-	if r.plannerTraceSupplier != nil {
-		r.record.IntentRouter = r.plannerTraceSupplier()
-		r.addPlannerTokens(r.record.IntentRouter)
-	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
 	r.record.Outcome.TotalTokens = r.totalTokens
 	r.record.Outcome.PromptTokens = r.promptTokens
@@ -882,12 +844,6 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	signals.ChatErr = chatErr
 	r.record.FinalizeOutcome(signals)
 	return r.writer.Append(r.record)
-}
-
-func (r *cliTraceRecorder) addPlannerTokens(trace observability.RouterTrace) {
-	r.totalTokens += trace.InputTokens + trace.OutputTokens
-	r.promptTokens += trace.InputTokens
-	r.completionTokens += trace.OutputTokens
 }
 
 func llmTokenUsageTotal(usage llm.TokenUsage) int {

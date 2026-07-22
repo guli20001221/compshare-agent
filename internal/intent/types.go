@@ -48,9 +48,8 @@ const (
 	// confirm-gated create flow. Keep this separate from create_instance, which
 	// covers hardware-first creation.
 	IntentDeployModel Intent = "deploy_model"
-	// create_instance (R2b P1a, 2026-06-26): first-class create-family intent.
-	// It is default-on via COMPSHARE_UNIFIED_CREATE and keeps deploy_model separate;
-	// set the flag off to roll back the create_instance route during soak.
+	// create_instance identifies hardware-first instance creation in legacy trace
+	// and evaluation records. Runtime action discovery is capability-driven.
 	IntentCreateInstance Intent = "create_instance"
 )
 

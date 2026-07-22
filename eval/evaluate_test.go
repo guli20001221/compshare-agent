@@ -186,15 +186,7 @@ func TestEval(t *testing.T) {
 		ran++
 
 		t.Run(model.Name, func(t *testing.T) {
-			// B2a (ADR-002 Acceptance #3): eval client via the Router factory
-			// (tier-aware) instead of llm.NewClient. nil overrides →
-			// For(TierFast) == base model byte-for-byte. The no-API-key
-			// Logf+continue above runs before this t.Run.
-			router, err := llm.NewModelRouter(llmConfigFromModel(model), nil)
-			if err != nil {
-				t.Fatalf("build LLM router for model %s: %v", model.Name, err)
-			}
-			client := router.For(llm.TierFast)
+			client := llm.NewClient(llmConfigFromModel(model))
 			report := ModelReport{ModelName: model.Name}
 			start := time.Now()
 

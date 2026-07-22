@@ -73,7 +73,7 @@ type WriterOptions struct {
 // queue. FileWriter has no long-lived resources and returns nil immediately.
 type Writer interface {
 	Append(record TraceRecord) error
-	// EmitStep is a reserved no-op hook on the SINK. B6.2 wires agent-tier
+	// EmitStep is a reserved no-op hook on the sink. Workflow step
 	// step accumulation in the per-turn RECORDER (cmd/trace.go
 	// cliTraceRecorder.EmitStep, internal/httpapi/trace_recorder.go
 	// chatTraceRecorder.EmitStep), NOT here: both sinks write the turn row
@@ -142,9 +142,8 @@ type TraceRecord struct {
 	Continuity          ContinuityTrace      `json:"continuity"`
 	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
-	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
-	// omitempty for all non-agent turns, so trace output stays byte-identical
-	// until a producer exists (same reserved-slot precedent as TaskTier in B1).
+	// Steps holds workflow step traces. Empty values are omitted for turns that
+	// did not execute a workflow.
 	Steps []StepTrace `json:"steps,omitempty"`
 	// Authorizations holds the per-target dual-proof audit record for each write a
 	// mutating action authorized this turn. Empty / omitempty for every non-mutating
@@ -268,9 +267,9 @@ func traceContinuityObserved(trace ContinuityTrace) bool {
 		trace.RecoveryAttempt || trace.CommitOutcome != "" || trace.CommitReason != ""
 }
 
-// TWO SEPARATE AXES describe how a turn ran. They are NOT interchangeable and
-// deliberately diverge for some turns — keep them distinct (do not collapse the
-// two fields into one, or force one shared vocabulary onto both).
+// LEGACY TRACE COMPAT: these two axes describe records produced before the
+// central-Agent cutover. They do not select a model or execution path today.
+// Keep them readable until the stored trace schema is retired.
 // TestActualExecutionTierAndExecutionPathAreSeparateAxes pins the divergence.
 //
 //   - Work-tier axis (TaskTier predicted / ActualExecutionTier realized): WHAT KIND of

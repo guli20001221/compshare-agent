@@ -158,11 +158,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
 	}
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
-	unifiedCreate, unknownUnifiedCreate := unifiedCreateEnabledFromEnv(getenv)
-	if unknownUnifiedCreate != "" {
-		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_UNIFIED_CREATE value %q\n", unknownUnifiedCreate)
-	}
-	engine.SetUnifiedCreateEnabled(unifiedCreate)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)
@@ -274,7 +269,6 @@ func runCLI(cmd *cobra.Command, args []string) error {
 			eng.SetTokenUsageObserver(traceRecorder.AddTokenUsage)
 			eng.SetFreshnessTraceObserver(traceRecorder.SetFreshnessTrace)
 			eng.SetDiagnosisTraceObserver(traceRecorder.SetDiagnosisTrace)
-			traceRecorder.SetPlannerTraceSupplier(nil)
 			if knowledgeRetrievalEnabled {
 				eng.SetRetrievalTraceObserver(traceRecorder.SetRetrievalTrace)
 				eng.SetOutcomeTraceObserver(traceRecorder.SetOutcomeTrace)

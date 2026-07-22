@@ -125,10 +125,7 @@ func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report k
 // Agent rewrites its own answer. No Tools are passed (no tool loop) and there is no
 // verifier persona. Returns ("", false) on any client/transport failure.
 func (e *Engine) retryKnowledgeCitation(ctx context.Context) (string, bool) {
-	client := e.agentLLMClient
-	if client == nil {
-		client = e.llmClient
-	}
+	client := e.llmClient
 	if client == nil {
 		return "", false
 	}
