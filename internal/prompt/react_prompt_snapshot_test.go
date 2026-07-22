@@ -14,8 +14,13 @@ const (
 	// when the user asks to actually change a resource — method/rules/fee/consequence/
 	// hypothetical questions are answered, not executed (review round-2 finding on the
 	// "怎么关机" ambiguity; behavioral effect validated in P7).
-	mutatingReActPromptSHA256 = "2f867cfb7608234b652de804dca53fca1c83412f364b3fbd9cfda8788aa85b30"
-	readOnlyReActPromptSHA256 = "d29db38abee4f64b0a6c8778df5bd0df381e01ebce76cfc3d78a10a24adb9b60"
+	// 2026-07-21: adopted the B4 central-agent behavior/reply prompt (the pro-carding
+	// rewrite). It restates the SAME write-authorization guard — act on do-requests,
+	// answer how-to/rules/fee/feasibility questions — with a proactive "适用就立即提交，
+	// 由确认卡补齐参数" framing, validated behaviorally (pro+B4: reliably cards creates,
+	// 0 false-cards on how-to probes). SHAs regenerated for the new segment text.
+	mutatingReActPromptSHA256 = "1072cc6bce17ee3724e2fd440b34a970b11501b10f6ac245eb75947c30ce3a56"
+	readOnlyReActPromptSHA256 = "399a8343e8abe982c7e8e52363a87ce1137a4850ad649200303a50657f799337"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

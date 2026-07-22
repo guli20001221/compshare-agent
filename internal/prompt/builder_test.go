@@ -107,8 +107,13 @@ func TestBuildSystem_ContainsCentralAgentContract(t *testing.T) {
 	for _, text := range []string{
 		"本轮唯一的业务判断者",
 		"先阅读完整对话",
-		"只有用户明确要求实际改变资源",
-		"动作建议本身不会执行操作",
+		// B4 write-authorization guard (2026-07-21 rephrase of "只有用户明确要求实际
+		// 改变资源", same intent): the do-vs-ask distinction — act on do-requests,
+		// ANSWER how-to/rules/fee/feasibility questions rather than executing them.
+		// Behaviorally validated 0 false-cards on how-to probes under pro+B4.
+		"用户问的是怎么做、规则、计费或可行性时，直接回答",
+		// The proposal itself never executes; the confirm card + server gate do.
+		"动作建议不会直接执行",
 		"相同条件没有新信息时不要重复调用",
 	} {
 		if !strings.Contains(prompt, text) {
