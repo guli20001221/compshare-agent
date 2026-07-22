@@ -2645,10 +2645,36 @@ func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
 // imageSourceFacetOptions lists the image sources the create flow really supports.
 // custom/shared are deliberately absent — create forbids them (the tool schema enum
 // is platform/community), so the facet never offers a source that would be rejected.
+// imageSourceFacetOptions asks what the user wants to DO, and answers with which
+// catalog to read.
+//
+// The two values stay platform/community because that is what they select: the
+// catalogs live behind different endpoints with different response shapes
+// (ImageSet[] vs CompshareImageGroup[].Data[]), so this is genuinely a choice of
+// where to look, not a field that could be enumerated from one catalog. What
+// changed is the QUESTION. "平台镜像 / 社区镜像" asks the user to know how this
+// platform files its images before they can say what they want to run.
+//
+// The framing is not decoration — it is what the two catalogs actually are.
+// Measured live 2026-07-22: community is 821 groups, 219/219 of the fetched rows
+// tagged, and those tags ARE the platform's 用途 classification — a catalog of
+// ready-to-run applications. Platform is 72 rows: 9 bare System images and 52 App
+// images whose tags are framework names (PyTorch, Miniconda3, Tensorflow) — a
+// catalog of environments to build in.
+//
+// Order and default are deliberately unchanged: platform stays first and stays the
+// default, so this reframes the question without silently moving anyone to a
+// different catalog.
 func imageSourceFacetOptions() []ConfirmFormOption {
 	return []ConfirmFormOption{
-		{Value: "platform", Label: "平台镜像", Note: "优云算力官方镜像"},
-		{Value: "community", Label: "社区镜像", Note: "社区镜像市场的真实镜像"},
+		{
+			Value: "platform", Label: "自己搭环境",
+			Note: "平台官方镜像：干净的系统镜像，或预装 PyTorch / TensorFlow 等框架的基础镜像",
+		},
+		{
+			Value: "community", Label: "跑现成的应用 / 模型",
+			Note: "社区镜像：开箱即用的应用与模型，可按数字人、图像视频生成、语音、LLM 等用途挑选",
+		},
 	}
 }
 
@@ -2657,21 +2683,38 @@ func imageSourceFacetOptions() []ConfirmFormOption {
 // each candidate's ImageType field, never from a purpose keyword table. Returns nil
 // (facet omitted) when fewer than two types are present — a single-type list is no
 // choice.
+// It carries the same "N 个镜像" count the 用途 facet does. The two facets are the
+// second step of opposite branches of the same card — 自己搭环境 gets types,
+// 跑现成的应用 gets 用途 — and one of them silently lacking counts reads as
+// unfinished rather than as a different kind of filter.
 func imageTypeFacetOptions(snap *deployment.ImageCatalogSnapshot) []ConfirmFormOption {
-	seen := map[string]bool{}
-	var opts []ConfirmFormOption
+	order := []string{}
+	count := map[string]int{}
+	label := map[string]string{}
 	for _, e := range snap.Entries() {
 		t := strings.TrimSpace(e.ImageType)
-		if t == "" || seen[strings.ToLower(t)] {
+		if t == "" {
 			continue
 		}
-		seen[strings.ToLower(t)] = true
-		opts = append(opts, ConfirmFormOption{Value: t, Label: imageTypeFacetLabel(t)})
+		key := strings.ToLower(t)
+		if _, seen := count[key]; !seen {
+			order = append(order, key)
+			label[key] = t
+		}
+		count[key]++
 	}
-	if len(opts) < 2 {
+	if len(order) < 2 {
 		return nil
 	}
-	return append([]ConfirmFormOption{{Value: "", Label: "全部类型"}}, opts...)
+	opts := []ConfirmFormOption{{Value: "", Label: "全部类型"}}
+	for _, key := range order {
+		opts = append(opts, ConfirmFormOption{
+			Value: label[key],
+			Label: imageTypeFacetLabel(label[key]),
+			Note:  fmt.Sprintf("%d 个镜像", count[key]),
+		})
+	}
+	return opts
 }
 
 // imageTagFacetOptions returns the distinct real Tags among the current candidates.
@@ -2737,12 +2780,23 @@ func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, snap *deploym
 	return append([]ConfirmFormOption{{Value: "", Label: "全部用途"}}, opts...)
 }
 
+// imageTypeFacetLabel names an upstream ImageType for the card.
+//
+// The enum is System / App / Game / Other (DescribeCompShareImages), and the live
+// platform catalog really does return all of System(9), App(52) and Other(11) —
+// "Other" used to fall through and render as the bare English word next to three
+// Chinese labels. An unrecognised type still falls through verbatim on purpose: a
+// value we cannot name is shown as the platform sent it rather than guessed at.
 func imageTypeFacetLabel(t string) string {
 	switch strings.ToLower(t) {
 	case "system":
 		return "系统镜像"
 	case "app":
-		return "应用镜像"
+		return "框架 / 应用镜像"
+	case "game":
+		return "游戏镜像"
+	case "other":
+		return "其他镜像"
 	case "custom":
 		return "自制镜像"
 	case "community":
@@ -2859,16 +2913,25 @@ func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 			})
 		}
 	}
-	description := "镜像类型和标签都来自所选来源的真实镜像目录。标签留空表示不按标签筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
-	if len(categoryOpts) > 0 {
-		description = "用途分类来自平台自己的镜像分类目录，每项后的数量是当前来源里真实匹配的镜像数。留空表示不按用途筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
+	// Title and copy follow whichever facet this branch actually offers, so the card
+	// reads as the second half of the question the first card asked rather than as a
+	// generic "筛选" step that happens to show different fields.
+	title := "缩小镜像范围"
+	description := "镜像类型和标签都来自所选目录里的真实镜像。留空表示不按它筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
+	switch {
+	case len(categoryOpts) > 0:
+		title = "想跑哪一类"
+		description = "用途分类来自平台自己的镜像分类目录，每项后的数量是当前目录里真实匹配的镜像数。留空表示不按用途筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
+	case len(fields) > 0 && fields[0].Key == "ImageType":
+		title = "要哪种底座"
+		description = "系统镜像是干净的操作系统，框架 / 应用镜像预装了 PyTorch、TensorFlow 等环境。每项后的数量是目录里真实匹配的镜像数，留空表示不筛选。"
 	}
 	return &ConfirmForm{
 		Version: 2,
 		Step: &ConfirmFormStep{
 			Index:          index,
 			Total:          total,
-			Title:          guidedStepTitle(index, "请选择镜像筛选"),
+			Title:          guidedStepTitle(index, title),
 			Description:    description,
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
@@ -2878,9 +2941,15 @@ func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 	}, nil
 }
 
-// buildGuidedImageSourceForm is the source-only form of the two-stage image flow. It
-// offers just the ImageSource (the sources create supports) so the following re-query
-// and facets step can rebuild from the chosen source's real catalog.
+// buildGuidedImageSourceForm is the first card of the image flow. It asks what the
+// user wants to do and stores the answer as ImageSource, so the following re-query
+// and filter step rebuild from the matching catalog.
+//
+// The card no longer asks "哪个来源" — see imageSourceFacetOptions. Each branch then
+// gets the filter that fits its data, with no branch-specific code: community rows
+// all carry ImageType=Community so the type facet omits itself for lack of a
+// choice, and platform tags barely intersect the platform's 用途 classification so
+// the category facet omits itself the same way. The two filters select themselves.
 func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
 	index, total := guidedStepPosition(wfCtx, guidedStepImageSource)
 	source := paramStr(wfCtx.Params, "ImageSource", "platform")
@@ -2892,14 +2961,14 @@ func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
 		Step: &ConfirmFormStep{
 			Index:          index,
 			Total:          total,
-			Title:          guidedStepTitle(index, "请选择镜像来源"),
-			Description:    "先选择镜像来源；随后只在该来源的真实镜像目录里做类型/标签筛选与选择。切换来源会按新来源重新查询并展示其真实类型与标签。",
+			Title:          guidedStepTitle(index, "你想怎么开始"),
+			Description:    "先说清楚要做什么，下一步只在对应的真实镜像目录里筛选和挑选。改这一步会按新目录重新查询，并展示它真实的分类与镜像。",
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
 			Skippable:      true,
 		},
 		Fields: []ConfirmFormField{{
-			Key: "ImageSource", Label: "镜像来源", Type: "select",
+			Key: "ImageSource", Label: "使用方式", Type: "select",
 			Value: source, Render: "cards", Editable: true, Options: imageSourceFacetOptions(),
 		}},
 	}, nil
