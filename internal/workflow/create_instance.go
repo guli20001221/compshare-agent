@@ -372,11 +372,13 @@ func CreateInstanceGuidedDef() *Definition {
 			stepGuidedChooseImageFacets(),
 			stepGuidedChooseImage(),
 			stepGuidedChooseChargeType(),
-			stepGuidedChooseGPU(),
-			// One capacity call per candidate zone, while image+GPU are settled and
-			// the zone is not: this is the only point in the flow where a zone the
-			// user cannot create in can be grayed out BEFORE they pick it.
+			// One capacity fan-out over every (model, zone) the catalog offers, read
+			// by BOTH hardware cards. It used to sit between them and cover only the
+			// chosen model's zones; the GPU card was then the one place a user could
+			// click something they could not buy. Image and charge type are settled by
+			// here, which is everything the call needs except the zone.
 			stepProbeZoneCapacity(),
+			stepGuidedChooseGPU(),
 			stepGuidedChooseZone(),
 			// Real creatability (ResourceEnough) for the resolved image+GPU+zone,
 			// fetched before the count / CPU-memory steps so their options can be
@@ -743,7 +745,10 @@ func guidedCapacityArgs(wfCtx *Context) (map[string]any, bool) {
 // creatability is a property of (image, GPU, zone), and the zone card is built
 // at the one moment where the first two are settled and the third is still open.
 func guidedCapacityArgsForZone(wfCtx *Context, zone string) (map[string]any, bool) {
-	gpuType := paramStr(wfCtx.Params, "GpuType", "")
+	return guidedCapacityArgsFor(wfCtx, paramStr(wfCtx.Params, "GpuType", ""), zone)
+}
+
+func guidedCapacityArgsFor(wfCtx *Context, gpuType, zone string) (map[string]any, bool) {
 	if gpuType == "" || zone == "" {
 		return nil, false
 	}
@@ -776,9 +781,21 @@ const zoneCapacityStepName = "查询各可用区容量"
 // It cannot be one call. The capacity API takes the zone as INPUT, so a single
 // request only ever describes the zone already chosen; that is what
 // stepQueryCapacitySpecs does, and it is why the sold-out answer used to arrive
-// after the user had picked. This is also why the equivalent gate is impossible
-// one step earlier on the GPU card: there the zone is not yet chosen, so the
-// question would need N_gpu × N_zone calls to answer something weaker.
+// after the user had picked.
+//
+// It now covers the GPU card too, which an earlier version of this comment
+// called impossible — "there the zone is not yet chosen". That was written when
+// the GPU card came FIRST. Under the image-first order the image is already
+// resolved here, and the image is the input the capacity call is hardest to
+// assemble; only the zone is missing, and each model is offered in a handful of
+// zones. So the fan-out is one call per (model, zone) row of the catalog — ~19
+// live, not N_gpu × N_zone — and both cards read the one answer.
+//
+// This is what makes "every enabled option is creatable" true rather than
+// approximate: a card count cannot answer it. The official CLI refuses
+// `instance search --available` without `--image` for exactly this reason
+// ("inventory depends on the image and disks"), and CheckCompShareResourceCapacity
+// is the only call that accounts for image size, disk, spec and charge type.
 //
 // Optional, and skipped until a concrete image is resolved: absence of a
 // capacity signal is never evidence of unavailability, so a probe that cannot
@@ -790,12 +807,16 @@ func stepProbeZoneCapacity() Step {
 		Tool:     "CheckCompShareResourceCapacity",
 		Optional: true,
 		SkipIf: func(wfCtx *Context) (bool, error) {
+			skipGPU, err := shouldSkipGuidedGPUStep(wfCtx)
+			if err != nil {
+				return false, err
+			}
 			skipZone, err := shouldSkipGuidedZoneStep(wfCtx)
 			if err != nil {
 				return false, err
 			}
-			// Nothing to gray out if the user is never shown the card.
-			if skipZone {
+			// Nothing to gray out if neither card is ever shown.
+			if skipGPU && skipZone {
 				return true, nil
 			}
 			return len(zoneCapacityProbeCalls(wfCtx)) == 0, nil
@@ -806,23 +827,72 @@ func stepProbeZoneCapacity() Step {
 	}
 }
 
-// zoneCapacityProbeCalls builds one capacity request per candidate zone of the
-// selected GPU. It returns nothing when the image or GPU is not yet resolved —
-// the step then skips, and the zone card keeps its ungated behavior.
+// capacityComboKey names one (model, zone) probe. Both cards derive their key
+// the same way, so a card can never look up a combination the probe filed under
+// a different name.
+func capacityComboKey(gpuType, zone string) string { return gpuType + "\x00" + zone }
+
+// zoneCapacityProbeCalls builds one capacity request per (model, zone) the
+// catalog offers. When the GPU is already pinned it narrows to that model, so a
+// flow that only needs the zone card still costs what it used to.
+//
+// Returns nothing when the image is not yet resolved — the step then skips and
+// both cards keep their ungated behavior.
 func zoneCapacityProbeCalls(wfCtx *Context) []BatchCall {
-	gpuType := paramStr(wfCtx.Params, "GpuType", "")
-	if gpuType == "" {
-		return nil
+	catalog := wfCtx.Result("查询可用配比")
+	// Only models the resolved image can actually run: the GPU card disables the
+	// rest on the image alone, so asking upstream about them buys nothing.
+	models := filterModelsByImageSupport(
+		guidedCandidateGPUModels(catalog),
+		currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像")))
+	if pinned := paramStr(wfCtx.Params, "GpuType", ""); pinned != "" {
+		if skip, err := shouldSkipGuidedGPUStep(wfCtx); err == nil && skip {
+			models = []string{pinned}
+		}
 	}
 	var calls []BatchCall
-	for _, zone := range guidedCandidateZones(wfCtx.Result("查询可用配比"), gpuType) {
-		args, ok := guidedCapacityArgsForZone(wfCtx, zone)
-		if !ok {
-			continue
+	for _, gpuType := range models {
+		for _, zone := range guidedCandidateZones(catalog, gpuType) {
+			args, ok := guidedCapacityArgsFor(wfCtx, gpuType, zone)
+			if !ok {
+				continue
+			}
+			calls = append(calls, BatchCall{Key: capacityComboKey(gpuType, zone), Args: args})
 		}
-		calls = append(calls, BatchCall{Key: zone, Args: args})
 	}
 	return calls
+}
+
+func filterModelsByImageSupport(models, supported []string) []string {
+	if len(supported) == 0 {
+		return models
+	}
+	var out []string
+	for _, m := range models {
+		if containsFold(supported, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// guidedCandidateGPUModels lists the models the catalog offers, in catalog
+// order, deduplicated — the same enumeration the GPU card renders, kept as one
+// function so the probe cannot ask about a different set than the card shows.
+func guidedCandidateGPUModels(catalog map[string]any) []string {
+	rows, _ := catalog["AvailableInstanceTypes"].([]any)
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		name, _ := row["Name"].(string)
+		if name == "" || seen[strings.ToLower(name)] {
+			continue
+		}
+		seen[strings.ToLower(name)] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // guidedCandidateZones lists the zones the catalog offers this GPU in, in
@@ -863,6 +933,14 @@ func guidedCandidateZones(catalog map[string]any, gpuType string) []string {
 // failed call, a call the batch bound never made, and an empty spec list are all
 // "we do not know", and the caller must leave those zones alone.
 func zoneCreatability(result map[string]any) map[string]bool {
+	return comboCreatability(result)
+}
+
+// comboCreatability maps capacityComboKey(model, zone) -> creatable. An entry is
+// only present when that probe actually answered: a failed call or a response
+// with no capacity signal stays ABSENT, which both cards read as unknown rather
+// than as a refusal.
+func comboCreatability(result map[string]any) map[string]bool {
 	outcomes := BatchResults(result)
 	if len(outcomes) == 0 {
 		return nil
@@ -882,6 +960,43 @@ func zoneCreatability(result map[string]any) map[string]bool {
 		return nil
 	}
 	return known
+}
+
+// zoneCreatabilityFor narrows the combo map to one model, keyed by zone, which
+// is the shape the zone card has always consumed. It looks each candidate up by
+// the same key the probe filed it under rather than scanning — the caller
+// already knows which zones it is going to render.
+func zoneCreatabilityFor(combos map[string]bool, gpuType string, zones []string) map[string]bool {
+	if len(combos) == 0 || gpuType == "" {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, zone := range zones {
+		if ok, answered := combos[capacityComboKey(gpuType, zone)]; answered {
+			out[zone] = ok
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// gpuModelCreatable answers the GPU card's question: is this model creatable in
+// AT LEAST ONE of the zones it is offered in? Unknown combinations count as
+// possible — a probe that could not answer must not gray anything out.
+func gpuModelCreatable(combos map[string]bool, gpuType string, zones []string) (creatable, known bool) {
+	for _, zone := range zones {
+		ok, answered := combos[capacityComboKey(gpuType, zone)]
+		if !answered {
+			return true, false
+		}
+		known = true
+		if ok {
+			return true, true
+		}
+	}
+	return false, known
 }
 
 // anyZoneCreatable reports whether at least one CANDIDATE zone is known
@@ -4031,6 +4146,25 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 		}
 		order = filtered
 	}
+	// Real creatability for the exact image / disk / charge type this create will
+	// send, per (model, zone). A combination the probe could not answer is absent
+	// and reads as unknown — never as a refusal.
+	combos := comboCreatability(wfCtx.Result(zoneCapacityStepName))
+	// Same escape hatch the zone card has: the gate STEERS, it does not refuse.
+	// If nothing is creatable there is nothing to steer toward, and graying out
+	// every model leaves a card that offers nothing — ensureGuidedGPUType turns
+	// that into a dead end raised before the draft exists, losing both the
+	// candidate draft and the typed capacity_sold_out reason the sold-out reply is
+	// built from. That authoritative negative belongs to 检查库存.
+	anyModelCreatable := false
+	for _, name := range order {
+		if ch := choices[name]; ch != nil {
+			if ok, known := gpuModelCreatable(combos, ch.name, ch.zones); ok && known {
+				anyModelCreatable = true
+				break
+			}
+		}
+	}
 	var opts []ConfirmFormOption
 	appendChoice := func(name string) {
 		ch := choices[name]
@@ -4051,7 +4185,9 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 		stock, stockKnown := inventory.total(ch.zones, ch.name)
 		imageUnsupported := len(supported) > 0 && !containsFold(supported, ch.name)
 		poolUnsupported, poolReason := poolUnsupportedEverywhere(wfCtx, ch.zones, ch.name)
-		disabled := !ch.normal || imageUnsupported || poolUnsupported
+		canCreate, creatabilityKnown := gpuModelCreatable(combos, ch.name, ch.zones)
+		soldOut := creatabilityKnown && !canCreate && anyModelCreatable
+		disabled := !ch.normal || imageUnsupported || poolUnsupported || soldOut
 		disabledReason := ""
 		if imageUnsupported {
 			noteParts = append(noteParts, "镜像不支持当前 GPU")
@@ -4064,15 +4200,26 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 			disabledReason = poolReason
 			stockKnown = false
 		}
-		if ch.normal && !poolUnsupported {
-			if stockKnown {
+		if soldOut && disabledReason == "" {
+			disabledReason = "当前配置在所有可用区都无可创建库存"
+			noteParts = append(noteParts, disabledReason)
+			stockKnown = false
+		}
+		if ch.normal && !poolUnsupported && !soldOut {
+			switch {
+			case creatabilityKnown && canCreate:
+				// The authoritative answer, for the exact image / disk / charge type
+				// this create will send. It outranks the snapshot count, which reports
+				// 0 for zones that are in fact selling.
+				noteParts = append(noteParts, "当前可创建")
+			case stockKnown:
 				noteParts = append(noteParts, guidedStockNote(stock))
-			} else {
+			default:
 				// Status==Normal means the model is ON SALE in the catalog — it is NOT
 				// evidence that stock exists right now, and no capacity reading is
-				// available at this step. Saying "可售" turned that catalog fact into an
-				// availability promise, which is how a sold-out GPU was offered as
-				// available. State the catalog fact and defer the verdict.
+				// available. Saying "可售" turned that catalog fact into an availability
+				// promise, which is how a sold-out GPU was offered as available. State
+				// the catalog fact and defer the verdict.
 				noteParts = append(noteParts, "在售，库存以最终确认为准")
 			}
 		}
@@ -4190,7 +4337,8 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 	// the raw GPU inventory count is NOT a substitute (it reports 0 for zones
 	// that are in fact selling, which is why it may inform the note but never
 	// disable an option).
-	creatable := zoneCreatability(wfCtx.Result(zoneCapacityStepName))
+	creatable := zoneCreatabilityFor(
+		comboCreatability(wfCtx.Result(zoneCapacityStepName)), gpuType, guidedCandidateZones(catalog, gpuType))
 	// The gate steers; it does not refuse. Graying out every zone leaves a card
 	// that offers nothing, and ensureGuidedZone turns that into "暂无可选可用区" —
 	// a dead end raised BEFORE the draft exists, so the failure record would lose

@@ -477,16 +477,19 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			created = c.args
 		}
 	}
-	// Capacity is checked per candidate zone (to gate the zone card), then once for
-	// the chosen zone (to gate 卡数量/CPU-内存), then once more to validate the sealed
-	// spec at the create gate — matching the official CLI, which also runs
-	// CheckCompShareResourceCapacity both to show creatable specs and to validate
-	// before the write. The zone term is derived, not a constant: a fan-out that
-	// grew to N_zone × N_something would still fail here.
-	zoneProbes := len(guidedCandidateZones(formCatalogFixture(), "A800"))
-	require.Equal(t, 1, zoneProbes, "A800 is offered in exactly one zone in this fixture")
-	assert.Equal(t, zoneProbes+2, capacityCalls,
-		"per-zone probe + option-gating capacity check + authoritative create-time re-check")
+	// Capacity is checked once per offered (model, zone) — that one fan-out gates
+	// BOTH the GPU and the zone card — then once for the chosen zone (to gate
+	// 卡数量/CPU-内存), then once more to validate the sealed spec at the create gate,
+	// matching the official CLI, which also runs CheckCompShareResourceCapacity
+	// both to show creatable specs and to validate before the write. The probe term
+	// is derived, not a constant: a fan-out that grew per spec would still fail here.
+	combos := 0
+	for _, model := range guidedCandidateGPUModels(formCatalogFixture()) {
+		combos += len(guidedCandidateZones(formCatalogFixture(), model))
+	}
+	require.Equal(t, 4, combos, "this fixture offers four sellable model/zone pairs")
+	assert.Equal(t, combos+2, capacityCalls,
+		"one combo fan-out + option-gating capacity check + authoritative create-time re-check")
 	assert.Equal(t, 1, priceCalls, "price is checked after the full spec is chosen")
 	require.NotNil(t, created)
 	assert.Equal(t, "A800", created["GpuType"])
@@ -1637,9 +1640,12 @@ func TestCreateInstanceGuided_FinalEditRevalidatesPriceBeforeCreate(t *testing.T
 	// validation once more (price re-checks on the edit). The zone probe must NOT
 	// re-run on the final edit — that edit changes the image, not the zone list, and
 	// a probe that re-fanned-out there would double the cost of every edit.
-	zoneProbes := len(guidedCandidateZones(formCatalogFixture(), "4090"))
-	require.Equal(t, 2, zoneProbes, "4090 is offered in two zones in this fixture")
-	assert.Equal(t, zoneProbes+3, capacityCalls)
+	combos := 0
+	for _, model := range guidedCandidateGPUModels(formCatalogFixture()) {
+		combos += len(guidedCandidateZones(formCatalogFixture(), model))
+	}
+	require.Equal(t, 4, combos, "this fixture offers four sellable model/zone pairs")
+	assert.Equal(t, combos+3, capacityCalls)
 	assert.Equal(t, 2, priceCalls)
 	require.NotNil(t, created)
 	assert.Equal(t, "img-002", created["CompShareImageId"])

@@ -88,16 +88,58 @@ func TestZoneCardDisablesAZoneWithNoCapacityBeforeTheUserPicksIt(t *testing.T) {
 	available := zoneOptionByValue(t, opts, "cn-sh2-02")
 	assert.False(t, available.Disabled, "the zone that IS creatable stays selectable")
 
-	// One call per candidate zone, and no more: the probe must not re-ask per spec.
-	require.Len(t, exec.capacityArgs, 2)
+	// One call per (model, zone) the catalog offers while the GPU card is still
+	// open, and no more: the probe must not re-ask per spec. The GPU card reads the
+	// same answers, which is why it covers every model rather than only the current
+	// one — an option a user can click has to be one they can buy.
+	require.Len(t, exec.capacityArgs, 4)
 	asked := map[string]bool{}
 	for _, args := range exec.capacityArgs {
+		gpu, _ := args["GpuType"].(string)
 		zone, _ := args["Zone"].(string)
-		asked[zone] = true
+		asked[gpu+"/"+zone] = true
 		assert.NotEmpty(t, args["CompShareImageId"],
 			"creatability is per image — a probe without one answers a different question")
 	}
-	assert.Equal(t, map[string]bool{"cn-sh2-02": true, "cn-wlcb-01": true}, asked)
+	assert.Equal(t, map[string]bool{
+		"4090/cn-wlcb-01": true, "4090/cn-sh2-02": true,
+		"4090_48G/cn-wlcb-01": true, "A800/cn-wlcb-01": true,
+	}, asked)
+}
+
+// TestGPUCardDisablesAModelNoZoneCanCreate is the same guarantee one card
+// earlier: 4090 survives because 上海二B can create it, while 4090_48G and A800
+// are offered only in the zone that cannot. Before the probe covered every
+// model, both were selectable and the refusal arrived at 检查库存.
+func TestGPUCardDisablesAModelNoZoneCanCreate(t *testing.T) {
+	exec := newZoneCapacityExecutor(map[string]bool{"cn-sh2-02": true, "cn-wlcb-01": false})
+	var gpuOpts []ConfirmFormOption
+	eng := NewEngine(exec, func(string, map[string]any) bool { return true }, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		if form != nil {
+			if f := form.Field("GpuType"); f != nil {
+				gpuOpts = f.Options
+				return ConfirmResolution{Confirmed: false}
+			}
+		}
+		return ConfirmResolution{Confirmed: true}
+	})
+	_, err := eng.Run(context.Background(), CreateInstanceGuidedDef(), map[string]any{},
+		func(c *Context) { c.referenceData.ZoneCatalog = createZoneCatalog() })
+	require.NoError(t, err)
+	require.NotEmpty(t, gpuOpts)
+
+	byValue := map[string]ConfirmFormOption{}
+	for _, o := range gpuOpts {
+		byValue[o.Value] = o
+	}
+	assert.False(t, byValue["4090"].Disabled, "上海二B can create a 4090, so the model stays selectable")
+	assert.Contains(t, byValue["4090"].Note, "当前可创建",
+		"the authoritative answer outranks the snapshot count in the note")
+	assert.True(t, byValue["A800"].Disabled, "A800 is offered only where nothing can be created")
+	assert.NotEmpty(t, byValue["A800"].Reason)
+	assert.NotContains(t, byValue["A800"].Note, "在售",
+		"a model that cannot be created must not also be described as on sale")
 }
 
 // TestZoneCardLeavesEveryZoneSelectableWhenNoneIsCreatable holds the line that
@@ -151,6 +193,36 @@ func TestZoneCardIgnoresAProbeThatCouldNotAnswer(t *testing.T) {
 	})
 }
 
+// TestGPUCardTreatsAnUnansweredComboAsPossible is the same rule on the GPU card,
+// and it is the one that decides whether a flaky upstream read can block a
+// create. A model is grayed out only when EVERY zone it is offered in came back
+// with an actual "no"; a probe that errored or returned nothing leaves the model
+// selectable and the authoritative refusal to 检查库存.
+func TestGPUCardTreatsAnUnansweredComboAsPossible(t *testing.T) {
+	answered := map[string]bool{
+		capacityComboKey("4090", "cn-sh2-02"):  false,
+		capacityComboKey("A800", "cn-wlcb-01"): true,
+		capacityComboKey("4090", "cn-wlcb-01"): false,
+	}
+
+	// Every zone answered "no" → a real dead end.
+	creatable, known := gpuModelCreatable(answered, "4090", []string{"cn-wlcb-01", "cn-sh2-02"})
+	assert.True(t, known)
+	assert.False(t, creatable)
+
+	// One zone was never answered → the model must stay possible, even though the
+	// zone that DID answer said no. Treating the gap as a refusal would let one
+	// failed HTTP call hide a buyable GPU.
+	creatable, known = gpuModelCreatable(answered, "4090", []string{"cn-wlcb-01", "cn-unprobed-09"})
+	assert.False(t, known, "a gap is not an answer")
+	assert.True(t, creatable, "and an unanswered model must not be grayed out")
+
+	// No probe results at all: nothing is judged.
+	creatable, known = gpuModelCreatable(nil, "4090", []string{"cn-wlcb-01"})
+	assert.False(t, known)
+	assert.True(t, creatable)
+}
+
 // TestZoneCapacityProbeSkipsUntilAnImageIsResolved pins the ordering the gate
 // depends on. Creatability is a property of the IMAGE too, so a probe fired
 // before the image is pinned would gate the card on some other image's answer.
@@ -169,12 +241,23 @@ func TestZoneCapacityProbeSkipsUntilAnImageIsResolved(t *testing.T) {
 	require.False(t, skip, "a resolved image + GPU is exactly when the question is answerable")
 	calls, err := step.BuildArgsBatch(withImage)
 	require.NoError(t, err)
-	require.Len(t, calls, 2, "one call per candidate zone of the selected GPU")
-	assert.Equal(t, "cn-wlcb-01", calls[0].Key)
-	assert.Equal(t, "cn-sh2-02", calls[1].Key)
+	require.Len(t, calls, 4, "one call per (model, zone) offered — both hardware cards read these")
+	assert.Equal(t, capacityComboKey("4090", "cn-wlcb-01"), calls[0].Key)
+	assert.Equal(t, capacityComboKey("4090", "cn-sh2-02"), calls[1].Key)
 	for _, c := range calls {
-		assert.Equal(t, c.Key, c.Args["Zone"], "each call must ask about its OWN zone")
+		assert.Equal(t, c.Key, capacityComboKey(c.Args["GpuType"].(string), c.Args["Zone"].(string)),
+			"each call must be filed under the combination it actually asked about")
 	}
+
+	// A pinned GPU that no card will re-open narrows the fan-out back down: the
+	// wider probe pays for a choice the user still has, not for one they made.
+	pinned := formWfCtx(t, map[string]any{
+		"GpuType": "4090", "GuidedGpuLocked": true, "CompShareImageId": "img-004",
+		"Zone": "cn-wlcb-01", "Gpu": float64(1), "Cpu": float64(16), "Memory": float64(65536),
+	})
+	pinnedCalls, err := step.BuildArgsBatch(pinned)
+	require.NoError(t, err)
+	assert.Len(t, pinnedCalls, 2, "only the pinned model's zones")
 }
 
 // TestGuidedCreateWiresTheZoneProbeBeforeTheZoneCard is the anti-orphan gate: a
@@ -194,9 +277,12 @@ func TestGuidedCreateWiresTheZoneProbeBeforeTheZoneCard(t *testing.T) {
 			gpuAt = i
 		}
 	}
-	require.NotEqual(t, -1, probeAt, "the per-zone capacity probe must be IN the guided flow")
+	require.NotEqual(t, -1, probeAt, "the capacity probe must be IN the guided flow")
 	require.NotEqual(t, -1, zoneAt)
 	require.NotEqual(t, -1, gpuAt)
-	assert.Greater(t, probeAt, gpuAt, "the probe needs the chosen GPU")
-	assert.Less(t, probeAt, zoneAt, "…and must run before the card it gates")
+	// It used to run BETWEEN these two, on the reasoning that it "needs the chosen
+	// GPU". It does not — it fans out over the models instead — and sitting there
+	// left the GPU card as the one place a user could pick something unbuyable.
+	assert.Less(t, probeAt, gpuAt, "the probe must gate the GPU card too")
+	assert.Less(t, probeAt, zoneAt, "…and the zone card, which reads the same answers")
 }
