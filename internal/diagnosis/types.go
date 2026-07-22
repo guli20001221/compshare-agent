@@ -1,6 +1,11 @@
 package diagnosis
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+
+	"github.com/compshare-agent/internal/tools"
+)
 
 // VerdictAction determines what happens after a diagnosis step evaluates.
 type VerdictAction int
@@ -20,14 +25,17 @@ type Step struct {
 	Name      string
 	Tool      string
 	BuildArgs func(dCtx *Context) (map[string]any, error)
-	Evaluate  func(result map[string]any, dCtx *Context) Verdict
+	// Execute optionally owns a multi-call read such as pagination. When nil,
+	// Engine performs the ordinary single Tool call. The function receives the
+	// already-built arguments and must return one merged response.
+	Execute  func(context.Context, tools.ToolExecutor, map[string]any) (map[string]any, error)
+	Evaluate func(result map[string]any, dCtx *Context) Verdict
 }
 
 type Chain struct {
-	Name        string
-	Description string
-	Steps       []Step
-	Fallback    Verdict
+	Name     string
+	Steps    []Step
+	Fallback Verdict
 }
 
 type Context struct {

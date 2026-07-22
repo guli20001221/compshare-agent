@@ -10,8 +10,7 @@ const createDiskMissingSizeMessage = "创建数据盘需要指定磁盘大小（
 
 func CreateDiskDef() *Definition {
 	return &Definition{
-		Name:        "CreateDiskWorkflow",
-		Description: "查询实例 → 查询数据盘价格 → 确认创建数据盘 → 创建并挂载",
+		Name: "CreateDiskWorkflow",
 		Steps: []Step{
 			stepQueryForDisk(),
 			stepQuerySupportZones(),

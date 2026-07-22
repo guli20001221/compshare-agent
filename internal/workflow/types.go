@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/compshare-agent/internal/deployment"
 )
@@ -102,6 +103,12 @@ type Step struct {
 	// Optional lets a post-success enrichment step fail without failing the
 	// whole workflow. Default false preserves existing fail-stop behavior.
 	Optional bool
+	// Poll retries a successful read whose CheckResult reports a pending state.
+	// It is opt-in and intended for asynchronous state transitions after a
+	// confirmed write (for example Running -> Stopping -> Stopped). Mutating
+	// calls must never use it: writes remain single-attempt under the action
+	// journal.
+	Poll *PollPolicy
 
 	// --- Editable confirm form (StepConfirm only; all three nil/empty =
 	// legacy boolean confirm, byte-identical). Consumed only by
@@ -144,6 +151,12 @@ type Step struct {
 	ConfirmSubmitMode ConfirmSubmitMode
 }
 
+// PollPolicy bounds an opt-in read poll. Both fields must be positive.
+type PollPolicy struct {
+	Interval time.Duration
+	Timeout  time.Duration
+}
+
 // ConfirmSubmitMode controls StepConfirm form-submission behavior.
 type ConfirmSubmitMode string
 
@@ -154,10 +167,15 @@ const (
 
 // Definition holds a complete workflow.
 type Definition struct {
-	Name        string
-	Description string
-	Steps       []Step
-	ResultData  func(wfCtx *Context) map[string]any
+	Name       string
+	Steps      []Step
+	ResultData func(wfCtx *Context) map[string]any
+	// ImageCatalogSource declares a fixed image source for workflows whose image
+	// id must be resolved against one specific catalog. Empty means the source is
+	// supplied by the proposal (for example reinstall). Keeping this metadata on
+	// the capability avoids exposing a constant ImageSource argument to the model
+	// or hard-coding workflow names in the engine.
+	ImageCatalogSource string
 	// FailureDraft returns the candidate this workflow was working from, encoded,
 	// for the failure record. Like ResultData it is the definition's own way of
 	// naming what only it understands — the engine never interprets what comes
@@ -216,6 +234,9 @@ const (
 type CheckOutcome struct {
 	OK      bool
 	Message string
+	// Pending asks an opt-in polling step to query again. It is distinct from a
+	// failed check: an asynchronous transition is still in progress, not denied.
+	Pending bool
 	// Reason is optional. Most rejections need only be explained, not classified;
 	// only a caller that must ACT differently needs one, and inventing reasons for
 	// rejections nobody branches on would be inventing a vocabulary.
@@ -228,6 +249,11 @@ func CheckPassed() CheckOutcome { return CheckOutcome{OK: true} }
 // CheckFailed stops the workflow with an explanation and no classification.
 func CheckFailed(message string) CheckOutcome {
 	return CheckOutcome{Message: message}
+}
+
+// CheckPending asks a polling read step to retry until it passes or times out.
+func CheckPending(message string) CheckOutcome {
+	return CheckOutcome{Message: message, Pending: true}
 }
 
 // CheckFailedBecause stops the workflow with an explanation AND a machine-readable

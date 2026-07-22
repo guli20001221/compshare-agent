@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,7 +46,8 @@ func customImageContainerInstanceResult(state string) map[string]any {
 
 func customImageMockExecutor() *mockExecutor {
 	return &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance":        customImageInstanceResult("Running"),
+		"DescribeCompShareInstance":        customImageInstanceResult("Stopped"),
+		"DescribeCompShareSupportZone":     customImageSupportZoneResult(),
 		"CreateCompShareCustomImage":       {"CompShareImageId": "cimg-custom-001"},
 		"GetCompShareImageCreateProgress":  {"Process": float64(65.5), "TotalDuration": float64(300), "RemainingDuration": float64(105)},
 		"TerminateCompShareCustomImage":    {"RetCode": 0},
@@ -59,6 +61,37 @@ func customImageMockExecutor() *mockExecutor {
 		"DeleteCompshareDisk":              {"RetCode": 0},
 		"DeleteCompShareTeam":              {"RetCode": 0},
 	}}
+}
+
+func customImageSupportZoneResult() map[string]any {
+	return map[string]any{"ZoneInfo": []any{map[string]any{
+		"Zone": "cn-sh2-02", "Region": "cn-sh2",
+		"ZoneId": float64(8200), "RegionId": float64(1000009),
+	}}}
+}
+
+type customImageLifecycleExecutor struct {
+	base      *mockExecutor
+	stopped   bool
+	pollCount int
+}
+
+func (e *customImageLifecycleExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	if action == "DescribeCompShareInstance" {
+		e.base.calls = append(e.base.calls, executorCall{action: action, args: args})
+		if !e.stopped {
+			return customImageInstanceResult("Running"), nil
+		}
+		e.pollCount++
+		if e.pollCount == 1 {
+			return customImageInstanceResult("Stopping"), nil
+		}
+		return customImageInstanceResult("Stopped"), nil
+	}
+	if action == "StopCompShareInstance" {
+		e.stopped = true
+	}
+	return e.base.Execute(ctx, action, args)
 }
 
 func findExecutorCall(calls []executorCall, action string) (executorCall, bool) {
@@ -194,6 +227,8 @@ func TestCreateCustomImage_HappyPathThreadsSourceZoneRegionAndQueriesProgress(t 
 	assert.Equal(t, "training environment", createCall.args["Description"])
 	assert.Equal(t, "cn-sh2", createCall.args["Region"])
 	assert.Equal(t, "cn-sh2-02", createCall.args["Zone"])
+	assert.Equal(t, uint32(1000009), createCall.args["az_group"])
+	assert.Equal(t, uint32(8200), createCall.args["zone_id"])
 	for _, key := range []string{"Softwares", "SoftwarePorts", "FirewallPorts"} {
 		assert.NotContains(t, createCall.args, key, "v1 must not pass %s", key)
 	}
@@ -203,6 +238,34 @@ func TestCreateCustomImage_HappyPathThreadsSourceZoneRegionAndQueriesProgress(t 
 	assert.Equal(t, "cimg-custom-001", progressCall.args["CompShareImageId"])
 	assert.Equal(t, "cn-sh2", progressCall.args["Region"])
 	assert.Equal(t, "cn-sh2-02", progressCall.args["Zone"])
+}
+
+func TestCreateCustomImage_RunningVMStopsWaitsThenCreates(t *testing.T) {
+	base := customImageMockExecutor()
+	executor := &customImageLifecycleExecutor{base: base}
+	def := CreateCustomImageDef()
+	for i := range def.Steps {
+		if def.Steps[i].Name == "等待源实例关机" {
+			def.Steps[i].Poll = &PollPolicy{Interval: time.Millisecond, Timeout: time.Second}
+		}
+	}
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		assert.Contains(t, args["warning"], "先关闭")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), def, map[string]any{
+		"UHostId": "uhost-src",
+		"Name":    "snapshot-v1",
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	_, stopped := findExecutorCall(base.calls, "StopCompShareInstance")
+	require.True(t, stopped, "a running VM must be stopped after confirmation")
+	_, created := findExecutorCall(base.calls, "CreateCompShareCustomImage")
+	require.True(t, created, "image creation must wait for the stopped observation")
+	assert.Equal(t, 2, executor.pollCount)
 }
 
 func TestCreateCustomImage_MissingSourceZoneRegionStopsBeforeConfirmation(t *testing.T) {

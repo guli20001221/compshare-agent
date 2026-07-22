@@ -18,6 +18,7 @@ func TestIsWorkflowTool(t *testing.T) {
 	assert.True(t, IsWorkflowTool("CancelStopSchedulerWorkflow"))
 	assert.True(t, IsWorkflowTool("ResizeDiskWorkflow"))
 	assert.True(t, IsWorkflowTool("CreateCustomImageWorkflow"))
+	assert.True(t, IsWorkflowTool("CloneCustomImageWorkflow"))
 
 	// Non-workflow actions should return false
 	assert.False(t, IsWorkflowTool("DescribeCompShareInstance"))
@@ -88,11 +89,17 @@ func TestGetWorkflow(t *testing.T) {
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 3)
 
-	// CreateCustomImageWorkflow: 4 steps
+	// CreateCustomImageWorkflow: query + zone + confirm + optional stop/wait + create + progress
 	def, ok = GetWorkflow("CreateCustomImageWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 4)
+	assert.Len(t, def.Steps, 7)
+
+	// CloneCustomImageWorkflow: confirm -> sync -> optional progress
+	def, ok = GetWorkflow("CloneCustomImageWorkflow")
+	assert.True(t, ok)
+	assert.NotNil(t, def)
+	assert.Len(t, def.Steps, 3)
 
 	// ResizeDiskWorkflow: query instance -> query zones -> check -> price -> confirm -> resize
 	def, ok = GetWorkflow("ResizeDiskWorkflow")

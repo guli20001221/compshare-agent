@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,11 +30,10 @@ func TestProposalToolExposureAndMapping(t *testing.T) {
 	require.False(t, ok, "the retired alias must no longer resolve to an operation")
 }
 
-// The single model-visible proposal contract is authored once
-// (proposalInvocationContract{Prefix,Suffix}) and shared by every
-// Request<Operation> tool, so the per-op description cannot drift from a second
-// copy — the base ProposeAction template deliberately no longer restates it.
-func TestRequestToolDescriptionUsesSingleContractSource(t *testing.T) {
+// The system prompt owns the shared write-proposal behavior. Request tools carry
+// only their operation-specific semantic boundary, sourced from the capability
+// registry rather than the workflow's internal execution-step description.
+func TestRequestToolDescriptionUsesCapabilityBoundaryNotWorkflowSteps(t *testing.T) {
 	var desc string
 	for _, tool := range centralAgentToolWindow(true) {
 		if tool.Function != nil && tool.Function.Name == "RequestCreateInstance" {
@@ -42,10 +42,32 @@ func TestRequestToolDescriptionUsesSingleContractSource(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, desc, "RequestCreateInstance must be advertised when mutating is enabled")
-	require.True(t, strings.HasPrefix(desc, proposalInvocationContractPrefix),
-		"the per-op description must open with the single contract preamble")
-	require.True(t, strings.HasSuffix(desc, proposalInvocationContractSuffix),
-		"the per-op description must close with the single contract suffix")
+	capability, ok := tools.DefaultCapabilityRegistry().Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+	require.Equal(t, capability.AgentInstruction, desc)
+	require.NotContains(t, desc, "→", "workflow execution steps are runtime-only")
+	require.NotContains(t, desc, "参数可不完整", "shared proposal behavior belongs only in the system prompt")
+	require.NotContains(t, desc, "本工具不直接执行", "shared proposal behavior belongs only in the system prompt")
+}
+
+func TestRequestToolDescriptionsDoNotRepeatSharedPromptOrExecutionChains(t *testing.T) {
+	for _, tool := range centralAgentToolWindow(true) {
+		if tool.Function == nil || !strings.HasPrefix(tool.Function.Name, "Request") {
+			continue
+		}
+		desc := tool.Function.Description
+		require.NotEmpty(t, desc, tool.Function.Name)
+		require.NotContains(t, desc, "参数可不完整", tool.Function.Name)
+		require.NotContains(t, desc, "服务端负责缺失字段", tool.Function.Name)
+		require.NotContains(t, desc, "本工具不直接执行", tool.Function.Name)
+		require.NotContains(t, desc, "→", tool.Function.Name)
+		require.NotContains(t, desc, "->", tool.Function.Name)
+		require.NotContains(t, desc, "自动执行", tool.Function.Name)
+		require.NotContains(t, desc, "确认式工作流", tool.Function.Name)
+		for _, internalAPI := range []string{"DescribeCompShare", "GetCompShare", "CreateCompShare", "SyncCompShare"} {
+			require.NotContains(t, desc, internalAPI, tool.Function.Name)
+		}
+	}
 }
 
 func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {

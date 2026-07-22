@@ -76,8 +76,7 @@ func TestEngine_Run_Success(t *testing.T) {
 	onStep, events := collectEvents()
 
 	def := &Definition{
-		Name:        "CreateInstance",
-		Description: "创建实例",
+		Name: "CreateInstance",
 		Steps: []Step{
 			{
 				Name: "get_price",

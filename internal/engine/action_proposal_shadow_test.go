@@ -28,6 +28,14 @@ func createProposalArgs(turnID, gpuType string) map[string]any {
 	}
 }
 
+func TestProposalImageCatalogSourceUsesCapabilityDefaultWithoutModelConstant(t *testing.T) {
+	spec := actionresolver.OperationSpec{ImageCatalogSource: "custom"}
+	require.Equal(t, "custom", proposalImageCatalogSource(actionresolver.ActionProposal{}, spec))
+	require.Equal(t, "sharing", proposalImageCatalogSource(actionresolver.ActionProposal{
+		Slots: []actionresolver.SlotCandidate{{Name: "ImageSource", Value: "sharing"}},
+	}, spec))
+}
+
 // TestProposeActionCatalogOutageParksNoPendingTask is the engine half of the
 // "our failure is not the user's fault" contract. The resolver reporting a
 // DependencyFailure is not enough on its own: the engine must also refuse to
@@ -599,6 +607,28 @@ func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
 	require.Equal(t, float64(200), resolved.action.Arguments["Size"])
+}
+
+func TestCompleteCurrentTurnEvidenceAcceptsExactCustomImageName(t *testing.T) {
+	catalog, err := actionresolver.BuildCatalog()
+	require.NoError(t, err)
+	spec, ok := catalog.Lookup("CreateCustomImageWorkflow")
+	require.True(t, ok)
+	name := "codex-agent-fixed-1784566477"
+	question := "请立即调用 ProposeAction_CreateCustomImageWorkflow，把实例 uhost-1szs4kk4wmjj 制作为自制镜像，镜像名称 " + name + "。不要用文字模拟确认，必须发出真实确认卡。"
+	proposal := actionresolver.ActionProposal{
+		TurnID:    "turn-custom-image",
+		Operation: "CreateCustomImageWorkflow",
+		Slots: []actionresolver.SlotCandidate{{
+			Name: "Name", Value: name, Source: actionresolver.SourceUserExplicit,
+		}},
+	}
+	view := AgentContext{TurnID: "turn-custom-image", CurrentQuestion: question}
+
+	completed := completeCurrentTurnEvidence(proposal, view, spec)
+	require.NotNil(t, completed.Slots[0].Evidence)
+	require.Equal(t, name, completed.Slots[0].Evidence.Quote)
+	require.True(t, verifyCurrentQuestionEvidence(view, completed.Slots[0], spec.Fields["Name"].Codec))
 }
 
 func TestProposalRejectsDifferentTurnEvidence(t *testing.T) {

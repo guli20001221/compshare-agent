@@ -173,8 +173,9 @@ type HistoryMessage struct {
 // is returned verbatim, or as a single override chunk when engine guards
 // rewrite the reply.
 type ChatOptions struct {
-	// TurnID is the durable server turn identity. It is trace/context metadata
-	// only and grants no execution authority.
+	// TurnID is the durable server turn identity. When the transport does not
+	// provide one, ChatWithOptions creates an engine-local identity for this
+	// turn. It is trace/context metadata only and grants no execution authority.
 	TurnID string
 	// OnTextDelta, if non-nil, is called once per text token in order, but
 	// only for the final LLM reply (not for intermediate ReAct tool-call rounds).
@@ -1113,8 +1114,12 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 // authority (see ChatOptions.TurnID) — it exists so this turn's current-turn
 // evidence can be tied to this turn rather than stamped with an empty id the
 // verifier then rejects.
+//
+// This is the SINGLE producer of that fallback id. ChatWithOptions used to compute
+// its own copy inline, which is how one turn could end up labelled two ways in the
+// same trace; the prefix here is the one cede00d4's engine_test pins.
 func (e *Engine) ephemeralTurnID() string {
-	return fmt.Sprintf("local-turn-%d", e.userTurn)
+	return fmt.Sprintf("engine-turn-%d", e.userTurn)
 }
 
 // ChatWithOptions is like Chat but accepts streaming callbacks via opts.
@@ -1125,6 +1130,10 @@ func (e *Engine) ephemeralTurnID() string {
 
 func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep func(StepEvent), opts ChatOptions) (reply string, err error) {
 	e.userTurn++
+	turnID := strings.TrimSpace(opts.TurnID)
+	if turnID == "" {
+		turnID = e.ephemeralTurnID()
+	}
 	e.resetTurnCompletion()
 	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
 		e.turnModelCallsThisTurn++
@@ -1224,14 +1233,16 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// empty MessageID that verifyCurrentQuestionEvidence then rejects — the server
 	// disowning its own evidence — which surfaces as a bogus unverified_source
 	// rejection on any standalone user_explicit field (ImageName/GpuType/Zone/…)
-	// and dead-ends the create card. Backfill an ephemeral, turn-local id so the
-	// invariant never depends on which entry point remembered to pass one. It
-	// grants no execution authority (see ChatOptions.TurnID); it only binds this
-	// turn's evidence to this turn.
-	if strings.TrimSpace(opts.TurnID) == "" {
-		opts.TurnID = e.ephemeralTurnID()
-	}
-	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, opts.TurnID, continuityNow)
+	// and dead-ends the create card.
+	//
+	// The backfill now happens once at the top of the turn (turnID, above), which
+	// is the same guarantee one step earlier — so opts.TurnID is mirrored to it
+	// here rather than being filled a second time. Two independent fallbacks for
+	// one identity is how a turn ends up labelled two different ways in the trace.
+	// It grants no execution authority (see ChatOptions.TurnID); it only binds
+	// this turn's evidence to this turn.
+	opts.TurnID = turnID
+	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, turnID, continuityNow)
 	e.turnContextViewReady = true
 	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
@@ -2039,6 +2050,7 @@ var friendlyActionNames = map[string]string{
 	"ReinstallInstanceWorkflow":   "重装系统",
 	"CreateDiskWorkflow":          "创建数据盘",
 	"CreateCustomImageWorkflow":   "创建自制镜像",
+	"CloneCustomImageWorkflow":    "克隆自制镜像",
 }
 
 func friendlyActionName(action string) string {
@@ -3797,7 +3809,6 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			return finalReplyPrefix + reply
 		}
 	}
-
 	b, _ := json.Marshal(result)
 	return string(b)
 }
@@ -4169,6 +4180,17 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 		}
 		b, _ := json.Marshal(result)
 		return string(b), intent.HandlerFailureGenericRead
+	}
+	if action == "DiagnoseBilling" {
+		// Billing amounts are server-rendered from structured upstream fields.
+		// Letting the model narrate this result previously re-summed periods,
+		// extrapolated hourly quotes to monthly spend and inferred a free quota
+		// from a zero price. Exact financial facts have one deterministic exit.
+		reply := strings.TrimSpace(result.Conclusion)
+		if suggestion := strings.TrimSpace(result.Suggestion); suggestion != "" {
+			reply += "\n\n" + suggestion
+		}
+		return finalReplyPrefix + reply, intent.HandlerFailureNone
 	}
 
 	b, _ := json.Marshal(result)

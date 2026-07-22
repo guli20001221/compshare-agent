@@ -63,7 +63,7 @@ func (CFSListRequest) MissingFields() []platform.MissingField { return nil }
 func cfsListReadSpec() ReadCapabilitySpec[CFSListRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSListRequest, CFSResponse]{
 		Label:       readCFSList,
-		Description: "查询 CFS 列表或指定 CFS 状态。",
+		Description: "查询当前账号 CFS 列表或指定 CFS 的状态、容量和位置。价格、扩容价和退费估算使用对应 CFS 能力。",
 		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}),
 		Handle:      cfsListHandle,
 		Render:      cfsRender,
@@ -109,10 +109,14 @@ func (r CFSCreatePriceRequest) MissingFields() []platform.MissingField {
 func cfsCreatePriceReadSpec() ReadCapabilitySpec[CFSCreatePriceRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSCreatePriceRequest, CFSResponse]{
 		Label:       readCFSCreatePrice,
-		Description: "估算创建 CFS 的价格。",
-		Params:      objectParam(map[string]schemaNode{"zone": stringParam(), "target_size_gb": integerParam(1), "charge_type": stringParam()}, "zone", "target_size_gb"),
-		Handle:      cfsCreatePriceHandle,
-		Render:      cfsRender,
+		Description: "查询拟创建云存储 Pro（CFS 共享文件存储）在指定可用区和容量下的实时账号净报价。不用于普通实例数据盘；上游接口不返回免费额度字段。",
+		Params: objectParam(map[string]schemaNode{
+			"zone":           stringParam().described("精确可用区 ID。当前只有上游标记为 Pod 的区域支持该询价。"),
+			"target_size_gb": integerParam(1).described("目标容量 GB。"),
+			"charge_type":    enumParam("Day", "Month", "Year", "Dynamic").described("计费周期；省略时默认为 Month。"),
+		}, "zone", "target_size_gb"),
+		Handle: cfsCreatePriceHandle,
+		Render: cfsRender,
 	}
 }
 
@@ -132,7 +136,6 @@ func cfsCreatePriceHandle(ctx context.Context, req CFSCreatePriceRequest, rt Rea
 	}
 	args := map[string]any{
 		"Size":       size,
-		"Zone":       zone.Zone,
 		"ChargeType": cfsChargeTypeFromSlot(req.ChargeType),
 		"Quantity":   1,
 		"zone_id":    zone.ZoneID,
@@ -169,7 +172,7 @@ func (r CFSUpgradePriceRequest) MissingFields() []platform.MissingField {
 func cfsUpgradePriceReadSpec() ReadCapabilitySpec[CFSUpgradePriceRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSUpgradePriceRequest, CFSResponse]{
 		Label:       readCFSUpgradePrice,
-		Description: "估算指定 CFS 扩容到目标容量的价格。",
+		Description: "估算指定已有 CFS 扩容到目标总容量的价格差额。只读，不执行扩容；新建 CFS 报价使用 CFS 创建报价能力。",
 		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam(), "target_size_gb": integerParam(1)}, "cfs", "target_size_gb"),
 		Handle:      cfsUpgradePriceHandle,
 		Render:      cfsRender,
@@ -216,7 +219,7 @@ func (r CFSRefundEstimateRequest) MissingFields() []platform.MissingField {
 func cfsRefundEstimateReadSpec() ReadCapabilitySpec[CFSRefundEstimateRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSRefundEstimateRequest, CFSResponse]{
 		Label:       readCFSRefundEstimate,
-		Description: "估算指定 CFS 当前可退金额。",
+		Description: "估算指定已有 CFS 当前可退金额。只读，不删除或释放 CFS。",
 		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}, "cfs"),
 		Handle:      cfsRefundEstimateHandle,
 		Render:      cfsRender,
@@ -372,11 +375,15 @@ func renderCFSInfoReply(raw map[string]any) string {
 }
 
 func renderCFSCreatePriceReply(raw map[string]any, size int, zone string) string {
-	price := cfsPriceFromDetails(raw)
+	price, chargeType := cfsPriceFromDetails(raw)
 	if price == "" {
 		return fmt.Sprintf("未获取到 %s 创建 %dGB CFS 的价格。CFS 询价是只读操作，不会创建资源。", zone, size)
 	}
-	return fmt.Sprintf("%s 创建 %dGB CFS 的预估价格：%s。CFS 询价是只读操作，不会创建资源；真正创建需要走确认流程。", zone, size, price)
+	period := map[string]string{"Day": "包日", "Month": "包月", "Year": "包年", "Dynamic": "按量"}[chargeType]
+	if period == "" {
+		period = chargeType
+	}
+	return fmt.Sprintf("%s 创建 %dGB 云存储 Pro（CFS）的当前账号预估净报价：%s %s。上游接口不返回免费额度字段，不能从价格反推额度；询价不会创建资源，真正创建需要走确认流程。", zone, size, period, price)
 }
 
 func renderCFSUpgradePriceReply(raw map[string]any, cfsID string, size int) string {
@@ -393,21 +400,22 @@ func renderCFSRefundReply(raw map[string]any, cfsID string) string {
 	return fmt.Sprintf("未获取到 %s 的退费估算结果。这个查询只做估算，不会删除或释放 CFS。", cfsID)
 }
 
-func cfsPriceFromDetails(raw map[string]any) string {
+func cfsPriceFromDetails(raw map[string]any) (string, string) {
 	details := mapSliceAt(raw, "PriceDetails")
 	if len(details) == 0 {
-		return ""
+		return "", ""
 	}
 	row, ok := details[0].(map[string]any)
 	if !ok {
-		return ""
+		return "", ""
 	}
+	chargeType := stringField(row, "ChargeType")
 	for _, key := range []string{"Disks", "Price", "TotalPrice"} {
 		if price, ok := numericField(row, key); ok {
-			return fmt.Sprintf("¥%.2f", price)
+			return fmt.Sprintf("¥%.2f", price), chargeType
 		}
 	}
-	return ""
+	return "", chargeType
 }
 
 func uint32Field(m map[string]any, keys ...string) uint32 {

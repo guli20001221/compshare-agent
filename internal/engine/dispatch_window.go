@@ -40,17 +40,6 @@ func centralAgentToolWindow(mutatingEnabled bool) []openai.Tool {
 	return out
 }
 
-// proposalInvocationContract is the ONE model-visible statement of the write
-// proposal contract, shared verbatim by every generated Request<Operation> tool.
-// The system prompt (segmentCentralAgentBehavior) carries the high-level behavior
-// rule; this is the per-tool, schema-level restatement. These two are the single
-// sources — the base ProposeAction template deliberately does NOT restate the
-// contract a third time.
-const (
-	proposalInvocationContractPrefix = "提交本操作的结构化候选，参数可不完整；服务端负责缺失字段、来源核验、确认和执行。"
-	proposalInvocationContractSuffix = "本工具不直接执行。"
-)
-
 func proposalToolName(operation string) string {
 	return "Request" + strings.TrimSuffix(operation, "Workflow")
 }
@@ -110,11 +99,13 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 	// fields in the model schema makes the model ask in prose before it can call.
 	root["required"] = []string{}
 	function.Name = proposalToolName(spec.Operation)
-	function.Description = proposalInvocationContractPrefix + " " + strings.TrimSpace(spec.Description)
+	// The system prompt owns the action-first / partial-proposal / confirmation
+	// rules once. A tool description owns only this operation's semantic boundary;
+	// workflow step sequences are runtime details and must never leak in here.
+	function.Description = strings.TrimSpace(spec.AgentDescription)
 	if hasSensitiveField {
 		function.Description += " 敏感值已由服务端安全接收并从参数结构中移除；不要追问或复述该值，直接提交其余已明确字段。"
 	}
-	function.Description += " " + proposalInvocationContractSuffix
 	function.Parameters = root
 	tool.Function = &function
 	return tool

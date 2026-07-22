@@ -44,12 +44,12 @@ type GPUSpecsResponse struct {
 
 func gpuSpecsReadSpec() ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse] {
 	return ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse]{
-		Label:       gpuSpecsCapabilityLabel,
+		Label: gpuSpecsCapabilityLabel,
 		// Model-visible. It said "静态规格" while reading the live catalog — after the
 		// hand-maintained gpuSpecs table was deleted this is the ONLY source of GPU
 		// facts, and calling it static invited the agent to trust it less and answer
 		// from its own weights instead.
-		Description: "查询平台 GPU 机型规格（显存、算力、最大卡数等），数据来自上游机型接口。",
+		Description: "查询平台 GPU 机型的结构化规格，包括显存、算力、最大卡数和可选 CPU/内存组合。用于规格比较，不代表当前实时库存。",
 		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "detail_level": enumParam(platform.DetailLevelValues()...)}),
 		Handle:      gpuSpecsHandle,
 		Render:      gpuSpecsRender,

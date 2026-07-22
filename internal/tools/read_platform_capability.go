@@ -16,10 +16,10 @@ var ShadowCapabilityDefinitions = []CapabilityDefinition{
 			Name: ProposeActionName,
 			// Base template only — never shown to the model. The window exposes one
 			// Request<Operation> variant per write op (dispatch_window.go), each
-			// carrying the single model-visible contract (proposalInvocationContract)
-			// plus that operation's field schema. The high-level behavior rule lives
-			// once in the system prompt (segmentCentralAgentBehavior).
-			Description: "写操作动作建议的基础模板；每个写操作以 Request<Operation> 变体暴露并携带该操作的字段契约。本工具不直接执行。",
+			// carrying only that operation's semantic description and field schema.
+			// The shared action-first behavior rule lives once in the system prompt
+			// (segmentCentralAgentBehavior).
+			Description: "写操作候选请求的内部 Schema 模板，不向模型暴露。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

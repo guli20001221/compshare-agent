@@ -48,6 +48,11 @@ type EntityResolver interface {
 type ReadRuntime struct {
 	Executor ReadExecutor
 	Resolver EntityResolver
+	// Tenant identity is server-owned request metadata for upstream reads that
+	// require organization fields in the body (for example support-zone and raw
+	// GPU-inventory calls). It is not part of a model-visible capability schema.
+	TopOrganizationID uint32
+	OrganizationID    uint32
 	// Now is the turn's reference clock for freshness/absence decisions. It is
 	// server-owned, never a model parameter; a zero value means the caller did not
 	// wire it and the freshness check defaults to time.Now().

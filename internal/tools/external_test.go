@@ -142,6 +142,22 @@ func TestFlattenInto_StringArray(t *testing.T) {
 	}
 }
 
+func TestFlattenInto_Uint32Array(t *testing.T) {
+	dst := make(map[string]string)
+	flattenInto(dst, map[string]any{"TargetZoneIds": []uint32{8200, 5001}}, "")
+
+	assert.Equal(t, "8200", dst["TargetZoneIds.0"])
+	assert.Equal(t, "5001", dst["TargetZoneIds.1"])
+	assert.NotContains(t, dst, "TargetZoneIds")
+}
+
+func TestJSONSignValue_Uint32ArrayMatchesDecodedJSON(t *testing.T) {
+	typed := jsonSignValue([]uint32{8200, 5001})
+	decoded := jsonSignValue([]any{float64(8200), float64(5001)})
+	assert.Equal(t, decoded, typed)
+	assert.Equal(t, "82005001", typed)
+}
+
 func TestFlattenInto_WithPrefix(t *testing.T) {
 	dst := make(map[string]string)
 	src := map[string]any{"Name": "test"}

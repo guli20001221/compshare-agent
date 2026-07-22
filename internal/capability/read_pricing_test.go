@@ -84,6 +84,10 @@ func pricingFixture(extra map[string]any) map[string]any {
 						},
 					},
 				},
+				"Disks": []any{map[string]any{
+					"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(40), "MaximalSize": float64(500)}},
+					"DataDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(10), "MaximalSize": float64(8000)}},
+				}},
 			},
 		},
 	}
@@ -126,6 +130,106 @@ func TestPricingHandle_PassesMemoryAsMBToAPI(t *testing.T) {
 	assert.Equal(t, "4090", priceCall.args["GpuType"])
 	_, hasZone := priceCall.args["Zone"]
 	assert.False(t, hasZone, "Zone must be omitted from the price call (RetCode=230 guard)")
+}
+
+func TestPricingHandle_QuotesSupportedDiskComponentsWithoutInventingQuota(t *testing.T) {
+	exec := &fakeReadExec{result: pricingFixture(map[string]any{
+		"PriceDetails": []any{map[string]any{
+			"ChargeType": "Postpay", "Instance": float64(1.58),
+			"SystemDisks": float64(0), "Disks": float64(0.14),
+		}},
+	})}
+
+	result := runPricing(t, exec, PricingRequest{
+		GPUType: "4090", ChargeTypes: []string{"Postpay"},
+		Disks: []PricingDisk{
+			{Role: "system", Type: "CLOUD_SSD", SizeGB: 100},
+			{Role: "data", Type: "CLOUD_SSD", SizeGB: 200},
+		},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "算力 ¥1.58")
+	assert.Contains(t, result.Reply, "系统盘 ¥0.00")
+	assert.Contains(t, result.Reply, "数据盘合计 ¥0.14")
+	assert.Contains(t, result.Reply, "合计 ¥1.72")
+	assert.Contains(t, result.Reply, "不能从 ¥0 反推免费额度")
+	var priceCall *fakeReadExecCall
+	for i := range exec.calls {
+		if exec.calls[i].action == pricingDiskPriceAction {
+			priceCall = &exec.calls[i]
+		}
+	}
+	require.NotNil(t, priceCall)
+	assert.Equal(t, "Postpay", priceCall.args["ChargeType"])
+	assert.Equal(t, 1, priceCall.args["Gpu"])
+	assert.Equal(t, 16, priceCall.args["Cpu"])
+	assert.NotContains(t, priceCall.args, "GPU")
+	assert.NotContains(t, priceCall.args, "CPU")
+	assert.Equal(t, []any{
+		map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 100},
+		map[string]any{"IsBoot": false, "Type": "CLOUD_SSD", "Size": 200},
+	}, priceCall.args["Disks"])
+}
+
+func TestPricingHandle_RejectsDiskTypeOrSizeAbsentFromZoneCatalog(t *testing.T) {
+	exec := &fakeReadExec{result: pricingFixture(map[string]any{
+		"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": float64(1.58)}},
+	})}
+
+	result := runPricing(t, exec, PricingRequest{
+		GPUType: "4090",
+		Disks:   []PricingDisk{{Role: "data", Type: "CLOUD_RSSD", SizeGB: 200}},
+	})
+
+	assert.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	for _, call := range exec.calls {
+		assert.NotEqual(t, pricingDiskPriceAction, call.action, "unsupported disk must not reach the price API")
+	}
+}
+
+func TestPricingHandle_DiskQuoteUsesSingleChargePriceAPI(t *testing.T) {
+	exec := &fakeReadExec{result: pricingFixture(map[string]any{
+		"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": float64(2.05), "Disks": float64(0.10)}},
+	})}
+
+	result := runPricing(t, exec, PricingRequest{
+		GPUType: "4090", ChargeTypes: []string{"Postpay"},
+		Disks: []PricingDisk{{Role: "data", Type: "CLOUD_SSD", SizeGB: 200}},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, pricingDiskPriceAction, result.ToolAction)
+	var diskCalls, aggregateCalls int
+	for _, call := range exec.calls {
+		if call.action == pricingDiskPriceAction {
+			diskCalls++
+		}
+		if call.action == pricingPriceAction {
+			aggregateCalls++
+		}
+	}
+	assert.Equal(t, 1, diskCalls)
+	assert.Zero(t, aggregateCalls)
+}
+
+func TestPricingHandle_DoesNotPretendMissingDiskPriceWasReturned(t *testing.T) {
+	exec := &fakeReadExec{result: pricingFixture(map[string]any{
+		"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": float64(2.05)}},
+	})}
+
+	result := runPricing(t, exec, PricingRequest{
+		GPUType: "4090",
+		Disks: []PricingDisk{
+			{Role: "system", Type: "CLOUD_SSD", SizeGB: 100},
+			{Role: "data", Type: "CLOUD_SSD", SizeGB: 200},
+		},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "系统盘金额未返回")
+	assert.Contains(t, result.Reply, "数据盘金额未返回")
+	assert.NotContains(t, result.Reply, "系统盘 ¥0.00")
 }
 
 // TestPricingHandle_UserPriceReply mirrors TestHandlePricingQuery_UserPriceUses
@@ -242,5 +346,5 @@ func TestPricingSpecsDoesNotInventZoneWhenCatalogOmitsIt(t *testing.T) {
 			"Collection": []any{map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}}},
 		}},
 	}}
-	assert.Empty(t, pricingSpecs("4090", items, 1, ""), "missing placement must not become a hard-coded zone")
+	assert.Empty(t, pricingSpecs("4090", items, 1, "", nil), "missing placement must not become a hard-coded zone")
 }

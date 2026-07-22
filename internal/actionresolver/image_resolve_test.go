@@ -57,6 +57,13 @@ func TestCodecImageActivatedForImageBearingOps(t *testing.T) {
 	require.True(t, ok)
 	assert.False(t, SpecNeedsImageCatalog(stop),
 		"a workflow with no CompShareImageId field must not trigger the image-catalog fetch")
+
+	clone, ok := catalog.Lookup("CloneCustomImageWorkflow")
+	require.True(t, ok)
+	assert.Equal(t, CodecImage, clone.Fields["CompShareImageId"].Codec)
+	assert.Equal(t, "custom", clone.ImageCatalogSource,
+		"the capability, not a model-authored constant or engine name switch, owns the fixed source")
+	assert.True(t, SpecNeedsImageCatalog(clone))
 }
 
 func imageOnlySpecResolver(imageCatalog *deployment.ImageCatalogSnapshot) *Resolver {

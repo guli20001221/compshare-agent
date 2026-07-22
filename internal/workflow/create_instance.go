@@ -273,12 +273,13 @@ func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64,
 func CreateInstanceDef() *Definition {
 	return &Definition{
 		Name: "CreateInstanceWorkflow",
-		// Model-facing: this string becomes the RequestCreateInstance tool description
-		// (actionresolver/catalog.go -> engine/dispatch_window.go). It states WHEN the
-		// operation applies so the trigger decision lives with the tool, not as rules in
-		// the shared behavior prompt. The internal step list was removed: it described
-		// the server's own pipeline and primed the Agent to re-run those reads itself.
-		Description: "适用场景：用户要你实际为他创建/开一台实例——此时提交本操作；用户问的是创建的方法、步骤或可行性时，直接回答即可。提交时带上此刻已明确的 GPU、镜像、可用区、计费方式等、其余留空；即使镜像或可用区还只是用户的口头说法、尚未确定，也照样提交，由确认卡和服务端去核对并与用户逐项确认，你不必先查清或替卡片问全。提交后不会直接执行——服务端会查镜像、配比、库存、价格，再走确认与创建。",
+		// No Description: after cede00d4 the model-facing text for this operation is
+		// the tool's own description (tools/registry.go -> capability.AgentInstruction
+		// -> actionresolver/catalog.go AgentDescription -> engine/dispatch_window.go).
+		// A Description here would be dead text at best and a second, drifting source
+		// of the trigger rule at worst. The step list that used to live here was
+		// removed for a separate reason: it described the server's own pipeline and
+		// primed the Agent to re-run those reads itself.
 		Steps: []Step{
 			stepQueryImages(false),
 			stepQueryInstanceTypes(),
@@ -309,8 +310,10 @@ func CreateInstanceDef() *Definition {
 // CreateInstanceWorkflow so old tooling and confirmation labels remain stable.
 func CreateInstanceGuidedDef() *Definition {
 	return &Definition{
-		Name:        "CreateInstanceWorkflow",
-		Description: "查询镜像 → 查询可用配比 → 查询GPU库存 → 选择镜像来源 → 查询所选来源镜像 → 选择镜像筛选 → 选择镜像 → 选择 GPU → 查询各可用区容量 → 选择可用区 → 查询容量规格 → 选择卡数量 → 选择 CPU/内存 → 形成执行草稿 → 检查库存 → 查询价格 → 形成确认快照 → 确认创建 → 创建实例 → 查看状态",
+		// No Description here either: it was a narration of the step list below, which
+		// drifts the moment a step moves — and this flow's order has now changed twice.
+		// The steps are the description.
+		Name: "CreateInstanceWorkflow",
 		Steps: []Step{
 			stepQueryImages(true),
 			// Both availability queries are CHARGE-TYPE-SCOPED (the catalog by
@@ -319,11 +322,22 @@ func CreateInstanceGuidedDef() *Definition {
 			// point. It is: it arrives in the create args and is never asked as a
 			// card — see buildGuidedFinalForm for why it cannot be one.
 			stepQueryInstanceTypes(),
-			stepQueryGPUInventory(),
-			// Image is chosen first: the GPU list is then constrained to the
-			// selected image's SupportedGpuTypes, and 卡数量 / CPU-内存 are gated by a
-			// capacity check that needs the real image. Image steps skip when the
-			// image is already known, so those flows start at GPU.
+			// GPU inventory comes from TWO upstream implementations: the request's
+			// zone_id selects the backend rather than filtering the result, so an
+			// absent zone_id reaches only the official pools and a Pod zone's stock
+			// reads as a real zero. cede00d4 splits the call and merges the answers
+			// against the live zone catalog; this flow takes that whole mechanism.
+			stepQueryOfficialGPUInventory(),
+			stepQueryPodGPUInventory(),
+			stepResolveGPUInventorySnapshot(),
+			// The CARD order stays image-first (this branch's reordering), which
+			// cede00d4 predates rather than disagrees with: it branched from the
+			// hardware-first order and only inserted the inventory steps above.
+			// Image must lead because the GPU list is constrained by the selected
+			// image's SupportedGpuTypes, the per-zone capacity probe needs a concrete
+			// image, and 卡数量 / CPU-内存 are gated by a capacity check that needs it
+			// too. Image steps skip when the image is already known, so those flows
+			// still start at GPU.
 			stepGuidedChooseImageSource(),
 			stepReQuerySelectedSourceImages(),
 			// A named community search that matched nothing must fall back to browsing:
@@ -524,9 +538,15 @@ func stepQueryInstanceTypes() Step {
 	}
 }
 
-func stepQueryGPUInventory() Step {
+const (
+	createOfficialGPUInventoryStep = "查询官方GPU库存"
+	createPodGPUInventoryStep      = "查询Pod GPU库存"
+	createGPUInventoryStep         = "查询GPU库存"
+)
+
+func stepQueryOfficialGPUInventory() Step {
 	return Step{
-		Name:     "查询GPU库存",
+		Name:     createOfficialGPUInventoryStep,
 		Type:     StepToolCall,
 		Tool:     "DescribeCompShareGpuInventory",
 		Optional: true,
@@ -534,6 +554,52 @@ func stepQueryGPUInventory() Step {
 			args := map[string]any{}
 			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
+		},
+	}
+}
+
+func stepQueryPodGPUInventory() Step {
+	return Step{
+		Name:     createPodGPUInventoryStep,
+		Type:     StepToolCall,
+		Tool:     "DescribeCompShareGpuInventory",
+		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			_, ok := deployment.PodSelectorZoneID(wfCtx.ZoneCatalog())
+			return !ok, nil
+		},
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			zoneID, ok := deployment.PodSelectorZoneID(wfCtx.ZoneCatalog())
+			if !ok {
+				return nil, fmt.Errorf("当前区域目录未提供 Pod 可用区")
+			}
+			args := map[string]any{"zone_id": zoneID}
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
+			return args, nil
+		},
+	}
+}
+
+// stepResolveGPUInventorySnapshot merges the two upstream implementations into
+// one authoritative per-zone result. The upstream zone_id is a backend selector,
+// not a result filter: an empty request reaches the official implementation,
+// while any Pod zone id reaches the Pod implementation. The live zone catalog
+// decides which backend owns each returned row, so an official zero can never
+// shadow a real Pod count.
+func stepResolveGPUInventorySnapshot() Step {
+	return Step{
+		Name: createGPUInventoryStep,
+		Type: StepResolve,
+		Resolve: func(wfCtx *Context) (map[string]any, error) {
+			official := wfCtx.Result(createOfficialGPUInventoryStep)
+			pod := wfCtx.Result(createPodGPUInventoryStep)
+			_, podAttempted := deployment.PodSelectorZoneID(wfCtx.ZoneCatalog())
+			snapshot := deployment.NewGPUInventorySnapshot(
+				wfCtx.ZoneCatalog(),
+				official, true, deployment.GPUInventoryPayloadAvailable(official),
+				pod, podAttempted, deployment.GPUInventoryPayloadAvailable(pod),
+			)
+			return snapshot.ToResultMap(), nil
 		},
 	}
 }
@@ -3416,7 +3482,8 @@ func markGuidedRecommendedOption(opts []ConfirmFormOption, value string) {
 }
 
 type guidedInventory struct {
-	counts map[string]map[string]float64
+	counts        map[string]map[string]map[string]float64
+	preferredPool string
 }
 
 func guidedInventoryFrom(wfCtx *Context, result map[string]any) guidedInventory {
@@ -3428,39 +3495,41 @@ func guidedInventoryFrom(wfCtx *Context, result map[string]any) guidedInventory 
 	if rawInv == nil {
 		return guidedInventory{}
 	}
-	poolName := "Exclusive"
+	preferredPool := deployment.GPUInventoryPoolExclusive
 	if strings.EqualFold(createChargeType(wfCtx.Params), "Spot") {
-		poolName = "Spot"
+		preferredPool = deployment.GPUInventoryPoolSpot
 	}
-	rawPool, _ := rawInv[poolName].(map[string]any)
-	if rawPool == nil {
-		return guidedInventory{}
-	}
-	counts := map[string]map[string]float64{}
-	for rawZoneID, rawGPUCounts := range rawPool {
-		id, ok := parseUint32Any(rawZoneID)
-		if !ok {
-			continue
-		}
-		zone := zoneByID[id]
-		if zone == "" {
-			continue
-		}
-		gpuCounts, _ := rawGPUCounts.(map[string]any)
-		if gpuCounts == nil {
-			continue
-		}
-		if counts[zone] == nil {
-			counts[zone] = map[string]float64{}
-		}
-		for gpuType, rawCount := range gpuCounts {
-			counts[zone][gpuType] = anyFloat(rawCount)
+	counts := map[string]map[string]map[string]float64{}
+	for _, poolName := range []string{deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot} {
+		rawPool, _ := rawInv[poolName].(map[string]any)
+		for rawZoneID, rawGPUCounts := range rawPool {
+			id, ok := parseUint32Any(rawZoneID)
+			if !ok {
+				continue
+			}
+			zone := zoneByID[id]
+			if zone == "" {
+				continue
+			}
+			gpuCounts, _ := rawGPUCounts.(map[string]any)
+			if gpuCounts == nil {
+				continue
+			}
+			if counts[zone] == nil {
+				counts[zone] = map[string]map[string]float64{}
+			}
+			if counts[zone][poolName] == nil {
+				counts[zone][poolName] = map[string]float64{}
+			}
+			for gpuType, rawCount := range gpuCounts {
+				counts[zone][poolName][gpuType] = anyFloat(rawCount)
+			}
 		}
 	}
 	if len(counts) == 0 {
 		return guidedInventory{}
 	}
-	return guidedInventory{counts: counts}
+	return guidedInventory{counts: counts, preferredPool: preferredPool}
 }
 
 // addZoneRegionAndID stamps the read-probe query with the zone's Region and
@@ -3557,11 +3626,29 @@ func (inv guidedInventory) count(zone, gpuType string) (float64, bool) {
 	if inv.counts == nil || zone == "" || gpuType == "" {
 		return 0, false
 	}
-	gpus, ok := inv.counts[zone]
+	pools, ok := inv.counts[zone]
 	if !ok {
 		return 0, false
 	}
-	return gpus[gpuType], true
+	if gpus, ok := pools[inv.preferredPool]; ok {
+		if count, present := gpus[gpuType]; present {
+			return count, true
+		}
+	}
+	// Pod zones may expose only Spot inventory even before the user reaches the
+	// charge-type form. Use the other explicitly returned pool rather than
+	// presenting the zone as unknown; this is still a real backend observation.
+	for _, pool := range []string{deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot} {
+		if pool == inv.preferredPool {
+			continue
+		}
+		if gpus, ok := pools[pool]; ok {
+			if count, present := gpus[gpuType]; present {
+				return count, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func (inv guidedInventory) total(zones []string, gpuType string) (float64, bool) {

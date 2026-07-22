@@ -1,18 +1,34 @@
 package workflow
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func CreateCustomImageDef() *Definition {
 	return &Definition{
-		Name:        "CreateCustomImageWorkflow",
-		Description: "查询源实例 -> 确认创建自制镜像 -> 创建镜像 -> 查询制作进度",
+		Name: "CreateCustomImageWorkflow",
 		Steps: []Step{
 			stepQuerySourceInstanceForCustomImage(),
+			stepQuerySupportZonesForCustomImage(),
 			stepConfirmCreateCustomImage(),
+			stepStopSourceForCustomImage(),
+			stepWaitSourceStoppedForCustomImage(),
 			stepCreateCustomImage(),
 			stepGetCustomImageCreateProgress(),
 		},
 		ResultData: customImageResultData,
+	}
+}
+
+func stepQuerySupportZonesForCustomImage() Step {
+	return Step{
+		Name: "查询源实例可用区",
+		Type: StepToolCall,
+		Tool: "DescribeCompShareSupportZone",
+		BuildArgs: func(_ *Context) (map[string]any, error) {
+			return map[string]any{}, nil
+		},
 	}
 }
 
@@ -93,9 +109,55 @@ func stepConfirmCreateCustomImage() Step {
 			if description := paramStr(wfCtx.Params, "Description", ""); description != "" {
 				summary["Description"] = description
 			}
-			summary["warning"] = "将基于该实例创建自制镜像。虚机 Running/Stopped 均可制作；容器实例需要 Running。"
+			if sourceCustomImageNeedsStop(wfCtx.Result("查询源实例")) {
+				summary["warning"] = "将先关闭这台普通虚机，待关机完成后创建自制镜像；制作完成后实例保持关机。"
+			} else {
+				summary["warning"] = "将基于该实例创建自制镜像。容器来源实例会保持运行。"
+			}
 			return summary, nil
 		},
+	}
+}
+
+func stepStopSourceForCustomImage() Step {
+	return Step{
+		Name: "关闭源实例",
+		Type: StepToolCall,
+		Tool: "StopCompShareInstance",
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return !sourceCustomImageNeedsStop(wfCtx.Result("查询源实例")), nil
+		},
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			args := map[string]any{"UHostId": paramStr(wfCtx.Params, "UHostId", "")}
+			return addCustomImagePlacementArgs(args, wfCtx)
+		},
+	}
+}
+
+func stepWaitSourceStoppedForCustomImage() Step {
+	return Step{
+		Name: "等待源实例关机",
+		Type: StepToolCall,
+		Tool: "DescribeCompShareInstance",
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return !sourceCustomImageNeedsStop(wfCtx.Result("查询源实例")), nil
+		},
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return map[string]any{"UHostIds": []any{paramStr(wfCtx.Params, "UHostId", "")}}, nil
+		},
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
+			switch state := extractInstanceState(result); state {
+			case "Stopped":
+				return CheckPassed()
+			case "Running", "Stopping":
+				return CheckPending("已发起关机，但实例在等待时限内仍未停止；未创建镜像，请稍后重试。")
+			case "":
+				return CheckFailed("关机后未能重新查询到源实例；未创建镜像。")
+			default:
+				return CheckFailed(fmt.Sprintf("源实例关机后进入了状态 %s；未创建镜像。", state))
+			}
+		},
+		Poll: &PollPolicy{Interval: 2 * time.Second, Timeout: 2 * time.Minute},
 	}
 }
 
@@ -113,20 +175,14 @@ func stepCreateCustomImage() Step {
 			if name == "" {
 				return nil, NewMissingSlotError("创建自制镜像需要指定名称。", "name")
 			}
-			region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
-			if !ok {
-				return nil, fmt.Errorf("源实例缺少可用区或地域信息，无法安全创建自制镜像")
-			}
 			args := map[string]any{
 				"UHostId": uHostId,
 				"Name":    name,
-				"Region":  region,
-				"Zone":    zone,
 			}
 			if description := paramStr(wfCtx.Params, "Description", ""); description != "" {
 				args["Description"] = description
 			}
-			return args, nil
+			return addCustomImagePlacementArgs(args, wfCtx)
 		},
 		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			if customImageID(result) == "" {
@@ -148,15 +204,9 @@ func stepGetCustomImageCreateProgress() Step {
 			if imageID == "" {
 				return nil, fmt.Errorf("CompShareImageId is empty; skip progress query")
 			}
-			region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
-			if !ok {
-				return nil, fmt.Errorf("源实例缺少可用区或地域信息，无法查询镜像制作进度")
-			}
-			return map[string]any{
+			return addCustomImagePlacementArgs(map[string]any{
 				"CompShareImageId": imageID,
-				"Region":           region,
-				"Zone":             zone,
-			}, nil
+			}, wfCtx)
 		},
 	}
 }
@@ -194,4 +244,26 @@ func sourceCustomImagePlacement(result map[string]any) (region, zone string, ok 
 
 func sourceCustomImageRequiresRunning(result map[string]any) bool {
 	return isPodInstanceResult(result) || isContainerInstanceResult(result)
+}
+
+func sourceCustomImageNeedsStop(result map[string]any) bool {
+	return !sourceCustomImageRequiresRunning(result) && extractInstanceState(result) == "Running"
+}
+
+func addCustomImagePlacementArgs(args map[string]any, wfCtx *Context) (map[string]any, error) {
+	region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
+	if !ok {
+		return nil, fmt.Errorf("源实例缺少可用区或地域信息，无法安全创建自制镜像")
+	}
+	placement, ok := supportZonePlacementForZone(wfCtx.Result("查询源实例可用区"), zone)
+	if !ok || placement.azGroup == 0 {
+		return nil, fmt.Errorf("未获取到源实例内部可用区编号，无法安全创建自制镜像")
+	}
+	args["Region"] = region
+	args["Zone"] = zone
+	args["az_group"] = placement.azGroup
+	if placement.zoneID != 0 {
+		args["zone_id"] = placement.zoneID
+	}
+	return args, nil
 }

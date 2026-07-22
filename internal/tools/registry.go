@@ -9,7 +9,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SearchKnowledge",
-			Description: "按明确问题检索平台文档与技术证据，返回带 chunk_id 的证据条目。",
+			Description: "检索平台文档和技术证据。用于产品规则、操作方法、技术原理和故障知识；实例状态、库存、价格等实时账号数据应使用对应只读能力。返回本轮可引用的证据条目。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -490,7 +490,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建实例的完整工作流。自动执行：查询镜像→检查库存→查询价格→用户确认→创建实例→查看状态。支持平台镜像和社区镜像。平台镜像默认查询公共镜像（含系统镜像和应用基础镜像如 PyTorch/CUDA 等）。传 ImageName 可按名称缩小镜像范围（平台和社区均可用）。传 ImageSource='community' 使用社区镜像创建。Pod 区必须使用容器镜像，普通区可使用系统镜像或应用镜像。不支持自制/私有镜像。",
+			Description: "创建算力实例的候选请求。用于用户明确要求实际创建实例；支持平台镜像和社区镜像，配置不完整时可进入引导卡继续选择。价格、库存或创建方法查询不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -558,7 +558,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "StopInstanceWorkflow",
-			Description: "关机工作流。会提醒用户关机后磁盘仍然收费。用户要求关机时使用此工具。",
+			Description: "关闭已有实例的候选请求。用于用户要求实际关机；关机方法、影响或费用咨询不使用。关机不会释放磁盘，保留资源可能继续计费。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -575,7 +575,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "StartInstanceWorkflow",
-			Description: "开机工作流。用户要求开机时使用此工具。需要无卡开机时提交上游真实档位 A（2C/4GB）或 B（8C/16GB）；普通开机不提交该字段。",
+			Description: "启动已有实例的候选请求。用于普通开机或无卡开机；无卡开机只接受档位 A（2C/4GB）或 B（8C/16GB）。开机方法或费用咨询不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -597,7 +597,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "RebootInstanceWorkflow",
-			Description: "重启实例工作流。检查状态→确认→重启。仅 Running 状态可重启。会中断当前运行的任务。",
+			Description: "重启运行中实例的候选请求。仅用于用户要求实际重启；会中断当前运行任务。关机后再开机或只询问重启方法时不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -614,7 +614,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "RenameInstanceWorkflow",
-			Description: "重命名实例工作流。确认→修改名称。名称最长63字符，支持中英文、数字、下划线等。",
+			Description: "修改已有实例名称的候选请求。仅用于用户要求实际改名；新名称最长 63 个字符。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -635,7 +635,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResetPasswordWorkflow",
-			Description: "重置实例密码工作流。普通主机需先关机，容器实例支持在线重置。密码要求8-32字符，至少2种字符类型（大小写字母/数字/特殊字符）。",
+			Description: "重置已有实例登录密码的候选请求。普通虚机需关机，容器实例可在线重置；密码规则由安全输入和服务端校验。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -657,7 +657,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SetStopSchedulerWorkflow",
-			Description: "设置定时关机工作流。为运行中的实例设置自动关机时间。支持相对时间（如30分钟后）或绝对时间。抢占式实例不支持。用户要求定时关机、自动关机、延时关机时使用此工具。",
+			Description: "为运行中的非抢占式实例设置定时关机的候选请求。支持相对时间或绝对时间；取消已有定时关机应使用取消操作。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -696,7 +696,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CancelStopSchedulerWorkflow",
-			Description: "取消定时关机工作流。取消实例已设置的定时关机任务。用户要求取消定时关机、取消自动关机时使用此工具。",
+			Description: "取消实例已有定时关机任务的候选请求。设置或修改关机时间不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -901,7 +901,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResizeInstanceWorkflow",
-			Description: "实例变配工作流。修改实例的 CPU/GPU/内存配置。实例必须处于关机状态。用户要求'加卡'、'升级配置'、'加内存'时使用。",
+			Description: "修改已有实例 CPU、GPU 或内存配置的候选请求。实例必须处于关机状态；磁盘扩容不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -930,7 +930,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ReinstallInstanceWorkflow",
-			Description: "重装系统工作流。将实例重装为指定镜像，系统盘数据会被清除。用户要求'换镜像'、'重装系统'、'换成 Ubuntu'时使用。",
+			Description: "使用选定镜像重装已有实例的候选请求。重装会清除系统盘数据；仅咨询镜像或不接受清盘风险时不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -963,7 +963,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateDiskWorkflow",
-			Description: "新建数据盘并挂载到实例的工作流。只创建一块指定 Size 的新云数据盘并自动挂载，不支持挂载已有盘，也不是扩已有盘。用户要求'加数据盘'、'新建数据盘'、'加磁盘'、'磁盘不够'时使用；如果没给 Size，先追问容量。",
+			Description: "为实例新建一块云数据盘并挂载的候选请求。只创建新盘，不扩已有盘，也不挂载已有盘。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -984,7 +984,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResizeDiskWorkflow",
-			Description: "扩已有磁盘工作流。用于把实例上已经挂载的系统盘或数据盘扩到指定目标容量。不会新建磁盘，也不支持挂载已有盘。Size 是目标容量 GB，不是新增容量；例如从 60GB 扩到 120GB 时 Size=120。扩系统盘传 DiskType=Boot；扩数据盘优先传 DiskId，实例有多块数据盘时必须传 DiskId。",
+			Description: "扩容实例上已有系统盘或数据盘的候选请求。Size 表示目标总容量，不是新增容量；新建并挂载数据盘不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1014,7 +1014,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateCustomImageWorkflow",
-			Description: "从已有实例创建自制镜像的确认式工作流。自动执行：DescribeCompShareInstance -> 用户确认 -> CreateCompShareCustomImage -> GetCompShareImageCreateProgress。用于用户要保存当前环境、把实例做成自定义镜像、下次复用环境。需要 UHostId 和镜像 Name；Description 可选。不用于发布社区镜像，不要直接调用原始 CreateCompShareCustomImage。",
+			Description: "从已有实例制作当前账号自制镜像的候选请求。用于保存和复用实例环境；普通虚机制作前需停机，容器来源需保持运行。不用于发布社区镜像，也不用于跨可用区克隆已有自制镜像。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1038,8 +1038,38 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
+			Name:        "CloneCustomImageWorkflow",
+			Description: "将当前账号已有且可用的自制镜像克隆到另一个可用区的候选请求。只适用于自制镜像；从实例制作新镜像或复制平台、社区、共享镜像不使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "源自制镜像 ID；如用户只给名称，应先查询自制镜像目录取得真实 ID。",
+					},
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "目标可用区字符串或展示名；不能与源镜像所在可用区相同。",
+					},
+					"TargetImageName": map[string]any{
+						"type":        "string",
+						"description": "克隆后目标镜像的名称，最多 50 个字符。用户未给名称时先追问，不要编造。",
+						"maxLength":   50,
+					},
+					"TargetImageDescription": map[string]any{
+						"type":        "string",
+						"description": "克隆后目标镜像的描述，可选。",
+					},
+				},
+				"required": []string{"CompShareImageId", "Zone", "TargetImageName"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
 			Name:        "EnableNetOptimizerWorkflow",
-			Description: "开启/同步指定可用区网络加速的确认式工作流。需要 Zone；先查询该区域网络加速状态，未开通时必须用户确认后才调用上游开启/同步接口；本轮 agent 暂不暴露关闭能力，因此不用于关闭网络加速。",
+			Description: "为指定可用区开启或同步网络加速的候选请求。只支持开启或同步，不支持关闭；查询当前状态使用只读能力。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1060,7 +1090,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateCFSWorkflow",
-			Description: "创建 CFS 共享文件存储的确认式工作流。CFS 用于共享数据集/模型文件，当前只支持 Pod/容器可用区；创建前会查询价格并要求确认。需要 Name、Size、Zone；Size 单位 GB，范围 50 到 2048。CFS 不支持按量付费，不能用于删除 CFS。",
+			Description: "创建 CFS 共享文件存储的候选请求。仅支持 Pod/容器可用区和 Month、Year、Day、Dynamic 计费；扩容已有 CFS 不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1094,7 +1124,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResizeCFSWorkflow",
-			Description: "扩容 CFS 共享文件存储的确认式工作流。先查询 CFS 当前容量和价格差额，再确认扩容。Size 是目标容量 GB，必须大于当前容量；不支持缩容或删除。",
+			Description: "扩容已有 CFS 的候选请求。Size 是目标总容量且必须大于当前容量；不支持缩容、删除或新建 CFS。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1116,7 +1146,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseSSH",
-			Description: "诊断 SSH 连接失败。自动执行：检查实例状态与 DescribeCompShareInstance 返回的 SshLoginCommand → 检查资源使用 → 给出结论、只读自查命令和建议。用户反馈 SSH 连不上、连接超时、连接被拒时使用。",
+			Description: "诊断已有实例的 SSH 连接失败。用于连接超时、连接被拒或无法登录；需要明确实例。返回实时检查结论和只读自查建议，不执行修复或修改资源。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1133,7 +1163,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseBilling",
-			Description: "诊断费用异常。查询实例列表并分析各项费用明细，解释扣费原因。用户反馈为什么扣这么多钱、费用不对、扣费异常时使用。可传 UHostId 查特定实例，不传则分析所有实例。",
+			Description: "核对已有实例当前配置的上游净报价及关机后仍计费的磁盘。用于查询现有实例当前费用构成；不用于账户余额、账单流水、发票或历史实际扣款。可传 UHostId 查特定实例，不传则检查全部实例。金额由服务端根据结构化上游数据生成，Agent 不应重算。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

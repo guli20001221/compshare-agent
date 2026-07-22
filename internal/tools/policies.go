@@ -96,6 +96,9 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "organization_id")
 		}
+		if action == "SyncCompShareCustomImage" {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "TargetZoneIds")
+		}
 		policies[action] = policy
 	}
 
@@ -121,6 +124,9 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if actionAllowsBackendIdentity(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "organization_id")
+		}
+		if action == "SyncCompShareCustomImage" {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "TargetZoneIds")
 		}
 		policies[action] = policy
 	}
@@ -227,6 +233,16 @@ func internalOnlyAllowedParams(action string) []string {
 		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "Zone", "Region"}
 	case "CreateCompShareInstance":
 		return []string{"Name", "Zone", "Region", "GpuType", "GPU", "Cpu", "CPU", "Memory", "CompShareImageId", "ChargeType", "MachineType", "MinimalCpuPlatform", "LoginMode", "Disks"}
+	case "CreateCompShareCustomImage":
+		return []string{"UHostId", "Name", "Description", "Zone", "Region"}
+	case "GetCompShareImageCreateProgress":
+		return []string{"CompShareImageId", "Zone", "Region"}
+	case "SyncCompShareCustomImage":
+		return []string{"SourceCompShareImageId", "TargetImageName", "TargetImageDescription"}
+	case "DescribeCompShareCustomImageSyncDetail":
+		return []string{"CompShareImageId"}
+	case "StopCompShareInstance":
+		return []string{"UHostId", "Zone", "Region"}
 	default:
 		return nil
 	}
@@ -251,6 +267,9 @@ func actionAllowsBackendZoneID(action string) bool {
 		"DescribeCFS",
 		"CreateCFS",
 		"ResizeCFS",
+		"CreateCompShareCustomImage",
+		"GetCompShareImageCreateProgress",
+		"DescribeCompShareCustomImageSyncDetail",
 		// DescribeCompShareJupyterToken: Pod (cpod-*) instances need the
 		// internal zone_id or the call fails outright (RetCode 8433,
 		// live-verified 2026-07-10, finding #9). SafeToolExecutor resolves
@@ -278,7 +297,9 @@ func actionAllowsBackendAzGroup(action string) bool {
 		"ResizeCompShareInstance",
 		"ResizeCompShareDisk",
 		"GetCompShareCFSPrice",
-		"CreateCFS":
+		"CreateCFS",
+		"CreateCompShareCustomImage",
+		"GetCompShareImageCreateProgress":
 		return true
 	default:
 		return false
@@ -314,6 +335,7 @@ func actionAllowsBackendIdentity(action string) bool {
 	switch action {
 	case "CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"DescribeCompShareSupportZone",
 		"DescribeCompShareGpuInventory",
 		"DescribeCFS",
 		"GetCompShareCFSPrice",

@@ -22,6 +22,7 @@ const (
 	pricingCapabilityLabel = "pricing_query"
 	pricingDescribeAction  = "DescribeAvailableCompShareInstanceTypes"
 	pricingPriceAction     = "GetCompShareInstanceUserPrice"
+	pricingDiskPriceAction = "GetCompShareInstancePrice"
 
 	// noInstanceTypesReply — stage 1 returned no machine inventory at all.
 	// noPricingReply — stage 2 ran but per-charge-type extraction yielded nothing.
@@ -37,6 +38,17 @@ type PricingRequest struct {
 	Kind        platform.PriceKind `json:"price_kind,omitempty"`
 	Zone        string             `json:"zone,omitempty"`
 	ChargeTypes []string           `json:"charge_types,omitempty"`
+	Disks       []PricingDisk      `json:"disks,omitempty"`
+}
+
+// PricingDisk is one prospective disk included in the upstream quote. Type is
+// deliberately a catalog value rather than a locally maintained enum: disk
+// availability differs by zone and machine type and is validated against the
+// live AvailableInstanceTypes response before the price call.
+type PricingDisk struct {
+	Role   string `json:"role"`
+	Type   string `json:"type"`
+	SizeGB int    `json:"size_gb"`
 }
 
 // MissingFields reports the required-but-absent request fields.
@@ -59,13 +71,18 @@ type PricingResponse struct {
 func pricingReadSpec() ReadCapabilitySpec[PricingRequest, PricingResponse] {
 	return ReadCapabilitySpec[PricingRequest, PricingResponse]{
 		Label:       pricingCapabilityLabel,
-		Description: "查询指定 GPU 机型的账号价或目录价。",
+		Description: "查询拟创建 GPU 配置及可选系统盘/数据盘在各可用区的实时账号净报价或目录价。用于配置报价，不用于核对已有实例当前费用；后者使用 DiagnoseBilling。云存储 Pro 使用 CFS 创建报价能力。报价已包含上游适用的减免，但接口不返回免费额度数值。",
 		Params: objectParam(map[string]schemaNode{
 			"gpu_type":     stringParam().described("真实 GPU 机型名称；精确名称不会自动替换成显存变体。"),
 			"gpu_count":    integerParam(1).described("卡数；省略时默认为 1。"),
 			"price_kind":   enumParam(platform.PriceKindValues()...).described("account=当前账号实付价（默认）；catalog=目录价。"),
 			"zone":         stringParam().described("可选的精确可用区 ID；省略时查询该机型全部可售区域。"),
 			"charge_types": arrayParam(enumParam("Postpay", "Spot", "Day", "Month")).described("所需计费方式；省略时返回上游提供的全部方式。"),
+			"disks": arrayParam(objectParam(map[string]schemaNode{
+				"role":    enumParam("system", "data").described("system=系统盘；data=普通数据盘。"),
+				"type":    stringParam().described("实时机型目录返回的精确磁盘类型，例如 CLOUD_SSD 或 CLOUD_RSSD。"),
+				"size_gb": integerParam(1).described("磁盘容量 GB。"),
+			}, "role", "type", "size_gb")).described("可选磁盘配置；省略时只查算力价格。"),
 		}, "gpu_type"),
 		Handle: pricingHandle,
 		Render: pricingRender,
@@ -104,10 +121,10 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 	// Postpay/Day/Month for the same GPU name.
 	priced := []gpuPriceRow{}
 	for _, name := range matched {
-		for _, spec := range pricingSpecs(name, items, req.GPUCount, req.Zone) {
-			args := pricingPriceArgs(name, spec)
+		for _, spec := range pricingSpecs(name, items, req.GPUCount, req.Zone, req.Disks) {
+			args := pricingPriceArgs(name, spec, req.Disks)
 			addPricingPlacementArgs(args, spec.Zone, supportZones)
-			priceRaw, errInner := rt.Executor.ExecuteInternal(ctx, pricingPriceAction, args)
+			priceRaw, priceAction, errInner := executePricingQuote(ctx, rt, args, req)
 			if errInner != nil {
 				continue
 			}
@@ -124,6 +141,8 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 				RawData:     priceRaw,
 				Kind:        pricingKindForRequest(req),
 				ChargeTypes: append([]string(nil), req.ChargeTypes...),
+				Disks:       append([]PricingDisk(nil), req.Disks...),
+				ToolAction:  priceAction,
 			})
 		}
 	}
@@ -137,17 +156,82 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 func pricingRender(resp PricingResponse) ReadResult {
 	r := ReadHandled(renderPricingReply(resp.Rows))
 	r.ToolAction = pricingPriceAction
+	if len(resp.Rows) > 0 && resp.Rows[0].ToolAction != "" {
+		r.ToolAction = resp.Rows[0].ToolAction
+	}
 	return r
 }
 
-func pricingPriceArgs(name string, spec pricingDefaultSpec) map[string]any {
+func executePricingQuote(ctx context.Context, rt ReadRuntime, args map[string]any, req PricingRequest) (map[string]any, string, error) {
+	if len(req.Disks) == 0 {
+		raw, err := rt.Executor.ExecuteInternal(ctx, pricingPriceAction, args)
+		return raw, pricingPriceAction, err
+	}
+	chargeTypes := append([]string(nil), req.ChargeTypes...)
+	if len(chargeTypes) == 0 {
+		chargeTypes = []string{"Postpay", "Spot", "Day", "Month"}
+	}
+	merged := map[string]any{
+		"PriceDetails":         []any{},
+		"OriginalPriceDetails": []any{},
+		"ListPriceDetails":     []any{},
+	}
+	var firstErr error
+	succeeded := 0
+	for _, chargeType := range chargeTypes {
+		one := make(map[string]any, len(args)+1)
+		for key, value := range args {
+			one[key] = value
+		}
+		// The single-charge endpoint's public contract uses Gpu/Cpu while the
+		// aggregate user-price endpoint uses GPU/CPU. SafeToolExecutor filters by
+		// the selected endpoint schema, so normalize before crossing that boundary.
+		one["Gpu"] = one["GPU"]
+		one["Cpu"] = one["CPU"]
+		delete(one, "GPU")
+		delete(one, "CPU")
+		one["ChargeType"] = chargeType
+		raw, err := rt.Executor.ExecuteInternal(ctx, pricingDiskPriceAction, one)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		succeeded++
+		for _, key := range []string{"PriceDetails", "OriginalPriceDetails", "ListPriceDetails"} {
+			merged[key] = append(merged[key].([]any), platform.MapSliceAt(raw, key)...)
+		}
+	}
+	if succeeded == 0 {
+		if firstErr == nil {
+			firstErr = fmt.Errorf("磁盘询价没有返回可用结果")
+		}
+		return nil, pricingDiskPriceAction, firstErr
+	}
+	return merged, pricingDiskPriceAction, nil
+}
+
+func pricingPriceArgs(name string, spec pricingDefaultSpec, disks []PricingDisk) map[string]any {
 	memMB := spec.Memory * 1024
-	return map[string]any{
+	args := map[string]any{
 		"GpuType": name,
 		"GPU":     spec.GPU,
 		"CPU":     spec.Cpu,
 		"Memory":  memMB,
 	}
+	if len(disks) > 0 {
+		quoted := make([]any, 0, len(disks))
+		for _, disk := range disks {
+			quoted = append(quoted, map[string]any{
+				"IsBoot": disk.Role == "system",
+				"Type":   disk.Type,
+				"Size":   disk.SizeGB,
+			})
+		}
+		args["Disks"] = quoted
+	}
+	return args
 }
 
 func pricingKindForRequest(req PricingRequest) string {
@@ -205,12 +289,14 @@ type gpuPriceRow struct {
 	RawData     map[string]any
 	Kind        string
 	ChargeTypes []string
+	Disks       []PricingDisk
+	ToolAction  string
 }
 
 // pricingSpecs returns one deterministic minimum CPU/memory spec for every
 // matching zone. Missing zones are rejected instead of being replaced by a
 // hard-coded region.
-func pricingSpecs(gpuName string, items []any, requestedCount int, zoneFilter string) []pricingDefaultSpec {
+func pricingSpecs(gpuName string, items []any, requestedCount int, zoneFilter string, disks []PricingDisk) []pricingDefaultSpec {
 	requestedGPU := 1
 	if requestedCount > 0 {
 		requestedGPU = requestedCount
@@ -229,6 +315,9 @@ func pricingSpecs(gpuName string, items []any, requestedCount int, zoneFilter st
 			continue
 		}
 		if strings.TrimSpace(zoneFilter) != "" && !strings.EqualFold(zone, strings.TrimSpace(zoneFilter)) {
+			continue
+		}
+		if !pricingDisksSupported(entry, disks) {
 			continue
 		}
 		best := pricingDefaultSpec{}
@@ -288,6 +377,40 @@ func pricingSpecs(gpuName string, items []any, requestedCount int, zoneFilter st
 		out = append(out, byZone[zone])
 	}
 	return out
+}
+
+func pricingDisksSupported(entry map[string]any, requested []PricingDisk) bool {
+	if len(requested) == 0 {
+		return true
+	}
+	for _, want := range requested {
+		field := "DataDisk"
+		if want.Role == "system" {
+			field = "BootDisk"
+		}
+		matched := false
+		for _, groupRaw := range platform.MapSliceAt(entry, "Disks") {
+			group, ok := groupRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, diskRaw := range platform.MapSliceAt(group, field) {
+				disk, ok := diskRaw.(map[string]any)
+				if !ok || platform.SafeString(disk, "Name") != want.Type {
+					continue
+				}
+				min := pricingNumericInt(disk["MinimalSize"])
+				max := pricingNumericInt(disk["MaximalSize"])
+				if (min == 0 || want.SizeGB >= min) && (max == 0 || want.SizeGB <= max) {
+					matched = true
+				}
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 func billingTableMatchesRequestedTypes(table map[string]string, requested []string) bool {
@@ -385,13 +508,90 @@ func renderPricingReply(rows []gpuPriceRow) string {
 			if !ok {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("- **%s**: %s", label, val))
+			if len(row.Disks) == 0 {
+				lines = append(lines, fmt.Sprintf("- **%s**: %s", label, val))
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("- **%s**: %s", label, pricingDetailedPrice(row.RawData, kind, key, val, row.Disks)))
+		}
+		if len(row.Disks) > 0 {
+			lines = append(lines, "  磁盘金额是上游返回的当前账号净报价；系统盘免费额度如适用已在上游扣除，但接口不返回额度数值，不能从 ¥0 反推免费额度。")
 		}
 	}
 	if len(lines) == 0 {
 		return noPricingReply
 	}
 	return strings.Join(lines, "\n")
+}
+
+func pricingDetailedPrice(raw map[string]any, kind, chargeType, instanceText string, requested []PricingDisk) string {
+	rowsKey := "PriceDetails"
+	if pricingKindIsCatalog(kind) {
+		rowsKey = "ListPriceDetails"
+		if len(platform.MapSliceAt(raw, rowsKey)) == 0 {
+			rowsKey = "OriginalPriceDetails"
+		}
+	}
+	for _, item := range platform.MapSliceAt(raw, rowsKey) {
+		row, ok := item.(map[string]any)
+		if !ok || platform.SafeString(row, "ChargeType") != chargeType {
+			continue
+		}
+		parts := []string{"算力 " + instanceText}
+		systemPrice := pricingFormatNumber(row["SystemDisks"])
+		dataPrice := pricingFormatNumber(row["Disks"])
+		if systemPrice != "" {
+			parts = append(parts, "系统盘 "+systemPrice)
+		}
+		if dataPrice != "" {
+			parts = append(parts, "数据盘合计 "+dataPrice)
+		}
+		for _, disk := range requested {
+			if disk.Role == "system" && systemPrice == "" {
+				parts = append(parts, "系统盘金额未返回")
+				systemPrice = "missing"
+			}
+			if disk.Role == "data" && dataPrice == "" {
+				parts = append(parts, "数据盘金额未返回")
+				dataPrice = "missing"
+			}
+		}
+		if value := pricingFormatNumber(row["CompShareImage"]); value != "" {
+			parts = append(parts, "付费镜像 "+value)
+		}
+		if total, ok := pricingTotal(row, requested); ok {
+			parts = append(parts, fmt.Sprintf("合计 ¥%.2f", total))
+		}
+		return strings.Join(parts, "；")
+	}
+	return "上游未返回分项价格"
+}
+
+func pricingTotal(row map[string]any, requested []PricingDisk) (float64, bool) {
+	instance, ok := numericFloat(row["Instance"])
+	if !ok {
+		return 0, false
+	}
+	total := instance
+	needSystem, needData := false, false
+	for _, disk := range requested {
+		needSystem = needSystem || disk.Role == "system"
+		needData = needData || disk.Role == "data"
+	}
+	if value, present := numericFloat(row["SystemDisks"]); present {
+		total += value
+	} else if needSystem {
+		return 0, false
+	}
+	if value, present := numericFloat(row["Disks"]); present {
+		total += value
+	} else if needData {
+		return 0, false
+	}
+	if value, present := numericFloat(row["CompShareImage"]); present {
+		total += value
+	}
+	return total, true
 }
 
 func containsExact(values []string, want string) bool {

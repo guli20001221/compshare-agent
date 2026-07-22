@@ -227,13 +227,24 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	targetEvidence := e.targetEvidenceForProposal(ctx, proposal, spec)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
 	zoneCatalog := e.zoneCatalogSnapshotForSpec(ctx, spec)
-	imageCatalog := e.imageCatalogSnapshotForSpec(ctx, spec,
-		proposalSlotString(proposal, "ImageSource"), proposalSlotString(proposal, "CompShareImageId"))
+	// Source resolution from cede00d4 (falls back to the spec's own default when the
+	// proposal names none); the id argument is the fetch gate — a create that names
+	// no image has nothing to verify, so the full paginated catalog is not fetched.
+	imageSource := proposalImageCatalogSource(proposal, spec)
+	imageCatalog := e.imageCatalogSnapshotForSpec(ctx, spec, imageSource,
+		proposalSlotString(proposal, "CompShareImageId"))
 	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec, binding: binding, targetEvidence: targetEvidence}, machineTypes).
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
 	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog}, targetEvidence: targetEvidence}, nil
+}
+
+func proposalImageCatalogSource(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) string {
+	if source := proposalSlotString(proposal, "ImageSource"); source != "" {
+		return source
+	}
+	return spec.ImageCatalogSource
 }
 
 // targetEvidenceForProposal builds an existence verdict for every distinct

@@ -176,8 +176,7 @@ func formatRelativeDuration(d time.Duration) string {
 // scheduled stop on a CompShare GPU instance: query state, confirm, then set.
 func SetStopSchedulerDef() *Definition {
 	return &Definition{
-		Name:        "SetStopSchedulerWorkflow",
-		Description: "查询实例 → 确认设置 → 设置定时关机",
+		Name: "SetStopSchedulerWorkflow",
 		Steps: []Step{
 			stepQueryForScheduler(),
 			stepResolveSchedulerDraft(),
@@ -312,8 +311,7 @@ func shutdownDraftFromValue(raw any) (map[string]any, error) {
 // delete the scheduler task.
 func CancelStopSchedulerDef() *Definition {
 	return &Definition{
-		Name:        "CancelStopSchedulerWorkflow",
-		Description: "查询实例 → 确认取消 → 取消定时关机",
+		Name: "CancelStopSchedulerWorkflow",
 		Steps: []Step{
 			stepQueryForCancelScheduler(),
 			stepConfirmCancelScheduler(),

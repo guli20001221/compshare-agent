@@ -415,7 +415,12 @@ func httpStatusError(statusCode int, body []byte) error {
 }
 
 func usesJSONBody(action string) bool {
-	return action == "GetCompShareInstanceMonitor"
+	switch action {
+	case "GetCompShareInstanceMonitor", "SyncCompShareCustomImage":
+		return true
+	default:
+		return false
+	}
 }
 
 // ucloudSign computes the UCloud API signature.
@@ -488,6 +493,12 @@ func jsonSignValue(v any) string {
 			buf.WriteString(item)
 		}
 		return buf.String()
+	case []uint32:
+		var buf strings.Builder
+		for _, item := range val {
+			buf.WriteString(strconv.FormatUint(uint64(item), 10))
+		}
+		return buf.String()
 	case map[string]any:
 		keys := make([]string, 0, len(val))
 		for k := range val {
@@ -520,6 +531,13 @@ func flattenInto(dst map[string]string, src map[string]any, prefix string) {
 			// default branch would encode the slice as "[a b]" instead of Key.N.
 			for i, item := range val {
 				dst[fmt.Sprintf("%s.%d", key, i)] = item
+			}
+		case []uint32:
+			// Numeric id lists use the same indexed UCloud encoding. Encoding a
+			// typed slice through fmt would produce "[8200]", which the upstream
+			// request decoder cannot unmarshal into []uint32.
+			for i, item := range val {
+				dst[fmt.Sprintf("%s.%d", key, i)] = fmt.Sprint(item)
 			}
 		case []any:
 			for i, item := range val {

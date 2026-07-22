@@ -1,6 +1,13 @@
 package diagnosis
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/compshare-agent/internal/tools"
+)
 
 // BillingAnomalyChain returns a 2-step diagnostic chain that queries instance
 // billing info and produces a cost breakdown with anomaly detection.
@@ -13,8 +20,7 @@ import "fmt"
 // optimization on the platform side).
 func BillingAnomalyChain() *Chain {
 	return &Chain{
-		Name:        "DiagnoseBilling",
-		Description: "诊断费用异常：查实例列表→查价格详情→列出收费项→解释规则",
+		Name: "DiagnoseBilling",
 		Steps: []Step{
 			stepBillingListInstances(),
 			stepBillingQueryPrices(),
@@ -42,8 +48,12 @@ func stepBillingListInstances() Step {
 			// API default Limit=20; set higher to cover all instances.
 			return map[string]any{"Limit": 100}, nil
 		},
+		Execute: executeBillingInstancePages,
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
 			hosts, _ := result["UHostSet"].([]any)
+			if total, ok := billingIntegerField(result, "TotalCount"); ok {
+				dCtx.Params["_billingTotalCount"] = total
+			}
 			if len(hosts) == 0 {
 				return Verdict{
 					Action:     Conclude,
@@ -97,6 +107,7 @@ func stepBillingQueryPrices() Step {
 			}
 			return map[string]any{"UHostIds": idsAny}, nil
 		},
+		Execute: executeBillingPriceBatches,
 		Evaluate: func(result map[string]any, dCtx *Context) Verdict {
 			hosts, _ := result["UHostSet"].([]any)
 			if len(hosts) == 0 {
@@ -107,6 +118,9 @@ func stepBillingQueryPrices() Step {
 				}
 			}
 			conclusion, suggestion := buildBillingSummary(hosts)
+			if total, ok := dCtx.Params["_billingTotalCount"].(int); ok && total > len(hosts) {
+				conclusion += fmt.Sprintf("\n本次只取得 %d/%d 个实例的价格，不能据此计算全账号合计。", len(hosts), total)
+			}
 			return Verdict{
 				Action:     Conclude,
 				Conclusion: conclusion,
@@ -116,69 +130,141 @@ func stepBillingQueryPrices() Step {
 	}
 }
 
+func executeBillingInstancePages(ctx context.Context, executor tools.ToolExecutor, args map[string]any) (map[string]any, error) {
+	if _, targeted := args["UHostIds"]; targeted {
+		return executor.Execute(ctx, "DescribeCompShareInstance", args)
+	}
+	const pageSize = 100
+	merged := map[string]any{"UHostSet": []any{}}
+	all := make([]any, 0, pageSize)
+	for offset := 0; ; offset += pageSize {
+		pageArgs := cloneBillingArgs(args)
+		pageArgs["Offset"] = offset
+		pageArgs["Limit"] = pageSize
+		page, err := executor.Execute(ctx, "DescribeCompShareInstance", pageArgs)
+		if err != nil {
+			return nil, err
+		}
+		if offset == 0 {
+			for key, value := range page {
+				merged[key] = value
+			}
+		}
+		rows, _ := page["UHostSet"].([]any)
+		all = append(all, rows...)
+		total, hasTotal := billingIntegerField(page, "TotalCount")
+		if len(rows) < pageSize || (hasTotal && len(all) >= total) {
+			break
+		}
+	}
+	merged["UHostSet"] = all
+	merged["TotalCount"] = len(all)
+	return merged, nil
+}
+
+func executeBillingPriceBatches(ctx context.Context, executor tools.ToolExecutor, args map[string]any) (map[string]any, error) {
+	ids, ok := args["UHostIds"].([]any)
+	if !ok || len(ids) <= 100 {
+		return executor.Execute(ctx, "DescribeCompShareInstance", args)
+	}
+	merged := map[string]any{"UHostSet": []any{}}
+	all := make([]any, 0, len(ids))
+	for start := 0; start < len(ids); start += 100 {
+		end := start + 100
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batchArgs := cloneBillingArgs(args)
+		batchArgs["UHostIds"] = append([]any(nil), ids[start:end]...)
+		page, err := executor.Execute(ctx, "DescribeCompShareInstance", batchArgs)
+		if err != nil {
+			return nil, err
+		}
+		if start == 0 {
+			for key, value := range page {
+				merged[key] = value
+			}
+		}
+		rows, _ := page["UHostSet"].([]any)
+		all = append(all, rows...)
+	}
+	merged["UHostSet"] = all
+	merged["TotalCount"] = len(all)
+	return merged, nil
+}
+
+func cloneBillingArgs(args map[string]any) map[string]any {
+	out := make(map[string]any, len(args)+2)
+	for key, value := range args {
+		out[key] = value
+	}
+	return out
+}
+
 func buildBillingSummary(hosts []any) (conclusion, suggestion string) {
 	facts := BuildBillingFacts(hosts)
 
 	total := len(facts.Instances)
-	conclusion = fmt.Sprintf("您当前有 %d 个实例，费用明细如下：\n", total)
+	conclusion = fmt.Sprintf("查到 %d 个实例。以下是上游返回的当前配置净报价，不是历史账单或已扣金额：\n", total)
 	for _, fact := range facts.Instances {
 		conclusion += formatInstanceFactCost(fact) + "\n"
 	}
-	if facts.HasDynamic {
-		if facts.HasUnknownDynamicCost {
-			conclusion += "部分费用未返回，合计暂不计算。"
-		} else {
-			conclusion += fmt.Sprintf("按量/抢占式实例合计: ¥%.2f/时", facts.HourlyTotal)
-		}
+	periods := make([]string, 0, len(facts.CurrentTotals))
+	for period := range facts.CurrentTotals {
+		periods = append(periods, period)
 	}
-	if facts.HasPrepaid {
-		if facts.HasDynamic {
-			conclusion += "\n"
-		}
-		conclusion += "包月/包日实例按预付费计费，具体金额以订单为准。"
+	sort.Strings(periods)
+	for _, period := range periods {
+		conclusion += fmt.Sprintf("\n可确定的当前费用合计：¥%.2f%s", facts.CurrentTotals[period], billingUnitSuffix(period))
 	}
-
-	if facts.StoppedCount > 0 && facts.StoppedRetainedTotal > 0 && !facts.HasUnknownStoppedRetained {
-		costLabel := "磁盘保留费用"
-		if facts.HasStoppedImageCost() {
-			costLabel = "磁盘和镜像保留费用"
-		}
-		conclusion += fmt.Sprintf("\n\n注意：关机实例（%d 个）仍在产生%s，合计 ¥%.2f/时。", facts.StoppedCount, costLabel, facts.StoppedRetainedTotal)
+	if facts.HasUnknownCurrentCost {
+		conclusion += "\n部分当前费用缺少结构化价格或关机保留信息，未纳入合计。"
 	}
+	conclusion += "\n磁盘价格是上游按该资源、区域和计费方式算出的净价；系统盘免费额度如适用已在上游扣除，但接口不返回额度数值，不能从价格反推。数据盘和容器 CVolume 也没有免费额度字段。"
 
 	switch {
 	case facts.StoppedCount > 0 && facts.StoppedRetainedTotal > 0:
-		releaseLabel := "磁盘保留计费"
-		if facts.HasStoppedImageCost() {
-			releaseLabel = "磁盘和镜像保留计费"
-		}
-		suggestion = fmt.Sprintf("建议释放不再使用的关机实例以停止%s，或使用定时关机功能避免空跑。", releaseLabel)
+		suggestion = "关机后仍计费的磁盘已按上游返回单独标出；不再使用时需释放对应资源，关机本身不会释放磁盘。"
 	case facts.HasDynamic && facts.RunningCount > 0:
-		suggestion = "按量实例建议在不使用时关机。如长期使用，包月计费更划算，可在控制台查看包月价格对比。"
+		suggestion = "这里反映当前配置的单位报价；如要核对某一时间段实际扣费，仍需查询账单流水。"
 	default:
-		suggestion = "如有疑问，请查看控制台费用明细页面了解详细扣费记录。"
+		suggestion = "如要核对实际扣款，请以控制台账单流水为准。"
 	}
 
 	return conclusion, suggestion
 }
 
 type BillingInstanceFact struct {
-	UHostID               string
-	Name                  string
-	State                 string
-	ChargeType            string
-	IsSpot                bool
-	GpuType               string
-	GPU                   int
-	InstancePrice         float64
-	DiskPrice             float64
-	ImagePrice            float64
-	HasInstancePrice      bool
-	HasDiskPrice          bool
-	HasImagePrice         bool
-	ActualComputeCharge   float64
-	RetainedStoppedCharge float64
-	Period                string
+	UHostID              string
+	Name                 string
+	State                string
+	ChargeType           string
+	IsSpot               bool
+	GpuType              string
+	GPU                  int
+	InstancePrice        float64
+	DiskPrice            float64
+	ImagePrice           float64
+	HasInstancePrice     bool
+	HasDiskPrice         bool
+	HasImagePrice        bool
+	ActualComputeCharge  float64
+	Period               string
+	Region               string
+	Zone                 string
+	Components           []BillingCostComponent
+	HasDiskBreakdown     bool
+	HasPowerOffBreakdown bool
+}
+
+type BillingCostComponent struct {
+	Kind                string
+	ChargeType          string
+	Period              string
+	Price               float64
+	Known               bool
+	IsBoot              bool
+	RetainedWhenStopped bool
 }
 
 type BillingFactsSummary struct {
@@ -189,12 +275,13 @@ type BillingFactsSummary struct {
 	StoppedCount              int
 	HasDynamic                bool
 	HasPrepaid                bool
-	HasUnknownDynamicCost     bool
 	HasUnknownStoppedRetained bool
+	CurrentTotals             map[string]float64
+	HasUnknownCurrentCost     bool
 }
 
 func BuildBillingFacts(hosts []any) BillingFactsSummary {
-	var summary BillingFactsSummary
+	summary := BillingFactsSummary{CurrentTotals: map[string]float64{}}
 	for _, h := range hosts {
 		host, ok := h.(map[string]any)
 		if !ok {
@@ -212,21 +299,10 @@ func BuildBillingFacts(hosts []any) BillingFactsSummary {
 		switch {
 		case fact.isHourly():
 			summary.HasDynamic = true
-			if fact.hasKnownHourlyTotal() {
-				summary.HourlyTotal += fact.ActualComputeCharge + fact.DiskPrice + fact.ImagePrice
-			} else {
-				summary.HasUnknownDynamicCost = true
-			}
 		case fact.ChargeType == "Month" || fact.ChargeType == "Day" || fact.ChargeType == "Year":
 			summary.HasPrepaid = true
 		}
-		if fact.State == "Stopped" {
-			if fact.hasKnownStoppedRetainedCharge() {
-				summary.StoppedRetainedTotal += fact.RetainedStoppedCharge
-			} else {
-				summary.HasUnknownStoppedRetained = true
-			}
-		}
+		accumulateCurrentCosts(&summary, fact)
 		summary.Instances = append(summary.Instances, fact)
 	}
 	return summary
@@ -236,6 +312,8 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 	id, _ := host["UHostId"].(string)
 	name, _ := host["Name"].(string)
 	state, _ := host["State"].(string)
+	region, _ := host["Region"].(string)
+	zone, _ := host["Zone"].(string)
 	gpuType, _ := host["GpuType"].(string)
 	gpu, _ := host["GPU"].(float64)
 	chargeType, _ := host["ChargeType"].(string)
@@ -247,23 +325,132 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 	instancePrice, hasInstancePrice := billingPriceField(host, "InstancePrice")
 	diskPrice, hasDiskPrice := billingPriceField(host, "DiskPrice")
 	imagePrice, hasImagePrice := billingPriceField(host, "CompShareImagePrice")
-	return BillingInstanceFact{
-		UHostID:               id,
-		Name:                  name,
-		State:                 state,
-		ChargeType:            chargeType,
-		IsSpot:                isSpot,
-		GpuType:               gpuType,
-		GPU:                   int(gpu),
-		InstancePrice:         instancePrice,
-		DiskPrice:             diskPrice,
-		ImagePrice:            imagePrice,
-		HasInstancePrice:      hasInstancePrice,
-		HasDiskPrice:          hasDiskPrice,
-		HasImagePrice:         hasImagePrice,
-		ActualComputeCharge:   actualInstanceCost(state, chargeType, isSpot, instancePrice),
-		RetainedStoppedCharge: retainedStoppedCharge(state, diskPrice, imagePrice),
-		Period:                billingPeriod(chargeType, isSpot),
+	fact := BillingInstanceFact{
+		UHostID:             id,
+		Name:                name,
+		State:               state,
+		ChargeType:          chargeType,
+		IsSpot:              isSpot,
+		GpuType:             gpuType,
+		GPU:                 int(gpu),
+		InstancePrice:       instancePrice,
+		DiskPrice:           diskPrice,
+		ImagePrice:          imagePrice,
+		HasInstancePrice:    hasInstancePrice,
+		HasDiskPrice:        hasDiskPrice,
+		HasImagePrice:       hasImagePrice,
+		ActualComputeCharge: actualInstanceCost(state, chargeType, isSpot, instancePrice),
+		Period:              billingPeriod(chargeType, isSpot),
+		Region:              region,
+		Zone:                zone,
+	}
+	fact.Components, fact.HasDiskBreakdown, fact.HasPowerOffBreakdown = billingCostComponents(host, fact)
+	return fact
+}
+
+func billingCostComponents(host map[string]any, fact BillingInstanceFact) ([]BillingCostComponent, bool, bool) {
+	components := make([]BillingCostComponent, 0, 5)
+	components = append(components, BillingCostComponent{Kind: "compute", ChargeType: fact.ChargeType, Period: fact.Period, Price: fact.InstancePrice, Known: fact.HasInstancePrice})
+
+	diskInfos := billingMapSlice(host["DiskPriceInfo"])
+	powerOffInfos := billingMapSlice(host["PostPayPowerOffBillingResource"])
+	if len(powerOffInfos) == 0 {
+		powerOffInfos = billingMapSlice(host["PostPayPowerOffBillingResources"])
+	}
+	for _, info := range diskInfos {
+		price, known := billingPriceField(info, "Price")
+		chargeType, _ := info["ChargeType"].(string)
+		isBoot, _ := info["IsBoot"].(bool)
+		components = append(components, BillingCostComponent{
+			Kind:                "disk",
+			ChargeType:          chargeType,
+			Period:              billingPeriod(chargeType, false),
+			Price:               price,
+			Known:               known,
+			IsBoot:              isBoot,
+			RetainedWhenStopped: billingPowerOffContains(powerOffInfos, isBoot, chargeType),
+		})
+	}
+	if len(diskInfos) == 0 && fact.HasDiskPrice {
+		components = append(components, BillingCostComponent{Kind: "disk_total", Period: "unknown", Price: fact.DiskPrice, Known: true})
+	}
+	components = append(components, BillingCostComponent{Kind: "image", ChargeType: fact.ChargeType, Period: fact.Period, Price: fact.ImagePrice, Known: fact.HasImagePrice})
+	return components, len(diskInfos) > 0, len(powerOffInfos) > 0
+}
+
+func billingMapSlice(v any) []map[string]any {
+	rows, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		if m, ok := row.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func billingPowerOffContains(rows []map[string]any, isBoot bool, chargeType string) bool {
+	for _, row := range rows {
+		rowBoot, _ := row["IsBoot"].(bool)
+		rowCharge, _ := row["ChargeType"].(string)
+		price, known := billingPriceField(row, "Price")
+		if rowBoot == isBoot && rowCharge == chargeType && known && price > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func accumulateCurrentCosts(summary *BillingFactsSummary, fact BillingInstanceFact) {
+	switch fact.State {
+	case "Running":
+		for _, component := range fact.Components {
+			if !component.Known || (component.Period == "unknown" && component.Price != 0) {
+				summary.HasUnknownCurrentCost = true
+				continue
+			}
+			if component.Period == "unknown" {
+				continue
+			}
+			summary.CurrentTotals[component.Period] += component.Price
+			if component.Period == "hour" {
+				summary.HourlyTotal += component.Price
+			}
+		}
+	case "Stopped":
+		if fact.isHourly() {
+			for _, component := range fact.Components {
+				if component.Kind != "disk" || !component.RetainedWhenStopped {
+					continue
+				}
+				if !component.Known || component.Period == "unknown" {
+					summary.HasUnknownCurrentCost = true
+					continue
+				}
+				summary.CurrentTotals[component.Period] += component.Price
+				summary.StoppedRetainedTotal += component.Price
+				if component.Period == "hour" {
+					summary.HourlyTotal += component.Price
+				}
+			}
+			if !fact.HasPowerOffBreakdown && (fact.HasDiskPrice || fact.HasDiskBreakdown) {
+				for _, component := range fact.Components {
+					if (component.Kind == "disk" || component.Kind == "disk_total") && component.Known && component.Price > 0 {
+						summary.HasUnknownStoppedRetained = true
+						summary.HasUnknownCurrentCost = true
+						break
+					}
+				}
+			}
+			if fact.HasImagePrice && fact.ImagePrice > 0 {
+				summary.HasUnknownCurrentCost = true
+			}
+		}
+	default:
+		summary.HasUnknownCurrentCost = true
 	}
 }
 
@@ -290,39 +477,23 @@ func billingPriceField(host map[string]any, key string) (float64, bool) {
 	}
 }
 
-func (s BillingFactsSummary) HasStoppedImageCost() bool {
-	for _, fact := range s.Instances {
-		if fact.State == "Stopped" && fact.HasImagePrice && fact.ImagePrice > 0 {
-			return true
-		}
-	}
-	return false
+func billingIntegerField(host map[string]any, key string) (int, bool) {
+	v, ok := billingPriceField(host, key)
+	return int(v), ok
 }
 
-func retainedStoppedCharge(state string, diskPrice, imagePrice float64) float64 {
-	if state != "Stopped" {
-		return 0
-	}
-	return diskPrice + imagePrice
-}
-
-// isHourly reports whether the instance bills by the hour (按量 / 抢占式). Postpay is
-// the only live hourly charge type (upstream's legacy "Dynamic"/CHARGE_BY_HOUR is no
-// longer used); spot is detected via IsSpot, not the ChargeType string — upstream
-// renders spot as "Postpay" (or empty), never "Spot".
+// isHourly accepts both current Postpay and legacy Dynamic records. Spot is
+// detected via IsSpot because upstream does not emit ChargeType "Spot".
 func (fact BillingInstanceFact) isHourly() bool {
-	return fact.ChargeType == "Postpay" || fact.IsSpot
+	return fact.ChargeType == "Postpay" || fact.ChargeType == "Dynamic" || fact.IsSpot
 }
 
-// actualInstanceCost returns the real billing amount for the instance portion.
-// The describe API returns the configured unit price REGARDLESS of power state
-// (confirmed against upstream getInstancePrice — no state check), but a stopped
-// hourly instance with 关机不计费 charges ¥0 for GPU/CPU/Memory. Instances that
-// keep charging while off expose PostPayShutdown=false, which the common describe
-// response omits, so this stays a best-effort assumption; disk/image retention is
-// surfaced separately.
+// actualInstanceCost projects only the compute portion. The describe API returns
+// its configured unit quote regardless of power state; a stopped hourly instance
+// has no running compute charge. Retained resources are never inferred here and
+// come only from PostPayPowerOffBillingResource.
 func actualInstanceCost(state, chargeType string, isSpot bool, price float64) float64 {
-	if state == "Stopped" && (chargeType == "Postpay" || isSpot) {
+	if state == "Stopped" && (chargeType == "Postpay" || chargeType == "Dynamic" || isSpot) {
 		return 0
 	}
 	return price
@@ -330,40 +501,63 @@ func actualInstanceCost(state, chargeType string, isSpot bool, price float64) fl
 
 func formatInstanceFactCost(fact BillingInstanceFact) string {
 	billing := chargeTypeLabel(fact.ChargeType, fact.IsSpot)
-	actual := fact.ActualComputeCharge
-
-	costParts := "实例费 未返回"
-	if fact.HasInstancePrice {
-		costParts = fmt.Sprintf("实例费 ¥%.2f", actual)
-		if fact.State == "Stopped" && actual == 0 && fact.InstancePrice > 0 {
-			costParts = "实例费 ¥0（已关机停计）"
+	location := strings.Trim(strings.Join([]string{fact.Region, fact.Zone}, "/"), "/")
+	if location == "" {
+		location = "区域未返回"
+	}
+	lines := []string{fmt.Sprintf("- %s (%s, %s, %s×%d, %s, %s)", fact.UHostID, fact.Name, location, fact.GpuType, fact.GPU, fact.State, billing)}
+	for _, component := range fact.Components {
+		label := billingComponentLabel(component)
+		if !component.Known {
+			lines = append(lines, "  - "+label+"：未返回")
+			continue
 		}
+		value := fmt.Sprintf("¥%.2f%s", component.Price, billingUnitSuffix(component.Period))
+		if component.Kind == "compute" && fact.State == "Stopped" && fact.isHourly() {
+			value = fmt.Sprintf("当前 ¥0；开机配置报价 ¥%.2f%s", component.Price, billingUnitSuffix(component.Period))
+		}
+		if component.RetainedWhenStopped && fact.State == "Stopped" {
+			value += "（关机后仍计费）"
+		}
+		if component.Kind == "disk_total" {
+			value += "（上游未分拆系统盘/数据盘或计费周期，不纳入合计）"
+		}
+		lines = append(lines, "  - "+label+"："+value)
 	}
-
-	if fact.HasDiskPrice {
-		costParts += fmt.Sprintf(" + 磁盘费 ¥%.2f", fact.DiskPrice)
-	} else {
-		costParts += " + 磁盘费 未返回"
-	}
-	if fact.HasImagePrice && fact.ImagePrice > 0 {
-		costParts += fmt.Sprintf(" + 镜像费 ¥%.2f", fact.ImagePrice)
-	} else if !fact.HasImagePrice {
-		costParts += " + 镜像费 未返回"
-	}
-
-	return fmt.Sprintf("- %s (%s, %s×%.0f, %s, %s): %s",
-		fact.UHostID, fact.Name, fact.GpuType, float64(fact.GPU), fact.State, billing, costParts)
+	return strings.Join(lines, "\n")
 }
 
-func (fact BillingInstanceFact) hasKnownHourlyTotal() bool {
-	return fact.HasInstancePrice && fact.HasDiskPrice && fact.HasImagePrice
+func billingComponentLabel(component BillingCostComponent) string {
+	switch component.Kind {
+	case "compute":
+		return "算力"
+	case "image":
+		return "镜像"
+	case "disk_total":
+		return "磁盘汇总"
+	case "disk":
+		if component.IsBoot {
+			return "系统盘"
+		}
+		return "数据盘/CVolume"
+	default:
+		return component.Kind
+	}
 }
 
-func (fact BillingInstanceFact) hasKnownStoppedRetainedCharge() bool {
-	if fact.State != "Stopped" {
-		return true
+func billingUnitSuffix(period string) string {
+	switch period {
+	case "hour":
+		return "/时"
+	case "day":
+		return "/天"
+	case "month":
+		return "/月"
+	case "year":
+		return "/年"
+	default:
+		return "（周期未返回）"
 	}
-	return fact.HasDiskPrice && fact.HasImagePrice
 }
 
 // chargeTypeLabel returns a human-readable billing label with unit. Spot is keyed
@@ -392,6 +586,8 @@ func billingPeriod(chargeType string, isSpot bool) string {
 	}
 	switch chargeType {
 	case "Postpay":
+		return "hour"
+	case "Dynamic":
 		return "hour"
 	case "Day":
 		return "day"

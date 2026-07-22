@@ -36,12 +36,13 @@ func BuildCatalog() (*Catalog, error) {
 		}
 		catalog.ordered = append(catalog.ordered, operation)
 		catalog.specs[operation] = OperationSpec{
-			Operation: operation, Description: definition.Description, Fields: fields,
-			NeedsConfirm:     capability.Policy.NeedsConfirm,
-			Risk:             capability.Policy.SecurityLevel,
-			Execution:        workflow.ExecutionContract(definition),
-			ValidateResolved: operationValidator(operation),
-			Intake:           intake,
+			Operation: operation, AgentDescription: strings.TrimSpace(capability.AgentInstruction), Fields: fields,
+			ImageCatalogSource: definition.ImageCatalogSource,
+			NeedsConfirm:       capability.Policy.NeedsConfirm,
+			Risk:               capability.Policy.SecurityLevel,
+			Execution:          workflow.ExecutionContract(definition),
+			ValidateResolved:   operationValidator(operation),
+			Intake:             intake,
 		}
 	}
 	return catalog, nil

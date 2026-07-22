@@ -11,6 +11,7 @@ import (
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
+	"github.com/compshare-agent/internal/tools"
 )
 
 // ReadCapabilityObservation is the only result shape exposed by the read
@@ -74,6 +75,10 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		Resolver:         snapshot,
 		Now:              now,
 		FallbackGPUModel: e.fallbackStockGpuModel(now),
+	}
+	if user, ok := tools.UserFrom(ctx); ok {
+		rt.TopOrganizationID = user.TopOrganizationID
+		rt.OrganizationID = user.OrganizationID
 	}
 	if e.sessionStateHydrated && e.sessionState.SelectedInstanceID != "" {
 		rt.FallbackInstanceID = e.sessionState.SelectedInstanceID

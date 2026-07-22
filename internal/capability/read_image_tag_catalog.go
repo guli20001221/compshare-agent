@@ -34,7 +34,7 @@ type ImageTagCatalogResponse struct {
 func imageTagCatalogReadSpec() ReadCapabilitySpec[ImageTagCatalogRequest, ImageTagCatalogResponse] {
 	return ReadCapabilitySpec[ImageTagCatalogRequest, ImageTagCatalogResponse]{
 		Label:       imageTagCatalogCapabilityLabel,
-		Description: "查询平台镜像标签和分类。",
+		Description: "查询平台镜像可用标签和分类目录。只返回标签体系，不返回具体镜像；具体镜像使用镜像列表能力。",
 		Params:      objectParam(nil),
 		Handle:      imageTagCatalogHandle,
 		Render:      imageTagCatalogRender,

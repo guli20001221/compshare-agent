@@ -71,6 +71,11 @@ type ImageCatalogEntry struct {
 	SizeMB      float64 // image size in MB (Size), for reinstall disk sizing
 	CreateTime  int64
 	PubTime     int64
+	// Zone/ZoneID identify where a custom image currently resides. They are
+	// catalog facts, not inferred from its name, and let a clone workflow reject
+	// synchronising an image back into its own zone before confirmation.
+	Zone   string
+	ZoneID uint32
 }
 
 // DisplayLabel is the label a picker/card must show for this row: the name plus the
@@ -312,6 +317,22 @@ func imageEntryFromMap(img map[string]any, source string) (ImageCatalogEntry, bo
 		SizeMB:            asFloat(img, "Size", "ActualSize", "ImageSize"),
 		CreateTime:        asInt64(img, "CreateTime"),
 		PubTime:           asInt64(img, "PubTime"),
+		Zone:              asString(img, "Zone"),
+	}
+	if zones, ok := img["ImageSupportZone"].([]any); ok {
+		for _, rawZone := range zones {
+			zone, ok := rawZone.(map[string]any)
+			if !ok {
+				continue
+			}
+			if e.Zone == "" {
+				e.Zone = asString(zone, "Zone")
+			}
+			e.ZoneID = uint32(asInt64FromAny(zone["ZoneId"]))
+			if e.ZoneID != 0 || e.Zone != "" {
+				break
+			}
+		}
 	}
 	if sw, ok := img["Softwares"].(map[string]any); ok && sw != nil {
 		e.Software = SoftwareFacts{
