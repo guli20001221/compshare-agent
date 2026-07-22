@@ -2522,9 +2522,14 @@ func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
 	return &ConfirmForm{Version: 1, Fields: fields}, nil
 }
 
+// guidedStepLabel names this card's position for the confirmation payload. The
+// wizard is conditional, so guidedStepPosition reports no total — the old
+// "%d/%d" format outlived its denominator and rendered "4/0", a total of zero
+// stated as fact. It uses the same vocabulary the card title does, so the
+// payload and the card the user is reading cannot disagree.
 func guidedStepLabel(wfCtx *Context, logical int) string {
-	index, total := guidedStepPosition(wfCtx, logical)
-	return fmt.Sprintf("%d/%d", index, total)
+	index, _ := guidedStepPosition(wfCtx, logical)
+	return guidedOrdinal(index)
 }
 
 func guidedStepPosition(wfCtx *Context, logical int) (int, int) {
@@ -2563,41 +2568,17 @@ func guidedReachedOrder(wfCtx *Context) []int {
 	return out
 }
 
-func guidedStepReached(wfCtx *Context, logical int) bool {
-	if wfCtx == nil || wfCtx.Params == nil {
-		return false
-	}
-	raw, ok := wfCtx.Params["GuidedReachedSteps"]
-	if !ok || raw == nil {
-		return false
-	}
-	key := strconv.Itoa(logical)
-	switch steps := raw.(type) {
-	case map[string]bool:
-		return steps[key]
-	case map[string]any:
-		v, ok := steps[key]
-		if !ok {
-			return false
-		}
-		b, _ := v.(bool)
-		return b
-	default:
-		return false
-	}
-}
-
+// markGuidedStepReached records that a card was shown, in the order the cards
+// were reached — which is what the step ordinal is derived from.
+//
+// It used to also maintain a GuidedReachedSteps set for a membership query. The
+// final card stopped asking whether the image step had been reached (it no
+// longer re-opens the image at all), which left that set written and never read
+// — dead state inside Params, and Params is what seal() hashes.
 func markGuidedStepReached(wfCtx *Context, logical int) {
 	if wfCtx == nil || wfCtx.Params == nil {
 		return
 	}
-	key := strconv.Itoa(logical)
-	steps, _ := wfCtx.Params["GuidedReachedSteps"].(map[string]bool)
-	if steps == nil {
-		steps = map[string]bool{}
-		wfCtx.Params["GuidedReachedSteps"] = steps
-	}
-	steps[key] = true
 	order := guidedReachedOrder(wfCtx)
 	for _, step := range order {
 		if step == logical {
@@ -2776,31 +2757,9 @@ func initialParamSet(wfCtx *Context, key string) bool {
 	return ok
 }
 
-func enabledOptionCount(opts []ConfirmFormOption) (int, string) {
-	count := 0
-	only := ""
-	for _, opt := range opts {
-		if opt.Disabled {
-			continue
-		}
-		count++
-		only = opt.Value
-	}
-	return count, only
-}
-
 func enabledOptionExists(opts []ConfirmFormOption, value string) bool {
 	for _, opt := range opts {
 		if !opt.Disabled && strings.EqualFold(opt.Value, value) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsString(list []string, needle string) bool {
-	for _, item := range list {
-		if item == needle {
 			return true
 		}
 	}

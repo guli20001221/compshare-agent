@@ -383,6 +383,7 @@ func TestValidateOverrides_DisabledOptionRejected(t *testing.T) {
 func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.T) {
 	executor := formMockExecutor()
 	var seenSteps []int
+	stepLabels := 0
 
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, args map[string]any, form *ConfirmForm) ConfirmResolution {
@@ -394,6 +395,19 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 		// step.Description under the title; dropping it would leave a bare card.
 		assert.NotEmpty(t, form.Step.Description,
 			"guided step %d must carry guidance text", form.Step.Index)
+
+		// The payload's step label and the card the user is reading are two
+		// renderings of one position, so they must not disagree — and neither may
+		// state a total this conditional wizard does not have. A fixed "%d/%d"
+		// format outlived its denominator here and emitted "4/0"; nothing asserted
+		// the label, so a fully green suite hid it.
+		if label, ok := args["step"].(string); ok {
+			stepLabels++
+			assert.NotContains(t, label, "/",
+				"step %d label must not state a denominator the wizard cannot know", form.Step.Index)
+			assert.Equal(t, guidedOrdinal(form.Step.Index), label,
+				"the payload label and the card's own ordinal must be one vocabulary")
+		}
 
 		// Every source resolves a concrete image before charge type and hardware,
 		// so every capacity card below is about the image the user selected.
@@ -464,6 +478,10 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	assert.Equal(t, []int{1, 2, 3, 4, 5, 6, 7, 8}, seenSteps)
+	// Guards the label assertions above against becoming vacuous: they live behind
+	// a type check, so a payload that stopped carrying the key would silently skip
+	// them rather than fail.
+	assert.Equal(t, 7, stepLabels, "every selection card carries a step label; only the final card does not")
 
 	var capacityCalls, priceCalls int
 	var created map[string]any
