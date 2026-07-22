@@ -1143,13 +1143,18 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseSSH",
-			Description: "诊断已有实例的 SSH 连接失败。用于连接超时、连接被拒或无法登录；需要明确实例。返回实时检查结论和只读自查建议，不执行修复或修改资源。",
+			Description: "对已有实例执行云侧 SSH 预检。核对实例状态、平台返回的登录入口和监控风险信号，并按用户实际遇到的错误给出只读排查建议；不会探测公网端口、进入实例或执行修复。需要明确实例。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"UHostId": map[string]any{
 						"type":        "string",
 						"description": "要诊断的实例 ID",
+					},
+					"FailureKind": map[string]any{
+						"type":        "string",
+						"description": "用户实际报告的 SSH 失败类型。仅按用户给出的错误选择；无法确定时用 unknown，不要根据实例状态或监控数据推断。",
+						"enum":        []string{"timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown"},
 					},
 				},
 				"required": []string{"UHostId"},

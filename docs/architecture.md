@@ -133,7 +133,7 @@ RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不�
 
 ## 9. Diagnosis — 只读诊断
 
-`internal/diagnosis/` 是只读诊断链,当前只广告**两条**:`DiagnoseSSH` 和 `DiagnoseBilling`(hand-written registry,非 codegen)。init-failure / GPU-not-detected / image-issue / port-firewall 链在 pre-P7 收敛中删除(无诊断价值,或改由中心 Agent 经 `SearchKnowledge` + `DescribeCompShareInstance` 取证)。`chainRegistry` 恒等于广告集,未广告的诊断名无法 resolve(`TestDiagnosisRegistryHasNoUnadvertisedChains` 强制:model 看不见 ≠ 不可达)。边界规则:只读自检命令可作为用户动作建议,改环境的命令须标"可选修复",绝不自动执行。
+`internal/diagnosis/` 是只读诊断链,当前只广告**两条**:`DiagnoseSSH` 和 `DiagnoseBilling`(hand-written registry,非 codegen)。init-failure / GPU-not-detected / image-issue / port-firewall 链在 pre-P7 收敛中删除(无诊断价值,或改由中心 Agent 经 `SearchKnowledge` + `DescribeCompShareInstance` 取证)。`chainRegistry` 恒等于广告集,未广告的诊断名无法 resolve(`TestDiagnosisRegistryHasNoUnadvertisedChains` 强制:model 看不见 ≠ 不可达)。`DiagnoseSSH` 只做云侧预检:精确核对目标实例、生命周期状态、结构化登录入口和监控风险信号,不探测公网端口,也不进入实例检查 SSH 服务或认证日志。边界规则:只读自检命令可作为用户动作建议,改环境的命令须标"可选修复",绝不自动执行。
 
 ## 10. 横切关注点
 
