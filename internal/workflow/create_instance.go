@@ -1228,8 +1228,15 @@ func createInventoryPoolLabel(pool string) string {
 // (see stepQueryInstanceTypes for the measurement), so that premise silently
 // disabled the gate on the plain path.
 func createInventoryPoolSupport(wfCtx *Context, placement deployment.ZonePlacement, pool string) (bool, bool) {
+	return createInventoryPoolSupportFor(wfCtx, placement, paramStr(wfCtx.Params, "GpuType", ""), pool)
+}
+
+// createInventoryPoolSupportFor is the same fact for a model the caller names
+// explicitly. The GPU card needs it: it is deciding BETWEEN models, so the one
+// in Params is not yet the one being judged.
+func createInventoryPoolSupportFor(wfCtx *Context, placement deployment.ZonePlacement, gpuType, pool string) (bool, bool) {
 	supported, known := deployment.InventoryPoolSupportFromResult(
-		wfCtx.Result(createGPUInventoryStep), placement, paramStr(wfCtx.Params, "GpuType", ""), pool,
+		wfCtx.Result(createGPUInventoryStep), placement, gpuType, pool,
 	)
 	if known {
 		return supported, true
@@ -2267,19 +2274,54 @@ func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 	return opts
 }
 
-// spotUnavailableInZone reports whether the CURRENT charge type is Spot and the
-// given zone cannot serve it. Only a resolvable pod zone is a known no: an
-// unresolvable placement is not evidence, so the option stays enabled and
-// validateCreatePlacement remains the authoritative refusal.
-func spotUnavailableInZone(wfCtx *Context, zone string) bool {
-	if !strings.EqualFold(createChargeType(wfCtx.Params), deployment.ChargeTypeSpot) {
-		return false
-	}
+// poolUnsupportedInZone reports whether the CURRENT charge type's purchase pool
+// is KNOWN not to be sold for this model in this zone, and the label to show.
+//
+// This used to answer "is it a pod zone", which is the rule the create gate
+// itself dropped: pod-ness does not decide Spot. 华北二C is a pod zone that DOES
+// sell Spot, and 华北一C is a pod zone that does not — a card built on pod-ness
+// hides the first and the gate would have accepted it. Reading the same fact the
+// gate reads is the only way the two cannot disagree.
+//
+// An unresolvable placement or an unanswered backend is not evidence: the option
+// stays enabled and validateCreatePlacement remains the authoritative refusal.
+func poolUnsupportedInZone(wfCtx *Context, zone, gpuType string) (bool, string) {
 	placement, err := workflowZonePlacement(wfCtx, zone)
 	if err != nil {
-		return false
+		return false, ""
 	}
-	return placement.IsPod
+	pool := createInventoryPool(createChargeType(wfCtx.Params))
+	supported, known := createInventoryPoolSupportFor(wfCtx, placement, gpuType, pool)
+	if !known || supported {
+		return false, ""
+	}
+	return true, "该可用区不支持" + createInventoryPoolLabel(pool) + "购买方式"
+}
+
+// poolUnsupportedEverywhere reports whether the current charge type's pool is
+// known not to be sold for this model in EVERY zone the model is offered in.
+//
+// The GPU card comes before the zone card, so a model spans several zones here
+// and only the aggregate is answerable. It has to be the strict one: a single
+// zone that still sells the mode — or that the backend did not answer for —
+// leaves the model buyable, and greying it out would remove a choice the zone
+// card was about to make available. No API calls; the snapshot is already read.
+func poolUnsupportedEverywhere(wfCtx *Context, zones []string, gpuType string) (bool, string) {
+	if len(zones) == 0 {
+		return false, ""
+	}
+	reason := ""
+	for _, zone := range zones {
+		unsupported, zoneReason := poolUnsupportedInZone(wfCtx, zone, gpuType)
+		if !unsupported {
+			return false, ""
+		}
+		if reason == "" {
+			reason = zoneReason
+		}
+	}
+	pool := createInventoryPool(createChargeType(wfCtx.Params))
+	return true, "该机型不支持" + createInventoryPoolLabel(pool) + "购买方式"
 }
 
 func hasExplicitImageIntent(params map[string]any) bool {
@@ -3845,13 +3887,21 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 		}
 		stock, stockKnown := inventory.total(ch.zones, ch.name)
 		imageUnsupported := len(supported) > 0 && !containsFold(supported, ch.name)
-		disabled := !ch.normal || imageUnsupported
+		poolUnsupported, poolReason := poolUnsupportedEverywhere(wfCtx, ch.zones, ch.name)
+		disabled := !ch.normal || imageUnsupported || poolUnsupported
 		disabledReason := ""
 		if imageUnsupported {
 			noteParts = append(noteParts, "镜像不支持当前 GPU")
 			disabledReason = "镜像不支持当前 GPU"
 		}
-		if ch.normal {
+		if poolUnsupported && disabledReason == "" {
+			// Replaces the stock line rather than joining it: a card that says both
+			// "不支持抢占式" and "库存快照约 3 张" is telling the user to try anyway.
+			noteParts = append(noteParts, poolReason)
+			disabledReason = poolReason
+			stockKnown = false
+		}
+		if ch.normal && !poolUnsupported {
 			if stockKnown {
 				noteParts = append(noteParts, guidedStockNote(stock))
 			} else {
@@ -4012,14 +4062,13 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 				note = fmt.Sprintf("%s · %s", gpuType, disabledReason)
 			}
 		}
-		// Spot is unavailable in a pod zone. This gate used to point the other way —
-		// the charge-type card disabled Spot once a zone was known — which could not
-		// work while the charge type was chosen LAST. Now the charge type is known
-		// first, so the constraint runs in its natural direction and the user is
-		// never offered a zone their billing mode cannot use.
-		if !disabled && spotUnavailableInZone(wfCtx, zone) {
+		// The charge type is settled before this card, so the purchase-mode
+		// constraint runs in its natural direction: the user is never offered a zone
+		// their billing mode cannot use, and — because this reads the same fact the
+		// create gate reads — never denied one it would have accepted.
+		if unsupported, reason := poolUnsupportedInZone(wfCtx, zone, gpuType); !disabled && unsupported {
 			disabled = true
-			disabledReason = "该可用区不支持抢占式"
+			disabledReason = reason
 			note = fmt.Sprintf("%s · %s", gpuType, disabledReason)
 		}
 		opt := ConfirmFormOption{
