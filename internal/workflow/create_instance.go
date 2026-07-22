@@ -834,19 +834,65 @@ func workflowZonePlacement(wfCtx *Context, zone string) (deployment.ZonePlacemen
 
 func validateCreatePlacement(wfCtx *Context, placement deployment.ZonePlacement, purchase bool) error {
 	chargeType := createChargeType(wfCtx.Params)
-	if placement.IsPod && strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
-		return fmt.Errorf("%s 当前不支持抢占式实例，请改用按量、包日或包月", zoneDisplayLabel(wfCtx, placement.Zone))
-	}
-	if !placement.IsPod {
-		return nil
-	}
-	if placement.ZoneID == 0 {
+	if placement.IsPod && placement.ZoneID == 0 {
 		return fmt.Errorf("未获取到 %s 的内部可用区编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx, placement.Zone))
 	}
-	if purchase && placement.AzGroup == 0 {
+	if placement.IsPod && purchase && placement.AzGroup == 0 {
 		return fmt.Errorf("未获取到 %s 的内部地域编号，无法安全创建。请稍后重试或到控制台确认可用区", zoneDisplayLabel(wfCtx, placement.Zone))
 	}
+	if !purchase {
+		return nil
+	}
+	pool := createInventoryPool(chargeType)
+	supported, known := createInventoryPoolSupport(wfCtx, placement, pool)
+	if known && !supported {
+		return fmt.Errorf("%s 的 %s 当前不支持%s购买方式，请选择其他计费方式或可用区",
+			zoneDisplayLabel(wfCtx, placement.Zone), paramStr(wfCtx.Params, "GpuType", "该机型"), createInventoryPoolLabel(pool))
+	}
+	if !known {
+		return fmt.Errorf("未能确认 %s 的 %s 是否支持%s购买方式，请稍后重试",
+			zoneDisplayLabel(wfCtx, placement.Zone), paramStr(wfCtx.Params, "GpuType", "该机型"), createInventoryPoolLabel(pool))
+	}
 	return nil
+}
+
+func createInventoryPool(chargeType string) string {
+	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
+		return deployment.GPUInventoryPoolSpot
+	}
+	return deployment.GPUInventoryPoolExclusive
+}
+
+func createInventoryPoolLabel(pool string) string {
+	if pool == deployment.GPUInventoryPoolSpot {
+		return "抢占式"
+	}
+	return "独占"
+}
+
+func createInventoryPoolSupport(wfCtx *Context, placement deployment.ZonePlacement, pool string) (bool, bool) {
+	result := wfCtx.Result(createGPUInventoryStep)
+	if result == nil {
+		// The fully specified workflow queried the instance-type catalog with the
+		// selected ChargeType before resolving the draft, so reaching this point
+		// already proves that mode/model/zone combination is offered. The guided
+		// workflow has the richer inventory result below because ChargeType is
+		// selected after its initial catalog query.
+		return true, true
+	}
+	supported, known := deployment.InventoryPoolSupportFromResult(
+		result, placement, paramStr(wfCtx.Params, "GpuType", ""), pool,
+	)
+	if known {
+		return supported, true
+	}
+	// The official product contract always offers Postpay/Day/Month. Spot and
+	// Pod pool membership depend on the live inventory metadata and must not be
+	// guessed when that metadata is unavailable.
+	if !placement.IsPod && pool == deployment.GPUInventoryPoolExclusive {
+		return true, true
+	}
+	return false, false
 }
 
 func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placement deployment.ZonePlacement) error {
@@ -1791,21 +1837,21 @@ var createFormChargeTypes = []ConfirmFormOption{
 func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 	opts := make([]ConfirmFormOption, len(createFormChargeTypes))
 	copy(opts, createFormChargeTypes)
-	// Display-only: the Spot option is disabled for a pod zone. If the zone can't
-	// be resolved here, show every charge type — the authoritative create gate
-	// (validateCreatePlacement) still refuses an unresolvable or pod+Spot pick.
 	placement, err := workflowZonePlacement(wfCtx, zone)
 	if err != nil {
 		return opts
 	}
 	for i := range opts {
-		if !strings.EqualFold(opts[i].Value, deployment.ChargeTypeSpot) {
-			continue
-		}
-		if placement.IsPod {
+		pool := createInventoryPool(opts[i].Value)
+		supported, known := createInventoryPoolSupport(wfCtx, placement, pool)
+		if known && !supported {
 			opts[i].Disabled = true
-			opts[i].Reason = "当前可用区不支持抢占式"
-			opts[i].Note = "Pod 可用区暂不支持抢占式"
+			opts[i].Reason = "当前可用区和机型不支持" + createInventoryPoolLabel(pool) + "购买方式"
+			opts[i].Note = opts[i].Reason
+		} else if !known {
+			opts[i].Disabled = true
+			opts[i].Reason = "本轮未能确认该购买方式是否受支持"
+			opts[i].Note = opts[i].Reason
 		}
 	}
 	return opts

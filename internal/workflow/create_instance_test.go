@@ -3,6 +3,7 @@ package workflow
 import (
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1019,8 +1020,11 @@ func TestCreateInstance_NormalZoneCapacityKeepsZoneAndRegion(t *testing.T) {
 	assert.Equal(t, uint32(2002), checkArgs["zone_id"])
 }
 
-func TestCreateInstance_PodZoneRejectsSpotBeforeCapacity(t *testing.T) {
+func TestCreateInstance_FullySpecifiedPodSpotUsesChargeFilteredCatalog(t *testing.T) {
 	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-pod", "Name": "Pod CUDA", "Container": "True", "Size": float64(102400)},
+	}}
 	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
 
 	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
@@ -1030,15 +1034,18 @@ func TestCreateInstance_PodZoneRejectsSpotBeforeCapacity(t *testing.T) {
 	}, withPodZone("cn-newpod-03", "cn-newpod", 9103, 3103))
 
 	assert.NoError(t, err)
-	assert.False(t, result.Success)
-	// Placement is validated once, while the draft is formed — under the stricter
-	// purchase=true form that capacity's own check never applied.
-	assert.Equal(t, "形成执行草稿", result.StoppedAt)
-	assert.Contains(t, result.Message, "不支持抢占式")
+	assert.True(t, result.Success)
+	var catalogArgs, capacityArgs map[string]any
 	for _, call := range executor.calls {
-		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
-		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+		if call.action == "DescribeAvailableCompShareInstanceTypes" {
+			catalogArgs = call.args
+		}
+		if call.action == "CheckCompShareResourceCapacity" {
+			capacityArgs = call.args
+		}
 	}
+	assert.Equal(t, "spot", catalogArgs["InstanceType"])
+	assert.Equal(t, deployment.ChargeTypeSpot, capacityArgs["ChargeType"])
 }
 
 func TestCreateInstance_UnsupportedImageBlocksBeforeCapacity(t *testing.T) {

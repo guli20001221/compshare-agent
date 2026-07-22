@@ -458,7 +458,7 @@ func TestRenderStockCapacity_SuccessButAllFalseIsNotGlobalDenial(t *testing.T) {
 	assert.NotContains(t, reply, "售罄")
 }
 
-func TestStockInventoryExplicitZeroAndNoPositivePrecheckIsFriendlyNoStock(t *testing.T) {
+func TestStockInventoryExplicitZeroAndNoPositivePrecheckRemainsUncertain(t *testing.T) {
 	catalog := stockZoneCatalogSnapshot(zones.ParseSupportZones(stockSupportZonesFixture()))
 	snapshot := deployment.NewGPUInventorySnapshot(catalog, map[string]any{
 		"GpuInventory": map[string]any{
@@ -470,40 +470,37 @@ func TestStockInventoryExplicitZeroAndNoPositivePrecheckIsFriendlyNoStock(t *tes
 		Name: "4090_48G", Zone: "上海二B (cn-sh2-02)", CanonicalZone: "cn-sh2-02", CheckedSpec: 2,
 	}}
 
-	require.True(t, stockInventoryProvesCurrentlyEmpty(snapshot, checks))
-	reply := renderStockCurrentlyEmpty(checks)
-	assert.Equal(t, "上海二B (cn-sh2-02) 的 4090_48G 当前暂无可用库存。库存会实时变化，可以稍后再查，或选择其他可用区。", reply)
-	assert.NotContains(t, reply, "原始库存")
-	assert.NotContains(t, reply, "样本")
-	assert.NotContains(t, reply, "尝试创建")
+	reply := joinStockReply(renderStockCapacityReply(checks), renderStockGPUInventory(snapshot, []string{"4090_48G"}, nil, zones.ParseSupportZones(stockSupportZonesFixture())))
+	assert.Contains(t, reply, "不能据此判断该机型无法创建")
+	assert.Contains(t, reply, "库存快照为 0")
+	assert.NotContains(t, reply, "当前暂无可用库存")
 }
 
 func TestStockInventoryZeroDoesNotOverridePositiveCapacity(t *testing.T) {
-	catalog := stockZoneCatalogSnapshot(zones.ParseSupportZones(stockSupportZonesFixture()))
-	snapshot := deployment.NewGPUInventorySnapshot(catalog, map[string]any{
-		"GpuInventory": map[string]any{
-			"Exclusive": map[string]any{"2": map[string]any{"4090": float64(0)}},
-		},
-	}, true, true, nil, false, false)
 	checks := []stockCapacityCheck{{
 		Name: "4090", Zone: "上海二B (cn-sh2-02)", CanonicalZone: "cn-sh2-02",
 		CheckedSpec: 1, EnoughSpecs: []string{"1卡/16C/64G"},
 	}}
 
-	assert.False(t, stockInventoryProvesCurrentlyEmpty(snapshot, checks),
-		"a successful capacity precheck is stronger evidence than a racing raw zero")
 	assert.Contains(t, renderStockCapacityReply(checks), "可以新建实例")
 	assert.NotContains(t, renderStockCapacityReply(checks), "暂无可用库存")
 }
 
 func TestStockInventoryUnavailableNeverBecomesNoStock(t *testing.T) {
-	catalog := stockZoneCatalogSnapshot(zones.ParseSupportZones(stockSupportZonesFixture()))
-	snapshot := deployment.NewGPUInventorySnapshot(catalog, nil, true, false, nil, false, false)
 	checks := []stockCapacityCheck{{
 		Name: "4090_48G", Zone: "上海二B (cn-sh2-02)", CanonicalZone: "cn-sh2-02", CheckedSpec: 2,
 	}}
-	assert.False(t, stockInventoryProvesCurrentlyEmpty(snapshot, checks),
-		"an unavailable source is unknown, never an implicit zero")
+	assert.Contains(t, renderStockCapacityReply(checks), "不能据此判断该机型无法创建")
+}
+
+func TestStockInventoryFailedPrecheckAndExplicitZeroNeverBecomesNoStock(t *testing.T) {
+	checks := []stockCapacityCheck{{
+		Name: "4090", Zone: "上海二B (cn-sh2-02)", CanonicalZone: "cn-sh2-02", Failed: true,
+	}}
+	reply := renderStockCapacityReply(checks)
+	assert.Contains(t, reply, "预检未完成")
+	assert.NotContains(t, reply, "暂无可用库存")
+	assert.NotContains(t, reply, "无法创建")
 }
 
 func TestRequestedInventoryPoolNeverConfusesSpotAndExclusive(t *testing.T) {
@@ -520,22 +517,39 @@ func TestRequestedInventoryPoolNeverConfusesSpotAndExclusive(t *testing.T) {
 			Name: "4090", Zone: "华北二C (cn-wlcb-03)", CanonicalZone: "cn-wlcb-03",
 			CheckedSpec: 1, EnoughSpecs: []string{"1卡/14C/64G"},
 		}}
-		reply, decisive := renderRequestedInventoryPool(snapshot, checks, deployment.GPUInventoryPoolExclusive)
-		require.True(t, decisive)
-		assert.Contains(t, reply, "当前没有独占库存")
-		assert.Contains(t, reply, "抢占式库存约 1 张")
-		assert.NotContains(t, reply, "当前有独占库存")
+		eligible, reply := requestedInventoryPoolView(snapshot, checks, deployment.GPUInventoryPoolExclusive)
+		assert.Empty(t, eligible, "capacity preview must not approve an unsupported purchase mode")
+		assert.Empty(t, renderStockCapacityReply(eligible), "an unsupported mode must not emit a blank-model on-sale sentence")
+		assert.Contains(t, reply, "当前不支持独占购买方式")
+		assert.NotContains(t, reply, "暂无独占库存")
 	})
 
 	t.Run("exclusive-only zone rejects spot claim", func(t *testing.T) {
 		checks := []stockCapacityCheck{{
 			Name: "4090", Zone: "华北一C (cn-bj2-03)", CanonicalZone: "cn-bj2-03",
 		}}
-		reply, decisive := renderRequestedInventoryPool(snapshot, checks, deployment.GPUInventoryPoolSpot)
-		require.True(t, decisive)
-		assert.Contains(t, reply, "当前没有抢占式库存")
-		assert.Contains(t, reply, "独占库存约 15 张")
+		eligible, reply := requestedInventoryPoolView(snapshot, checks, deployment.GPUInventoryPoolSpot)
+		assert.Empty(t, eligible)
+		assert.Contains(t, reply, "当前不支持抢占式购买方式")
 	})
+}
+
+func TestRequestedInventoryPoolZeroIsSnapshotNotGlobalDenial(t *testing.T) {
+	catalog := stockZoneCatalogSnapshot(zones.ParseSupportZones(stockSupportZonesFixture()))
+	snapshot := deployment.NewGPUInventorySnapshot(catalog, map[string]any{
+		"GpuInventory": map[string]any{
+			"Exclusive": map[string]any{"2": map[string]any{"4090_48G": float64(0)}},
+		},
+	}, true, true, nil, false, false)
+	checks := []stockCapacityCheck{{
+		Name: "4090_48G", Zone: "上海二B (cn-sh2-02)", CanonicalZone: "cn-sh2-02", CheckedSpec: 1,
+	}}
+	eligible, reply := requestedInventoryPoolView(snapshot, checks, deployment.GPUInventoryPoolExclusive)
+	require.Len(t, eligible, 1)
+	assert.Contains(t, reply, "支持独占购买方式")
+	assert.Contains(t, reply, "库存快照为 0")
+	assert.Contains(t, reply, "不等同于无法创建")
+	assert.NotContains(t, reply, "暂无独占库存")
 }
 
 func TestCapacityPrecheckUsesRequestedPoolChargeType(t *testing.T) {

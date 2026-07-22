@@ -355,12 +355,8 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 		return joinStockReply(renderStockCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder))+"\n容量预检未执行：当前接口结果缺少可用区信息。", inventoryReply), true, ReadResult{}
 	}
 	if pool := normalizeInventoryPool(req.InventoryPool); pool != "" {
-		if reply, decisive := renderRequestedInventoryPool(inventory, checks, pool); decisive {
-			return reply, true, ReadResult{}
-		}
-	}
-	if stockInventoryProvesCurrentlyEmpty(inventory, checks) {
-		return renderStockCurrentlyEmpty(checks), true, ReadResult{}
+		eligibleChecks, poolReply := requestedInventoryPoolView(inventory, checks, pool)
+		return joinStockReply(renderStockCapacityReply(eligibleChecks), poolReply), true, ReadResult{}
 	}
 	return joinStockReply(renderStockCapacityReply(checks), inventoryReply), true, ReadResult{}
 }
@@ -471,42 +467,6 @@ func joinStockReply(primary, inventory string) string {
 	return primary + "\n" + inventory
 }
 
-// stockInventoryProvesCurrentlyEmpty combines the two independent signals
-// without asking the model to interpret their relationship. A positive capacity
-// result always wins. Otherwise, every requested zone/model must have an
-// explicit zero from its authoritative inventory backend; unavailable or
-// omitted inventory remains unknown rather than becoming a false sold-out.
-func stockInventoryProvesCurrentlyEmpty(snapshot *deployment.GPUInventorySnapshot, checks []stockCapacityCheck) bool {
-	if snapshot == nil || len(checks) == 0 {
-		return false
-	}
-	for _, check := range checks {
-		if len(check.EnoughSpecs) > 0 || strings.TrimSpace(check.CanonicalZone) == "" {
-			return false
-		}
-		exclusive, spot, present, available := snapshot.Counts(check.CanonicalZone, check.Name)
-		if !available || !present || exclusive > 0 || spot > 0 {
-			return false
-		}
-	}
-	return true
-}
-
-func renderStockCurrentlyEmpty(checks []stockCapacityCheck) string {
-	seen := map[string]struct{}{}
-	targets := make([]string, 0, len(checks))
-	for _, check := range checks {
-		target := strings.TrimSpace(check.Zone) + " 的 " + strings.TrimSpace(check.Name)
-		if _, ok := seen[target]; ok || strings.TrimSpace(target) == "的" {
-			continue
-		}
-		seen[target] = struct{}{}
-		targets = append(targets, target)
-	}
-	sort.Strings(targets)
-	return fmt.Sprintf("%s 当前暂无可用库存。库存会实时变化，可以稍后再查，或选择其他可用区。", strings.Join(targets, "、"))
-}
-
 func normalizeInventoryPool(pool string) string {
 	switch {
 	case strings.EqualFold(strings.TrimSpace(pool), deployment.GPUInventoryPoolExclusive):
@@ -518,56 +478,63 @@ func normalizeInventoryPool(pool string) string {
 	}
 }
 
-// renderRequestedInventoryPool answers an explicit 独占/抢占 question from
-// the inventory backend's product bucket. Capacity preview is deliberately not
-// allowed to override it: the Pod preview API checks physical capacity but does
-// not validate ChargeType, while the inventory backend explicitly places
-// wlcb3 in Spot and the other partner zones in Exclusive.
-func renderRequestedInventoryPool(snapshot *deployment.GPUInventorySnapshot, checks []stockCapacityCheck, pool string) (string, bool) {
+// requestedInventoryPoolView separates two facts that used to be conflated:
+// pool membership is authoritative product support, while the numeric count is
+// only a point-in-time snapshot. Unsupported rows are removed from capacity
+// conclusions because that API does not validate ChargeType; supported zeroes
+// remain eligible and never become a global no-stock claim.
+func requestedInventoryPoolView(snapshot *deployment.GPUInventorySnapshot, checks []stockCapacityCheck, pool string) ([]stockCapacityCheck, string) {
 	if snapshot == nil || len(checks) == 0 {
-		return "", false
+		return checks, ""
 	}
 	pool = normalizeInventoryPool(pool)
 	if pool == "" {
-		return "", false
+		return checks, ""
 	}
 	poolLabel := "独占"
-	otherPool := deployment.GPUInventoryPoolSpot
-	otherLabel := "抢占式"
 	if pool == deployment.GPUInventoryPoolSpot {
 		poolLabel = "抢占式"
-		otherPool = deployment.GPUInventoryPoolExclusive
-		otherLabel = "独占"
 	}
 	rows := make([]string, 0, len(checks))
+	eligible := make([]stockCapacityCheck, 0, len(checks))
 	seen := map[string]struct{}{}
 	for _, check := range checks {
+		supported, known := snapshot.PoolSupported(check.CanonicalZone, check.Name, pool)
+		if known && !supported {
+			key := check.CanonicalZone + "\x00" + check.Name
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				rows = append(rows, fmt.Sprintf("%s 的 %s 当前不支持%s购买方式", check.Zone, check.Name, poolLabel))
+			}
+			continue
+		}
+		eligible = append(eligible, check)
 		key := check.CanonicalZone + "\x00" + check.Name
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		count, _, available := snapshot.PoolCount(check.CanonicalZone, check.Name, pool)
-		if !available {
-			return "", false
-		}
 		target := fmt.Sprintf("%s 的 %s", check.Zone, check.Name)
+		if !known {
+			rows = append(rows, fmt.Sprintf("%s 本轮未确认%s购买方式的支持状态", target, poolLabel))
+			continue
+		}
+		count, present, available := snapshot.PoolCount(check.CanonicalZone, check.Name, pool)
+		if !available || !present {
+			rows = append(rows, fmt.Sprintf("%s 支持%s购买方式；库存接口本轮未返回该型号的数量", target, poolLabel))
+			continue
+		}
 		if count > 0 {
-			rows = append(rows, fmt.Sprintf("%s 当前有%s库存，约 %d 张", target, poolLabel, count))
+			rows = append(rows, fmt.Sprintf("%s 支持%s购买方式；原始库存快照约 %d 张", target, poolLabel, count))
 			continue
 		}
-		otherCount, _, _ := snapshot.PoolCount(check.CanonicalZone, check.Name, otherPool)
-		if otherCount > 0 {
-			rows = append(rows, fmt.Sprintf("%s 当前没有%s库存；本轮查询到%s库存约 %d 张", target, poolLabel, otherLabel, otherCount))
-			continue
-		}
-		rows = append(rows, fmt.Sprintf("%s 当前暂无%s库存", target, poolLabel))
+		rows = append(rows, fmt.Sprintf("%s 支持%s购买方式；本轮原始库存快照为 0，但这不等同于无法创建", target, poolLabel))
 	}
 	if len(rows) == 0 {
-		return "", false
+		return eligible, ""
 	}
 	sort.Strings(rows)
-	return strings.Join(rows, "；") + "。库存会实时变化，可以稍后再查。", true
+	return eligible, strings.Join(rows, "；") + "。"
 }
 
 func failedStockCapacityChecks(entriesByModel map[string][]stockInstanceTypeEntry, modelOrder []string) []stockCapacityCheck {
@@ -835,6 +802,9 @@ func capacitySpecLabel(spec map[string]any) string {
 }
 
 func renderStockCapacityReply(checks []stockCapacityCheck) string {
+	if len(checks) == 0 {
+		return ""
+	}
 	names := make([]string, 0, len(checks))
 	seenNames := map[string]struct{}{}
 	var enough []string

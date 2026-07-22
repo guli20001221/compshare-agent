@@ -3,6 +3,7 @@ package deployment
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -21,9 +22,10 @@ const (
 // here prevents an official-pool zero for a Pod zone from being presented as a
 // real Pod inventory observation.
 type GPUInventorySnapshot struct {
-	catalog *ZoneCatalogSnapshot
-	counts  map[string]map[uint32]map[string]uint32 // pool -> zone id -> gpu -> cards
-	sources map[string]GPUInventorySourceState
+	catalog                 *ZoneCatalogSnapshot
+	counts                  map[string]map[uint32]map[string]uint32 // pool -> zone id -> gpu -> cards
+	sources                 map[string]GPUInventorySourceState
+	spotUnsupportedGpuTypes map[string]struct{}
 }
 
 // GPUInventorySourceState distinguishes a successful empty response from a
@@ -47,7 +49,8 @@ func NewGPUInventorySnapshot(
 	podAttempted, podAvailable bool,
 ) *GPUInventorySnapshot {
 	s := &GPUInventorySnapshot{
-		catalog: catalog,
+		catalog:                 catalog,
+		spotUnsupportedGpuTypes: inventoryStringSet(officialRaw["SpotUnsupportedGpuTypes"]),
 		counts: map[string]map[uint32]map[string]uint32{
 			GPUInventoryPoolExclusive: {},
 			GPUInventoryPoolSpot:      {},
@@ -147,6 +150,28 @@ func (s *GPUInventorySnapshot) PoolCount(zone, gpuType, pool string) (count uint
 	return count, present, true
 }
 
+// PoolSupported reports whether the requested purchase pool is a supported
+// product mode for this exact zone/model. This is deliberately independent of
+// PoolCount: a returned zero is an observed quantity, not proof that the mode
+// is unsupported or that creation is impossible.
+func (s *GPUInventorySnapshot) PoolSupported(zone, gpuType, pool string) (supported, known bool) {
+	if s == nil || !s.catalog.Available() {
+		return false, false
+	}
+	placement, ok := s.catalog.Placement(zone)
+	if !ok {
+		return false, false
+	}
+	return inventoryPoolSupport(s.ToResultMap(), placement, gpuType, pool)
+}
+
+// InventoryPoolSupportFromResult exposes the same product-mode contract to
+// workflows after the typed snapshot has crossed the generic step-result
+// boundary. Missing source data stays unknown; it never becomes unsupported.
+func InventoryPoolSupportFromResult(result map[string]any, placement ZonePlacement, gpuType, pool string) (supported, known bool) {
+	return inventoryPoolSupport(result, placement, gpuType, pool)
+}
+
 // ToResultMap produces the generic workflow step-result shape consumed by the
 // guided form. It always returns fresh maps, so no caller can mutate the typed
 // snapshot. Source status is included so future consumers do not have to infer
@@ -157,7 +182,8 @@ func (s *GPUInventorySnapshot) ToResultMap() map[string]any {
 			GPUInventoryPoolExclusive: inventoryPoolToMap(nil),
 			GPUInventoryPoolSpot:      inventoryPoolToMap(nil),
 		},
-		"InventorySources": map[string]any{},
+		"InventorySources":        map[string]any{},
+		"SpotUnsupportedGpuTypes": []string{},
 	}
 	if s == nil {
 		return result
@@ -175,7 +201,74 @@ func (s *GPUInventorySnapshot) ToResultMap() map[string]any {
 			"UpdateTime": state.UpdateTime,
 		}
 	}
+	unsupported := make([]string, 0, len(s.spotUnsupportedGpuTypes))
+	for gpuType := range s.spotUnsupportedGpuTypes {
+		unsupported = append(unsupported, gpuType)
+	}
+	sort.Strings(unsupported)
+	result["SpotUnsupportedGpuTypes"] = unsupported
 	return result
+}
+
+func inventoryPoolSupport(result map[string]any, placement ZonePlacement, gpuType, pool string) (bool, bool) {
+	pool = canonicalInventoryPool(pool)
+	if result == nil || pool == "" || placement.ZoneID == 0 || strings.TrimSpace(gpuType) == "" {
+		return false, false
+	}
+	source := GPUInventorySourceOfficial
+	if placement.IsPod {
+		source = GPUInventorySourcePod
+	}
+	if !inventorySourceAvailable(result, source) {
+		return false, false
+	}
+	if !placement.IsPod {
+		if pool == GPUInventoryPoolExclusive {
+			return true, true
+		}
+		_, unsupported := inventoryStringSet(result["SpotUnsupportedGpuTypes"])[strings.ToLower(strings.TrimSpace(gpuType))]
+		return !unsupported, true
+	}
+
+	_, requestedPresent := inventoryGPUCount(inventoryPool(result, pool), placement.ZoneID, gpuType)
+	other := GPUInventoryPoolExclusive
+	if pool == GPUInventoryPoolExclusive {
+		other = GPUInventoryPoolSpot
+	}
+	_, otherPresent := inventoryGPUCount(inventoryPool(result, other), placement.ZoneID, gpuType)
+	if requestedPresent {
+		return true, true
+	}
+	if otherPresent {
+		return false, true
+	}
+	return false, false
+}
+
+func inventorySourceAvailable(result map[string]any, source string) bool {
+	root := indirectValue(reflect.ValueOf(result["InventorySources"]))
+	entry := mapValueFold(root, source)
+	available := mapValueFold(entry, "Available")
+	return available.IsValid() && available.Kind() == reflect.Bool && available.Bool()
+}
+
+func inventoryStringSet(value any) map[string]struct{} {
+	out := map[string]struct{}{}
+	v := indirectValue(reflect.ValueOf(value))
+	if !v.IsValid() || (v.Kind() != reflect.Slice && v.Kind() != reflect.Array) {
+		return out
+	}
+	for i := 0; i < v.Len(); i++ {
+		item := indirectValue(v.Index(i))
+		if !item.IsValid() {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(fmt.Sprint(item.Interface())))
+		if name != "" {
+			out[name] = struct{}{}
+		}
+	}
+	return out
 }
 
 func (s *GPUInventorySnapshot) mergeSource(raw map[string]any, pod bool) {
