@@ -16,7 +16,7 @@ import (
 // ReAct loop that is a probabilistic model-behavior property, to be measured from
 // real-model traces for acceptance, not something a tool-list test can prove.
 func TestProposalToolExposureAndMapping(t *testing.T) {
-	names := centralAgentToolNames(true)
+	names := centralAgentToolNames(true, false)
 	require.Contains(t, names, "RequestCreateInstance",
 		"the create proposal tool must be advertised as RequestCreateInstance")
 	require.NotContains(t, names, "ProposeAction_CreateInstanceWorkflow",
@@ -35,7 +35,7 @@ func TestProposalToolExposureAndMapping(t *testing.T) {
 // registry rather than the workflow's internal execution-step description.
 func TestRequestToolDescriptionUsesCapabilityBoundaryNotWorkflowSteps(t *testing.T) {
 	var desc string
-	for _, tool := range centralAgentToolWindow(true) {
+	for _, tool := range centralAgentToolWindow(true, false) {
 		if tool.Function != nil && tool.Function.Name == "RequestCreateInstance" {
 			desc = tool.Function.Description
 			break
@@ -51,7 +51,7 @@ func TestRequestToolDescriptionUsesCapabilityBoundaryNotWorkflowSteps(t *testing
 }
 
 func TestRequestToolDescriptionsDoNotRepeatSharedPromptOrExecutionChains(t *testing.T) {
-	for _, tool := range centralAgentToolWindow(true) {
+	for _, tool := range centralAgentToolWindow(true, false) {
 		if tool.Function == nil || !strings.HasPrefix(tool.Function.Name, "Request") {
 			continue
 		}
@@ -73,7 +73,7 @@ func TestRequestToolDescriptionsDoNotRepeatSharedPromptOrExecutionChains(t *test
 func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {
 	var description string
 	var parameters any
-	for _, tool := range centralAgentToolWindow(true) {
+	for _, tool := range centralAgentToolWindow(true, false) {
 		if tool.Function != nil && tool.Function.Name == "RequestResetPassword" {
 			description = tool.Function.Description
 			parameters = tool.Function.Parameters

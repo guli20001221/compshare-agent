@@ -640,7 +640,7 @@ func TestProposalRejectsDifferentTurnEvidence(t *testing.T) {
 }
 
 func TestCentralAgentProposalSchemaComesFromWorkflowCatalog(t *testing.T) {
-	window := centralAgentToolWindow(true)
+	window := centralAgentToolWindow(true, false)
 	var stopTool, cfsTool map[string]any
 	for _, tool := range window {
 		if tool.Function == nil {
@@ -667,7 +667,7 @@ func TestCentralAgentProposalSchemaComesFromWorkflowCatalog(t *testing.T) {
 }
 
 func TestCentralAgentReadSchemaComesFromCapabilityRegistry(t *testing.T) {
-	window := centralAgentToolWindow(false)
+	window := centralAgentToolWindow(false, false)
 	var priceTool, imageTool map[string]any
 	for _, tool := range window {
 		if tool.Function == nil {

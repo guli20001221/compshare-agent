@@ -280,7 +280,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 7 shared + 79 per-session = 86 fields. Any drift
+// Whitelist totals: 7 shared + 82 per-session = 89 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -420,17 +420,27 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"secretInputsThisTurn":                true,
 		"baseUserContext":                     true,
 		"displayedResourceSelectionThisTurn":  true,
+		// In-instance SSH diagnosis lane (INV-9/INV-11). instanceOps is copied from
+		// SharedDeps but is per-session-overridable via SetInstanceOps (the CLI path),
+		// so a session can hold a different runner than its siblings — classified
+		// per-session, not shared like externalExecutor. The two *ThisTurn fields are
+		// turn-local: sharing them would let one tenant's in-instance run (or its
+		// one-per-turn slot) bleed into another tenant's turn. All reset per turn /
+		// cleared on return.
+		"instanceOps":            true,
+		"instanceOpsRanThisTurn": true,
+		"currentTurnID":          true,
 	}
 
 	if want, got := 7, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 79, len(perSessionFields); want != got {
+	if want, got := 82, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 86, typ.NumField(); want != got {
+	if want, got := 89, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

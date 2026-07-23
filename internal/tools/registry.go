@@ -1173,6 +1173,32 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name: "DiagnoseInstanceInternals",
+			Description: "登录到指定实例内部执行只读命令排查问题。适用于根因在实例内部、平台 API 看不到的故障：" +
+				"GPU 掉卡 / nvidia-smi 报错 / CUDA 找不到设备、显存被占满、服务或端口起不来（ComfyUI、Jupyter、vLLM 等）、" +
+				"磁盘写满、数据盘未挂载、Python 环境与依赖异常、进程卡死或负载异常。执行前会请用户在卡片上授权；" +
+				"只执行只读命令，任何会修改环境的操作都会被拒绝，修复步骤仅作为建议返回。" +
+				"不用于：SSH 连不上或登录失败（用 DiagnoseSSH）、费用与计费（用 DiagnoseBilling）、" +
+				"平台侧安全组与端口开放（不在实例内）、不针对具体实例的通用知识问题。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要进入排查的实例 ID",
+					},
+					"Task": map[string]any{
+						"type":        "string",
+						"description": "本次要排查什么，一句话自然语言描述（由你根据用户问题自行撰写）",
+					},
+				},
+				"required": []string{"UHostId", "Task"},
+			},
+		},
+	},
 }
 
 // VisibleRegistryForSubset returns a filtered tool list scoped to the given

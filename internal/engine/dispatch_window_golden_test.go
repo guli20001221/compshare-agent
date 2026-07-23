@@ -85,9 +85,9 @@ var goldenWindowMutating = []string{
 }
 
 func TestCentralAgentToolWindowGolden(t *testing.T) {
-	require.Equal(t, goldenWindowReadOnly, centralAgentToolNames(false),
+	require.Equal(t, goldenWindowReadOnly, centralAgentToolNames(false, false),
 		"read-only tool window drifted")
-	require.Equal(t, goldenWindowMutating, centralAgentToolNames(true),
+	require.Equal(t, goldenWindowMutating, centralAgentToolNames(true, false),
 		"mutating tool window drifted")
 }
 
@@ -96,6 +96,6 @@ func TestCentralAgentToolWindowGolden(t *testing.T) {
 // makes an accidental duplicate visible as a count mismatch rather than as a
 // slice diff buried in 37 lines.
 func TestCentralAgentToolWindowGoldenCounts(t *testing.T) {
-	require.Len(t, centralAgentToolNames(false), 20)
-	require.Len(t, centralAgentToolNames(true), 37)
+	require.Len(t, centralAgentToolNames(false, false), 20)
+	require.Len(t, centralAgentToolNames(true, false), 37)
 }
