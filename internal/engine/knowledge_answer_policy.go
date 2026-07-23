@@ -2,8 +2,8 @@ package engine
 
 const (
 	// ragUngroundableReply is the ONLY fixed knowledge reply left. It is a security
-	// stop for a persistent raw-evidence leak (a verbatim dump the retry could not
-	// rewrite) — NOT a grounding refusal. Typography-only + fail-open never replaces
+	// stop for a raw-evidence leak (a verbatim dump) — NOT a grounding refusal.
+	// Typography-only + fail-open never replaces
 	// an ungrounded answer with a canned "知识库未覆盖" template (that string was a
 	// lie 81% of the time in production: the evidence was there, the answer was
 	// written, and a bracket-regex deleted it).

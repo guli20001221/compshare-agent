@@ -248,10 +248,9 @@ type Engine struct {
 	// turn. ToolScope controls whether the tool is available for the active intent.
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
-	// searchKnowledgeCallsThisTurn counts SearchKnowledge invocations this turn so
-	// the ReAct loop can withdraw the tool once it hits maxSearchKnowledgeCallsPerTurn,
-	// bounding the corpus-gap re-search thrash that otherwise exhausts the token
-	// budget. Reset per turn; inert unless the agentic SearchKnowledge tool runs.
+	// searchKnowledgeCallsThisTurn counts actual retrieval queries, including
+	// the bounded query variants emitted by the multi-turn query planner.
+	// The ReAct loop withdraws the capability at maxSearchKnowledgeCallsPerTurn.
 	searchKnowledgeCallsThisTurn int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
 	// evidence ledger (the union of every SearchKnowledge call's items this turn,
@@ -260,10 +259,10 @@ type Engine struct {
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
 	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
-	// resolvedKnowledgeQuestionThisTurn is the first standalone question the
-	// agent formulated from the complete visible conversation. Later searches
-	// may use narrower subqueries, but answer verification must keep one stable
-	// question instead of joining unrelated retrieval strings with " | ".
+	// resolvedKnowledgeQuestionThisTurn is the standalone answer target produced
+	// by the bounded conversation-aware query planner (or the Agent query when
+	// planning is unnecessary/unavailable). Later searches may use narrower
+	// subqueries, but answer verification keeps this one stable question.
 	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
@@ -2134,76 +2133,76 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if query == "" {
 		query = hint
 	}
-	// The same agent that sees the full conversation owns query formulation.
-	// The first accepted query is therefore the turn's standalone resolved
-	// question; subsequent calls remain observable as actual subqueries but do
-	// not change what the final answer is supposed to answer.
-	if e.resolvedKnowledgeQuestionThisTurn == "" && query != "" {
-		e.resolvedKnowledgeQuestionThisTurn = query
+	plan := fallbackKnowledgeQueryPlan(query)
+	if e.resolvedKnowledgeQuestionThisTurn == "" {
+		plan = e.planKnowledgeQuery(ctx, query)
+		e.resolvedKnowledgeQuestionThisTurn = plan.AnswerQuestion
 	}
 	resolvedQuestion := e.resolvedKnowledgeQuestionThisTurn
 	if resolvedQuestion == "" {
 		resolvedQuestion = query
 	}
-	onStep(StepEvent{Type: StepToolCall, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Args: map[string]any{"query": query}})
-	// One model response may contain several parallel SearchKnowledge calls. The
-	// tool-window cap is evaluated before that response, so enforce the same
-	// bound again at the execution boundary instead of allowing the batch to
-	// overshoot it.
+	if len(plan.SearchQueries) == 0 && query != "" {
+		plan.SearchQueries = []string{query}
+	}
+	onStep(StepEvent{
+		Type:   StepToolCall,
+		Action: "SearchKnowledge",
+		Source: observability.ToolSourceKnowledgeLocal,
+		Args: map[string]any{
+			"answer_question": resolvedQuestion,
+			"queries":         append([]string(nil), plan.SearchQueries...),
+		},
+	})
 	if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "本轮检索次数已达上限"})
 		return `{"EvidenceLedger":{"items":[]},"empty":true,"search_limit_reached":true}`
 	}
-	// Count every invocation (incl. the degenerate no-retriever/empty-query path)
-	// so the ReAct loop can withdraw the tool once the per-turn cap is hit.
-	e.searchKnowledgeCallsThisTurn++
-	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
-	if e.knowledgeRetriever == nil || query == "" {
+	if e.knowledgeRetriever == nil || len(plan.SearchQueries) == 0 {
+		e.searchKnowledgeCallsThisTurn++
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true)
 	}
-	retrieved := e.knowledgeRetriever.Retrieve(query, "")
-	rawHits := retrieved.HitItems
-	// Relevance floor: the retriever always returns top-K, so on a turn whose corpus
-	// lacks a relevant chunk (e.g. a tool-ops symptom with the external KB off) the
-	// top hits are topically IRRELEVANT and feeding them would false-ground the
-	// synthesis. qwen3_rrf's Score IS the qwen3-reranker relevance score, so the
-	// existing weak-evidence floor (weakEvidenceSemanticThreshold=0.5) discriminates
-	// cleanly — verified live: relevant ext-* hits score 0.60-0.99 (kept); irrelevant
-	// platform hits at external-off score 0.01-0.07 (dropped). Drop to no-evidence
-	// when weak, so the
-	// agent gets an honest empty ledger and gives general guidance instead of
-	// pretending the irrelevant chunks support a specific answer.
-	hits := rawHits
-	floorDroppedAll := false
-	if isWeakEvidence(rawHits, retrieved.HybridMode) {
-		hits = nil
-		// Only "dropped ALL" when there were hits to drop — a corpus-empty turn
-		// (rawHits==0) is corpus_gap, not all_below_floor.
-		floorDroppedAll = len(rawHits) > 0
-	}
-	ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
-	e.searchKnowledgeRanThisTurn = true
-	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
-	e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
-		ID:              activityID,
-		Query:           query,
-		Hits:            len(retrieved.Hits),
-		FloorDroppedAll: floorDroppedAll,
-	}, hits)
-	// Keep exactly the evidence shown during this turn for the semantic answer
-	// verifier. This ledger is the single grounding source.
-	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
-	// Emit the RAW retrieval as a RetrievalTrace so what SearchKnowledge retrieved
-	// (enabled, hit count, chunk_ids, weak_evidence) is OBSERVABLE in traces and eval
-	// — including when the relevance floor dropped it. Mirrors the diagnosis
-	// knowledge probe's trace emission.
-	e.emitSearchKnowledgeRetrievalTrace(query, retrieved, rawHits, floorDroppedAll, activityID)
-	empty := retrieved.Empty || len(ledger.Items) == 0
-	onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "搜索完成", TraceResult: map[string]any{"items": len(ledger.Items)}})
-	out := searchKnowledgeResultJSON(ledger, empty)
 
-	return out
+	combined := knowledge.EvidenceLedger{Query: resolvedQuestion}
+	executedQueries := 0
+	for _, plannedQuery := range plan.SearchQueries {
+		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
+			break
+		}
+		e.searchKnowledgeCallsThisTurn++
+		executedQueries++
+		activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
+		retrieved := e.knowledgeRetriever.Retrieve(plannedQuery, "")
+		rawHits := retrieved.HitItems
+		hits := rawHits
+		floorDroppedAll := false
+		if isWeakEvidence(rawHits, retrieved.HybridMode) {
+			hits = nil
+			floorDroppedAll = len(rawHits) > 0
+		}
+		ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
+		combined = knowledge.MergeEvidenceLedgers(combined, ledger, maxKnowledgePlanQueries*knowledge.DefaultEvidenceLedgerMaxItems)
+		e.searchKnowledgeRanThisTurn = true
+		e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+		e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
+			ID:              activityID,
+			Query:           plannedQuery,
+			Hits:            len(retrieved.Hits),
+			FloorDroppedAll: floorDroppedAll,
+		}, hits)
+		e.emitSearchKnowledgeRetrievalTrace(plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
+	}
+	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
+	empty := len(combined.Items) == 0
+	onStep(StepEvent{
+		Type:        StepToolResult,
+		Action:      "SearchKnowledge",
+		Source:      observability.ToolSourceKnowledgeLocal,
+		Message:     "搜索完成",
+		TraceResult: map[string]any{"items": len(combined.Items), "queries": executedQueries},
+	})
+	return searchKnowledgeResultJSON(combined, empty)
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
@@ -2222,6 +2221,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 	trace := observability.RetrievalTrace{
 		Enabled:                retrieved.Enabled,
 		KBVersion:              retrieved.KBVersion,
+		AnswerQuestion:         e.resolvedKnowledgeQuestionThisTurn,
 		QueryRaw:               query,
 		QueryNormalized:        retrieved.QueryNormalized,
 		QueryExpansions:        []string{},
@@ -2296,6 +2296,7 @@ func (e *Engine) emitSearchKnowledgeTurnTrace(citedChunkIDs []string) {
 		Enabled:         true,
 		TurnAggregate:   true,
 		KBVersion:       kbVersion,
+		AnswerQuestion:  query,
 		QueryRaw:        query,
 		QueryNormalized: queryNormalized,
 		Hits:            len(turnHits),

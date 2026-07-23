@@ -19,8 +19,11 @@ const (
 	// answer how-to/rules/fee/feasibility questions — with a proactive "适用就立即提交，
 	// 由确认卡补齐参数" framing, validated behaviorally (pro+B4: reliably cards creates,
 	// 0 false-cards on how-to probes). SHAs regenerated for the new segment text.
-	mutatingReActPromptSHA256 = "1072cc6bce17ee3724e2fd440b34a970b11501b10f6ac245eb75947c30ce3a56"
-	readOnlyReActPromptSHA256 = "399a8343e8abe982c7e8e52363a87ce1137a4850ad649200303a50657f799337"
+	// 2026-07-23: platform-specific rules and billing must be retrieved even when
+	// the model considers them familiar; only stable general knowledge may bypass
+	// SearchKnowledge.
+	mutatingReActPromptSHA256 = "39f40b8a1bb4973c7136a8e5898b078e7f8c2dd3785fd84941e6600fad835b2b"
+	readOnlyReActPromptSHA256 = "3e1696b22af94c8e7bc9cdcb740178c8d19c3c4cd9cd3b497e51a51e87134f6b"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {
