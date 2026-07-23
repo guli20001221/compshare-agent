@@ -37,6 +37,7 @@ type schemaNode struct {
 	description string
 	enum        []string              // string enum members (kind==nodeString); nil = free string
 	minimum     *int                  // integer lower bound (kind==nodeInteger); nil = unbounded
+	maximum     *int                  // integer upper bound (kind==nodeInteger); nil = unbounded
 	props       map[string]schemaNode // object properties (kind==nodeObject)
 	req         []string              // object required keys (kind==nodeObject)
 	items       *schemaNode           // array element (kind==nodeArray)
@@ -59,6 +60,11 @@ func enumParam(values ...string) schemaNode {
 func integerParam(minimum int) schemaNode {
 	m := minimum
 	return schemaNode{kind: nodeInteger, minimum: &m}
+}
+
+func boundedIntegerParam(minimum, maximum int) schemaNode {
+	min, max := minimum, maximum
+	return schemaNode{kind: nodeInteger, minimum: &min, maximum: &max}
 }
 
 func arrayParam(items schemaNode) schemaNode {
@@ -127,6 +133,9 @@ func (n schemaNode) jsonSchema() map[string]any {
 		if n.minimum != nil {
 			out["minimum"] = *n.minimum
 		}
+		if n.maximum != nil {
+			out["maximum"] = *n.maximum
+		}
 		return withDescription(out)
 	case nodeArray:
 		items := map[string]any{}
@@ -175,6 +184,9 @@ func (n schemaNode) validate(value any, path string) error {
 		}
 		if n.minimum != nil && f < float64(*n.minimum) {
 			return fmt.Errorf("%s: %v 小于允许最小值 %d", path, value, *n.minimum)
+		}
+		if n.maximum != nil && f > float64(*n.maximum) {
+			return fmt.Errorf("%s: %v 大于允许最大值 %d", path, value, *n.maximum)
 		}
 		return nil
 	case nodeArray:

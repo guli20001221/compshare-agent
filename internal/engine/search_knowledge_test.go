@@ -117,6 +117,22 @@ func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(
 	assert.Equal(t, []string{"chunk-a", "chunk-b"}, final.CitedChunkIDs)
 }
 
+func TestExecuteSearchKnowledge_ThirdCallIsRejectedWithoutRetrieval(t *testing.T) {
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true},
+		{Enabled: true},
+	}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "first"}, noopStep)
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "second"}, noopStep)
+	third := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "third"}, noopStep)
+
+	require.Len(t, retriever.calls, 2)
+	assert.Contains(t, third, `"search_limit_reached":true`)
+}
+
 func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testing.T) {
 	chunkA := knowledge.KBChunk{ChunkID: "chunk-a", KBVersion: "kb.v1", Title: "A", Content: "evidence a"}
 	chunkB := knowledge.KBChunk{ChunkID: "chunk-b", KBVersion: "kb.v1", Title: "B", Content: "evidence b"}

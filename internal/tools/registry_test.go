@@ -1,34 +1,10 @@
 package tools
 
 import (
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
-
-func TestDiagnoseSSHDeclaresTypedFailureKind(t *testing.T) {
-	var parameters map[string]any
-	for _, tool := range Registry {
-		if tool.Function != nil && tool.Function.Name == "DiagnoseSSH" {
-			parameters, _ = tool.Function.Parameters.(map[string]any)
-			break
-		}
-	}
-	if parameters == nil {
-		t.Fatal("DiagnoseSSH schema not found")
-	}
-	properties, _ := parameters["properties"].(map[string]any)
-	kind, _ := properties["FailureKind"].(map[string]any)
-	got, _ := kind["enum"].([]string)
-	want := []string{"timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("FailureKind enum = %#v, want %#v", got, want)
-	}
-	policy := DefaultToolExecutionPolicies()["DiagnoseSSH"]
-	if !containsString(policy.AllowedParams, "FailureKind") {
-		t.Fatal("DiagnoseSSH policy must preserve the typed failure kind")
-	}
-}
 
 func TestCreatePathToolsAllowRegion(t *testing.T) {
 	// The create-path read tools must declare Region (→ AllowedParams) so
@@ -154,7 +130,6 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 	descriptions := registryDescriptions()
 	for _, action := range []string{
 		"GetCompShareRefundPrice",
-		"DescribeCompShareJupyterToken",
 		"DescribeCFS",
 		"GetCompShareCFSPrice",
 		"GetCompShareCFSUpgradePrice",
@@ -167,8 +142,16 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 			t.Fatalf("%s must be registered for the first upstream capability batch", action)
 		}
 	}
-	mustContain(t, descriptions["DescribeCompShareJupyterToken"], "不要明文展示")
+	if _, ok := descriptions["DescribeCompShareJupyterToken"]; ok {
+		t.Fatal("raw Jupyter token API must stay internal; ReadCapability_instance_access owns explicit token retrieval")
+	}
 	policies := DefaultToolExecutionPolicies()
+	if _, ok := policies["DescribeCompShareJupyterToken"]; !ok {
+		t.Fatal("internal Jupyter token action still needs a safe execution policy")
+	}
+	if !slices.Contains(policies["DescribeCompShareJupyterToken"].AllowedParams, "UHostIds") {
+		t.Fatal("internal Jupyter token action must accept the verified instance id")
+	}
 	for _, action := range []string{"EnableNetOptimizerWorkflow", "CreateCFSWorkflow", "ResizeCFSWorkflow"} {
 		if !policies[action].NeedsConfirm {
 			t.Fatalf("%s must require confirmation in the runtime policy", action)

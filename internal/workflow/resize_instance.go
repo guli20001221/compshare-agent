@@ -62,7 +62,7 @@ func stepQueryResizeAvailableSpecs() Step {
 		Tool: "DescribeAvailableCompShareInstanceTypes",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
-			region, zone, err := extractRequiredInstanceLocation(queried)
+			region, zone, err := extractRequiredInstanceLocation(queried, wfCtx.Result("查询支持区"))
 			if err != nil {
 				return nil, err
 			}

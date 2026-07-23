@@ -41,7 +41,7 @@ var builtinCapabilities = []capabilityEntry{
 	// assistant->user multi-turn) and it now returns HTTP 200 + the forced
 	// tool_call — 12/12 forced across the four tools that uniformly 400'd on
 	// 2026-05-08 (GetCompShareInstanceMonitor, DescribeCompShareInstance,
-	// DiagnoseSSH, DiagnoseBilling). The upstream rejection was lifted, so the
+	// typed instance-access read and DiagnoseBilling). The upstream rejection was lifted, so the
 	// flag is flipped true. See eval/capability/2026-06-08-ds-v4-flash-tool-
 	// choice-reprobe.md (supersedes the 2026-05-08 probe). Hot-rollback: a
 	// COMPSHARE_LLM_CAPABILITY_FILE override with supports_object_tool_choice:false.

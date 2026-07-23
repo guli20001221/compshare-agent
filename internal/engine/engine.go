@@ -70,9 +70,9 @@ const (
 	// the per-turn token budget trips and the user gets the bare "请简化问题" instead
 	// of an honest "no specific docs" answer. Past this cap SearchKnowledge is
 	// withdrawn from the tool list so the model must answer from what it has (or
-	// decline) well within budget. Generous enough to preserve genuine multi-hop
-	// retrieval (1-2 productive searches is typical); it only kills the thrash.
-	maxSearchKnowledgeCallsPerTurn = 5
+	// decline) well within budget. One resolved query is normally sufficient; a
+	// second permits a genuine follow-up angle without allowing search thrash.
+	maxSearchKnowledgeCallsPerTurn = 2
 )
 
 const actionOutcomeUncertainReply = "上游请求已发出，但本次没有收到可确认的结果。为避免重复操作，系统不会自动重试；请先查询资源当前状态，再决定下一步。"
@@ -2473,7 +2473,8 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 
 	// Diagnosis meta-tools → delegate to diagnosis engine. Keys on chainRegistry
 	// (IsDiagnosisTool), which since the pre-P7 convergence is EQUAL to the
-	// advertised set {DiagnoseSSH, DiagnoseBilling} — no dormant superset. The
+	// advertised diagnosis set contains only DiagnoseBilling; SSH/Jupyter/port
+	// checks are owned by the typed ReadCapability_instance_access vertical. The
 	// GPU/image/port/init chains were deleted outright, so a hallucinated or
 	// replayed de-advertised diagnosis name no longer resolves to a chain here; it
 	// falls through to the normal unknown/mutating-tool handling below. Enforced by

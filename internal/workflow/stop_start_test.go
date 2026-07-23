@@ -219,7 +219,7 @@ func TestStartInstance_MissingLocationRejectedBeforeStart(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "开机", result.StoppedAt)
+	assert.Equal(t, "确认开机", result.StoppedAt)
 	assert.Contains(t, result.Message, "可用区")
 	assert.Len(t, executor.calls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)

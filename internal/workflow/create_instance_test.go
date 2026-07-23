@@ -32,6 +32,10 @@ func livePriceDetails() []any {
 }
 
 func mockInstanceTypes(gpuType string, sizes ...struct{ Gpu, Cpu, MemGB float64 }) map[string]any {
+	return mockInstanceTypesInZone("cn-wlcb-01", gpuType, sizes...)
+}
+
+func mockInstanceTypesInZone(zone, gpuType string, sizes ...struct{ Gpu, Cpu, MemGB float64 }) map[string]any {
 	machineSizes := make([]any, 0, len(sizes))
 	for _, s := range sizes {
 		machineSizes = append(machineSizes, map[string]any{
@@ -45,6 +49,7 @@ func mockInstanceTypes(gpuType string, sizes ...struct{ Gpu, Cpu, MemGB float64 
 		"AvailableInstanceTypes": []any{
 			map[string]any{
 				"Name":         gpuType,
+				"Zone":         zone,
 				"MachineSizes": machineSizes,
 				"CpuPlatforms": map[string]any{"Amd": map[string]any{}},
 				"Disks":        []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
@@ -354,7 +359,7 @@ func TestCreateInstance_DynamicInputNormalizesToPostpay(t *testing.T) {
 func TestCreateInstance_UserOverrides(t *testing.T) {
 	executor := createMockExecutor()
 	// Override instance types and capacity to match A100 × 2 / 32C / 128GB
-	executor.results["DescribeAvailableCompShareInstanceTypes"] = mockInstanceTypes("A100",
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = mockInstanceTypesInZone("cn-bj2-04", "A100",
 		struct{ Gpu, Cpu, MemGB float64 }{2, 32, 128},
 	)
 	executor.results["CheckCompShareResourceCapacity"] = map[string]any{"Specs": []any{
@@ -817,6 +822,7 @@ func multiMemoryInstanceTypes() map[string]any {
 		"AvailableInstanceTypes": []any{
 			map[string]any{
 				"Name": "4090",
+				"Zone": "cn-wlcb-01",
 				"MachineSizes": []any{
 					map[string]any{
 						"Gpu": float64(1),
@@ -832,7 +838,7 @@ func multiMemoryInstanceTypes() map[string]any {
 
 func TestListSpecCandidates_ExpandsAllCombinations(t *testing.T) {
 	result := multiMemoryInstanceTypes()
-	candidates := listSpecCandidates(result, "4090", 1, "")
+	candidates := listSpecCandidates(result, "4090", 1, "cn-wlcb-01")
 	assert.Len(t, candidates, 2)
 	assert.Equal(t, specCandidate{CPU: 16, MemoryMB: 64 * 1024}, candidates[0])
 	assert.Equal(t, specCandidate{CPU: 16, MemoryMB: 94 * 1024}, candidates[1])
@@ -843,6 +849,7 @@ func TestListSpecCandidates_MultipleCollections(t *testing.T) {
 		"AvailableInstanceTypes": []any{
 			map[string]any{
 				"Name": "A800",
+				"Zone": "cn-wlcb-01",
 				"MachineSizes": []any{
 					map[string]any{
 						"Gpu": float64(1),
@@ -855,7 +862,7 @@ func TestListSpecCandidates_MultipleCollections(t *testing.T) {
 			},
 		},
 	}
-	candidates := listSpecCandidates(result, "A800", 1, "")
+	candidates := listSpecCandidates(result, "A800", 1, "cn-wlcb-01")
 	assert.Len(t, candidates, 2)
 	assert.Equal(t, specCandidate{CPU: 16, MemoryMB: 64 * 1024}, candidates[0])
 	assert.Equal(t, specCandidate{CPU: 32, MemoryMB: 128 * 1024}, candidates[1])
@@ -916,9 +923,9 @@ func TestResolveTargetSpec_ResolvesNonDefaultZone(t *testing.T) {
 	assert.Equal(t, "cn-sh2-02", zone, "must resolve the zone the GPU actually lives in")
 }
 
-func TestResolveTargetSpec_MultiZone_PrefersDefaultZone_NoDuplicates(t *testing.T) {
-	// A GPU present in several zones must resolve to the default zone (preference)
-	// and yield a single candidate — not one duplicate per zone.
+func TestResolveTargetSpec_MultiZoneUsesLiveCatalogOrder_NoDuplicates(t *testing.T) {
+	// A GPU present in several zones uses the live catalog's first sellable row
+	// and yields a single candidate — never a built-in zone preference.
 	wfCtx := NewContext(map[string]any{"GpuType": "4090"})
 	wfCtx.StepResults["查询可用配比"] = zoneTaggedTypes(
 		struct{ Name, Zone, Status string }{"4090", "cn-sh2-02", "Normal"},
@@ -926,7 +933,7 @@ func TestResolveTargetSpec_MultiZone_PrefersDefaultZone_NoDuplicates(t *testing.
 	)
 	_, _, _, zone, err := resolveTargetSpec(wfCtx)
 	assert.NoError(t, err)
-	assert.Equal(t, "cn-wlcb-01", zone, "must prefer the platform default zone when the GPU is in several")
+	assert.Equal(t, "cn-sh2-02", zone, "must follow the live catalog order, not a fixed default zone")
 
 	// And only one candidate (no cross-zone duplicates) → auto-selects cleanly.
 	candidates := listSpecCandidates(wfCtx.StepResults["查询可用配比"], "4090", 1, zone)
@@ -946,6 +953,27 @@ func TestResolveTargetSpec_NoCandidate_ListsRealAvailableTypes(t *testing.T) {
 	assert.Contains(t, err.Error(), "未找到 MI300X")
 	assert.Contains(t, err.Error(), "4090")
 	assert.Contains(t, err.Error(), "V100S")
+}
+
+func TestResolveTargetSpec_MissingZoneNeverUsesFixedFallback(t *testing.T) {
+	wfCtx := NewContext(map[string]any{"GpuType": "4090"})
+	wfCtx.StepResults["查询可用配比"] = map[string]any{
+		"AvailableInstanceTypes": []any{map[string]any{
+			"Name": "4090",
+			"MachineSizes": []any{map[string]any{
+				"Gpu": float64(1),
+				"Collection": []any{map[string]any{
+					"Cpu": float64(16), "Memory": []any{float64(64)},
+				}},
+			}},
+		}},
+	}
+
+	_, _, _, zone, err := resolveTargetSpec(wfCtx)
+	assert.Error(t, err)
+	assert.Empty(t, zone)
+	assert.Contains(t, err.Error(), "真实可用区")
+	assert.NotContains(t, err.Error(), "cn-wlcb-01")
 }
 
 func TestCreateInstance_NonDefaultZone_ThreadsZoneToCreate(t *testing.T) {
@@ -1070,6 +1098,9 @@ func TestCreateInstance_NormalZoneCapacityKeepsZoneAndRegion(t *testing.T) {
 // asserts the ARGUMENT, not the mock's answer.
 func TestCreateInstance_FullySpecifiedPodSpotDoesNotScopeCatalogButScopesCapacity(t *testing.T) {
 	executor := createMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = mockInstanceTypesInZone("cn-newpod-03", "4090",
+		struct{ Gpu, Cpu, MemGB float64 }{1, 16, 64},
+	)
 	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-pod", "Name": "Pod CUDA", "Container": "True", "Size": float64(102400)},
 	}}

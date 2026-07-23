@@ -48,6 +48,18 @@ func TestResponseGatewaySubstitutesOnlyAgentSelectedObservationBlocks(t *testing
 	require.Equal(t, "只做解释，不展示精确表格。", substituteReadObservationBlocks("只做解释，不展示精确表格。", evidence))
 }
 
+func TestResponseGatewayInsertsMissingRequiredObservationBlock(t *testing.T) {
+	evidence := []readResponseEvidence{{
+		Reply: "opaque token", Placeholder: "{{READ_OBSERVATION_1}}", Required: true,
+	}}
+	require.Equal(t,
+		"opaque token\n\nToken 已获取。",
+		substituteReadObservationBlocks("Token 已获取。", evidence))
+	require.Equal(t,
+		"opaque token",
+		substituteReadObservationBlocks("{{READ_OBSERVATION_1}}", evidence))
+}
+
 func TestResponseGatewayNeverShipsToolProtocolMarkup(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	reply := eng.finalizeResponse(context.Background(), "给实例重置密码",

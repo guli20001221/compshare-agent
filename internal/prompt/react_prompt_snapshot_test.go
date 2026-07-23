@@ -22,8 +22,12 @@ const (
 	// 2026-07-23: platform-specific rules and billing must be retrieved even when
 	// the model considers them familiar; only stable general knowledge may bypass
 	// SearchKnowledge.
-	mutatingReActPromptSHA256 = "39f40b8a1bb4973c7136a8e5898b078e7f8c2dd3785fd84941e6600fad835b2b"
-	readOnlyReActPromptSHA256 = "3e1696b22af94c8e7bc9cdcb740178c8d19c3c4cd9cd3b497e51a51e87134f6b"
+	// 2026-07-23: uncertain tool observations may only become investigation items,
+	// never a ranked cause or evidence that an unobserved layer is healthy.
+	// SHAs regenerated for the merged segment text (A: retrieval discipline; B:
+	// instance-access diagnosis) — both prompt changes are present in this build.
+	mutatingReActPromptSHA256 = "2185eeec0b33cadbe966391018d6f1ac6a9b40737180e041f9865fcf0f215b4a"
+	readOnlyReActPromptSHA256 = "af0600c9c16bba10db3dab03eabfafd035ee109495bcb17c5a04ab77d901aa7e"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

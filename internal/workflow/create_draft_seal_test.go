@@ -30,7 +30,7 @@ func draftContext(zone string) *Context {
 
 // draftMockExecutor is createMockExecutor with the catalog homing 4090 in a
 // NON-default zone, so a zone appearing in the contract can only have come from
-// the resolution — never from the user, never from defaultZone.
+// the resolution — never from the user and never from a fixed fallback zone.
 func draftMockExecutor(zone string) *mockExecutor {
 	executor := createMockExecutor()
 	executor.results["DescribeAvailableCompShareInstanceTypes"] = zoneTaggedTypes(

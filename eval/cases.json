@@ -328,7 +328,7 @@
     "description": "触发SSH诊断链",
     "expected_intent": "diagnosis",
     "expected_tools": [
-      "DiagnoseSSH"
+      "ReadCapability_instance_access"
     ],
     "user_context": "您有 1 个实例（1 个运行中）\n- my-gpu (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
     "tags": [
@@ -361,10 +361,66 @@
     "description": "SSH诊断——不同表述",
     "expected_intent": "diagnosis",
     "expected_tools": [
-      "DiagnoseSSH"
+      "ReadCapability_instance_access"
     ],
     "user_context": "您有 1 个实例（1 个运行中）\n- dev (uhost-dev1): GPU=4090×1, 状态=运行中, 计费=Dynamic",
     "tags": []
+  },
+  {
+    "id": "dg_06",
+    "category": "diagnosis",
+    "input": "uhost-xxx 这个为什么我无法使用 JupyterLab？",
+    "description": "真实记录回放：指定实例的 Jupyter 入口故障",
+    "expected_intent": "diagnosis",
+    "expected_tools": [
+      "ReadCapability_instance_access"
+    ],
+    "user_context": "您有 1 个实例（1 个运行中）\n- pod-dev (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
+    "tags": [
+      "real_2026_06_26"
+    ]
+  },
+  {
+    "id": "dg_08",
+    "category": "diagnosis",
+    "input": "服务器 23 TCP 端口是开着的，我本地 SSH 不通",
+    "description": "真实记录回放：用户观察与 SSH 连接失败并存",
+    "expected_intent": "diagnosis",
+    "expected_tools": [
+      "ReadCapability_instance_access"
+    ],
+    "user_context": "您有 1 个实例（1 个运行中）\n- pod-dev (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
+    "tags": [
+      "real_2026_06_26"
+    ]
+  },
+  {
+    "id": "dg_09",
+    "category": "diagnosis",
+    "input": "uhost-xxx 的 8188 端口无法访问",
+    "description": "真实记录回放：ComfyUI 自定义端口访问失败",
+    "expected_intent": "diagnosis",
+    "expected_tools": [
+      "ReadCapability_instance_access"
+    ],
+    "user_context": "您有 1 个实例（1 个运行中）\n- comfy-pod (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
+    "tags": [
+      "real_2026_07_08"
+    ]
+  },
+  {
+    "id": "dg_10",
+    "category": "diagnosis",
+    "input": "获取 uhost-xxx 的 Jupyter Token",
+    "description": "显式 Token 获取应走统一实例访问能力",
+    "expected_intent": "diagnosis",
+    "expected_tools": [
+      "ReadCapability_instance_access"
+    ],
+    "user_context": "您有 1 个实例（1 个运行中）\n- notebook (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
+    "tags": [
+      "jupyter_token"
+    ]
   },
   {
     "id": "dg_07",

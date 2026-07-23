@@ -60,7 +60,7 @@ func toolToIntent(toolName string) string {
 	case "CreateInstanceWorkflow", "StopInstanceWorkflow", "StartInstanceWorkflow",
 		"RebootInstanceWorkflow", "RenameInstanceWorkflow", "ResetPasswordWorkflow":
 		return "complex_task"
-	case "DiagnoseSSH", "DiagnoseBilling":
+	case "ReadCapability_instance_access", "DiagnoseBilling":
 		return "diagnosis"
 	default:
 		// All other registered API tools are simple queries

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/sanitizer"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/zones"
@@ -547,7 +548,7 @@ func hasNonZeroUint(v any) bool {
 
 func firstPodUHostID(v any) string {
 	for _, id := range stringSliceArg(v) {
-		if strings.HasPrefix(id, "cpod-") {
+		if platform.IsPodInstanceID(id) {
 			return id
 		}
 	}

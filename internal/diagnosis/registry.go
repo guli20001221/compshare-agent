@@ -9,7 +9,6 @@ package diagnosis
 // SSH-ops capability must be built in the typed-capability architecture, not
 // resurrected as a legacy chain here.
 var registeredDiagnosisActions = []string{
-	"DiagnoseSSH",
 	"DiagnoseBilling",
 }
 
@@ -18,7 +17,6 @@ var registeredDiagnosisActions = []string{
 // diagnosis name can never resolve to an executable chain (enforced by
 // TestDiagnosisRegistryHasNoUnadvertisedChains).
 var chainRegistry = map[string]func() *Chain{
-	"DiagnoseSSH":     SSHFailureChain,
 	"DiagnoseBilling": BillingAnomalyChain,
 }
 

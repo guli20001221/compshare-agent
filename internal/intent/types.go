@@ -13,6 +13,7 @@ const (
 	IntentBillingInstance           Intent = "billing_instance"
 	IntentBillingAccountUnsupported Intent = "billing_account_unsupported"
 	IntentDiagnosis                 Intent = "diagnosis"
+	IntentInstanceAccess            Intent = "instance_access"
 	IntentVagueFailure              Intent = "vague_failure"
 	IntentOperationLifecycle        Intent = "operation_lifecycle"
 	IntentKnowledgeQA               Intent = "knowledge_qa"
@@ -222,6 +223,7 @@ func AllIntents() []Intent {
 		IntentBillingInstance,
 		IntentBillingAccountUnsupported,
 		IntentDiagnosis,
+		IntentInstanceAccess,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
 		IntentKnowledgeQA,
@@ -250,6 +252,7 @@ func RuntimeIntents() []Intent {
 		IntentBillingInstance,
 		IntentBillingAccountUnsupported,
 		IntentDiagnosis,
+		IntentInstanceAccess,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
 		IntentKnowledgeQA,

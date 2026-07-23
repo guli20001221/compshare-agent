@@ -9,9 +9,6 @@ import (
 	"github.com/compshare-agent/internal/deployment"
 )
 
-// defaultZone is the default availability zone per API docs (cn-wlcb-01, not cn-wlcb-a).
-const defaultZone = "cn-wlcb-01"
-
 // Guided wizard step order. Image is resolved BEFORE the hardware specs so that
 // (1) the GPU list can be constrained to the chosen image's SupportedGpuTypes and
 // (2) the 卡数量 / CPU-内存 options can be gated by a CheckCompShareResourceCapacity
@@ -61,11 +58,9 @@ const (
 //
 // The returned zone is the availability zone the rest of the workflow (capacity /
 // price / create / confirm) must use. It is the user-specified Zone when given,
-// otherwise the zone the requested GPU actually lives in (preferring the platform
-// default zone, then any "Normal" zone), falling back to defaultZone when the
-// catalog carries no zone info. This is what fixes cards that exist only in a
-// non-default zone (e.g. 2080Ti in cn-sh2-02) instead of failing with a hardcoded
-// cn-wlcb-01 query.
+// otherwise a zone from the live machine catalog for that GPU (preferring a
+// sellable row). Missing zone data is an error: the workflow must not turn
+// "unknown" into a fixed platform location.
 func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, zone string, err error) {
 	gpuType, _ := wfCtx.Params["GpuType"].(string)
 	gpu = paramNum(wfCtx.Params, "Gpu", 1)
@@ -76,6 +71,13 @@ func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, zone string,
 	}
 
 	zone = resolveTargetZone(result, gpuType, paramStr(wfCtx.Params, "Zone", ""))
+	if zone == "" {
+		if !catalogCarriesGPUType(result, gpuType) {
+			return 0, 0, 0, "", fmt.Errorf("未找到 %s × %.0f 卡的可用配比。当前可部署的 GPU 机型：%s。请确认机型名称与卡数是否正确。",
+				gpuType, gpu, availableTypeNames(result))
+		}
+		return 0, 0, 0, "", fmt.Errorf("未获取到 %s 的真实可用区，无法安全创建实例。请稍后重试或在可用区目录恢复后重新选择。", gpuType)
+	}
 
 	candidates := listSpecCandidates(result, gpuType, gpu, zone)
 	if len(candidates) == 0 {
@@ -83,12 +85,6 @@ func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, zone string,
 		// downstream reply can state real options instead of fabricating them.
 		return 0, 0, 0, "", fmt.Errorf("未找到 %s × %.0f 卡的可用配比。当前可部署的 GPU 机型：%s。请确认机型名称与卡数是否正确。",
 			gpuType, gpu, availableTypeNames(result))
-	}
-
-	// Zone for the downstream API args. resolveTargetZone returns "" only when the
-	// catalog has no zone data (legacy/test results) and the user didn't pick one.
-	if zone == "" {
-		zone = defaultZone
 	}
 
 	_, hasCpu := wfCtx.Params["Cpu"]
@@ -141,12 +137,13 @@ func resolveTargetSpec(wfCtx *Context) (gpu, cpu, memoryMB float64, zone string,
 
 // resolveTargetZone returns the availability zone to create in for the given GPU
 // type. An explicit user Zone wins. Otherwise it scans the catalog for zones that
-// carry this GPU, preferring a "Normal" (sellable) zone over a sold-out one and
-// the platform default zone over others. Returns "" when the catalog has no zone
-// data for the type (legacy/test results) so the caller can fall back to defaultZone.
+// carry this GPU, preferring the first "Normal" (sellable) row in the upstream
+// catalog and otherwise preserving the catalog's first real row for the later
+// capacity check. Returns "" when the catalog has no zone data; callers must
+// fail rather than substitute a fixed default.
 func resolveTargetZone(result map[string]any, gpuType, userZone string) string {
-	if userZone != "" {
-		return userZone
+	if zone := strings.TrimSpace(userZone); zone != "" {
+		return zone
 	}
 	var normalZones, allZones []string
 	types, _ := result["AvailableInstanceTypes"].([]any)
@@ -164,23 +161,25 @@ func resolveTargetZone(result map[string]any, gpuType, userZone string) string {
 			normalZones = append(normalZones, z)
 		}
 	}
-	if z := preferZone(normalZones); z != "" {
-		return z
+	if len(normalZones) > 0 {
+		return normalZones[0]
 	}
-	return preferZone(allZones)
-}
-
-// preferZone picks the platform default zone if present, else the first zone.
-func preferZone(zones []string) string {
-	for _, z := range zones {
-		if z == defaultZone {
-			return z
-		}
-	}
-	if len(zones) > 0 {
-		return zones[0]
+	if len(allZones) > 0 {
+		return allZones[0]
 	}
 	return ""
+}
+
+func catalogCarriesGPUType(result map[string]any, gpuType string) bool {
+	types, _ := result["AvailableInstanceTypes"].([]any)
+	for _, raw := range types {
+		entry, _ := raw.(map[string]any)
+		name, _ := entry["Name"].(string)
+		if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(gpuType)) {
+			return true
+		}
+	}
+	return false
 }
 
 // availableTypeNames returns the distinct sellable GPU type names in the catalog
@@ -238,9 +237,14 @@ type specCandidate struct {
 // the target zone. Each Collection entry × each Memory value produces one
 // candidate. Because the catalog query is no longer zone-filtered upstream (a
 // GPU may appear in several zones), the zone filter here keeps candidates to the
-// single resolved zone — avoiding cross-zone duplicates. An empty targetZone, or
-// an entry with no Zone field (legacy/test results), matches everything.
+// single resolved zone — avoiding cross-zone duplicates. Both the selected zone
+// and each catalog row must be explicit; a missing Zone is not treated as a
+// wildcard or a platform default.
 func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64, targetZone string) []specCandidate {
+	targetZone = strings.TrimSpace(targetZone)
+	if targetZone == "" {
+		return nil
+	}
 	var candidates []specCandidate
 	types, _ := result["AvailableInstanceTypes"].([]any)
 	for _, t := range types {
@@ -249,7 +253,8 @@ func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64,
 		if name != gpuType {
 			continue
 		}
-		if entryZone, _ := mt["Zone"].(string); targetZone != "" && entryZone != "" && entryZone != targetZone {
+		entryZone, _ := mt["Zone"].(string)
+		if strings.TrimSpace(entryZone) == "" || !strings.EqualFold(entryZone, targetZone) {
 			continue
 		}
 		sizes, _ := mt["MachineSizes"].([]any)
@@ -927,7 +932,7 @@ func guidedCandidateZones(catalog map[string]any, gpuType string) []string {
 		}
 		zone, _ := mt["Zone"].(string)
 		if zone == "" {
-			zone = defaultZone
+			continue
 		}
 		if seen[zone] {
 			continue
@@ -4768,7 +4773,7 @@ func guidedGPUCountFormOptions(wfCtx *Context, catalog map[string]any, gpuType, 
 		}
 		entryZone, _ := mt["Zone"].(string)
 		if entryZone == "" {
-			entryZone = defaultZone
+			continue
 		}
 		if entryZone != zone {
 			continue
@@ -4864,7 +4869,7 @@ func guidedCpuMemoryFormOptions(wfCtx *Context, catalog map[string]any, gpuType,
 		}
 		entryZone, _ := mt["Zone"].(string)
 		if entryZone == "" {
-			entryZone = defaultZone
+			continue
 		}
 		if entryZone != zone {
 			continue
