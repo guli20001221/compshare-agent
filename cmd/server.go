@@ -83,7 +83,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		defer closeServerTraceWriter(traceWriter)
 	}
 
-	pool, err := buildHTTPServerPool(cfg, messageStore, overlayGetenv)
+	pool, err := buildHTTPServerPool(cfg, messageStore, overlayGetenv, db)
 	if err != nil {
 		return err
 	}

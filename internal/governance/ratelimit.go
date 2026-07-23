@@ -19,6 +19,10 @@ const (
 	DefaultMutatingDaily      = 50
 	DefaultReadExpensiveQPS   = 6
 	DefaultReadExpensiveDaily = 500
+	// SSH-ops spawns a subprocess that SSHes into a box and runs an agent loop for up to minutes:
+	// a heavy, consent-gated op weighted like a mutating action (one at a time, modest daily cap).
+	DefaultSSHExecQPS   = 1
+	DefaultSSHExecDaily = 50
 )
 
 type Class string
@@ -27,6 +31,11 @@ const (
 	ClassLLM               Class = "llm"
 	ClassMutatingTool      Class = "mutating_tool"
 	ClassReadExpensiveTool Class = "read_expensive_tool"
+	// ClassSSHExec counts consent-gated in-instance SSH-ops diagnoses. The driver (the cmd
+	// instance-ops adapter) calls Allow explicitly BEFORE spawning the harness — this class is
+	// NOT consumed by the read-expensive tool budget, since that lane never passes through
+	// SafeToolExecutor (R4). Defaults to the built-in SSHExec budget, not opt-in like user_turn.
+	ClassSSHExec Class = "ssh_exec"
 	// ClassUserTurn counts user-initiated chat turns (one
 	// ClientMsgUserMessage frame). Confirm responses and pings do not
 	// increment this counter. Unlike LLM / mutating / read-expensive, the
@@ -75,6 +84,10 @@ type Limits struct {
 	MutatingDaily      int
 	ReadExpensiveQPS   int
 	ReadExpensiveDaily int
+	// SSHExecQPS / SSHExecDaily: per-tenant cap on consent-gated in-instance SSH-ops
+	// diagnoses. Subject to the "zero means default" promotion in normalizeLimits.
+	SSHExecQPS   int
+	SSHExecDaily int
 	// UserTurnQPS / UserTurnDaily: per-tenant cap on user-initiated chat
 	// turns. 0 = disabled (no enforcement for that dimension). Used by
 	// the WS server path (test-phase guardrail). NOT subject to the
@@ -92,6 +105,8 @@ func DefaultLimits() Limits {
 		MutatingDaily:      DefaultMutatingDaily,
 		ReadExpensiveQPS:   DefaultReadExpensiveQPS,
 		ReadExpensiveDaily: DefaultReadExpensiveDaily,
+		SSHExecQPS:         DefaultSSHExecQPS,
+		SSHExecDaily:       DefaultSSHExecDaily,
 	}
 }
 
@@ -275,6 +290,8 @@ func (l Limits) forClass(class Class) (qps int, daily int) {
 		return l.MutatingQPS, l.MutatingDaily
 	case ClassReadExpensiveTool:
 		return l.ReadExpensiveQPS, l.ReadExpensiveDaily
+	case ClassSSHExec:
+		return l.SSHExecQPS, l.SSHExecDaily
 	case ClassLLM:
 		return l.LLMQPS, l.LLMDaily
 	case ClassUserTurn:
@@ -313,6 +330,12 @@ func normalizeLimits(l Limits) Limits {
 	}
 	if l.ReadExpensiveDaily <= 0 {
 		l.ReadExpensiveDaily = defaults.ReadExpensiveDaily
+	}
+	if l.SSHExecQPS <= 0 {
+		l.SSHExecQPS = defaults.SSHExecQPS
+	}
+	if l.SSHExecDaily <= 0 {
+		l.SSHExecDaily = defaults.SSHExecDaily
 	}
 	return l
 }

@@ -231,6 +231,8 @@ func TestLoad_RateLimitPartialOverridesMergeWithDefaults(t *testing.T) {
 		MutatingDaily:      7,
 		ReadExpensiveQPS:   2,
 		ReadExpensiveDaily: governance.DefaultReadExpensiveDaily,
+		SSHExecQPS:         governance.DefaultSSHExecQPS,
+		SSHExecDaily:       governance.DefaultSSHExecDaily,
 	}, cfg.Agent.RateLimit.Limits())
 }
 
