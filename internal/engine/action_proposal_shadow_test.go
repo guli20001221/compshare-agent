@@ -590,6 +590,29 @@ func TestDeterministicReinstallReplyDoesNotInventANewPassword(t *testing.T) {
 	require.NotContains(t, withPassword, "secret")
 }
 
+func TestDeterministicResizeCFSReplyCannotBeRestatedAsReadOnlyEstimate(t *testing.T) {
+	reply, ok := deterministicWorkflowReply("ResizeCFSWorkflow", map[string]any{
+		"CfsId": "cfs-test", "Size": float64(110),
+	})
+	require.True(t, ok)
+	require.Contains(t, reply, "已将 CFS cfs-test 扩容到 110GB")
+	require.NotContains(t, reply, "估算")
+	require.NotContains(t, reply, "不会直接扩容")
+}
+
+func TestSecondWriteProposalInOneTurnIsRejected(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.actionProposalRanThisTurn = true
+
+	reply := eng.executeActionProposal(context.Background(), map[string]any{
+		"operation": "StartInstanceWorkflow",
+	}, noopStep)
+
+	require.True(t, strings.HasPrefix(reply, finalReplyPrefix))
+	require.Contains(t, reply, "本轮已经处理过一个写操作请求")
+	require.Equal(t, "duplicate_write_proposal", eng.actionProposalDispositionThisTurn)
+}
+
 func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.lastUserMsg = "给 uhost-1 加200G数据盘"

@@ -12,6 +12,12 @@ import (
 // chat text: this check runs at the engine boundary before dispatch.
 func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText string) error {
 	switch req := request.(type) {
+	case ZoneCatalogRequest:
+		if strings.TrimSpace(req.Query) != "" {
+			if err := requireLiteralSpan(currentUserText, req.Query, "query"); err != nil {
+				return err
+			}
+		}
 	case StockAvailabilityRequest:
 		for _, mention := range req.ZoneMentions {
 			if err := requireLiteralSpan(currentUserText, mention, "zone_mentions"); err != nil {

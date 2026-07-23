@@ -22,6 +22,13 @@ const defaultZone = "cn-wlcb-01"
 const (
 	guidedStepImageSource = iota + 1
 	guidedStepImageFacets
+	// The tag question is its OWN card, asked after the type card, because the two
+	// are not independent: platform System images carry no tags at all (0/9 live),
+	// so 系统镜像 + any 标签 ANDs to an empty picker. Asking them on one card that
+	// submits once offered the user a pair that could only dead-end. Split, the tag
+	// options are computed from the candidates the type left behind — and when that
+	// leaves no tag worth asking about, this card skips itself.
+	guidedStepImageTag
 	guidedStepImage
 	// Charge type sits between the image and the GPU because that is the only
 	// window where it is both askable and still early enough. Everything from the
@@ -371,6 +378,7 @@ func CreateInstanceGuidedDef() *Definition {
 			// rows this page returned.
 			stepQueryImageTagCatalog(),
 			stepGuidedChooseImageFacets(),
+			stepGuidedChooseImageTag(),
 			stepGuidedChooseImage(),
 			stepGuidedChooseChargeType(),
 			// One capacity fan-out over every (model, zone) the catalog offers, read
@@ -430,12 +438,21 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 			args := map[string]any{
 				"Limit": maxPlatformImageQueryLimit,
 			}
-			if id := paramStr(wfCtx.Params, "CompShareImageId", ""); id != "" {
-				args["CompShareImageId"] = id
-				return args, nil
-			}
-			if name := paramStr(wfCtx.Params, "ImageName", ""); name != "" {
-				args["Name"] = name
+			// Narrow the query ONLY when the user settled the image. A settled id
+			// skips the picker, so the by-id row is all capacity/price needs; a
+			// settled name narrows a browse the user asked for. An Agent SUGGESTION
+			// the user has not chosen must NOT narrow the catalog — the picker still
+			// runs and needs the whole catalog to offer alternatives, with the
+			// suggested id preselected from within it (a one-row "choice" card,
+			// narrowed by the Agent's own id, was the bug).
+			if imageUserSettled(wfCtx) {
+				if id := paramStr(wfCtx.Params, "CompShareImageId", ""); id != "" {
+					args["CompShareImageId"] = id
+					return args, nil
+				}
+				if name := paramStr(wfCtx.Params, "ImageName", ""); name != "" {
+					args["Name"] = name
+				}
 			}
 			return args, nil
 		},
@@ -992,18 +1009,6 @@ func gpuModelCreatable(combos map[string]bool, gpuType string, zones []string) (
 	return false, known
 }
 
-// anyZoneCreatable reports whether at least one CANDIDATE zone is known
-// creatable. It takes the candidate list rather than reading the map's values
-// alone so a stale entry for a zone no longer offered cannot keep the gate armed.
-func anyZoneCreatable(creatable map[string]bool, candidates []string) bool {
-	for _, zone := range candidates {
-		if creatable[zone] {
-			return true
-		}
-	}
-	return false
-}
-
 func stepGetPrice() Step {
 	return Step{
 		Name: "查询价格",
@@ -1180,7 +1185,7 @@ func stepQueryImageTagCatalog() Step {
 		Tool:     "DescribeCompShareImageTags",
 		Optional: true,
 		SkipIf: func(wfCtx *Context) (bool, error) {
-			return hasExplicitImageSelection(wfCtx.Params), nil
+			return imageUserSettled(wfCtx), nil
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{}
@@ -1193,6 +1198,98 @@ func stepQueryImageTagCatalog() Step {
 // createImageTaxonomy is the workflow's single view of the platform classification.
 func createImageTaxonomy(wfCtx *Context) *deployment.ImageTaxonomy {
 	return deployment.ParseImageTaxonomy(wfCtx.Result(imageTaxonomyStepName))
+}
+
+// imageCandidateSet is the ONE candidate set the whole image flow reads. Every
+// number a card states and every option it offers is a projection of it, so the
+// card cannot promise a population the next card does not have.
+//
+// It exists because they used to be computed twice. The facet card counted
+// snap.Entries() — the raw catalog — while the picker ran the ranker (hard status
+// and pod/container gates, plus the agent's structured request) and only then
+// applied the facets. The card therefore advertised "框架 / 应用镜像 55 个镜像"
+// against a picker that could hand back ten, and on a Pod zone it counted VM-only
+// images the picker had already dropped.
+type imageCandidateSet struct {
+	snap *deployment.ImageCatalogSnapshot
+	// base survives the hard gates and the structured request; no facet applied.
+	// The TYPE facet counts over this.
+	base []deployment.ImageSelection
+	// afterType is base narrowed by the chosen ImageType. The TAG facet counts over
+	// this — that is the whole reason the tag question is a later card.
+	afterType []deployment.ImageSelection
+	// final is what the picker offers and what "共 N 个" counts.
+	final []deployment.ImageSelection
+}
+
+// buildImageCandidateSet takes zoneIsPod as an EXPLICIT argument rather than
+// reading the ZoneIsPod param, which was the bug. ZoneIsPod is a denormalized cache
+// that syncGuidedZoneMeta only writes at the zone card — and under the image-first
+// order the picker runs BEFORE that card, so a zone pinned in the request reached
+// here with the param absent (read as non-pod). The pod/container filter never
+// applied, the picker offered and defaulted to a VM-only image, and the create gate
+// refused it at the very end ("... 不是容器镜像，不能用于 上海二A"). The caller now
+// resolves the flag from the zone catalog (createZoneIsPod), the same authority the
+// create gate uses, so it cannot be stale or unset.
+func buildImageCandidateSet(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy, zoneIsPod bool) imageCandidateSet {
+	snap := formImageCatalog(images, paramStr(params, "ImageSource", "platform"))
+	base := deployment.RankImages(snap, deployment.ImageRequest{
+		Name:         paramStr(params, "ImageName", ""),
+		RequestedGPU: gpuType,
+		Zone:         deployment.ZoneConstraint{Zone: paramStr(params, "Zone", ""), IsPod: zoneIsPod},
+	})
+	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
+	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
+	wantCategory := strings.TrimSpace(paramStr(params, "ImageCategory", ""))
+
+	afterType := base
+	if wantType != "" {
+		afterType = filterSelections(base, func(sel deployment.ImageSelection) bool {
+			return imageSelectionMatchesFacets(snap, sel.ID, wantType, "")
+		})
+	}
+	final := afterType
+	if wantTag != "" || wantCategory != "" {
+		final = filterSelections(afterType, func(sel deployment.ImageSelection) bool {
+			return imageSelectionMatchesFacets(snap, sel.ID, "", wantTag) &&
+				imageSelectionMatchesCategory(snap, taxonomy, sel.ID, wantCategory)
+		})
+	}
+	return imageCandidateSet{snap: snap, base: base, afterType: afterType, final: final}
+}
+
+func filterSelections(in []deployment.ImageSelection, keep func(deployment.ImageSelection) bool) []deployment.ImageSelection {
+	out := make([]deployment.ImageSelection, 0, len(in))
+	for _, sel := range in {
+		if keep(sel) {
+			out = append(out, sel)
+		}
+	}
+	return out
+}
+
+// createImageCandidates builds the candidate set from the workflow context, so the
+// facet cards, the tag card and the picker all read the same parameters — and the
+// same authoritative pod flag, resolved from the zone catalog rather than the
+// ZoneIsPod cache the picker used to read before it was warm.
+func createImageCandidates(wfCtx *Context) imageCandidateSet {
+	return buildImageCandidateSet(wfCtx.Params, wfCtx.Result("查询镜像"),
+		paramStr(wfCtx.Params, "GpuType", ""), createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
+}
+
+// createZoneIsPod resolves the pinned zone's pod flag from the zone catalog — the
+// same authority validateSelectedImageCompatibility (the create gate) reads. It
+// exists because the ZoneIsPod param is written lazily at the zone card, which runs
+// after the image picker: trusting it there let a request-pinned pod zone read as
+// non-pod. Falls back to the cached param only when the catalog cannot resolve the
+// zone (a zone it does not carry), which is the best available answer then.
+func createZoneIsPod(wfCtx *Context) bool {
+	if zone := strings.TrimSpace(paramStr(wfCtx.Params, "Zone", "")); zone != "" {
+		if entry, err := workflowZoneEntry(wfCtx, zone); err == nil {
+			return entry.Placement.IsPod
+		}
+	}
+	return paramBool(wfCtx.Params, "ZoneIsPod", false) || paramBool(wfCtx.Params, "IsPodZone", false)
 }
 
 func stepGuidedChooseImageFacets() Step {
@@ -1208,8 +1305,27 @@ func stepGuidedChooseImageFacets() Step {
 				"workflow":      "CreateInstanceWorkflow",
 				"step":          guidedStepLabel(wfCtx, guidedStepImageFacets),
 				"ImageType":     paramStr(wfCtx.Params, "ImageType", ""),
-				"ImageTag":      paramStr(wfCtx.Params, "ImageTag", ""),
 				"ImageCategory": paramStr(wfCtx.Params, "ImageCategory", ""),
+			}, nil
+		},
+	}
+}
+
+// stepGuidedChooseImageTag asks the raw-tag question after the type question, so
+// the tags offered are the ones the chosen type actually leaves behind.
+func stepGuidedChooseImageTag() Step {
+	return Step{
+		Name:              "选择镜像标签",
+		Type:              StepConfirm,
+		SkipIf:            shouldSkipGuidedImageTagStep,
+		BuildForm:         buildGuidedImageTagForm,
+		ApplyOverrides:    applyGuidedImageTagOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return map[string]any{
+				"workflow": "CreateInstanceWorkflow",
+				"step":     guidedStepLabel(wfCtx, guidedStepImageTag),
+				"ImageTag": paramStr(wfCtx.Params, "ImageTag", ""),
 			}, nil
 		},
 	}
@@ -1225,7 +1341,7 @@ func stepGuidedChooseImage() Step {
 		ConfirmSubmitMode: ConfirmSubmitContinue,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			gpuType := paramStr(wfCtx.Params, "GpuType", "")
-			current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx))
+			current, opts, _ := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
 			if len(opts) == 0 {
 				return nil, fmt.Errorf("未找到可选镜像，请换一个镜像来源或稍后再试")
 			}
@@ -1377,10 +1493,17 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 	if name == "" {
 		name = "所选镜像"
 	}
+	// The container/VM verdict comes from imageZoneCompatibility — the same call
+	// the zone card makes — so the two cannot drift into different rules. This gate
+	// is stricter by design on one verdict only: Unverifiable refuses here and does
+	// not disable there, because refusing on missing evidence is the gate's job.
+	switch imageContainerFitForZone(wfCtx.Result("查询镜像"), imageID, placement) {
+	case imageContainerFitUnverifiable:
+		return fmt.Errorf("未能确认 %s 是可用于 %s 的容器镜像，请刷新后重新选择", name, zoneDisplayLabel(wfCtx, placement.Zone))
+	case imageContainerFitNeedsContainerImage:
+		return fmt.Errorf("%s 不是容器镜像，不能用于 %s，请更换镜像或可用区", name, zoneDisplayLabel(wfCtx, placement.Zone))
+	}
 	if image == nil {
-		if placement.IsPod {
-			return fmt.Errorf("未能确认 %s 是可用于 %s 的容器镜像，请刷新后重新选择", name, zoneDisplayLabel(wfCtx, placement.Zone))
-		}
 		// Community image searches can return a different page/order on a second
 		// query. Keep the exact selected id for normal zones; the upstream capacity
 		// preflight validates that id, its status, and its adaptive UHost image.
@@ -1388,9 +1511,6 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 	}
 	if status := strings.TrimSpace(paramStr(image, "Status", "")); status != "" && !strings.EqualFold(status, deployment.ImageStatusAvailable) {
 		return fmt.Errorf("%s 当前不可用，请更换镜像", name)
-	}
-	if placement.IsPod && !imageContainerByID(wfCtx.Result("查询镜像"), imageID) {
-		return fmt.Errorf("%s 不是容器镜像，不能用于 %s，请更换镜像或可用区", name, zoneDisplayLabel(wfCtx, placement.Zone))
 	}
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
 	supported := imageSupportedByID(wfCtx.Result("查询镜像"), imageID)
@@ -2398,6 +2518,71 @@ func poolUnsupportedInZone(wfCtx *Context, zone, gpuType string) (bool, string) 
 	return poolUnsupportedInZoneForPool(wfCtx, zone, gpuType, createInventoryPool(createChargeType(wfCtx.Params)))
 }
 
+// imageContainerFit answers ONE narrow question: does the image's container/VM
+// nature match the zone's kind? A pod zone runs container images only.
+//
+// It is deliberately not called "can this zone boot this image", which is a much
+// larger question this type does NOT answer. It does not look at the image's
+// Status, its SupportedGpuTypes, the zone's capacity, or the purchase mode — each
+// of those is a separate check with its own call site, and imageContainerFitOK is
+// therefore NOT a creatability proof. A reader who takes it for one will build the
+// next gate on a guarantee that was never made.
+//
+// Within its one axis it is the single implementation, consumed by BOTH the zone
+// card and the create gate. They used to compute it separately from the same two
+// inputs — the same answer today, and a drift waiting to happen the first time
+// either side is touched, which is precisely how a card comes to offer what the
+// gate refuses.
+type imageContainerFit int
+
+const (
+	imageContainerFitOK imageContainerFit = iota
+	// imageContainerFitNeedsContainerImage: a pod zone and a VM-only image. An
+	// impossible pair, knowable as soon as the image is chosen.
+	imageContainerFitNeedsContainerImage
+	// imageContainerFitUnverifiable: a pod zone and an image this catalog page does
+	// not carry (a community search can return a different page on a second query).
+	// Distinct from NeedsContainerImage because it is OUR ignorance, not a known
+	// mismatch — the card treats it as no reason to disable, while the create gate
+	// refuses, because only the gate is entitled to refuse on missing evidence.
+	imageContainerFitUnverifiable
+)
+
+func imageContainerFitForZone(images map[string]any, imageID string, placement deployment.ZonePlacement) imageContainerFit {
+	if !placement.IsPod || strings.TrimSpace(imageID) == "" {
+		return imageContainerFitOK
+	}
+	if imageMapByID(images, imageID) == nil {
+		return imageContainerFitUnverifiable
+	}
+	if imageContainerByID(images, imageID) {
+		return imageContainerFitOK
+	}
+	return imageContainerFitNeedsContainerImage
+}
+
+// zoneRejectsSelectedImage is the zone card's view of that verdict: it disables a
+// zone only on a KNOWN mismatch. Before this gate existed the pair was assembled
+// silently — the flow's own default zone could pick the incompatible one — and
+// surfaced as "Ubuntu-nvidia 22.04 不是容器镜像，不能用于 上海二A" after the last
+// card, when the only remedy left was to start over.
+//
+// It does not claim the card and the gate can never disagree about an OUTCOME:
+// imageZoneUnverifiable is deliberately passed here and refused there, and the
+// combined stand-down in guidedZoneFormOptions can hand back a zone the gate will
+// reject. What it does guarantee is that neither side invents its own rule.
+func zoneRejectsSelectedImage(wfCtx *Context, zone string) (bool, string) {
+	placement, err := workflowZonePlacement(wfCtx, zone)
+	if err != nil {
+		return false, ""
+	}
+	imageID := paramStr(wfCtx.Params, "CompShareImageId", "")
+	if imageContainerFitForZone(wfCtx.Result("查询镜像"), imageID, placement) != imageContainerFitNeedsContainerImage {
+		return false, ""
+	}
+	return true, "所选镜像不是容器镜像，该可用区用不了"
+}
+
 func poolUnsupportedInZoneForPool(wfCtx *Context, zone, gpuType, pool string) (bool, string) {
 	placement, err := workflowZonePlacement(wfCtx, zone)
 	if err != nil {
@@ -2606,6 +2791,8 @@ func guidedStepSkipped(wfCtx *Context, logical int) bool {
 		skip, err = shouldSkipGuidedImageSourceStep(wfCtx)
 	case guidedStepImageFacets:
 		skip, err = shouldSkipGuidedImageFacetsStep(wfCtx)
+	case guidedStepImageTag:
+		skip, err = shouldSkipGuidedImageTagStep(wfCtx)
 	case guidedStepImage:
 		skip, err = shouldSkipGuidedImageStep(wfCtx)
 	case guidedStepChargeType:
@@ -2622,21 +2809,16 @@ func guidedStepTitle(index int, title string) string {
 	return fmt.Sprintf("%s，%s", guidedOrdinal(index), title)
 }
 
+// guidedOrdinal names a card's position. The table covers 1..10 because that is
+// the wizard's real ceiling — a full platform run with both narrowing cards is ten
+// — and a run that reached the digits mid-flow rendered "第五步" next to "第6步",
+// which reads as two different numbering schemes rather than one sequence.
 func guidedOrdinal(index int) string {
-	switch index {
-	case 1:
-		return "第一步"
-	case 2:
-		return "第二步"
-	case 3:
-		return "第三步"
-	case 4:
-		return "第四步"
-	case 5:
-		return "第五步"
-	default:
-		return fmt.Sprintf("第%d步", index)
+	numerals := []string{"一", "二", "三", "四", "五", "六", "七", "八", "九", "十"}
+	if index >= 1 && index <= len(numerals) {
+		return "第" + numerals[index-1] + "步"
 	}
+	return fmt.Sprintf("第%d步", index)
 }
 
 func shouldSkipGuidedGPUStep(wfCtx *Context) (bool, error) {
@@ -2659,7 +2841,7 @@ func shouldSkipGuidedZoneStep(wfCtx *Context) (bool, error) {
 	if current == "" || gpuType == "" || !initialParamSet(wfCtx, "Zone") {
 		return false, nil
 	}
-	selected, opts := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts, _ := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	return strings.EqualFold(selected, current) && enabledOptionExists(opts, current), nil
 }
 
@@ -2699,40 +2881,77 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 }
 
 // shouldSkipGuidedImageSourceStep and shouldSkipGuidedImageFacetsStep gate the two-stage
-// image flow on hasExplicitImageSelection (a concrete image already pinned), NOT
+// image flow on imageUserSettled (the USER settled a concrete image), NOT on
 // hasExplicitImageIntent — so BOTH steps show for community BROWSING (source chosen, no
-// concrete image yet), which is exactly the case the two-stage flow serves.
+// concrete image yet), which is exactly the case the two-stage flow serves. An Agent
+// SUGGESTION is not settlement, so these steps show for it too — the user still chooses.
 func shouldSkipGuidedImageSourceStep(wfCtx *Context) (bool, error) {
-	return hasExplicitImageSelection(wfCtx.Params), nil
+	return imageUserSettled(wfCtx), nil
 }
 
 func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
-	if hasExplicitImageSelection(wfCtx.Params) {
+	if imageUserSettled(wfCtx) {
 		return true, nil
 	}
 	// No empty card: the facets step earns its place only when the chosen source's
-	// catalog (this run's 查询镜像, refreshed by the re-query) offers a real ImageType or
-	// ImageTag choice. An absent facet never filters, so skipping here excludes nothing.
-	snap := createImageCatalog(wfCtx)
-	return len(imageTypeFacetOptions(snap)) == 0 &&
-		len(imageTagFacetOptions(snap)) == 0 &&
-		len(imageCategoryFacetOptions(createImageTaxonomy(wfCtx), snap)) == 0, nil
+	// catalog (this run's 查询镜像, refreshed by the re-query) offers a real ImageType
+	// or 用途 choice. An absent facet never filters, so skipping here excludes
+	// nothing. The tag facet is NOT consulted — it has its own card now, which is
+	// reached whether or not this one is.
+	set := createImageCandidates(wfCtx)
+	return len(imageTypeFacetOptions(set)) == 0 &&
+		len(imageCategoryFacetOptions(createImageTaxonomy(wfCtx), set)) == 0, nil
+}
+
+// shouldSkipGuidedImageTagStep drops the tag card whenever it has nothing real to
+// ask. That is the normal case for community (the 用途 card already covered this
+// axis at a stabler resolution) and for any candidate set whose remaining images
+// carry no tags — which, after the type card, includes 系统镜像.
+//
+// imageTagFacetOptions counts over the post-type candidates, so "no tag left" here
+// means exactly "no tag would have led anywhere". A one-option card (only 不限标签)
+// is not a choice, so it is skipped too.
+func shouldSkipGuidedImageTagStep(wfCtx *Context) (bool, error) {
+	if imageUserSettled(wfCtx) {
+		return true, nil
+	}
+	set := createImageCandidates(wfCtx)
+	if len(imageCategoryFacetOptions(createImageTaxonomy(wfCtx), set)) > 0 {
+		return true, nil
+	}
+	return len(imageTagFacetOptions(set)) < 2, nil
 }
 
 func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
-	if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
-		return true, nil
+	// The picker RESOLVES a concrete image, so skip it only when one is already
+	// settled and needs no resolution: the user settled the image (imageUserSettled —
+	// their text pinned it, or they picked on the card, which also sets a concrete id)
+	// AND a concrete id exists. A bare user NAME is not a concrete id, so the picker
+	// still runs (ranked, preselected). An Agent SUGGESTION is not settlement
+	// (imageUserSettled is false for it), so the picker runs preselected on the
+	// suggestion rather than sealing it unseen — an Agent-pinned id skipping this card
+	// entirely (CompShareImageId != "" alone meant "settled") was the bug this closes.
+	if !imageUserSettled(wfCtx) {
+		return false, nil
 	}
-	if initialParamSet(wfCtx, "CompShareImageId") {
-		return true, nil
+	return strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "", nil
+}
+
+// imageUserSettled reports the create's image is settled by the USER, not left as
+// the Agent's raw suggestion. It keeps the old "a concrete id or name is a selection"
+// rule (hasExplicitImageSelection) but subtracts the one case that let the Agent's
+// own pick skip every image card: an Agent-suggested id (ImageSelectionSuggested)
+// the user has not yet locked in on the picker. A user-pinned image (their text
+// named it) and a card pick (GuidedImageLocked, set when the user submits the picker
+// and cleared whenever an earlier edit invalidates the image) both count as settled.
+func imageUserSettled(wfCtx *Context) bool {
+	if wfCtx == nil || !hasExplicitImageSelection(wfCtx.Params) {
+		return false
 	}
-	// Every source resolves a concrete image here, before charge type and hardware.
-	// Capacity depends on the image id, boot disk and container/VM shape, so letting
-	// platform defer its choice to the final card made the earlier GPU/zone cards
-	// describe an automatically-ranked image that the user could then replace.
-	// A provided ImageName is still not a concrete id and can be ambiguous, so it is
-	// presented as a ranked default rather than silently sealed.
-	return false, nil
+	if wfCtx.ImageSelection() == ImageSelectionSuggested && !paramBool(wfCtx.Params, "GuidedImageLocked", false) {
+		return false
+	}
+	return true
 }
 
 // shouldSkipSourceReQuery skips the post-source re-query when an explicit image is
@@ -2742,7 +2961,7 @@ func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
 // the re-query replaces the stale initial catalog with the chosen source's, so the
 // facets/picker/resolve steps never read a foreign-source listing.
 func shouldSkipSourceReQuery(wfCtx *Context) (bool, error) {
-	if hasExplicitImageSelection(wfCtx.Params) {
+	if imageUserSettled(wfCtx) {
 		return true, nil
 	}
 	return normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) ==
@@ -2937,9 +3156,13 @@ func buildGuidedZoneForm(wfCtx *Context) (*ConfirmForm, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, opts := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	_, opts, stoodDown := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("%s 暂无可选可用区，请换一个 GPU 型号或稍后再试", gpuType)
+	}
+	description := "可用区影响 GPU 现货与就近接入。建议优先选择有现货的可用区；同一型号在不同区的库存可能不同。"
+	if stoodDown {
+		description = guidedZoneStandDownDescription()
 	}
 	index, total := guidedStepPosition(wfCtx, guidedStepZone)
 	return &ConfirmForm{
@@ -2948,7 +3171,7 @@ func buildGuidedZoneForm(wfCtx *Context) (*ConfirmForm, error) {
 			Index:          index,
 			Total:          total,
 			Title:          guidedStepTitle(index, "请选择可用区"),
-			Description:    "可用区影响 GPU 现货与就近接入。建议优先选择有现货的可用区；同一型号在不同区的库存可能不同。",
+			Description:    description,
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
 			Skippable:      true,
@@ -3082,11 +3305,11 @@ func imageSourceFacetOptions() []ConfirmFormOption {
 // second step of opposite branches of the same card — 自己搭环境 gets types,
 // 跑现成的应用 gets 用途 — and one of them silently lacking counts reads as
 // unfinished rather than as a different kind of filter.
-func imageTypeFacetOptions(snap *deployment.ImageCatalogSnapshot) []ConfirmFormOption {
+func imageTypeFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 	order := []string{}
 	count := map[string]int{}
 	label := map[string]string{}
-	for _, e := range snap.Entries() {
+	for _, e := range candidateEntries(set.snap, set.base) {
 		t := strings.TrimSpace(e.ImageType)
 		if t == "" {
 			continue
@@ -3112,28 +3335,63 @@ func imageTypeFacetOptions(snap *deployment.ImageCatalogSnapshot) []ConfirmFormO
 	return opts
 }
 
-// imageTagFacetOptions returns the distinct real Tags among the current candidates.
-// The values are REAL catalog tags (镜像标签), never synthesized purpose keys, so a
-// tag membership filter is exact. Returns nil (facet OMITTED — never a default, never
-// a blocker) when no candidate carries a tag or the catalog is unavailable: an absent
-// tag facet must never exclude any image.
-func imageTagFacetOptions(snap *deployment.ImageCatalogSnapshot) []ConfirmFormOption {
-	seen := map[string]bool{}
-	var opts []ConfirmFormOption
-	for _, e := range snap.Entries() {
+// imageTagFacetOptions returns the distinct real Tags among the candidates the
+// TYPE step left behind (set.afterType), each with the count of candidates that
+// actually carry it. The values are REAL catalog tags (镜像标签), never synthesized
+// purpose keys, so a tag membership filter is exact — and no alias table maps
+// miniconda onto Miniconda3, because inventing that equivalence is exactly the
+// keyword-table this repo refuses to grow. Two near-identical upstream tags stay
+// two options; their counts now say which one has images behind it.
+//
+// Counting over afterType rather than the whole catalog is what makes every offered
+// tag reachable: a tag whose only images the type already excluded scores 0 and is
+// not offered, so the card can no longer produce an empty picker.
+//
+// Returns nil (facet OMITTED — never a default, never a blocker) when no candidate
+// carries a tag: an absent tag facet must never exclude any image.
+func imageTagFacetOptions(set imageCandidateSet) []ConfirmFormOption {
+	order := []string{}
+	count := map[string]int{}
+	label := map[string]string{}
+	for _, e := range candidateEntries(set.snap, set.afterType) {
 		for _, tag := range e.Tags {
 			t := strings.TrimSpace(tag)
-			if t == "" || seen[strings.ToLower(t)] {
+			if t == "" {
 				continue
 			}
-			seen[strings.ToLower(t)] = true
-			opts = append(opts, ConfirmFormOption{Value: t, Label: t})
+			key := strings.ToLower(t)
+			if _, seen := count[key]; !seen {
+				order = append(order, key)
+				label[key] = t
+			}
+			count[key]++
 		}
 	}
-	if len(opts) == 0 {
+	if len(order) == 0 {
 		return nil
 	}
-	return append([]ConfirmFormOption{{Value: "", Label: "不限标签"}}, opts...)
+	opts := []ConfirmFormOption{{Value: "", Label: "不限标签"}}
+	for _, key := range order {
+		opts = append(opts, ConfirmFormOption{
+			Value: label[key],
+			Label: label[key],
+			Note:  fmt.Sprintf("%d 个镜像", count[key]),
+		})
+	}
+	return opts
+}
+
+// candidateEntries resolves a candidate list back to its catalog rows. A selection
+// whose id is absent from the snapshot (an externally-threaded image) carries no
+// type or tags to count, so it is skipped rather than counted as an unknown.
+func candidateEntries(snap *deployment.ImageCatalogSnapshot, candidates []deployment.ImageSelection) []deployment.ImageCatalogEntry {
+	out := make([]deployment.ImageCatalogEntry, 0, len(candidates))
+	for _, sel := range candidates {
+		if entry, ok := snap.ByID(sel.ID); ok {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // imageCategoryFacetOptions offers the platform's 用途 categories, restricted to
@@ -3149,12 +3407,12 @@ func imageTagFacetOptions(snap *deployment.ImageCatalogSnapshot) []ConfirmFormOp
 // is worse than no filter. Fewer than two usable categories means there is no
 // choice to make, so the facet is omitted entirely rather than shown with one
 // option — the same rule imageTypeFacetOptions already follows.
-func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, snap *deployment.ImageCatalogSnapshot) []ConfirmFormOption {
-	if !taxonomy.Available() || snap == nil {
+func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, set imageCandidateSet) []ConfirmFormOption {
+	if !taxonomy.Available() || set.snap == nil {
 		return nil
 	}
 	count := map[string]int{}
-	for _, e := range snap.Entries() {
+	for _, e := range candidateEntries(set.snap, set.base) {
 		for _, c := range taxonomy.CategoriesOf(e.Tags) {
 			count[c]++
 		}
@@ -3265,54 +3523,44 @@ func imageSelectionMatchesFacets(snap *deployment.ImageCatalogSnapshot, id, want
 	return true
 }
 
-// buildGuidedImageFacetsForm is the SECOND of the two-stage image flow: it offers the
-// ImageType and ImageTag facets built ONLY from the catalog of the source chosen in the
-// prior source step (createImageCatalog reads this run's 查询镜像, which the re-query
-// refreshed to the chosen source). The source itself is NOT editable here — that is the
-// separate source step, so the facets shown are always the chosen source's real types
-// and tags, never a foreign source's. ImageType/ImageTag are shown only when they offer
-// a genuine choice; an absent tag facet never filters anything. Natural-language intent
+// buildGuidedImageFacetsForm is the SECOND of the staged image flow: it offers ONE
+// narrowing axis — the ImageType facet, or the 用途 category when the platform's own
+// classification covers this catalog — built ONLY from the catalog of the source
+// chosen in the prior source step (createImageCatalog reads this run's 查询镜像,
+// which the re-query refreshed to the chosen source). The source itself is NOT
+// editable here — that is the separate source step, so the facets shown are always
+// the chosen source's real types, never a foreign source's. Natural-language intent
 // ("大模型推理" / "深度学习") is NOT handled here — the central Agent maps it to a real
 // image before the workflow runs; this step is the click-through fallback.
+//
+// The raw ImageTag facet used to sit on this same card. It now has its own card
+// (stepGuidedChooseImageTag) so its options can be computed from what THIS card's
+// answer leaves behind — see guidedStepImageTag.
 func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
-	snap := createImageCatalog(wfCtx)
+	set := createImageCandidates(wfCtx)
 	index, total := guidedStepPosition(wfCtx, guidedStepImageFacets)
 	var fields []ConfirmFormField
-	if opts := imageTypeFacetOptions(snap); len(opts) > 0 {
+	if opts := imageTypeFacetOptions(set); len(opts) > 0 {
 		fields = append(fields, ConfirmFormField{
 			Key: "ImageType", Label: "镜像类型", Type: "select",
 			Value: paramStr(wfCtx.Params, "ImageType", ""), Editable: true, Options: opts,
 		})
 	}
 	// 用途 supersedes the raw tag list when the platform's classification is
-	// available. They are the same axis at two resolutions, and offering both in
-	// one submit would let the user pick a contradictory pair (用途=LLM +
-	// 标签=数字人) that ANDs to an empty picker — this card submits once, so there
-	// is no re-render in which the tag options could narrow to the chosen 用途.
-	// The finer granularity is not lost: the next card lists the concrete images.
-	tagFacetLabel := "镜像标签"
-	tagFacetKey := "ImageTag"
-	categoryOpts := imageCategoryFacetOptions(createImageTaxonomy(wfCtx), snap)
+	// available. They are the same axis at two resolutions, and the category is the
+	// stable one, so a catalog it covers never reaches the tag card at all.
+	categoryOpts := imageCategoryFacetOptions(createImageTaxonomy(wfCtx), set)
 	if len(categoryOpts) > 0 {
 		fields = append(fields, ConfirmFormField{
 			Key: "ImageCategory", Label: "用途", Type: "select",
 			Value: paramStr(wfCtx.Params, "ImageCategory", ""), Editable: true, Options: categoryOpts,
 		})
-		tagFacetKey = ""
-	}
-	if tagFacetKey != "" {
-		if opts := imageTagFacetOptions(snap); len(opts) > 0 {
-			fields = append(fields, ConfirmFormField{
-				Key: tagFacetKey, Label: tagFacetLabel, Type: "select",
-				Value: paramStr(wfCtx.Params, "ImageTag", ""), Editable: true, Options: opts,
-			})
-		}
 	}
 	// Title and copy follow whichever facet this branch actually offers, so the card
 	// reads as the second half of the question the first card asked rather than as a
 	// generic "筛选" step that happens to show different fields.
 	title := "缩小镜像范围"
-	description := "镜像类型和标签都来自所选目录里的真实镜像。留空表示不按它筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
+	description := "镜像类型来自所选目录里的真实镜像。留空表示不按它筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
 	switch {
 	case len(categoryOpts) > 0:
 		title = "想跑哪一类"
@@ -3333,6 +3581,40 @@ func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 			Skippable:      true,
 		},
 		Fields: fields,
+	}, nil
+}
+
+// buildGuidedImageTagForm asks the raw-tag question on its own card, AFTER the type
+// card, so its options describe the candidates the type actually left. Every tag
+// offered here has at least one image behind it and the count says how many — which
+// is what makes "系统镜像 + pytorch" unreachable rather than a dead end the user was
+// invited to click.
+//
+// No alias table: miniconda and Miniconda3 are two upstream tags and stay two
+// options. Deciding they mean the same thing is a keyword table, and the counts
+// already tell the user which one has images.
+func buildGuidedImageTagForm(wfCtx *Context) (*ConfirmForm, error) {
+	set := createImageCandidates(wfCtx)
+	opts := imageTagFacetOptions(set)
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("当前候选镜像没有可用标签")
+	}
+	index, total := guidedStepPosition(wfCtx, guidedStepImageTag)
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          index,
+			Total:          total,
+			Title:          guidedStepTitle(index, "再按标签缩小范围"),
+			Description:    "标签是所选目录里镜像自带的原始标签，每项后的数量是当前候选里真实带该标签的镜像数。留空表示不按标签筛选，不会排除任何镜像。",
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "跳过",
+			Skippable:      true,
+		},
+		Fields: []ConfirmFormField{{
+			Key: "ImageTag", Label: "镜像标签", Type: "select",
+			Value: paramStr(wfCtx.Params, "ImageTag", ""), Editable: true, Options: opts,
+		}},
 	}, nil
 }
 
@@ -3369,9 +3651,27 @@ func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
 	}, nil
 }
 
+// guidedImagePageDescription states what this card is showing and, when the
+// candidate list is longer than the page, what it is NOT showing.
+//
+// Silence here was the defect: the earlier filter card advertised "框架 / 应用镜像
+// 55 个镜像" and this card handed back ten with no sign that forty-five existed.
+// Neither available lie is acceptable — restating the count as ten hides real
+// candidates, and listing all fifty-five makes the card unusable — so the card
+// says both numbers and names the two ways to narrow. Real paging/search is still
+// owed; this is the honest interim.
+func guidedImagePageDescription(shown, candidates int) string {
+	const base = "先确定实际创建使用的镜像，后续 GPU、可用区和库存检查都以这一个镜像 ID 为准。"
+	if candidates <= shown {
+		return base
+	}
+	return fmt.Sprintf("%s当前展示 %d 个，共 %d 个匹配镜像；如果这里没有想要的，回上一步改类型或标签，或直接告诉我镜像名称。",
+		base, shown, candidates)
+}
+
 func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
-	current, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx))
+	current, opts, candidates := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("未找到可选镜像，请换一个镜像来源或稍后再试")
 	}
@@ -3385,7 +3685,7 @@ func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 			Index:          index,
 			Total:          total,
 			Title:          guidedStepTitle(index, "请选择具体镜像"),
-			Description:    "先确定实际创建使用的镜像，后续 GPU、可用区和库存检查都以这一个镜像 ID 为准。",
+			Description:    guidedImagePageDescription(len(opts), candidates),
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "取消",
 		},
@@ -3409,7 +3709,7 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 	// states that decision: changing it here would invalidate GPU/zone/spec choices
 	// that were computed for a different image. A future "修改镜像" affordance must
 	// return to the image step and re-run the dependency chain, not edit in place.
-	if cur, opts := guidedImageFormOptions(wfCtx.Params, images, gpuType, createImageTaxonomy(wfCtx)); cur != "" && len(opts) > 0 {
+	if cur, opts, _ := guidedImageFormOptions(wfCtx.Params, images, gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx)); cur != "" && len(opts) > 0 {
 		fields = append(fields, ConfirmFormField{
 			Key: "ImageId", Label: "镜像", Type: "select", Value: cur, Editable: false,
 		})
@@ -3496,6 +3796,7 @@ func applyGuidedGPUOverrides(wfCtx *Context, overrides map[string]string) error 
 				if supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像")); len(supported) > 0 && !containsFold(supported, v) {
 					delete(wfCtx.Params, "CompShareImageId")
 					delete(wfCtx.Params, "ImageName")
+					delete(wfCtx.Params, "GuidedImageLocked")
 				}
 			}
 		default:
@@ -3575,22 +3876,39 @@ func applyGuidedImageFacetsOverrides(wfCtx *Context, overrides map[string]string
 		switch k {
 		case "ImageType":
 			wfCtx.Params["ImageType"] = strings.TrimSpace(v)
-		case "ImageTag":
-			wfCtx.Params["ImageTag"] = strings.TrimSpace(v)
 		case "ImageCategory":
 			wfCtx.Params["ImageCategory"] = strings.TrimSpace(v)
 		default:
 			return fmt.Errorf("不支持修改字段 %s", k)
 		}
 	}
-	// A type/tag change invalidates a previously-picked concrete image: the refreshed
-	// image step re-picks from the newly-scoped candidates rather than carrying a stale
-	// id/name that may not match the new type/tag. The source is owned by the earlier
-	// source step and is never touched here. Nothing is silent: the user re-confirms the
-	// refreshed card before anything is created.
+	// A type/category change invalidates a previously-picked concrete image: the
+	// refreshed image step re-picks from the newly-scoped candidates rather than
+	// carrying a stale id/name that may not match. The source is owned by the earlier
+	// source step and is never touched here. Nothing is silent: the user re-confirms
+	// the refreshed card before anything is created.
 	delete(wfCtx.Params, "CompShareImageId")
 	delete(wfCtx.Params, "ImageName")
+	delete(wfCtx.Params, "GuidedImageLocked")
+	// The tag was chosen against the PREVIOUS type's candidates, so it may now select
+	// nothing. Cleared = absent = "no filter" (honest absence, never "match nothing"),
+	// and the tag card that follows re-asks over the new candidates.
+	delete(wfCtx.Params, "ImageTag")
 	markGuidedStepReached(wfCtx, guidedStepImageFacets)
+	return nil
+}
+
+func applyGuidedImageTagOverrides(wfCtx *Context, overrides map[string]string) error {
+	for k, v := range overrides {
+		if k != "ImageTag" {
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+		wfCtx.Params["ImageTag"] = strings.TrimSpace(v)
+	}
+	delete(wfCtx.Params, "CompShareImageId")
+	delete(wfCtx.Params, "ImageName")
+	delete(wfCtx.Params, "GuidedImageLocked")
+	markGuidedStepReached(wfCtx, guidedStepImageTag)
 	return nil
 }
 
@@ -3623,6 +3941,7 @@ func applyGuidedImageSourceOverrides(wfCtx *Context, overrides map[string]string
 		delete(wfCtx.Params, "ImageCategory")
 		delete(wfCtx.Params, "CompShareImageId")
 		delete(wfCtx.Params, "ImageName")
+		delete(wfCtx.Params, "GuidedImageLocked")
 	}
 	markGuidedStepReached(wfCtx, guidedStepImageSource)
 	return nil
@@ -3655,6 +3974,12 @@ func applyGuidedImageOverrides(wfCtx *Context, overrides map[string]string) erro
 	if err := applyCreateOverrides(wfCtx, overrides); err != nil {
 		return err
 	}
+	// The user picked on the picker: the image is now user-settled. Subsequent
+	// re-runs (a later-card edit re-runs the flow) read this and skip the image
+	// cards, instead of seeing state==Suggested and re-opening the picker as if the
+	// pick were a fresh Agent suggestion. Cleared by the source/type/tag/GPU edits
+	// that invalidate the pinned image, so a re-browse starts clean.
+	wfCtx.Params["GuidedImageLocked"] = true
 	markGuidedStepReached(wfCtx, guidedStepImage)
 	return nil
 }
@@ -3701,7 +4026,7 @@ func ensureGuidedZone(wfCtx *Context) (string, error) {
 		return "", err
 	}
 	current := paramStr(wfCtx.Params, "Zone", "")
-	selected, opts := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	selected, opts, _ := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if selected == "" || len(opts) == 0 {
 		return "", fmt.Errorf("%s 暂无可选可用区，请换一个 GPU 型号或稍后再试", gpuType)
 	}
@@ -4126,21 +4451,23 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 		canCreate, creatabilityKnown := gpuModelCreatable(combos, ch.name, ch.zones)
 		soldOut := creatabilityKnown && !canCreate && anyModelCreatable
 		disabled := !ch.normal || imageUnsupported || poolUnsupported || soldOut
+		// A disabled option's reason goes in Reason ONLY, never also into the note.
+		// The client renders [Note, Disabled && Reason] joined (MessageItem.jsx), so
+		// a reason present in both is printed twice — live: "4090 · 该可用区不支持独占
+		// 购买方式 · 该可用区不支持独占购买方式". Note carries the neutral context,
+		// Reason carries the why.
 		disabledReason := ""
 		if imageUnsupported {
-			noteParts = append(noteParts, "镜像不支持当前 GPU")
 			disabledReason = "镜像不支持当前 GPU"
 		}
 		if poolUnsupported && disabledReason == "" {
-			// Replaces the stock line rather than joining it: a card that says both
+			// Suppresses the stock line rather than joining it: a card that says both
 			// "不支持抢占式" and "库存快照约 3 张" is telling the user to try anyway.
-			noteParts = append(noteParts, poolReason)
 			disabledReason = poolReason
 			stockKnown = false
 		}
 		if soldOut && disabledReason == "" {
 			disabledReason = "当前配置在所有可用区都无可创建库存"
-			noteParts = append(noteParts, disabledReason)
 			stockKnown = false
 		}
 		if ch.normal && !poolUnsupported && !soldOut {
@@ -4161,11 +4488,8 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 				noteParts = append(noteParts, "在售，库存以最终确认为准")
 			}
 		}
-		if !ch.normal {
-			noteParts = append(noteParts, "暂不可售")
-			if disabledReason == "" {
-				disabledReason = "暂不可售"
-			}
+		if !ch.normal && disabledReason == "" {
+			disabledReason = "暂不可售"
 		}
 		if len(ch.zones) > 0 {
 			noteParts = append(noteParts, "可用区 "+strings.Join(ch.zones, "、"))
@@ -4265,9 +4589,14 @@ func guidedGPUIntentMatches(intent, candidate string) bool {
 	return strings.EqualFold(strings.TrimSpace(intent), strings.TrimSpace(candidate))
 }
 
-func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, current string, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption) {
+// guidedZoneFormOptions returns the zone card's selection, its options, and
+// whether the gates stood down — i.e. whether every zone failed some rule and the
+// options were re-enabled to keep the flow moving. The caller needs that flag
+// because a stood-down card must say so; silently offering everything is how the
+// user ends up choosing a zone the create gate will refuse.
+func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, current string, params map[string]any, inventoryResult map[string]any) (string, []ConfirmFormOption, bool) {
 	if catalog == nil || gpuType == "" {
-		return "", nil
+		return "", nil, false
 	}
 	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
 	// Real creatability per zone, when the probe managed to establish it. A zone
@@ -4277,16 +4606,6 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 	// disable an option).
 	creatable := zoneCreatabilityFor(
 		comboCreatability(wfCtx.Result(zoneCapacityStepName)), gpuType, guidedCandidateZones(catalog, gpuType))
-	// The gate steers; it does not refuse. Graying out every zone leaves a card
-	// that offers nothing, and ensureGuidedZone turns that into "暂无可选可用区" —
-	// a dead end raised BEFORE the draft exists, so the failure record would lose
-	// both the candidate draft and the typed capacity_sold_out reason that the
-	// sold-out reply is built from. When nothing is creatable there is nothing to
-	// steer toward, and the authoritative negative belongs to 检查库存, which
-	// raises it with a complete record. See stepCheckCapacity.
-	if !anyZoneCreatable(creatable, guidedCandidateZones(catalog, gpuType)) {
-		creatable = nil
-	}
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
 	for _, zone := range guidedCandidateZones(catalog, gpuType) {
@@ -4308,17 +4627,37 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 			} else {
 				disabled = true
 				disabledReason = "该可用区当前无可创建库存"
-				note = fmt.Sprintf("%s · %s", gpuType, disabledReason)
 			}
 		}
 		// The charge type is settled before this card, so the purchase-mode
-		// constraint runs in its natural direction: the user is never offered a zone
-		// their billing mode cannot use, and — because this reads the same fact the
-		// create gate reads — never denied one it would have accepted.
+		// constraint runs in its natural direction: a zone the billing mode cannot
+		// use is grayed out here rather than refused at the create gate. It reads
+		// the same fact the gate reads, so it can never deny a zone the gate would
+		// have accepted; the converse does not hold — see the stand-down below.
 		if unsupported, reason := poolUnsupportedInZone(wfCtx, zone, gpuType); !disabled && unsupported {
 			disabled = true
 			disabledReason = reason
-			note = fmt.Sprintf("%s · %s", gpuType, disabledReason)
+		}
+		// The image is settled several cards before this one, so the container/VM
+		// constraint runs in its natural direction here too: a zone that cannot boot
+		// the chosen image is grayed out while the user can still act on it.
+		//
+		// "Never offered a zone the create gate will refuse" is NOT what this
+		// establishes, and saying so would be a lie the next reader would trust:
+		// an image id this catalog page does not carry passes here and is refused
+		// there (imageZoneUnverifiable), and the stand-down below deliberately
+		// re-enables everything when nothing is left.
+		if rejects, reason := zoneRejectsSelectedImage(wfCtx, zone); !disabled && rejects {
+			disabled = true
+			disabledReason = reason
+		}
+		// A disabled zone must not also advertise stock. "4090 · 库存约 8 张" beside
+		// "该可用区不支持独占购买方式" reads as an invitation to try anyway; the
+		// reason is the only thing worth saying. It lives in Reason alone — the
+		// client joins [Note, Disabled && Reason], so repeating it here printed it
+		// twice.
+		if disabled {
+			note = gpuType
 		}
 		opt := ConfirmFormOption{
 			Value:    zone,
@@ -4338,11 +4677,76 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 			opts = append(opts, opt)
 		}
 	}
+	// ONE stand-down over the COMBINED verdict, not one per rule.
+	//
+	// The gates steer; they do not refuse. Graying out every zone leaves a card
+	// that offers nothing, and ensureGuidedZone turns that into "暂无可选可用区" —
+	// a dead end raised BEFORE the draft exists, so the failure record would lose
+	// both the candidate draft and the typed capacity_sold_out reason the sold-out
+	// reply is built from. When nothing is selectable there is nothing to steer
+	// toward, and the authoritative negative belongs to 检查库存 / the create gate,
+	// which raise it with a complete record. See stepCheckCapacity.
+	//
+	// This used to be one stand-down per rule, and that is not the same thing.
+	// Capacity asked "is any zone creatable", purchase mode asked nothing at all,
+	// and the image rule asked "does any zone accept this image" — so a card where
+	// capacity killed zone A and the image killed zone B saw each rule find its own
+	// survivor, stood down neither, and went out with nothing enabled. Every rule
+	// was individually satisfied and the card was still a dead end. Deciding it once
+	// on the assembled options is what makes a fourth rule safe to add.
+	//
+	// What this is NOT: a fix for the user's situation. Re-enabling the options is a
+	// downgrade that keeps the flow moving, and one of the known-bad zones then
+	// becomes the default. The confirm protocol has no back operation
+	// (ConfirmResolution is confirmed/denied plus overrides — types.go), so from
+	// here the user can only cancel the whole create and start over, or continue and
+	// be stopped by 检查库存 / the create gate. The notes and the stood-down
+	// description below are what make that choice an informed one; they are not a
+	// substitute for a zone-step structured conflict that could send them back to
+	// the image card.
+	stoodDown := false
+	if firstEnabledValue(opts) == "" && len(opts) > 0 {
+		stoodDown = true
+		for i := range opts {
+			foldReasonIntoNote(&opts[i])
+			opts[i].Disabled = false
+		}
+	}
 	selected := current
 	if selected == "" || !seen[selected] || !enabledOptionExists(opts, selected) {
 		selected = firstEnabledValue(opts)
 	}
-	return selected, opts
+	return selected, opts, stoodDown
+}
+
+// foldReasonIntoNote moves a disabled option's Reason into its Note.
+//
+// The client renders the reason ONLY while the option is disabled —
+// `[o.Note, o.Disabled && o.Reason].filter(Boolean).join(' · ')` — so re-enabling
+// an option without folding would silently drop the one line that explained it.
+// This is the whole reason Note and Reason are kept disjoint at every producer:
+// they can be concatenated safely exactly once, here.
+func foldReasonIntoNote(opt *ConfirmFormOption) {
+	if opt.Reason == "" {
+		return
+	}
+	if opt.Note == "" {
+		opt.Note = opt.Reason
+	} else {
+		opt.Note = opt.Note + " · " + opt.Reason
+	}
+	opt.Reason = ""
+}
+
+// guidedZoneStandDownDescription replaces the zone card's normal copy when every
+// zone failed some rule. The normal copy ("建议优先选择有现货的可用区") is actively
+// wrong then — there is no good choice to steer toward — and a card whose options
+// each carry a warning but whose heading still recommends picking one reads as a
+// rendering glitch rather than as the conflict it is.
+func guidedZoneStandDownDescription() string {
+	return "当前没有同时满足库存、购买方式和所选镜像的可用区，下面每个区都标注了原因。" +
+		"继续确认不会跳过后续检查——真正的创建仍会被拦下。" +
+		"建议取消本次创建，改用其他镜像、GPU 型号或计费方式后重新开始。"
 }
 
 func guidedGPUCountFormOptions(wfCtx *Context, catalog map[string]any, gpuType, zone string, current float64, params map[string]any, inventoryResult map[string]any) (float64, []ConfirmFormOption) {
@@ -4577,27 +4981,38 @@ func parseGuidedSpecKey(key string) (zone string, gpu, cpu, memoryMB float64, er
 	return zone, gpu, cpu, memoryMB, nil
 }
 
-func guidedImageFormOptions(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy) (string, []ConfirmFormOption) {
+// guidedImageFormOptions returns the picker's current value, its options and the
+// TOTAL number of candidates those options are a page of. The total is returned
+// rather than inferred because the options are capped at maxGuidedImageOptions:
+// the caller states "共 N 个" from the same set the options came from, so the card
+// can no longer advertise a population it does not show.
+func guidedImageFormOptions(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy, zoneIsPod bool) (string, []ConfirmFormOption, int) {
 	if images == nil {
-		return "", nil
+		return "", nil, 0
 	}
-	snap := formImageCatalog(images, paramStr(params, "ImageSource", "platform"))
-	zoneIsPod := paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false)
-	ranked := deployment.RankImages(snap, deployment.ImageRequest{
-		Name:         paramStr(params, "ImageName", ""),
-		RequestedGPU: gpuType,
-		Zone:         deployment.ZoneConstraint{Zone: paramStr(params, "Zone", ""), IsPod: zoneIsPod},
-	})
-	// Narrow by the optional ImageType / ImageTag facets. An unset facet is no filter
-	// (never excludes an image); a set tag is exact membership against real Tags.
-	ranked = filterImagesByFacets(snap, ranked, params, taxonomy)
+	set := buildImageCandidateSet(params, images, gpuType, taxonomy, zoneIsPod)
+	snap := set.snap
+	ranked := set.final
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
 	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
 
+	// total counts every DISTINCT candidate this card is a page of, including the
+	// threaded current selection when it is not one of the ranked rows. It is
+	// counted here rather than from len(opts) because opts stops at the page size —
+	// which is the whole bug this returns a total to close.
+	total := 0
+	counted := map[string]bool{}
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
 	appendOpt := func(id, label string, supported []string) {
-		if id == "" || seen[id] || len(opts) >= maxGuidedImageOptions {
+		if id == "" {
+			return
+		}
+		if !counted[id] {
+			counted[id] = true
+			total++
+		}
+		if seen[id] || len(opts) >= maxGuidedImageOptions {
 			return
 		}
 		seen[id] = true
@@ -4605,8 +5020,10 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 		disabled := false
 		// A GPU-recommendation mismatch is shown DISABLED (not hidden), so the user
 		// sees why an image they might name is not selectable for this card.
+		// Reason only — the client joins [Note, Disabled && Reason], so the old pair
+		// ("所选镜像不支持当前 GPU" + "镜像不支持当前 GPU") rendered as the same
+		// sentence twice with a separator between them.
 		if gpuType != "" && len(supported) > 0 && !containsFold(supported, gpuType) {
-			note = "所选镜像不支持当前 GPU"
 			reason = "镜像不支持当前 GPU"
 			disabled = true
 		}
@@ -4616,16 +5033,36 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 		})
 	}
 
+	// Membership in the HARD-filtered candidate set (set.base is post-status,
+	// post-pod/container; it does not yet apply the type/tag facets). The
+	// current/threaded lead below must respect this: pickImageId resolves a default
+	// from the raw catalog with NO pod constraint, so on a pod zone it can name a
+	// VM-only image the candidate set already dropped. Leading with it re-added the
+	// very image RankImages excluded — which is how a pinned pod zone still offered
+	// "Ubuntu-nvidia 22.04" and the create gate refused it at the end.
+	inCandidates := map[string]bool{}
+	for _, sel := range set.base {
+		inCandidates[sel.ID] = true
+	}
+
 	// The current/threaded selection leads — but only if it survives the active
-	// facets (a selection that no longer matches a just-picked tag/type must not lead
-	// the list; it is re-picked from the facet-scoped candidates below).
+	// facets AND the hard filters. A selection dropped by a facet is re-picked from
+	// the facet-scoped candidates below; a selection dropped by the pod/status gate
+	// is not a valid candidate at all and must not lead (or appear).
 	current := pickImageId(params, images)
 	if current != "" && imageSelectionMatchesFacets(snap, current, wantType, wantTag) {
 		if entry, ok := snap.ByID(current); ok {
-			appendOpt(entry.ID, entry.DisplayLabel(), entry.SupportedGPUTypes)
+			if inCandidates[current] {
+				appendOpt(entry.ID, entry.DisplayLabel(), entry.SupportedGPUTypes)
+			} else {
+				// Present in the catalog but dropped by a hard filter (e.g. a VM image
+				// in a pod zone). Not a candidate — fall through to the ranked set.
+				current = ""
+			}
 		} else {
 			// A threaded id absent from this result: still offer it as current; its
-			// GPU state is unknown here, so it is not disabled.
+			// GPU/container state is unknown here, so the create gate (which has the
+			// authority to refuse on missing evidence) is the backstop.
 			label := imageNameByID(images, current)
 			if label == "" {
 				label = pickImageName(params, images)
@@ -4648,12 +5085,12 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 		appendOpt(sel.ID, label, entry.SupportedGPUTypes)
 	}
 	if len(opts) == 0 {
-		return "", nil
+		return "", nil, 0
 	}
 	if current == "" || !seen[current] || !enabledOptionExists(opts, current) {
 		current = firstEnabledValue(opts)
 	}
-	return current, opts
+	return current, opts, total
 }
 
 // gpuFormOptions lists selectable GPU types: sellable types from the catalog,

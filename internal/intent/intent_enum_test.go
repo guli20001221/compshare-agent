@@ -31,6 +31,7 @@ func TestIntentEnumDeclaresAllV1Intents(t *testing.T) {
 		IntentRefundEstimate,
 		IntentCFSInfo,
 		IntentImageTagCatalog,
+		IntentZoneCatalog,
 		IntentModelRepositoryBrowse,
 		IntentImageList,
 		// PR #3 (2026-05-22) — pricing route (commercial path).

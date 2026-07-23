@@ -5,8 +5,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/compshare-agent/internal/deployment"
 )
 
 // platformImageQueryArgs runs the given platform 查询镜像 step's BuildArgs and
@@ -58,19 +56,20 @@ func TestPlatformImageQueryAsksForTheWholeCatalog(t *testing.T) {
 // an unsplit "comfyUI，ComfyUI" is what the user is asked to click — and picking the
 // clean spelling then matches nothing, because membership is exact.
 func TestCompoundTagsDoNotReachTheFacetCard(t *testing.T) {
-	snap := deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(
-		map[string]any{"ImageSet": []any{
-			map[string]any{
-				"CompShareImageId": "img-a", "Name": "PyTorch", "ImageType": "App",
-				"Status": "Available", "Tags": []any{"pytorch，Pytorch"},
-			},
-			map[string]any{
-				"CompShareImageId": "img-b", "Name": "ComfyUI", "ImageType": "App",
-				"Status": "Available", "Tags": []any{"comfyUI，ComfyUI"},
-			},
-		}}, "platform"))
+	images := map[string]any{"ImageSet": []any{
+		map[string]any{
+			"CompShareImageId": "img-a", "Name": "PyTorch", "ImageType": "App",
+			"Status": "Available", "Tags": []any{"pytorch，Pytorch"},
+		},
+		map[string]any{
+			"CompShareImageId": "img-b", "Name": "ComfyUI", "ImageType": "App",
+			"Status": "Available", "Tags": []any{"comfyUI，ComfyUI"},
+		},
+	}}
+	set := buildImageCandidateSet(map[string]any{"ImageSource": "platform"}, images, "", nil, false)
+	snap := set.snap
 
-	opts := imageTagFacetOptions(snap)
+	opts := imageTagFacetOptions(set)
 	require.NotEmpty(t, opts)
 	for _, o := range opts {
 		assert.NotContains(t, o.Label, "，",

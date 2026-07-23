@@ -237,7 +237,7 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
-	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog}, targetEvidence: targetEvidence}, nil
+	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog, ImageSelection: deriveImageSelection(resolved.Provenance)}, targetEvidence: targetEvidence}, nil
 }
 
 func proposalImageCatalogSource(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) string {
@@ -245,6 +245,28 @@ func proposalImageCatalogSource(proposal actionresolver.ActionProposal, spec act
 		return source
 	}
 	return spec.ImageCatalogSource
+}
+
+// deriveImageSelection classifies who settled the create's image from the resolved
+// provenance, so the guided image flow offers an Agent suggestion on the picker
+// instead of sealing it silently. A user-explicit id OR name is the user naming the
+// image (UserPinned) — keyed on both because a bare user NAME, whose id the Agent
+// then resolved against the catalog, is still the user's own choice. A concrete id
+// the user did not name is the Agent's suggestion (Suggested). Nothing is Unset.
+//
+// Only the guided create flow reads this; for reinstall/clone (which carry a
+// CompShareImageId but never open the picker) it is computed and harmlessly unread.
+func deriveImageSelection(provenance map[string]actionresolver.ResolvedSlot) workflow.ImageSelectionState {
+	idSlot, hasID := provenance["CompShareImageId"]
+	nameSlot, hasName := provenance["ImageName"]
+	if (hasID && idSlot.Source == actionresolver.SourceUserExplicit) ||
+		(hasName && nameSlot.Source == actionresolver.SourceUserExplicit) {
+		return workflow.ImageSelectionUserPinned
+	}
+	if hasID && strings.TrimSpace(fmt.Sprint(idSlot.Value)) != "" {
+		return workflow.ImageSelectionSuggested
+	}
+	return workflow.ImageSelectionUnset
 }
 
 // targetEvidenceForProposal builds an existence verdict for every distinct
@@ -551,6 +573,10 @@ func (e *Engine) executeActionProposalShadow(ctx context.Context, args map[strin
 }
 
 func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
+	if e.actionProposalRanThisTurn {
+		e.actionProposalDispositionThisTurn = "duplicate_write_proposal"
+		return finalReplyPrefix + "本轮已经处理过一个写操作请求，没有执行模型随后提出的其他操作。请根据上面的结果确认下一步，再单独发送新的操作指令。"
+	}
 	e.actionProposalRanThisTurn = true
 	resolved, err := e.resolveActionProposalShadow(ctx, args)
 	if err != nil {

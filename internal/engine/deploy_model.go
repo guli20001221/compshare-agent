@@ -50,16 +50,22 @@ func (e *Engine) supportZoneListStrict(ctx context.Context) ([]zones.ZoneInfo, e
 // structural derivation only when upstream omits it), so ZoneID/Region/AzGroup/
 // IsPod and the display name all come from one row and cannot disagree.
 func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalogSnapshot {
+	if e.currentCtx != nil && e.zoneCatalogThisTurn != nil {
+		return e.zoneCatalogThisTurn
+	}
+	var snapshot *deployment.ZoneCatalogSnapshot
 	// "could not obtain the catalog" is distinct from "obtained an empty catalog":
 	// only the former is unavailable. No executor (CLI, no tenant) or a query error
 	// is a failure — refuse; a successful query is available even when it lists no
 	// zones.
 	if e.externalExecutor == nil {
-		return deployment.NewZoneCatalogSnapshot(false, nil)
+		snapshot = deployment.NewZoneCatalogSnapshot(false, nil)
+		return e.rememberZoneCatalogThisTurn(snapshot)
 	}
 	list, err := e.supportZoneListStrict(ctx)
 	if err != nil {
-		return deployment.NewZoneCatalogSnapshot(false, nil)
+		snapshot = deployment.NewZoneCatalogSnapshot(false, nil)
+		return e.rememberZoneCatalogThisTurn(snapshot)
 	}
 	entries := make([]deployment.ZoneCatalogEntry, 0, len(list))
 	for _, z := range list {
@@ -78,7 +84,15 @@ func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalo
 			DisplayName: z.Describe,
 		})
 	}
-	return deployment.NewZoneCatalogSnapshot(true, entries)
+	snapshot = deployment.NewZoneCatalogSnapshot(true, entries)
+	return e.rememberZoneCatalogThisTurn(snapshot)
+}
+
+func (e *Engine) rememberZoneCatalogThisTurn(snapshot *deployment.ZoneCatalogSnapshot) *deployment.ZoneCatalogSnapshot {
+	if e.currentCtx != nil {
+		e.zoneCatalogThisTurn = snapshot
+	}
+	return snapshot
 }
 
 // zoneCatalogSnapshotForSpec is the spec-gated builder the action-proposal

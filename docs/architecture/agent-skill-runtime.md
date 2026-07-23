@@ -103,8 +103,10 @@ guard.
 A diagnosis chain (`internal/diagnosis/`) is a read-only diagnostic tool. Only
 `DiagnoseSSH` and `DiagnoseBilling` are advertised; `chainRegistry` equals the
 advertised set, so an unadvertised diagnosis name cannot resolve (model-invisible
-≠ unreachable). Symptoms without a dedicated chain (GPU/init/port/image) are
-handled by the central Agent gathering evidence via `SearchKnowledge` +
+≠ unreachable). `DiagnoseSSH` is explicitly a cloud-side precheck: it verifies
+the exact instance, lifecycle state, structured login endpoint, and monitor risk
+signals, but does not probe a public port or inspect the guest OS. Symptoms without
+a dedicated chain (GPU/init/port/image) are handled by the central Agent gathering evidence via `SearchKnowledge` +
 `DescribeCompShareInstance`.
 
 ### Memory

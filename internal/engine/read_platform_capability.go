@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/envelope"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
@@ -76,6 +77,9 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		Now:              now,
 		FallbackGPUModel: e.fallbackStockGpuModel(now),
 	}
+	if capabilityLabel == string(intent.IntentZoneCatalog) {
+		rt.ZoneCatalog = e.zoneCatalogSnapshot(ctx)
+	}
 	if user, ok := tools.UserFrom(ctx); ok {
 		rt.TopOrganizationID = user.TopOrganizationID
 		rt.OrganizationID = user.OrganizationID
@@ -139,7 +143,11 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 		Envelope:         result.Envelope,
 		CanAssertAbsence: canAssertAbsence,
 	}
-	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification && result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
+	// A browse listing is a menu, not a measurement: it gets no render_ref, so the
+	// server never staples the raw catalog in front of the model's curated answer.
+	// The envelope below still carries every exact id/count the model needs.
+	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification && !result.ReplyIsBrowseListing &&
+		result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
 		placeholder := fmt.Sprintf("{{READ_OBSERVATION_%d}}", len(e.readResponseEvidenceThisTurn)+1)
 		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
 			Capability:  capabilityLabel,

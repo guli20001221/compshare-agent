@@ -129,3 +129,31 @@ func TestZoneCatalogSnapshot_SuccessfulEmptyCatalogIsAvailable(t *testing.T) {
 		t.Error("an empty catalog resolves nothing")
 	}
 }
+
+// One turn must not fetch two catalogs: a zone-catalog read followed by a write
+// proposal must see the exact same immutable object. This test pins the engine
+// choke point rather than relying on the process cache to make two calls happen
+// to return equal data.
+func TestZoneCatalogSnapshot_IsOneObjectAndOneFetchPerTurn(t *testing.T) {
+	calls := 0
+	exec := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareSupportZone" {
+			calls++
+			return zoneCatalogExec().Execute(context.Background(), action, nil)
+		}
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
+	eng.currentCtx = zoneUserCtx() // marks an active turn; Chat normally owns this
+	defer func() { eng.currentCtx = nil }()
+
+	first := eng.zoneCatalogSnapshot(zoneUserCtx())
+	second := eng.zoneCatalogSnapshot(zoneUserCtx())
+
+	if first != second {
+		t.Fatal("all zone consumers in one turn must receive the same snapshot object")
+	}
+	if calls != 1 {
+		t.Fatalf("one turn must fetch the support-zone catalog once, got %d calls", calls)
+	}
+}

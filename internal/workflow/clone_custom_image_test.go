@@ -91,6 +91,50 @@ func TestCloneCustomImage_RejectsSameZoneBeforeConfirmation(t *testing.T) {
 	assert.Empty(t, executor.calls)
 }
 
+func TestCloneCustomImage_RejectsVMImageToPodZoneBeforeConfirmation(t *testing.T) {
+	executor := cloneCustomImageExecutor()
+	ref := cloneCustomImageReferenceData(deployment.ImageStatusAvailable, "cn-wlcb-01", 10027)
+	ref.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", ZoneID: 5001, IsPod: true}, DisplayName: "华北一C"},
+	})
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("虚机自制镜像克隆到容器区必须在确认前拒绝")
+		return false
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CloneCustomImageDef(), map[string]any{
+		"CompShareImageId": "cimg-source", "Zone": "cn-bj2-03", "TargetImageName": "invalid-pod-copy",
+	}, WithReferenceData(ref))
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "虚机自制镜像不能克隆到容器可用区 华北一C")
+	assert.Empty(t, executor.calls)
+}
+
+func TestCloneCustomImage_AllowsContainerImageToPodZone(t *testing.T) {
+	executor := cloneCustomImageExecutor()
+	ref := cloneCustomImageReferenceData(deployment.ImageStatusAvailable, "cn-wlcb-01", 10027)
+	ref.ImageCatalog = deployment.NewImageCatalogSnapshot(true, []deployment.ImageCatalogEntry{{
+		ID: "cimg-source", Name: "container-base", Source: "custom", ImageType: "Custom",
+		Status: deployment.ImageStatusAvailable, Zone: "cn-wlcb-01", ZoneID: 10027, Container: true,
+	}})
+	ref.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", ZoneID: 5001, IsPod: true}, DisplayName: "华北一C"},
+	})
+	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
+
+	result, err := eng.Run(context.Background(), CloneCustomImageDef(), map[string]any{
+		"CompShareImageId": "cimg-source", "Zone": "cn-bj2-03", "TargetImageName": "valid-pod-copy",
+	}, WithReferenceData(ref))
+
+	require.NoError(t, err)
+	assert.True(t, result.Success, result.Message)
+	call, ok := findExecutorCall(executor.calls, "SyncCompShareCustomImage")
+	require.True(t, ok)
+	assert.Equal(t, []uint32{5001}, call.args["TargetZoneIds"])
+}
+
 func TestCloneCustomImage_RejectsUnavailableSource(t *testing.T) {
 	executor := cloneCustomImageExecutor()
 	eng := NewEngine(executor, nil, nil)
