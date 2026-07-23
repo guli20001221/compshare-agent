@@ -764,8 +764,13 @@ type RetrievalTrace struct {
 	// TurnAggregate marks the final de-duplicated evidence snapshot for the
 	// entire turn. It is emitted for both grounded answers and grounding
 	// failures so a multi-search failure does not retain only its last call.
-	TurnAggregate   bool                 `json:"turn_aggregate,omitempty"`
-	KBVersion       string               `json:"kb_version"`
+	TurnAggregate bool   `json:"turn_aggregate,omitempty"`
+	KBVersion     string `json:"kb_version"`
+	// AnswerQuestion is the standalone conversational question the answer must
+	// resolve. QueryRaw/Activities are retrieval strings and may be narrower
+	// subqueries; keeping both prevents a search phrase from silently redefining
+	// the user's question.
+	AnswerQuestion  string               `json:"answer_question,omitempty"`
 	QueryRaw        string               `json:"query_raw,omitempty"`
 	QueryNormalized string               `json:"query_normalized,omitempty"`
 	QueryExpansions []string             `json:"query_expansions,omitempty"`

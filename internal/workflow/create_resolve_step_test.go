@@ -304,6 +304,9 @@ func TestPodZoneCapacityAndPurchaseFlattenPlacementDifferently(t *testing.T) {
 // pointless upstream round-trips.
 func TestCreateInstance_PodZoneWithoutAzGroupRefusedAtDraft(t *testing.T) {
 	executor := createMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = mockInstanceTypesInZone("cn-newpod-03", "4090",
+		struct{ Gpu, Cpu, MemGB float64 }{1, 16, 64},
+	)
 	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
 
 	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/compshare-agent/internal/knowledge"
@@ -9,16 +10,19 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// searchKnowledgeBudgetSynthNote asks the central Agent to write its final answer NOW
-// from the evidence it already gathered, for the case where the turn ran out of token
-// budget or ReAct rounds before it produced one. Single central-Agent model call, same
-// context, no verifier / repair persona. It owns only its STATE — the framing and the
-// scope clause (write only evidence-supported content) — while the citation rule itself
-// is the shared buildRAGAnswerStrategyNote source.
-var searchKnowledgeBudgetSynthNote = buildRAGAnswerStrategyNote(
-	`本轮已经检索到资料但还没有给出最终回答。请立即根据本轮已检索到的资料写出最终回答：`,
-	`只写有资料支撑的内容，无法支撑的不要写；`,
-)
+const searchKnowledgeBudgetSynthNote = `根据给定问题和证据生成面向用户的最终答案。
+仅输出 JSON：{"answer":"最终答案正文"}。
+每条来自证据的事实用 [1]、[2] 标注，编号对应 evidence.items 的顺序。
+只写证据支持的内容，不整段复制证据，不说明检索、改写、校验或内部处理过程。`
+
+type knowledgeSynthesisInput struct {
+	Question string                   `json:"question"`
+	Evidence knowledge.EvidenceLedger `json:"evidence"`
+}
+
+type knowledgeSynthesisOutput struct {
+	Answer string `json:"answer"`
+}
 
 // synthesizeOnBudgetExceeded writes a final answer from the evidence SearchKnowledge
 // already gathered this turn, for the budget / round-ceiling recovery paths: when
@@ -48,15 +52,28 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 	if client == nil {
 		return "", false
 	}
-	messages := append(e.buildMessagesForLLM(),
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: searchKnowledgeBudgetSynthNote},
-	)
-	resp, err := client.Chat(ctx, llm.ChatRequest{Messages: messages})
+	payload, err := json.Marshal(knowledgeSynthesisInput{Question: resolved, Evidence: ledger})
+	if err != nil {
+		return "", false
+	}
+	resp, err := client.Chat(ctx, llm.ChatRequest{
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: searchKnowledgeBudgetSynthNote},
+			{Role: openai.ChatMessageRoleUser, Content: string(payload)},
+		},
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		},
+	})
 	if err != nil || resp == nil {
 		return "", false
 	}
 	e.emitTokenUsage(resp.Usage)
-	answer := strings.TrimSpace(resp.Content)
+	var output knowledgeSynthesisOutput
+	if !parseFirstJSONObject(resp.Content, &output) {
+		return "", false
+	}
+	answer := strings.TrimSpace(output.Answer)
 	if answer == "" {
 		return "", false
 	}

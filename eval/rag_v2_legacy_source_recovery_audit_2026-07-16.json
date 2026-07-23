@@ -1,0 +1,36 @@
+{
+  "schema_version": "compshare.rag.legacy-source-recovery-audit.v1",
+  "legacy_rows": 255,
+  "source_origin": {
+    "external_official": 253,
+    "external_community": 2
+  },
+  "rows_with_surface_url": 0,
+  "unique_source_ref_prefixes": 157,
+  "prefix_coverage": {
+    "top_5_prefixes_rows": 103,
+    "top_10_prefixes_rows": 135,
+    "top_20_prefixes_rows": 171,
+    "top_40_prefixes_rows": 198
+  },
+  "largest_source_families": {
+    "pytorch-docs": 46,
+    "nvidia-docs": 43,
+    "vllm-docs": 32,
+    "ollama-docs": 16,
+    "openssh-docs": 13,
+    "hf-accelerate": 12,
+    "comfyui-docs": 11,
+    "hf-docs": 11,
+    "mlflow-docs": 11,
+    "comfyui-repo": 10
+  },
+  "verified_current_official_examples": [
+    {"source_family":"vllm-docs","url":"https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/"},
+    {"source_family":"pytorch-docs","url":"https://docs.pytorch.org/docs/stable/accelerator/amp.html"},
+    {"source_family":"nvidia-docs","url":"https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting.html"},
+    {"source_family":"comfyui-docs","url":"https://docs.comfy.org/development/core-concepts/models"}
+  ],
+  "recovery_rule": "Resolve source_refs and distinctive content against current official documentation, snapshot the exact page or repository revision, compare claims, then rebuild and replace the legacy row. Search snippets alone are not accepted as source evidence.",
+  "effect_until_recovered": "Legacy rows remain searchable and may be re-embedded, but their text is immutable, freshness is unverified, and exact source citations are unavailable."
+}

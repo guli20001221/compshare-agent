@@ -271,7 +271,7 @@ var engineGoldenCases = []goldenCase{
 		ID:              "golden_07_ssh_diagnose",
 		Input:           "SSH连不上",
 		UserContext:     "您有 1 个实例（1 个运行中）\n- my-gpu (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
-		ExpectToolCalls: []string{"DiagnoseSSH"},
+		ExpectToolCalls: []string{"ReadCapability_instance_access"},
 	},
 	{
 		ID:               "golden_09_knowledge_nocard",
@@ -423,7 +423,7 @@ var engineGoldenCases = []goldenCase{
 			},
 			{
 				Input:           "就是 uhost-1 那台",
-				ExpectToolCalls: []string{"DiagnoseSSH"},
+				ExpectToolCalls: []string{"ReadCapability_instance_access"},
 			},
 		},
 	},

@@ -21,7 +21,7 @@ CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,
 - **单一中心 Agent。** 不再按 tier 分三套执行管线。一个 ReAct 风格的循环(`internal/engine/`)接收编译好的 `AgentContext`,每轮要么选一个只读 capability、要么调知识检索工具、要么提出一个写操作,并在同一循环里观察工具结果。
 - **能力是 typed capability,不是 route manifest。** 模型可见的只读能力在 `internal/capability/read_*.go`,每个能力自带 typed 请求结构、字段合同(`field_contract.go` 的 `schemaNode` 是工具 schema、运行时校验、一致性测试的**单一来源**)、handler 和 renderer。没有独立的路由注册表。
 - **read-only 默认,写操作密封。** 变更类操作(创建 / 开关机 / 重启 / 重置密码 / 改名)默认关闭(`COMPSHARE_ENABLE_MUTATING_TOOLS=1` 才开);写操作先经 Action Resolver 确定性定目标,再进 Sealed Workflow,过 resolver / 确认 / 权限 / action-journal 四道门。删除、注销等 L2 破坏性动作无论如何都拒(`internal/tools/safe_executor.go`)。
-- **证据驱动 + fail-open。** 回答基于工具返回的事实或检索到的文档;RAG 不是独立管线,而是中心 Agent 在循环内调用的 `SearchKnowledge` 工具。引用纪律是 **fail-open** 的:能引就引,引不出时给一次有界重试,仍引不出则**照发**(去掉引用标记)——一个错或缺的 chunk_id 不能毁掉一个大概率正确的答案;唯一硬停是**持续原样泄漏检索原文**(安全)。精确平台事实不走这条路,由只读工具服务端渲染。
+- **证据驱动 + fail-open。** 回答基于工具返回的事实或检索到的文档;RAG 不是独立管线,而是中心 Agent 在循环内调用的 `SearchKnowledge` 工具。多轮检索先形成独立的完整问题,再生成最多三条检索词。引用纪律是 **fail-open** 的:能引就引,引不出则保留原答案并去掉引用标记,引用格式不能触发整段答案重写;唯一硬停是**原样泄漏检索原文**(安全)。精确平台事实不走这条路,由只读工具服务端渲染。
 - **确定性渲染。** 精确的标识、数量、价格、库存、规格、状态由代码渲染成 typed observation,Agent 在最终回答里插入 `render_ref` 占位,由 Response Gateway 替换成确定性结果,防止模型改写数字或截断列表。
 - **分层安全。** 输入守卫、工具执行管控、输出脱敏三层独立实施。
 
@@ -119,7 +119,8 @@ RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不�
 **检索管线**(`internal/knowledge/`,默认 `qwen3_rrf`):
 
 ```
-用户问题 / Agent 的检索 query
+用户问题 + 必要的对话历史
+  → 结构化问题整理(answer_question + 1~3 条 search_queries;首轮无历史时跳过)
   → BM25 关键词 top-50  ⊕  qwen3-embedding-8b 向量 top-50   (hybrid 召回)
   → Reciprocal Rank Fusion 融合 (k=60)
   → qwen3-reranker-8b cross-encoder 精排 top-3
@@ -127,7 +128,7 @@ RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不�
 ```
 
 - 关键词召回和向量召回各有盲区,hybrid + RRF + cross-encoder 精排比单一召回稳;embedder 和 reranker 用同族(qwen3)比跨族混搭可靠。
-- **引用纪律(fail-open)**:合成带引用的中文回答;引不出引用时一次有界重试后**照发**(去掉引用标记),不做罐头拒答——唯一硬停是持续原样泄漏检索原文(安全)。引用标记是否泄漏到最终文本由输出守卫兜底。
+- **引用纪律(fail-open)**:合成带引用的中文回答;引不出引用时保留原答案并去掉引用标记,不再为了引用格式重写正文,也不做罐头拒答——唯一硬停是原样泄漏检索原文(安全)。引用标记是否泄漏到最终文本由输出守卫兜底。
 - **知识库**:`deploy/kb/stage2b_w0.jsonl` + 两份预计算 embedding sidecar,三件套用 LF 归一 SHA256 字节锁定(`internal/knowledge/corpus_digest.go`),对不上直接拒绝启动。外部工具 / 运维语料(`external_w0.jsonl`)默认合入索引。
 - 系统提示由 `internal/prompt/segments.go` 的 Go 段组装,**没有** Go/Python 共用的 prompt 目录(旧的 terminal-RAG `rag_system_segments` 已删)。
 

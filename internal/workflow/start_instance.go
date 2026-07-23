@@ -73,6 +73,9 @@ func stepConfirmStart() Step {
 		Name: "确认开机",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if _, _, err := extractRequiredInstanceLocation(wfCtx.Result("查询实例"), nil); err != nil {
+				return nil, err
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
 			if spec := requestedWithoutGPUSpec(wfCtx); spec != "" {
 				cpu, memory, _ := withoutGPUSpecResources(spec)
@@ -94,7 +97,7 @@ func stepStartInstance() Step {
 		Tool: "StartCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
-			region, zone, err := extractRequiredInstanceLocation(queried)
+			region, zone, err := extractRequiredInstanceLocation(queried, nil)
 			if err != nil {
 				return nil, err
 			}

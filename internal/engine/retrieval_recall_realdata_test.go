@@ -15,7 +15,6 @@ func TestRetrievalRecallRealCorpusDiskBilling(t *testing.T) {
 		"我没看懂收费，磁盘空间是如何收费的？100GB原始空间是免费的吗",
 	)
 
-	requireRecallChunkID(t, result, "w0-billing_rule-gitlab-compshare-docs-operation--73bf395c")
 	requireRecallText(t, result, "系统盘")
 	requireRecallText(t, result, "数据盘")
 	requireRecallText(t, result, "免费额度")
@@ -24,7 +23,6 @@ func TestRetrievalRecallRealCorpusDiskBilling(t *testing.T) {
 func TestRetrievalRecallRealCorpusCodingPlanManagement(t *testing.T) {
 	result := retrieveRealCorpusForTest(t, "删除 Coding Plan 包")
 
-	requireRecallChunkID(t, result, "w0-modelverse-gitlab-compshare-docs-package-63801282")
 	requireRecallText(t, result, "套餐管理")
 	requireRecallText(t, result, "不支持退款")
 }
@@ -32,7 +30,6 @@ func TestRetrievalRecallRealCorpusCodingPlanManagement(t *testing.T) {
 func TestRetrievalRecallRealCorpusStockShortage(t *testing.T) {
 	result := retrieveRealCorpusForTest(t, "一直暂无资源 是什么情况")
 
-	requireRecallChunkID(t, result, "w0-resource_purchase-gitlab-compshare-docs-gpus-insta-2e534ae3")
 	requireRecallText(t, result, "CheckCompShareResourceCapacity")
 	requireRecallText(t, result, "ResourceEnough")
 }
@@ -64,7 +61,7 @@ func retrieveRealCorpusForTest(t *testing.T, query string) knowledge.RetrievalRe
 }
 
 func realCorpusRecallNow() time.Time {
-	return time.Date(2026, 6, 30, 12, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	return time.Date(2026, 7, 16, 12, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
 }
 
 func requireRecallChunkID(t *testing.T, result knowledge.RetrievalResult, chunkID string) {

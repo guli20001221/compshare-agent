@@ -50,8 +50,8 @@ func stepQuerySourceInstanceForCustomImage() Step {
 			state := extractInstanceState(result)
 			switch state {
 			case "Running", "Stopped":
-				if _, _, ok := sourceCustomImagePlacement(result); !ok {
-					return CheckFailed("源实例缺少可用区或地域信息，无法安全创建自制镜像。")
+				if extractInstanceZone(result, "") == "" {
+					return CheckFailed("源实例缺少可用区信息，无法安全创建自制镜像。")
 				}
 				if sourceCustomImageUnsupportedWithoutGPU(result) {
 					return CheckFailed("该虚机当前处于 2C/4GB 无卡模式；上游仅允许 8C/16GB 无卡虚机制作自制镜像。请先恢复有卡配置或切换到 8C/16GB 无卡档位。")
@@ -100,7 +100,8 @@ func stepConfirmCreateCustomImage() Step {
 			summary["workflow"] = "CreateCustomImageWorkflow"
 			summary["UHostId"] = paramStr(wfCtx.Params, "UHostId", "")
 			summary["Name"] = name
-			region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
+			region, zone, ok := sourceCustomImagePlacement(
+				wfCtx.Result("查询源实例"), wfCtx.Result("查询源实例可用区"))
 			if !ok {
 				return nil, fmt.Errorf("源实例缺少可用区或地域信息，无法安全创建自制镜像")
 			}
@@ -236,10 +237,9 @@ func customImageID(result map[string]any) string {
 	return ""
 }
 
-func sourceCustomImagePlacement(result map[string]any) (region, zone string, ok bool) {
-	zone = extractInstanceZone(result, "")
-	region = extractInstanceRegion(result, "")
-	return region, zone, region != "" && zone != ""
+func sourceCustomImagePlacement(result, supportZones map[string]any) (region, zone string, ok bool) {
+	region, zone, err := extractRequiredInstanceLocation(result, supportZones)
+	return region, zone, err == nil
 }
 
 func sourceCustomImageRequiresRunning(result map[string]any) bool {
@@ -251,7 +251,8 @@ func sourceCustomImageNeedsStop(result map[string]any) bool {
 }
 
 func addCustomImagePlacementArgs(args map[string]any, wfCtx *Context) (map[string]any, error) {
-	region, zone, ok := sourceCustomImagePlacement(wfCtx.Result("查询源实例"))
+	region, zone, ok := sourceCustomImagePlacement(
+		wfCtx.Result("查询源实例"), wfCtx.Result("查询源实例可用区"))
 	if !ok {
 		return nil, fmt.Errorf("源实例缺少可用区或地域信息，无法安全创建自制镜像")
 	}

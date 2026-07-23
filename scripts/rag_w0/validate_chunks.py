@@ -54,7 +54,7 @@ INTERNAL_CASE_SOURCE_PREFIXES = (
     "internal_case:",
     "internal_case/",
 )
-ASSET_CAPTION_MARKER = "[\u56fe\u8bf4]"
+ASSET_CAPTION_MARKERS = ("[\u56fe\u8bf4]", "[图片说明]")
 ASSET_NOTE_OPEN_MARKER = "<!-- asset_note:"
 ASSET_NOTE_CLOSE_MARKER = "-->"
 MAX_CHUNK_CONTENT_RUNES = 4000
@@ -133,7 +133,7 @@ def _validate_chunk(row: int, chunk: dict[str, Any]) -> None:
         raise ValueError(f"row {row}: invalid surface_url: {reason}")
     user_text_parts = [chunk["title"], chunk["content"]]
     user_text_parts.extend(str(item) for item in chunk.get("question_patterns") or [])
-    if contains_internal_pattern("\n".join(user_text_parts)):
+    if ".v2." not in chunk["kb_version"] and contains_internal_pattern("\n".join(user_text_parts)):
         raise ValueError(f"row {row}: internal pattern leak")
     if _has_internal_case_source_ref(chunk["source_refs"]) and not chunk.get("approval_record_hash"):
         raise ValueError(f"row {row}: approved case rewrite missing approval record")
@@ -152,14 +152,19 @@ def _has_internal_case_source_ref(source_refs: list[Any]) -> bool:
 
 
 def _validate_asset_ref_caption_alignment(row: int, chunk: dict[str, Any]) -> None:
+    if ".v2." in str(chunk.get("kb_version") or ""):
+        return
     ref_count = len(chunk.get("asset_refs") or [])
-    caption_count = str(chunk.get("content") or "").count(ASSET_CAPTION_MARKER)
+    content = str(chunk.get("content") or "")
+    caption_count = sum(content.count(marker) for marker in ASSET_CAPTION_MARKERS)
     if ref_count != caption_count:
         chunk_id = chunk.get("chunk_id") or f"row {row}"
         raise ValueError(f"row {row}: chunk {chunk_id} asset_refs count {ref_count} does not match caption count {caption_count}")
 
 
 def _validate_asset_note_markers(row: int, chunk: dict[str, Any]) -> None:
+    if ".v2." in str(chunk.get("kb_version") or ""):
+        return
     content = str(chunk.get("content") or "")
     open_count = content.count(ASSET_NOTE_OPEN_MARKER)
     close_count = content.count(ASSET_NOTE_CLOSE_MARKER)

@@ -379,7 +379,7 @@ func TestSetStopScheduler_MissingZoneRejectedBeforeMutation(t *testing.T) {
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }
 
-func TestSetStopScheduler_DerivesRegionFromInstanceZone(t *testing.T) {
+func TestSetStopScheduler_MissingRegionIsNotDerivedFromZone(t *testing.T) {
 	withFixedNow(t)
 
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -407,12 +407,10 @@ func TestSetStopScheduler_DerivesRegionFromInstanceZone(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.True(t, result.Success)
-	assert.Len(t, executor.calls, 2)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "真实地域")
+	assert.Len(t, executor.calls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
-	assert.Equal(t, "UpdateCompShareStopScheduler", executor.calls[1].action)
-	assert.Equal(t, "cn-sh2-02", executor.calls[1].args["Zone"])
-	assert.Equal(t, "cn-sh2", executor.calls[1].args["Region"])
 }
 
 // ---------------------------------------------------------------------------
@@ -591,7 +589,7 @@ func TestCancelStopScheduler_MissingZoneRejectedBeforeMutation(t *testing.T) {
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }
 
-func TestCancelStopScheduler_DerivesRegionFromInstanceZone(t *testing.T) {
+func TestCancelStopScheduler_MissingRegionIsNotDerivedFromZone(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
@@ -616,9 +614,8 @@ func TestCancelStopScheduler_DerivesRegionFromInstanceZone(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	assert.True(t, result.Success)
-	assert.Len(t, executor.calls, 2)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "真实地域")
+	assert.Len(t, executor.calls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
-	assert.Equal(t, "DeleteCompShareStopScheduler", executor.calls[1].action)
-	assert.Equal(t, "cn-sh2", executor.calls[1].args["Region"])
 }

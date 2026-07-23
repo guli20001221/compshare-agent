@@ -342,7 +342,6 @@ func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 	for _, name := range []string{
 		"DescribeCompShareInstance",
 		"GetCompShareInstanceMonitor",
-		"DiagnoseSSH",
 		"DiagnoseBilling",
 	} {
 		assert.True(t, names[name], "read-only/diagnosis tool %s should remain visible", name)
@@ -400,7 +399,7 @@ func TestSafeExecutorRejectsMissingPolicy(t *testing.T) {
 // surviving member rather than dropped — dropping it would have quietly left the
 // knowledge route ungated while the test kept passing.
 func TestSafeExecutorDoesNotSendMetaToolsToInnerExecutor(t *testing.T) {
-	for _, action := range []string{"SearchKnowledge", "DiagnoseSSH", "StartInstanceWorkflow"} {
+	for _, action := range []string{"SearchKnowledge", "DiagnoseBilling", "StartInstanceWorkflow"} {
 		t.Run(action, func(t *testing.T) {
 			inner := &spyExecutor{}
 			safe := NewSafeToolExecutor(inner)

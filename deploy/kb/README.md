@@ -7,9 +7,9 @@ sidecars for the CompShare console agent's RAG path.
 
 | File | Purpose | Bound to |
 |---|---|---|
-| `stage2b_w0.jsonl` | Customer-safe FAQ corpus (689 chunks @ 2026-06-24, kb_version `kb.stage2b.w1-r5.2026-06-24`) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
+| `stage2b_w0.jsonl` | Public platform corpus rebuilt by RAG V2 (544 chunks @ 2026-07-15, no redaction, caption-only images) | `internal/knowledge/corpus_digest.go:CorpusDigestExpected` |
 | `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes (current default) | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
-| `external_w0.jsonl` | Stable external tool/ops corpus (255 chunks @ 2026-06-24, kb_version `kb.external.w0.2026-06-06`) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
+| `external_w0.jsonl` | External corpus (1200 chunks: 255 locked legacy + 945 source-backed V2 chunks; image recovery refreshed 2026-07-23) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
 | `embeddings_<external-corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for the external corpus | `internal/knowledge/corpus_digest.go:ExternalEmbeddingDigestExpectedQwen3` |
 
 `text-embedding-3-large` sidecar is **no longer maintained** as of W1-R2
@@ -23,8 +23,10 @@ updating the constant.
 All three artifacts are byte-pinned by LF-normalized SHA256 digest. The Go
 loader refuses to start if any pin mismatches its on-disk content.
 
-Content policy: every chunk must be `acl="customer_safe"` and contain no
-account-specific values, keys, tokens, IPs, or raw transcripts.
+Content policy: every chunk must be `acl="customer_safe"` and come from the
+pinned public source set. RAG V2 does not redact public examples. Private chats,
+tickets, admin pages and temporary signed links are excluded during source
+selection instead of being rewritten after ingestion.
 
 External-corpus stability policy: this file is a low-frequency, platform-neutral
 technical corpus. It should cover durable protocols, troubleshooting flows, and

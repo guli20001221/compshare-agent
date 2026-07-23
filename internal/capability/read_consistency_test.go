@@ -191,7 +191,7 @@ func assertSchemaMatchesType(t *testing.T, schema map[string]any, typ reflect.Ty
 
 // TestReadRuntimeValidation_RejectsOutOfContractValues proves the field contract
 // is ENFORCED at decode, not merely advertised. Each case is a value the schema
-// forbids (an unknown enum member, or an integer below the declared minimum)
+// forbids (an unknown enum member, or an integer outside its declared bounds)
 // that the pre-contract decoder accepted and silently defaulted — the exact bug
 // class the escalated Issue 3 named (source/price_kind:"bogus" quietly defaulted,
 // gpu_count:-1 quietly became 1).
@@ -210,6 +210,10 @@ func TestReadRuntimeValidation_RejectsOutOfContractValues(t *testing.T) {
 		{"monitor unknown metric element", ReadToolName(intent.IntentMonitorQuery), map[string]any{"metrics": []any{"bogus"}}},
 		{"monitor unknown nested target type", ReadToolName(intent.IntentMonitorQuery), map[string]any{"targets": []any{map[string]any{"type": "bogus", "value": "x", "source": "user_text"}}}},
 		{"cfs create target_size_gb below minimum", namedReadToolName(readCFSCreatePrice), map[string]any{"zone": "cn-wlcb-01", "target_size_gb": -5}},
+		{"instance access port above maximum", namedReadToolName(instanceAccessCapabilityLabel), map[string]any{
+			"targets":     []any{map[string]any{"type": "uhost_id_user_input", "value": "uhost-a", "source": "user_text"}},
+			"access_type": "custom_port", "protocol": "tcp", "port": 65536,
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

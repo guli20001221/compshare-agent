@@ -15,7 +15,7 @@ import (
 // refusal remains fail closed.
 func TestSynthesizeOnBudgetExceeded_DeliversFromEvidenceOverBudget(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
-		{Content: `可以把 max-model-len 调小来降低显存占用[1]。`, Usage: llm.TokenUsage{TotalTokens: 60000}},
+		{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。"}`, Usage: llm.TokenUsage{TotalTokens: 60000}},
 	}}, &mockExecutor{}, nil)
 	eng.maxTokensPerTurn = 50000
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{keptVLLMHit()}
@@ -27,7 +27,7 @@ func TestSynthesizeOnBudgetExceeded_DeliversFromEvidenceOverBudget(t *testing.T)
 }
 
 func TestSynthesizeOnBudgetExceeded_NoEvidenceReturnsFalse(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "凭空捏造 [1]。"}}}, &mockExecutor{}, nil)
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{"answer":"凭空捏造 [1]。"}`}}}, &mockExecutor{}, nil)
 	eng.maxTokensPerTurn = 50000
 	_, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "q")
 	assert.False(t, ok, "with no evidence in hand the budget path must refuse, never fabricate")

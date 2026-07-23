@@ -120,6 +120,8 @@ func TestCentralAgentProposalExecutesOnlyThroughExistingWorkflowGate(t *testing.
 		switch action {
 		case "DescribeCompShareInstance":
 			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "Zone": "cn-wlcb-01"}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"}}}, nil
 		default:
 			return map[string]any{"RetCode": 0}, nil
 		}
@@ -550,6 +552,8 @@ func TestConfirmedFollowUpExecutesThroughResolvedTargetAuthority(t *testing.T) {
 			return map[string]any{"UHostSet": []any{map[string]any{
 				"UHostId": "uhost-1", "Name": "host", "State": "Running", "Zone": "cn-wlcb-01",
 			}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"}}}, nil
 		default:
 			return map[string]any{"RetCode": 0}, nil
 		}

@@ -239,7 +239,7 @@ func stepConfirmScheduler() Step {
 			if err != nil {
 				return nil, err
 			}
-			if _, _, err := extractRequiredInstanceLocation(wfCtx.Result("查询实例")); err != nil {
+			if _, _, err := extractRequiredInstanceLocation(wfCtx.Result("查询实例"), nil); err != nil {
 				return nil, err
 			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
@@ -268,7 +268,7 @@ func stepSetStopScheduler() Step {
 				return nil, err
 			}
 			queried := wfCtx.Result("查询实例")
-			region, zone, err := extractRequiredInstanceLocation(queried)
+			region, zone, err := extractRequiredInstanceLocation(queried, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -347,7 +347,7 @@ func stepConfirmCancelScheduler() Step {
 		Name: "确认取消",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if _, _, err := extractRequiredInstanceLocation(wfCtx.Result("查询实例")); err != nil {
+			if _, _, err := extractRequiredInstanceLocation(wfCtx.Result("查询实例"), nil); err != nil {
 				return nil, err
 			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
@@ -364,7 +364,7 @@ func stepDeleteStopScheduler() Step {
 		Tool: "DeleteCompShareStopScheduler",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
-			region, _, err := extractRequiredInstanceLocation(queried)
+			region, _, err := extractRequiredInstanceLocation(queried, nil)
 			if err != nil {
 				return nil, err
 			}
