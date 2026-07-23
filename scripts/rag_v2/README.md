@@ -2,7 +2,12 @@
 
 V2 rebuilds the platform corpus from pinned public source documents and extends the external corpus from source snapshots. It does not redact or rewrite public text. Images are build-time evidence: VL converts them into structured captions, visible text, controls, and spatial relations; runtime chunks contain no hosted image or clickable image URL. Private chats, tickets, internal admin pages, temporary signed links, and unpinned inputs are rejected at source selection instead of being redacted later.
 
-The current Agentic RAG planner, `SearchKnowledge`, retrieval modes, embedding model, reranker, citation validator, and answer synthesis remain unchanged. V2 emits a runtime-compatible JSONL projection plus traceability fields that older loaders may ignore.
+The preprocessing pipeline is reusable and independent of the runtime Agentic
+RAG policy. It emits a runtime-compatible JSONL projection plus traceability
+fields that older loaders may ignore. Runtime query planning, `SearchKnowledge`,
+retrieval modes, embedding, reranking, citation validation, and answer synthesis
+can evolve separately without changing the source-lock, build, validation, and
+promotion stages described here.
 
 ## Inputs
 
