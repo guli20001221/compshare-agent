@@ -49,8 +49,9 @@ type Service struct {
 	audit AuditWriter
 }
 
-// NewService wires a Service. sup is normally a sshops.Supervisor value. audit may be nil only in
-// tests; production always passes a fail-closed AuditWriter.
+// NewService wires a Service. sup is normally a sshops.Supervisor value. audit is REQUIRED: Diagnose
+// refuses to run (fail-closed) when it is nil, so an in-instance access can never happen unlogged.
+// Production passes store.SSHOpsAuditStore; tests pass MemAuditWriter.
 func NewService(sup harnessRunner, audit AuditWriter) *Service {
 	return &Service{sup: sup, audit: audit}
 }
@@ -85,6 +86,13 @@ func (s *Service) ListCandidates(ctx context.Context, d Describer) ([]Candidate,
 // record cannot be written, the harness does not run. The returned Result.Output is the harness's
 // already-scrubbed verdict; the credential never appears in it.
 func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instanceID, task string) (Result, error) {
+	// Fail closed: an in-instance access we could not durably record must never happen. Refuse BEFORE
+	// the credential is fetched — no audit sink means no credential pull and no harness spawn. Production
+	// always wires a fail-closed AuditWriter (store.SSHOpsAuditStore); a nil audit is a construction /
+	// wiring error, not a valid mode, so it is a hard refusal rather than a silent skip.
+	if s.audit == nil {
+		return Result{}, fmt.Errorf("sshops: no audit writer configured, refusing to run (fail-closed)")
+	}
 	if strings.TrimSpace(task) == "" {
 		task = DefaultDiagnosisTask
 	}
@@ -101,32 +109,27 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		Task:              task,
 		Phase:             "read_only",
 	}
-	var auditID string
-	if s.audit != nil {
-		auditID, err = s.audit.Begin(ctx, ev)
-		if err != nil {
-			// Fail closed: never run an in-instance access we could not record.
-			return Result{}, fmt.Errorf("sshops: audit begin failed, refusing to run (fail-closed): %w", err)
-		}
+	auditID, err := s.audit.Begin(ctx, ev)
+	if err != nil {
+		// Fail closed: never run an in-instance access we could not record.
+		return Result{}, fmt.Errorf("sshops: audit begin failed, refusing to run (fail-closed): %w", err)
 	}
 
 	res, runErr := s.sup.Run(ctx, cred, task)
 
-	if s.audit != nil {
-		done := ev
-		done.ExitCode, done.TimedOut, done.OutputBytes = res.ExitCode, res.TimedOut, len(res.Output)
-		done.Disposition = "ok"
-		if runErr != nil {
-			done.Disposition = "error"
-		}
-		// Best effort: the attempt is already durably recorded by Begin; a failed enrichment must
-		// not discard a valid verdict, but it is surfaced to logs by the SQL writer's error return.
-		// Detached from the request ctx: on client disconnect (browser tab close / curl --max-time)
-		// the request ctx is already cancelled, and the SQL writer derives a WithTimeout child from it
-		// — a cancelled parent makes the Finish UPDATE fail, orphaning the row forever at "started".
-		// WithoutCancel keeps the values but drops the cancellation so the outcome still lands (Go 1.21+).
-		_ = s.audit.Finish(context.WithoutCancel(ctx), auditID, done)
+	done := ev
+	done.ExitCode, done.TimedOut, done.OutputBytes = res.ExitCode, res.TimedOut, len(res.Output)
+	done.Disposition = "ok"
+	if runErr != nil {
+		done.Disposition = "error"
 	}
+	// Best effort: the attempt is already durably recorded by Begin; a failed enrichment must
+	// not discard a valid verdict, but it is surfaced to logs by the SQL writer's error return.
+	// Detached from the request ctx: on client disconnect (browser tab close / curl --max-time)
+	// the request ctx is already cancelled, and the SQL writer derives a WithTimeout child from it
+	// — a cancelled parent makes the Finish UPDATE fail, orphaning the row forever at "started".
+	// WithoutCancel keeps the values but drops the cancellation so the outcome still lands (Go 1.21+).
+	_ = s.audit.Finish(context.WithoutCancel(ctx), auditID, done)
 	return res, runErr
 }
 

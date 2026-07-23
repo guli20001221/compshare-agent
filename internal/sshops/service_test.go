@@ -87,6 +87,35 @@ func TestDiagnoseFailClosedOnAuditBegin(t *testing.T) {
 	}
 }
 
+// describerFunc adapts a func to the Describer interface so a test can assert the upstream is (or is
+// not) consulted.
+type describerFunc func(ctx context.Context, action string, args map[string]any) (map[string]any, error)
+
+func (f describerFunc) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	return f(ctx, action, args)
+}
+
+// WHY: with no audit sink an access can never be recorded, so it must be refused BEFORE the credential
+// is even fetched — no audit, no credential pull, no harness. This guards the fail-closed audit
+// invariant against a mis-wired (nil-audit) Service reaching a run path. The describer fails the test
+// if consulted, proving the refusal precedes the crown-jewel credential fetch.
+func TestDiagnoseFailClosedOnNilAudit(t *testing.T) {
+	d := describerFunc(func(context.Context, string, map[string]any) (map[string]any, error) {
+		t.Fatalf("describer consulted despite nil audit — credential fetched before the fail-closed refusal")
+		return nil, nil
+	})
+	runner := &fakeRunner{res: Result{Output: "should-not-run"}}
+	svc := NewService(runner, nil)
+
+	_, err := svc.Diagnose(context.Background(), d, Owner{TopOrganizationID: 1, OrganizationID: 2}, "uhost-abc", "")
+	if err == nil {
+		t.Fatalf("expected fail-closed error when no audit writer is configured")
+	}
+	if runner.calls != 0 {
+		t.Fatalf("harness ran with no audit sink (calls=%d) — fail-closed violated", runner.calls)
+	}
+}
+
 func TestDiagnoseRecordsAuditAndDefaultsTask(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
 	d := stubDescriber{resp: describeResp("ssh -p 23 root@10.0.0.9", b64)}

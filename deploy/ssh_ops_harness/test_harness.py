@@ -163,8 +163,11 @@ check("transport-keeps-benign", "role pw" in _res["stdout"])
 
 
 # --- INV-9: only ssh_exec exposed; built-ins stripped; settings isolated. Fail CLOSED otherwise. ---
-def opts(allowed, disallowed, sources):
-    return types.SimpleNamespace(allowed_tools=allowed, disallowed_tools=disallowed, setting_sources=sources)
+def opts(allowed, disallowed, sources, tools="DEFAULT"):
+    if tools == "DEFAULT":
+        tools = []                                       # valid: all built-ins disabled by existence
+    return types.SimpleNamespace(tools=tools, allowed_tools=allowed, disallowed_tools=disallowed,
+                                 setting_sources=sources)
 
 
 good = opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [])
@@ -179,6 +182,12 @@ for name, bad in [
     ("inv9-rejects-missing-disallowed", opts(harness.ALLOWED_TOOLS, ["Read"], [])),
     ("inv9-rejects-nonempty-sources", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["user"])),
     ("inv9-rejects-empty-allowed", opts([], harness.DISALLOWED_TOOLS, [])),
+    # tools=[] is the existence off-switch: a non-empty base set, None (the SDK default), or a missing
+    # field (an older SDK without `tools`) all mean built-ins could exist — each must fail closed.
+    ("inv9-rejects-tools-with-builtin", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], tools=["Bash"])),
+    ("inv9-rejects-tools-none", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], tools=None)),
+    ("inv9-rejects-tools-missing", types.SimpleNamespace(
+        allowed_tools=harness.ALLOWED_TOOLS, disallowed_tools=harness.DISALLOWED_TOOLS, setting_sources=[])),
 ]:
     try:
         harness.assert_single_tool(bad)

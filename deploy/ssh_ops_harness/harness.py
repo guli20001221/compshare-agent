@@ -196,7 +196,18 @@ def preflight_probe(conn):
 def assert_single_tool(opts) -> None:
     """INV-9: fail CLOSED unless the harness exposes EXACTLY ssh_exec with every built-in stripped
     and host settings isolated. A built-in Bash here would run on the LOCAL control-plane host and
-    bypass the SSH guardrails entirely (the spike's #1 safety bug)."""
+    bypass the SSH guardrails entirely (the spike's #1 safety bug).
+
+    `tools=[]` is the load-bearing off-switch, asserted FIRST: per the SDK, `tools` is the base set of
+    available built-in tools and `[]` disables ALL of them by EXISTENCE. `allowed_tools` only grants
+    auto-approval (a built-in NOT listed there still EXISTS and can run), and `disallowed_tools` is a
+    hand-enumerated denylist a future SDK built-in could slip past — so those are defense-in-depth ON TOP
+    of `tools=[]`, never a substitute for it."""
+    tools = getattr(opts, "tools", "MISSING")
+    if tools != []:
+        raise SystemExit(
+            "INV-9: tools must be [] to disable ALL built-in tools by existence "
+            f"(allowed_tools grants auto-approval, not existence), got {tools!r}")
     allowed = list(getattr(opts, "allowed_tools", None) or [])
     if allowed != ALLOWED_TOOLS:
         raise SystemExit(f"INV-9: allowed_tools must be exactly {ALLOWED_TOOLS}, got {allowed}")
@@ -211,6 +222,7 @@ def assert_single_tool(opts) -> None:
 def build_options(server, model):
     from claude_agent_sdk import ClaudeAgentOptions
     opts = ClaudeAgentOptions(
+        tools=[],                                        # INV-9: disable ALL built-in tools by existence
         system_prompt=SYSTEM_PROMPT,
         mcp_servers={"ssh_ops": server},
         allowed_tools=list(ALLOWED_TOOLS),
