@@ -24,9 +24,9 @@ func TestLoadExternalCorpusPinnedRealData(t *testing.T) {
 	}
 	corpus, sidecar, err := loadPinnedCorpusWithDigests(ext, extSidecar, ExternalCorpusDigestExpected, ExternalEmbeddingDigestExpectedQwen3)
 	require.NoError(t, err)
-	assert.Equal(t, 1180, len(corpus.Chunks)) // 255 locked legacy + 925 source-backed V2 chunks
+	assert.Equal(t, 1200, len(corpus.Chunks)) // 255 locked legacy + 945 source-backed V2 chunks
 	assert.Equal(t, 4096, sidecar.Dim)
-	assert.Equal(t, 1180, len(sidecar.Vectors))
+	assert.Equal(t, 1200, len(sidecar.Vectors))
 	for _, c := range corpus.Chunks {
 		assert.Contains(t, []string{"external_official", "external_community"}, c.SourceOrigin, "chunk %s origin", c.ChunkID)
 		assert.Equal(t, "customer_safe", c.ACL, "chunk %s acl", c.ChunkID)
@@ -54,9 +54,9 @@ func TestMergePlatformAndExternalRealData(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "merged", merged.KBVersion)
-	assert.Equal(t, 544+1180, len(merged.Chunks))
+	assert.Equal(t, 544+1200, len(merged.Chunks))
 	assert.Equal(t, 4096, sidecar.Dim)
-	assert.Equal(t, 544+1180, len(sidecar.Vectors))
+	assert.Equal(t, 544+1200, len(sidecar.Vectors))
 	for _, c := range merged.Chunks {
 		_, ok := sidecar.Vectors[c.ChunkID]
 		assert.True(t, ok, "missing vector for merged chunk %s", c.ChunkID)

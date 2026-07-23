@@ -39,12 +39,12 @@ const EmbeddingDigestExpectedQwen3 = "e0bd57ee7f4fb3de588486761f6ca5564727cecb1c
 // community-image rankings belong in the internal platform corpus instead.
 // Loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. Same
 // refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "0a395a7798c645af05d87ff5fd184d1d3d01401a2de3918bd13acb0a433ba89e"
+const ExternalCorpusDigestExpected = "9b30c68385c3f5ef028b377300dc0a962be3c7acc640413fc084b5be9cd5ad0d"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "7b4ce6119af40dfbea93786ea55514289173c9070714ad04876da48a85393645"
+const ExternalEmbeddingDigestExpectedQwen3 = "4516e2e4638b774afbbd7cd92d86db480115f5f06ea70967dfbdbc90de59af65"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.

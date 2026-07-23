@@ -17,6 +17,11 @@ from scripts.rag_v2.pipeline import (
     plan_document_units,
     semantic_parts,
     validate_chunks,
+    _canonical_remote_image_url,
+    _image_content_type,
+    _is_decorative_asset,
+    _prepare_vl_image,
+    _retryable_asset_failure,
     _question_patterns,
 )
 
@@ -162,6 +167,81 @@ class RAGV2PipelineTests(unittest.TestCase):
             self.assertNotIn("http", content)
             self.assertNotIn("查看原图", content)
             self.assertEqual([], media)
+
+    def test_missing_external_image_does_not_pollute_runtime_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "guide.md"
+            path.write_text("操作说明\n\n![工作流截图](missing.png)\n\n下一步说明", encoding="utf-8")
+            doc = SourceDocument(
+                source_id="external-test", source_path="guide.md", source_kind="external_doc",
+                source_origin="external_official", title="指南", text=path.read_text(encoding="utf-8"),
+                surface_url=None, root=root, absolute_path=path,
+            )
+            content, media = inject_asset_notes(doc, {})
+            self.assertEqual("操作说明\n\n\n\n下一步说明", content)
+            self.assertNotIn("原文图片未包含", content)
+            self.assertEqual([], media)
+
+    def test_only_transient_asset_failures_are_retried(self):
+        self.assertTrue(_retryable_asset_failure({"reason": "source_remote_image_unavailable:TimeoutError:x"}))
+        self.assertFalse(_retryable_asset_failure({"reason": "source_remote_image_unavailable:HTTPError:HTTP Error 404"}))
+        self.assertFalse(_retryable_asset_failure({"reason": "source_remote_image_unavailable:ValueError:remote asset is not an image"}))
+        self.assertTrue(_retryable_asset_failure({"reason": "vl_failed:TimeoutError:x"}))
+        self.assertTrue(_retryable_asset_failure({"reason": "vl_failed:HTTPError:HTTP Error 400: Bad Request"}))
+        self.assertFalse(_retryable_asset_failure({"reason": "missing_local_image"}))
+        self.assertFalse(_retryable_asset_failure({"reason": "non_https_image"}))
+
+    def test_github_blob_images_are_downloaded_as_raw_assets(self):
+        self.assertEqual(
+            "https://raw.githubusercontent.com/org/repo/main/docs/workflow.png",
+            _canonical_remote_image_url("https://github.com/org/repo/blob/main/docs/workflow.png?raw=true"),
+        )
+
+    def test_decorative_badges_are_filtered_before_vl(self):
+        self.assertTrue(_is_decorative_asset("build", "https://img.shields.io/badge/build-passing.svg"))
+        self.assertTrue(
+            _is_decorative_asset(
+                "Open in Colab",
+                "https://colab.research.google.com/assets/colab-badge.svg",
+            )
+        )
+        self.assertFalse(_is_decorative_asset("工作流", "https://example.com/workflow.png"))
+        self.assertTrue(
+            _is_decorative_asset(
+                "version",
+                "https://camo.githubusercontent.com/x/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f782d79",
+            )
+        )
+
+    def test_image_magic_recovers_octet_stream_assets(self):
+        self.assertEqual("image/png", _image_content_type(b"\x89PNG\r\n\x1a\nrest", "application/octet-stream", "x"))
+        self.assertEqual(
+            "image/webp",
+            _image_content_type(b"RIFF\x00\x00\x00\x00WEBPrest", "application/octet-stream", "x"),
+        )
+        self.assertIsNone(_image_content_type(b"not an image", "application/octet-stream", "https://x/file"))
+
+    def test_animated_image_is_flattened_for_vl(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is optional outside release-build environments")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "animated.gif"
+            Image.new("RGB", (4, 4), "red").save(
+                source,
+                save_all=True,
+                append_images=[Image.new("RGB", (4, 4), "blue")],
+                duration=100,
+                loop=0,
+            )
+            prepared = _prepare_vl_image(source, root / "cache")
+            self.assertNotEqual(source, prepared)
+            self.assertEqual(".png", prepared.suffix)
+            with Image.open(prepared) as flattened:
+                self.assertEqual((4, 8), flattened.size)
 
     def test_all_supported_image_syntaxes_are_normalized(self):
         text = (

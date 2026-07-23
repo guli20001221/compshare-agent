@@ -86,6 +86,102 @@ def normalized_file_digest(path: Path) -> str:
     return sha256_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
 
 
+def _retryable_asset_failure(item: dict[str, Any]) -> bool:
+    reason = str(item.get("reason") or "")
+    if reason.startswith("source_remote_image_unavailable:"):
+        return any(marker in reason for marker in ("Timeout", "HTTP Error 429", "HTTP Error 5", "URLError", "SSL"))
+    if not reason.startswith("vl_failed:"):
+        return False
+    return True
+
+
+def _canonical_remote_image_url(value: str) -> str:
+    parsed = urlparse(value)
+    if (parsed.hostname or "").lower() != "github.com":
+        return value
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 5 and parts[2] in {"blob", "raw"}:
+        owner, repo, _mode, revision, *asset_path = parts
+        return f"https://raw.githubusercontent.com/{owner}/{repo}/{revision}/{'/'.join(asset_path)}"
+    return value
+
+
+def _is_decorative_asset(alt: str, ref: str) -> bool:
+    parsed = urlparse(ref)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if host == "camo.githubusercontent.com":
+        try:
+            decoded_target = bytes.fromhex(path.rsplit("/", 1)[-1]).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            decoded_target = ""
+        if decoded_target and _is_decorative_asset(alt, decoded_target):
+            return True
+    if host in {
+        "img.shields.io", "badge.fury.io", "counter.seku.su", "contrib.rocks",
+        "reporoster.com", "trendshift.io", "api.star-history.com",
+    }:
+        return True
+    if host == "colab.research.google.com" and path.endswith("/assets/colab-badge.svg"):
+        return True
+    if host == "camo.githubusercontent.com" and any(token in alt.lower() for token in ("badge", "license", "version", "stars")):
+        return True
+    return path.endswith(("/logo.svg", "/next.svg", "/bot.svg"))
+
+
+def _image_content_type(data: bytes, declared: str, source_url: str) -> str | None:
+    if declared.startswith("image/"):
+        return declared
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    stripped = data.lstrip()[:256].lower()
+    if stripped.startswith((b"<svg", b"<?xml")) and b"<svg" in data[:4096].lower():
+        return "image/svg+xml"
+    guessed = mimetypes.guess_type(urlparse(source_url).path)[0]
+    return guessed if guessed and guessed.startswith("image/") else None
+
+
+def _prepare_vl_image(path: Path, cache_dir: Path) -> Path:
+    if path.suffix.lower() not in {".gif", ".webp"}:
+        return path
+    try:
+        from PIL import Image
+    except ImportError:
+        return path
+    with Image.open(path) as source:
+        frame_count = int(getattr(source, "n_frames", 1))
+        if frame_count <= 1:
+            return path
+        sample_count = min(4, frame_count)
+        frame_indexes = sorted({round(index * (frame_count - 1) / max(1, sample_count - 1)) for index in range(sample_count)})
+        frames = []
+        for frame_index in frame_indexes:
+            source.seek(frame_index)
+            frame = source.convert("RGBA")
+            frame.thumbnail((1280, 1280))
+            background = Image.new("RGB", frame.size, "white")
+            background.paste(frame, mask=frame.getchannel("A"))
+            frames.append(background)
+        width = max(frame.width for frame in frames)
+        height = sum(frame.height for frame in frames)
+        contact_sheet = Image.new("RGB", (width, height), "white")
+        offset = 0
+        for frame in frames:
+            contact_sheet.paste(frame, (0, offset))
+            offset += frame.height
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / f"{sha256_file(path)[:24]}-frames.png"
+        if not target.exists():
+            contact_sheet.save(target, format="PNG", optimize=True)
+        return target
+
+
 def tree_lock(path: Path) -> dict[str, Any]:
     files = sorted(item for item in path.rglob("*") if item.is_file() and ".git" not in item.parts)
     h = hashlib.sha256()
@@ -504,18 +600,22 @@ def describe_assets(
     if lock_path.exists():
         try:
             locked = json.loads(lock_path.read_text(encoding="utf-8"))
-            if locked.get("fingerprint") == lock_fingerprint:
+            locked_failures = list(locked.get("failures") or [])
+            exact_lock = locked.get("fingerprint") == lock_fingerprint
+            if exact_lock and not any(_retryable_asset_failure(item) for item in locked_failures):
                 for item in locked.get("notes") or []:
                     note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
                     notes[(str(item["source_id"]), str(item["source_path"]), str(item["ref"]))] = AssetNote(**note_fields)
-                return notes, list(locked.get("failures") or [])
-            if reuse_existing_notes:
+                return notes, locked_failures
+            if exact_lock or reuse_existing_notes:
                 for item in locked.get("notes") or []:
                     note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
                     note = AssetNote(**note_fields)
-                    if note.model in {model, fallback_model}:
+                    if note.model in {model, fallback_model, "deterministic-decoration-filter"}:
                         reusable_notes[(str(item["source_id"]), str(item["source_path"]), str(item["ref"]))] = note
-                for item in locked.get("failures") or []:
+                for item in locked_failures:
+                    if _retryable_asset_failure(item):
+                        continue
                     failure_key = (
                         str(item.get("source_id") or ""),
                         str(item.get("source") or ""),
@@ -531,6 +631,21 @@ def describe_assets(
         key = (doc.source_id, doc.source_path, ref)
         try:
             decoded = unquote(ref).replace("\\", "/")
+            if _is_decorative_asset(alt, decoded):
+                return key, AssetNote(
+                    asset_id="decorative-" + sha256_bytes(decoded.encode("utf-8"))[:16],
+                    source_path=doc.source_path,
+                    repo_path=None,
+                    public_url=decoded if decoded.startswith("https://") else "",
+                    description="decorative asset",
+                    visible_text=[],
+                    controls=[],
+                    relations=[],
+                    confidence=1.0,
+                    model="deterministic-decoration-filter",
+                    visual_type="decorative",
+                    include_in_rag=False,
+                ), None
             image_input: Path | str
             repo_path: str | None = None
             legacy_image_url: str | None = None
@@ -554,9 +669,9 @@ def describe_assets(
                             content_type = str(mapping["content_type"])
                     if cached_remote is None:
                         last_download_error: Exception | None = None
-                        for download_attempt in range(1):
+                        for download_attempt in range(3):
                             try:
-                                request_url = quote(decoded, safe="/:?&=%#@+;,[]!$'()*")
+                                request_url = quote(_canonical_remote_image_url(decoded), safe="/:?&=%#@+;,[]!$'()*")
                                 request = Request(request_url, headers={"User-Agent": "compshare-rag-v2/1.0"})
                                 with urlopen(request, timeout=10) as response:
                                     data = response.read(20 * 1024 * 1024 + 1)
@@ -564,15 +679,17 @@ def describe_assets(
                                 break
                             except Exception as exc:
                                 last_download_error = exc
-                                if download_attempt == 0:
+                                if download_attempt == 2:
                                     raise
                                 time.sleep(2 ** download_attempt)
                     else:
                         data = cached_remote.read_bytes()
                     if len(data) > 20 * 1024 * 1024:
                         raise ValueError("remote image exceeds 20 MiB")
-                    if not content_type.startswith("image/"):
+                    detected_content_type = _image_content_type(data, content_type, decoded)
+                    if detected_content_type is None:
                         raise ValueError(f"remote asset is not an image: {content_type}")
+                    content_type = detected_content_type
                 except Exception as exc:  # source defect, not a preprocessing defect
                     return key, None, {
                         "source": doc.source_path,
@@ -613,6 +730,8 @@ def describe_assets(
                 "relations(array of strings)、confidence(number)、visual_type(string)、include_in_rag(boolean)。"
                 "保留命令、路径、错误码、模型名、数字、单位和按钮原文。二维码、群聊码、纯装饰图和无信息图设置 include_in_rag=false。"
             )
+            if isinstance(image_input, Path):
+                image_input = _prepare_vl_image(image_input, client.cache_dir.parent / "vl-ready")
             used_model = model
             try:
                 payload = client.cached_json(model=model, prompt=prompt, image=legacy_image_url) if legacy_image_url else None
@@ -719,7 +838,7 @@ def inject_asset_notes(doc: SourceDocument, notes: dict[tuple[str, str, str], As
         alt, ref = match.group(1), match.group(2)
         note = notes.get((doc.source_id, doc.source_path, ref))
         if note is None:
-            return f"[原文图片未包含在来源快照：{alt}]" if alt and alt.lower() not in {"image", "img"} else ""
+            return ""
         if not note.include_in_rag:
             return ""
         parts = [f"[图片说明] {note.description}"]

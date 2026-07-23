@@ -31,6 +31,15 @@ python -m scripts.rag_v2.build `
 
 `--skip-vl` and `--skip-semantic` are only for deterministic unit tests and local diagnosis. A release build must process all referenced images and must fail closed when a required asset cannot be extracted.
 
+External snapshots must include every source-local image that carries workflow,
+input/output, architecture, or UI evidence. The pipeline does not fetch an
+unpinned current copy from an upstream repository when a pinned ZIP omitted the
+file. Remote images are retried, GitHub `blob` links are normalized to raw
+content, animated GIF/WebP inputs are flattened when Pillow is available, and
+decorative badges are excluded before VL. Missing external images are recorded
+in `asset_report.json` and omitted from runtime text; no caption or placeholder
+is fabricated.
+
 The output is an immutable release bundle containing both corpora, copied local assets, model caches, source locks, and a release manifest. Model caches are build artifacts and should not be committed.
 
 After validating the candidate corpora, build or incrementally refresh their

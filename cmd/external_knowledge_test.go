@@ -116,7 +116,7 @@ func TestLoadKnowledgeCorporaMergeAndDegrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("on-path merge load: %v", err)
 	}
-	if len(merged.Chunks) != 544+1180 {
+	if len(merged.Chunks) != 544+1200 {
 		t.Fatalf("external on: got %d chunks, want 1680 (merged)", len(merged.Chunks))
 	}
 
