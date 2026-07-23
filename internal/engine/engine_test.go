@@ -1507,6 +1507,7 @@ func TestChatReadOnlyHidesWorkflowToolsFromLLM(t *testing.T) {
 	assert.NotContains(t, names, "ReadPlatformCapability")
 	assert.Contains(t, names, "ReadCapability_instance_access")
 	assert.NotContains(t, names, "DiagnoseSSH")
+	assert.NotContains(t, names, "DescribeCompShareJupyterToken")
 }
 
 func TestChatReadOnlyBlocksWorkflowToolCall(t *testing.T) {

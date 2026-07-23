@@ -15,7 +15,7 @@ import (
 )
 
 // TestLiveInstanceAccessSources is a read-only, env-gated conformance probe
-// for the two public APIs used by the instance-access capability. It never
+// for the public APIs used by the instance-access capability. It never
 // logs an IP address, login command, instance id, or credential.
 func TestLiveInstanceAccessSources(t *testing.T) {
 	if os.Getenv("RUN_ACCESS_DIAGNOSIS_PROBE") != "1" {
@@ -29,6 +29,10 @@ func TestLiveInstanceAccessSources(t *testing.T) {
 
 	cfg, err := config.Load(configPath)
 	require.NoError(t, err)
+	projectID := strings.TrimSpace(os.Getenv("ACCESS_PROBE_PROJECT_ID"))
+	if projectID == "" {
+		projectID = cfg.Agent.ProjectId
+	}
 	roleUrn := cfg.Agent.STS.DefaultRoleUrn
 	if roleUrn == "" {
 		roleUrn, err = tools.RoleUrnFromTemplate(cfg.Agent.STS.RoleUrnTemplate, topOrg)
@@ -43,7 +47,7 @@ func TestLiveInstanceAccessSources(t *testing.T) {
 		CompanyID:         topOrg,
 		RoleUrn:           roleUrn,
 		SessionName:       cfg.Agent.STS.DefaultSessionName,
-		ProjectId:         cfg.Agent.ProjectId,
+		ProjectId:         projectID,
 		Region:            cfg.Agent.Region,
 		UserEmail:         strings.TrimSpace(os.Getenv("ACCESS_PROBE_USER_EMAIL")),
 	})
@@ -80,6 +84,37 @@ func TestLiveInstanceAccessSources(t *testing.T) {
 	}
 	t.Logf("DescribeCompShareInstance: ok, instances=%d, selected_kind=%s, running=%t, jupyter_metadata=%t",
 		len(hosts), accessProbeHostKind(hostID), strings.EqualFold(probeString(host["State"]), "Running"), hasJupyter)
+
+	monitor, err := exec.Execute(ctx, "GetCompShareInstanceMonitor", map[string]any{"UHostIds": []string{hostID}})
+	require.NoError(t, err)
+	t.Logf("GetCompShareInstanceMonitor: ok, response_keys=%v", sortedProbeKeys(monitor))
+
+	tokenResult, err := exec.Execute(ctx, "DescribeCompShareJupyterToken", map[string]any{"UHostIds": []string{hostID}})
+	require.NoError(t, err)
+	token := strings.TrimSpace(probeString(tokenResult["JupyterToken"]))
+	require.NotEmpty(t, token, "Jupyter token API succeeded but returned no token")
+	t.Logf("DescribeCompShareJupyterToken: ok, token_present=true, token_length=%d", len(token))
+
+	accessResult := NewReadCapability(instanceAccessReadSpec()).Run(ctx, InstanceAccessRequest{
+		Targets: accessTarget(hostID), AccessType: accessTypeJupyterToken,
+	}, ReadRuntime{
+		Executor: accessProbeReadExecutor{ToolExecutor: exec},
+		Resolver: coldRegistrySnapshot(),
+		Now:      time.Now(),
+	})
+	require.Equal(t, "handled", string(accessResult.Status))
+	require.Contains(t, accessResult.Reply, token)
+	require.NotNil(t, accessResult.Envelope)
+	require.Contains(t, accessResult.Envelope.SourceActions, instanceAccessTokenAction)
+	t.Log("ReadCapability_instance_access: explicit Jupyter token path ok")
+}
+
+type accessProbeReadExecutor struct {
+	tools.ToolExecutor
+}
+
+func (e accessProbeReadExecutor) ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	return e.Execute(ctx, action, args)
 }
 
 func requiredProbeUint32(t *testing.T, name string) uint32 {

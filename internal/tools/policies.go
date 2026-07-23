@@ -243,6 +243,8 @@ func internalOnlyAllowedParams(action string) []string {
 		return []string{"CompShareImageId"}
 	case "StopCompShareInstance":
 		return []string{"UHostId", "Zone", "Region"}
+	case "DescribeCompShareJupyterToken":
+		return []string{"UHostIds"}
 	default:
 		return nil
 	}

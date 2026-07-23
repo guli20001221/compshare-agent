@@ -14,10 +14,12 @@ const (
 	instanceAccessCapabilityLabel = "instance_access"
 	instanceAccessDescribeAction  = "DescribeCompShareInstance"
 	instanceAccessPortAction      = "DescribeCompShareSoftwarePort"
+	instanceAccessTokenAction     = "DescribeCompShareJupyterToken"
 
-	accessTypeSSH        = "ssh"
-	accessTypeJupyter    = "jupyter"
-	accessTypeCustomPort = "custom_port"
+	accessTypeSSH          = "ssh"
+	accessTypeJupyter      = "jupyter"
+	accessTypeJupyterToken = "jupyter_token"
+	accessTypeCustomPort   = "custom_port"
 
 	accessProtocolHTTP = "http"
 	accessProtocolTCP  = "tcp"
@@ -66,17 +68,19 @@ type InstanceAccessResponse struct {
 	Status        string
 	Reason        string
 	KnownSoftware string
+	JupyterToken  string
 	SourceActions []string
 }
 
 func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse] {
 	return ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse]{
 		Label: instanceAccessCapabilityLabel,
-		Description: "检查已有实例的 SSH、Jupyter 或自定义端口的云侧配置。它会核实实例状态、平台登记的应用入口和 Pod 端口映射；" +
-			"不会连接公网端口、不会进入实例、不会读取或展示令牌，也不会修改防火墙或端口。需要明确一个实例；自定义端口还要给出协议和端口号。",
+		Description: "检查已有实例的 SSH、Jupyter 或自定义端口的云侧配置，也可在用户明确要求时获取该实例的 Jupyter Token。" +
+			"它不会连接公网端口、不会进入实例，也不会修改防火墙或端口。需要明确一个实例；自定义端口还要给出协议和端口号。" +
+			"只有用户明确索要 Token 时才使用 jupyter_token；普通 Jupyter 故障检查使用 jupyter。",
 		Params: objectParam(map[string]schemaNode{
 			"targets":     targetRefsParam(),
-			"access_type": enumParam(accessTypeSSH, accessTypeJupyter, accessTypeCustomPort),
+			"access_type": enumParam(accessTypeSSH, accessTypeJupyter, accessTypeJupyterToken, accessTypeCustomPort),
 			"protocol":    enumParam(accessProtocolHTTP, accessProtocolTCP, accessProtocolUDP),
 			"port":        boundedIntegerParam(1, 65535),
 			"failure_kind": enumParam("timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown").
@@ -117,6 +121,26 @@ func instanceAccessHandle(ctx context.Context, req InstanceAccessRequest, rt Rea
 		Protocol:      req.Protocol,
 		Port:          req.Port,
 		SourceActions: []string{instanceAccessDescribeAction},
+	}
+
+	if req.AccessType == accessTypeJupyterToken {
+		tokenRaw, callErr := rt.Executor.Execute(ctx, instanceAccessTokenAction, map[string]any{"UHostIds": []string{ids[0]}})
+		if callErr != nil {
+			return InstanceAccessResponse{}, ReadFailureAfterTool(instanceAccessTokenAction, instanceAccessCapabilityLabel, callErr)
+		}
+		resp.SourceActions = append(resp.SourceActions, instanceAccessTokenAction)
+		resp.JupyterToken = strings.TrimSpace(stringField(tokenRaw, "JupyterToken"))
+		if resp.JupyterToken == "" {
+			resp.Status = "unknown"
+			resp.Reason = "Token 查询成功，但上游没有返回有效的 Jupyter Token。"
+		} else if strings.EqualFold(resp.State, "Running") {
+			resp.Status = "configured"
+			resp.Reason = "已从实例归属校验后的上游接口取得 Jupyter Token。"
+		} else {
+			resp.Status = "configured"
+			resp.Reason = "已取得 Jupyter Token；实例当前不是运行状态，需启动后才能使用访问入口。"
+		}
+		return resp, ReadResult{}
 	}
 
 	if req.AccessType == accessTypeSSH {
@@ -183,6 +207,10 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	reply := fmt.Sprintf("%s 的%s访问预检：%s。%s %s",
 		subject, accessTypeDisplay(resp.AccessType), verdict, strings.TrimSpace(detail),
 		"该结果没有实际连接公网端口，也没有进入实例检查服务进程、系统防火墙或认证日志。")
+	if resp.JupyterToken != "" {
+		reply = fmt.Sprintf("%s 的 Jupyter Token：%s。%s",
+			subject, resp.JupyterToken, strings.TrimSpace(detail))
+	}
 
 	facts := []envelope.Fact{
 		{SubjectID: resp.InstanceID, Key: "state", Label: "实例状态", Value: resp.State, Source: envelope.FactSourceAPI},
@@ -205,9 +233,17 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 			SubjectID: resp.InstanceID, Key: "catalog_software", Label: "平台端口目录应用", Value: resp.KnownSoftware, Source: envelope.FactSourceAPI,
 		})
 	}
+	if resp.JupyterToken != "" {
+		facts = append(facts, envelope.Fact{
+			SubjectID: resp.InstanceID, Key: "jupyter_token", Label: "Jupyter Token", Value: resp.JupyterToken, Source: envelope.FactSourceAPI,
+		})
+	}
 
 	result := ReadHandled(strings.TrimSpace(reply))
 	result.ToolAction = instanceAccessDescribeAction
+	if resp.AccessType == accessTypeJupyterToken {
+		result.ToolAction = instanceAccessTokenAction
+	}
 	result.Envelope = &envelope.Envelope{
 		Kind:          envelope.KindInstanceAccess,
 		SourceActions: append([]string(nil), resp.SourceActions...),
@@ -336,6 +372,8 @@ func accessTypeDisplay(value string) string {
 		return " SSH "
 	case accessTypeJupyter:
 		return " Jupyter "
+	case accessTypeJupyterToken:
+		return " Jupyter Token "
 	case accessTypeCustomPort:
 		return "自定义端口"
 	default:

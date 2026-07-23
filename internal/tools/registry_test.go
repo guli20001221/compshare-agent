@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -129,7 +130,6 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 	descriptions := registryDescriptions()
 	for _, action := range []string{
 		"GetCompShareRefundPrice",
-		"DescribeCompShareJupyterToken",
 		"DescribeCFS",
 		"GetCompShareCFSPrice",
 		"GetCompShareCFSUpgradePrice",
@@ -142,8 +142,16 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 			t.Fatalf("%s must be registered for the first upstream capability batch", action)
 		}
 	}
-	mustContain(t, descriptions["DescribeCompShareJupyterToken"], "不要明文展示")
+	if _, ok := descriptions["DescribeCompShareJupyterToken"]; ok {
+		t.Fatal("raw Jupyter token API must stay internal; ReadCapability_instance_access owns explicit token retrieval")
+	}
 	policies := DefaultToolExecutionPolicies()
+	if _, ok := policies["DescribeCompShareJupyterToken"]; !ok {
+		t.Fatal("internal Jupyter token action still needs a safe execution policy")
+	}
+	if !slices.Contains(policies["DescribeCompShareJupyterToken"].AllowedParams, "UHostIds") {
+		t.Fatal("internal Jupyter token action must accept the verified instance id")
+	}
 	for _, action := range []string{"EnableNetOptimizerWorkflow", "CreateCFSWorkflow", "ResizeCFSWorkflow"} {
 		if !policies[action].NeedsConfirm {
 			t.Fatalf("%s must require confirmation in the runtime policy", action)

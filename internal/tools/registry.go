@@ -732,24 +732,6 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
-			Name:        "DescribeCompShareJupyterToken",
-			Description: "查询实例 Jupyter 入口所需 token 的只读接口。token 属于敏感凭据，回答时不要明文展示完整 token；只用于判断 Jupyter 是否需要 token、入口是否可用，必要时提示用户到控制台安全查看。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostIds": map[string]any{
-						"type":        "array",
-						"items":       map[string]any{"type": "string"},
-						"description": "实例 ID 列表，通常只传一台实例。",
-					},
-				},
-				"required": []string{"UHostIds"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareNetOptimizer",
 			Description: "查询当前账号/地域的网络加速状态，只读。用于回答网络加速是否已开通、哪些地域已加速；不会修改网络配置。用户要求开启加速时应使用 EnableNetOptimizerWorkflow。",
 			Parameters: map[string]any{

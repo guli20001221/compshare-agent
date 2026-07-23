@@ -209,7 +209,7 @@ func TestInstanceAccessRequiresSameIDInDescribeResponse(t *testing.T) {
 	assert.Nil(t, result.Envelope)
 }
 
-func TestInstanceAccessNeverCallsUnverifiedTokenOrURLAPIs(t *testing.T) {
+func TestInstanceAccessJupyterDiagnosisDoesNotFetchTokenOrSoftwareURL(t *testing.T) {
 	exec := &accessReadExec{results: map[string]map[string]any{
 		instanceAccessDescribeAction: describeFixture(accessHost("uhost-a", "UHost", nil)),
 		instanceAccessPortAction: {
@@ -226,6 +226,61 @@ func TestInstanceAccessNeverCallsUnverifiedTokenOrURLAPIs(t *testing.T) {
 		assert.NotEqual(t, "GetSoftwareUrl", call.action)
 		assert.NotEqual(t, "GetSoftwareURL", call.action)
 	}
+}
+
+func TestInstanceAccessExplicitJupyterTokenUsesVerifiedInstance(t *testing.T) {
+	const token = "stable-console-visible-token"
+	exec := &accessReadExec{results: map[string]map[string]any{
+		instanceAccessDescribeAction: describeFixture(accessHost("cpod-a", "Container", map[string]any{
+			"State": "Stopped",
+		})),
+		instanceAccessTokenAction: {"JupyterToken": token},
+	}}
+
+	result := runInstanceAccess(t, exec, InstanceAccessRequest{
+		Targets: accessTarget("cpod-a"), AccessType: accessTypeJupyterToken,
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, instanceAccessTokenAction, result.ToolAction)
+	assert.Contains(t, result.Reply, token)
+	assert.Contains(t, result.Reply, "需启动后")
+	require.Len(t, exec.calls, 2)
+	assert.Equal(t, instanceAccessDescribeAction, exec.calls[0].action)
+	assert.Equal(t, instanceAccessTokenAction, exec.calls[1].action)
+	assert.Equal(t, []string{instanceAccessDescribeAction, instanceAccessTokenAction}, result.Envelope.SourceActions)
+	assert.Equal(t, token, factValue(result.Envelope, "jupyter_token"))
+	for _, call := range exec.calls {
+		assert.NotEqual(t, "GetSoftwareUrl", call.action)
+		assert.NotEqual(t, "GetSoftwareURL", call.action)
+	}
+}
+
+func TestInstanceAccessExplicitJupyterTokenDoesNotInventMissingValue(t *testing.T) {
+	exec := &accessReadExec{results: map[string]map[string]any{
+		instanceAccessDescribeAction: describeFixture(accessHost("uhost-a", "UHost", nil)),
+		instanceAccessTokenAction:    {"JupyterToken": ""},
+	}}
+
+	result := runInstanceAccess(t, exec, InstanceAccessRequest{
+		Targets: accessTarget("uhost-a"), AccessType: accessTypeJupyterToken,
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "没有返回有效")
+	assert.NotContains(t, result.Reply, "Jupyter Token：")
+}
+
+func factValue(got *envelope.Envelope, key string) any {
+	if got == nil {
+		return nil
+	}
+	for _, fact := range got.Facts {
+		if fact.Key == key {
+			return fact.Value
+		}
+	}
+	return nil
 }
 
 func accessMonitorMetric(key string, value float64) map[string]any {
