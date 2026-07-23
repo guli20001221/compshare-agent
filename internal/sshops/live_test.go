@@ -129,8 +129,10 @@ func TestLiveFullFlow(t *testing.T) {
 	// The model already selected DiagnoseInstanceInternals{UHostId, Task} and the user authorized it
 	// on the engine's card. Enter the instance and diagnose (real harness, real SSH, default 掉卡 probe).
 	t.Logf("[授权后] 进入实例 %s 只读排查", instanceID)
-	owner := Owner{TopOrganizationID: 1, OrganizationID: 2, RequestUUID: "live-req-1"}
-	res, err := svc.Diagnose(context.Background(), d, owner, instanceID, "")
+	owner := Owner{TopOrganizationID: 1, OrganizationID: 2, RequestUUID: "live-req-1", TurnID: "live-turn-1"}
+	res, err := svc.Diagnose(context.Background(), d, owner, instanceID, "", func(st Step) {
+		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
+	})
 	t.Logf("\n========== [beat 4] 进入实例排查 · 诊断结论 ==========\n%s\n====================================================", res.Output)
 	if err != nil {
 		t.Fatalf("Diagnose: %v (timedOut=%v)", err, res.TimedOut)

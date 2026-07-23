@@ -9,7 +9,13 @@ import (
 // identity, the target instance, the task text, and the outcome. The persisted row is the
 // fail-closed record that a human-consented, read-only in-instance access happened.
 type AuditEvent struct {
-	RequestUUID       string
+	RequestUUID string
+	// TurnID is the server-side turn identity; TaskHash is the sha256 of the raw task text.
+	// Together they are the (turn_id, task_hash) UNIQUE key that stops a durable replay of the
+	// SAME turn from re-entering the box (INV-9). The engine-side per-turn gate (INV-11) is the
+	// primary defense against a one-word Task tweak; this DB key covers cross-turn/replay only.
+	TurnID            string
+	TaskHash          string
 	TopOrganizationID uint32
 	OrganizationID    uint32
 	InstanceID        string

@@ -78,8 +78,10 @@ func (s Supervisor) childEnv() []string {
 // Run spawns the harness for one consented task. cred must already be resolved via FetchCredential.
 // The harness runs in its OWN process group, so a timeout/cancel kills the WHOLE tree — the python
 // wrapper AND the claude CLI (+ node) the SDK spawns under it — not just the direct child. stdout is
-// consumed through the bounded line protocol; only the VERDICT body becomes Output.
-func (s Supervisor) Run(ctx context.Context, cred Credential, task string) (Result, error) {
+// consumed through the bounded line protocol; only the VERDICT body becomes Output. onStep, if
+// non-nil, fires once per command as its @@STEP line is parsed — the LIVE activity stream, metadata
+// only (INV-6). The same Steps are also returned in Result.Steps for the caller's tally/audit.
+func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onStep func(Step)) (Result, error) {
 	if s.HarnessPath == "" {
 		return Result{}, fmt.Errorf("sshops: no harness path configured")
 	}
@@ -135,8 +137,9 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string) (Resu
 	}
 
 	// Read stdout to EOF BEFORE Wait (Wait closes the pipe). On timeout/cancel the group is killed, the
-	// pipe reaches EOF, and this returns.
-	verdict, steps, parseErr := parseHarnessStream(stdout)
+	// pipe reaches EOF, and this returns. onStep fires live as each @@STEP line arrives (the harness
+	// flushes per command), so the caller sees the activity stream during the run, not after it.
+	verdict, steps, parseErr := parseHarnessStream(stdout, onStep)
 	runErr := cmd.Wait()
 	_ = killProcGroup(cmd) // best-effort reap of any strays the SDK left in the group
 
@@ -170,7 +173,10 @@ const (
 //
 //	@@STEP {json}                one per command, metadata only
 //	<<<VERDICT>>> ... <<<END>>>  the single terminal conclusion block
-func parseHarnessStream(r io.Reader) (verdict string, steps []Step, err error) {
+//
+// onStep, if non-nil, is invoked once per parsed @@STEP as it is read (bounded by the same step cap),
+// so a caller can surface a live activity stream instead of waiting for the whole run to finish.
+func parseHarnessStream(r io.Reader, onStep func(Step)) (verdict string, steps []Step, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxHarnessStepLine)
 	var total int
@@ -199,6 +205,9 @@ func parseHarnessStream(r io.Reader) (verdict string, steps []Step, err error) {
 			}
 			if st, ok := parseStep(line[len("@@STEP "):]); ok {
 				steps = append(steps, st)
+				if onStep != nil {
+					onStep(st) // live: fire as parsed, bounded by the same step cap above
+				}
 			}
 		}
 	}

@@ -5,16 +5,19 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
+	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/sshops"
 	"github.com/google/uuid"
 )
 
 // SSHOpsAuditStore is the synchronous, fail-closed AuditWriter backing the consent-gated SSH-ops
 // lane (COMPSHARE_SSH_OPS). It implements sshops.AuditWriter against the ssh_ops_audit table
-// (deploy/migrations/0005). The SSH credential is NEVER written — only tenant identity, the target
-// instance, the task text, and the outcome. Begin must succeed before the harness runs, so a
-// missing/unreachable table refuses the diagnosis rather than running it unlogged.
+// (deploy/migrations/0011). The SSH credential is NEVER written — only tenant identity, the target
+// instance, the (PII-redacted) task text, and the outcome. Begin must succeed before the harness
+// runs, so a missing/unreachable table — or a UNIQUE(turn_id, task_hash) replay collision (INV-9) —
+// refuses the diagnosis rather than running it unlogged.
 type SSHOpsAuditStore struct {
 	db *sql.DB
 }
@@ -27,12 +30,16 @@ func (s *SSHOpsAuditStore) Begin(ctx context.Context, ev sshops.AuditEvent) (str
 	id := uuid.NewString()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	// INV-4: the task is free-form operator/model text — redact PII before it is persisted. The
+	// task_hash column is the raw-task sha256 the caller computed (the INV-9 dedup identity); it is
+	// stored verbatim and, being a hash, carries nothing sensitive. UNIQUE(turn_id, task_hash) makes
+	// a durable replay of the same turn fail here, which the fail-closed caller turns into a refusal.
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO ssh_ops_audit
-    (id, request_uuid, top_organization_id, organization_id, instance_id, task, phase, disposition, started_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'started', now())`,
-		id, ev.RequestUUID, ev.TopOrganizationID, ev.OrganizationID, ev.InstanceID,
-		truncateAuditTask(ev.Task, 4000), ev.Phase)
+    (id, request_uuid, turn_id, task_hash, top_organization_id, organization_id, instance_id, task, phase, disposition, started_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'started', now())`,
+		id, ev.RequestUUID, ev.TurnID, ev.TaskHash, ev.TopOrganizationID, ev.OrganizationID, ev.InstanceID,
+		truncateAuditTask(guardrails.RedactPII(ev.Task), 4000), ev.Phase)
 	if err != nil {
 		return "", fmt.Errorf("ssh_ops_audit begin: %w", err)
 	}
@@ -58,6 +65,12 @@ WHERE id = $1`,
 func truncateAuditTask(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	// Trim back to a valid UTF-8 boundary at or below n bytes. A hard s[:n] can split a multibyte
+	// (CJK) task mid-rune, and PostgreSQL rejects invalid UTF-8 — that would fail the audit INSERT and,
+	// because the audit is fail-closed, refuse an otherwise-valid diagnosis.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }
