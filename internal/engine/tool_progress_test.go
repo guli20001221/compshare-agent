@@ -63,3 +63,15 @@ func TestMonitorUniqueCallBudgetStopsThirdVariant(t *testing.T) {
 	require.Contains(t, third, "call_budget_exhausted")
 	require.Equal(t, 2, uniqueAgentToolCalls(eng.toolResultsByCallThisTurn, action))
 }
+
+func TestZoneCatalogIsSingleShotOnlyAfterSuccessfulObservation(t *testing.T) {
+	action := capability.ReadToolName(intent.IntentZoneCatalog)
+	results := map[string]string{
+		toolProgressCallKey(action, map[string]any{"query": "invented"}): `{"status":"fallback_before_tool"}`,
+	}
+	require.False(t, completedAgentToolCall(results, action), "a validation failure must leave room for one corrected call")
+
+	results[toolProgressCallKey(action, map[string]any{})] = `{"status":"handled"}`
+	require.True(t, singleShotAgentTool(action))
+	require.True(t, completedAgentToolCall(results, action))
+}

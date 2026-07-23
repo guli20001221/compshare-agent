@@ -218,7 +218,11 @@ type Engine struct {
 	// zoneCatalog resolves availability zones (incl. Chinese display names) from
 	// the live support-zone catalog. nil → falls back to the process-wide
 	// zones.Default(); tests inject a fresh catalog for isolation.
-	zoneCatalog                      *zones.Catalog
+	zoneCatalog *zones.Catalog
+	// zoneCatalogThisTurn is populated lazily and shared by the zone-catalog read
+	// capability, CodecZone and workflows. It is reset at Chat entry; direct unit
+	// calls outside Chat remain uncached so tests cannot accidentally share state.
+	zoneCatalogThisTurn              *deployment.ZoneCatalogSnapshot
 	registry                         *entity.EntityRegistry
 	knowledgeRetriever               KnowledgeRetriever
 	agentRuntimeEventsThisTurn       []agentruntime.Event
@@ -1149,6 +1153,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 
 	e.lastUserMsg = userMsg
+	e.zoneCatalogThisTurn = nil
 	e.imageContextThisTurn = opts.ImageContext
 	e.readExpensiveCallsThisTurn = 0
 	e.turnTokensConsumed = 0
@@ -1306,6 +1311,15 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") {
 			req.Tools = toolListWithoutFunction(req.Tools, "SearchKnowledge")
+		}
+		// A whole-catalog read is complete after one successful observation. The
+		// model may still reason over that observation, but cannot spend later
+		// rounds asking the same immutable snapshot with cosmetic query variants.
+		for _, tool := range req.Tools {
+			if tool.Function != nil && singleShotAgentTool(tool.Function.Name) &&
+				completedAgentToolCall(e.toolResultsByCallThisTurn, tool.Function.Name) {
+				req.Tools = toolListWithoutFunction(req.Tools, tool.Function.Name)
+			}
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)

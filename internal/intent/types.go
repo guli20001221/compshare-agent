@@ -24,6 +24,7 @@ const (
 	IntentStockAvailability     Intent = "stock_availability"
 	IntentImageList             Intent = "image_list"
 	IntentImageTagCatalog       Intent = "image_tag_catalog"
+	IntentZoneCatalog           Intent = "zone_catalog"
 	IntentModelRepositoryBrowse Intent = "model_repository_browse"
 	IntentNetAcceleratorStatus  Intent = "network_accelerator_status"
 	IntentRefundEstimate        Intent = "refund_estimate"
@@ -228,6 +229,7 @@ func AllIntents() []Intent {
 		IntentStockAvailability,
 		IntentImageList,
 		IntentImageTagCatalog,
+		IntentZoneCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,
 		IntentRefundEstimate,
@@ -255,6 +257,7 @@ func RuntimeIntents() []Intent {
 		IntentStockAvailability,
 		IntentImageList,
 		IntentImageTagCatalog,
+		IntentZoneCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,
 		IntentRefundEstimate,

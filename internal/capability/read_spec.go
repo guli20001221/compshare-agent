@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/platform"
@@ -48,6 +49,11 @@ type EntityResolver interface {
 type ReadRuntime struct {
 	Executor ReadExecutor
 	Resolver EntityResolver
+	// ZoneCatalog is the one immutable support-zone snapshot for this turn. The
+	// engine supplies the same object to this read capability, CodecZone and the
+	// workflow, so a free-form answer and a later write cannot observe different
+	// zone directories. It is server-owned reference data, never a model field.
+	ZoneCatalog *deployment.ZoneCatalogSnapshot
 	// Tenant identity is server-owned request metadata for upstream reads that
 	// require organization fields in the body (for example support-zone and raw
 	// GPU-inventory calls). It is not part of a model-visible capability schema.

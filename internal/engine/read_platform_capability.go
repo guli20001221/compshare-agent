@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/envelope"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
@@ -75,6 +76,9 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		Resolver:         snapshot,
 		Now:              now,
 		FallbackGPUModel: e.fallbackStockGpuModel(now),
+	}
+	if capabilityLabel == string(intent.IntentZoneCatalog) {
+		rt.ZoneCatalog = e.zoneCatalogSnapshot(ctx)
 	}
 	if user, ok := tools.UserFrom(ctx); ok {
 		rt.TopOrganizationID = user.TopOrganizationID

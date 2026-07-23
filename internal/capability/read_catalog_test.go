@@ -35,6 +35,7 @@ func TestReadDefinitionsUseCapabilitySpecificSchemas(t *testing.T) {
 		intent.IntentResourceInfo, intent.IntentMonitorQuery, intent.IntentMonitorHistory,
 		intent.IntentGPUSpecsQuery, intent.IntentStockAvailability, intent.IntentImageList,
 		intent.IntentImageTagCatalog, intent.IntentModelRepositoryBrowse, intent.IntentNetAcceleratorStatus,
+		intent.IntentZoneCatalog,
 		intent.IntentPricingQuery, intent.IntentRefundEstimate, intent.IntentCFSInfo,
 	}
 	for _, want := range expectedReadIntents {

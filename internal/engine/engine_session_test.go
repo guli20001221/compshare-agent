@@ -389,6 +389,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"agentRuntimeEventsThisTurn": true,
 		"agentRuntimeObserver":       true,
 		"currentCtx":                 true,
+		// One immutable support-zone view per active turn. Sharing it across
+		// sessions would expose one tenant/turn's catalog availability to another.
+		"zoneCatalogThisTurn": true,
 		// guidedCreate is a per-turn HTTP capability gate; sharing it would let
 		// one client's opt-in change another client's create workflow shape.
 		"guidedCreate": true,
@@ -425,12 +428,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 7, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 79, len(perSessionFields); want != got {
+	if want, got := 80, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 86, typ.NumField(); want != got {
+	if want, got := 87, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

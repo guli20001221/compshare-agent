@@ -39,6 +39,34 @@ func maxUniqueAgentToolCalls(action string) int {
 	}
 }
 
+// singleShotAgentTool identifies immutable whole-catalog reads. Once one such
+// call succeeds, changing arguments cannot reveal fresher facts in the same
+// turn; the next round should answer from the existing observation instead of
+// spending model rounds re-filtering the same snapshot.
+func singleShotAgentTool(action string) bool {
+	readIntent, ok := capability.ReadIntentForTool(action)
+	return ok && readIntent == intent.IntentZoneCatalog
+}
+
+func completedAgentToolCall(results map[string]string, action string) bool {
+	for key, raw := range results {
+		recordedAction, _, found := strings.Cut(key, ":")
+		if !found || recordedAction != action {
+			continue
+		}
+		var observation struct {
+			Status string `json:"status"`
+		}
+		if json.Unmarshal([]byte(raw), &observation) == nil {
+			switch observation.Status {
+			case "handled", "empty", "conflict", "unavailable":
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func uniqueAgentToolCalls(results map[string]string, action string) int {
 	count := 0
 	for key := range results {
