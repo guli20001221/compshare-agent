@@ -1121,6 +1121,90 @@ func TestReinstall_PodRejectsNonContainerImageBeforeConfirm(t *testing.T) {
 	assert.False(t, reinstalled)
 }
 
+func TestReinstall_RejectsImageThatDoesNotSupportCurrentGPUBeforeConfirm(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{
+				"CompShareImageId": "img-5090-only", "Name": "5090 only",
+				"Container": "False", "SupportedGpuTypes": []any{"5090"},
+			},
+		}},
+	}}
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("GPU 不兼容的重装不应进入确认")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), ReinstallInstanceDef(), map[string]any{
+		"UHostId": "uhost-test", "CompShareImageId": "img-5090-only",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "不支持当前实例的 GPU 机型 4090")
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.False(t, reinstalled)
+}
+
+func TestReinstall_NoCardInstanceUsesOriginalGPUForCompatibility(t *testing.T) {
+	instance := stoppedInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	host["GpuType"] = ""
+	host["SrcInstanceConfig"] = map[string]any{"GpuType": "A800"}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": instance,
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{
+				"CompShareImageId": "img-4090-only", "Name": "4090 only",
+				"Container": "False", "SupportedGpuTypes": []any{"4090"},
+			},
+		}},
+	}}
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("无卡状态也必须按原带卡规格拒绝不兼容镜像")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), ReinstallInstanceDef(), map[string]any{
+		"UHostId": "uhost-test", "CompShareImageId": "img-4090-only",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "GPU 机型 A800")
+}
+
+func TestReinstall_NoCardMachineModeRefusesBeforeConfirmation(t *testing.T) {
+	instance := stoppedInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	host["MachineType"] = "O"
+	host["GPU"] = float64(0)
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": instance,
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{
+				"CompShareImageId": "img-platform", "Name": "Ubuntu-nvidia 22.04",
+				"Container": "False", "SupportedGpuTypes": []any{"4090"},
+			},
+		}},
+	}}
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("无卡模式不应进入重装确认")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), ReinstallInstanceDef(), map[string]any{
+		"UHostId": "uhost-test", "CompShareImageId": "img-platform",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "先恢复带卡运行并关机")
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.False(t, reinstalled)
+}
+
 func TestReinstall_BlocksWhenImageRequiresLargerSystemDisk(t *testing.T) {
 	instance := stoppedInstanceResult()
 	host := instance["UHostSet"].([]any)[0].(map[string]any)

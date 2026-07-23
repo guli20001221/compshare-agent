@@ -146,6 +146,23 @@ func stepConfirmReinstall() Step {
 			if (isPodInstanceResult(queried) || isContainerInstanceResult(queried)) && !image.Container {
 				return nil, fmt.Errorf("Pod 实例重装必须选择容器镜像；当前镜像「%s」不是容器镜像。", image.Name)
 			}
+			// In no-card UHost mode DescribeCompShareInstance exposes only the display
+			// GPU name and MachineType=O. The upstream reinstall gate validates the
+			// hidden UhostType instead; it is not present in this API response, so the
+			// Agent cannot prove compatibility from the catalog. Refuse before a
+			// destructive confirmation rather than knowingly send a request that the
+			// upstream rejects with 226603.
+			if strings.EqualFold(firstInstanceField(queried, "MachineType"), "O") {
+				return nil, fmt.Errorf("实例当前处于无卡运行模式，重装接口无法核实底层 GPU 机型与目标镜像的兼容性。请先恢复带卡运行并关机，再发起重装。")
+			}
+			// SupportedGpuTypes is advisory for create capacity ranking, but the
+			// upstream ReinstallCompShareInstance implementation explicitly rejects a
+			// non-member with RetCode 226603. Enforce that operation-specific contract
+			// before asking the user to approve a destructive reinstall.
+			if gpuType := reinstallCurrentGPUType(queried); gpuType != "" &&
+				len(image.SupportedGPUTypes) > 0 && !containsFold(image.SupportedGPUTypes, gpuType) {
+				return nil, fmt.Errorf("目标镜像「%s」不支持当前实例的 GPU 机型 %s，请选择支持该机型的镜像后重试。", image.Name, gpuType)
+			}
 			if requiredGB := image.RequiredSystemDiskGB(); requiredGB > 0 {
 				if currentGB := currentSystemDiskGB(queried); currentGB > 0 && currentGB < requiredGB {
 					return nil, fmt.Errorf("目标镜像「%s」需要约 %.0fGB 系统盘，当前系统盘 %.0fGB，请先扩容系统盘或选择更小的镜像。", image.Name, requiredGB, currentGB)
@@ -192,11 +209,12 @@ func stepReinstallInstance() Step {
 }
 
 type reinstallImageInfo struct {
-	ID        string
-	Name      string
-	Source    string
-	Container bool
-	SizeMB    float64
+	ID                string
+	Name              string
+	Source            string
+	Container         bool
+	SupportedGPUTypes []string
+	SizeMB            float64
 }
 
 func (info reinstallImageInfo) RequiredSystemDiskGB() float64 {
@@ -285,14 +303,38 @@ func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
 		}
 		entry, _ := snap.ByID(sel.ID)
 		return reinstallImageInfo{
-			ID:        sel.ID,
-			Name:      sel.Name,
-			Source:    item.source,
-			Container: sel.Container,
-			SizeMB:    entry.SizeMB,
+			ID:                sel.ID,
+			Name:              sel.Name,
+			Source:            item.source,
+			Container:         sel.Container,
+			SupportedGPUTypes: append([]string(nil), entry.SupportedGPUTypes...),
+			SizeMB:            entry.SizeMB,
 		}, true
 	}
 	return reinstallImageInfo{}, false
+}
+
+// reinstallCurrentGPUType returns the GPU identity the upstream reinstall API
+// validates. A no-card instance may carry the original sellable configuration
+// under SrcInstanceConfig, so the current empty GpuType must not erase that fact.
+func reinstallCurrentGPUType(result map[string]any) string {
+	host, ok := firstInstance(result)
+	if !ok {
+		return ""
+	}
+	if gpu := strings.TrimSpace(stringFieldAny(host["GpuType"])); gpu != "" {
+		return gpu
+	}
+	if gpu := strings.TrimSpace(stringFieldAny(host["GPUType"])); gpu != "" {
+		return gpu
+	}
+	if source, ok := sourceInstanceConfig(host); ok {
+		if gpu := strings.TrimSpace(stringFieldAny(source["GpuType"])); gpu != "" {
+			return gpu
+		}
+		return strings.TrimSpace(stringFieldAny(source["GPUType"]))
+	}
+	return ""
 }
 
 // reinstallSelection picks the resolved image, or the top recommended candidate for

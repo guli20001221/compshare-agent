@@ -3742,6 +3742,22 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
 		return finalReplyPrefix + reply
 	}
+	if !result.Success && action == "CloneCustomImageWorkflow" {
+		reply := strings.TrimSpace(workflowStepPrefixRE.ReplaceAllString(result.Message, ""))
+		if reply == "" {
+			reply = "克隆自制镜像没有成功，请核对源镜像状态和目标可用区后重试。"
+		}
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
+		return finalReplyPrefix + reply
+	}
+	if !result.Success && action == "ReinstallInstanceWorkflow" {
+		reply := strings.TrimSpace(workflowStepPrefixRE.ReplaceAllString(result.Message, ""))
+		if reply == "" {
+			reply = "重装系统没有执行，请核对实例状态和目标镜像后重试。"
+		}
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
+		return finalReplyPrefix + reply
+	}
 
 	if result.Success {
 		e.markRegistryInvalidated(action)
@@ -3822,6 +3838,13 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 			return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。出于安全考虑，新密码不会在对话中回显；请使用你刚设置的密码登录。", uhost), true
 		}
 		return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。本次未设置新密码，请继续使用原登录凭据。", uhost), true
+	case "ResizeCFSWorkflow":
+		cfsID := strings.TrimSpace(fmt.Sprint(args["CfsId"]))
+		size, _ := firstNumberAny(args, "Size")
+		if size > 0 {
+			return fmt.Sprintf("✅ 已将 CFS %s 扩容到 %.0fGB。", cfsID, size), true
+		}
+		return fmt.Sprintf("✅ 已完成 CFS %s 扩容。", cfsID), true
 	default:
 		return "", false
 	}
