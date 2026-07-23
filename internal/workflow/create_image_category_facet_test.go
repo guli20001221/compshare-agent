@@ -55,7 +55,7 @@ func categoryWfCtx(t *testing.T, params map[string]any) *Context {
 // no image in this catalog, so it must not appear.
 func TestCategoryFacetOffersOnlyCategoriesThatHaveImages(t *testing.T) {
 	wfCtx := categoryWfCtx(t, map[string]any{"ImageSource": "community"})
-	opts := imageCategoryFacetOptions(createImageTaxonomy(wfCtx), createImageCatalog(wfCtx))
+	opts := imageCategoryFacetOptions(createImageTaxonomy(wfCtx), createImageCandidates(wfCtx))
 	require.NotEmpty(t, opts)
 
 	var values []string
@@ -89,8 +89,10 @@ func TestCategoryFacetReplacesTheRawTagList(t *testing.T) {
 }
 
 // TestWithoutTheTaxonomyTheTagFacetStillWorks is the degradation contract. A failed
-// DescribeCompShareImageTags must leave the card exactly as it was — the classification
-// is an improvement on the filter, never a precondition for having one.
+// DescribeCompShareImageTags must still leave the user a way to narrow — the
+// classification is an improvement on the filter, never a precondition for having
+// one. The raw-tag facet now lives on its own card, so the fallback is that the tag
+// CARD becomes reachable, not that the 用途 card grows a second field.
 func TestWithoutTheTaxonomyTheTagFacetStillWorks(t *testing.T) {
 	wfCtx := &Context{
 		Params:      map[string]any{"ImageSource": "community"},
@@ -98,10 +100,27 @@ func TestWithoutTheTaxonomyTheTagFacetStillWorks(t *testing.T) {
 	}
 	form, err := buildGuidedImageFacetsForm(wfCtx)
 	require.NoError(t, err)
-
 	assert.Nil(t, form.Field("ImageCategory"), "no classification, no 用途 facet")
-	assert.NotNil(t, form.Field("ImageTag"),
+
+	skip, err := shouldSkipGuidedImageTagStep(wfCtx)
+	require.NoError(t, err)
+	require.False(t, skip, "with no classification the raw-tag card must be reached")
+
+	tagForm, err := buildGuidedImageTagForm(wfCtx)
+	require.NoError(t, err)
+	assert.NotNil(t, tagForm.Field("ImageTag"),
 		"the previous raw-tag facet must survive as the fallback")
+}
+
+// TestTheTaxonomySupersedesTheTagCard is the other half: when the platform DID
+// classify this catalog, the finer raw-tag card must not also be asked. Two
+// resolutions of one axis, asked twice, is how the user reaches a contradictory
+// pair — and the tag card exists only because the type card cannot cover it.
+func TestTheTaxonomySupersedesTheTagCard(t *testing.T) {
+	wfCtx := categoryWfCtx(t, map[string]any{"ImageSource": "community"})
+	skip, err := shouldSkipGuidedImageTagStep(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skip, "用途 already asked this question at a stabler resolution")
 }
 
 // TestPickingACategoryNarrowsTheImageList proves the facet actually filters rather
@@ -110,7 +129,7 @@ func TestWithoutTheTaxonomyTheTagFacetStillWorks(t *testing.T) {
 func TestPickingACategoryNarrowsTheImageList(t *testing.T) {
 	ids := func(params map[string]any) []string {
 		wfCtx := categoryWfCtx(t, params)
-		_, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), "", createImageTaxonomy(wfCtx))
+		_, opts, _ := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), "", createImageTaxonomy(wfCtx), false)
 		var out []string
 		for _, o := range opts {
 			out = append(out, o.Value)
@@ -138,7 +157,7 @@ func TestAnUnreadableCategoryDoesNotEmptyThePicker(t *testing.T) {
 		// 查询镜像分类 absent: the fetch failed.
 		StepResults: map[string]map[string]any{"查询镜像": categoryTestCatalog()},
 	}
-	_, opts := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), "", createImageTaxonomy(wfCtx))
+	_, opts, _ := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), "", createImageTaxonomy(wfCtx), false)
 	assert.Len(t, opts, 4,
 		"a category we cannot resolve must not filter; the user still gets a usable picker")
 }

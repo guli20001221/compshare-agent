@@ -122,7 +122,7 @@ func TestTheTypeFacetNamesEveryTypeTheCatalogReturns(t *testing.T) {
 		Params:      map[string]any{"ImageSource": "platform"},
 		StepResults: map[string]map[string]any{"查询镜像": platformCatalogRows()},
 	}
-	opts := imageTypeFacetOptions(createImageCatalog(wfCtx))
+	opts := imageTypeFacetOptions(createImageCandidates(wfCtx))
 	require.NotEmpty(t, opts)
 
 	byValue := map[string]ConfirmFormOption{}

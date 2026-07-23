@@ -103,10 +103,14 @@ func imageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) 
 	return resp, ReadResult{}
 }
 
+// imageListRender projects the response. The reply is declared a browse listing:
+// every source here renders a catalog to choose from, and the guided create flow
+// owns the actual picking, so the rendered rows are never the answer to the turn.
 func imageListRender(resp ImageListResponse) ReadResult {
 	r := ReadHandled(resp.Reply)
 	r.ToolAction = resp.Action
 	r.Envelope = resp.Envelope
+	r.ReplyIsBrowseListing = true
 	return r
 }
 

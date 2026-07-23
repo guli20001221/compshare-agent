@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -654,8 +655,14 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 	assert.Equal(t, []string{"4090"}, optionValues(gpu))
 	plain4090 := optionByValue(t, gpu, "4090")
 	assert.True(t, plain4090.Disabled)
-	assert.Contains(t, plain4090.Reason, "镜像不支持当前 GPU")
-	assert.Contains(t, plain4090.Note, "镜像不支持当前 GPU")
+	// Asserted on the rendered caption, not on Note or Reason individually: which
+	// field carries the sentence is an implementation detail (it moved out of Note
+	// once the client was found to print both), but the user must read it exactly
+	// once either way.
+	caption := renderedOptionCaption(plain4090)
+	assert.Contains(t, caption, "镜像不支持当前 GPU")
+	assert.Equal(t, 1, strings.Count(caption, "镜像不支持当前 GPU"),
+		"the reason must appear once in what the user reads, not twice")
 	for _, call := range executor.calls {
 		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action, "capacity must not run before the user resolves the disabled GPU card")
 		assert.NotEqual(t, "CreateCompShareInstance", call.action)
@@ -1054,11 +1061,52 @@ func TestGuidedImageSourceAndFacetsFormsAppearWhenNoImageIntent(t *testing.T) {
 	imgType := fieldByKey(t, facetsForm, "ImageType")
 	assert.Equal(t, []string{"", "System", "App"}, optionValues(imgType))
 
-	// ImageTag facet lists the real catalog tags, led by the "不限标签" sentinel.
-	tag := fieldByKey(t, facetsForm, "ImageTag")
-	assert.Equal(t, []string{"", "深度学习", "大模型推理"}, optionValues(tag))
-
+	// The tag question is a SEPARATE card asked after this one, so that its options
+	// can be computed from what the type answer left behind. On this card it must be
+	// absent — offering both in one submit is what let the user pick 系统镜像 +
+	// 大模型推理 and reach an empty picker.
+	assert.Nil(t, facetsForm.Field("ImageTag"), "the tag question has its own card")
 	assert.Nil(t, facetsForm.Field("ImagePurpose"))
+
+	// Its own card lists the real catalog tags, led by the "不限标签" sentinel, each
+	// with the count of candidates that carry it.
+	tagForm, err := buildGuidedImageTagForm(wfCtx)
+	require.NoError(t, err)
+	tag := fieldByKey(t, tagForm, "ImageTag")
+	assert.Equal(t, []string{"", "深度学习", "大模型推理"}, optionValues(tag))
+	assert.Equal(t, "1 个镜像", tag.Options[1].Note, "every offered tag states how many images it has")
+}
+
+// TestTheTagCardOnlyOffersTagsTheChosenTypeLeftBehind is the dead-end fix. The live
+// platform catalog carries no tags at all on System images (0/9), so 系统镜像 +
+// any 标签 ANDed to nothing and the picker raised "未找到可选镜像" — on a pair the
+// card had invited the user to click. With the tag options computed after the type,
+// the unreachable pair cannot be expressed.
+func TestTheTagCardOnlyOffersTagsTheChosenTypeLeftBehind(t *testing.T) {
+	catalog := map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-sys", "Name": "Ubuntu 22.04", "ImageType": "System", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-app", "Name": "PyTorch 2.4", "ImageType": "App", "Status": "Available", "Tags": []any{"pytorch"}},
+	}}
+
+	// Type=App still has a tag to ask about.
+	app := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageType": "App"})
+	app.StepResults["查询镜像"] = catalog
+	skip, err := shouldSkipGuidedImageTagStep(app)
+	require.NoError(t, err)
+	require.False(t, skip, "premise: the App branch does have tags")
+
+	// Type=System has none, so the card removes itself rather than offering a tag
+	// that selects nothing.
+	sys := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageType": "System"})
+	sys.StepResults["查询镜像"] = catalog
+	skip, err = shouldSkipGuidedImageTagStep(sys)
+	require.NoError(t, err)
+	assert.True(t, skip, "no tag survives 系统镜像; asking would only build a dead end")
+
+	// And the picker for that pair is still reachable — the type alone selects.
+	form, err := buildGuidedImageForm(sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"img-sys"}, optionValues(fieldByKey(t, form, "ImageId")))
 }
 
 func TestGuidedImageFacetsStepSkipsWhenImageIntentExists(t *testing.T) {
@@ -1115,20 +1163,40 @@ func TestGuidedImageFormTagNarrowsLLMImages(t *testing.T) {
 }
 
 func TestGuidedImageFacetsOverridesClearStaleImageSelection(t *testing.T) {
-	// Changing any facet (here the ImageTag) must drop the previously-pinned concrete
-	// image: the refreshed image step re-picks from the newly-scoped candidates, so a
-	// stale id/name that may not match the new tag can never survive the edit.
+	// Changing any facet (here the ImageTag, on its own card) must drop the
+	// previously-pinned concrete image: the refreshed image step re-picks from the
+	// newly-scoped candidates, so a stale id/name that may not match the new tag can
+	// never survive the edit.
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType":          "4090",
 		"CompShareImageId": "img-torch",
 		"ImageName":        "cuda128_torch291_py312",
 	})
 
-	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{"ImageTag": "大模型推理"}))
+	require.NoError(t, applyGuidedImageTagOverrides(wfCtx, map[string]string{"ImageTag": "大模型推理"}))
 
 	assert.Equal(t, "大模型推理", wfCtx.Params["ImageTag"])
 	assert.NotContains(t, wfCtx.Params, "CompShareImageId")
 	assert.NotContains(t, wfCtx.Params, "ImageName")
+}
+
+// TestChangingTheTypeDropsATagChosenUnderTheOldType closes the loop the split
+// opened: the tag was picked from options computed against the PREVIOUS type's
+// candidates, so carrying it forward could select nothing under the new type —
+// re-creating by the back door exactly the dead end the split removed. Cleared =
+// absent = "no filter", and the tag card re-asks over the new candidates.
+func TestChangingTheTypeDropsATagChosenUnderTheOldType(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType":   "4090",
+		"ImageType": "App",
+		"ImageTag":  "pytorch",
+	})
+
+	require.NoError(t, applyGuidedImageFacetsOverrides(wfCtx, map[string]string{"ImageType": "System"}))
+
+	assert.Equal(t, "System", wfCtx.Params["ImageType"])
+	assert.NotContains(t, wfCtx.Params, "ImageTag",
+		"a tag chosen under the old type must not silently survive into the new one")
 }
 
 func TestGuidedImageSourceOverrideCommunitySwitchesSource(t *testing.T) {
@@ -1372,7 +1440,7 @@ func TestGuidedImageFormOptionsShowsTopTenCommunityGroups(t *testing.T) {
 	params := map[string]any{"GpuType": "4090", "ImageSource": "community"}
 	images := formManyCommunityImagesFixture(12)
 
-	_, opts := guidedImageFormOptions(params, images, "4090", nil)
+	_, opts, _ := guidedImageFormOptions(params, images, "4090", nil, false)
 
 	require.Len(t, opts, 10)
 	assert.Equal(t, "cimg-hot-01", opts[0].Value)
@@ -1600,8 +1668,10 @@ func TestCreateInstanceGuided_ImageOptionsDisableUnsupportedGPU(t *testing.T) {
 		}
 	}
 	assert.True(t, mismatch.Disabled)
-	assert.Contains(t, mismatch.Note, "不支持当前 GPU")
-	assert.Contains(t, mismatch.Reason, "镜像不支持")
+	caption := renderedOptionCaption(mismatch)
+	assert.Contains(t, caption, "不支持当前 GPU")
+	assert.Equal(t, 1, strings.Count(caption, "不支持当前 GPU"),
+		"the reason must appear once in what the user reads; Note and Reason used to both carry it")
 }
 
 func TestCreateInstanceGuided_ImageIsSelectedBeforeCapacityAndFinalIsReadOnly(t *testing.T) {

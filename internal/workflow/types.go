@@ -27,7 +27,33 @@ type ReferenceData struct {
 	// image resolution. nil on paths that carry no image field; nil-safe accessors,
 	// so a consumer reads it the same way whether or not it is present.
 	ImageCatalog *deployment.ImageCatalogSnapshot
+	// ImageSelection records whether the create's image was settled by the user or
+	// only suggested by the Agent, so the guided image steps offer a suggestion on
+	// the picker instead of silently sealing it. Zero value (ImageSelectionUnset) on
+	// every non-create run and on a create that named no image.
+	ImageSelection ImageSelectionState
 }
+
+// ImageSelectionState records who settled the create's image, so every image step
+// reads one authority instead of each re-deciding from CompShareImageId != "". The
+// engine derives it from the resolved proposal's provenance before the run, and it
+// rides ReferenceData — never Params, never the seal.
+type ImageSelectionState int
+
+const (
+	// ImageSelectionUnset: the proposal named no image — browse from scratch.
+	ImageSelectionUnset ImageSelectionState = iota
+	// ImageSelectionSuggested: the Agent proposed a concrete image id the user did
+	// not name (no explicit id and no explicit name in their text). It is a default
+	// to preselect on the picker, NOT a decision — the picker still shows the whole
+	// catalog so the user can choose another.
+	ImageSelectionSuggested
+	// ImageSelectionUserPinned: the user's own text named the image (explicit id or
+	// explicit name). Browsing is skipped; a concrete pinned id skips the picker too
+	// (a bare name still shows the ranked picker), and the final confirmation card is
+	// still shown.
+	ImageSelectionUserPinned
+)
 
 const (
 	// StepToolCall executes an API tool via executor.
@@ -381,6 +407,13 @@ func (c *Context) ZoneCatalog() *deployment.ZoneCatalogSnapshot { return c.refer
 func (c *Context) ImageCatalog() *deployment.ImageCatalogSnapshot {
 	return c.referenceData.ImageCatalog
 }
+
+// ImageSelection reports who settled the create's image — the user's own text
+// (ImageSelectionUserPinned), an Agent suggestion (ImageSelectionSuggested), or
+// nothing (ImageSelectionUnset). It is the single authority the guided image steps
+// read instead of each inferring intent from CompShareImageId != "". Zero value on
+// a run that carries no image selection state.
+func (c *Context) ImageSelection() ImageSelectionState { return c.referenceData.ImageSelection }
 
 // Result returns the API result from a previous step, or nil.
 func (c *Context) Result(stepName string) map[string]any {

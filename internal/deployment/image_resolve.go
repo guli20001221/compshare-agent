@@ -280,16 +280,25 @@ func rankRecommendations(entries []ImageCatalogEntry, req ImageRequest, keepAll 
 	}
 	want := strings.ToLower(strings.TrimSpace(req.Name))
 	var out []scored
-	// scoredByRequest records whether the request discriminated at all. When it did
-	// not, every score is 0 and any further ordering we apply is our invention
-	// rather than the user's preference — see the tiebreak below.
+	// scoredByRequest records whether the request expressed a preference ABOUT THE
+	// IMAGE. When it did not, every ordering beyond the catalog's own is our
+	// invention rather than the user's preference — see the tiebreak below.
+	//
+	// A GPU bump deliberately does NOT count. SupportedGpuTypes is a compatibility
+	// hint about hardware, not a statement about which image the user wants, and the
+	// guided flow almost always knows the GPU by the time it builds the picker — so
+	// letting it set this flag handed every ordinary create turn to the PubTime
+	// tiebreak and threw away the popularity order the caller asked upstream for.
+	// Live symptom: InfiniteTalk (16,969 deploys, February build) lost its place to
+	// a 3-deploy image published later.
 	scoredByRequest := false
 	for i, e := range entries {
-		s := nameSimilarity(want, e.Name) + structuredScore(req, e.Software) + gpuBump(req.RequestedGPU, e.SupportedGPUTypes)
+		preference := nameSimilarity(want, e.Name) + structuredScore(req, e.Software)
+		s := preference + gpuBump(req.RequestedGPU, e.SupportedGPUTypes)
 		if s <= 0 && !keepAll {
 			continue
 		}
-		if s > 0 {
+		if preference > 0 {
 			scoredByRequest = true
 		}
 		out = append(out, scored{e: e, score: s, idx: i})

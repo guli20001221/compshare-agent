@@ -35,7 +35,7 @@ func TestZoneCardDisablesOnlyZonesThatDoNotSellTheChosenPool(t *testing.T) {
 	wfCtx := guidedInventoryContext(t, "cn-wlcb-03", "Spot")
 	wfCtx.StepResults["查询可用配比"] = poolCardCatalog()
 
-	_, opts := guidedZoneFormOptions(wfCtx, poolCardCatalog(), "4090", "", wfCtx.Params, wfCtx.Result(createGPUInventoryStep))
+	_, opts, _ := guidedZoneFormOptions(wfCtx, poolCardCatalog(), "4090", "", wfCtx.Params, wfCtx.Result(createGPUInventoryStep))
 	require.NotEmpty(t, opts)
 
 	sellsSpot, ok := poolCardOption(opts, "cn-wlcb-03")

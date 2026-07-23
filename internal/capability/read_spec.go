@@ -81,6 +81,22 @@ type ReadResult struct {
 	ToolAction         string
 	Envelope           *envelope.Envelope
 	MissingFields      []platform.MissingField
+	// ReplyIsBrowseListing marks a rendered Reply that is a MENU rather than an
+	// answer: a catalog the user picks from, not a measurement to quote. It changes
+	// how the engine treats the reply, exactly like NeedsClarification does — it is
+	// not capability-specific data, so it belongs here rather than as a ReadEffect.
+	//
+	// The engine hands quotable replies to the model as a render_ref it pastes into
+	// its answer verbatim, so precise ids/prices/stock are never paraphrased. That
+	// contract is wrong for a browse listing: the whole point of "推荐一个做数字人的
+	// 镜像" is that the model reads the catalog and curates it. Pasting the raw
+	// listing on top of the curated answer produced both — a 1.4k-char dump of every
+	// row followed by the model restating the same numbers.
+	//
+	// The envelope still reaches the model either way, so it keeps the exact ids and
+	// deploy counts; it just writes them into its own answer instead of the server
+	// stapling a second copy in front.
+	ReplyIsBrowseListing bool
 	// Alternatives is the payload of the unavailable status only: the supported
 	// capabilities the model should redirect the user to. Read solely by the
 	// engine's Unavailable observation branch, never by the general read path.
