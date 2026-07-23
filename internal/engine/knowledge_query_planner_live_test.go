@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -295,16 +296,33 @@ func TestLivePlannerAAOnRealTraffic(t *testing.T) {
 		t.Fatalf("all %d cases returned the fallback plan (query == input verbatim): the planner is not running, so this is not a noise measurement", len(pairs))
 	}
 
-	var countFlips, chunkSetFlips int
+	// Attribution. internal/knowledge proves retrieval is a pure function of the
+	// query text (TestRetrieverIsDeterministicForAnIdenticalQuery), so every
+	// chunk-set flip must trace to the planner emitting different TEXT. Split the
+	// cases to confirm that chain end to end rather than assuming it, and to show
+	// how much of the variation is a harmless paraphrase versus a different
+	// retrieval target.
+	var countFlips, chunkSetFlips, textFlips, textSameButChunksDiffer int
 	var jaccardSum float64
-	for _, p := range pairs {
+	var diagnostics []string
+	for i, p := range pairs {
 		if len(p.a.Queries) != len(p.b.Queries) {
 			countFlips++
+		}
+		sameText := strings.Join(p.a.Queries, " ") == strings.Join(p.b.Queries, " ")
+		if !sameText {
+			textFlips++
+			diagnostics = append(diagnostics, fmt.Sprintf("case=%s\n  input : %s\n  run A : %s\n  run B : %s",
+				inputs[i].CaseID, inputs[i].Current,
+				strings.Join(p.a.Queries, " | "), strings.Join(p.b.Queries, " | ")))
 		}
 		j := jaccard(p.a.ChunkIDs, p.b.ChunkIDs)
 		jaccardSum += j
 		if j < 1.0 {
 			chunkSetFlips++
+			if sameText {
+				textSameButChunksDiffer++
+			}
 		}
 	}
 	n := float64(len(pairs))
@@ -313,6 +331,17 @@ func TestLivePlannerAAOnRealTraffic(t *testing.T) {
 	t.Logf("  召回 chunk 集合不一致 : %d/%d (%.0f%%)", chunkSetFlips, len(pairs), 100*float64(chunkSetFlips)/n)
 	t.Logf("  平均 Jaccard          : %.3f", jaccardSum/n)
 	t.Logf("  回落到 fallback 的 case: %d/%d (planner 未改写,原样透传)", fallbackShaped, len(pairs))
+	t.Logf("  ---- 归因 ----")
+	t.Logf("  query 文本不一致      : %d/%d (%.0f%%)", textFlips, len(pairs), 100*float64(textFlips)/n)
+	t.Logf("  文本相同但召回不同    : %d  (必须为 0，否则检索不是纯函数)", textSameButChunksDiffer)
+	if out := os.Getenv("COMPSHARE_PROBE_OUT"); out != "" && len(diagnostics) > 0 {
+		// Rewrites of real customer questions: local inspection only, never
+		// committed. COMPSHARE_PROBE_OUT is expected to point outside the repo.
+		if err := os.WriteFile(out, []byte(strings.Join(diagnostics, "\n\n")), 0o600); err != nil {
+			t.Fatalf("write diagnostics: %v", err)
+		}
+		t.Logf("  文本差异样本 -> %s", out)
+	}
 	t.Logf("  => 任何 planner 级 A/B 的 effect 必须显著大于以上翻转率才可信")
 }
 
