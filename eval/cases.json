@@ -328,7 +328,7 @@
     "description": "触发SSH诊断链",
     "expected_intent": "diagnosis",
     "expected_tools": [
-      "DiagnoseSSH"
+      "ReadCapability_instance_access"
     ],
     "user_context": "您有 1 个实例（1 个运行中）\n- my-gpu (uhost-xxx): GPU=4090×1, 状态=运行中, 计费=Dynamic",
     "tags": [
@@ -361,7 +361,7 @@
     "description": "SSH诊断——不同表述",
     "expected_intent": "diagnosis",
     "expected_tools": [
-      "DiagnoseSSH"
+      "ReadCapability_instance_access"
     ],
     "user_context": "您有 1 个实例（1 个运行中）\n- dev (uhost-dev1): GPU=4090×1, 状态=运行中, 计费=Dynamic",
     "tags": []

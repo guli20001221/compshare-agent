@@ -13,7 +13,7 @@
     "expect_intent": "diagnosis",
     "expected_execution_path": "agent",
     "boundary": "runtime failure reports should not become knowledge-only",
-    "allowed_actions": ["DiagnoseSSH"],
+    "allowed_actions": ["ReadCapability_instance_access"],
     "forbid_intents": ["knowledge_qa"]
   },
   {
@@ -22,7 +22,7 @@
     "expect_intent": "vague_failure",
     "expected_execution_path": "agent",
     "boundary": "vague failure asks for symptom before diagnosis",
-    "forbid_actions": ["DiagnoseSSH", "DiagnoseGPU", "DiagnoseInitFailure", "DiagnosePortOrFirewall", "DiagnoseImageIssue", "DiagnoseBilling"]
+    "forbid_actions": ["ReadCapability_instance_access", "DiagnoseGPU", "DiagnoseInitFailure", "DiagnosePortOrFirewall", "DiagnoseImageIssue", "DiagnoseBilling"]
   },
   {
     "id": "shutdown_uses_workflow",

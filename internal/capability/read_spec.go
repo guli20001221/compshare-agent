@@ -219,7 +219,7 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 	Description string
 	// Params is the capability's parameter field contract — the single source
 	// for the model-facing JSON schema (Params.jsonSchema()), the runtime
-	// argument validator (Params.validate, which enforces the enum/minimum the
+	// argument validator (Params.validate, which enforces enum and numeric bounds the
 	// decoder does not) and the consistency-test expectation. Its property set
 	// must equal Request's JSON field set (enforced by the catalog consistency
 	// test).
@@ -289,7 +289,7 @@ func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapa
 		params:      spec.Params,
 		requestType: reflect.TypeOf(*new(Request)),
 		decode: func(args map[string]any) (platform.ReadRequest, error) {
-			// Enforce the enum/minimum the strict JSON decoder cannot: an
+			// Enforce enum membership and numeric bounds the strict JSON decoder cannot: an
 			// out-of-contract value is a validation fallback, not a silent
 			// default. Runs before decode so a bogus enum never reaches a handler.
 			if err := spec.Params.validate(args, ""); err != nil {

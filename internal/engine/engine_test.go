@@ -1343,12 +1343,12 @@ func TestDiagnosisInternalReadExpensiveCountsTurnBudget(t *testing.T) {
 	eng.readExpensiveCallsThisTurn = maxReadExpensiveCallsPerTurn
 	onStep, events := collectSteps()
 
-	reply := eng.executeDiagnosis(context.Background(), "DiagnoseSSH", map[string]any{"UHostId": "uhost-diag-001"}, onStep)
+	reply := eng.executeDiagnosis(context.Background(), "DiagnoseBilling", map[string]any{"UHostId": "uhost-diag-001"}, onStep)
 
 	assert.Equal(t, finalReplyPrefix+readExpensiveTurnBudgetMessage, reply)
 	assert.Empty(t, executor.calls, "diagnosis internal read-expensive calls must stop when turn budget is exhausted")
 	assertStepWithType(t, *events, StepBlocked, "DescribeCompShareInstance", readExpensiveTurnBudgetMessage)
-	assertStepWithType(t, *events, StepBlocked, "DiagnoseSSH", readExpensiveTurnBudgetMessage)
+	assertStepWithType(t, *events, StepBlocked, "DiagnoseBilling", readExpensiveTurnBudgetMessage)
 	assertNoStepTypeForAction(t, *events, StepError, "DescribeCompShareInstance")
 }
 
@@ -1505,7 +1505,8 @@ func TestChatReadOnlyHidesWorkflowToolsFromLLM(t *testing.T) {
 	assert.NotContains(t, names, "CreateInstanceWorkflow")
 	assert.Contains(t, names, capability.ReadToolName(intent.IntentResourceInfo))
 	assert.NotContains(t, names, "ReadPlatformCapability")
-	assert.Contains(t, names, "DiagnoseSSH")
+	assert.Contains(t, names, "ReadCapability_instance_access")
+	assert.NotContains(t, names, "DiagnoseSSH")
 }
 
 func TestChatReadOnlyBlocksWorkflowToolCall(t *testing.T) {
@@ -1727,7 +1728,7 @@ func TestChat_WorkflowTool_ArgsFiltered(t *testing.T) {
 	}
 }
 
-func TestChat_DiagnosisTool_SSHStopped(t *testing.T) {
+func TestChat_InstanceAccessTool_SSHStopped(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
@@ -1737,7 +1738,7 @@ func TestChat_DiagnosisTool_SSHStopped(t *testing.T) {
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseSSH", `{"UHostId":"uhost-diag-001"}`),
+			toolCall("tc1", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-001","source":"user_text"}],"access_type":"ssh"}`),
 		}},
 		{Content: "诊断结果：实例已关机，需要先开机"},
 	}}
@@ -1755,7 +1756,7 @@ func TestChat_DiagnosisTool_SSHStopped(t *testing.T) {
 
 	hasDiagCall := false
 	for _, ev := range *events {
-		if ev.Type == StepToolCall && ev.Action == "DiagnoseSSH" {
+		if ev.Type == StepToolCall && ev.Action == "ReadCapability_instance_access" {
 			hasDiagCall = true
 		}
 	}
@@ -1763,14 +1764,12 @@ func TestChat_DiagnosisTool_SSHStopped(t *testing.T) {
 
 	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
 	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	var result map[string]any
-	err = json.Unmarshal([]byte(toolMsg.Content), &result)
-	assert.NoError(t, err)
-	assert.Equal(t, true, result["success"])
-	assert.Contains(t, result["conclusion"], "关机")
+	assert.Contains(t, toolMsg.Content, `"cloud_precheck_status"`)
+	assert.Contains(t, toolMsg.Content, `"value":"blocked"`)
+	assert.Contains(t, toolMsg.Content, `"value":"Stopped"`)
 }
 
-func TestChat_DiagnosisTool_ArgsFiltered(t *testing.T) {
+func TestChat_InstanceAccessTool_UnknownArgsRejectedBeforeUpstream(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{
@@ -1780,7 +1779,7 @@ func TestChat_DiagnosisTool_ArgsFiltered(t *testing.T) {
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DiagnoseSSH", `{"UHostId":"uhost-diag-002","evil":"injection"}`),
+			toolCall("tc1", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-002","source":"user_text"}],"access_type":"ssh","evil":"injection"}`),
 		}},
 		{Content: "done"},
 	}}
@@ -1792,12 +1791,8 @@ func TestChat_DiagnosisTool_ArgsFiltered(t *testing.T) {
 
 	eng.Chat(context.Background(), "test", onStep)
 
-	for _, ev := range *events {
-		if ev.Type == StepToolCall && ev.Action == "DiagnoseSSH" {
-			assert.NotContains(t, ev.Args, "evil")
-			assert.Contains(t, ev.Args, "UHostId")
-		}
-	}
+	assert.Empty(t, executor.calls)
+	assertStepWithType(t, *events, StepError, "ReadCapability_instance_access", "unknown field")
 }
 
 // Freshness is compiled into AgentContext instead of being injected as a

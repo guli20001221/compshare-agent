@@ -1,34 +1,9 @@
 package tools
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
-
-func TestDiagnoseSSHDeclaresTypedFailureKind(t *testing.T) {
-	var parameters map[string]any
-	for _, tool := range Registry {
-		if tool.Function != nil && tool.Function.Name == "DiagnoseSSH" {
-			parameters, _ = tool.Function.Parameters.(map[string]any)
-			break
-		}
-	}
-	if parameters == nil {
-		t.Fatal("DiagnoseSSH schema not found")
-	}
-	properties, _ := parameters["properties"].(map[string]any)
-	kind, _ := properties["FailureKind"].(map[string]any)
-	got, _ := kind["enum"].([]string)
-	want := []string{"timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("FailureKind enum = %#v, want %#v", got, want)
-	}
-	policy := DefaultToolExecutionPolicies()["DiagnoseSSH"]
-	if !containsString(policy.AllowedParams, "FailureKind") {
-		t.Fatal("DiagnoseSSH policy must preserve the typed failure kind")
-	}
-}
 
 func TestCreatePathToolsAllowRegion(t *testing.T) {
 	// The create-path read tools must declare Region (→ AllowedParams) so

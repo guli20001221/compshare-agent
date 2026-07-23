@@ -175,7 +175,7 @@
       },
       {
         "input": "就是 uhost-xxx 那台",
-        "expect_tool_calls": ["DiagnoseSSH"],
+        "expect_tool_calls": ["ReadCapability_instance_access"],
         "reply_contains": ["SSH"]
       }
     ]
