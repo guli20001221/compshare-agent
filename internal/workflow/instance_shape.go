@@ -1,6 +1,10 @@
 package workflow
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/compshare-agent/internal/platform"
+)
 
 func firstInstanceField(result map[string]any, key string) string {
 	host, ok := firstInstance(result)
@@ -45,7 +49,7 @@ func instanceTypeFromResult(result map[string]any) string {
 }
 
 func isPodInstanceResult(result map[string]any) bool {
-	return strings.HasPrefix(instanceIDFromResult(result), "cpod-")
+	return platform.IsPodInstanceID(instanceIDFromResult(result))
 }
 
 func isContainerInstanceResult(result map[string]any) bool {

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
 )
 
@@ -276,7 +277,7 @@ func validatedSSHEndpoint(host map[string]any) (sshEndpoint, string, bool) {
 	}
 
 	id := strings.TrimSpace(stringValue(host["UHostId"]))
-	if len(id) >= len("cpod-") && strings.EqualFold(id[:len("cpod-")], "cpod-") {
+	if platform.IsPodInstanceID(id) {
 		rawForwards, present := host["TcpForwards"]
 		if !present {
 			return endpoint, command, true // backward-compatible deployed response

@@ -219,6 +219,10 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 		{SubjectID: resp.InstanceID, Key: "instance_kind", Label: "实例类型", Value: resp.InstanceKind, Source: envelope.FactSourceAPI},
 		{SubjectID: resp.InstanceID, Key: "access_type", Label: "访问类型", Value: resp.AccessType, Source: envelope.FactSourceComputed},
 		{SubjectID: resp.InstanceID, Key: "cloud_precheck_status", Label: "云侧预检状态", Value: resp.Status, Source: envelope.FactSourceComputed},
+		{SubjectID: resp.InstanceID, Key: "cloud_precheck_reason", Label: "云侧预检依据", Value: resp.Reason, Source: envelope.FactSourceComputed},
+		{SubjectID: resp.InstanceID, Key: "endpoint_reachability_checked", Label: "是否实际探测访问入口", Value: false, Source: envelope.FactSourceComputed},
+		{SubjectID: resp.InstanceID, Key: "instance_process_checked", Label: "是否检查实例内服务进程", Value: false, Source: envelope.FactSourceComputed},
+		{SubjectID: resp.InstanceID, Key: "system_firewall_checked", Label: "是否检查实例内防火墙", Value: false, Source: envelope.FactSourceComputed},
 	}
 	if resp.Port > 0 {
 		facts = append(facts, envelope.Fact{
@@ -237,14 +241,14 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	}
 	if resp.JupyterToken != "" {
 		facts = append(facts, envelope.Fact{
-			SubjectID: resp.InstanceID, Key: "jupyter_token", Label: "Jupyter Token", Value: resp.JupyterToken, Source: envelope.FactSourceAPI,
+			SubjectID: resp.InstanceID, Key: "jupyter_token_present", Label: "是否已取得 Jupyter Token", Value: true, Source: envelope.FactSourceAPI,
 		})
 	}
 
 	result := ReadHandled(strings.TrimSpace(reply))
 	result.ToolAction = instanceAccessDescribeAction
 	if resp.AccessType == accessTypeJupyterToken {
-		result.DirectReply = true
+		result.RenderRequired = true
 		result.ToolAction = instanceAccessTokenAction
 	}
 	result.Envelope = &envelope.Envelope{
@@ -272,7 +276,10 @@ func instanceAccessHostForID(raw map[string]any, id string) (map[string]any, boo
 }
 
 func instanceAccessKind(host map[string]any) string {
-	if strings.EqualFold(stringField(host, "InstanceType"), "Container") {
+	// InstanceType=Container can also mean a UHost created from a container
+	// image. The upstream dispatcher identifies Pod instances by the cpod-
+	// resource id; only those instances expose Pod port mappings.
+	if platform.IsPodInstanceID(stringField(host, "UHostId")) {
 		return "pod"
 	}
 	return "vm"
@@ -285,7 +292,9 @@ func evaluateJupyterAccess(host map[string]any, kind string, catalogPort int) (s
 			return "unknown", "平台端口目录没有返回 Jupyter 端口定义。"
 		}
 		if !podPortPresent(host, accessProtocolHTTP, catalogPort) {
-			return "blocked", fmt.Sprintf("Pod 当前端口配置中没有登记 Jupyter 的 HTTP %d 端口。", catalogPort)
+			return "blocked", fmt.Sprintf(
+				"Pod 当前端口配置中没有登记 Jupyter 的 HTTP %d 端口；这一项已足以阻止外部访问，但没有检查实例内服务进程或防火墙，不能据此断言它们正常。",
+				catalogPort)
 		}
 		if softwareFound && urlPresent {
 			return "configured", fmt.Sprintf("Pod 已登记 HTTP %d 端口，实例详情也返回了 Jupyter 入口。", catalogPort)
@@ -293,7 +302,7 @@ func evaluateJupyterAccess(host map[string]any, kind string, catalogPort int) (s
 		return "configured", fmt.Sprintf("Pod 已登记 HTTP %d 端口；实例详情没有返回可核验的 Jupyter 入口，服务进程仍需在实例内确认。", catalogPort)
 	}
 	if softwareFound && urlPresent {
-		return "configured", "实例详情返回了 Jupyter 入口。"
+		return "unknown", "实例详情返回了 Jupyter 入口记录，但这不能证明入口、平台代理或实例内服务当前可达。"
 	}
 	if softwareFound {
 		return "unknown", "实例详情标记了 Jupyter，但没有返回可核验的入口。"
@@ -306,7 +315,9 @@ func evaluateCustomPortAccess(host map[string]any, kind, protocol string, port i
 		return "unknown", "虚机实例详情不返回实例内监听端口或系统防火墙状态。"
 	}
 	if !podPortPresent(host, protocol, port) {
-		return "blocked", fmt.Sprintf("Pod 当前云侧端口配置中没有登记 %s %d。", strings.ToUpper(protocol), port)
+		return "blocked", fmt.Sprintf(
+			"Pod 当前云侧端口配置中没有登记 %s %d；这一项已足以阻止外部访问，但没有检查实例内服务进程或防火墙，不能据此断言它们正常。",
+			strings.ToUpper(protocol), port)
 	}
 	if protocol == accessProtocolTCP && !podTCPForwardPresent(host, port) {
 		return "blocked", fmt.Sprintf("Pod 已登记 TCP %d，但没有找到对应的外部 TCP 转发。", port)

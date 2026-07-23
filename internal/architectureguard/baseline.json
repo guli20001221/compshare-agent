@@ -1805,10 +1805,10 @@
       "value": "5"
     },
     {
-      "id": "a69ff080dda1b87e",
+      "id": "0049a5343bf80c65",
       "kind": "string_heuristic",
-      "path": "internal/tools/safe_executor.go",
-      "symbol": "firstPodUHostID",
+      "path": "internal/platform/instance_id.go",
+      "symbol": "IsPodInstanceID",
       "callee": "strings.HasPrefix",
       "value": "cpod-"
     },
@@ -1883,14 +1883,6 @@
       "symbol": "sanitizeInteractionArgs",
       "callee": "strings.Contains",
       "value": "token"
-    },
-    {
-      "id": "03a11410d5c96b00",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/instance_shape.go",
-      "symbol": "isPodInstanceResult",
-      "callee": "strings.HasPrefix",
-      "value": "cpod-"
     },
     {
       "id": "03b69fccf8f347fc",

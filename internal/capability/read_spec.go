@@ -75,10 +75,10 @@ type ReadRuntime struct {
 type ReadResult struct {
 	Status platform.ReadStatus
 	Reply  string
-	// DirectReply ends the turn with Reply instead of sending the result back to
-	// the model. Use it only when the request is fully satisfied and another
-	// model round would add no value or expose a credential.
-	DirectReply        bool
+	// RenderRequired keeps an opaque value out of model-authored prose and makes
+	// the response gateway insert Reply after output redaction. It does not end
+	// the Agent loop.
+	RenderRequired     bool
 	NeedsClarification bool
 	FailureClass       platform.ReadFailureClass
 	FallbackReason     platform.ReadFallbackReason

@@ -1818,7 +1818,7 @@ func TestChat_InstanceAccessDiagnosisCanUseKnowledgeWithoutRewritingFacts(t *tes
 	assert.NotContains(t, reply, "[[")
 }
 
-func TestChat_InstanceAccessTokenDoesNotEnterAnotherModelRound(t *testing.T) {
+func TestChat_InstanceAccessTokenReturnsThroughTheCentralAgent(t *testing.T) {
 	const token = "stable-console-visible-token"
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -1830,9 +1830,12 @@ func TestChat_InstanceAccessTokenDoesNotEnterAnotherModelRound(t *testing.T) {
 		},
 		"DescribeCompShareJupyterToken": {"JupyterToken": token},
 	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{ToolCalls: []openai.ToolCall{
-		toolCall("token", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-token-001","source":"user_text"}],"access_type":"jupyter_token"}`),
-	}}}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("token", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-token-001","source":"user_text"}],"access_type":"jupyter_token"}`),
+		}},
+		{Content: "Token 已获取。"},
+	}}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
@@ -1840,8 +1843,10 @@ func TestChat_InstanceAccessTokenDoesNotEnterAnotherModelRound(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "查询 uhost-token-001 的 Jupyter Token", noopStep)
 	require.NoError(t, err)
-	require.Len(t, mock.calls, 1)
+	require.Len(t, mock.calls, 2)
 	assert.Contains(t, reply, token)
+	toolResult := mock.calls[1].Messages[len(mock.calls[1].Messages)-1].Content
+	assert.NotContains(t, toolResult, token, "the opaque value must not pass through the model")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 	assert.Contains(t, executor.calls, "DescribeCompShareJupyterToken")
 }

@@ -99,6 +99,9 @@ func TestInstanceAccessSSHUsesCloudMetadataWithoutLeakingCommand(t *testing.T) {
 	require.NotNil(t, result.Envelope)
 	assert.Equal(t, envelope.KindInstanceAccess, result.Envelope.Kind)
 	assert.Equal(t, []string{instanceAccessDescribeAction, "GetCompShareInstanceMonitor"}, result.Envelope.SourceActions)
+	assert.Equal(t, false, factValue(result.Envelope, "endpoint_reachability_checked"))
+	assert.Equal(t, false, factValue(result.Envelope, "instance_process_checked"))
+	assert.Equal(t, false, factValue(result.Envelope, "system_firewall_checked"))
 }
 
 func TestInstanceAccessJupyterUsesInstanceAndRealPortCatalog(t *testing.T) {
@@ -153,11 +156,18 @@ func TestInstanceAccessJupyterMissingPodPortIsBlocked(t *testing.T) {
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Contains(t, result.Reply, "云侧存在明确阻断")
 	assert.Contains(t, result.Reply, "没有登记")
+	assert.Contains(t, result.Reply, "不能据此断言它们正常")
 }
 
 func TestInstanceAccessVMJupyterDoesNotTreatGlobalCatalogAsInstanceMapping(t *testing.T) {
 	exec := &accessReadExec{results: map[string]map[string]any{
-		instanceAccessDescribeAction: describeFixture(accessHost("uhost-a", "UHost", nil)),
+		// The upstream may report InstanceType=Container for a UHost created
+		// from a container image. It is still not a Pod port-mapping target.
+		instanceAccessDescribeAction: describeFixture(accessHost("uhost-a", "Container", map[string]any{
+			"Softwares": []any{map[string]any{
+				"Name": "JupyterLab", "URL": "https://entry.invalid/?token=not-a-connectivity-check",
+			}},
+		})),
 		instanceAccessPortAction: {
 			"SoftwarePort": []any{map[string]any{"Software": "JupyterLab", "Port": float64(8888)}},
 		},
@@ -168,11 +178,17 @@ func TestInstanceAccessVMJupyterDoesNotTreatGlobalCatalogAsInstanceMapping(t *te
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	assert.False(t, result.DirectReply, "a diagnosis must remain available to the central Agent")
-	assert.Contains(t, result.Reply, "没有返回 Jupyter 应用入口")
+	assert.Contains(t, result.Reply, "云侧信息不足")
+	assert.Contains(t, result.Reply, "不能证明入口、平台代理或实例内服务当前可达")
 	assert.NotContains(t, result.Reply, "8888")
+	assert.NotContains(t, result.Reply, "entry.invalid")
+	assert.NotContains(t, result.Reply, "token=")
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, instanceAccessDescribeAction, exec.calls[0].action)
+	assert.Equal(t,
+		"实例详情返回了 Jupyter 入口记录，但这不能证明入口、平台代理或实例内服务当前可达。",
+		factValue(result.Envelope, "cloud_precheck_reason"))
+	assert.Equal(t, false, factValue(result.Envelope, "endpoint_reachability_checked"))
 }
 
 func TestInstanceAccessCustomPortDistinguishesPodFromVM(t *testing.T) {
@@ -262,15 +278,16 @@ func TestInstanceAccessExplicitJupyterTokenUsesVerifiedInstance(t *testing.T) {
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	assert.True(t, result.DirectReply, "a credential response must not be sent through another model round")
 	assert.Equal(t, instanceAccessTokenAction, result.ToolAction)
 	assert.Contains(t, result.Reply, token)
 	assert.Contains(t, result.Reply, "需启动后")
+	assert.True(t, result.RenderRequired)
 	require.Len(t, exec.calls, 2)
 	assert.Equal(t, instanceAccessDescribeAction, exec.calls[0].action)
 	assert.Equal(t, instanceAccessTokenAction, exec.calls[1].action)
 	assert.Equal(t, []string{instanceAccessDescribeAction, instanceAccessTokenAction}, result.Envelope.SourceActions)
-	assert.Equal(t, token, factValue(result.Envelope, "jupyter_token"))
+	assert.Equal(t, true, factValue(result.Envelope, "jupyter_token_present"))
+	assert.Nil(t, factValue(result.Envelope, "jupyter_token"))
 	for _, call := range exec.calls {
 		assert.NotEqual(t, "GetSoftwareUrl", call.action)
 		assert.NotEqual(t, "GetSoftwareURL", call.action)
@@ -288,7 +305,6 @@ func TestInstanceAccessExplicitJupyterTokenDoesNotInventMissingValue(t *testing.
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	assert.True(t, result.DirectReply)
 	assert.Contains(t, result.Reply, "没有返回有效")
 	assert.NotContains(t, result.Reply, "Jupyter Token：")
 }

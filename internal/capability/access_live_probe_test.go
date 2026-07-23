@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -188,7 +189,7 @@ func accessProbeCatalogHasJupyter(rows []any) bool {
 }
 
 func accessProbeHostKind(id string) string {
-	if strings.HasPrefix(strings.ToLower(id), "cpod-") {
+	if platform.IsPodInstanceID(id) {
 		return "pod"
 	}
 	return "vm"

@@ -74,7 +74,7 @@ func TestInstanceAccessDiagnosisCanContinueToAgentAndKnowledge(t *testing.T) {
 	require.Contains(t, observation.RenderContract, "不得改写")
 }
 
-func TestJupyterTokenDirectlyCompletesTheTurn(t *testing.T) {
+func TestJupyterTokenReturnsOpaqueRequiredObservation(t *testing.T) {
 	const token = "stable-console-visible-token"
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -93,9 +93,16 @@ func TestJupyterTokenDirectlyCompletesTheTurn(t *testing.T) {
 		capability.ReadToolName(intent.IntentInstanceAccess),
 		`{"targets":[{"type":"uhost_id_user_input","value":"uhost-1","source":"user_text"}],"access_type":"jupyter_token"}`), noopStep)
 
-	final, ok := isFinalReply(out)
-	require.True(t, ok)
-	require.Contains(t, final, token)
+	_, final := isFinalReply(out)
+	require.False(t, final, "an opaque value must not terminate the central Agent")
+	var observation ReadCapabilityObservation
+	require.NoError(t, json.Unmarshal([]byte(out), &observation))
+	require.Equal(t, platform.ReadStatusHandled, observation.Status)
+	require.NotEmpty(t, observation.RenderRef)
+	require.NotContains(t, out, token, "the opaque value must not pass through the model")
+	require.Len(t, eng.readResponseEvidenceThisTurn, 1)
+	require.True(t, eng.readResponseEvidenceThisTurn[0].Required)
+	require.Contains(t, eng.readResponseEvidenceThisTurn[0].Reply, token)
 }
 
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {

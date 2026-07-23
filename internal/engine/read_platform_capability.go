@@ -95,12 +95,6 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 	// Absence is asserted only against a registry still fresh as of `now`: a
 	// stale-but-complete snapshot must not tell the model "you have none".
 	observation := e.buildReadObservation(action, capabilityLabel, readResult, snapshot.CanAssertAbsenceAt(now), onStep)
-	if readResult.DirectReply &&
-		readResult.Status == platform.ReadStatusHandled &&
-		!readResult.NeedsClarification &&
-		strings.TrimSpace(readResult.Reply) != "" {
-		return finalReplyPrefix + strings.TrimSpace(readResult.Reply)
-	}
 	return observation
 }
 
@@ -161,6 +155,7 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 			Reply:       strings.TrimSpace(result.Reply),
 			Envelope:    *result.Envelope,
 			Placeholder: placeholder,
+			Required:    result.RenderRequired,
 		})
 		observation.RenderRef = placeholder
 		observation.RenderContract = "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
