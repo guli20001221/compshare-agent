@@ -2176,6 +2176,10 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if len(plan.SearchQueries) == 0 && query != "" {
 		plan.SearchQueries = []string{query}
 	}
+	// Experiment arm: withhold the up-front fan-out so the budget is spent on
+	// follow-ups formed from evidence the agent has actually seen. No-op unless
+	// the flag was frozen on at boot.
+	plan = narrowPlanForGapDrivenRetrieval(plan)
 	onStep(StepEvent{
 		Type:   StepToolCall,
 		Action: "SearchKnowledge",
@@ -2195,7 +2199,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.searchKnowledgeCallsThisTurn++
 	if e.knowledgeRetriever == nil || len(plan.SearchQueries) == 0 {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
-		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true)
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true, "")
 	}
 
 	combined := knowledge.EvidenceLedger{Query: resolvedQuestion}
@@ -2234,6 +2238,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	}
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
 	empty := len(combined.Items) == 0
+	affordance := e.followUpAffordance(len(combined.Items))
 	onStep(StepEvent{
 		Type:        StepToolResult,
 		Action:      "SearchKnowledge",
@@ -2246,7 +2251,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 			"dropped_queries": droppedQueries,
 		},
 	})
-	return searchKnowledgeResultJSON(combined, empty)
+	return searchKnowledgeResultJSON(combined, empty, affordance)
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
@@ -2406,10 +2411,17 @@ func searchKnowledgeArg(args map[string]any, key string) string {
 	return ""
 }
 
-func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool) string {
+// searchKnowledgeResultJSON renders one SearchKnowledge observation. followUp is
+// the optional gap-driven affordance; it is omitted entirely when empty, so the
+// default arm's tool results stay byte-identical to before that experiment
+// existed.
+func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool, followUp string) string {
 	result := map[string]any{"EvidenceLedger": ledger}
 	if empty || len(ledger.Items) == 0 {
 		result["empty"] = true
+	}
+	if followUp != "" {
+		result["follow_up"] = followUp
 	}
 	b, err := json.Marshal(result)
 	if err != nil {
