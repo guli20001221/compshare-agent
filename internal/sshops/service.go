@@ -3,10 +3,7 @@ package sshops
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
-
-	"github.com/compshare-agent/internal/entity"
 )
 
 // Owner is the tenant identity carried into the audit row. It is NOT the credential.
@@ -14,15 +11,6 @@ type Owner struct {
 	TopOrganizationID uint32
 	OrganizationID    uint32
 	RequestUUID       string
-}
-
-// Candidate is one selectable instance for the consent picker. It carries no secret.
-type Candidate struct {
-	InstanceID string `json:"InstanceId"`
-	Name       string `json:"Name"`
-	GpuType    string `json:"GpuType"`
-	GPU        int    `json:"Gpu"`
-	State      string `json:"State"`
 }
 
 // DefaultDiagnosisTask is the read-only "掉卡" root-cause probe used when the caller passes no task.
@@ -54,31 +42,6 @@ type Service struct {
 // Production passes store.SSHOpsAuditStore; tests pass MemAuditWriter.
 func NewService(sup harnessRunner, audit AuditWriter) *Service {
 	return &Service{sup: sup, audit: audit}
-}
-
-// ListCandidates returns the caller's instances for the consent picker. d is the upstream
-// DescribeCompShareInstance executor, already bound to the tenant via ctx (tools.WithUser).
-func (s *Service) ListCandidates(ctx context.Context, d Describer) ([]Candidate, error) {
-	raw, err := d.Execute(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100})
-	if err != nil {
-		return nil, fmt.Errorf("sshops: list instances: %w", err)
-	}
-	rows := instanceRows(raw)
-	out := make([]Candidate, 0, len(rows))
-	for _, row := range rows {
-		snap := entity.InstanceFromMap(row)
-		if snap.UHostId == "" {
-			continue
-		}
-		out = append(out, Candidate{
-			InstanceID: snap.UHostId,
-			Name:       snap.Name,
-			GpuType:    snap.GpuType,
-			GPU:        snap.GPU,
-			State:      snap.State,
-		})
-	}
-	return out, nil
 }
 
 // Diagnose runs ONE consented, read-only in-instance diagnosis. Consent MUST already be verified
@@ -131,43 +94,4 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 	// WithoutCancel keeps the values but drops the cancellation so the outcome still lands (Go 1.21+).
 	_ = s.audit.Finish(context.WithoutCancel(ctx), auditID, done)
 	return res, runErr
-}
-
-var (
-	gpuWord  = regexp.MustCompile(`(?i)gpu|显卡|nvidia|cuda`)
-	lostWord = regexp.MustCompile(`(?i)检测不到|找不到|看不见|不可见|不可用|用不了|没反应|消失|没了|不见|报错|command not found|failed to initialize`)
-)
-
-// IsInstanceOpsSymptom reports whether the user text describes a GPU-lost / "掉卡" symptom that
-// warrants offering an in-instance SSH diagnosis. Deterministic (reasoning-blind), mirroring the
-// engine's inferDiagnosisActionFromText GPU patterns — code answers routing, not the model.
-func IsInstanceOpsSymptom(text string) bool {
-	if strings.TrimSpace(text) == "" {
-		return false
-	}
-	if strings.Contains(text, "掉卡") || strings.Contains(text, "卡掉") {
-		return true
-	}
-	return gpuWord.MatchString(text) && lostWord.MatchString(text)
-}
-
-// instanceRows extracts the instance array from a DescribeCompShareInstance response, tolerating
-// the upstream's key variants (mirrors firstInstance in credential.go).
-func instanceRows(raw map[string]any) []map[string]any {
-	for _, key := range []string{"UHostSet", "UHostInstanceSet", "Instances", "DataSet"} {
-		arr, ok := raw[key].([]any)
-		if !ok {
-			continue
-		}
-		out := make([]map[string]any, 0, len(arr))
-		for _, it := range arr {
-			if m, ok := it.(map[string]any); ok {
-				out = append(out, m)
-			}
-		}
-		if len(out) > 0 {
-			return out
-		}
-	}
-	return nil
 }

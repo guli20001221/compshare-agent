@@ -482,44 +482,20 @@
       "value": "^[A-Za-z0-9_.-]+$"
     },
     {
-      "id": "9ca65d600aadca13",
-      "kind": "regex",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:过去|最近|近|past|last|previous)\\s*(\\d+)\\s*([a-z]+|分钟|分|小时|时)"
-    },
-    {
-      "id": "0957daf96bfe94ea",
-      "kind": "regex",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseMonitorTime",
-      "callee": "regexp.MustCompile",
-      "value": "(\\d{4}-\\d{2}-\\d{2})T(\\d{1,2}:\\d{2}(?::\\d{2})?(?:Z|[+-]\\d{2}:\\d{2}))"
-    },
-    {
-      "id": "932ac1403f56c51b",
-      "kind": "regex",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseMonitorTime",
-      "callee": "regexp.MustCompile",
-      "value": "(\\d{4}-\\d{2}-\\d{2})\\s+(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?"
-    },
-    {
-      "id": "23f82eb3f63f6b82",
-      "kind": "regex",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseMonitorTimeWithDefaultDate",
-      "callee": "regexp.MustCompile",
-      "value": "(?:^|\\D)(\\d{1,2})(?:\\s*(?::|点|时)\\s*(\\d{1,2})?)?"
-    },
-    {
       "id": "7937b0b26e125e35",
       "kind": "regex",
       "path": "internal/security/secret_boundary.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "[^a-z0-9]+"
+    },
+    {
+      "id": "ef3ff99a71f5a964",
+      "kind": "regex",
+      "path": "internal/sshops/credential.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\bssh\\s+(?:-p\\s+(\\d+)\\s+)?([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+)"
     },
     {
       "id": "fcb651138eaebd79",
@@ -1262,14 +1238,6 @@
       "value": "webhooksecret"
     },
     {
-      "id": "aed96f01d3cf50e0",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/output.go",
-      "symbol": "explicitPasswordReset",
-      "callee": "strings.HasPrefix",
-      "value": "password"
-    },
-    {
       "id": "60e560f918535b48",
       "kind": "string_heuristic",
       "path": "internal/guardrails/output.go",
@@ -1278,12 +1246,12 @@
       "value": "密码"
     },
     {
-      "id": "26637632c48f5e6f",
+      "id": "aed96f01d3cf50e0",
       "kind": "string_heuristic",
       "path": "internal/guardrails/output.go",
       "symbol": "explicitPasswordReset",
       "callee": "strings.HasPrefix",
-      "value": "重置"
+      "value": "password"
     },
     {
       "id": "ba4fe8e4419aaf9a",
@@ -1292,6 +1260,14 @@
       "symbol": "explicitPasswordReset",
       "callee": "strings.HasPrefix",
       "value": "改密"
+    },
+    {
+      "id": "26637632c48f5e6f",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.HasPrefix",
+      "value": "重置"
     },
     {
       "id": "731dbb6cbf343631",
@@ -1653,22 +1629,6 @@
       "value": "vram"
     },
     {
-      "id": "e9aa5ae3a5b3d7f8",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseRelativeMonitorWindow",
-      "callee": "strings.Contains",
-      "value": "yesterday"
-    },
-    {
-      "id": "05146c2d077f44a0",
-      "kind": "string_heuristic",
-      "path": "internal/readprojection/timewindow.go",
-      "symbol": "parseRelativeMonitorWindow",
-      "callee": "strings.Contains",
-      "value": "昨天"
-    },
-    {
       "id": "fc8ffb7ab5037990",
       "kind": "string_heuristic",
       "path": "internal/security/secret_boundary.go",
@@ -1715,6 +1675,14 @@
       "symbol": "isBillingOrCostKey",
       "callee": "strings.Contains",
       "value": "price"
+    },
+    {
+      "id": "f0848cf75b1cb69c",
+      "kind": "string_heuristic",
+      "path": "internal/sshops/supervisor.go",
+      "symbol": "parseHarnessStream",
+      "callee": "strings.HasPrefix",
+      "value": "@@STEP "
     },
     {
       "id": "f8866346a56150c8",

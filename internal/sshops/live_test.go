@@ -110,9 +110,11 @@ func TestLiveKeystone(t *testing.T) {
 	}
 }
 
-// TestLiveFullFlow simulates the whole Option-A flow against the real box, driving the real
-// Service: recognition -> list candidates -> consent -> Diagnose (real harness, real SSH). Run it
-// against a box whose NVIDIA user-space driver lib has been relocated to reproduce a "掉卡".
+// TestLiveFullFlow drives the real Service end to end against a live box. B-only: the model selects
+// the tool + UHostId and the engine's authorization card gates consent, so there is no
+// symptom-recognition or candidate-list step here — the instance ID comes straight from the caller,
+// then Diagnose enters over real SSH and runs the real harness. Run it against a box whose NVIDIA
+// user-space driver lib has been relocated to reproduce a "掉卡".
 func TestLiveFullFlow(t *testing.T) {
 	host, port, user, pass := liveEnv(t)
 	if os.Getenv("SSHH_HARNESS") == "" {
@@ -120,38 +122,15 @@ func TestLiveFullFlow(t *testing.T) {
 	}
 	instanceID := envOr("SSHH_INSTANCE", "uhost-livetest")
 
-	// Beat 1 — the user asks; code (not the model) recognizes the in-instance ops symptom.
-	userMsg := envOr("SSHH_USERMSG", "我怎么掉卡了？")
-	if !IsInstanceOpsSymptom(userMsg) {
-		t.Fatalf("recognition failed for %q", userMsg)
-	}
-	t.Logf("[beat 1] 用户: %s   -> 识别为实例内运维症状（掉卡/驱动）", userMsg)
-
 	d := liveDescriber(host, port, user, pass, instanceID)
 	audit := &MemAuditWriter{}
 	svc := NewService(liveSupervisor(), audit)
 
-	// Beat 2 — list the user's instances for the consent picker.
-	cands, err := svc.ListCandidates(context.Background(), d)
-	if err != nil {
-		t.Fatalf("ListCandidates: %v", err)
-	}
-	t.Logf("[beat 2] 列出可选实例：")
-	for _, c := range cands {
-		t.Logf("        - %s  %q  %dx%s  %s", c.InstanceID, c.Name, c.GPU, c.GpuType, c.State)
-	}
-	if len(cands) == 0 {
-		t.Fatalf("no candidates listed")
-	}
-
-	// Beat 3 — the user selects the instance and consents (the dedicated Action requires
-	// Consent==true; here we call Diagnose directly, post-consent).
-	chosen := cands[0].InstanceID
-	t.Logf("[beat 3] 用户选择 %s 并授权只读 SSH 排查", chosen)
-
-	// Beat 4 — enter the instance and diagnose (real harness, real SSH, default 掉卡 probe).
+	// The model already selected DiagnoseInstanceInternals{UHostId, Task} and the user authorized it
+	// on the engine's card. Enter the instance and diagnose (real harness, real SSH, default 掉卡 probe).
+	t.Logf("[授权后] 进入实例 %s 只读排查", instanceID)
 	owner := Owner{TopOrganizationID: 1, OrganizationID: 2, RequestUUID: "live-req-1"}
-	res, err := svc.Diagnose(context.Background(), d, owner, chosen, "")
+	res, err := svc.Diagnose(context.Background(), d, owner, instanceID, "")
 	t.Logf("\n========== [beat 4] 进入实例排查 · 诊断结论 ==========\n%s\n====================================================", res.Output)
 	if err != nil {
 		t.Fatalf("Diagnose: %v (timedOut=%v)", err, res.TimedOut)

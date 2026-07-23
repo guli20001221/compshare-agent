@@ -42,33 +42,6 @@ func (a *ctxCheckAudit) Finish(ctx context.Context, _ string, _ AuditEvent) erro
 	return nil
 }
 
-func describerWithInstances(rows ...map[string]any) Describer {
-	arr := make([]any, len(rows))
-	for i, r := range rows {
-		arr[i] = r
-	}
-	return stubDescriber{resp: map[string]any{"RetCode": float64(0), "UHostSet": arr}}
-}
-
-func TestListCandidates(t *testing.T) {
-	d := describerWithInstances(
-		map[string]any{"UHostId": "uhost-a", "Name": "box-a", "GpuType": "RTX3080Ti", "GPU": 1, "State": "Running"},
-		map[string]any{"UHostId": "uhost-b", "Name": "box-b", "GpuType": "RTX4090", "GPU": 2, "State": "Stopped"},
-		map[string]any{"UHostId": "", "Name": "ignored"}, // no id -> skipped
-	)
-	svc := NewService(&fakeRunner{}, &MemAuditWriter{})
-	cands, err := svc.ListCandidates(context.Background(), d)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(cands) != 2 {
-		t.Fatalf("want 2 candidates, got %d (%+v)", len(cands), cands)
-	}
-	if cands[0].InstanceID != "uhost-a" || cands[0].GpuType != "RTX3080Ti" || cands[0].GPU != 1 || cands[0].State != "Running" {
-		t.Fatalf("candidate[0] parsed wrong: %+v", cands[0])
-	}
-}
-
 // WHY: the fail-closed audit is a security invariant — an in-instance access that could not be
 // recorded must NOT happen. If a future refactor runs the harness before/around a failed Begin,
 // this test fails.
@@ -192,26 +165,6 @@ func TestDiagnoseFinishDetachedFromCancelledRequestCtx(t *testing.T) {
 	}
 	if audit.finishSawCancelled {
 		t.Fatalf("Finish received a cancelled ctx — the audit UPDATE would fail and orphan the row at 'started'")
-	}
-}
-
-func TestIsInstanceOpsSymptom(t *testing.T) {
-	pos := []string{
-		"我怎么掉卡了？", "卡掉了怎么办", "GPU检测不到了", "nvidia-smi 用不了了",
-		"显卡不见了", "我的gpu没了", "cuda 报错 failed to initialize", "nvidia-smi command not found",
-	}
-	neg := []string{
-		"", "你好", "帮我创建一个4090实例", "我想找一个便宜的GPU租用", "查询我的余额", "这个模型怎么部署",
-	}
-	for _, s := range pos {
-		if !IsInstanceOpsSymptom(s) {
-			t.Errorf("expected ops symptom for %q", s)
-		}
-	}
-	for _, s := range neg {
-		if IsInstanceOpsSymptom(s) {
-			t.Errorf("did NOT expect ops symptom for %q", s)
-		}
 	}
 }
 
