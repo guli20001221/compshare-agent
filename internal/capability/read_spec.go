@@ -73,8 +73,12 @@ type ReadRuntime struct {
 // pre-migration one. Empty Status is a sentinel used only inside a Handle return
 // to mean "not terminal — render the Response".
 type ReadResult struct {
-	Status             platform.ReadStatus
-	Reply              string
+	Status platform.ReadStatus
+	Reply  string
+	// DirectReply ends the turn with Reply instead of sending the result back to
+	// the model. Use it only when the request is fully satisfied and another
+	// model round would add no value or expose a credential.
+	DirectReply        bool
 	NeedsClarification bool
 	FailureClass       platform.ReadFailureClass
 	FallbackReason     platform.ReadFallbackReason

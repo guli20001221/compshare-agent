@@ -18,7 +18,7 @@ func TestGenericReadPlatformCapabilityIsRemoved(t *testing.T) {
 	require.False(t, ok)
 }
 
-func TestConcreteReadAlwaysReturnsObservationAndNeverEndsTurn(t *testing.T) {
+func TestOrdinaryReadReturnsObservationAndDoesNotEndTurn(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
 			"TotalCount": float64(1),
@@ -42,6 +42,60 @@ func TestConcreteReadAlwaysReturnsObservationAndNeverEndsTurn(t *testing.T) {
 	// intent-typed observation, so the model sees the same JSON.
 	assert.Contains(t, out, `"status":"handled"`)
 	assert.Contains(t, out, `"route_status":"dispatched"`)
+}
+
+func TestInstanceAccessDiagnosisCanContinueToAgentAndKnowledge(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"TotalCount": float64(1),
+			"UHostSet": []any{map[string]any{
+				"UHostId": "cpod-1", "Name": "pod-a", "State": "Running",
+				"InstanceType": "Container",
+				"Ports": map[string]any{
+					"TcpPorts": []any{float64(22)},
+				},
+			}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "cpod-1 的 8188 端口打不开，怎么修"
+
+	out := eng.executeTool(context.Background(), toolCall("read",
+		capability.ReadToolName(intent.IntentInstanceAccess),
+		`{"targets":[{"type":"uhost_id_user_input","value":"cpod-1","source":"user_text"}],"access_type":"custom_port","protocol":"tcp","port":8188}`), noopStep)
+
+	_, final := isFinalReply(out)
+	require.False(t, final, "a diagnosis is evidence for the Agent, not a reason to terminate its turn")
+	var observation ReadCapabilityObservation
+	require.NoError(t, json.Unmarshal([]byte(out), &observation))
+	require.Equal(t, platform.ReadStatusHandled, observation.Status)
+	require.NotEmpty(t, observation.RenderRef)
+	require.Contains(t, observation.RenderContract, "可以继续查询资料")
+	require.Contains(t, observation.RenderContract, "不得改写")
+}
+
+func TestJupyterTokenDirectlyCompletesTheTurn(t *testing.T) {
+	const token = "stable-console-visible-token"
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"TotalCount": float64(1),
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "vm-a", "State": "Running",
+				"InstanceType": "UHost",
+			}},
+		},
+		"DescribeCompShareJupyterToken": {"JupyterToken": token},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "查询 uhost-1 的 Jupyter Token"
+
+	out := eng.executeTool(context.Background(), toolCall("read",
+		capability.ReadToolName(intent.IntentInstanceAccess),
+		`{"targets":[{"type":"uhost_id_user_input","value":"uhost-1","source":"user_text"}],"access_type":"jupyter_token"}`), noopStep)
+
+	final, ok := isFinalReply(out)
+	require.True(t, ok)
+	require.Contains(t, final, token)
 }
 
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {

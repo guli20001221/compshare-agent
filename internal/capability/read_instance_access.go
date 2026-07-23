@@ -171,12 +171,14 @@ func instanceAccessHandle(ctx context.Context, req InstanceAccessRequest, rt Rea
 
 	switch req.AccessType {
 	case accessTypeJupyter:
-		portRaw, callErr := rt.Executor.Execute(ctx, instanceAccessPortAction, map[string]any{})
-		if callErr != nil {
-			return InstanceAccessResponse{}, ReadFailureAfterTool(instanceAccessPortAction, instanceAccessCapabilityLabel, callErr)
+		if resp.InstanceKind == "pod" {
+			portRaw, callErr := rt.Executor.Execute(ctx, instanceAccessPortAction, map[string]any{})
+			if callErr != nil {
+				return InstanceAccessResponse{}, ReadFailureAfterTool(instanceAccessPortAction, instanceAccessCapabilityLabel, callErr)
+			}
+			resp.SourceActions = append(resp.SourceActions, instanceAccessPortAction)
+			resp.Port, resp.KnownSoftware = jupyterCatalogPort(portRaw)
 		}
-		resp.SourceActions = append(resp.SourceActions, instanceAccessPortAction)
-		resp.Port, resp.KnownSoftware = jupyterCatalogPort(portRaw)
 		resp.Status, resp.Reason = evaluateJupyterAccess(host, resp.InstanceKind, resp.Port)
 	case accessTypeCustomPort:
 		resp.Status, resp.Reason = evaluateCustomPortAccess(host, resp.InstanceKind, req.Protocol, req.Port)
@@ -242,6 +244,7 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	result := ReadHandled(strings.TrimSpace(reply))
 	result.ToolAction = instanceAccessDescribeAction
 	if resp.AccessType == accessTypeJupyterToken {
+		result.DirectReply = true
 		result.ToolAction = instanceAccessTokenAction
 	}
 	result.Envelope = &envelope.Envelope{

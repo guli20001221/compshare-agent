@@ -1770,6 +1770,82 @@ func TestChat_InstanceAccessTool_SSHStopped(t *testing.T) {
 	assert.Contains(t, toolMsg.Content, `"value":"Stopped"`)
 }
 
+func TestChat_InstanceAccessDiagnosisCanUseKnowledgeWithoutRewritingFacts(t *testing.T) {
+	const chunkID = "pod-port-configuration"
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"TotalCount": float64(1),
+			"UHostSet": []any{map[string]any{
+				"UHostId": "cpod-diag-001", "Name": "comfy-pod", "State": "Running",
+				"InstanceType": "Container",
+				"Ports": map[string]any{
+					"TcpPorts": []any{float64(22)},
+				},
+			}},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("access", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"cpod-diag-001","source":"user_text"}],"access_type":"custom_port","protocol":"tcp","port":8188}`),
+		}},
+		{ToolCalls: []openai.ToolCall{
+			toolCall("knowledge", "SearchKnowledge", `{"query":"Pod 添加 TCP 端口映射的方法"}`),
+		}},
+		{Content: "{{READ_OBSERVATION_1}}\n\n处理建议：按平台文档添加 TCP 8188 映射，然后确认应用监听该端口。[[" + chunkID + "]]"},
+	}}
+	chunk := knowledge.KBChunk{
+		ChunkID: chunkID, KBVersion: "test", Title: "Pod 端口配置",
+		Content: "Pod 可在实例端口配置中添加 TCP 端口映射；修改后还要确认实例内应用监听相同端口。",
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true, KBVersion: "test", Hits: []knowledge.KBChunk{chunk},
+		HitItems: []knowledge.RetrievalHit{{Chunk: chunk, Score: 90, Kept: true}},
+	}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "cpod-diag-001 的 8188 端口打不开，怎么修", noopStep)
+	require.NoError(t, err)
+	require.Len(t, mock.calls, 3, "the same central Agent should diagnose, retrieve guidance, and answer")
+	require.Len(t, retriever.calls, 1)
+	assert.Contains(t, reply, "Pod 当前云侧端口配置中没有登记 TCP 8188")
+	assert.Contains(t, reply, "按平台文档添加 TCP 8188 映射")
+	assert.NotContains(t, reply, "防火墙拒绝")
+	assert.NotContains(t, reply, "{{READ_OBSERVATION_")
+	assert.NotContains(t, reply, "[[")
+}
+
+func TestChat_InstanceAccessTokenDoesNotEnterAnotherModelRound(t *testing.T) {
+	const token = "stable-console-visible-token"
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"TotalCount": float64(1),
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-token-001", "Name": "token-vm", "State": "Running",
+				"InstanceType": "UHost",
+			}},
+		},
+		"DescribeCompShareJupyterToken": {"JupyterToken": token},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{{ToolCalls: []openai.ToolCall{
+		toolCall("token", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-token-001","source":"user_text"}],"access_type":"jupyter_token"}`),
+	}}}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "查询 uhost-token-001 的 Jupyter Token", noopStep)
+	require.NoError(t, err)
+	require.Len(t, mock.calls, 1)
+	assert.Contains(t, reply, token)
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+	assert.Contains(t, executor.calls, "DescribeCompShareJupyterToken")
+}
+
 func TestChat_InstanceAccessTool_UnknownArgsRejectedBeforeUpstream(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {

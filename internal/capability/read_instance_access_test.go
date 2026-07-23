@@ -155,6 +155,26 @@ func TestInstanceAccessJupyterMissingPodPortIsBlocked(t *testing.T) {
 	assert.Contains(t, result.Reply, "没有登记")
 }
 
+func TestInstanceAccessVMJupyterDoesNotTreatGlobalCatalogAsInstanceMapping(t *testing.T) {
+	exec := &accessReadExec{results: map[string]map[string]any{
+		instanceAccessDescribeAction: describeFixture(accessHost("uhost-a", "UHost", nil)),
+		instanceAccessPortAction: {
+			"SoftwarePort": []any{map[string]any{"Software": "JupyterLab", "Port": float64(8888)}},
+		},
+	}}
+
+	result := runInstanceAccess(t, exec, InstanceAccessRequest{
+		Targets: accessTarget("uhost-a"), AccessType: accessTypeJupyter,
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.False(t, result.DirectReply, "a diagnosis must remain available to the central Agent")
+	assert.Contains(t, result.Reply, "没有返回 Jupyter 应用入口")
+	assert.NotContains(t, result.Reply, "8888")
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, instanceAccessDescribeAction, exec.calls[0].action)
+}
+
 func TestInstanceAccessCustomPortDistinguishesPodFromVM(t *testing.T) {
 	t.Run("pod exact mapping", func(t *testing.T) {
 		exec := &accessReadExec{results: map[string]map[string]any{
@@ -242,6 +262,7 @@ func TestInstanceAccessExplicitJupyterTokenUsesVerifiedInstance(t *testing.T) {
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.True(t, result.DirectReply, "a credential response must not be sent through another model round")
 	assert.Equal(t, instanceAccessTokenAction, result.ToolAction)
 	assert.Contains(t, result.Reply, token)
 	assert.Contains(t, result.Reply, "需启动后")
@@ -267,6 +288,7 @@ func TestInstanceAccessExplicitJupyterTokenDoesNotInventMissingValue(t *testing.
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.True(t, result.DirectReply)
 	assert.Contains(t, result.Reply, "没有返回有效")
 	assert.NotContains(t, result.Reply, "Jupyter Token：")
 }
