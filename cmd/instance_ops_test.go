@@ -185,11 +185,17 @@ func TestServerInstanceOpsRunner_OffByDefault(t *testing.T) {
 	require.Nil(t, r)
 }
 
-// P2 gate 2: SSH_OPS on but durable off → nil (the harness needs the durable commit path).
-func TestServerInstanceOpsRunner_RequiresDurable(t *testing.T) {
-	r, err := serverInstanceOpsRunner(gateCfg(), gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"}), noopDescriber{}, nil)
+// The lane is READ-ONLY, so it does NOT require durable turns: with SSH_OPS + non-static STS + a DB it
+// runs on the current (non-durable) production transport (WS/SSE via chatStream, which carries the
+// confirm card + StepEvent stream). Durable only adds disconnect-survival, not safety.
+func TestServerInstanceOpsRunner_RunsWithoutDurable(t *testing.T) {
+	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"}) // COMPSHARE_DURABLE_TURNS deliberately unset
+	db := sql.OpenDB(fakeConnector{})
+	defer db.Close()
+
+	r, err := serverInstanceOpsRunner(gateCfg(), env, noopDescriber{}, db)
 	require.NoError(t, err)
-	require.Nil(t, r, "ssh-ops must stay off without COMPSHARE_DURABLE_TURNS=1")
+	require.NotNil(t, r, "read-only lane must run on the non-durable transport (no durable requirement)")
 }
 
 // P2 gate 7 (INV-12): SSH_OPS + durable on, but a static provider (no STS service AK/SK) → refuse to
@@ -198,7 +204,7 @@ func TestServerInstanceOpsRunner_RefusesStaticProvider(t *testing.T) {
 	cfg := gateCfg()
 	cfg.Agent.STS = config.STSConfig{} // empty service AK/SK ⇒ StaticCredentialProvider path
 	cfg.Agent.PublicKey, cfg.Agent.PrivateKey = "pk", "sk"
-	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1", "COMPSHARE_DURABLE_TURNS": "1"})
+	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"})
 
 	// non-nil db so the ONLY thing gating construction is the static provider
 	db := sql.OpenDB(fakeConnector{})
@@ -209,8 +215,8 @@ func TestServerInstanceOpsRunner_RefusesStaticProvider(t *testing.T) {
 	require.Nil(t, r, "static AK/SK must refuse the lane (INV-12)")
 }
 
-// All conditions satisfied → a runner is constructed.
-func TestServerInstanceOpsRunner_ConstructsWhenFullyEnabled(t *testing.T) {
+// Durable ON is accepted too — it simply adds disconnect-survival; the gate never depended on it.
+func TestServerInstanceOpsRunner_ConstructsWithDurableOn(t *testing.T) {
 	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1", "COMPSHARE_DURABLE_TURNS": "1"})
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
@@ -224,7 +230,7 @@ func TestServerInstanceOpsRunner_ConstructsWhenFullyEnabled(t *testing.T) {
 func TestServerInstanceOpsRunner_MisconfigIsBootError(t *testing.T) {
 	cfg := gateCfg()
 	cfg.Agent.SSHOps.HarnessPath = "" // enabled but not configured
-	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1", "COMPSHARE_DURABLE_TURNS": "1"})
+	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"})
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 

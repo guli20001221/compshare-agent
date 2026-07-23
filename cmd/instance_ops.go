@@ -127,20 +127,21 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback string, audit ssho
 // serverInstanceOpsRunner decides whether the HTTP server wires the SSH-ops lane, and builds it if so.
 // It returns nil (with a logged reason) — never an error for a deliberately-off lane — unless ALL hold:
 //   - COMPSHARE_SSH_OPS is enabled
-//   - COMPSHARE_DURABLE_TURNS==1: the harness outlives a single request, and only the durable commit
-//     path survives a WebSocket disconnect; the legacy path would kill it mid-run (R1 / P2 gate 2)
 //   - the credential provider is per-tenant STS, not a shared static account: under static AK/SK there
 //     is no upstream tenant scoping on the target instance, so the lane must refuse (INV-12 / gate 7)
 //   - a database is available for the fail-closed audit store
 //
-// A genuine misconfiguration (lane fully enabled but harness settings missing) returns an error so
-// boot fails loudly rather than silently disabling the lane.
+// It deliberately does NOT require durable turns. The lane is READ-ONLY, so the only thing the durable
+// path adds is disconnect-survival (a detached worker ctx) and per-step replay persistence — both are
+// UX robustness, not safety. On the current non-durable transport a client disconnect cancels the ctx
+// and kills the (read-only) harness mid-run; Diagnose still finalizes the audit row (its Finish runs on
+// a WithoutCancel ctx), so the outcome is a clean retry, not corruption or an orphaned record. The same
+// chatStream driver serves the legacy SSE and the non-durable WS path with the confirm card + live
+// StepEvent stream, so the lane works on production today; enabling durable later only makes the
+// harness survive a disconnect. A genuine misconfiguration (lane enabled but harness settings missing)
+// returns an error so boot fails loudly rather than silently disabling the lane.
 func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, describer sshops.Describer, db *sql.DB) (engine.InstanceOpsRunner, error) {
 	if !serverFeatureEnabled(getenv, "COMPSHARE_SSH_OPS") {
-		return nil, nil
-	}
-	if getenv("COMPSHARE_DURABLE_TURNS") != "1" {
-		log.Printf("ssh-ops disabled: COMPSHARE_SSH_OPS requires COMPSHARE_DURABLE_TURNS=1 (the harness outlives a request; the legacy path kills it on disconnect)")
 		return nil, nil
 	}
 	if cfg.Agent.STS.ServiceAK == "" || cfg.Agent.STS.ServiceSK == "" {
@@ -156,7 +157,8 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 		return nil, fmt.Errorf("ssh-ops: %w", err)
 	}
 	limiter := governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits())
-	log.Printf("ssh-ops enabled: consent-gated read-only in-instance diagnosis (durable path, per-tenant STS, fail-closed audit)")
+	durable := getenv("COMPSHARE_DURABLE_TURNS") == "1"
+	log.Printf("ssh-ops enabled: consent-gated read-only in-instance diagnosis (per-tenant STS, fail-closed audit, durable=%t; on the non-durable transport a client disconnect ends a read-only diagnosis and the user retries)", durable)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }
 

@@ -90,9 +90,10 @@ agent:
 
   # Consent-gated, read-only in-instance SSH-ops diagnosis lane (DiagnoseInstanceInternals).
   # Default OFF. When enabled: false the tool is absent from the model's window and nothing changes.
-  # Server path ALSO requires features.durable_turns: true and a non-static STS provider (INV-12);
-  # CLI path needs only enabled: true. harness_path/gateway_url are required when enabled (boot fails
-  # loudly if enabled but unset). Runtime deps on the host: python3 + claude_agent_sdk + the ccr gateway.
+  # Server path requires a non-static STS provider (INV-12); it runs on the current non-durable WS/SSE
+  # transport (no durable_turns dependency — the lane is read-only, so a disconnect just ends the probe
+  # and the user retries). CLI path needs only enabled: true. harness_path/gateway_url are required when
+  # enabled (boot fails loudly if enabled but unset). Host deps: python3 + claude_agent_sdk + ccr gateway.
   ssh_ops:
     enabled: false
     harness_path: ""                   # absolute path to deploy/ssh_ops_harness/harness.py (required when enabled)
