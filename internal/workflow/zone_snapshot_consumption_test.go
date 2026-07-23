@@ -159,7 +159,7 @@ func TestNetOptimizerNormalize_RequiresAvailableSnapshot(t *testing.T) {
 // TestAddZoneRegionAndID_RegionAndIDFromOneRecord pins that the read-probe stamps
 // Region AND zone_id from a SINGLE catalog record, never a snapshot id paired with
 // a zone-string-guessed Region. The record's Region is deliberately unequal to
-// regionFromZone(zone) so a guess is distinguishable; a zone the catalog rejects
+// a string-derived region so a guess is distinguishable; a zone the catalog rejects
 // gets neither field.
 func TestAddZoneRegionAndID_RegionAndIDFromOneRecord(t *testing.T) {
 	snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
@@ -188,7 +188,7 @@ func TestAddZoneRegionAndID_RegionAndIDFromOneRecord(t *testing.T) {
 // TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot pins that the CFS
 // Region comes ONLY from the catalog record — a contradictory Region param cannot
 // override it, and a record missing Region fails closed instead of being back-filled
-// by regionFromZone. The pod zone id is chosen so regionFromZone(zone) != the
+// by trimming the zone string. The pod zone id is chosen so that guess differs from the
 // record Region, making a guess visible.
 func TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot(t *testing.T) {
 	pod := deployment.ZonePlacement{Zone: "cn-pod-bj-01", Region: "cn-realpod", ZoneID: 7001, AzGroup: 3007, IsPod: true}
@@ -205,7 +205,7 @@ func TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot(t *testing.T) {
 			"Region from the catalog record, not the param cn-wrong nor the guess cn-pod-bj")
 	})
 
-	t.Run("record missing Region fails closed, no regionFromZone fallback", func(t *testing.T) {
+	t.Run("record missing Region fails closed, no string-derived fallback", func(t *testing.T) {
 		noRegion := deployment.ZonePlacement{Zone: "cn-pod-bj-01", ZoneID: 7001, AzGroup: 3007, IsPod: true}
 		snap := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{Placement: noRegion}})
 		wfCtx := NewContext(map[string]any{
@@ -213,7 +213,7 @@ func TestNormalizeCreateCFSParams_RegionSingleSourceFromSnapshot(t *testing.T) {
 		})
 		wfCtx.referenceData.ZoneCatalog = snap
 		require.Error(t, normalizeCreateCFSParams(wfCtx),
-			"a catalog record with no Region must refuse, not fall back to regionFromZone")
+			"a catalog record with no Region must refuse, not derive one from the zone string")
 	})
 }
 

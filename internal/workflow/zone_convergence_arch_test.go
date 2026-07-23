@@ -37,6 +37,9 @@ func TestZoneConvergence_NoLegacyChainInProduction(t *testing.T) {
 		// catalog: executeWorkflow now REQUIRES the snapshot as a parameter and never
 		// builds its own, so a second catalog can no longer come into being here.
 		"zoneCatalogSnapshotForAction", "withPrebuiltZoneCatalog",
+		// A missing location is unavailable, never a reason to substitute the old
+		// fixed zone/region or derive Region by trimming the Zone string.
+		"defaultZone", "defaultRegion", "regionFromZone",
 	}
 
 	for _, dir := range []string{".", "../engine", "../zones"} {

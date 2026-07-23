@@ -5,74 +5,12 @@ import (
 	"strings"
 )
 
-// defaultRegion is the Region paired with defaultZone. Kept in lockstep with
-// defaultZone (cn-wlcb-01 → cn-wlcb) so workflow fallbacks are consistent.
-//
-// This is the workflow-side fallback only; the runtime Region for mutating
-// workflows comes from the queried instance via extractInstanceRegion.
-// It is independent of config.yaml's `cfg.Region`, which only matters for
-// CLI single-region dev mode — see internal/tools/external.go for that
-// path. The two values do not need to match in production (HTTP path).
-//
-// CreateInstanceWorkflow does NOT currently use this fallback; its read
-// tools are gated by SafeToolExecutor.filterSafeArgs which would drop any
-// args["Region"] (registry schema in internal/tools/registry.go does not
-// declare Region for those tools). See PR-β1 follow-up.
-const defaultRegion = "cn-wlcb"
-
-// regionFromZone derives a Region name from a Zone name by stripping the
-// trailing "-<index>" segment. CompShare zone naming is "<region>-<index>"
-// where <region> itself contains at least one dash (e.g. "cn-sh2-02" →
-// "cn-sh2", "cn-wlcb-01" → "cn-wlcb"). Returns "" when the input clearly
-// is not a Zone — empty string, no separator, or fewer than 2 dashes (which
-// guards against a caller accidentally passing a Region like "cn-wlcb" and
-// getting "cn" back).
-//
-// This is a derivation fallback only. When the upstream response carries an
-// explicit Region field, prefer that — see extractInstanceRegion.
-func regionFromZone(zone string) string {
-	zone = strings.TrimSpace(zone)
-	if zone == "" {
-		return ""
-	}
-	if strings.Count(zone, "-") < 2 {
-		return ""
-	}
-	idx := strings.LastIndex(zone, "-")
-	if idx <= 0 {
-		return ""
-	}
-	return zone[:idx]
-}
-
-// extractInstanceRegion returns the Region the workflow should use for a
-// mutating call on a queried instance. Resolution order:
-//  1. Region field from the first UHostSet entry (upstream populates this).
-//  2. regionFromZone(Zone) derived from the same entry.
-//  3. defaultRegion (CLI/dev fallback).
-//
-// This pairs with extractInstanceZone — call both when building args for a
-// mutating step so the upstream signer does not have to reverse-derive Region
-// from Zone in a code path that only runs in IsInternalCall() mode.
-func extractInstanceRegion(result map[string]any, defaultRegionVal string) string {
-	if result != nil {
-		if hostSet, ok := result["UHostSet"].([]any); ok && len(hostSet) > 0 {
-			if first, ok := hostSet[0].(map[string]any); ok {
-				if region, ok := first["Region"].(string); ok && region != "" {
-					return region
-				}
-				if zone, ok := first["Zone"].(string); ok && zone != "" {
-					if derived := regionFromZone(zone); derived != "" {
-						return derived
-					}
-				}
-			}
-		}
-	}
-	return defaultRegionVal
-}
-
-func extractRequiredInstanceLocation(result map[string]any) (region, zone string, err error) {
+// extractRequiredInstanceLocation returns a write-safe instance location.
+// DescribeCompShareInstance carries the instance's Zone and Region. Some old
+// or partially populated responses omit Region, so the matching row in the live
+// DescribeCompShareSupportZone result is an accepted fallback. The location is
+// never guessed from the Zone string and never replaced with a fixed default.
+func extractRequiredInstanceLocation(result, supportZones map[string]any) (region, zone string, err error) {
 	if result != nil {
 		if hostSet, ok := result["UHostSet"].([]any); ok && len(hostSet) > 0 {
 			if first, ok := hostSet[0].(map[string]any); ok {
@@ -85,11 +23,18 @@ func extractRequiredInstanceLocation(result map[string]any) (region, zone string
 			}
 		}
 	}
-	if region == "" && zone != "" {
-		region = regionFromZone(zone)
-	}
-	if zone == "" || region == "" {
+	if zone == "" {
 		return "", "", fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
+	}
+	if placement, ok := supportZonePlacementForZone(supportZones, zone); ok {
+		if region == "" {
+			region = placement.region
+		} else if placement.region != "" && !strings.EqualFold(region, placement.region) {
+			return "", "", fmt.Errorf("实例地域与实时可用区目录不一致，无法安全执行该操作。请稍后重试或到控制台确认实例位置。")
+		}
+	}
+	if region == "" {
+		return "", "", fmt.Errorf("未获取到实例真实地域，无法安全执行该操作。请稍后重试或到控制台确认实例位置。")
 	}
 	return region, zone, nil
 }
@@ -100,9 +45,9 @@ func extractRequiredInstanceLocation(result map[string]any) (region, zone string
 // UHostSet the same workflow's DescribeCompShareInstance step returns never
 // carries usable ZoneId/RegionId — upstream tags them json:"-" — so this
 // catalog lookup keyed by the Zone string is the only real resolution path.
-// Optional: a failed/slow lookup must not block a VM-only workflow that
-// doesn't need the numeric IDs; addRequiredPodPlacementArgs fails closed on
-// its own once it establishes the target actually is Pod/Container.
+// The lookup remains optional for VM operations whose instance response already
+// carries Region. A missing lookup can never re-enable a guess: callers still
+// fail closed when neither response supplies a real Region.
 func stepQuerySupportZones() Step {
 	return Step{
 		Name:     "查询支持区",
@@ -116,33 +61,21 @@ func stepQuerySupportZones() Step {
 }
 
 func addRequiredPodPlacementArgs(args map[string]any, result map[string]any, supportZones map[string]any) (map[string]any, error) {
-	host, ok := firstInstance(result)
+	_, ok := firstInstance(result)
 	if !ok {
 		return nil, fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
 	}
-	zone := strings.TrimSpace(stringFieldAny(host["Zone"]))
-	region := strings.TrimSpace(stringFieldAny(host["Region"]))
-	if zone == "" {
-		return nil, fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
+	region, zone, err := extractRequiredInstanceLocation(result, supportZones)
+	if err != nil {
+		return nil, err
 	}
 	if sz, ok := supportZonePlacementForZone(supportZones, zone); ok {
-		if region == "" {
-			region = sz.region
-		}
 		if sz.zoneID != 0 {
 			args["zone_id"] = sz.zoneID
 		}
 		if sz.azGroup != 0 {
 			args["az_group"] = sz.azGroup
 		}
-	}
-	if region == "" {
-		if derived := regionFromZone(zone); derived != "" {
-			region = derived
-		}
-	}
-	if region == "" {
-		return nil, fmt.Errorf("未获取到实例真实可用区，无法安全执行该操作。请稍后重试或到控制台确认实例可用区。")
 	}
 	args["Region"] = region
 	args["Zone"] = zone
@@ -193,11 +126,11 @@ func supportZonePlacementForZone(result map[string]any, zone string) (supportZon
 		if !ok {
 			continue
 		}
-		if strings.TrimSpace(stringFieldAny(entry["Zone"])) != zone {
+		if !strings.EqualFold(strings.TrimSpace(stringFieldAny(entry["Zone"])), zone) {
 			continue
 		}
 		placement := supportZonePlacement{
-			region: stringFieldAny(entry["Region"]),
+			region: strings.TrimSpace(stringFieldAny(entry["Region"])),
 		}
 		if id, ok := parseUint32Any(entry["ZoneId"]); ok {
 			placement.zoneID = id

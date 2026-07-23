@@ -1282,6 +1282,9 @@ func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *
 		"DescribeCompShareInstance": {
 			"UHostSet": []any{map[string]any{"UHostId": "uhost-stop-001", "State": "Running", "Zone": "cn-wlcb-01"}},
 		},
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"}},
+		},
 		"StopCompShareInstance": {"RetCode": 0},
 	}}
 	limiter := &scriptedRateLimiter{}
