@@ -71,6 +71,7 @@ class RAGV2PipelineTests(unittest.TestCase):
             )
             self.assertEqual(2, stats["chunk_count"])
             self.assertTrue(any("控制台重置密码" in row["content"] for row in rows))
+            self.assertTrue(all("retrieval_text" not in row for row in rows))
             self.assertEqual([], validate_chunks(rows, expected_version="kb.platform.v2.test"))
 
     def test_long_text_falls_back_without_loss(self):

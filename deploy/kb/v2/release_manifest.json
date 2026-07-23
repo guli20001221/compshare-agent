@@ -66,22 +66,22 @@
   "artifacts": {
     "internal_corpus": {
       "path": "deploy/kb/v2/stage2b_v2.jsonl",
-      "sha256": "3da808650d9110427aaf90096ac5b6557b47ec1a1dc1414b399eda6bc567352d"
+      "sha256": "c4421ea2ef5b9f83226d36d2c2d3b5bc0b319591af59dc659b6d341316959870"
     },
     "external_corpus": {
       "path": "deploy/kb/v2/external_v2.jsonl",
-      "sha256": "6555e3996b1a85dd54e4e6db46295c113b11a99854a24be28ec4085a69936602"
+      "sha256": "0a395a7798c645af05d87ff5fd184d1d3d01401a2de3918bd13acb0a433ba89e"
     },
     "internal_embeddings": {
-      "path": "deploy/kb/embeddings_3da808650d9110427aaf90096ac5b6557b47ec1a1dc1414b399eda6bc567352d_qwen3-embedding-8b.jsonl",
-      "sha256": "7a46f3fc53d252868fda9fb5f660c66e86802628593968f4e5f8eeea74acc793",
+      "path": "deploy/kb/embeddings_c4421ea2ef5b9f83226d36d2c2d3b5bc0b319591af59dc659b6d341316959870_qwen3-embedding-8b.jsonl",
+      "sha256": "e0bd57ee7f4fb3de588486761f6ca5564727cecb1cb2d8df6a6f7dae9533db32",
       "model": "qwen3-embedding-8b",
       "dim": 4096,
       "rows": 544
     },
     "external_embeddings": {
-      "path": "deploy/kb/embeddings_6555e3996b1a85dd54e4e6db46295c113b11a99854a24be28ec4085a69936602_qwen3-embedding-8b.jsonl",
-      "sha256": "4c7abc6e8dab4ce250d242a87dd5cd7fe71cd7cdef6f6084547a6f8696a488c6",
+      "path": "deploy/kb/embeddings_0a395a7798c645af05d87ff5fd184d1d3d01401a2de3918bd13acb0a433ba89e_qwen3-embedding-8b.jsonl",
+      "sha256": "7b4ce6119af40dfbea93786ea55514289173c9070714ad04876da48a85393645",
       "model": "qwen3-embedding-8b",
       "dim": 4096,
       "rows": 1180

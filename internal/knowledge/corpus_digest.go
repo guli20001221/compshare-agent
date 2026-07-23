@@ -14,7 +14,7 @@ import (
 // @ 8a81268 plus the three public FAQ exports. V2 keeps complete short API
 // references and operation guides as one chunk, uses caption-only VL image
 // evidence, performs no redaction, and emits 544 chunks.
-const CorpusDigestExpected = "3da808650d9110427aaf90096ac5b6557b47ec1a1dc1414b399eda6bc567352d"
+const CorpusDigestExpected = "c4421ea2ef5b9f83226d36d2c2d3b5bc0b319591af59dc659b6d341316959870"
 
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
@@ -28,7 +28,7 @@ const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b3
 // RAG_RETRIEVAL_MODE=qwen3_full; the text-emb-3 sidecar above remains the
 // default for hybrid_cosine / hybrid_rerank modes. Same mismatch semantics
 // as EmbeddingDigestExpected: stale sidecar = hybrid path refuses to load.
-const EmbeddingDigestExpectedQwen3 = "7a46f3fc53d252868fda9fb5f660c66e86802628593968f4e5f8eeea74acc793"
+const EmbeddingDigestExpectedQwen3 = "e0bd57ee7f4fb3de588486761f6ca5564727cecb1cb2d8df6a6f7dae9533db32"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate
 // external tool/ops corpus. It is intentionally platform-neutral and stable:
@@ -39,12 +39,12 @@ const EmbeddingDigestExpectedQwen3 = "7a46f3fc53d252868fda9fb5f660c66e8680262859
 // community-image rankings belong in the internal platform corpus instead.
 // Loaded alongside the platform corpus via LoadPinnedCorporaWithEmbeddings. Same
 // refuse-to-start-on-mismatch semantics as the platform pin.
-const ExternalCorpusDigestExpected = "6555e3996b1a85dd54e4e6db46295c113b11a99854a24be28ec4085a69936602"
+const ExternalCorpusDigestExpected = "0a395a7798c645af05d87ff5fd184d1d3d01401a2de3918bd13acb0a433ba89e"
 
 // ExternalEmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar
 // (4096-dim) for the external corpus:
 // deploy/kb/embeddings_<ExternalCorpusDigestExpected>_qwen3-embedding-8b.jsonl.
-const ExternalEmbeddingDigestExpectedQwen3 = "4c7abc6e8dab4ce250d242a87dd5cd7fe71cd7cdef6f6084547a6f8696a488c6"
+const ExternalEmbeddingDigestExpectedQwen3 = "7b4ce6119af40dfbea93786ea55514289173c9070714ad04876da48a85393645"
 
 // ComputeCorpusDigest normalizes line endings so the pinned corpus digest is
 // stable across Windows and Unix checkouts.

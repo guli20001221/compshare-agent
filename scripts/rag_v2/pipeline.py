@@ -1019,7 +1019,6 @@ def build_chunks(
                     "product_area": area,
                     "question_patterns": question_patterns,
                     "retrieval_score_hint": None,
-                    "retrieval_text": "\n".join([chunk_title, " > ".join(heading_path), *question_patterns, content]),
                     "source_origin": doc.source_origin,
                     "source_refs": [f"{doc.source_id}:{doc.source_path}"],
                     "source_type": "runbook" if _looks_like_runbook(content) else "faq",
