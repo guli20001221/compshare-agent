@@ -104,7 +104,14 @@ func TestSearchKnowledgeUsesPlannedQueriesButKeepsOneAnswerQuestion(t *testing.T
 	assert.Equal(t, eng.resolvedKnowledgeQuestionThisTurn, eng.searchKnowledgeLedgerThisTurn.Query)
 	assert.Contains(t, out, "novnc-audio")
 	assert.Contains(t, out, "browser-limit")
-	assert.Equal(t, 2, eng.searchKnowledgeCallsThisTurn, "the cap counts actual retrievals, not tool envelopes")
+	// The original intent of this assertion — "retrievals are counted, not tool
+	// envelopes" — is preserved, on the counter that now owns it. The inputs
+	// above are untouched; only the field the count lives on moved, because one
+	// counter used to serve both budgets and the wide plan below therefore ate
+	// every later hop. Both halves are pinned so the split cannot silently
+	// collapse back into a single counter.
+	assert.Equal(t, 2, eng.searchKnowledgeQueriesThisTurn, "the retrieval budget counts actual retrievals, not tool envelopes")
+	assert.Equal(t, 1, eng.searchKnowledgeCallsThisTurn, "the call budget counts agent decisions to search: this was one call")
 }
 
 func TestMultiTurnKnowledgeQueryPlanningIsWiredThroughTheProductionAgentLoop(t *testing.T) {

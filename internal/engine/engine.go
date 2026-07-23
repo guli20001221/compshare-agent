@@ -37,7 +37,13 @@ import (
 )
 
 const (
-	maxReActRounds = 10
+	// maxReActRounds bounds the agent loop. Raised 10 -> 16 together with the
+	// retrieval budgets below: a genuine multi-hop knowledge turn now costs
+	// several rounds (search -> read the gap -> search again -> answer), and at
+	// 10 the ceiling was close enough to that path to truncate it. The real cost
+	// ceiling stays agent.rate_limit.max_tokens_per_turn, which is enforced
+	// per turn and trips long before 16 rounds of tool traffic.
+	maxReActRounds = 16
 	// maxHistoryMessages is the maximum number of non-system messages to keep.
 	//
 	// This was 40, sized for "a 32K context window" — a model we no longer run.
@@ -61,18 +67,34 @@ const (
 	// way of real traffic without pretending to fix that.
 	maxHistoryMessages           = 120
 	maxKnowledgeHistoryRunes     = 4000
-	maxReadExpensiveCallsPerTurn = 20
-	// maxSearchKnowledgeCallsPerTurn bounds how many times the knowledge_qa agent
-	// loop may call SearchKnowledge in a single turn. On a corpus-gap query the
-	// retriever returns only weak hits (dropped by the relevance floor), so the
-	// model sees "no relevant docs" and re-searches with new phrasings round after
-	// round — up to maxReActRounds, each round re-sending a growing context — until
-	// the per-turn token budget trips and the user gets the bare "请简化问题" instead
+	maxReadExpensiveCallsPerTurn = 30
+	// maxSearchKnowledgeCallsPerTurn bounds how many times the agent may CALL
+	// SearchKnowledge in a single turn. On a corpus-gap query the retriever
+	// returns only weak hits (dropped by the relevance floor), so the model sees
+	// "no relevant docs" and re-searches with new phrasings round after round —
+	// up to maxReActRounds, each round re-sending a growing context — until the
+	// per-turn token budget trips and the user gets the bare "请简化问题" instead
 	// of an honest "no specific docs" answer. Past this cap SearchKnowledge is
 	// withdrawn from the tool list so the model must answer from what it has (or
-	// decline) well within budget. One resolved query is normally sufficient; a
-	// second permits a genuine follow-up angle without allowing search thrash.
-	maxSearchKnowledgeCallsPerTurn = 2
+	// decline) well within budget.
+	//
+	// This counter used to be incremented once per RETRIEVAL, not once per call,
+	// which quietly merged two different budgets into one. The multi-turn query
+	// planner fans a resolved question out into up to maxKnowledgePlanQueries
+	// retrievals *inside a single call*, so whenever it emitted 2+ queries the
+	// very first call exhausted the turn and the agent lost every later hop —
+	// on a live probe over real 2026-06-26..07-09 questions that was 8% of
+	// single-question turns and 14% (1/7) of the real multi-turn replay cases.
+	// Search thrash and retrieval volume are now bounded separately: this counts
+	// agent decisions to search, maxRetrievalQueriesPerTurn counts the retrievals
+	// those decisions cost.
+	maxSearchKnowledgeCallsPerTurn = 4
+	// maxRetrievalQueriesPerTurn bounds total retrievals across every
+	// SearchKnowledge call in one turn, including the planner's per-call fan-out.
+	// It is the cost ceiling the old per-query counter was really enforcing;
+	// keeping it separate lets a follow-up hop stay reachable without letting a
+	// wide plan multiply into unbounded retrieval.
+	maxRetrievalQueriesPerTurn = 8
 )
 
 const actionOutcomeUncertainReply = "上游请求已发出，但本次没有收到可确认的结果。为避免重复操作，系统不会自动重试；请先查询资源当前状态，再决定下一步。"
@@ -248,10 +270,18 @@ type Engine struct {
 	// turn. ToolScope controls whether the tool is available for the active intent.
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
-	// searchKnowledgeCallsThisTurn counts actual retrieval queries, including
-	// the bounded query variants emitted by the multi-turn query planner.
-	// The ReAct loop withdraws the capability at maxSearchKnowledgeCallsPerTurn.
+	// searchKnowledgeCallsThisTurn counts how many times the agent CHOSE to call
+	// SearchKnowledge this turn — one increment per tool call, regardless of how
+	// many query variants the multi-turn planner fans that call out into. The
+	// ReAct loop withdraws the capability at maxSearchKnowledgeCallsPerTurn, so
+	// this is the anti-thrash budget.
 	searchKnowledgeCallsThisTurn int
+	// searchKnowledgeQueriesThisTurn counts actual retrievals, including the
+	// planner's per-call fan-out. This is the cost budget, bounded by
+	// maxRetrievalQueriesPerTurn. It was previously merged into
+	// searchKnowledgeCallsThisTurn, which made a wide first plan silently
+	// consume every later hop.
+	searchKnowledgeQueriesThisTurn int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
 	// evidence ledger (the union of every SearchKnowledge call's items this turn,
 	// #126). The route-independent grounded-answer validator checks the final
@@ -1171,6 +1201,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
+	e.searchKnowledgeQueriesThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
@@ -2158,21 +2189,29 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "本轮检索次数已达上限"})
 		return `{"EvidenceLedger":{"items":[]},"empty":true,"search_limit_reached":true}`
 	}
+	// One agent decision to search costs exactly one unit of the call budget,
+	// however many query variants the planner fanned it out into. The retrievals
+	// themselves are charged to maxRetrievalQueriesPerTurn below.
+	e.searchKnowledgeCallsThisTurn++
 	if e.knowledgeRetriever == nil || len(plan.SearchQueries) == 0 {
-		e.searchKnowledgeCallsThisTurn++
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true)
 	}
 
 	combined := knowledge.EvidenceLedger{Query: resolvedQuestion}
 	executedQueries := 0
+	droppedQueries := 0
 	for _, plannedQuery := range plan.SearchQueries {
-		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
+		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
+			// Never drop a planned query silently: the trace must show that the
+			// plan and the execution disagreed, or a truncated search looks
+			// identical to a narrow one.
+			droppedQueries = len(plan.SearchQueries) - executedQueries
 			break
 		}
-		e.searchKnowledgeCallsThisTurn++
+		e.searchKnowledgeQueriesThisTurn++
 		executedQueries++
-		activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
+		activityID := fmt.Sprintf("search_%d", e.searchKnowledgeQueriesThisTurn)
 		retrieved := e.knowledgeRetriever.Retrieve(plannedQuery, "")
 		rawHits := retrieved.HitItems
 		hits := rawHits
@@ -2200,7 +2239,12 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		Action:      "SearchKnowledge",
 		Source:      observability.ToolSourceKnowledgeLocal,
 		Message:     "搜索完成",
-		TraceResult: map[string]any{"items": len(combined.Items), "queries": executedQueries},
+		TraceResult: map[string]any{
+			"items":           len(combined.Items),
+			"queries":         executedQueries,
+			"planned_queries": len(plan.SearchQueries),
+			"dropped_queries": droppedQueries,
+		},
 	})
 	return searchKnowledgeResultJSON(combined, empty)
 }

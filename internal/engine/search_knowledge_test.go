@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
@@ -117,20 +118,28 @@ func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(
 	assert.Equal(t, []string{"chunk-a", "chunk-b"}, final.CitedChunkIDs)
 }
 
-func TestExecuteSearchKnowledge_ThirdCallIsRejectedWithoutRetrieval(t *testing.T) {
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
-		{Enabled: true},
-		{Enabled: true},
-	}}
+// TestExecuteSearchKnowledge_CallPastTheBudgetIsRejectedWithoutRetrieval keeps
+// the original contract — past the per-turn call budget SearchKnowledge stops
+// retrieving and says so — while no longer hard-coding the budget's value. The
+// count moved (2 -> maxSearchKnowledgeCallsPerTurn) because the constant was
+// deliberately raised; the assertion shape is unchanged, and binding the loop to
+// the constant means removing the enforcement still fails this test.
+func TestExecuteSearchKnowledge_CallPastTheBudgetIsRejectedWithoutRetrieval(t *testing.T) {
+	results := make([]knowledge.RetrievalResult, 0, maxSearchKnowledgeCallsPerTurn)
+	for i := 0; i < maxSearchKnowledgeCallsPerTurn; i++ {
+		results = append(results, knowledge.RetrievalResult{Enabled: true})
+	}
+	retriever := &scriptedKnowledgeRetriever{results: results}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
 
-	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "first"}, noopStep)
-	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "second"}, noopStep)
-	third := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "third"}, noopStep)
+	for i := 0; i < maxSearchKnowledgeCallsPerTurn; i++ {
+		_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": fmt.Sprintf("q%d", i)}, noopStep)
+	}
+	past := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "past-budget"}, noopStep)
 
-	require.Len(t, retriever.calls, 2)
-	assert.Contains(t, third, `"search_limit_reached":true`)
+	require.Len(t, retriever.calls, maxSearchKnowledgeCallsPerTurn)
+	assert.Contains(t, past, `"search_limit_reached":true`)
 }
 
 func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testing.T) {
