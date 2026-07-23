@@ -49,10 +49,10 @@ func (h *Handlers) handleCreateSession(c *gin.Context, base BaseRequest, raw *si
 	}, nil
 }
 
-// getOrCreateSession fetches a session for owner, or creates a replacement when
-// the client sends a stale/deleted/session-from-another-owner id. This mirrors
-// the console behavior: a stale local SessionId should recover into a fresh
-// conversation without exposing whether the old id existed.
+// getOrCreateSession is the chat-path recovery fallback: it fetches a session
+// for owner, or creates a replacement when a chat request carries a
+// stale/deleted/session-from-another-owner id. The chat meta frame returns the
+// authoritative replacement id so the client can adopt it.
 func (h *Handlers) getOrCreateSession(ctx context.Context, owner store.Owner, sessionID string) (store.Session, bool, error) {
 	sess, err := h.sessions.GetByID(ctx, owner, sessionID)
 	if err == nil {
@@ -85,13 +85,12 @@ func (h *Handlers) handleGetSession(c *gin.Context, base BaseRequest, raw *simpl
 		return h.handleGetDurableSession(c.Request.Context(), base.Owner, sessionID, limit, cursor)
 	}
 
-	sess, created, err := h.getOrCreateSession(c.Request.Context(), base.Owner, sessionID)
+	sess, err := h.sessions.GetByID(c.Request.Context(), base.Owner, sessionID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound.WithMessage("session not found; create a new session explicitly")
+		}
 		return nil, err
-	}
-	sessionID = sess.ID
-	if created {
-		cursor = ""
 	}
 	messages, nextCursor, err := h.messages.ListBySession(c.Request.Context(), sessionID, limit, cursor)
 	if err != nil {
