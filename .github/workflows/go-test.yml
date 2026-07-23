@@ -1,16 +1,18 @@
 name: Go Tests
 
 # Full deterministic Go suite — the table-stakes correctness gate. Runs the
-# entire `go test ./...` (unit tests, golden scripts, offline intent eval,
-# behavioral-contract tests) on every PR and on pushes to main.
+# entire `go test ./...` (unit tests + golden scripts) on every PR and on pushes
+# to main.
 #
-# No model / server / DB needed: the real-model evals (TestEval,
-# TestOnlineRouterEval) self-skip without a -model flag, so this stays fast,
-# free, and deterministic. The real-model accuracy gate lives in
-# accuracy-gate.yml (dispatch + nightly).
+# No model / server / DB needed: the real-model eval (eval.TestEval) and the
+# in-process behavioral gate (cmd.TestBehavioralGate) self-skip without their
+# -model / -behavioral-gate flags, so this job stays fast, free, and
+# deterministic. The nightly real-model behavioral gate lives in
+# behavioral-gate.yml; the old eval/intent accuracy-gate.yml and skills-ci.yml
+# were removed with the P6 router / skills-loader deletion.
 #
-# Complements entity-race.yml and skills-ci.yml (which add -race on their
-# packages); this adds full-suite coverage that CI was previously missing.
+# Complements entity-race.yml (which adds -race on internal/entity); this adds
+# full-suite coverage that CI was previously missing.
 
 on:
   pull_request:

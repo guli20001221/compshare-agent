@@ -227,8 +227,8 @@ func TestSetStopScheduler_SetsRegion(t *testing.T) {
 	onStep, _ := collectEvents()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), SetStopSchedulerDef(), map[string]any{
-		"UHostId":      "uhost-x",
-		"AfterMinutes": float64(60),
+		"UHostId":  "uhost-x",
+		"Schedule": map[string]any{"mode": "after_minutes", "minutes": float64(60)},
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success, "SetStopScheduler should succeed; got %q", result.Message)
@@ -247,33 +247,11 @@ func TestSetStopScheduler_SetsRegion(t *testing.T) {
 // prior revision of this file documented as deferred). The create-path read tools'
 // schemas in internal/tools/registry.go now declare Region, so
 // SafeToolExecutor.filterSafeArgs keeps it; and each create-path step pairs Region
-// with a non-default Zone via addZoneRegion. The upstream rejects a Zone without
-// its Region (RetCode=230) for any zone but the default cn-wlcb-01 — live-verified
-// 2026-06-16: cn-bj2-03 (华北一C) creates only with Region=cn-bj2.
+// with a non-default Zone via addZoneRegionAndID, sourced from the turn's zone
+// catalog snapshot. The upstream rejects a Zone without its Region (RetCode=230)
+// for any zone but the default cn-wlcb-01 — live-verified 2026-06-16: cn-bj2-03
+// (华北一C) creates only with Region=cn-bj2.
 // Cite: project-multi-region-audit-2026-05-25 PR-β1.
-
-func TestAddZoneRegion(t *testing.T) {
-	cases := []struct {
-		zone, wantRegion string
-		wantSet          bool
-	}{
-		{"cn-bj2-03", "cn-bj2", true},
-		{"cn-sh2-02", "cn-sh2", true},
-		{"cn-wlcb-01", "cn-wlcb", true},
-		{"", "", false},        // no zone → no Region key (API uses its default region)
-		{"cn-wlcb", "", false}, // a Region, not a Zone → don't fabricate
-	}
-	for _, c := range cases {
-		t.Run(c.zone, func(t *testing.T) {
-			args := addZoneRegion(map[string]any{}, c.zone)
-			r, ok := args["Region"]
-			assert.Equal(t, c.wantSet, ok, "Region presence")
-			if c.wantSet {
-				assert.Equal(t, c.wantRegion, r)
-			}
-		})
-	}
-}
 
 func TestCreateInstance_NonDefaultZone_PairsRegionWithZone(t *testing.T) {
 	// Every create-path API call must carry the Region matching a non-default Zone,
@@ -285,7 +263,7 @@ func TestCreateInstance_NonDefaultZone_PairsRegionWithZone(t *testing.T) {
 	result, err := eng.Run(context.Background(), CreateInstanceDef(), map[string]any{
 		"GpuType": "4090",
 		"Zone":    "cn-bj2-04",
-	})
+	}, withNormalZone("cn-bj2-04", "cn-bj2", 6004))
 	assert.NoError(t, err)
 	assert.True(t, result.Success, "message=%q", result.Message)
 

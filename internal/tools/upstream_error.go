@@ -10,10 +10,15 @@ import (
 // CompShare response carries a non-zero RetCode.
 //
 // Its Error() string is BYTE-IDENTICAL to the historical flat format
-// ("API error (RetCode=N): MSG"), so every existing string-matching consumer is
-// unaffected — most importantly engine.isImageUnavailableMessage, which keys off
-// the "230"+"CompShareImageId" substrings to trigger zone-image auto-recovery,
-// and the saga step wrappers that embed %v. Do NOT change Error()'s format.
+// ("API error (RetCode=N): MSG"), because the saga step wrappers embed it via %v
+// and that text reaches user-facing narration. Do NOT change Error()'s format.
+//
+// Classification, however, must NOT go through this string. Callers deciding what
+// to DO about a failure read the typed fields: engine.isImageUnavailableError
+// checks Code == 230 as an integer. It used to grep Error() for the "230" and
+// "CompShareImageId" substrings, which matched any "230" anywhere in the sentence
+// (a memory size, a byte count, part of an id) and could trigger an image swap on
+// an unrelated failure.
 //
 // Hint carries optional recovery guidance (P0 阶段1B). It is NOT part of Error()
 // and is surfaced to the model/user separately, so reading it can never leak the
@@ -108,7 +113,9 @@ func retCodeHintForMessage(code int, msg string) string {
 		return "安全组配置异常：请检查网络和安全组设置后再试。"
 	case 8090:
 		return "价格查询失败：请稍后重试或到控制台确认费用后再操作。"
-	case 8095, 8367:
+	case 8095:
+		return "资源配额不足：请释放部分资源或申请提升配额。"
+	case 8367:
 		return "资源配额查询或校验失败：请稍后重试，仍失败请联系平台支持。"
 	case 8097, 8108, 8117:
 		return "账单或订单信息暂时不可用：请稍后重试或到控制台确认费用。"

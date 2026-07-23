@@ -8,27 +8,19 @@ import (
 )
 
 const (
-	// 2026-06-05: workflow and diagnosis catalogs are generated from registries.
-	// 2026-06-05 (remediation): operation boundary / state-refresh / no-pretext /
-	// vague-failure rules now single-sourced from cards.go (shared with the
-	// flag-on cards), so the rule text lives in one place. SHA updated to match.
-	// 2026-06-18: narrow deploy/create boundary to hardware-first creation only.
-	// 2026-06-20: remove duplicate CreateInstanceWorkflow routing sentence from the shared card.
-	// 2026-06-22 (阶段1A KV-cache): move the volatile "## 用户当前状态" block to the
-	// tail so the static prefix is cacheable; also drop the now-wrong "上方"
-	// (above) directional word from the real-time-query rule, since the block is
-	// no longer above that rule.
-	// 2026-06-23: clarify network acceleration close is not exposed by the agent.
-	// 2026-06-25: route price questions through the user-price API so list/original
-	// prices and discounted prices share one live upstream path.
-	// 2026-06-26: remove the dead "recommendation" intent label from the default
-	// ReAct taxonomy; GPU recommendation tools remain available as read-only facts.
-	// 2026-06-29: remove CreateInstanceWorkflow from ReAct operation guidance;
-	// new-instance creation is owned by create_instance / deploy_model handlers.
-	mutatingReActPromptSHA256 = "6881b14028037b58be42602d0906fdb6b5182447cff288a6074baefb1e8b6d11"
-	// 2026-06-05: read-only diagnosis catalog is generated from the diagnosis registry.
-	// 2026-06-22 (阶段1A KV-cache): volatile userContext block moved to the tail.
-	readOnlyReActPromptSHA256 = "a9824405b7522b7c89de15f04c1464377207c0b52c128ce8dd2d5887f468f127"
+	// 2026-07-15: the central Agent is the only semantic runtime. Per-intent
+	// routing tables and temporary prompt cards were removed.
+	// 2026-07-19: the action-call contract now states that a write is proposed only
+	// when the user asks to actually change a resource — method/rules/fee/consequence/
+	// hypothetical questions are answered, not executed (review round-2 finding on the
+	// "怎么关机" ambiguity; behavioral effect validated in P7).
+	// 2026-07-21: adopted the B4 central-agent behavior/reply prompt (the pro-carding
+	// rewrite). It restates the SAME write-authorization guard — act on do-requests,
+	// answer how-to/rules/fee/feasibility questions — with a proactive "适用就立即提交，
+	// 由确认卡补齐参数" framing, validated behaviorally (pro+B4: reliably cards creates,
+	// 0 false-cards on how-to probes). SHAs regenerated for the new segment text.
+	mutatingReActPromptSHA256 = "1072cc6bce17ee3724e2fd440b34a970b11501b10f6ac245eb75947c30ce3a56"
+	readOnlyReActPromptSHA256 = "399a8343e8abe982c7e8e52363a87ce1137a4850ad649200303a50657f799337"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

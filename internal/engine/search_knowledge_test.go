@@ -4,11 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,6 +38,7 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
 
 	tc := openai.ToolCall{
 		ID:   "call-sk",
@@ -64,6 +63,85 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	assert.Equal(t, "vllm 显存不足", retriever.calls[0].question)
 	assert.True(t, eng.searchKnowledgeRanThisTurn)
 	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
+}
+
+func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(t *testing.T) {
+	chunkA := knowledge.KBChunk{
+		ChunkID:   "chunk-a",
+		KBVersion: "kb.v1",
+		Title:     "GPU resize",
+		Content:   "调整 GPU 数量需要先关机。",
+	}
+	chunkB := knowledge.KBChunk{
+		ChunkID:   "chunk-b",
+		KBVersion: "kb.v1",
+		Title:     "Disk persistence",
+		Content:   "重装会清除系统盘，数据盘不受影响。",
+	}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true, KBVersion: "kb.v1", HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 90, Chunk: chunkA}}},
+		{Enabled: true, KBVersion: "kb.v1", HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 91, Chunk: chunkB}}},
+	}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	var traces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
+		traces = append(traces, trace)
+	})
+
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "GPU 能否调整"}, noopStep)
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "更换 GPU 数据会变吗"}, noopStep)
+	assert.Equal(t, "GPU 能否调整", eng.resolvedKnowledgeQuestionThisTurn,
+		"the first history-aware query is the stable question the answer must resolve")
+	assert.Equal(t, "GPU 能否调整", eng.searchKnowledgeLedgerThisTurn.Query,
+		"later subqueries must not turn the verifier input into a synthetic q1 | q2 question")
+	assert.NotContains(t, eng.searchKnowledgeLedgerThisTurn.Query, " | ")
+	report := knowledge.ValidateGroundedCitations("GPU 调整和数据保留分别见资料 [[chunk-a]] [[chunk-b]]。", eng.searchKnowledgeLedgerThisTurn)
+	require.True(t, report.Grounded())
+	eng.emitSearchKnowledgeCitationTrace(report)
+
+	require.Len(t, retriever.calls, 2)
+	require.NotEmpty(t, traces)
+	final := traces[len(traces)-1]
+	require.Len(t, final.Activities, 2)
+	assert.Equal(t, "search_1", final.Activities[0].ID)
+	assert.Equal(t, "search_2", final.Activities[1].ID)
+	require.Len(t, final.References, 2)
+	assert.Equal(t, []string{"search_1"}, final.References[0].ActivityIDs)
+	assert.Equal(t, []string{"search_2"}, final.References[1].ActivityIDs)
+	assert.Equal(t, []observability.RetrievalCitedRef{
+		{RefID: "1", ChunkID: "chunk-a"},
+		{RefID: "2", ChunkID: "chunk-b"},
+	}, final.CitedRefs)
+	assert.Equal(t, []string{"chunk-a", "chunk-b"}, final.CitedChunkIDs)
+}
+
+func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testing.T) {
+	chunkA := knowledge.KBChunk{ChunkID: "chunk-a", KBVersion: "kb.v1", Title: "A", Content: "evidence a"}
+	chunkB := knowledge.KBChunk{ChunkID: "chunk-b", KBVersion: "kb.v1", Title: "B", Content: "evidence b"}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true, KBVersion: "kb.v1", HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 90, Chunk: chunkA}}},
+		{Enabled: true, KBVersion: "kb.v1", HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 91, Chunk: chunkB}}},
+	}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	var traces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) { traces = append(traces, trace) })
+
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "q1"}, noopStep)
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "q2"}, noopStep)
+	eng.emitSearchKnowledgeHardBlock("search_knowledge_ungrounded")
+
+	require.NotEmpty(t, traces)
+	final := traces[len(traces)-1]
+	assert.True(t, final.TurnAggregate)
+	assert.Equal(t, 2, final.Hits)
+	require.Len(t, final.Activities, 2)
+	require.Len(t, final.References, 2)
+	require.Len(t, final.HitItems, 2)
+	assert.Empty(t, final.CitedChunkIDs)
 }
 
 // TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits proves the relevance floor:
@@ -91,10 +169,11 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
 
 	tc := openai.ToolCall{
-		ID:   "call-sk",
-		Type: openai.ToolTypeFunction,
+		ID:       "call-sk",
+		Type:     openai.ToolTypeFunction,
 		Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"vllm 进程被 kill"}`},
 	}
 	out := eng.executeTool(context.Background(), tc, noopStep)
@@ -106,81 +185,4 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "weak hits must not be recorded as grounding evidence")
 	// SearchKnowledge still ran (the raw retrieval is traced as weak for observability).
 	assert.True(t, eng.searchKnowledgeRanThisTurn)
-}
-
-// TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn proves the P4a flag-gated
-// relax: with COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE on, an empty-target diagnosis
-// turn (>1 instance) NO LONGER short-circuits with the canned which-instance
-// reply — it falls through to the agent lane (ReAct) so the loop can call
-// SearchKnowledge first. Flag off is byte-identical (covered by
-// TestPlannerDiagnosisClarificationDoesNotRequireEnabledIntent).
-func TestPlannerDiagnosis_DeadEndRelaxedWhenAgenticOn(t *testing.T) {
-	tools.SetAgenticSearchKnowledgeEnabled(true)
-	defer tools.SetAgenticSearchKnowledgeEnabled(false)
-
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: diagnosisPlanWithoutTarget()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "react path"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "train-a", "State": "Running"},
-			map[string]any{"UHostId": "uhost-b", "Name": "train-b", "State": "Running"},
-		},
-	}, "test"))
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-		Model:          "deepseek-v4-flash",
-	})
-
-	// "我的机器 SSH 连不上了" = "my machine can't SSH"
-	reply, err := eng.Chat(context.Background(), "我的机器 SSH 连不上了", noopStep)
-	require.NoError(t, err)
-	// "哪台实例" = "which instance" — the canned dead-end phrase.
-	assert.NotContains(t, reply, "哪台实例", "flag on: must NOT fire the canned which-instance dead-end")
-	assert.NotEmpty(t, mock.calls, "flag on: empty-target diagnosis falls through to the agent lane (ReAct)")
-}
-
-// TestGuardSearchKnowledgeSynthesis closes the engine-level coverage gap on the
-// P3 no-raw-leak synthesis guard (review TQ-1). It exercises the engine wiring
-// directly: the condition (SearchKnowledge ran this turn), the >=32-rune
-// verbatim-content replacement, and the hardblock trace category.
-func TestGuardSearchKnowledgeSynthesis(t *testing.T) {
-	// A real-shaped runbook sentence, < 96 runes so the only leak needle is the
-	// full sentence (the delimiter is 。 not ，). An answer echoing it verbatim leaks.
-	chunkContent := "缩短上下文长度可以显著降低显存占用，把 max-model-len 设为略大于实际最大输入输出长度即可，过长会占用更多 KV cache。"
-	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{ChunkID: "ext-gpu-oom-vllm-001", Content: chunkContent}}
-
-	newEng := func() (*Engine, *[]observability.EngineHardBlockTrace) {
-		eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
-		var traces []observability.EngineHardBlockTrace
-		eng.SetHardBlockObserver(func(tr observability.EngineHardBlockTrace) { traces = append(traces, tr) })
-		return eng, &traces
-	}
-
-	// 1. Leak: answer dumps the raw chunk sentence verbatim -> replaced + traced.
-	eng, traces := newEng()
-	eng.searchKnowledgeRanThisTurn = true
-	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
-	got := eng.guardSearchKnowledgeSynthesis(chunkContent)
-	assert.Equal(t, ragNoEvidenceReply, got, "raw >=32-rune chunk leak must be replaced")
-	require.Len(t, *traces, 1)
-	assert.Equal(t, "search_knowledge_raw_leak", (*traces)[0].Category)
-	assert.True(t, (*traces)[0].Hit)
-
-	// 2. Clean: a short paraphrase with only the short flag token passes unchanged.
-	eng2, traces2 := newEng()
-	eng2.searchKnowledgeRanThisTurn = true
-	eng2.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
-	clean := "把 max-model-len 调小一点即可省显存。"
-	assert.Equal(t, clean, eng2.guardSearchKnowledgeSynthesis(clean), "paraphrase with only short tokens must pass")
-	assert.Empty(t, *traces2, "no leak => no hardblock trace")
-
-	// 3. Not-run: when SearchKnowledge did not run this turn, the guard is a no-op
-	//    even on identical-to-leak content — this is the flag-off byte-identity path.
-	eng3, traces3 := newEng()
-	eng3.searchKnowledgeRanThisTurn = false
-	assert.Equal(t, chunkContent, eng3.guardSearchKnowledgeSynthesis(chunkContent), "guard inert when SearchKnowledge did not run")
-	assert.Empty(t, *traces3)
 }

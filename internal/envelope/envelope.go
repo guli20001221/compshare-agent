@@ -11,6 +11,11 @@ const (
 	KindGPUSpecsQuery     Kind = "gpu_specs_query"
 	KindStockAvailability Kind = "stock_availability"
 	KindImageList         Kind = "image_list"
+	KindZoneCatalog       Kind = "zone_catalog"
+	// KindContextualDirectReply wraps a deterministic, tool-derived plain-text
+	// handler result so the answering model can combine it with understanding-
+	// only conversation context without treating user text as factual evidence.
+	KindContextualDirectReply Kind = "contextual_direct_reply"
 )
 
 type SubjectType string
@@ -20,6 +25,7 @@ const (
 	SubjectGPUModel   SubjectType = "gpu_model"
 	SubjectImage      SubjectType = "image"
 	SubjectImageGroup SubjectType = "image_group"
+	SubjectZone       SubjectType = "zone"
 )
 
 type FactSource string

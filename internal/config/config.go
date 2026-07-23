@@ -36,15 +36,9 @@ type STSConfig struct {
 }
 
 type AgentConfig struct {
-	LLM LLMConfig `yaml:"llm"`
-	// TierRouting overrides the LLM model (and optionally base_url / api_key)
-	// per ADR-001 task-complexity tier. Keys must be one of "fast" /
-	// "knowledge" / "agent" — unknown keys cause Load to fail. When this
-	// map is empty or missing, all tiers share agent.llm.model (backward
-	// compat with pre-ADR-002 configs). See ADR-002 §Config 形态.
-	TierRouting map[string]LLMConfig `yaml:"tier_routing"`
-	RateLimit   RateLimitConfig      `yaml:"rate_limit"`
-	Executor    string               `yaml:"executor"` // "external" or "internal"
+	LLM       LLMConfig       `yaml:"llm"`
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	Executor  string          `yaml:"executor"` // "external" or "internal"
 
 	CompShareAPIURL string `yaml:"compshare_api_url"`
 	PublicKey       string `yaml:"public_key"`
@@ -68,7 +62,6 @@ type AgentConfig struct {
 	Features  FeaturesConfig  `yaml:"features"`
 	Retrieval RetrievalConfig `yaml:"retrieval"`
 	Trace     TraceConfig     `yaml:"trace"`
-	Planner   PlannerConfig   `yaml:"planner"`
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).
@@ -81,11 +74,10 @@ type HTTPConfig struct {
 	MaxInputLength       int           `yaml:"max_input_length"`
 	PoolCapacity         int           `yaml:"pool_capacity"`
 	PoolIdleTTL          time.Duration `yaml:"pool_idle_ttl"`
-	// MaxSessionTurns caps how many user-assistant question-answer pairs a
-	// single session may produce. Zero or unset falls back to
-	// DefaultMaxSessionTurns. Enforced in handleChat: once a session has
-	// reached the cap, further Chat requests return SessionTurnLimitExceeded
-	// and the caller must open a new session.
+	// MaxSessionTurns caps the compatibility chat path only. Durable WebSocket
+	// turns deliberately have no conversation-length wall: committed history is
+	// paged and rebuilt per turn instead of forcing a context-breaking session
+	// rollover. Zero or unset uses DefaultMaxSessionTurns in compatibility mode.
 	MaxSessionTurns int `yaml:"max_session_turns"`
 	// DisableCORS turns off the permissive CORS middleware. Default false =
 	// CORS headers are added (needed for local front-end debug per the
@@ -97,8 +89,9 @@ type HTTPConfig struct {
 	DisableCORS bool `yaml:"disable_cors"`
 }
 
-// DefaultMaxSessionTurns is the fallback cap when agent.http.max_session_turns
-// is zero or unset. 10 question-answer pairs per session = 20 stored messages.
+// DefaultMaxSessionTurns is the compatibility-path fallback when
+// agent.http.max_session_turns is zero or unset. The durable turn coordinator
+// never consults it.
 const DefaultMaxSessionTurns = 10
 
 // MySQLConfig holds connection settings for the MySQL backing store.
@@ -204,12 +197,6 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := resolveRequiredSecret(&cfg.Agent.LLM.APIKey, "agent.llm.api_key", "LLM_API_KEY"); err != nil {
-		return nil, err
-	}
-	if err := validateTierRouting(cfg.Agent.TierRouting); err != nil {
-		return nil, err
-	}
-	if err := resolveTierRoutingPlaceholders(cfg.Agent.TierRouting); err != nil {
 		return nil, err
 	}
 	if err := resolveOptionalPlaceholder(&cfg.Agent.ProjectId, "agent.project_id"); err != nil {
@@ -327,52 +314,6 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 
 func negativeRateLimitError(yamlPath string) error {
 	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
-}
-
-// validateTierRouting fails fast on unknown tier keys so config typos
-// (e.g. "knowlege" → no override applied, silent regression) are caught
-// at boot, not at first runtime mis-route. Keys must be one of the
-// ADR-001 tier names. An empty / nil map is valid (backward compat).
-func validateTierRouting(tr map[string]LLMConfig) error {
-	if len(tr) == 0 {
-		return nil
-	}
-	// MUST stay in sync with internal/llm.AllTiers. We can't import
-	// internal/llm here because llm imports config (circular dep), so
-	// the canonical list is duplicated. If you add a tier to AllTiers,
-	// add it here too — the config_test.go TierRouting tests will not
-	// catch the drift (they only test known keys against this map).
-	valid := map[string]bool{"fast": true, "knowledge": true, "agent": true}
-	for tier := range tr {
-		if !valid[tier] {
-			return fmt.Errorf("agent.tier_routing.%s: unknown tier (must be fast / knowledge / agent)", tier)
-		}
-	}
-	return nil
-}
-
-// resolveTierRoutingPlaceholders enforces the same "no-literal credential"
-// rule for per-tier api_key overrides that resolveRequiredSecret enforces
-// for agent.llm.api_key. If a tier override sets api_key, it MUST use the
-// ${ENV_VAR} placeholder form — otherwise reject loud. Empty api_key
-// inherits from the base agent.llm.api_key (Router merge logic in
-// internal/llm/router.go). base_url is left unresolved to match the
-// existing pattern at agent.llm.base_url (literal pass-through; no
-// placeholder support at the base path either, so adding it here would
-// drift). LLMConfig is a value type so we must write the resolved value
-// back into the map.
-func resolveTierRoutingPlaceholders(tr map[string]LLMConfig) error {
-	if len(tr) == 0 {
-		return nil
-	}
-	for tier, override := range tr {
-		yamlPath := fmt.Sprintf("agent.tier_routing.%s.api_key", tier)
-		if err := resolveOptionalPlaceholder(&override.APIKey, yamlPath); err != nil {
-			return err
-		}
-		tr[tier] = override
-	}
-	return nil
 }
 
 func negativeValueError(yamlPath string) error {

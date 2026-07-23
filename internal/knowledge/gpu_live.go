@@ -1,22 +1,23 @@
 package knowledge
 
 import (
-	"fmt"
 	"math"
 	"sort"
 	"strings"
 )
 
-// gpu_live.go makes deploy GPU sizing API-driven (B8.3 follow-up, 2026-05-31).
+// gpu_live.go reads the platform's GPU facts from the upstream catalog.
 //
-// The hand-maintained gpuSpecs table (model_specs.go / gpu_specs.go) goes STALE
-// when the platform adds a new card, retires one, or sells out a tier — exactly
-// the lead's concern. Instead of relying on it, the deploy matcher now sizes the
-// model against the LIVE set returned by DescribeAvailableCompShareInstanceTypes,
-// which by construction reflects only currently-offered cards. The static table
-// remains the OFFLINE FALLBACK (RecommendGPUTypeWithin) for when the live query is
-// empty or unavailable, so a transient API failure degrades gracefully rather than
-// blocking a deploy.
+// It once hedged: a live path plus a hand-maintained gpuSpecs table as an
+// "offline fallback" for when the query failed. Both are gone. The table was
+// deleted (it drifts every time the platform adds, retires or renames a card),
+// and with it RecommendGPUTypeLive — which turned out to have had ZERO production
+// callers, so the "live GPU sizing" it advertised never actually ran. What
+// remains is the part that IS wired: parsing the catalog, and picking fallback
+// cards from it when a create hits a sold-out tier.
+//
+// There is deliberately no fallback left. A caller that cannot reach the catalog
+// must say it cannot confirm, not answer from a local copy.
 //
 // Upstream contract (pkg/api/describe_available_compshare_instance_types.go):
 // AvailableInstanceTypes[] entries carry Name (== CreateInstance GpuType), Status
@@ -93,67 +94,12 @@ func ParseAvailableGPUs(result map[string]any, zone string) []AvailableGPU {
 	return out
 }
 
-// RecommendGPUTypeLive sizes a deploy request against the LIVE available-card set,
-// applying the same image-constraint (M2) policy as RecommendGPUTypeWithin but over
-// currently-offered cards instead of the static table. allowed is the chosen
-// image's SupportedGpuTypes (may be empty = no constraint). When available is empty
-// (offline / query failed) it falls back to the static-table RecommendGPUTypeWithin
-// so behavior degrades gracefully. Always returns a non-empty GpuType.
-func RecommendGPUTypeLive(modelName, quantization, scene string, allowed []string, available []AvailableGPU) (gpuType, note string) {
-	if len(available) == 0 {
-		return RecommendGPUTypeWithin(modelName, quantization, scene, allowed)
-	}
-	// Image-supported AND currently-available cards (M2 ∩ live).
-	allowedPool := filterAvailableByNames(available, allowed)
-	hasConstraint := len(allowed) > 0 && len(allowedPool) > 0
-
-	if paramsB, ok := resolveParamCountB(modelName); ok {
-		required := liveVRAMRequired(paramsB, quantization)
-		// Prefer an image-supported, available, fitting card.
-		if hasConstraint {
-			if g, ok := smallestFittingAvailable(allowedPool, required); ok {
-				return g.Name, fmt.Sprintf("%s 约需 %dGB 显存；镜像支持且当前可用机型中选 %s(%dGB)", modelName, required, g.Name, g.VRAMGB)
-			}
-		}
-		// Else any available fitting card (VRAM-correctness wins over the image's
-		// advisory list — same policy as the static path).
-		if g, ok := smallestFittingAvailable(available, required); ok {
-			if hasConstraint {
-				return g.Name, fmt.Sprintf("%s 约需 %dGB 显存；镜像推荐机型不满足显存，按当前可用机型选 %s(%dGB)", modelName, required, g.Name, g.VRAMGB)
-			}
-			return g.Name, fmt.Sprintf("%s 约需 %dGB 显存，按当前可用机型选 %s(%dGB)", modelName, required, g.Name, g.VRAMGB)
-		}
-		// No single available card fits → multi-card on the largest available.
-		largest := largestVRAMAvailable(available)
-		cards := int(math.Ceil(float64(required) / float64(largest.VRAMGB)))
-		if largest.MaxGPU > 0 && cards > largest.MaxGPU {
-			return largest.Name, fmt.Sprintf("%s 约需 %dGB 显存；%d×%s(%dGB) 超单机 %d 卡上限，建议更激进量化或多机", modelName, required, cards, largest.Name, largest.VRAMGB, largest.MaxGPU)
-		}
-		return largest.Name, fmt.Sprintf("%s 约需 %dGB 显存；无单卡可承载，按当前可用机型用 %d×%s(%dGB)", modelName, required, cards, largest.Name, largest.VRAMGB)
-	}
-
-	// Scene-based (no recognizable model size).
-	pool, suffix := available, ""
-	if hasConstraint {
-		pool, suffix = allowedPool, "（镜像支持机型内）"
-	}
-	if g, ok := sceneCardAvailable(scene, pool); ok {
-		return g.Name, fmt.Sprintf("按场景在当前可用机型%s中选 %s(%dGB)", suffix, g.Name, g.VRAMGB)
-	}
-	best := mostPerfAvailable(pool)
-	if best.Name == "" {
-		best = mostPerfAvailable(available) // allowed∩available empty → widen to all available
-		suffix = ""
-	}
-	return best.Name, fmt.Sprintf("按当前可用机型%s选算力较高的 %s(%dGB)", suffix, best.Name, best.VRAMGB)
-}
-
 // FittingGPUAlternatives returns up to `limit` of the `available` cards a deploy
 // can fall back to when its recommended card (`exclude`) is sold out, image-compat
 // filtered by `allowed` (the image's SupportedGpuTypes; dropped when it doesn't
-// intersect what's offered, matching RecommendGPUTypeLive's policy).
+// intersect what's offered).
 //
-// Two ranking regimes, mirroring RecommendGPUTypeLive:
+// Two ranking regimes:
 //   - Known model size (LLM): keep only VRAM-sufficient cards, ranked cheapest-
 //     sufficient first (smallest fitting VRAM; ties → higher perf, then name) to
 //     minimise over-provisioning.
@@ -237,63 +183,34 @@ func filterAvailableByNames(available []AvailableGPU, allowed []string) []Availa
 	return out
 }
 
-// smallestFittingAvailable returns the available card with the least VRAM that
-// still meets vramRequired (ties → higher Perf, then lexicographic Name for
-// determinism since the API slice order is not guaranteed).
-func smallestFittingAvailable(cards []AvailableGPU, vramRequired int) (AvailableGPU, bool) {
-	var best AvailableGPU
-	found := false
-	for _, g := range sortedByName(cards) {
-		if g.VRAMGB < vramRequired {
-			continue
-		}
-		if !found || g.VRAMGB < best.VRAMGB || (g.VRAMGB == best.VRAMGB && g.Perf > best.Perf) {
-			best, found = g, true
+
+// WithoutGPUTypes drops the named cards from a recommendation list.
+//
+// It exists because the availability catalog cannot express charge-type
+// eligibility. DescribeAvailableCompShareInstanceTypes answers InstanceType=spot
+// with an empty list rather than a Spot-scoped one, so "what can I offer instead
+// on Spot" has to be built as: take the full catalog, then subtract the cards
+// that upstream does not sell on Spot at all
+// (DescribeCompShareGpuInventory.SpotUnsupportedGpuTypes).
+//
+// Empty exclusions return the input unchanged — a missing inventory answer must
+// not silently empty the recommendation.
+func WithoutGPUTypes(available []AvailableGPU, exclude []string) []AvailableGPU {
+	if len(exclude) == 0 {
+		return available
+	}
+	set := make(map[string]bool, len(exclude))
+	for _, e := range exclude {
+		if n := strings.ToLower(strings.TrimSpace(e)); n != "" {
+			set[n] = true
 		}
 	}
-	return best, found
-}
-
-// largestVRAMAvailable returns the card with the most VRAM (ties → higher Perf).
-func largestVRAMAvailable(cards []AvailableGPU) AvailableGPU {
-	var best AvailableGPU
-	for _, g := range sortedByName(cards) {
-		if best.Name == "" || g.VRAMGB > best.VRAMGB || (g.VRAMGB == best.VRAMGB && g.Perf > best.Perf) {
-			best = g
+	var out []AvailableGPU
+	for _, g := range available {
+		if !set[strings.ToLower(strings.TrimSpace(g.Name))] {
+			out = append(out, g)
 		}
 	}
-	return best
-}
-
-// mostPerfAvailable returns the card with the highest Perf (ties → larger VRAM).
-func mostPerfAvailable(cards []AvailableGPU) AvailableGPU {
-	var best AvailableGPU
-	for _, g := range sortedByName(cards) {
-		if best.Name == "" || g.Perf > best.Perf || (g.Perf == best.Perf && g.VRAMGB > best.VRAMGB) {
-			best = g
-		}
-	}
-	return best
-}
-
-// sceneCardAvailable maps the scene to GetGPURecommendation's order and returns the
-// first recommended card that is in the available pool.
-func sceneCardAvailable(scene string, pool []AvailableGPU) (AvailableGPU, bool) {
-	rec := GetGPURecommendation(scene, false)
-	recs, _ := rec["recommendations"].([]GPURec)
-	for _, r := range recs {
-		for _, g := range pool {
-			if strings.EqualFold(g.Name, r.GPUType) {
-				return g, true
-			}
-		}
-	}
-	return AvailableGPU{}, false
-}
-
-func sortedByName(cards []AvailableGPU) []AvailableGPU {
-	out := append([]AvailableGPU(nil), cards...)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

@@ -89,7 +89,7 @@ func TestDispatchChat_PersistsEnvelopeOnSuccess(t *testing.T) {
 
 	var pc engine.PersistedContext
 	require.NoError(t, json.Unmarshal(row.Context, &pc))
-	assert.Equal(t, engine.SessionStateSchemaV1, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, engine.SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
 	// M1 has no in-engine writer, so SelectedInstanceID stays empty.
 	assert.Empty(t, pc.AgentSessionState.SelectedInstanceID)
 }
@@ -120,7 +120,7 @@ func TestDispatchChat_MalformedContext_SkipsPersist(t *testing.T) {
 // Case 3: unknown schema_version (forward-rollout protection) — chat
 // completes, NO persistence so a newer binary can later read the row.
 func TestDispatchChat_UnknownSchemaVersion_SkipsPersist(t *testing.T) {
-	futureEnvelope := json.RawMessage(`{"agent_session_state":{"schema_version":"2.0","future_field":"hello"},"client_context":{"app":"console"}}`)
+	futureEnvelope := json.RawMessage(`{"agent_session_state":{"schema_version":"9.0","future_field":"hello"},"client_context":{"app":"console"}}`)
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID:                "sess-future",
 		TopOrganizationID: 1,
@@ -164,7 +164,7 @@ func TestDispatchChat_LegacyContextUpgradedToEnvelope(t *testing.T) {
 
 	var pc engine.PersistedContext
 	require.NoError(t, json.Unmarshal(row.Context, &pc))
-	assert.Equal(t, engine.SessionStateSchemaV1, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, engine.SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
 	assert.JSONEq(t, string(legacy), string(pc.ClientContext),
 		"legacy client blob must be preserved verbatim as client_context")
 }
@@ -176,12 +176,13 @@ func TestDispatchChat_LegacyContextUpgradedToEnvelope(t *testing.T) {
 // whose parse fails.
 //
 // Two complementary assertions make this load-bearing:
-//   (a) sessions.updateContextCalls == 0 — persistence skipped (already
-//       guaranteed by sessionStatePersistable, but a necessary baseline);
-//   (b) eng.SessionStateSnapshot() returns hydrated=false after the turn
-//       — this is what actually proves ClearSessionState ran. Without
-//       the clear, hydrated would stay true (carrying "uhost-prev" set
-//       below), and M2's in-engine writer would step on a stale value.
+//
+//	(a) sessions.updateContextCalls == 0 — persistence skipped (already
+//	    guaranteed by sessionStatePersistable, but a necessary baseline);
+//	(b) eng.SessionStateSnapshot() returns hydrated=false after the turn
+//	    — this is what actually proves ClearSessionState ran. Without
+//	    the clear, hydrated would stay true (carrying "uhost-prev" set
+//	    below), and M2's in-engine writer would step on a stale value.
 func TestDispatchChat_PreHydratedEngine_MalformedContext_StillSkipsPersist(t *testing.T) {
 	h, sessions, eng := newChatTestHandlers(t, store.Session{
 		ID:                "sess-sticky",
@@ -241,5 +242,5 @@ func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
 		"stream must emit done even when CAS loses on persist — reply was already streamed")
 	assert.False(t, sink.has("error"),
 		"ErrStaleWrite is a warning-only condition, not a stream error")
-	require.Equal(t, 1, sessions.updateContextCalls)
+	require.Equal(t, 2, sessions.updateContextCalls)
 }

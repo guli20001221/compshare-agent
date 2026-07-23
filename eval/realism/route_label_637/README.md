@@ -1,8 +1,10 @@
 # Routing-accuracy eval set (handling-class labels, from 637 real sessions)
 
 This directory holds the **production-representative, handling-class-labeled** set
-that backs the routing-accuracy gate (`TestOnlineRoutingHandlingEval` in
-`eval/intent/routing_handling_eval_test.go`, P0 阶段0 §③).
+that backed the routing-accuracy gate (`TestOnlineRoutingHandlingEval`, P0 阶段0 §③).
+That gate and its `eval/intent/` package were removed with the P6 router deletion;
+the label data is retained here for the planned central-Agent HTTP/WebSocket replay
+gate that will replace it.
 
 Full provenance + methodology: `docs/research/routing_eval_set_637_2026-06-22.md`.
 

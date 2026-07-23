@@ -13,6 +13,7 @@ import (
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/security"
+	"github.com/compshare-agent/internal/zones"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,6 +24,19 @@ type spyExecutor struct {
 	result map[string]any
 	errs   []error
 }
+
+type spyActionJournal struct {
+	calls int
+	args  map[string]any
+}
+
+func (j *spyActionJournal) Execute(ctx context.Context, action string, args map[string]any, call ActionCall) (map[string]any, error) {
+	j.calls++
+	j.args = copyMap(args)
+	return call(ctx, action, args)
+}
+
+func (j *spyActionJournal) Err() error { return nil }
 
 func (s *spyExecutor) Execute(_ context.Context, _ string, args map[string]any) (map[string]any, error) {
 	s.calls++
@@ -38,6 +52,44 @@ func (s *spyExecutor) Execute(_ context.Context, _ string, args map[string]any) 
 		return s.result, nil
 	}
 	return map[string]any{"RetCode": float64(0)}, nil
+}
+
+func TestSafeToolExecutor_V2MutatingCallRequiresJournal(t *testing.T) {
+	inner := &spyExecutor{}
+	safe := NewSafeToolExecutor(inner,
+		WithMutatingToolsEnabled(true),
+		WithConfirmFunc(func(string, map[string]any) bool { return true }),
+		WithRequireActionJournal(true),
+	)
+
+	_, err := safe.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-1"})
+	require.ErrorIs(t, err, ErrActionJournalRequired)
+	assert.Zero(t, inner.calls, "missing journal must fail before the external side effect")
+}
+
+func TestSafeToolExecutor_MutatingCallJournalsFilteredArgsAfterConfirmation(t *testing.T) {
+	inner := &spyExecutor{}
+	journal := &spyActionJournal{}
+	confirmed := false
+	policy := policyForAction("StopCompShareInstance")
+	policy.AllowedParams = []string{"UHostId"}
+	safe := NewSafeToolExecutor(inner,
+		WithMutatingToolsEnabled(true),
+		WithConfirmFunc(func(string, map[string]any) bool { confirmed = true; return true }),
+		WithPolicies(map[string]ToolExecutionPolicy{"StopCompShareInstance": policy}),
+		WithActionJournal(journal),
+		WithRequireActionJournal(true),
+	)
+
+	_, err := safe.Execute(context.Background(), "StopCompShareInstance", map[string]any{
+		"UHostId": "uhost-1", "IgnoredModelField": "must-not-be-journaled",
+	})
+	require.NoError(t, err)
+	assert.True(t, confirmed)
+	assert.Equal(t, 1, journal.calls)
+	assert.Equal(t, 1, inner.calls)
+	assert.Equal(t, "uhost-1", journal.args["UHostId"])
+	assert.NotContains(t, journal.args, "IgnoredModelField")
 }
 
 func TestDefaultPoliciesCoverRegistryAndSecurityActions(t *testing.T) {
@@ -110,6 +162,24 @@ func TestDescribeCompShareImagesAllowsOffsetForPagination(t *testing.T) {
 	assert.Equal(t, 100, filtered["Offset"])
 }
 
+func TestReinstallWorkflowAllowsImageNameForLookup(t *testing.T) {
+	safe := NewSafeToolExecutor(&spyExecutor{})
+
+	filtered := safe.FilterArgs("ReinstallInstanceWorkflow", map[string]any{
+		"UHostId":          "uhost-1",
+		"ImageName":        "Ubuntu-nvidia 22.04",
+		"ImageSource":      "platform",
+		"CompShareImageId": "img-001",
+		"az_group":         uint32(3001),
+	})
+
+	assert.Equal(t, "uhost-1", filtered["UHostId"])
+	assert.Equal(t, "Ubuntu-nvidia 22.04", filtered["ImageName"])
+	assert.Equal(t, "platform", filtered["ImageSource"])
+	assert.Equal(t, "img-001", filtered["CompShareImageId"])
+	assert.NotContains(t, filtered, "az_group")
+}
+
 func TestBackendZoneIDIsInternalOnly(t *testing.T) {
 	directInner := &spyExecutor{}
 	direct := NewSafeToolExecutor(directInner)
@@ -154,11 +224,49 @@ func TestBackendZoneIDIsInternalOnly(t *testing.T) {
 	assert.Equal(t, uint32(9001), internalInner.args[0]["zone_id"], "workflow-derived zone_id must reach upstream")
 }
 
+func TestBackendIsPodIsInternalOnly(t *testing.T) {
+	directInner := &spyExecutor{}
+	direct := NewSafeToolExecutor(directInner, WithMutatingToolsEnabled(true), WithConfirmFunc(func(string, map[string]any) bool { return true }))
+	_, err := direct.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CreateCompShareInstance",
+		Args: map[string]any{
+			"GpuType": "4090",
+			"IsPod":   true,
+		},
+		Origin: OriginDirectLLM,
+	})
+	require.NoError(t, err)
+	require.Len(t, directInner.args, 1)
+	assert.NotContains(t, directInner.args[0], "IsPod", "model-origin calls must not be able to hand-fill IsPod")
+
+	internalInner := &spyExecutor{}
+	internal := NewSafeToolExecutor(internalInner, WithMutatingToolsEnabled(true), WithConfirmFunc(func(string, map[string]any) bool { return true }))
+	_, err = internal.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CreateCompShareInstance",
+		Args: map[string]any{
+			"GpuType": "4090",
+			"IsPod":   true,
+		},
+		Origin: OriginWorkflowInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, internalInner.args, 1)
+	assert.Equal(t, true, internalInner.args[0]["IsPod"], "workflow-derived IsPod must reach upstream")
+}
+
 func TestBackendPlacementAndIdentityFieldsAreInternalOnlyForCFSAndNetwork(t *testing.T) {
 	cases := []struct {
 		action string
 		args   map[string]any
 	}{
+		{
+			action: "DescribeCompShareGpuInventory",
+			args: map[string]any{
+				"zone_id":             uint32(5001),
+				"top_organization_id": uint32(1001),
+				"organization_id":     uint32(1002),
+			},
+		},
 		{
 			action: "GetCompShareCFSPrice",
 			args: map[string]any{
@@ -215,6 +323,8 @@ func TestBackendPlacementAndIdentityFieldsAreInternalOnlyForCFSAndNetwork(t *tes
 				assert.Equal(t, tc.args["az_group"], internalInner.args[0]["az_group"])
 			case "CheckCompShareNetOptimizer":
 				assert.Equal(t, tc.args["az_group"], internalInner.args[0]["az_group"])
+			case "DescribeCompShareGpuInventory":
+				assert.Equal(t, tc.args["zone_id"], internalInner.args[0]["zone_id"])
 			}
 		})
 	}
@@ -234,7 +344,6 @@ func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 		"GetCompShareInstanceMonitor",
 		"DiagnoseSSH",
 		"DiagnoseBilling",
-		"GetGPUSpecs",
 	} {
 		assert.True(t, names[name], "read-only/diagnosis tool %s should remain visible", name)
 	}
@@ -261,13 +370,8 @@ func TestVisibleRegistryFiltersMutatingWorkflowsByDefault(t *testing.T) {
 	}
 	assert.True(t, allNames["StopInstanceWorkflow"])
 	assert.True(t, allNames["CreateCustomImageWorkflow"])
-	// SearchKnowledge (agentic-RAG, P3) is gated behind
-	// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE: absent by default even in mutating
-	// mode, so the visible mutating set is the full registry minus that one
-	// gated tool. With the flag on it would equal len(Registry) (see
-	// TestSearchKnowledgeGatedVisibility).
-	assert.False(t, allNames["SearchKnowledge"], "SearchKnowledge is gated off by default")
-	assert.Equal(t, len(Registry)-1, len(all))
+	assert.True(t, allNames["SearchKnowledge"], "knowledge search is always registered")
+	assert.Equal(t, len(Registry), len(all))
 }
 
 func TestDefaultPoliciesAttachMonitorCaps(t *testing.T) {
@@ -290,8 +394,13 @@ func TestSafeExecutorRejectsMissingPolicy(t *testing.T) {
 	assert.Equal(t, 0, inner.calls)
 }
 
+// The knowledge-route case is SearchKnowledge, not the deleted GetGPUSpecs. The
+// subject here is the ROUTE (knowledge / diagnosis / workflow tools must never
+// reach the inner API executor), so the case was retargeted at that route's
+// surviving member rather than dropped — dropping it would have quietly left the
+// knowledge route ungated while the test kept passing.
 func TestSafeExecutorDoesNotSendMetaToolsToInnerExecutor(t *testing.T) {
-	for _, action := range []string{"GetGPUSpecs", "DiagnoseSSH", "StartInstanceWorkflow"} {
+	for _, action := range []string{"SearchKnowledge", "DiagnoseSSH", "StartInstanceWorkflow"} {
 		t.Run(action, func(t *testing.T) {
 			inner := &spyExecutor{}
 			safe := NewSafeToolExecutor(inner)
@@ -991,4 +1100,239 @@ func TestSafeExecutor_BackoffSleepsBetweenRetries(t *testing.T) {
 		"executor should have slept ~200ms between attempts; elapsed=%v", elapsed)
 	assert.Less(t, elapsed, 1*time.Second,
 		"backoff should not exceed ~1s for a single retry; elapsed=%v", elapsed)
+}
+
+// routedCall records one Execute invocation for routedExecutor.
+type routedCall struct {
+	action string
+	args   map[string]any
+}
+
+// routedExecutor dispatches a canned result per action, so tests can mock a
+// multi-step resolution flow (e.g. DescribeCFS -> GetCompShareCFSUpgradePrice
+// or DescribeCompShareInstance -> DescribeCompShareJupyterToken) where a
+// single spyExecutor's uniform response is not enough.
+type routedExecutor struct {
+	results map[string]map[string]any
+	calls   []routedCall
+}
+
+func (r *routedExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	r.calls = append(r.calls, routedCall{action: action, args: args})
+	if result, ok := r.results[action]; ok {
+		return result, nil
+	}
+	return map[string]any{"RetCode": float64(0)}, nil
+}
+
+// TestGetCompShareCFSUpgradePrice_ResolvesZoneIDFromDescribeCFS proves finding
+// #15's fix: a raw ReAct tool call to GetCompShareCFSUpgradePrice (no zone_id
+// in the schema, so a direct-LLM caller can never supply one) triggers an
+// internal DescribeCFS lookup and the resolved zone_id is attached before the
+// price call reaches the inner executor — matching the deterministic CFS
+// route's existing describe-then-price pattern instead of the pre-fix
+// behavior where zone_id was silently absent (upstream would then return a
+// fake RetCode=0/Price=0 "success").
+func TestGetCompShareCFSUpgradePrice_ResolvesZoneIDFromDescribeCFS(t *testing.T) {
+	inner := &routedExecutor{results: map[string]map[string]any{
+		"DescribeCFS": {"CfsId": "cfs-abc", "ZoneId": float64(5001)},
+	}}
+	safe := NewSafeToolExecutor(inner)
+
+	result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareCFSUpgradePrice",
+		Args:   map[string]any{"CfsId": "cfs-abc", "Size": 200},
+		Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, inner.calls, 2, "must describe the CFS before pricing it")
+	assert.Equal(t, "DescribeCFS", inner.calls[0].action)
+	assert.Equal(t, "cfs-abc", inner.calls[0].args["CfsId"])
+	assert.Equal(t, "GetCompShareCFSUpgradePrice", inner.calls[1].action)
+	assert.Equal(t, uint32(5001), inner.calls[1].args["zone_id"],
+		"resolved zone_id must reach the price call, or upstream silently returns a fake ¥0")
+}
+
+// TestGetCompShareCFSUpgradePrice_RejectsWhenZoneUnresolved proves the safe
+// fallback half of finding #15: when the CFS's zone cannot be resolved (empty
+// DescribeCFS result), the price call is refused rather than dispatched
+// without zone_id — which is exactly the request shape that upstream answers
+// with a misleading RetCode=0/Price=0 "success" instead of an error.
+func TestGetCompShareCFSUpgradePrice_RejectsWhenZoneUnresolved(t *testing.T) {
+	inner := &routedExecutor{results: map[string]map[string]any{
+		"DescribeCFS": {"CfsId": "cfs-abc"}, // no ZoneId/ZoneID/zone_id field
+	}}
+	safe := NewSafeToolExecutor(inner)
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareCFSUpgradePrice",
+		Args:   map[string]any{"CfsId": "cfs-abc", "Size": 200},
+		Origin: OriginDirectLLM,
+	})
+
+	require.ErrorIs(t, err, ErrCFSZoneUnresolved)
+	require.Len(t, inner.calls, 1, "must never dispatch the price call without a resolved zone_id")
+	assert.Equal(t, "DescribeCFS", inner.calls[0].action)
+}
+
+// TestGetCompShareCFSUpgradePrice_PreResolvedZoneIDSkipsExtraDescribe proves
+// the fix does not disturb the already-working deterministic CFS route: when
+// a caller (e.g. intent.handleCFSUpgradePrice via OriginDiagnosisInternal)
+// already resolved and supplied zone_id, no extra DescribeCFS lookup fires.
+func TestGetCompShareCFSUpgradePrice_PreResolvedZoneIDSkipsExtraDescribe(t *testing.T) {
+	inner := &routedExecutor{}
+	safe := NewSafeToolExecutor(inner)
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "GetCompShareCFSUpgradePrice",
+		Args:   map[string]any{"CfsId": "cfs-xyz", "Size": 100, "zone_id": uint32(7777)},
+		Origin: OriginDiagnosisInternal,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 1, "a pre-resolved zone_id must not trigger a redundant DescribeCFS lookup")
+	assert.Equal(t, "GetCompShareCFSUpgradePrice", inner.calls[0].action)
+	assert.Equal(t, uint32(7777), inner.calls[0].args["zone_id"])
+}
+
+func TestCustomImageWorkflowInternalArgsSurvivePolicyBoundary(t *testing.T) {
+	inner := &routedExecutor{}
+	safe := NewSafeToolExecutor(inner)
+	args := map[string]any{
+		"UHostId": "uhost-src", "Name": "snapshot", "Description": "desc",
+		"Region": "cn-sh2", "Zone": "cn-sh2-02",
+		"zone_id": uint32(8200), "az_group": uint32(1000009),
+		"agent_only": "must-drop",
+	}
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CreateCompShareCustomImage",
+		Args:   args,
+		Origin: OriginWorkflowInternal,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 1)
+	got := inner.calls[0].args
+	for _, key := range []string{"UHostId", "Name", "Description", "Region", "Zone", "zone_id", "az_group"} {
+		assert.Equal(t, args[key], got[key], "%s must reach the upstream API", key)
+	}
+	assert.NotContains(t, got, "agent_only")
+}
+
+// TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance proves
+// finding #9's fix: a raw call naming a Pod (cpod-*) instance triggers an
+// internal DescribeCompShareInstance lookup for its Zone STRING, a
+// DescribeCompShareSupportZone lookup to resolve that string to its numeric
+// ZoneID, and attaches the resolved zone_id — matching the live evidence (no
+// zone_id -> RetCode 8433 for Pod; zone_id=5001 -> success).
+//
+// The mock deliberately does NOT put a ZoneId field on the
+// DescribeCompShareInstance response — live-verified 2026-07-10 that field
+// never exists there (upstream tags it json:"-"); only the string Zone does.
+// An earlier version of this test/fix wrongly assumed ZoneId existed on that
+// response, which unit-tested green but was a no-op live; this fixture
+// exists specifically so that mistake can't silently reappear.
+func TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance(t *testing.T) {
+	inner := &routedExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{"UHostId": "cpod-abc", "Zone": "cn-bj2-03"}},
+		},
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "RegionId": float64(2), "IsPod": true},
+			},
+		},
+	}}
+	safe := NewSafeToolExecutor(inner, WithZoneCatalog(zones.NewCatalog(0)))
+	ctx := WithUser(context.Background(), UserContext{TopOrganizationID: 66391350, OrganizationID: 64404856})
+
+	_, err := safe.ExecuteSafe(ctx, SafeToolRequest{
+		Action: "DescribeCompShareJupyterToken",
+		Args:   map[string]any{"UHostIds": []any{"cpod-abc"}},
+		Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 3, "must describe the Pod instance and resolve its zone before requesting its Jupyter token")
+	assert.Equal(t, "DescribeCompShareInstance", inner.calls[0].action)
+	assert.Equal(t, []string{"cpod-abc"}, inner.calls[0].args["UHostIds"])
+	assert.Equal(t, "DescribeCompShareSupportZone", inner.calls[1].action)
+	assert.Equal(t, uint32(66391350), inner.calls[1].args["top_organization_id"])
+	assert.Equal(t, uint32(64404856), inner.calls[1].args["organization_id"])
+	assert.Equal(t, "DescribeCompShareJupyterToken", inner.calls[2].action)
+	assert.Equal(t, uint32(5001), inner.calls[2].args["zone_id"])
+}
+
+// TestDescribeCompShareJupyterToken_UCloudInstanceSkipsZoneResolution proves
+// finding #9's other half: a uhost-* (UCloud) instance ID does not trigger
+// any DescribeCompShareInstance lookup or zone_id attachment — the live
+// evidence showed only Pod instances needed it.
+func TestDescribeCompShareJupyterToken_UCloudInstanceSkipsZoneResolution(t *testing.T) {
+	inner := &routedExecutor{}
+	safe := NewSafeToolExecutor(inner)
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompShareJupyterToken",
+		Args:   map[string]any{"UHostIds": []any{"uhost-abc"}},
+		Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 1, "a UCloud instance must not trigger a zone-resolution describe call")
+	assert.Equal(t, "DescribeCompShareJupyterToken", inner.calls[0].action)
+	assert.NotContains(t, inner.calls[0].args, "zone_id")
+}
+
+// TestDedupeModelRepositoryTags proves finding #22's fix: duplicate tag
+// tokens leaking from the upstream backend's broken dedup (a "seen" map that
+// is checked but never written to — live-verified 2026-07-10, 3 total tokens
+// with "AI" appearing twice) are removed client-side for a raw tool call,
+// covering both shapes that carry tags: DescribeModelRepositoryModels' per-
+// model comma-separated "Tag" field and its sibling DescribeModelRepositoryTags'
+// flat "Tags" array.
+func TestDedupeModelRepositoryTags(t *testing.T) {
+	t.Run("DescribeModelRepositoryModels dedupes each model's CSV Tag field", func(t *testing.T) {
+		inner := &spyExecutor{result: map[string]any{
+			"Models": []any{
+				map[string]any{"Name": "Qwen2.5-7B", "Tag": "AI,LLM,AI"},
+				map[string]any{"Name": "Llama-3", "Tag": "LLM"},
+			},
+		}}
+		safe := NewSafeToolExecutor(inner)
+
+		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+			Action: "DescribeModelRepositoryModels",
+			Args:   map[string]any{},
+			Origin: OriginDirectLLM,
+		})
+
+		require.NoError(t, err)
+		models, ok := result.RawResult["Models"].([]any)
+		require.True(t, ok)
+		first, ok := models[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "AI,LLM", first["Tag"], "duplicate AI token must be removed, order preserved")
+		second, ok := models[1].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "LLM", second["Tag"], "single-tag entries must be left as-is")
+	})
+
+	t.Run("DescribeModelRepositoryTags dedupes the flat Tags array", func(t *testing.T) {
+		inner := &spyExecutor{result: map[string]any{
+			"Tags": []any{"AI", "LLM", "AI"},
+		}}
+		safe := NewSafeToolExecutor(inner)
+
+		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+			Action: "DescribeModelRepositoryTags",
+			Args:   map[string]any{},
+			Origin: OriginDirectLLM,
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, []any{"AI", "LLM"}, result.RawResult["Tags"])
+	})
 }

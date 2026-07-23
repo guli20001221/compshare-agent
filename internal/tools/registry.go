@@ -2,23 +2,6 @@ package tools
 
 import openai "github.com/sashabaranov/go-openai"
 
-// agenticSearchKnowledgeOn gates the agentic-RAG SearchKnowledge tool (P3) in
-// VisibleRegistry. Default false => byte-identical to before the tool existed,
-// for EVERY intent. Set once at boot from COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE
-// (cmd/trace.go). The flag is read at the single tool-visibility choke point
-// (VisibleRegistry/VisibleRegistryForSubset), so that filter IS the gate
-// (unified plan P3, gating design 2 — full byte-identity when off).
-var agenticSearchKnowledgeOn bool
-
-// SetAgenticSearchKnowledgeEnabled toggles SearchKnowledge visibility. Boot-only
-// (reversible by restart), mirroring the USE_SKILL_REGISTRY precedent (#114).
-func SetAgenticSearchKnowledgeEnabled(v bool) { agenticSearchKnowledgeOn = v }
-
-// AgenticSearchKnowledgeEnabled reports whether the agentic SearchKnowledge gate
-// is on. Used by the engine (P4a) to decide whether to relax the diagnosis
-// instance-demand dead-end so the agent can retrieve evidence first.
-func AgenticSearchKnowledgeEnabled() bool { return agenticSearchKnowledgeOn }
-
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
 	// --- Knowledge Tools (local, no API call) ---
@@ -26,13 +9,13 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SearchKnowledge",
-			Description: "检索平台与第三方工具（vLLM/SGLang/Ollama/ComfyUI 等）运维知识库，返回带证据片段的条目（chunk_id/标题/摘要/片段）。排查报错、定位原因或回答“怎么做/为什么”类工具问题时，先用它取证再作答；引用返回的 chunk 内容，不要凭空编造命令或参数。",
+			Description: "检索平台文档和技术证据。用于产品规则、操作方法、技术原理和故障知识；实例状态、库存、价格等实时账号数据应使用对应只读能力。返回本轮可引用的证据条目。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"query": map[string]any{
 						"type":        "string",
-						"description": "要检索的症状、报错或问题（简短自然语言）。",
+						"description": "脱离对话上文也能独立理解的检索问题。",
 					},
 					"context_hint": map[string]any{
 						"type":        "string",
@@ -40,65 +23,6 @@ var Registry = []openai.Tool{
 					},
 				},
 				"required": []string{"query"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "GetGPUSpecs",
-			Description: "查询 GPU 型号的概览规格参数（显存、算力、最大卡数、适用场景等），不展开控制台全部 CPU/内存/GPU 合法组合。用户明确要求所有/完整规格或某型号所有配置时，应使用 DescribeAvailableCompShareInstanceTypes。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"GpuType": map[string]any{
-						"type":        "string",
-						"description": "GPU 类型，可填上游返回的机型名称，例如 4090 或 A100。不传则返回本地 GPU 概览；要确认当前平台完整可选机型和配比，请用 DescribeAvailableCompShareInstanceTypes。",
-					},
-				},
-				"required": []string{},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "GetGPURecommendation",
-			Description: "根据使用场景推荐最合适的 GPU 配置。支持的场景包括：推理/部署、LoRA微调、全量训练、SD/ComfyUI绘图、学习入门等。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"scene": map[string]any{
-						"type":        "string",
-						"description": "使用场景描述，如 '训练7B模型'、'部署vLLM'、'跑SD绘图'、'学习入门' 等",
-					},
-					"budget_sensitive": map[string]any{
-						"type":        "boolean",
-						"description": "是否对价格敏感，为 true 时优先推荐性价比高的选项",
-					},
-				},
-				"required": []string{"scene"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "GetModelVRAMRequirement",
-			Description: "根据大模型名称(或参数量)估算推理所需显存,并给出可单卡承载的 GPU 选项;无单卡可承载时给出多卡方案。用于部署/选型,如 'Qwen32B'、'Llama3-70B'、'deepseek-67b'。仅做显存与可承载性计算;算力/场景优选请叠加 GetGPURecommendation,价格用 GetCompShareInstancePrice。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"model_name": map[string]any{
-						"type":        "string",
-						"description": "模型名称或参数量,如 'Qwen32B'、'Qwen2.5-32B-Instruct'、'Llama3-70B'、'7B'。",
-					},
-					"quantization": map[string]any{
-						"type":        "string",
-						"description": "量化精度,默认 fp16。可选 fp16 / bf16 / fp8 / int8 / int4(越低显存越省)。",
-					},
-				},
-				"required": []string{"model_name"},
 			},
 		},
 	},
@@ -206,7 +130,7 @@ var Registry = []openai.Tool{
 								"Size":   map[string]any{"type": "integer"},
 							},
 						},
-						"description": "磁盘配置，创建价格应带系统盘，例如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。",
+						"description": "磁盘配置，创建价格应带系统盘；工作流会按镜像 Size 和规格目录里的启动盘类型生成，模型不要写死大小。",
 					},
 				},
 				"required": []string{"Zone", "GpuType", "Gpu", "Cpu", "Memory"},
@@ -217,7 +141,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareGpuInventory",
-			Description: "查询 GPU 原始库存快照。返回 GpuInventory.Exclusive/Spot，按 zone_id -> GPU 型号 -> 剩余张数组织；该数量只表示原始 GPU 张数，不保证任意 CPU/内存/镜像组合都能创建。要确认某个具体配置是否可创建，还需要 CheckCompShareResourceCapacity。",
+			Description: "查询 GPU 原始库存快照。返回 GpuInventory.Exclusive/Spot，按 zone_id -> GPU 型号 -> 剩余张数组织；该数量只表示原始 GPU 张数，不保证任意 CPU/内存/镜像组合都能创建，也不作为卡片禁用或“无库存”的最终依据。要确认某个具体配置是否可创建，还需要 CheckCompShareResourceCapacity。",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -229,7 +153,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareResourceCapacity",
-			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。只传 Zone/Region 字符串，内部会处理上游所需字段，不要手填 zone_id/az_group。MachineType 固定传 G。MinimalCpuPlatform 传 Auto（或 Intel/Auto、Amd/Auto）。CompShareImageId 和 ChargeType 必填。Disks 至少包含一个系统盘，如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。返回各 GPU/CPU/Memory 组合的可用性。注意：本接口会校验镜像存在/状态，并在 ucloud 路径触发底层镜像适配解析；但它仍不能保证最终创建一定成功，镜像的 SupportedGpuTypes 也只能作为候选排序和风险提示。",
+			Description: "预检某个具体创建实例配置是否有足够资源，适合在用户已给出 GPU/CPU/内存/镜像/计费方式等创建参数时使用；也可在库存问题已识别 GPU 型号并拿到可用区后，确认该机型当前是否真实可创建。模型只提供业务字段，workflow 会按可用区类型补齐内部位置参数：普通区用 Zone/Region，Pod 区内部用 zone_id；不要手填 zone_id/az_group。MachineType 为 G。MinimalCpuPlatform 由规格目录推导，缺失时为 Auto。CompShareImageId 和 ChargeType 必填。Disks 由镜像 Size 和规格目录生成，不要写死 60GB。返回各 GPU/CPU/Memory 组合的可用性。注意：本接口会校验镜像存在/状态，并在 ucloud 路径触发底层镜像适配解析；但它仍不能保证最终创建一定成功，镜像的 SupportedGpuTypes 也只能作为候选排序和风险提示。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -284,7 +208,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareImages",
-			Description: "查询平台镜像列表。ImageType 枚举：System（系统镜像，裸 Ubuntu/Windows）、App（应用基础镜像，如 PyTorch/CUDA/ComfyUI/Ollama），不传返回全部。查自制镜像请用 DescribeCompShareCustomImages，查社区镜像请用 DescribeCommunityImages。不用于查库存。",
+			Description: "查询平台镜像列表。ImageType 枚举：System（系统镜像，裸 Ubuntu/Windows）、App（应用基础镜像，如 PyTorch/CUDA/ComfyUI/Ollama）、Game（游戏镜像）、Other（其他），不传返回全部。查自制镜像请用 DescribeCompShareCustomImages，查社区镜像请用 DescribeCommunityImages。不用于查库存。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -294,7 +218,7 @@ var Registry = []openai.Tool{
 					},
 					"ImageType": map[string]any{
 						"type":        "string",
-						"description": "镜像类型：System(系统镜像) / App(应用基础镜像)，不传则返回全部",
+						"description": "镜像类型：System(系统镜像) / App(应用基础镜像) / Game(游戏镜像) / Other(其他)，不传则返回全部",
 					},
 					"Name": map[string]any{
 						"type":        "string",
@@ -339,7 +263,7 @@ var Registry = []openai.Tool{
 					},
 					"tags": map[string]any{
 						"type":        "string",
-						"description": "按模型仓库标签筛选，多个标签用逗号分隔，如 LLM。",
+						"description": "按模型仓库标签筛选，多个标签用逗号分隔，如 AI。标签需与模型仓库实际标签完全匹配（大小写敏感），不确定标签是否存在时优先用 name 模糊搜索。",
 					},
 				},
 				"required": []string{},
@@ -485,7 +409,7 @@ var Registry = []openai.Tool{
 						"properties": map[string]any{
 							"Field": map[string]any{
 								"type":        "string",
-								"enum":        []string{"PubTime", "CreatedCount", "Favor", "ImageUseTime", "FavoritesCount"},
+								"enum":        []string{"PubTime", "CreatedCount", "Favor", "ImageUseTime", "FavoritesCount", "Price"},
 								"description": "排序字段。CreatedCount 表示按被用于创建实例的次数排序；PubTime 表示发布时间。",
 							},
 							"ASC": map[string]any{
@@ -554,7 +478,7 @@ var Registry = []openai.Tool{
 								"Size":   map[string]any{"type": "integer"},
 							},
 						},
-						"description": "磁盘配置，创建价格应带系统盘，例如 [{IsBoot:true, Type:CLOUD_SSD, Size:60}]。",
+						"description": "磁盘配置，创建价格应带系统盘；工作流会按镜像 Size 和规格目录里的启动盘类型生成，模型不要写死大小。",
 					},
 				},
 				"required": []string{"Zone", "GpuType", "GPU", "CPU", "Memory"},
@@ -566,7 +490,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建实例的完整工作流。自动执行：查询镜像→检查库存→查询价格→用户确认→创建实例→查看状态。支持平台镜像和社区镜像。平台镜像默认查询公共镜像（含系统镜像和应用基础镜像如 PyTorch/CUDA 等）。传 ImageName 可按名称缩小镜像范围（平台和社区均可用）。传 ImageSource='community' 使用社区镜像创建。Pod 区必须使用容器镜像，普通区可使用系统镜像或应用镜像。不支持自制/私有镜像。",
+			Description: "创建算力实例的候选请求。用于用户明确要求实际创建实例；支持平台镜像和社区镜像，配置不完整时可进入引导卡继续选择。价格、库存或创建方法查询不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -596,7 +520,7 @@ var Registry = []openai.Tool{
 					},
 					"Name": map[string]any{
 						"type":        "string",
-						"description": "实例名称（可选）",
+						"description": "实例名称（可选）。只在用户明确指定名称时填写并保持原文；未指定则省略，由平台生成。",
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",
@@ -607,6 +531,21 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "镜像名称关键词。平台镜像按 Name 精确/模糊匹配；社区镜像用于 FuzzySearch。如 PyTorch / Ubuntu / ComfyUI。",
 					},
+					// Preferred over ImageName whenever an id is known, because
+					// ImageName is passed upstream as FuzzySearch: a wording the
+					// platform does not match narrows the catalog to zero rows and
+					// the flow has no image left to offer. An id names one row and
+					// cannot miss.
+					//
+					// The value must come from a listing seen THIS turn (a read
+					// observation's evidence.subjects[].id, minus the "image:"
+					// prefix). CodecImage verifies it against the live catalog and
+					// REFUSES an id the catalog does not contain, so a remembered or
+					// invented id is rejected rather than created.
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "镜像 ID，如 compshareImage-xxxx。已经通过镜像查询看到具体镜像时，优先填这个而不是 ImageName——名称走模糊搜索，措辞不对会一个都搜不到；ID 精确指向一个版本。只能填本轮查询结果里真实出现过的 ID，不要凭记忆或推测填写。",
+					},
 				},
 				"required": []string{"GpuType"},
 			},
@@ -616,7 +555,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "StopInstanceWorkflow",
-			Description: "关机工作流。会提醒用户关机后磁盘仍然收费。用户要求关机时使用此工具。",
+			Description: "关闭已有实例的候选请求。用于用户要求实际关机；关机方法、影响或费用咨询不使用。关机不会释放磁盘，保留资源可能继续计费。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -633,7 +572,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "StartInstanceWorkflow",
-			Description: "开机工作流。用户要求开机时使用此工具。支持无卡模式（WithoutGpu=true）：不分配 GPU，仅用于数据拷贝或维护，费用更低。",
+			Description: "启动已有实例的候选请求。用于普通开机或无卡开机；无卡开机只接受档位 A（2C/4GB）或 B（8C/16GB）。开机方法或费用咨询不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -641,9 +580,10 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "要开机的实例 ID",
 					},
-					"WithoutGpu": map[string]any{
-						"type":        "boolean",
-						"description": "无卡模式开机，不分配 GPU，仅用于数据访问/维护，费用更低。默认 false（正常带卡开机）。",
+					"WithoutGpuSpec": map[string]any{
+						"type":        "string",
+						"enum":        []string{"A", "B"},
+						"description": "可选。无卡开机档位：A=2C/4GB，B=8C/16GB；容器实例仅支持 A。普通带卡开机时省略。",
 					},
 				},
 				"required": []string{"UHostId"},
@@ -654,7 +594,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "RebootInstanceWorkflow",
-			Description: "重启实例工作流。检查状态→确认→重启。仅 Running 状态可重启。会中断当前运行的任务。",
+			Description: "重启运行中实例的候选请求。仅用于用户要求实际重启；会中断当前运行任务。关机后再开机或只询问重启方法时不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -671,7 +611,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "RenameInstanceWorkflow",
-			Description: "重命名实例工作流。确认→修改名称。名称最长63字符，支持中英文、数字、下划线等。",
+			Description: "修改已有实例名称的候选请求。仅用于用户要求实际改名；新名称最长 63 个字符。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -692,7 +632,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResetPasswordWorkflow",
-			Description: "重置实例密码工作流。普通主机需先关机，容器实例支持在线重置。密码要求8-32字符，至少2种字符类型（大小写字母/数字/特殊字符）。",
+			Description: "重置已有实例登录密码的候选请求。普通虚机需关机，容器实例可在线重置；密码规则由安全输入和服务端校验。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -714,7 +654,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SetStopSchedulerWorkflow",
-			Description: "设置定时关机工作流。为运行中的实例设置自动关机时间。支持相对时间（如30分钟后）或绝对时间。抢占式实例不支持。用户要求定时关机、自动关机、延时关机时使用此工具。",
+			Description: "为运行中的非抢占式实例设置定时关机的候选请求。支持相对时间或绝对时间；取消已有定时关机应使用取消操作。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -722,16 +662,30 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "要设置定时关机的实例 ID",
 					},
-					"AfterMinutes": map[string]any{
-						"type":        "number",
-						"description": "几分钟后关机（正整数，最小 5）。与 ShutdownAt 二选一。如：60 表示 1 小时后关机。",
-					},
-					"ShutdownAt": map[string]any{
-						"type":        "string",
-						"description": "指定关机时间。支持格式：2026-04-16 23:00（按北京时间解析）或 RFC3339。与 AfterMinutes 二选一。",
+					"Schedule": map[string]any{
+						"type":        "object",
+						"description": "关机时间的结构化含义。用户说“今天/明天”时必须使用对应 mode，不要自行换算日期。",
+						"properties": map[string]any{
+							"mode": map[string]any{
+								"type": "string", "enum": []string{"after_minutes", "today", "tomorrow", "absolute"},
+							},
+							"minutes": map[string]any{
+								"type": "integer", "minimum": 5, "description": "仅 mode=after_minutes。",
+							},
+							"local_time": map[string]any{
+								"type": "string", "description": "仅 mode=today/tomorrow，格式 HH:MM。",
+							},
+							"at": map[string]any{
+								"type": "string", "description": "仅 mode=absolute，必须来自用户明确写出的完整日期时间。",
+							},
+							"timezone": map[string]any{
+								"type": "string", "enum": []string{"Asia/Shanghai", "UTC"},
+							},
+						},
+						"required": []string{"mode"},
 					},
 				},
-				"required": []string{"UHostId"},
+				"required": []string{"UHostId", "Schedule"},
 			},
 		},
 	},
@@ -739,7 +693,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CancelStopSchedulerWorkflow",
-			Description: "取消定时关机工作流。取消实例已设置的定时关机任务。用户要求取消定时关机、取消自动关机时使用此工具。",
+			Description: "取消实例已有定时关机任务的候选请求。设置或修改关机时间不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -809,7 +763,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCFS",
-			Description: "查询 CFS 共享文件存储列表或单个 CFS。CFS 是共享文件存储，可挂载到算力实例用于共享数据集/模型文件。可传 CfsId 精确查询；可传 Zone/Region 字符串筛选，内部会处理上游字段，不要手填 zone_id/az_group。",
+			Description: "查询 CFS 共享文件存储列表或单个 CFS。CFS 是共享文件存储，可挂载到算力实例用于共享数据集/模型文件。可传 CfsId 精确查询。注意：Zone/Region 目前不能可靠按可用区筛选结果——仅传 Zone 可能直接报错，仅传 Region 或同时传 Zone+Region（即使值不匹配）都不会真正过滤，会返回同一批 CFS；不要依赖这两个参数缩小范围，也不要手填 zone_id/az_group。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -944,7 +898,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResizeInstanceWorkflow",
-			Description: "实例变配工作流。修改实例的 CPU/GPU/内存配置。实例必须处于关机状态。用户要求'加卡'、'升级配置'、'加内存'时使用。",
+			Description: "修改已有实例 CPU、GPU 或内存配置的候选请求。实例必须处于关机状态；磁盘扩容不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -973,7 +927,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ReinstallInstanceWorkflow",
-			Description: "重装系统工作流。将实例重装为指定镜像，系统盘数据会被清除。用户要求'换镜像'、'重装系统'、'换成 Ubuntu'时使用。",
+			Description: "使用选定镜像重装已有实例的候选请求。重装会清除系统盘数据；仅咨询镜像或不接受清盘风险时不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -985,12 +939,20 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "目标镜像 ID",
 					},
+					"ImageName": map[string]any{
+						"type":        "string",
+						"description": "目标镜像名称或关键词；后端会通过真实镜像接口解析为 CompShareImageId",
+					},
+					"ImageSource": map[string]any{
+						"type":        "string",
+						"description": "镜像来源：platform/community/custom/shared；不确定时可不传",
+					},
 					"Password": map[string]any{
 						"type":        "string",
 						"description": "新的登录密码（可选，不传则保留原密码）",
 					},
 				},
-				"required": []string{"UHostId", "CompShareImageId"},
+				"required": []string{"UHostId"},
 			},
 		},
 	},
@@ -998,7 +960,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateDiskWorkflow",
-			Description: "新建数据盘并挂载到实例的工作流。只创建一块指定 Size 的新云数据盘并自动挂载，不支持挂载已有盘，也不是扩已有盘。用户要求'加数据盘'、'新建数据盘'、'加磁盘'、'磁盘不够'时使用；如果没给 Size，先追问容量。",
+			Description: "为实例新建一块云数据盘并挂载的候选请求。只创建新盘，不扩已有盘，也不挂载已有盘。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1019,7 +981,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResizeDiskWorkflow",
-			Description: "扩已有磁盘工作流。用于把实例上已经挂载的系统盘或数据盘扩到指定目标容量。不会新建磁盘，也不支持挂载已有盘。Size 是目标容量 GB，不是新增容量；例如从 60GB 扩到 120GB 时 Size=120。扩系统盘传 DiskType=Boot；扩数据盘优先传 DiskId，实例有多块数据盘时必须传 DiskId。",
+			Description: "扩容实例上已有系统盘或数据盘的候选请求。Size 表示目标总容量，不是新增容量；新建并挂载数据盘不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1049,7 +1011,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateCustomImageWorkflow",
-			Description: "从已有实例创建自制镜像的确认式工作流。自动执行：DescribeCompShareInstance -> 用户确认 -> CreateCompShareCustomImage -> GetCompShareImageCreateProgress。用于用户要保存当前环境、把实例做成自定义镜像、下次复用环境。需要 UHostId 和镜像 Name；Description 可选。不用于发布社区镜像，不要直接调用原始 CreateCompShareCustomImage。",
+			Description: "从已有实例制作当前账号自制镜像的候选请求。用于保存和复用实例环境；普通虚机制作前需停机，容器来源需保持运行。不用于发布社区镜像，也不用于跨可用区克隆已有自制镜像。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1073,8 +1035,38 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
+			Name:        "CloneCustomImageWorkflow",
+			Description: "将当前账号已有且可用的自制镜像克隆到另一个可用区的候选请求。只适用于自制镜像；从实例制作新镜像或复制平台、社区、共享镜像不使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "源自制镜像 ID；如用户只给名称，应先查询自制镜像目录取得真实 ID。",
+					},
+					"Zone": map[string]any{
+						"type":        "string",
+						"description": "目标可用区字符串或展示名；不能与源镜像所在可用区相同。",
+					},
+					"TargetImageName": map[string]any{
+						"type":        "string",
+						"description": "克隆后目标镜像的名称，最多 50 个字符。用户未给名称时先追问，不要编造。",
+						"maxLength":   50,
+					},
+					"TargetImageDescription": map[string]any{
+						"type":        "string",
+						"description": "克隆后目标镜像的描述，可选。",
+					},
+				},
+				"required": []string{"CompShareImageId", "Zone", "TargetImageName"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
 			Name:        "EnableNetOptimizerWorkflow",
-			Description: "开启/同步指定可用区网络加速的确认式工作流。需要 Zone；先查询该区域网络加速状态，未开通时必须用户确认后才调用上游开启/同步接口；本轮 agent 暂不暴露关闭能力，因此不用于关闭网络加速。",
+			Description: "为指定可用区开启或同步网络加速的候选请求。只支持开启或同步，不支持关闭；查询当前状态使用只读能力。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1095,7 +1087,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateCFSWorkflow",
-			Description: "创建 CFS 共享文件存储的确认式工作流。CFS 用于共享数据集/模型文件，当前只支持 Pod/容器可用区；创建前会查询价格并要求确认。需要 Name、Size、Zone；Size 单位 GB，范围 50 到 2048。CFS 不支持按量付费，不能用于删除 CFS。",
+			Description: "创建 CFS 共享文件存储的候选请求。仅支持 Pod/容器可用区和 Month、Year、Day、Dynamic 计费；扩容已有 CFS 不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1129,7 +1121,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResizeCFSWorkflow",
-			Description: "扩容 CFS 共享文件存储的确认式工作流。先查询 CFS 当前容量和价格差额，再确认扩容。Size 是目标容量 GB，必须大于当前容量；不支持缩容或删除。",
+			Description: "扩容已有 CFS 的候选请求。Size 是目标总容量且必须大于当前容量；不支持缩容、删除或新建 CFS。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1151,7 +1143,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseSSH",
-			Description: "诊断 SSH 连接失败。自动执行：检查实例状态与 DescribeCompShareInstance 返回的 SshLoginCommand → 检查资源使用 → 给出结论、只读自查命令和建议。用户反馈 SSH 连不上、连接超时、连接被拒时使用。",
+			Description: "对已有实例执行云侧 SSH 预检。核对实例状态、平台返回的登录入口和监控风险信号，并按用户实际遇到的错误给出只读排查建议；不会探测公网端口、进入实例或执行修复。需要明确实例。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1159,39 +1151,10 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "要诊断的实例 ID",
 					},
-				},
-				"required": []string{"UHostId"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "DiagnoseInitFailure",
-			Description: "诊断实例初始化失败。检查实例当前状态并给出修复建议。用户反馈创建失败、初始化失败、实例异常时使用。可传 UHostId 查特定实例，不传则扫描所有实例找出初始化失败的。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
+					"FailureKind": map[string]any{
 						"type":        "string",
-						"description": "要诊断的实例 ID（可选，不传则扫描所有实例）",
-					},
-				},
-				"required": []string{},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "DiagnoseGPU",
-			Description: "诊断 GPU 检测不到问题（nvidia-smi 报错）。自动执行：检查实例状态与 GPU 配置 → 检查 GPU 监控数据 → 给出结论和建议。用户反馈 nvidia-smi 报错、GPU 找不到、显卡无法识别时使用。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
-						"type":        "string",
-						"description": "要诊断的实例 ID",
+						"description": "用户实际报告的 SSH 失败类型。仅按用户给出的错误选择；无法确定时用 unknown，不要根据实例状态或监控数据推断。",
+						"enum":        []string{"timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown"},
 					},
 				},
 				"required": []string{"UHostId"},
@@ -1202,7 +1165,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseBilling",
-			Description: "诊断费用异常。查询实例列表并分析各项费用明细，解释扣费原因。用户反馈为什么扣这么多钱、费用不对、扣费异常时使用。可传 UHostId 查特定实例，不传则分析所有实例。",
+			Description: "核对已有实例当前配置的上游净报价及关机后仍计费的磁盘。用于查询现有实例当前费用构成；不用于账户余额、账单流水、发票或历史实际扣款。可传 UHostId 查特定实例，不传则检查全部实例。金额由服务端根据结构化上游数据生成，Agent 不应重算。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1215,54 +1178,65 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "DiagnosePortOrFirewall",
-			Description: "诊断端口/服务可达性问题。先查实例应用入口，再查询平台已知应用端口映射，给出排查线索；SSH 以实例 SshLoginCommand 为准，不以平台应用端口目录为准。用户报告服务无法访问、端口不通、JupyterLab/SSH/FileBrowser 打不开时使用。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
-						"type":        "string",
-						"description": "要诊断的实例 ID",
-					},
-					"Service": map[string]any{
-						"type":        "string",
-						"description": "目标服务名（可选，如 JupyterLab、SSH、FileBrowser，支持别名和大小写不敏感）",
-					},
-				},
-				"required": []string{"UHostId"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "DiagnoseImageIssue",
-			Description: "诊断镜像问题。镜像无法使用、启动异常、环境不符、初始化失败疑似镜像原因时使用。自动检查实例状态和镜像类型，区分社区镜像与官方镜像给出建议。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
-						"type":        "string",
-						"description": "要诊断的实例 ID",
-					},
-				},
-				"required": []string{"UHostId"},
-			},
-		},
-	},
 }
 
 // VisibleRegistryForSubset returns a filtered tool list scoped to the given
 // tool names. If subset is nil or empty, falls back to VisibleRegistry (full
 // read-only or mutating set). Used by the ReAct loop when the planner
 // classified an intent that has a defined tool subset (e.g. diagnosis).
+// ToolScopeMode is an EXPLICIT tool authorization. It exists because the previous
+// design encoded authorization as a nil slice, and nil had to mean two opposite
+// things at once: "this intent named no tools" and "this intent may use every tool".
+// VisibleRegistryForSubset resolved that ambiguity in the most dangerous direction —
+// see its doc comment. A mode is never inferred from emptiness.
+type ToolScopeMode string
+
+const (
+	// ToolScopeNamed authorizes exactly the tools in Names and nothing else.
+	// An EMPTY Names under this mode authorizes NOTHING; it is not "everything".
+	ToolScopeNamed ToolScopeMode = "named"
+
+	// ToolScopeReadOnlyFull authorizes every read tool and no mutating tool,
+	// regardless of whether mutating tools are enabled for the process. This is
+	// the fail-closed default for an intent with no allowlist.
+	ToolScopeReadOnlyFull ToolScopeMode = "read_only_full"
+
+	// ToolScopeMutableFull authorizes the entire registry, mutating tools included
+	// (subject to the process-wide mutating flag). Nothing selects this today; it
+	// exists so that "the agent may write anything" must be TYPED by a caller who
+	// means it, and can be grepped for. It must never become a fallback.
+	ToolScopeMutableFull ToolScopeMode = "mutable_full"
+)
+
+// ToolScope is the authorization handed to a dispatch window.
+type ToolScope struct {
+	Mode  ToolScopeMode
+	Names []string
+}
+
+// VisibleRegistryForScope resolves an explicit ToolScope to the tool list the model
+// may see. An unrecognized mode is treated as least-privilege (read-only), so a
+// zero-valued ToolScope cannot hand out write access by accident.
+func VisibleRegistryForScope(scope ToolScope, mutatingEnabled bool) []openai.Tool {
+	return DefaultCapabilityRegistry().VisibleTools(scope, mutatingEnabled)
+}
+
+// VisibleRegistryForSubset filters the registry to a named subset.
+//
+// DEPRECATED for dispatch authorization: prefer VisibleRegistryForScope, which cannot
+// confuse "no tools named" with "all tools allowed". This function is retained for the
+// read-only skill executor, which always passes a non-empty skill.RequiredTools with
+// mutatingEnabled=false. Its len(subset)==0 branch returns the FULL registry and is the
+// exact defect that gave ~65% of production turns (knowledge_qa, unknown, empty intent)
+// a mutating-capable tool window; no dispatch path may rely on it.
 func VisibleRegistryForSubset(subset []string, mutatingEnabled bool) []openai.Tool {
 	if len(subset) == 0 {
 		return VisibleRegistry(mutatingEnabled)
 	}
+	return visibleRegistryForNames(subset, mutatingEnabled)
+}
+
+func visibleRegistryForNames(subset []string, mutatingEnabled bool) []openai.Tool {
 	allowed := make(map[string]struct{}, len(subset))
 	for _, name := range subset {
 		allowed[name] = struct{}{}
@@ -1284,29 +1258,9 @@ func VisibleRegistryForSubset(subset []string, mutatingEnabled bool) []openai.To
 // runtime mode. Read-only mode hides mutating workflow tools while keeping
 // query, knowledge, and cloud-side diagnosis tools available.
 func VisibleRegistry(mutatingEnabled bool) []openai.Tool {
-	agenticSearch := AgenticSearchKnowledgeEnabled()
-	policies := DefaultToolExecutionPolicies()
-	visible := make([]openai.Tool, 0, len(Registry))
-	for _, tool := range Registry {
-		if tool.Function == nil {
-			continue
-		}
-		// Agentic-RAG SearchKnowledge (P3) is gated behind
-		// COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE. When off it is invisible for EVERY
-		// intent (full-registry AND subset), so the flag-off tool surface is
-		// byte-identical to before this tool existed. When on it survives the
-		// read-only filter below (Route=knowledge, read_cheap) and is scoped by
-		// the subset filter (P4a adds it only to the diagnosis subset).
-		if tool.Function.Name == "SearchKnowledge" && !agenticSearch {
-			continue
-		}
-		if !mutatingEnabled {
-			policy, ok := policies[tool.Function.Name]
-			if ok && (policy.Route == ActionRouteWorkflow || policy.Class == ActionClassMutating) {
-				continue
-			}
-		}
-		visible = append(visible, tool)
+	mode := ToolScopeReadOnlyFull
+	if mutatingEnabled {
+		mode = ToolScopeMutableFull
 	}
-	return visible
+	return DefaultCapabilityRegistry().VisibleTools(ToolScope{Mode: mode}, mutatingEnabled)
 }

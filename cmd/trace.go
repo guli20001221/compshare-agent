@@ -14,7 +14,6 @@ import (
 	"github.com/compshare-agent/internal/embedding"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
@@ -145,27 +144,6 @@ func cleanupTraceWriter(writer observability.Writer, now time.Time) error {
 	return observability.Cleanup(dir, observability.DefaultTraceRetentionDays, now)
 }
 
-func intentPlannerShadowEnabled(getenv getenvFunc) bool {
-	return getenv("COMPSHARE_INTENT_ROUTER_MODE") == "shadow"
-}
-
-func plannerRuntimeModeLine(shadowEnabled, plannerDispatchEnabled bool, routeIntents []intent.Intent) string {
-	mode := "off"
-	if plannerDispatchEnabled {
-		mode = "dispatch"
-	} else if shadowEnabled {
-		mode = "shadow"
-	}
-	return fmt.Sprintf("router_mode=%s route_intents=%s", mode, formatRouteIntents(routeIntents))
-}
-
-func groundedRendererRuntimeLine(mode string) string {
-	if mode == "" {
-		mode = "off"
-	}
-	return fmt.Sprintf("grounded_renderer=%s", mode)
-}
-
 func mutatingToolsEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	value := strings.TrimSpace(getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"))
 	switch value {
@@ -221,110 +199,6 @@ func reactHistoryCompactionEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-func intentScopedReActPromptEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	value := strings.TrimSpace(getenv("USE_INTENT_SCOPED_REACT_PROMPT"))
-	switch value {
-	case "", "0":
-		return false, ""
-	case "1":
-		return true, ""
-	default:
-		return false, value
-	}
-}
-
-type plannerStructuredOutputMode string
-
-const (
-	plannerStructuredOutputOff        plannerStructuredOutputMode = ""
-	plannerStructuredOutputJSONObject plannerStructuredOutputMode = "json_object"
-	plannerStructuredOutputJSONSchema plannerStructuredOutputMode = "json_schema"
-)
-
-func plannerStructuredOutputModeFromEnv(getenv getenvFunc) (plannerStructuredOutputMode, string) {
-	value := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT")))
-	switch value {
-	case "", "0", "off":
-		return plannerStructuredOutputOff, ""
-	case string(plannerStructuredOutputJSONObject):
-		return plannerStructuredOutputJSONObject, ""
-	case string(plannerStructuredOutputJSONSchema):
-		return plannerStructuredOutputJSONSchema, ""
-	default:
-		return plannerStructuredOutputOff, value
-	}
-}
-
-// useSkillExecutorFromEnv reads USE_SKILL_EXECUTOR (P2a gray-rollout). "1"
-// enables the body-driven skill executor gate. Diagnosis still requires the
-// USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS allowlist. "" is off; any other value is
-// unknown and treated as off (caller warns). Default off; boot-only, flips need a
-// restart.
-func useSkillExecutorFromEnv(getenv getenvFunc) (bool, string) {
-	value := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR"))
-	switch value {
-	case "":
-		return false, ""
-	case "1":
-		return true, ""
-	default:
-		return false, value
-	}
-}
-
-// agenticSearchKnowledgeEnabledFromEnv gates the agentic-RAG SearchKnowledge
-// registry tool (P3/P4a). DEFAULT ON. When on, a symptom/tool-ops diagnosis turn
-// can call SearchKnowledge for prior tool/ops evidence before any Diagnose* tool,
-// and the empty-target which-instance dead-end is relaxed so the loop reaches that
-// retrieval. ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off +
-// non-empty warn string (CLAUDE.md: never silently coerce). Boot-only: resolved
-// once in cmd (CLI + HTTP) and frozen via tools.SetAgenticSearchKnowledgeEnabled;
-// the Go-package default (tools.agenticSearchKnowledgeOn) stays false so the
-// engine/tools unit tests are unaffected. Rollback = COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE=0.
-//
-// WHY DEFAULT-ON (2026-06-07): enabled TOGETHER with COMPSHARE_EXTERNAL_KNOWLEDGE
-// (the agentic value comes from the external tool/ops KB — agentic-alone at
-// external-off had no positive value and a false-grounding risk, see the P5 report).
-// The joint enablement was eval-gated on merged main: the 34-probe joint eval
-// (170 runs) showed no platform-hosted-API vs self-hosted-service confusion and a
-// clean regression set, and the platform-FAQ faithfulness eval (15 probes x both
-// conditions) showed ZERO external-corpus contamination of platform answers. See
-// eval/trace_gate/{joint_onmain_anchor_observations.jsonl, agentic_rag_default_on_report.md}.
-func agenticSearchKnowledgeEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-// groundedAnswerValidatorEnabledFromEnv gates the route-independent grounded-answer
-// (cite + leak) validator on the agentic SearchKnowledge synthesis (#126). DEFAULT
-// OFF — deliberately separate from COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE (default-on)
-// because the cite contract must stay off until a flag-on eval proves the agent
-// attributes its answer at the hard-gate bar (100% cite-or-refuse / 0 raw-leak).
-// When on, the SearchKnowledge tool result carries a [[chunk_id]] cite_protocol and
-// a synthesis that does not cite a retrieved chunk (or cites an unknown one) is
-// replaced with the canned no-evidence reply. ""/0/off/false/no => off;
-// 1/true/yes/on => on; unknown => off + non-empty warn string (CLAUDE.md: never
-// silently coerce). Boot-only; the Go-package default (engine.groundedAnswerValidatorOn)
-// stays false so engine/tools unit tests are unaffected.
-func groundedAnswerValidatorEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_RAG_GROUNDED_VALIDATOR"))
-	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
-		return true, ""
-	default:
-		return false, raw
-	}
-}
-
 // domainMatchGuardEnabledFromEnv gates the #5 wrong-domain REFUSE arm
 // (COMPSHARE_RAG_DOMAIN_MATCH_GUARD). DEFAULT OFF — the domain verdict is always
 // recorded in the trace (all_cited_off_domain / domain_inference_empty), but the
@@ -345,194 +219,6 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	default:
 		return false, raw
 	}
-}
-
-// flashKnowledgeRouteGuardEnabledFromEnv gates the default-off flash route
-// fallback for a small set of product-fact questions that can otherwise be sent
-// to live tools. This is not part of the primary routing strategy.
-func flashKnowledgeRouteGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"))
-	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
-		return true, ""
-	default:
-		return false, raw
-	}
-}
-
-// createPreferenceExtractorEnabledFromEnv gates the optional create/deploy
-// preference extractor. DEFAULT ON: it adds one LLM pass before create/deploy
-// image matching, and the extracted fields only affect preference matching,
-// never routing or final workflow validation.
-func createPreferenceExtractorEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-// unifiedCreateEnabledFromEnv gates the R2b first-class create_instance route.
-// DEFAULT ON: the router prompt/schema expose create_instance by default. Set
-// COMPSHARE_UNIFIED_CREATE=0/off/false to roll back during soak.
-func unifiedCreateEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_UNIFIED_CREATE"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-// knowledgeQAAgentLoopEnabledFromEnv gates the terminal-knowledge_qa → agent-loop
-// route (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). DEFAULT ON (2026-06-09) — a knowledge_qa
-// turn routes through the agent loop: a forced SearchKnowledge first hop retrieves
-// evidence, then the disciplined-synthesis primitive writes the final cited answer
-// (see disciplinedKnowledgeQASynthesisEnabledFromEnv, also default-on). This collapses the
-// separate deterministic terminal-RAG route into the single agent loop (the lead's
-// "rag as a tool the agent calls in a loop" north star). The flip was gated on the
-// #150 A/B: on the decisive code-heavy probe (PyTorch DDP, N=20) the
-// agent-loop+disciplined answer matched terminal RAG — refusal 0.00 == terminal, 0
-// fabrication / 0 contamination (opus-4-7 judge); the other 7 real-tone probes were
-// already 0-refusal. The terminal route (tryStage2BRetrieval) is retained as the =0
-// rollback, not deleted. Inert unless COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is also on
-// (the tool must be visible) and a retriever is wired — the engine route gate enforces
-// both, so the forced first hop can never name an absent tool (the 400 trap).
-// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn string
-// (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
-// (engine.knowledgeQAAgentLoopOn) stays false so engine/tools unit tests are
-// unaffected. Rollback = COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP=0.
-func knowledgeQAAgentLoopEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-// disciplinedKnowledgeQASynthesisEnabledFromEnv gates the disciplined-synthesis primitive on
-// an agent-loop knowledge_qa turn (COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS). DEFAULT ON
-// (2026-06-09) and effective only when COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is also on:
-// the FINAL answer for the turn is written by terminal RAG's tight cited-synthesis
-// prompt (answerWithRetrievedEvidence, with its own cite-harder retry) on the evidence
-// the agent gathered via SearchKnowledge — rather than the free ReAct write, which
-// under flash intermittently omits the cite or dumps raw text. This is what made the
-// agent loop match terminal on faithfulness/refusal in the #150 A/B (DDP N=20: refusal
-// 0.00, 0 fab; see knowledgeQAAgentLoopEnabledFromEnv). On synthesis failure it falls
-// through to the existing cite-retry/refusal, so it is never worse than free-write.
-// ""/1/true/yes/on => on; 0/off/false/no => off; unknown => off + non-empty warn
-// (CLAUDE.md: never silently coerce). Boot-only; the Go-package default
-// (engine.disciplinedKnowledgeQASynthesisOn) stays false so unit tests are unaffected.
-func disciplinedKnowledgeQASynthesisEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true, ""
-	case "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	default:
-		return false, raw
-	}
-}
-
-func skillExecutorDiagnosisPilotsFromEnv(getenv getenvFunc) ([]string, []string) {
-	raw := strings.TrimSpace(getenv("USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"))
-	if raw == "" {
-		return nil, nil
-	}
-	known := map[string]struct{}{}
-	for _, name := range engine.KnownDiagnosisSkillExecutorPilots() {
-		known[name] = struct{}{}
-	}
-	seenKnown := map[string]struct{}{}
-	seenUnknown := map[string]struct{}{}
-	var pilots []string
-	var unknown []string
-	for _, part := range strings.Split(raw, ",") {
-		rawName := strings.TrimSpace(part)
-		if rawName == "" {
-			continue
-		}
-		name := engine.CanonicalDiagnosisSkillName(rawName)
-		if _, ok := known[name]; ok {
-			if _, seen := seenKnown[name]; !seen {
-				pilots = append(pilots, name)
-				seenKnown[name] = struct{}{}
-			}
-			continue
-		}
-		if _, seen := seenUnknown[rawName]; !seen {
-			unknown = append(unknown, rawName)
-			seenUnknown[rawName] = struct{}{}
-		}
-	}
-	return pilots, unknown
-}
-
-func plannerRuntimeTrace(shadowEnabled, plannerDispatchEnabled bool, routeIntents []intent.Intent) observability.RuntimeTrace {
-	mode := "off"
-	if plannerDispatchEnabled {
-		mode = "dispatch"
-	} else if shadowEnabled {
-		mode = "shadow"
-	}
-	return observability.RuntimeTrace{
-		RouterMode:   mode,
-		RouteIntents: routeIntentLabels(routeIntents),
-	}
-}
-
-func formatRouteIntents(routeIntents []intent.Intent) string {
-	labels := routeIntentLabels(routeIntents)
-	if len(labels) == 0 {
-		return "[]"
-	}
-	return "[" + strings.Join(labels, ",") + "]"
-}
-
-func routeIntentLabels(routeIntents []intent.Intent) []string {
-	if len(routeIntents) == 0 {
-		return nil
-	}
-	labels := make([]string, 0, len(routeIntents))
-	for _, enabled := range routeIntents {
-		switch enabled {
-		case intent.IntentResourceInfo:
-			labels = append(labels, "resource")
-		case intent.IntentMonitorQuery:
-			labels = append(labels, "monitor")
-		case intent.IntentGPUSpecsQuery:
-			labels = append(labels, "gpu_specs")
-		case intent.IntentStockAvailability:
-			labels = append(labels, "stock")
-		case intent.IntentImageTagCatalog:
-			labels = append(labels, "image_tags")
-		case intent.IntentModelRepositoryBrowse:
-			labels = append(labels, "model_repo")
-		case intent.IntentImageList:
-			labels = append(labels, "image_list")
-		case intent.IntentDiagnosis:
-			labels = append(labels, "diagnosis")
-		case intent.IntentVagueFailure:
-			labels = append(labels, "vague_failure")
-		default:
-			labels = append(labels, string(enabled))
-		}
-	}
-	return labels
 }
 
 const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
@@ -897,89 +583,6 @@ func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-func defaultRouteIntents() []intent.Intent {
-	return []intent.Intent{
-		intent.IntentResourceInfo,
-		intent.IntentMonitorQuery,
-		intent.IntentBillingAccountUnsupported,
-		intent.IntentGPUSpecsQuery,
-		intent.IntentStockAvailability,
-		intent.IntentPricingQuery,
-		intent.IntentRefundEstimate,
-		intent.IntentImageTagCatalog,
-		intent.IntentModelRepositoryBrowse,
-		intent.IntentImageList,
-		intent.IntentNetAcceleratorStatus,
-	}
-}
-
-func intentPlannerRouteIntentsFromEnv(getenv getenvFunc) ([]intent.Intent, []string) {
-	raw := getenv("COMPSHARE_DIRECT_DISPATCH_INTENTS")
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return defaultRouteIntents(), nil
-	}
-	switch strings.ToLower(trimmed) {
-	case "off", "none", "disabled":
-		return nil, nil
-	}
-	seen := map[intent.Intent]struct{}{}
-	intents := []intent.Intent{}
-	unknown := []string{}
-	for _, part := range strings.Split(raw, ",") {
-		value := strings.ToLower(strings.TrimSpace(part))
-		if value == "" {
-			continue
-		}
-		var enabled intent.Intent
-		switch value {
-		case "resource":
-			enabled = intent.IntentResourceInfo
-		case "monitor":
-			enabled = intent.IntentMonitorQuery
-		case "billing_account_unsupported", "account_billing_unsupported":
-			enabled = intent.IntentBillingAccountUnsupported
-		case "gpu_specs":
-			enabled = intent.IntentGPUSpecsQuery
-		case "stock":
-			enabled = intent.IntentStockAvailability
-		case "image_tags", "image_tag", "image_tag_catalog":
-			enabled = intent.IntentImageTagCatalog
-		case "model_repo", "model_repository", "model_repository_browse":
-			enabled = intent.IntentModelRepositoryBrowse
-		case "image", "image_list", "platform_image", "platform_image_list", "custom_image", "custom_image_list", "community_image", "community_image_list", "shared_image", "sharing_image", "shared_image_list":
-			enabled = intent.IntentImageList
-		case "network_accelerator", "network_accelerator_status", "net_accelerator":
-			enabled = intent.IntentNetAcceleratorStatus
-		case "pricing", "pricing_query":
-			// Accept both the short form ("pricing", convention-consistent
-			// with the sibling cases above) and the full intent label
-			// ("pricing_query") so existing eval scripts and operator runbooks
-			// using either form work. Short form is canonical going forward.
-			enabled = intent.IntentPricingQuery
-		case "refund", "refund_estimate":
-			enabled = intent.IntentRefundEstimate
-		case "diagnosis":
-			enabled = intent.IntentDiagnosis
-		case "vague_failure":
-			enabled = intent.IntentVagueFailure
-		default:
-			unknown = append(unknown, value)
-			continue
-		}
-		if _, ok := seen[enabled]; ok {
-			continue
-		}
-		seen[enabled] = struct{}{}
-		intents = append(intents, enabled)
-	}
-	return intents, unknown
-}
-
-func useSeparateShadowRunner(traceEnabled, shadowEnabled, routeEnabled bool) bool {
-	return traceEnabled && shadowEnabled && !routeEnabled
-}
-
 type cliTraceRecorder struct {
 	writer                observability.Writer
 	record                observability.TraceRecord
@@ -989,7 +592,6 @@ type cliTraceRecorder struct {
 	completionTokens      int
 	pendingByID           map[string][]int
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
-	plannerTraceSupplier  func() observability.RouterTrace
 	terminalSignals       observability.FinishSignals
 	stateTrace            observability.StateTrace
 }
@@ -1031,22 +633,6 @@ func (r *cliTraceRecorder) SetRuntimeTrace(trace observability.RuntimeTrace) {
 	r.record.Runtime = trace
 }
 
-func (r *cliTraceRecorder) SetPlannerTraceSupplier(supplier func() observability.RouterTrace) {
-	if r == nil {
-		return
-	}
-	r.plannerTraceSupplier = supplier
-}
-
-func (r *cliTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
-	if r == nil {
-		return
-	}
-	r.record.IntentRouter = trace
-	r.addPlannerTokens(trace)
-	r.plannerTraceSupplier = nil
-}
-
 func (r *cliTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
 	if r == nil {
 		return
@@ -1077,20 +663,13 @@ func (r *cliTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
 	r.record.Outcome.KBConflictCount = trace.KBConflictCount
 }
 
-func groundedRendererModeFromEnv(getenv getenvFunc) (string, string) {
-	raw := strings.ToLower(strings.TrimSpace(getenv("USE_GROUNDED_RENDERER")))
-	switch raw {
-	case "", "llm":
-		return "llm", ""
-	case "fast_template":
-		// B3: fast-tier catalog envelopes render via deterministic template
-		// (handler Reply); knowledge/agent tiers still use the LLM renderer.
-		return "fast_template", ""
-	case "off", "none", "disabled", "false", "0":
-		return "", ""
-	default:
-		return "", raw
+// AddAuthorizationTrace appends one write target's dual-proof audit record; the
+// engine calls it once per verified target of a mutating action.
+func (r *cliTraceRecorder) AddAuthorizationTrace(trace observability.AuthorizationTrace) {
+	if r == nil {
+		return
 	}
+	r.record.Authorizations = append(r.record.Authorizations, trace)
 }
 
 func (r *cliTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {
@@ -1207,12 +786,10 @@ func (r *cliTraceRecorder) OnStep(ev engine.StepEvent) {
 	}
 }
 
-// EmitStep accumulates one agent-tier saga StepTrace into THIS turn's record
-// (B6.2). The orchestrator saga runner uses the recorder as its StepSink. Steps
-// are folded into record.Steps in memory and persisted ONCE at Finish via
+// EmitStep accumulates one workflow step trace into this turn's record. Steps are
+// folded into record.Steps in memory and persisted once at Finish via
 // Append → prepareForPersist (which redacts Args/Result) — never a per-step
 // INSERT (a per-step INSERT would collide uk_request_uuid: one row per turn).
-// This makes *cliTraceRecorder satisfy orchestrator.StepSink.
 func (r *cliTraceRecorder) EmitStep(step observability.StepTrace) error {
 	if r == nil {
 		return nil
@@ -1249,10 +826,6 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r.registryTraceSupplier != nil {
 		r.record.EntityRegistry = r.registryTraceSupplier(end)
 	}
-	if r.plannerTraceSupplier != nil {
-		r.record.IntentRouter = r.plannerTraceSupplier()
-		r.addPlannerTokens(r.record.IntentRouter)
-	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
 	r.record.Outcome.TotalTokens = r.totalTokens
 	r.record.Outcome.PromptTokens = r.promptTokens
@@ -1271,12 +844,6 @@ func (r *cliTraceRecorder) Finish(chatErr error, end time.Time) error {
 	signals.ChatErr = chatErr
 	r.record.FinalizeOutcome(signals)
 	return r.writer.Append(r.record)
-}
-
-func (r *cliTraceRecorder) addPlannerTokens(trace observability.RouterTrace) {
-	r.totalTokens += trace.InputTokens + trace.OutputTokens
-	r.promptTokens += trace.InputTokens
-	r.completionTokens += trace.OutputTokens
 }
 
 func llmTokenUsageTotal(usage llm.TokenUsage) int {

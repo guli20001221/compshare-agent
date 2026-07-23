@@ -20,38 +20,35 @@ import (
 //
 //   - nil            → field omitted in YAML; fall back to the env var, then to
 //     the built-in default for that flag (NOT all default off — e.g.
-//     agentic_search_knowledge / knowledge_qa_* / external_knowledge default ON).
+//     knowledge verification / external_knowledge default ON).
 //   - &true / &false → explicit value; it WINS over any env var.
 //
 // SkillExecutorDiagnosisPilots is a list (joined to the CSV the env parser
 // expects) and only overrides when non-empty.
 type FeaturesConfig struct {
-	MutatingTools                   *bool    `yaml:"mutating_tools"`                     // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
-	ConfirmForm                     *bool    `yaml:"confirm_form"`                       // COMPSHARE_CONFIRM_FORM (server-only, default off)
-	GuidedCreate                    *bool    `yaml:"guided_create"`                      // COMPSHARE_GUIDED_CREATE (server-only, default off)
-	AgenticSearchKnowledge          *bool    `yaml:"agentic_search_knowledge"`           // COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE (default ON)
-	KnowledgeQAAgentLoop            *bool    `yaml:"knowledge_qa_agent_loop"`            // COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP (default ON)
-	KnowledgeQADisciplinedSynthesis *bool    `yaml:"knowledge_qa_disciplined_synthesis"` // COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS (default ON)
-	ExternalKnowledge               *bool    `yaml:"external_knowledge"`                 // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
-	GroundedValidator               *bool    `yaml:"grounded_validator"`                 // COMPSHARE_RAG_GROUNDED_VALIDATOR (default off)
-	DomainMatchGuard                *bool    `yaml:"domain_match_guard"`                 // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
-	FlashKnowledgeRouteGuard        *bool    `yaml:"flash_knowledge_route_guard"`        // COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD (default off)
-	SessionFactContext              *bool    `yaml:"session_fact_context"`               // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
-	ReactResultProjection           *bool    `yaml:"react_result_projection"`            // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
-	ReactHistoryCompaction          *bool    `yaml:"react_history_compaction"`           // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
-	IntentScopedReactPrompt         *bool    `yaml:"intent_scoped_react_prompt"`         // USE_INTENT_SCOPED_REACT_PROMPT (default off)
-	CreatePreferenceExtractor       *bool    `yaml:"create_preference_extractor"`        // COMPSHARE_CREATE_PREF_EXTRACTOR (default on; false disables)
-	UnifiedCreate                   *bool    `yaml:"unified_create"`                     // COMPSHARE_UNIFIED_CREATE (default on; false disables)
-	SkillExecutor                   *bool    `yaml:"skill_executor"`                     // USE_SKILL_EXECUTOR (default off)
-	SkillExecutorDiagnosisPilots    []string `yaml:"skill_executor_diagnosis_pilots"`    // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (CSV)
+	MutatingTools          *bool `yaml:"mutating_tools"`           // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
+	DurableTurns           *bool `yaml:"durable_turns"`            // COMPSHARE_DURABLE_TURNS (server-only, default off)
+	ConfirmForm            *bool `yaml:"confirm_form"`             // COMPSHARE_CONFIRM_FORM (server-only, default off)
+	GuidedCreate           *bool `yaml:"guided_create"`            // COMPSHARE_GUIDED_CREATE (server-only, default off)
+	ExternalKnowledge      *bool `yaml:"external_knowledge"`       // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
+	DomainMatchGuard       *bool `yaml:"domain_match_guard"`       // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
+	SessionFactContext     *bool `yaml:"session_fact_context"`     // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
+	ReactResultProjection  *bool `yaml:"react_result_projection"`  // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
+	ReactHistoryCompaction *bool `yaml:"react_history_compaction"` // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
+	// DEPRECATED (convergence plan P5): the body-driven skill executor mechanism
+	// was removed. These two fields are now INERT — nothing consumes the
+	// USE_SKILL_EXECUTOR / USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS overrides they emit.
+	// Kept only so an existing deploy config.yaml carrying these keys still loads
+	// (yaml.Unmarshal is lenient); pending product sign-off to drop the config keys.
+	SkillExecutor                *bool    `yaml:"skill_executor"`                  // USE_SKILL_EXECUTOR (inert)
+	SkillExecutorDiagnosisPilots []string `yaml:"skill_executor_diagnosis_pilots"` // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (inert)
 }
 
-// RetrievalConfig holds the RAG / knowledge retrieval + grounded-renderer knobs.
+// RetrievalConfig holds the RAG / knowledge retrieval knobs.
 // Empty string / zero int means "omitted — fall through to env, then default".
 type RetrievalConfig struct {
 	KnowledgeRetrieval     string `yaml:"knowledge_retrieval"`      // USE_KNOWLEDGE_RETRIEVAL: curated|off
 	Mode                   string `yaml:"mode"`                     // RAG_RETRIEVAL_MODE: qwen3_rrf|bm25_only|hybrid_cosine|hybrid_rerank|qwen3_full
-	GroundedRenderer       string `yaml:"grounded_renderer"`        // USE_GROUNDED_RENDERER: llm|fast_template|off
 	CorpusPath             string `yaml:"corpus_path"`              // COMPSHARE_KNOWLEDGE_CORPUS
 	EmbeddingsPath         string `yaml:"embeddings_path"`          // COMPSHARE_KNOWLEDGE_EMBEDDINGS
 	ExternalCorpusPath     string `yaml:"external_corpus_path"`     // COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS
@@ -70,15 +67,8 @@ type TraceConfig struct {
 	Dir     string `yaml:"dir"`     // COMPSHARE_TRACE_DIR (file/both only)
 }
 
-// PlannerConfig holds the intent-router / direct-dispatch knobs.
-type PlannerConfig struct {
-	RouterMode            string `yaml:"router_mode"`             // COMPSHARE_INTENT_ROUTER_MODE: shadow (else off)
-	DirectDispatchIntents string `yaml:"direct_dispatch_intents"` // COMPSHARE_DIRECT_DISPATCH_INTENTS: CSV or "off"
-	StructuredOutput      string `yaml:"structured_output"`       // COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT: json_object|json_schema|off
-}
-
 // RuntimeGetenv returns a getenv function that overlays the YAML runtime-flag
-// fields (agent.features / agent.retrieval / agent.trace / agent.planner) on top
+// fields (agent.features / agent.retrieval / agent.trace) on top
 // of the supplied base getenv (normally os.Getenv). A field SET in YAML wins; a
 // field omitted in YAML falls through to base(key). This keeps "YAML is the
 // source of truth, env is the fallback" while the cmd/ flag parsers continue to
@@ -103,20 +93,13 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	// on for those), so they must not use the empty-string off form.
 	putBoolEnv(overrides, "COMPSHARE_ENABLE_MUTATING_TOOLS", f.MutatingTools, "1", "")
 	putBoolEnv(overrides, "USE_SKILL_EXECUTOR", f.SkillExecutor, "1", "")
+	putBoolEnv(overrides, "COMPSHARE_DURABLE_TURNS", f.DurableTurns, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CONFIRM_FORM", f.ConfirmForm, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_GUIDED_CREATE", f.GuidedCreate, "1", "0")
 	putBoolEnv(overrides, "USE_SESSION_FACT_CONTEXT", f.SessionFactContext, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_RESULT_PROJECTION", f.ReactResultProjection, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_HISTORY_COMPACTION", f.ReactHistoryCompaction, "1", "0")
-	putBoolEnv(overrides, "USE_INTENT_SCOPED_REACT_PROMPT", f.IntentScopedReactPrompt, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_CREATE_PREF_EXTRACTOR", f.CreatePreferenceExtractor, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_UNIFIED_CREATE", f.UnifiedCreate, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE", f.AgenticSearchKnowledge, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_RAG_GROUNDED_VALIDATOR", f.GroundedValidator, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD", f.FlashKnowledgeRouteGuard, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP", f.KnowledgeQAAgentLoop, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS", f.KnowledgeQADisciplinedSynthesis, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE", f.ExternalKnowledge, "1", "0")
 	if len(f.SkillExecutorDiagnosisPilots) > 0 {
 		overrides["USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"] = strings.Join(f.SkillExecutorDiagnosisPilots, ",")
@@ -125,7 +108,6 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	r := c.Agent.Retrieval
 	putStrEnv(overrides, "USE_KNOWLEDGE_RETRIEVAL", r.KnowledgeRetrieval)
 	putStrEnv(overrides, "RAG_RETRIEVAL_MODE", r.Mode)
-	putStrEnv(overrides, "USE_GROUNDED_RENDERER", r.GroundedRenderer)
 	putStrEnv(overrides, "COMPSHARE_KNOWLEDGE_CORPUS", r.CorpusPath)
 	putStrEnv(overrides, "COMPSHARE_KNOWLEDGE_EMBEDDINGS", r.EmbeddingsPath)
 	putStrEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS", r.ExternalCorpusPath)
@@ -140,11 +122,6 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_TRACE_ENABLED", t.Enabled, "1", "0")
 	putStrEnv(overrides, "COMPSHARE_TRACE_SINK", t.Sink)
 	putStrEnv(overrides, "COMPSHARE_TRACE_DIR", t.Dir)
-
-	p := c.Agent.Planner
-	putStrEnv(overrides, "COMPSHARE_INTENT_ROUTER_MODE", p.RouterMode)
-	putStrEnv(overrides, "COMPSHARE_DIRECT_DISPATCH_INTENTS", p.DirectDispatchIntents)
-	putStrEnv(overrides, "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT", p.StructuredOutput)
 
 	// The RAG embedding/reranker clients read the API key through getenv
 	// (MODELVERSE_API_KEY, falling back to LLM_API_KEY). Expose the resolved

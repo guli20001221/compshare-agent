@@ -23,28 +23,6 @@ agent:
     # monitor ~1.86% empty-return rate on hybrid path (P3 watch-list).
     model: "deepseek-v4-flash"
 
-  # ADR-002 per-tier model routing (optional). Keys are ADR-001 tier names:
-  # fast (single-API queries), knowledge (RAG-backed Q&A), agent (multi-step
-  # tasks with side effects). Each value is an LLMConfig override; unspecified
-  # fields inherit from `agent.llm` above (model / base_url / api_key).
-  #
-  # When this block is empty or omitted, ALL tiers share `agent.llm.model`
-  # (backward compat with pre-ADR-002 configs). Unknown tier keys cause
-  # config load to fail loud — typos like "knowlege" do NOT silently no-op.
-  #
-  # SAFETY NOTE per ADR-002 Risks: switching planner (cli.go:349) to fast
-  # tier requires ADR-004 progressive disclosure (B4) to have landed first.
-  # Until then keep planner on ds-v4-pro by leaving the block commented or
-  # routing the planner explicitly. See ADR-002:99 (Risks #3) for rationale.
-  #
-  # tier_routing:
-  #   fast:
-  #     model: "deepseek-v4-flash"
-  #   knowledge:
-  #     model: "deepseek-v4-flash"
-  #   agent:
-  #     model: "deepseek-v4-pro"
-
   # ──────────────────────────────────────────────────────────────────────
   # Runtime feature flags (previously env-only). Configure the whole agent
   # from THIS file — no env vars needed for behavior. Precedence: a value set
@@ -56,17 +34,23 @@ agent:
   # NOTE 截图理解 (screenshot/VL) is enabled separately by agent.ocr.model
   # below (qwen3-vl-flash) — it is already on.
   features:
+    # Every chat turn is accepted, executed and committed through the durable
+    # global coordinator. Requires migrations 0005 through 0010 before boot.
+    # Keep this OFF while old binaries exist. Enable it only during a drained,
+    # cluster-wide backend + frontend cutover; mixed legacy/durable execution
+    # can process one conversation twice.
+    durable_turns: false
     # Write operations: create/start/stop/reboot/reset-password/resize-disk.
     # Destructive actions (delete / L2 terminate) stay refused REGARDLESS.
     mutating_tools: true
-    # Editable + guided GPU create flow (server-only; also needs the client's
-    # per-turn Features opt-in — safe if the client does not opt in).
+    # Editable + guided GPU create flow. Durable v2 persists the reviewed form
+    # and its validated edits, so refresh, replica changes and process restart
+    # resume the same confirmation. The client must still opt in per turn with
+    # confirm_form_v1 + guided_create_v1; selection cards remain unsupported.
     confirm_form: true
     guided_create: true
-    # Agentic-RAG answer stack (RAG as a tool the agent calls in-loop).
-    agentic_search_knowledge: true
-    knowledge_qa_agent_loop: true
-    knowledge_qa_disciplined_synthesis: true
+    # Agentic knowledge answering is a fixed runtime capability: retrieval is
+    # chosen in-loop and every released knowledge answer uses the shared proof.
     external_knowledge: true            # merge external tool/ops corpus (vLLM/CUDA/Linux/PyTorch)
     # Context-engineering optimizations.
     session_fact_context: true          # near-term fact cache injected into context
@@ -74,21 +58,17 @@ agent:
     react_history_compaction: true      # summarize old turns once history exceeds the window
     # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
     # guards only when their flag-on path is the validated production path.
-    grounded_validator: false           # cite-or-refuse validator on SearchKnowledge synthesis (#126)
     domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
-    flash_knowledge_route_guard: true   # explicit PR373 guard for flash product-fact route jitter
-    intent_scoped_react_prompt: false   # intent-specific ReAct system prompts
     skill_executor: false               # body-driven skill executor gate (P2a gray-rollout)
     skill_executor_diagnosis_pilots: [] # e.g. [diagnose-ssh, diagnose-billing] — requires skill_executor: true
 
   # Knowledge retrieval / RAG. The default answer stack: curated retrieval,
-  # qwen3 RRF, LLM grounded rendering. corpus/embeddings/model/timeout fields
+  # qwen3 RRF. corpus/embeddings/model/timeout fields
   # are left empty = use the pinned built-in defaults; set them only to point
   # at a non-default corpus or tune timeouts.
   retrieval:
     knowledge_retrieval: curated        # curated | off
     mode: qwen3_rrf                     # qwen3_rrf | bm25_only | hybrid_cosine | hybrid_rerank | qwen3_full
-    grounded_renderer: llm             # llm | fast_template | off
     # corpus_path: ""                  # COMPSHARE_KNOWLEDGE_CORPUS (default deploy/kb/stage2b_w0.jsonl)
     # embeddings_path: ""              # COMPSHARE_KNOWLEDGE_EMBEDDINGS (default: computed from digest)
     # external_corpus_path: ""        # COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS (default deploy/kb/external_w0.jsonl)
@@ -107,15 +87,6 @@ agent:
     enabled: true
     sink: mysql                        # file | mysql | both
     dir: ""                            # JSONL dir for file/both sinks; ignored for mysql
-
-  # Intent router / direct dispatch. Empty direct_dispatch_intents = the
-  # built-in platform set (resource,monitor,gpu_specs,stock,pricing,
-  # platform_image,custom_image,community_image,shared_image,net_accelerator).
-  # Set "off" to disable direct dispatch (everything via ReAct, debugging only).
-  planner:
-    router_mode: ""                    # "" (off) | shadow (trace-only A/B)
-    direct_dispatch_intents: ""        # "" (default set) | CSV | off
-    structured_output: ""              # "" (off) | json_object | json_schema — plumbed, not yet validated on flash
 
   # 0 or omitted uses the built-in defaults for llm / mutating /
   # read_expensive. The user_turn_* and max_tokens_per_turn fields are
@@ -143,7 +114,7 @@ agent:
     # follow-ups (the 80000 cap was tripping those, fully refusing answerable
     # questions). When the cap IS hit mid-turn, the engine now synthesizes a
     # grounded answer from any evidence already retrieved instead of returning
-    # a bare "请简化问题" (see answerWithRetrievedEvidence / synthesizeOnBudgetExceeded);
+    # a bare "请简化问题";
     # it only refuses when no evidence is in hand. Observe
     # trace.outcome.total_tokens and tighten once steady-state is known.
     max_tokens_per_turn: 200000
@@ -158,10 +129,9 @@ agent:
     max_input_length: 4000
     pool_capacity: 200
     pool_idle_ttl: "30m"
-    # Per-session question-answer pair cap. Once a session has reached this
-    # many turns (= 2 * value rows in `messages`), further Chat calls return
-    # SessionTurnLimitExceeded and the client must open a new session.
-    # Omit or 0 falls back to the built-in default (10).
+    # Compatibility-path setting only. After the coordinated durable cutover,
+    # conversations continue from committed history and do not roll to an empty
+    # session after 10 turns. Until then, the legacy path still uses this cap.
     max_session_turns: 10
     # Skip the built-in CORS middleware. Default false = agent emits
     # Access-Control-Allow-* headers itself (needed when the front-end dev

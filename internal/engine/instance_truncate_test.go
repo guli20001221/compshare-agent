@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/readprojection"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -40,13 +41,13 @@ func TestTruncateDescribeResultForReAct_TruncatesAbove10AndKeepsRunning(t *testi
 
 	shown, total, truncated := truncateDescribeResultForReAct(nil, result)
 	assert.True(t, truncated)
-	assert.Equal(t, intent.DefaultMaxInstancesPerDisplay, shown)
+	assert.Equal(t, readprojection.DefaultMaxInstancesPerDisplay, shown)
 	assert.Equal(t, 15, total)
 	assert.Equal(t, true, result["Truncated"])
-	assert.Equal(t, intent.DefaultMaxInstancesPerDisplay, result["Shown"])
+	assert.Equal(t, readprojection.DefaultMaxInstancesPerDisplay, result["Shown"])
 
 	keptHosts, _ := result["UHostSet"].([]any)
-	assert.Len(t, keptHosts, intent.DefaultMaxInstancesPerDisplay)
+	assert.Len(t, keptHosts, readprojection.DefaultMaxInstancesPerDisplay)
 
 	keptIDs := make([]string, 0, len(keptHosts))
 	for _, raw := range keptHosts {

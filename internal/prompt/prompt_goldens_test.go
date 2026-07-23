@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
@@ -60,7 +61,7 @@ func TestPromptGoldenCasesCoverCreateInstanceEntrypoint(t *testing.T) {
 		if tc.ExpectIntent != string(intent.IntentCreateInstance) {
 			t.Fatalf("case %s intent = %s, want %s", id, tc.ExpectIntent, intent.IntentCreateInstance)
 		}
-		if !containsString(tc.AllowedActions, "CreateInstanceWorkflow") {
+		if !slices.Contains(tc.AllowedActions, "CreateInstanceWorkflow") {
 			t.Fatalf("case %s must allow CreateInstanceWorkflow: %#v", id, tc)
 		}
 	}

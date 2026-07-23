@@ -1,10 +1,7 @@
 package engine
 
 import (
-	"context"
 	"fmt"
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,19 +9,12 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/readprojection"
 )
 
 const maxResourceSelectionCandidates = 20
 const pendingSelectionTTLSeconds = 300
 const pendingSelectionKindInstance = "instance"
-
-// uhostIDPattern matches a literal CompShare instance ID token in free text.
-// Real IDs are lowercase alphanumeric (e.g. uhost-1qy6d8tkfrl4); the class accepts
-// A-Z too so a mistyped-case ID is captured WHOLE and echoed back intact in the
-// "未找到实例 X" notice (it won't resolve — ResolveByID is exact — so it falls to the
-// wrong-ID branch). The trailing class stops at any non-alphanumeric rune, so
-// "uhost-xxx的GPU利用率" yields "uhost-xxx".
-var uhostIDPattern = regexp.MustCompile(`uhost-[0-9a-zA-Z]+`)
 
 type pendingResourceSelection struct {
 	originalUserMsg string
@@ -40,27 +30,21 @@ type pendingResourceSelection struct {
 	notFoundRef string
 }
 
-// findExplicitInstanceRef scans a raw user message for an explicit uhost-ID and
+// findExplicitInstanceRef scans a raw user message for an explicit instance ID and
 // resolves it against the snapshot. This is the deterministic backstop for the
-// intent router intermittently NOT extracting a literal ID into Slots.TargetRefs
+// central Agent intermittently NOT surfacing a literal ID as a resolved target
 // (Rule 5: a regex-matchable literal is resolved by code, not the LLM). Returns
 // the matched instance when an ID resolves; otherwise returns the first
-// unresolved uhost-shaped token so the caller can say "未找到 X".
+// unresolved ID-shaped token so the caller can say "未找到 X".
 func findExplicitInstanceRef(msg string, snapshot entity.RegistrySnapshot) (*entity.InstanceSnapshot, string) {
-	tokens := uhostIDPattern.FindAllString(msg, -1)
-	if len(tokens) == 0 {
-		return nil, ""
+	hits, unresolved := snapshot.ResolveInstanceRefsInText(msg)
+	if len(hits) > 0 {
+		return hits[0], ""
 	}
-	notFound := ""
-	for _, tok := range tokens {
-		if inst, res := snapshot.ResolveByID(tok); res.Status == entity.ResolveHit && inst != nil {
-			return inst, ""
-		}
-		if notFound == "" {
-			notFound = tok
-		}
+	if len(unresolved) > 0 {
+		return nil, unresolved[0]
 	}
-	return nil, notFound
+	return nil, ""
 }
 
 type resourceSelectionMatch struct {
@@ -149,7 +133,7 @@ func matchResourceSelectionReference(input string, p pendingResourceSelection) (
 		}
 		return resourceSelectionMatch{instance: p.candidates[index], ok: true}, false
 	}
-	for _, token := range uhostIDPattern.FindAllString(input, -1) {
+	for _, token := range p.snapshot.InstanceIDTokensInText(input) {
 		for _, inst := range p.candidates {
 			if token == inst.UHostId {
 				return resourceSelectionMatch{instance: inst, ok: true}, false
@@ -168,10 +152,60 @@ func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) b
 	if match.ok || match.ambiguous {
 		return true
 	}
-	if _, ok := parseResourceSelectionOrdinal(query); ok {
+	if _, ok := extractResourceSelectionOrdinal(query); ok {
 		return true
 	}
-	return uhostIDPattern.FindString(query) == query
+	if tokens := p.snapshot.InstanceIDTokensInText(query); len(tokens) == 1 && tokens[0] == query {
+		return true
+	}
+	return false
+}
+
+func removeResourceSelectionOrdinalTokens(input string, ordinal int) string {
+	if ordinal <= 0 {
+		return input
+	}
+	chinese := ""
+	numerals := chineseResourceSelectionNumerals()
+	if ordinal <= len(numerals) {
+		chinese = numerals[ordinal-1]
+	}
+	arabic := strconv.Itoa(ordinal)
+	tokens := []string{
+		"第" + arabic + "台实例",
+		"第" + arabic + "实例",
+		"第" + arabic + "台",
+		"第" + arabic + "机器",
+		"第" + arabic + "主机",
+		"第" + arabic,
+	}
+	if chinese != "" {
+		tokens = append(tokens,
+			"第"+chinese+"台实例",
+			"第"+chinese+"实例",
+			"第"+chinese+"台",
+			"第"+chinese+"机器",
+			"第"+chinese+"主机",
+			"第"+chinese,
+		)
+	}
+	for _, token := range tokens {
+		input = strings.ReplaceAll(input, token, "")
+	}
+	return input
+}
+
+func renderResourceSelectionSelectedReply(inst entity.InstanceSnapshot) string {
+	reply := fmt.Sprintf("已选中 %s（%s）。你接下来想查看监控、重启，还是执行其他操作？",
+		sanitizeResourceSelectionPromptField(inst.Name),
+		sanitizeResourceSelectionPromptField(inst.UHostId),
+	)
+	if inst.Name == "" {
+		reply = fmt.Sprintf("已选中 %s。你接下来想查看监控、重启，还是执行其他操作？",
+			sanitizeResourceSelectionPromptField(inst.UHostId),
+		)
+	}
+	return reply
 }
 
 func isResourceSelectionExpired(currentTurn int, p pendingResourceSelection) bool {
@@ -192,62 +226,13 @@ func isPersistedSelectionExpired(nowUnix int64, state SessionState) bool {
 	return nowUnix > state.PendingSelectionProducedAtUnix+int64(ttl)
 }
 
-func isResourceSelectionFallbackReason(reason intent.FallbackReason) bool {
-	switch reason {
-	case intent.FallbackMissingTarget, intent.FallbackUnresolvedTarget, intent.FallbackAmbiguousTarget:
-		return true
-	default:
-		return false
-	}
-}
-
-func (e *Engine) buildResourceSelectionForPlan(ctx context.Context, result intent.IntentRouterResult, snapshot entity.RegistrySnapshot, _ func(StepEvent)) (*pendingResourceSelection, bool, error) {
-	if result.Plan.Intent != intent.IntentMonitorQuery && result.Plan.Intent != intent.IntentMonitorHistory {
-		return nil, false, nil
-	}
-	candidates, refreshedSnapshot, truncated, ok, err := e.candidateInstancesForSelection(ctx, result.Plan, snapshot, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	if !ok || len(candidates) == 0 {
-		return nil, false, nil
-	}
-
-	// Deterministic explicit-ID backstop (Rule 5): the intent router intermittently
-	// fails to extract a literal uhost-ID from a monitor query into Slots.TargetRefs,
-	// which collapses to "all instances" and a needless "select one" prompt even
-	// though the user already named the instance. Resolve it from the raw message.
-	// A single resolved candidate flows through the existing len==1 auto-dispatch
-	// (engine.go) → HandleMonitorQuery → recordSelectedInstanceFromEnvelope, so
-	// SelectedInstanceID is populated exactly as a manual pick would (the all-
-	// instances prompt path never set it — a real context gap this also closes).
-	notFoundRef := ""
-	if len(result.Plan.Slots.TargetRefs) == 0 && len(candidates) > 1 {
-		if matched, notFound := findExplicitInstanceRef(e.lastUserMsg, refreshedSnapshot); matched != nil {
-			candidates = []entity.InstanceSnapshot{*matched}
-		} else if notFound != "" {
-			notFoundRef = notFound
-		}
-	}
-
-	return &pendingResourceSelection{
-		originalUserMsg: e.lastUserMsg,
-		plan:            result.Plan,
-		snapshot:        refreshedSnapshot,
-		candidates:      candidates,
-		truncated:       truncated,
-		createdTurn:     e.userTurn,
-		notFoundRef:     notFoundRef,
-	}, true, nil
-}
-
 func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnapshot, sourceIntent intent.Intent, originalUserMsg string, total int, truncated bool) {
 	if e == nil || !e.sessionStateHydrated || len(instances) == 0 {
 		return
 	}
 	candidates := append([]entity.InstanceSnapshot(nil), instances...)
-	if sourceIntent == intent.IntentResourceInfo && len(candidates) > intent.DefaultMaxInstancesPerDisplay {
-		candidates = candidates[:intent.DefaultMaxInstancesPerDisplay]
+	if sourceIntent == intent.IntentResourceInfo && len(candidates) > readprojection.DefaultMaxInstancesPerDisplay {
+		candidates = candidates[:readprojection.DefaultMaxInstancesPerDisplay]
 		truncated = true
 	}
 	limited := false
@@ -277,19 +262,6 @@ func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnaps
 	e.sessionState.PendingSelectionTruncated = truncated || limited || total > len(items)
 	e.sessionState.PendingSelectionTotalCount = total
 	e.sessionState.PendingSelectionItems = items
-}
-
-func (e *Engine) recordPendingSelectionFromHandlerResult(result intent.HandlerResult, plan intent.IntentRoute, originalUserMsg string) {
-	if e == nil || result.Status != intent.HandlerStatusHandled || plan.Intent != intent.IntentResourceInfo {
-		return
-	}
-	e.recordPendingInstanceSelection(
-		result.ResourceSelectionCandidates,
-		plan.Intent,
-		originalUserMsg,
-		len(result.ResourceSelectionCandidates),
-		false,
-	)
 }
 
 func pendingSelectionItemFromInstance(index int, inst entity.InstanceSnapshot) PendingSelectionItem {
@@ -362,8 +334,8 @@ func (e *Engine) pendingResourceSelectionFromSession() (*pendingResourceSelectio
 		return nil, false
 	}
 	truncated := e.sessionState.PendingSelectionTruncated
-	if len(candidates) > intent.DefaultMaxInstancesPerDisplay {
-		candidates = candidates[:intent.DefaultMaxInstancesPerDisplay]
+	if len(candidates) > readprojection.DefaultMaxInstancesPerDisplay {
+		candidates = candidates[:readprojection.DefaultMaxInstancesPerDisplay]
 		truncated = true
 	}
 	planIntent := intent.Intent(e.sessionState.PendingSelectionIntent)
@@ -404,101 +376,6 @@ func snapshotFromPendingSelectionCandidates(candidates []entity.InstanceSnapshot
 	}
 }
 
-func (e *Engine) candidateInstancesForSelection(ctx context.Context, plan intent.IntentRoute, snapshot entity.RegistrySnapshot, _ func(StepEvent)) ([]entity.InstanceSnapshot, entity.RegistrySnapshot, bool, bool, error) {
-	snapshot, ok, err := e.freshResourceSelectionSnapshot(ctx, snapshot)
-	if err != nil {
-		return nil, entity.RegistrySnapshot{}, false, false, err
-	}
-	if !ok {
-		return nil, entity.RegistrySnapshot{}, false, false, nil
-	}
-
-	var candidates []entity.InstanceSnapshot
-	if len(plan.Slots.TargetRefs) == 0 {
-		candidates = instancesFromSelectionSnapshot(snapshot)
-	} else {
-		candidates = matchingSelectionCandidates(plan, snapshot)
-		if len(candidates) == 0 {
-			candidates = instancesFromSelectionSnapshot(snapshot)
-		}
-	}
-	candidates, truncated := sortAndLimitResourceSelectionCandidates(candidates)
-	return candidates, snapshot, truncated, len(candidates) > 0, nil
-}
-
-func (e *Engine) freshResourceSelectionSnapshot(ctx context.Context, snapshot entity.RegistrySnapshot) (entity.RegistrySnapshot, bool, error) {
-	if e == nil || e.registry == nil {
-		return snapshot, len(snapshot.Instances) > 0 && !snapshot.LastFullSync.IsZero(), nil
-	}
-	if e.registry.NeedsRefresh(time.Now()) || len(snapshot.Instances) == 0 {
-		if _, err := e.refreshRegistry(ctx, entity.RefreshReasonTTL); err != nil {
-			return entity.RegistrySnapshot{}, false, err
-		}
-		return e.RegistrySnapshot(), true, nil
-	}
-	if snapshot.LastFullSync.IsZero() || len(snapshot.Instances) == 0 {
-		snapshot = e.RegistrySnapshot()
-	}
-	return snapshot, !snapshot.LastFullSync.IsZero() && len(snapshot.Instances) > 0, nil
-}
-
-func matchingSelectionCandidates(plan intent.IntentRoute, snapshot entity.RegistrySnapshot) []entity.InstanceSnapshot {
-	var candidates []entity.InstanceSnapshot
-	for _, ref := range plan.Slots.TargetRefs {
-		switch ref.Type {
-		case intent.TargetRefName:
-			matches, res := snapshot.ResolveByName(ref.Value)
-			if res.Status != entity.ResolveHit && res.Status != entity.ResolveAmbiguous {
-				continue
-			}
-			for _, match := range matches {
-				if match != nil {
-					candidates = append(candidates, *match)
-				}
-			}
-		case intent.TargetRefUHostIDUserInput:
-			if inst, res := snapshot.ResolveByID(ref.Value); res.Status == entity.ResolveHit && inst != nil {
-				candidates = append(candidates, *inst)
-			}
-		}
-	}
-	return dedupeResourceSelectionCandidates(candidates)
-}
-
-func instancesFromSelectionSnapshot(snapshot entity.RegistrySnapshot) []entity.InstanceSnapshot {
-	candidates := make([]entity.InstanceSnapshot, 0, len(snapshot.Instances))
-	for _, inst := range snapshot.Instances {
-		candidates = append(candidates, inst)
-	}
-	return candidates
-}
-
-func sortAndLimitResourceSelectionCandidates(candidates []entity.InstanceSnapshot) ([]entity.InstanceSnapshot, bool) {
-	candidates = dedupeResourceSelectionCandidates(candidates)
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].UHostId < candidates[j].UHostId
-	})
-	if len(candidates) > maxResourceSelectionCandidates {
-		return candidates[:maxResourceSelectionCandidates], true
-	}
-	return candidates, false
-}
-
-func dedupeResourceSelectionCandidates(candidates []entity.InstanceSnapshot) []entity.InstanceSnapshot {
-	if len(candidates) < 2 {
-		return candidates
-	}
-	seen := make(map[string]struct{}, len(candidates))
-	out := make([]entity.InstanceSnapshot, 0, len(candidates))
-	for _, candidate := range candidates {
-		if _, ok := seen[candidate.UHostId]; ok {
-			continue
-		}
-		seen[candidate.UHostId] = struct{}{}
-		out = append(out, candidate)
-	}
-	return out
-}
 
 func planWithSelectedResource(plan intent.IntentRoute, uhostID string) intent.IntentRoute {
 	plan.Slots.TargetRefs = []intent.TargetRef{{

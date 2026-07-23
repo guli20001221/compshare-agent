@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/compshare-agent/internal/security"
@@ -68,6 +69,10 @@ const (
 )
 
 func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
+	return DefaultCapabilityRegistry().Policies()
+}
+
+func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 	policies := map[string]ToolExecutionPolicy{}
 	registryParams := registryAllowedParams()
 
@@ -80,9 +85,19 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if actionAllowsBackendAzGroup(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "az_group")
 		}
+		if actionAllowsBackendIsPod(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "IsPod")
+		}
+		if actionAllowsBackendZoneRegion(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Zone")
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Region")
+		}
 		if actionAllowsBackendIdentity(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "organization_id")
+		}
+		if action == "SyncCompShareCustomImage" {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "TargetZoneIds")
 		}
 		policies[action] = policy
 	}
@@ -99,15 +114,31 @@ func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if actionAllowsBackendAzGroup(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "az_group")
 		}
+		if actionAllowsBackendIsPod(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "IsPod")
+		}
+		if actionAllowsBackendZoneRegion(action) {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Zone")
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "Region")
+		}
 		if actionAllowsBackendIdentity(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "top_organization_id")
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "organization_id")
+		}
+		if action == "SyncCompShareCustomImage" {
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "TargetZoneIds")
 		}
 		policies[action] = policy
 	}
 	if _, ok := policies["GetProjectList"]; !ok {
 		policies["GetProjectList"] = policyForAction("GetProjectList")
 	}
+	proposalPolicy := policyForAction(ProposeActionName)
+	proposalPolicy.AllowedParams = []string{"turn_id", "operation", "slots"}
+	policies[ProposeActionName] = proposalPolicy
+	taskStatePolicy := policyForAction(UpdateTaskStateName)
+	taskStatePolicy.AllowedParams = []string{"relation", "task"}
+	policies[UpdateTaskStateName] = taskStatePolicy
 
 	return policies
 }
@@ -199,7 +230,19 @@ func internalOnlyAllowedParams(action string) []string {
 	case "ResizeCompShareDisk":
 		return []string{"UHostId", "UDiskId", "Size", "Zone", "Region"}
 	case "ResizeCompShareInstance":
-		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "WithoutGpu", "Zone", "Region"}
+		return []string{"UHostId", "Cpu", "CPU", "Gpu", "GPU", "Memory", "DiskId", "DiskSpace", "Zone", "Region"}
+	case "CreateCompShareInstance":
+		return []string{"Name", "Zone", "Region", "GpuType", "GPU", "Cpu", "CPU", "Memory", "CompShareImageId", "ChargeType", "MachineType", "MinimalCpuPlatform", "LoginMode", "Disks"}
+	case "CreateCompShareCustomImage":
+		return []string{"UHostId", "Name", "Description", "Zone", "Region"}
+	case "GetCompShareImageCreateProgress":
+		return []string{"CompShareImageId", "Zone", "Region"}
+	case "SyncCompShareCustomImage":
+		return []string{"SourceCompShareImageId", "TargetImageName", "TargetImageDescription"}
+	case "DescribeCompShareCustomImageSyncDetail":
+		return []string{"CompShareImageId"}
+	case "StopCompShareInstance":
+		return []string{"UHostId", "Zone", "Region"}
 	default:
 		return nil
 	}
@@ -210,6 +253,7 @@ func actionAllowsBackendZoneID(action string) bool {
 	case "DescribeAvailableCompShareInstanceTypes",
 		"DescribeCompShareGpuInventory",
 		"CheckCompShareResourceCapacity",
+		"CreateCompShareInstance",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
 		"GetCompShareInstanceUpgradePrice",
@@ -222,7 +266,18 @@ func actionAllowsBackendZoneID(action string) bool {
 		"GetCompShareCFSRefundPrice",
 		"DescribeCFS",
 		"CreateCFS",
-		"ResizeCFS":
+		"ResizeCFS",
+		"CreateCompShareCustomImage",
+		"GetCompShareImageCreateProgress",
+		"DescribeCompShareCustomImageSyncDetail",
+		// DescribeCompShareJupyterToken: Pod (cpod-*) instances need the
+		// internal zone_id or the call fails outright (RetCode 8433,
+		// live-verified 2026-07-10, finding #9). SafeToolExecutor resolves
+		// and attaches zone_id itself (resolveJupyterTokenZoneID) for raw
+		// tool calls that don't supply one; this allowlist entry lets an
+		// already-resolved zone_id survive filterSafeArgs for
+		// OriginDiagnosisInternal/OriginWorkflowInternal callers too.
+		"DescribeCompShareJupyterToken":
 		return true
 	default:
 		return false
@@ -233,6 +288,7 @@ func actionAllowsBackendAzGroup(action string) bool {
 	switch action {
 	case "CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"CreateCompShareInstance",
 		"GetCompShareInstancePrice",
 		"GetCompShareInstanceUserPrice",
 		"GetCompShareInstanceUpgradePrice",
@@ -241,7 +297,34 @@ func actionAllowsBackendAzGroup(action string) bool {
 		"ResizeCompShareInstance",
 		"ResizeCompShareDisk",
 		"GetCompShareCFSPrice",
-		"CreateCFS":
+		"CreateCFS",
+		"CreateCompShareCustomImage",
+		"GetCompShareImageCreateProgress":
+		return true
+	default:
+		return false
+	}
+}
+
+func actionAllowsBackendIsPod(action string) bool {
+	switch action {
+	case "CheckCompShareResourceCapacity",
+		"CreateCompShareInstance",
+		"GetCompShareInstancePrice",
+		"GetCompShareInstanceUserPrice",
+		"GetCompShareInstanceUpgradePrice",
+		"ResizeCompShareInstance":
+		return true
+	default:
+		return false
+	}
+}
+
+
+func actionAllowsBackendZoneRegion(action string) bool {
+	switch action {
+	case "CheckCompShareNetOptimizer",
+		"SyncCompShareNetOptimizer":
 		return true
 	default:
 		return false
@@ -252,6 +335,7 @@ func actionAllowsBackendIdentity(action string) bool {
 	switch action {
 	case "CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"DescribeCompShareSupportZone",
 		"DescribeCompShareGpuInventory",
 		"DescribeCFS",
 		"GetCompShareCFSPrice",
@@ -267,12 +351,12 @@ func actionAllowsBackendIdentity(action string) bool {
 
 func routeForAction(action string) ActionRoute {
 	switch {
-	case action == "GetGPUSpecs" || action == "GetGPURecommendation" || action == "GetModelVRAMRequirement":
-		return ActionRouteKnowledge
 	case action == "SearchKnowledge":
 		// Agentic-RAG read-only tool (P3). Routed locally on a dedicated engine
-		// branch (like the GetGPUSpecs knowledge tools), never through
-		// SafeToolExecutor — its Route is Knowledge, not external_api.
+		// branch, never through SafeToolExecutor — its Route is Knowledge, not
+		// external_api. It is now the ONLY member of this route: the local GPU
+		// knowledge tools that used to share it were deleted with the static spec
+		// table they answered from.
 		return ActionRouteKnowledge
 	case strings.HasSuffix(action, "Workflow"):
 		return ActionRouteWorkflow
@@ -351,6 +435,7 @@ func allowedParamsFromDefinition(params any) []string {
 	for k := range props {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return keys
 }
 

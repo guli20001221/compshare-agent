@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.5"
+const SchemaVersion = "trace.v0.7"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -73,7 +73,7 @@ type WriterOptions struct {
 // queue. FileWriter has no long-lived resources and returns nil immediately.
 type Writer interface {
 	Append(record TraceRecord) error
-	// EmitStep is a reserved no-op hook on the SINK. B6.2 wires agent-tier
+	// EmitStep is a reserved no-op hook on the sink. Workflow step
 	// step accumulation in the per-turn RECORDER (cmd/trace.go
 	// cliTraceRecorder.EmitStep, internal/httpapi/trace_recorder.go
 	// chatTraceRecorder.EmitStep), NOT here: both sinks write the turn row
@@ -122,11 +122,11 @@ type TraceRecord struct {
 	// turn (no-tool ReAct answer, hard-block / canned reply) — empty means
 	// "tier not known", never default-to-agent (attribution-observable-only).
 	ActualExecutionTier string `json:"actual_execution_tier,omitempty"`
-	// ActualExecutionPath is the runtime-form axis: the coarse runtime architecture
-	// form that actually handled this turn. It is derived from observed execution
-	// signals, not from planner output: routing / terminal_rag / agent. This is a
-	// DIFFERENT axis from ActualExecutionTier and may diverge from it by design (see the
-	// ExecutionPath* consts). Empty means not observable.
+	// ActualExecutionPath is the LEGACY runtime-form axis (routing / terminal_rag /
+	// agent) — see the ExecutionPath* const note. It is retained for trace/dashboard
+	// continuity across the P6 cutover, NOT the current architecture (which has one
+	// execution form, the central Agent loop). Derived from observed signals, not
+	// from any planner (the planner was deleted). Empty means not observable.
 	ActualExecutionPath string               `json:"actual_execution_path,omitempty"`
 	Runtime             RuntimeTrace         `json:"runtime"`
 	IntentRouter        RouterTrace          `json:"intent_router"`
@@ -139,11 +139,17 @@ type TraceRecord struct {
 	Retrieval           RetrievalTrace       `json:"retrieval"`
 	Diagnosis           DiagnosisTrace       `json:"diagnosis"`
 	State               StateTrace           `json:"state"`
+	Continuity          ContinuityTrace      `json:"continuity"`
+	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
-	// Steps holds agent-tier saga step traces, populated by B6.2. Empty /
-	// omitempty for all non-agent turns, so trace output stays byte-identical
-	// until a producer exists (same reserved-slot precedent as TaskTier in B1).
+	// Steps holds workflow step traces. Empty values are omitted for turns that
+	// did not execute a workflow.
 	Steps []StepTrace `json:"steps,omitempty"`
+	// Authorizations holds the per-target dual-proof audit record for each write a
+	// mutating action authorized this turn. Empty / omitempty for every non-mutating
+	// turn, so trace output stays byte-identical until a write target is proven
+	// (same reserved-slot precedent as Steps).
+	Authorizations []AuthorizationTrace `json:"authorizations,omitempty"`
 }
 
 type traceRecordJSON struct {
@@ -167,8 +173,11 @@ type traceRecordJSON struct {
 	Retrieval           *RetrievalTrace       `json:"retrieval,omitempty"`
 	Diagnosis           *DiagnosisTrace       `json:"diagnosis,omitempty"`
 	State               *StateTrace           `json:"state,omitempty"`
+	Continuity          *ContinuityTrace      `json:"continuity,omitempty"`
+	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Steps               []StepTrace           `json:"steps,omitempty"`
+	Authorizations      []AuthorizationTrace  `json:"authorizations,omitempty"`
 }
 
 func (r TraceRecord) MarshalJSON() ([]byte, error) {
@@ -216,25 +225,59 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	if traceStateObserved(r.State) {
 		out.State = &r.State
 	}
+	if traceContinuityObserved(r.Continuity) {
+		out.Continuity = &r.Continuity
+	}
+	if traceCompletionObserved(r.Completion) {
+		out.Completion = &r.Completion
+	}
 	if traceOutcomeObserved(r.Outcome) {
 		out.Outcome = &r.Outcome
 	}
 	if len(r.Steps) > 0 {
 		out.Steps = r.Steps
 	}
+	if len(r.Authorizations) > 0 {
+		out.Authorizations = r.Authorizations
+	}
 	return json.Marshal(out)
 }
 
-// TWO SEPARATE AXES describe how a turn ran. They are NOT interchangeable and
-// deliberately diverge for some turns — keep them distinct (do not collapse the
-// two fields into one, or force one shared vocabulary onto both).
+// ContinuityTrace records the durable turn protocol around one execution
+// attempt. It deliberately contains only identity checks, counters, versions
+// and closed-set outcomes: no user text, model text, tool payload or persisted
+// session JSON is allowed across this observability boundary.
+type ContinuityTrace struct {
+	SessionIdentityMatch   bool   `json:"session_identity_match"`
+	TurnSequence           int64  `json:"turn_sequence"`
+	LeaseEpoch             int64  `json:"lease_epoch"`
+	SnapshotContextVersion int    `json:"snapshot_context_version"`
+	EnvelopeParseOutcome   string `json:"envelope_parse_outcome"`
+	ContextParseOutcome    string `json:"context_parse_outcome"`
+	RetryCount             int    `json:"retry_count"`
+	RecoveryAttempt        bool   `json:"recovery_attempt"`
+	CommitOutcome          string `json:"commit_outcome"`
+	CommitReason           string `json:"commit_reason,omitempty"`
+}
+
+func traceContinuityObserved(trace ContinuityTrace) bool {
+	return trace.TurnSequence != 0 || trace.LeaseEpoch != 0 ||
+		trace.SnapshotContextVersion != 0 || trace.EnvelopeParseOutcome != "" ||
+		trace.ContextParseOutcome != "" || trace.RetryCount != 0 ||
+		trace.RecoveryAttempt || trace.CommitOutcome != "" || trace.CommitReason != ""
+}
+
+// LEGACY TRACE COMPAT: these two axes describe records produced before the
+// central-Agent cutover. They do not select a model or execution path today.
+// Keep them readable until the stored trace schema is retired.
 // TestActualExecutionTierAndExecutionPathAreSeparateAxes pins the divergence.
 //
 //   - Work-tier axis (TaskTier predicted / ActualExecutionTier realized): WHAT KIND of
 //     work the turn did, on the ADR-001 complexity scale fast < knowledge < agent.
-//   - Runtime-form axis (PlannedExecutionPath / ActualExecutionPath): WHICH runtime
-//     architecture executed — routing (deterministic handler) / terminal_rag
-//     (final-answer retrieval workflow) / agent (ReAct loop).
+//   - Runtime-form axis (PlannedExecutionPath / ActualExecutionPath): the LEGACY
+//     runtime-form label — routing / terminal_rag / agent (see the ExecutionPath*
+//     const note). Retained for trace continuity; the current runtime has one form
+//     (the central Agent loop), so this axis is legacy trace-compat, not current.
 //
 // The axes correspond only loosely (fast↔routing, knowledge↔terminal_rag,
 // agent↔agent): a turn can do knowledge-tier WORK on the agent FORM — a
@@ -250,6 +293,15 @@ const (
 	ActualExecutionTierAgent     = "agent"
 )
 
+// LEGACY TRACE COMPAT (post-P6). The routing / terminal_rag / agent runtime-form
+// taxonomy predates the central-Agent cutover. The CURRENT runtime has a single
+// execution form — the central Agent loop — so these values are retained ONLY so
+// trace storage, dashboards, and the eval harness keep reading historical and
+// cutover-era records. Do NOT treat them as the current architecture: P7 (and any
+// new acceptance) must judge a turn by its real tools / steps / observations /
+// final answer, not by a derived form label. Removing them is a wire-visible
+// trace-schema migration, not a comment/test cleanup.
+//
 // ExecutionPath* are the runtime-form-axis values for TraceRecord.ActualExecutionPath
 // (and PlannedExecutionPath). NOTE: "terminal_rag" is the odd value out vs the
 // rest of the routing/agent vocabulary; renaming it to "rag" is a wire-visible
@@ -297,7 +349,7 @@ func (r TraceRecord) DeriveActualExecutionTier() string {
 	switch r.IntentRouter.RouteStatus {
 	case "dispatched_retrieval", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop is a knowledge_qa turn forced through the
-		// agent loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP): the realized work is still
+		// knowledge agent loop: the realized work is still
 		// knowledge retrieval, so the realized-tier attribution stays comparable
 		// across the terminal→agent-loop migration even though the runtime FORM
 		// becomes agent (see DeriveActualExecutionPath).
@@ -318,15 +370,17 @@ func (r TraceRecord) DeriveActualExecutionTier() string {
 	return ""
 }
 
-// DeriveActualExecutionPath computes the production architecture form that
-// actually handled the turn. It is intentionally coarser than ActualExecutionTier:
+// DeriveActualExecutionPath computes the LEGACY runtime-form label for a turn
+// (see the ExecutionPath* const note). It maps a trace's router status to the
+// retired routing / terminal_rag / agent taxonomy for trace/dashboard continuity;
+// it is NOT the current architecture (one central Agent form). Kept coarse:
 // terminal RAG is only a final-answer retrieval workflow; retrieval used inside
 // diagnosis or another agent path remains agent.
 func (r TraceRecord) DeriveActualExecutionPath() string {
 	switch r.IntentRouter.RouteStatus {
 	case "dispatched_agent", "dispatched_knowledge_agent_loop":
 		// dispatched_knowledge_agent_loop: a knowledge_qa turn forced through the
-		// shared ReAct loop (COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP). It runs the agent
+		// shared ReAct loop. It runs the agent
 		// loop (a SearchKnowledge tool call fires), so the runtime FORM is agent —
 		// the migration's whole point (terminal_rag → agent). The engine projects
 		// PlannedExecutionPath=agent for the same turn so planned==actual.
@@ -387,6 +441,27 @@ type RouterTrace struct {
 	Confidence           float64             `json:"confidence"`
 	HardBlockHint        bool                `json:"hard_block_hint"`
 	RouteStatus          string              `json:"route_status"`
+
+	// Why the router fell back — the question route_status alone cannot answer.
+	//
+	// When validation fails on every attempt, ProjectPlannerTrace overwrites Intent
+	// with "unknown" and the engine reports route_status=fallback_invalid. Both the
+	// intent the model actually chose and the reason it was rejected were then
+	// discarded, so `fallback_invalid` has been an opaque bucket. On real 6.26-7.9
+	// traffic it is 6.0% of follow-up turns vs 1.0% of opening turns — a 6x
+	// multi-turn degradation that nothing in the system could explain.
+	//
+	// ValidationCode is an ErrorCode enum and ValidationField a schema path
+	// (e.g. "slots.target_refs[0].value"). Neither carries user text, so this is
+	// safe to leave on in production — the same counts-and-enums-only rule
+	// PlannerSlots follows.
+	ValidationCode  string `json:"validation_code,omitempty"`
+	ValidationField string `json:"validation_field,omitempty"`
+	// RejectedIntent is the intent the model chose on the final failing attempt —
+	// preserved BEFORE the unknown-overwrite above, so a rejected-but-correct route
+	// is distinguishable from a genuinely off-platform one.
+	RejectedIntent string `json:"rejected_intent,omitempty"`
+	Attempts       int    `json:"attempts,omitempty"`
 }
 
 type PlannerSkillTrace struct {
@@ -394,10 +469,52 @@ type PlannerSkillTrace struct {
 	Resolution string `json:"resolution"`
 }
 
+// PlannerSlots projects intent.Slots for the trace. Nothing here may carry raw
+// model- or user-supplied text, so each slot is recorded under one of two
+// classes, following the TargetRef/TimeWindow precedent already established in
+// this file:
+//
+//   - verbatim, when the value is provably confined to a closed set. Those slots
+//     ARE the router's decision variable, and a trace that hides them cannot
+//     explain why a turn was refined the way it was.
+//   - hashed, when the value is free-form. A hash still shows whether the slot
+//     was populated and whether it was stable across runs, without carrying the
+//     raw text.
+//
+// "Provably confined" means confined by the time it reaches here — not merely
+// enum-typed in Go. ImageSource/ListMode/PriceKind/CFSKind/ChargeType/DetailLevel
+// and SizeGB used to be checked by intent.ValidateRoute, which was deleted with
+// the route stack (it had zero production callers by then, so the check it is
+// credited with here had already stopped running before it was removed). Their
+// confinement now rests on whatever produces the plan, not on a validator — if a
+// producer is ever added that does not confine them, this projection would record
+// unconfined text verbatim, so re-establish the check before trusting it. Action is
+// NOT: the router schema deliberately omits slots.action and is non-strict, so a
+// model that volunteers an arbitrary string still produces a SchemaValid plan
+// (see internal/intent/router_schema.go). It is therefore closed at projection
+// time against the known LifecycleAction constants — a known verb is recorded
+// verbatim, anything else is hashed, exactly as a non-canonical TimeWindow is.
 type PlannerSlots struct {
 	TargetRefs []any    `json:"target_refs"`
 	Metrics    []string `json:"metrics"`
 	TimeWindow any      `json:"time_window"`
+
+	// Validator-constrained / bounded — verbatim.
+	ImageSource string `json:"image_source,omitempty"`
+	ListMode    string `json:"list_mode,omitempty"`
+	PriceKind   string `json:"price_kind,omitempty"`
+	CFSKind     string `json:"cfs_kind,omitempty"`
+	ChargeType  string `json:"charge_type,omitempty"`
+	DetailLevel string `json:"detail_level,omitempty"`
+	SizeGB      int    `json:"size_gb,omitempty"`
+
+	// Closed at projection time: verbatim iff a known LifecycleAction.
+	Action     string `json:"action,omitempty"`
+	ActionHash string `json:"action_hash,omitempty"`
+
+	// Free-form user-derived slots — hashed, never raw.
+	SearchQueryHash string `json:"search_query_hash,omitempty"`
+	ZoneHash        string `json:"zone_hash,omitempty"`
 }
 
 // EngineHardBlock TriggeredBy enum values. Single-source attribution
@@ -430,8 +547,8 @@ type EngineHardBlockTrace struct {
 	// hard-block — single-source (no "both"), since short-circuited stages
 	// are unobservable. Allowed values:
 	//   "keyword"        — Chat() head inputguard.PreBlock keyword match
-	//   "planner_intent" — planner-classified intent (monitor_history etc.)
-	//                      routed through emitMonitorHistoryHardBlock helper
+	//   "planner_intent" — planner-classified intent hard-block (e.g. the
+	//                      account-billing-unsupported refusal)
 	//   "post_llm"       — post-LLM gate (currently cited_contract_violation)
 	// Empty when Hit=false. Joins with planner.hard_block_hint downstream
 	// for cross-source analytics — the join is observability, not routing.
@@ -461,6 +578,43 @@ type ToolCallTrace struct {
 	ExecutedTargets  int    `json:"executed_targets"`
 	WindowSeconds    int    `json:"window_seconds"`
 	Projected        bool   `json:"projected,omitempty"`
+}
+
+// AuthorizationTrace is the per-write-target dual-proof audit record: for each
+// target a mutating action acted on this turn, it captures WHICH read interface
+// (oracle) established the target's existence, WHEN, for WHICH account, with what
+// VERDICT (the ExistenceProof), plus whether the user's confirmation authorized
+// execution (the SelectionProof outcome). It exists so a post-hoc audit can answer
+// "由哪个接口、在什么时间、为哪个账户证明了这个目标存在" — which the target's
+// existence evidence (engine.targetEvidence) established but which was previously
+// consumed only as a resolver gate and then discarded.
+//
+// Content-free by the same rule as the rest of the trace: the target id and the
+// account are HASHED (never raw uhost-/cfs-/disk- ids or org ids), the kind /
+// oracle / verdict are closed-set enums, and the user email is deliberately not
+// carried. So it is safe to persist to the cross-tenant analytics trace.
+type AuthorizationTrace struct {
+	// Operation is the mutating workflow (e.g. StopInstanceWorkflow) — a closed set.
+	Operation string `json:"operation"`
+	// TargetKind is the resource kind proven: instance | cfs | disk.
+	TargetKind string `json:"target_kind"`
+	// TargetIDHash is a hash of the exact target id — correlatable, never raw.
+	TargetIDHash string `json:"target_id_hash,omitempty"`
+	// ExistenceVerdict is the closed-set verdict: verified | not_found | unavailable.
+	ExistenceVerdict string `json:"existence_verdict"`
+	// ExistenceOracle names the read interface that established existence:
+	// DescribeCompShareInstance | DescribeCFS | DescribeCompShareInstance#DiskSet.
+	ExistenceOracle string `json:"existence_oracle,omitempty"`
+	// ObservedUnix is when the existence check ran (server clock, unix seconds).
+	ObservedUnix int64 `json:"observed_unix,omitempty"`
+	// AccountHash is a hash of the (top_organization_id/organization_id) the proof
+	// was scoped to — correlatable to the turn's tenant, never the raw ids or email.
+	AccountHash string `json:"account_hash,omitempty"`
+	// ExecutionAuthorized is the SelectionProof outcome: true when the user confirmed
+	// the target on the card (authorizing execution — even if the upstream write then
+	// failed), false when the card was declined / never resolved. The confirmation
+	// card IS the SelectionProof, so this records whether that human gate was passed.
+	ExecutionAuthorized bool `json:"execution_authorized"`
 }
 
 type RendererTrace struct {
@@ -511,7 +665,7 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 }
 
 // MergeRetrievalTrace folds a new per-turn retrieval into the recorded one. A turn
-// can retrieve more than once (e.g. the COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP forced
+// can retrieve more than once (e.g. the knowledge agent loop's forced
 // SearchKnowledge first hop, then a voluntary re-query later in the same ReAct loop).
 // The recorders historically kept only the LAST retrieval, so a trailing no-hit
 // re-query would clobber the forced hop's substantive retrieval and make it look like
@@ -519,10 +673,80 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 // retrieval when the incoming one has no hits; otherwise the latest (substantive or
 // first-ever) wins. Terminal RAG retrieves once, so its trace is unchanged.
 func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
+	if next.TurnAggregate || len(next.CitedChunkIDs) > 0 || len(next.CitedRefs) > 0 {
+		if !traceRetrievalObserved(current) {
+			return next
+		}
+		merged := current
+		if next.TurnAggregate {
+			merged.TurnAggregate = true
+			merged.Hits = next.Hits
+			if next.QueryRaw != "" {
+				merged.QueryRaw = next.QueryRaw
+			}
+			if next.QueryNormalized != "" {
+				merged.QueryNormalized = next.QueryNormalized
+			}
+		}
+		if len(next.References) > 0 {
+			merged.References = next.References
+		}
+		if len(next.CitedRefs) > 0 {
+			merged.CitedRefs = next.CitedRefs
+		}
+		if len(next.CitedChunkIDs) > 0 {
+			merged.CitedChunkIDs = next.CitedChunkIDs
+		}
+		// The citation trace (emitSearchKnowledgeCitationTrace) recomputes
+		// References/CitedChunkIDs/Activities from the FULL accumulated turn, but
+		// `current` only holds the last SearchKnowledge call's HitItems/Hits (the
+		// "latest substantive wins" rule below). Without carrying next's HitItems/Hits
+		// too, a multi-hop turn persists cited_chunk_ids/references spanning the whole
+		// turn while hit_items reflects only the last call — a cited chunk can then be
+		// absent from hit_items in the ingested record. Overlay them from next.
+		if len(next.HitItems) > 0 {
+			merged.HitItems = next.HitItems
+		}
+		if !next.TurnAggregate && next.Hits > merged.Hits {
+			merged.Hits = next.Hits
+		}
+		if len(next.Activities) > 0 {
+			if next.TurnAggregate {
+				merged.Activities = append([]RetrievalActivity(nil), next.Activities...)
+			} else {
+				merged.Activities = mergeRetrievalActivities(merged.Activities, next.Activities)
+			}
+		}
+		return merged
+	}
 	if current.Enabled && current.Hits > 0 && (!next.Enabled || next.Hits == 0) {
 		return current
 	}
 	return next
+}
+
+func mergeRetrievalActivities(current, next []RetrievalActivity) []RetrievalActivity {
+	if len(current) == 0 {
+		return append([]RetrievalActivity(nil), next...)
+	}
+	out := append([]RetrievalActivity(nil), current...)
+	seen := make(map[string]int, len(out))
+	for i, activity := range out {
+		if activity.ID != "" {
+			seen[activity.ID] = i
+		}
+	}
+	for _, activity := range next {
+		if idx, ok := seen[activity.ID]; activity.ID != "" && ok {
+			out[idx] = activity
+			continue
+		}
+		if activity.ID != "" {
+			seen[activity.ID] = len(out)
+		}
+		out = append(out, activity)
+	}
+	return out
 }
 
 type RateLimitTrace struct {
@@ -536,14 +760,21 @@ type RateLimitTrace struct {
 }
 
 type RetrievalTrace struct {
-	Enabled               bool           `json:"enabled"`
-	KBVersion             string         `json:"kb_version"`
-	QueryRaw              string         `json:"query_raw,omitempty"`
-	QueryNormalized       string         `json:"query_normalized,omitempty"`
-	QueryExpansions       []string       `json:"query_expansions,omitempty"`
-	Hits                  int            `json:"hits"`
-	HitItems              []RetrievalHit `json:"hit_items,omitempty"`
-	RefusedReason string `json:"refused_reason,omitempty"`
+	Enabled bool `json:"enabled"`
+	// TurnAggregate marks the final de-duplicated evidence snapshot for the
+	// entire turn. It is emitted for both grounded answers and grounding
+	// failures so a multi-search failure does not retain only its last call.
+	TurnAggregate   bool                 `json:"turn_aggregate,omitempty"`
+	KBVersion       string               `json:"kb_version"`
+	QueryRaw        string               `json:"query_raw,omitempty"`
+	QueryNormalized string               `json:"query_normalized,omitempty"`
+	QueryExpansions []string             `json:"query_expansions,omitempty"`
+	Hits            int                  `json:"hits"`
+	HitItems        []RetrievalHit       `json:"hit_items,omitempty"`
+	Activities      []RetrievalActivity  `json:"activities,omitempty"`
+	References      []RetrievalReference `json:"references,omitempty"`
+	CitedRefs       []RetrievalCitedRef  `json:"cited_refs,omitempty"`
+	RefusedReason   string               `json:"refused_reason,omitempty"`
 	// RefusalType classifies a RAG refusal into the #5 four-state taxonomy
 	// (corpus_gap / all_below_floor / synthesis_refused / wrong_domain). Derived
 	// at Finish from RefusedReason + FloorDroppedAll (DeriveRefusalType); empty
@@ -560,9 +791,9 @@ type RetrievalTrace struct {
 	// far the top hit fell from the floor.
 	FloorValue float64 `json:"floor_value,omitempty"`
 	// DomainInferenceEmpty is true when the question's product area could not be
-	// inferred (inferKnowledgeProductArea=="") — so the #5 wrong-domain guard
-	// could not judge this turn. Recorded so a low wrong_domain rate is not
-	// misread as "no problem" (the question-side keyword-coverage gap).
+	// inferred, so the #5 wrong-domain guard could not judge this turn. Recorded
+	// so a low wrong_domain rate is not misread as "no problem" (the
+	// question-side routing coverage gap).
 	DomainInferenceEmpty bool `json:"domain_inference_empty,omitempty"`
 	// AllCitedOffDomain is true when every judgeable retrieved chunk was off the
 	// question's product area (the #5 case: a 库存 question grounded on billing
@@ -613,6 +844,31 @@ type RetrievalTrace struct {
 	// so the user only sees prose; this field is the only place [n] → chunk
 	// mapping survives.
 	CitedChunkIDs []string `json:"cited_chunk_ids,omitempty"`
+}
+
+type RetrievalActivity struct {
+	ID              string `json:"id"`
+	Query           string `json:"query"`
+	Hits            int    `json:"hits"`
+	LatencyMS       int64  `json:"latency_ms,omitempty"`
+	Fallback        string `json:"fallback,omitempty"`
+	Error           string `json:"error,omitempty"`
+	FloorDroppedAll bool   `json:"floor_dropped_all,omitempty"`
+}
+
+type RetrievalReference struct {
+	RefID       string   `json:"ref_id"`
+	ChunkID     string   `json:"chunk_id"`
+	Title       string   `json:"title,omitempty"`
+	SourceArea  string   `json:"source_area,omitempty"`
+	Score       float64  `json:"score,omitempty"`
+	Rank        int      `json:"rank,omitempty"`
+	ActivityIDs []string `json:"activity_ids,omitempty"`
+}
+
+type RetrievalCitedRef struct {
+	RefID   string `json:"ref_id"`
+	ChunkID string `json:"chunk_id"`
 }
 
 type RetrievalHit struct {
@@ -699,6 +955,13 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 }
 
 type OutcomeTrace struct {
+	// Continuity contract metadata is bounded and content-free. It proves which
+	// inputs and answer path were used without persisting prompts or user text.
+	ContextSources     []string `json:"context_sources,omitempty"`
+	ResponseContract   string   `json:"response_contract,omitempty"`
+	PromptSectionIDs   []string `json:"prompt_section_ids,omitempty"`
+	MemoryUpdateSource string   `json:"memory_update_source,omitempty"`
+	GroundingOutcome   string   `json:"grounding_outcome,omitempty"`
 	// TerminatedBy / AbortCause / ErrorClass / Resolution are the four
 	// outcome-attribution axes derived at Finish (see outcome.go). They close the
 	// "no attribution on ~25% of turns" dark hole. TerminatedBy is always set for a
@@ -712,13 +975,19 @@ type OutcomeTrace struct {
 	// ReactRounds is the number of ReAct loop rounds entered this turn; BudgetHit
 	// is true when the turn hit the token budget or the round ceiling. Both feed
 	// the D7 (per-turn budget exhaustion) analysis and the budget terminus.
-	ReactRounds                int   `json:"react_rounds,omitempty"`
-	BudgetHit                  bool  `json:"budget_hit,omitempty"`
-	TotalLatencyMS             int64 `json:"total_latency_ms,omitempty"`
-	TotalTokens                int   `json:"total_tokens,omitempty"`
-	PromptTokens               int   `json:"prompt_tokens,omitempty"`
-	CompletionTokens           int   `json:"completion_tokens,omitempty"`
-	AttemptedHallucinatedCount int   `json:"attempted_hallucinated_count,omitempty"`
+	ReactRounds int  `json:"react_rounds,omitempty"`
+	BudgetHit   bool `json:"budget_hit,omitempty"`
+	// ActionProposalDisposition records what the resolver did with a write proposal
+	// this turn — "confirmation"/"intake_form" when it carded, else the reason it did
+	// not ("rejected:<slot>=<kind>", "missing:<fields>", "dependency_failure", ...).
+	// "" when no proposal ran. Attributes why a create did or did not card without
+	// re-running the model.
+	ActionProposalDisposition  string `json:"action_proposal_disposition,omitempty"`
+	TotalLatencyMS             int64  `json:"total_latency_ms,omitempty"`
+	TotalTokens                int    `json:"total_tokens,omitempty"`
+	PromptTokens               int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens           int    `json:"completion_tokens,omitempty"`
+	AttemptedHallucinatedCount int    `json:"attempted_hallucinated_count,omitempty"`
 	// EscapedHallucinatedCount counts turns where the cited-contract
 	// retry was skipped or failed. Note: turns aborted by the per-turn
 	// token budget (refused_reason="token_budget") also bump this
@@ -947,6 +1216,9 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		len(trace.QueryExpansions) > 0 ||
 		trace.Hits != 0 ||
 		len(trace.HitItems) > 0 ||
+		len(trace.Activities) > 0 ||
+		len(trace.References) > 0 ||
+		len(trace.CitedRefs) > 0 ||
 		trace.RefusedReason != "" ||
 		trace.RefusalType != "" ||
 		trace.FloorDroppedAll ||
@@ -980,7 +1252,13 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		trace.ErrorClass != "" ||
 		trace.Resolution != "" ||
 		trace.ReactRounds != 0 ||
-		trace.BudgetHit
+		trace.BudgetHit ||
+		len(trace.ContextSources) > 0 ||
+		trace.ResponseContract != "" ||
+		len(trace.PromptSectionIDs) > 0 ||
+		trace.MemoryUpdateSource != "" ||
+		trace.GroundingOutcome != "" ||
+		trace.ActionProposalDisposition != ""
 }
 
 func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
@@ -1016,6 +1294,15 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Retrieval.HitItems == nil {
 		r.Retrieval.HitItems = []RetrievalHit{}
+	}
+	if r.Retrieval.Activities == nil {
+		r.Retrieval.Activities = []RetrievalActivity{}
+	}
+	if r.Retrieval.References == nil {
+		r.Retrieval.References = []RetrievalReference{}
+	}
+	if r.Retrieval.CitedRefs == nil {
+		r.Retrieval.CitedRefs = []RetrievalCitedRef{}
 	}
 	if r.Diagnosis.Claims == nil {
 		r.Diagnosis.Claims = []DiagnosisClaimTrace{}

@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+// CFS create size bounds (GB). Hand-maintained platform limits: upstream
+// exposes no CFS-limits API, so these are pinned from the CreateCFS spec
+// (verified 2026-07-11). The same 50–2048 range is surfaced verbatim in the
+// CFS tool descriptions (internal/tools/registry.go) — keep them in sync if the
+// platform changes the bounds.
 const (
 	minCFSSizeGB = 50
 	maxCFSSizeGB = 2048
@@ -12,10 +17,8 @@ const (
 
 func CreateCFSDef() *Definition {
 	return &Definition{
-		Name:        "CreateCFSWorkflow",
-		Description: "查询支持区 -> 查询 CFS 价格 -> 确认创建 -> 创建 CFS -> 回查 CFS",
+		Name: "CreateCFSWorkflow",
 		Steps: []Step{
-			stepQuerySupportZonesForCreateCFS(),
 			stepQueryCreateCFSPrice(),
 			stepConfirmCreateCFS(),
 			stepCreateCFS(),
@@ -39,8 +42,7 @@ func CreateCFSDef() *Definition {
 
 func ResizeCFSDef() *Definition {
 	return &Definition{
-		Name:        "ResizeCFSWorkflow",
-		Description: "查询 CFS -> 查询扩容价格 -> 确认扩容 -> 扩容 CFS",
+		Name: "ResizeCFSWorkflow",
 		Steps: []Step{
 			stepQueryCFSForResize(),
 			stepQueryResizeCFSPrice(),
@@ -57,25 +59,6 @@ func ResizeCFSDef() *Definition {
 	}
 }
 
-func stepQuerySupportZonesForCreateCFS() Step {
-	return Step{
-		Name: "查询支持区",
-		Type: StepToolCall,
-		Tool: "DescribeCompShareSupportZone",
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			args := map[string]any{}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
-			return args, nil
-		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
-			if !hasSupportZoneEntries(result) {
-				return false, "未获取到支持区列表，无法安全创建 CFS。请稍后重试或到控制台确认可用区。"
-			}
-			return true, ""
-		},
-	}
-}
-
 func stepQueryCreateCFSPrice() Step {
 	return Step{
 		Name: "查询 CFS 价格",
@@ -88,14 +71,12 @@ func stepQueryCreateCFSPrice() Step {
 			args := map[string]any{
 				"Name":       wfCtx.Params["Name"],
 				"Size":       wfCtx.Params["Size"],
-				"Zone":       wfCtx.Params["Zone"],
-				"Region":     wfCtx.Params["Region"],
 				"zone_id":    wfCtx.Params["CFSZoneId"],
 				"az_group":   wfCtx.Params["CFSAzGroup"],
 				"ChargeType": cfsChargeType(wfCtx.Params),
 				"Quantity":   wfCtx.Params["Quantity"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -133,8 +114,12 @@ func stepCreateCFS() Step {
 		Tool: "CreateCFS",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{
-				"Name":       wfCtx.Params["Name"],
-				"Size":       wfCtx.Params["Size"],
+				"Name": wfCtx.Params["Name"],
+				"Size": wfCtx.Params["Size"],
+				// Region/Zone are still required by the deployed public gateway to
+				// route CreateCFS. zone_id/az_group remain the authoritative placement
+				// selected from the trusted zone snapshot; sending both is accepted by
+				// the upstream BaseRequest and prevents gateway/version skew.
 				"Zone":       wfCtx.Params["Zone"],
 				"Region":     wfCtx.Params["Region"],
 				"zone_id":    wfCtx.Params["CFSZoneId"],
@@ -142,7 +127,7 @@ func stepCreateCFS() Step {
 				"ChargeType": cfsChargeType(wfCtx.Params),
 				"Quantity":   wfCtx.Params["Quantity"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -161,7 +146,7 @@ func stepDescribeCreatedCFS() Step {
 			args := map[string]any{
 				"CfsId": cfsIDFromCreateResult(wfCtx.Result("创建 CFS")),
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -178,39 +163,39 @@ func stepQueryCFSForResize() Step {
 				cfsID = strings.TrimSpace(paramStr(wfCtx.Params, "CFSId", ""))
 			}
 			if cfsID == "" {
-				return nil, fmt.Errorf("扩容 CFS 需要指定 CFS ID。")
+				return nil, NewMissingSlotError("扩容 CFS 需要指定 CFS ID。", "cfs_id")
 			}
 			targetSize := paramNum(wfCtx.Params, "Size", 0)
 			if targetSize <= 0 {
-				return nil, fmt.Errorf("扩容 CFS 需要指定目标容量（GB）。")
+				return nil, NewMissingSlotError("扩容 CFS 需要指定目标容量（GB）。", "target_size_gb")
 			}
 			wfCtx.Params["CfsId"] = cfsID
 			wfCtx.Params["Size"] = targetSize
 			args := map[string]any{"CfsId": cfsID}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			cfs, ok := firstCFS(result)
 			if !ok {
-				return false, "未找到该 CFS。"
+				return CheckFailed("未找到该 CFS。")
 			}
 			currentSize := cfsNumber(cfs, "Size")
 			if currentSize <= 0 {
-				return false, "未能识别当前 CFS 容量，无法安全扩容。"
+				return CheckFailed("未能识别当前 CFS 容量，无法安全扩容。")
 			}
 			targetSize := paramNum(wfCtx.Params, "Size", 0)
 			if targetSize <= currentSize {
-				return false, fmt.Sprintf("目标容量必须大于当前容量：当前 %.0fGB，目标 %.0fGB。CFS 只支持扩容，不支持缩容或保持不变。", currentSize, targetSize)
+				return CheckFailed(fmt.Sprintf("目标容量必须大于当前容量：当前 %.0fGB，目标 %.0fGB。CFS 只支持扩容，不支持缩容或保持不变。", currentSize, targetSize))
 			}
 			zoneID := cfsNumber(cfs, "ZoneId", "ZoneID")
 			if zoneID <= 0 {
-				return false, "未获取到 CFS 所在可用区编号，无法安全执行扩容。"
+				return CheckFailed("未获取到 CFS 所在可用区编号，无法安全执行扩容。")
 			}
 			wfCtx.Params["CurrentCFSSize"] = currentSize
 			wfCtx.Params["CFSName"] = cfsString(cfs, "Name")
 			wfCtx.Params["CFSZoneId"] = zoneID
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }
@@ -226,7 +211,7 @@ func stepQueryResizeCFSPrice() Step {
 				"Size":    wfCtx.Params["Size"],
 				"zone_id": wfCtx.Params["CFSZoneId"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -269,7 +254,7 @@ func stepResizeCFS() Step {
 				"Size":    wfCtx.Params["Size"],
 				"zone_id": wfCtx.Params["CFSZoneId"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -278,19 +263,15 @@ func stepResizeCFS() Step {
 func normalizeCreateCFSParams(wfCtx *Context) error {
 	name := strings.TrimSpace(paramStr(wfCtx.Params, "Name", ""))
 	if name == "" {
-		return fmt.Errorf("创建 CFS 需要指定名称。")
+		return NewMissingSlotError("创建 CFS 需要指定名称。", "name")
 	}
 	size := paramNum(wfCtx.Params, "Size", 0)
 	if size < minCFSSizeGB || size > maxCFSSizeGB {
-		return fmt.Errorf("CFS 容量需在 %dGB 到 %dGB 之间。", minCFSSizeGB, maxCFSSizeGB)
+		return NewMissingSlotError(fmt.Sprintf("CFS 容量需在 %dGB 到 %dGB 之间。", minCFSSizeGB, maxCFSSizeGB), "size_gb")
 	}
 	zone := strings.TrimSpace(paramStr(wfCtx.Params, "Zone", ""))
 	if zone == "" {
-		return fmt.Errorf("创建 CFS 需要指定可用区。")
-	}
-	region := strings.TrimSpace(paramStr(wfCtx.Params, "Region", ""))
-	if region == "" {
-		region = regionFromZone(zone)
+		return NewMissingSlotError("创建 CFS 需要指定可用区。", "zone")
 	}
 	isPod, zoneID, azGroup, resolvedRegion, resolved, err := resolveCreateCFSZone(wfCtx, zone)
 	if err != nil {
@@ -299,12 +280,10 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	if resolved != "" {
 		zone = resolved
 	}
-	if resolvedRegion != "" {
-		region = resolvedRegion
-	}
-	if region == "" {
-		return fmt.Errorf("无法从可用区推导地域，请从支持区列表中选择真实 Pod 区。")
-	}
+	// resolveCreateCFSZone fails closed on a record missing Region, so resolvedRegion
+	// is always non-empty here: the catalog record is the sole Region source, never a
+	// zone-string guess.
+	region := resolvedRegion
 	chargeType := cfsChargeType(wfCtx.Params)
 	if strings.EqualFold(chargeType, "Postpay") {
 		return fmt.Errorf("CFS 不支持按量付费，请选择 Month、Year、Day 或 Dynamic。")
@@ -326,88 +305,40 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 }
 
 func resolveCreateCFSZone(wfCtx *Context, requested string) (isPod bool, zoneID uint32, azGroup uint32, region string, zone string, err error) {
-	if placement, ok := createCFSSupportZonePlacement(wfCtx.Result("查询支持区"), requested); ok {
-		if !placement.isPod {
-			return false, 0, 0, "", "", fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", requested)
-		}
-		if placement.zoneID == 0 {
-			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部编号，无法安全创建 CFS。", placement.zone)
-		}
-		if placement.azGroup == 0 {
-			return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", placement.zone)
-		}
-		return true, placement.zoneID, placement.azGroup, placement.region, placement.zone, nil
+	// The turn's single zone catalog snapshot is authoritative: CFS resolves its
+	// Pod-zone placement from it (no second support-zone query), keeping its own
+	// Pod-only and internal-id checks on the record the snapshot returns.
+	placement, err := workflowZonePlacement(wfCtx, requested)
+	if err != nil {
+		return false, 0, 0, "", "", err
 	}
-	if hasSupportZoneEntries(wfCtx.Result("查询支持区")) {
-		return false, 0, 0, "", "", fmt.Errorf("未在支持区中找到可用区 %s。请从上游返回的 Pod/容器可用区中选择。", requested)
+	if !placement.IsPod {
+		return false, 0, 0, "", "", fmt.Errorf("CFS 当前只支持 Pod/容器可用区，%s 不是 Pod 区，不能创建 CFS。", requested)
 	}
-	return false, 0, 0, "", "", fmt.Errorf("未获取到支持区列表，无法安全创建 CFS。请稍后重试或到控制台确认可用区。")
+	if placement.ZoneID == 0 {
+		return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部编号，无法安全创建 CFS。", placement.Zone)
+	}
+	if placement.AzGroup == 0 {
+		return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全创建 CFS。", placement.Zone)
+	}
+	if strings.TrimSpace(placement.Region) == "" {
+		// Fail closed: a record the catalog carries but with no Region must NOT be
+		// back-filled by a zone-string guess (regionFromZone) — that reintroduces the
+		// split-source Region the snapshot exists to end.
+		return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的地域，无法安全创建 CFS。", placement.Zone)
+	}
+	return true, placement.ZoneID, placement.AzGroup, placement.Region, placement.Zone, nil
 }
 
-type createCFSZonePlacement struct {
-	zone    string
-	region  string
-	zoneID  uint32
-	azGroup uint32
-	isPod   bool
-}
-
-func createCFSSupportZonePlacement(result map[string]any, requested string) (createCFSZonePlacement, bool) {
-	requested = strings.TrimSpace(requested)
-	if requested == "" {
-		return createCFSZonePlacement{}, false
+// addWorkflowIdentityArgs forwards server-injected identity (org ids) from the
+// context's RuntimeMetadata into an upstream call's args. Identity is not a
+// business param, so it is sourced from Runtime, never from Params.
+func addWorkflowIdentityArgs(args map[string]any, rt RuntimeMetadata) {
+	if rt.TopOrganizationID != 0 {
+		args["top_organization_id"] = rt.TopOrganizationID
 	}
-	raw, _ := result["ZoneInfo"].([]any)
-	for _, item := range raw {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		entryZone := strings.TrimSpace(stringFieldAny(entry["Zone"]))
-		describe := strings.TrimSpace(stringFieldAny(entry["Describe"]))
-		if requested != entryZone && requested != describe {
-			continue
-		}
-		placement := createCFSZonePlacement{
-			zone:   entryZone,
-			region: strings.TrimSpace(stringFieldAny(entry["Region"])),
-			isPod:  boolFieldAny(entry["IsPod"]),
-		}
-		if id, ok := parseUint32Any(entry["ZoneId"]); ok {
-			placement.zoneID = id
-		}
-		if id, ok := parseUint32Any(entry["RegionId"]); ok {
-			placement.azGroup = id
-		}
-		return placement, true
-	}
-	return createCFSZonePlacement{}, false
-}
-
-func hasSupportZoneEntries(result map[string]any) bool {
-	raw, _ := result["ZoneInfo"].([]any)
-	return len(raw) > 0
-}
-
-func boolFieldAny(v any) bool {
-	switch typed := v.(type) {
-	case bool:
-		return typed
-	case string:
-		switch strings.ToLower(strings.TrimSpace(typed)) {
-		case "true", "1", "yes", "y":
-			return true
-		}
-	}
-	return false
-}
-
-func addWorkflowIdentityArgs(args map[string]any, params map[string]any) {
-	if v, ok := params["top_organization_id"]; ok {
-		args["top_organization_id"] = v
-	}
-	if v, ok := params["organization_id"]; ok {
-		args["organization_id"] = v
+	if rt.OrganizationID != 0 {
+		args["organization_id"] = rt.OrganizationID
 	}
 }
 

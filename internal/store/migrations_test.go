@@ -69,3 +69,114 @@ func TestHTTPMigrationsAddAgentTracesOutcomeColumns(t *testing.T) {
 	// GROUP BY / COUNT semantics) — never NOT NULL with a default.
 	assert.NotContains(t, strings.ToUpper(ddl), "NOT NULL")
 }
+
+func TestHTTPMigrationsCreateTurnExecutionKernel(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0005_create_turn_execution.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, fragment := range []string{
+		"CREATE TABLE chat_turns",
+		"CREATE TABLE conversation_leases",
+		"CREATE TABLE turn_actions",
+		"ADD COLUMN turn_id",
+		"ADD COLUMN turn_role",
+		"UNIQUE (top_organization_id, organization_id, session_id, client_turn_id)",
+		"PRIMARY KEY (turn_id, action_index)",
+		"active_turn_id",
+		"next_event_seq",
+		"turn_seq",
+		"UNIQUE (session_id, turn_seq)",
+		"UNIQUE (turn_id, action_name, args_hash)",
+		"action_name",
+		"args_hash",
+		"in_flight",
+		"upstream_request_id",
+		"in_flight        BOOLEAN       NOT NULL DEFAULT FALSE",
+		"status = 'reserved' OR NOT in_flight",
+	} {
+		assert.Contains(t, ddl, fragment)
+	}
+}
+
+func TestHTTPMigrationsCreateTurnProtocol(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0006_create_turn_protocol.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, fragment := range []string{
+		"CREATE TABLE chat_turn_events",
+		"CREATE TABLE turn_interactions",
+		"PRIMARY KEY (turn_id, seq)",
+		"UNIQUE (turn_id, interaction_key)",
+		"provisional",
+		"lease_epoch",
+		"expires_at",
+		"resolution_hash",
+	} {
+		assert.Contains(t, ddl, fragment)
+	}
+	assert.NotContains(t, ddl, "response_hash", "one canonical resolution hash avoids contradictory duplicate fields")
+}
+
+func TestHTTPMigrationsAddTurnRecoveryContext(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0007_add_turn_recovery_context.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, fragment := range []string{
+		"ADD COLUMN execution_envelope JSONB",
+		"ADD COLUMN context_hint JSONB",
+		"context_hint - 'resource_ids' - 'region' - 'zone'",
+		"idx_chat_turns_recovery",
+		"'awaiting_confirmation'",
+		"'committing'",
+	} {
+		assert.Contains(t, ddl, fragment)
+	}
+	assert.NotContains(t, ddl, "execution_envelope JSONB NOT NULL", "existing turns must remain valid")
+	assert.NotContains(t, ddl, "context_hint JSONB NOT NULL", "existing actions must remain valid")
+}
+
+func TestHTTPMigrationsAddDurableTurnRetryPolicy(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0008_add_turn_retry_policy.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, fragment := range []string{
+		"ADD COLUMN retry_count INT NOT NULL DEFAULT 0",
+		"ADD COLUMN next_retry_at TIMESTAMPTZ",
+		"'failed_final'",
+		"ck_chat_turn_retry_schedule",
+		"jsonb_path_exists",
+		`@.type() != "string"`,
+	} {
+		assert.Contains(t, ddl, fragment)
+	}
+}
+
+func TestHTTPMigrationsAddInteractionSupersession(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0009_add_interaction_supersession.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	assert.Contains(t, ddl, "status = 'superseded'")
+	assert.Contains(t, ddl, "idx_turn_interactions_pending")
+	assert.Contains(t, ddl, "interaction_generation")
+	assert.Contains(t, ddl, "uq_turn_interactions_generation")
+}
+
+func TestHTTPMigrationsAddActionAbandonment(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0010_add_action_abandonment.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	assert.Contains(t, ddl, "'abandoned'")
+	assert.Contains(t, ddl, "ck_turn_action_status")
+}

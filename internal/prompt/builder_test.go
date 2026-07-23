@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -12,11 +13,13 @@ func TestBuildSystem_WithContext(t *testing.T) {
 	if !strings.Contains(result, ctx) {
 		t.Error("BuildSystem should inject user context into prompt")
 	}
-	if !strings.Contains(result, "优云算力共享平台") {
-		t.Error("BuildSystem should contain platform identity")
-	}
 	if !strings.Contains(result, "Compshare Copilot") {
 		t.Error("BuildSystem should contain product brand (Compshare Copilot)")
+	}
+	for _, legacy := range []string{"拒答模板", "创作：", "天气、翻译"} {
+		if strings.Contains(result, legacy) {
+			t.Errorf("BuildSystem should not retain patch-like refusal inventory %q", legacy)
+		}
 	}
 }
 
@@ -99,23 +102,22 @@ func TestTranslateState(t *testing.T) {
 	}
 }
 
-func TestBuildSystem_ContainsDiagnosis(t *testing.T) {
-	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
-	for _, tool := range []string{"DiagnoseSSH", "DiagnoseInitFailure", "DiagnoseGPU", "DiagnoseBilling"} {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("system prompt should contain %s routing", tool)
-		}
-	}
-}
-
-func TestBuildSystem_ContainsDiagnosisCommandBoundary(t *testing.T) {
+func TestBuildSystem_ContainsCentralAgentContract(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
 	for _, text := range []string{
-		"实例内只读自查命令",
-		"修改实例环境的命令必须标为可选修复",
+		"本轮唯一的业务判断者",
+		"先阅读完整对话",
+		// B4 write-authorization guard (2026-07-21 rephrase of "只有用户明确要求实际
+		// 改变资源", same intent): the do-vs-ask distinction — act on do-requests,
+		// ANSWER how-to/rules/fee/feasibility questions rather than executing them.
+		// Behaviorally validated 0 false-cards on how-to probes under pro+B4.
+		"用户问的是怎么做、规则、计费或可行性时，直接回答",
+		// The proposal itself never executes; the confirm card + server gate do.
+		"动作建议不会直接执行",
+		"相同条件没有新信息时不要重复调用",
 	} {
 		if !strings.Contains(prompt, text) {
-			t.Fatalf("system prompt should contain diagnosis command boundary %q", text)
+			t.Fatalf("system prompt should contain central-agent contract %q", text)
 		}
 	}
 }
@@ -144,13 +146,8 @@ func TestBuildSystemWithOptions_ReadOnlyHidesMutatingWorkflowGuidance(t *testing
 		}
 	}
 	for _, text := range []string{
-		"当前阶段不直接执行开机、关机、重启",
-		"可以提供控制台操作步骤",
-		"诊断工具本身仅做云侧只读检查",
-		"可以给用户实例内只读自查命令",
-		"systemctl status",
-		"修改实例环境的命令必须标为可选修复",
-		"DiagnoseSSH",
+		"当前工具只允许查询和诊断",
+		"不要声称已经代为执行",
 	} {
 		if !strings.Contains(prompt, text) {
 			t.Fatalf("read-only prompt should contain %q", text)
@@ -177,8 +174,8 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 				}
 			}
 			for _, text := range []string{
-				"平台知识类问题必须通过知识库/RAG资料回答",
-				"不要凭内置 FAQ 或模型记忆补全平台规则",
+				"完整对话、统一上下文或稳定通用知识足以回答时直接回答",
+				"无关或空结果不能推翻已有上下文",
 			} {
 				if !strings.Contains(system, text) {
 					t.Fatalf("system prompt should contain knowledge-source boundary %q:\n%s", text, system)
@@ -188,37 +185,84 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 	}
 }
 
-func TestBuildSystemWithOptions_MutatingModeKeepsWorkflowGuidance(t *testing.T) {
+func TestKnowledgePolicyDoesNotCompeteWithScopeOrToolDescriptions(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
-	if strings.Contains(prompt, "CreateInstanceWorkflow") {
-		t.Fatalf("mutating ReAct prompt must not expose %q after create_instance became the create entry", "CreateInstanceWorkflow")
+	if strings.Contains(prompt, "优先用知识库") {
+		t.Fatal("范围说明不得另行决定是否检索")
 	}
-	for _, text := range []string{
-		"StopInstanceWorkflow",
-		"ResetPasswordWorkflow",
+	for _, required := range []string{
+		"稳定通用知识足以回答时直接回答",
+		"检索结果只是补充观察",
+		"可能的使用场景和排查方向",
 	} {
-		if !strings.Contains(prompt, text) {
-			t.Fatalf("mutating-enabled prompt should contain %q", text)
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("统一检索契约缺少 %q", required)
 		}
 	}
 }
 
-func TestBuildSystemWithOptions_CompleteListingRuleInBothModes(t *testing.T) {
+func TestRenderPromptSectionsRejectsDuplicatePolicyID(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("duplicate section id must fail prompt construction")
+		}
+	}()
+	renderPromptSections([]PromptSection{
+		{ID: "knowledge_turn_policy", Text: "first"},
+		{ID: "knowledge_turn_policy", Text: "second"},
+	})
+}
+
+func TestKnowledgeTurnPolicyAppearsExactlyOnce(t *testing.T) {
+	for _, mutating := range []bool{true, false} {
+		got := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: mutating})
+		if count := strings.Count(got, "## 知识来源与检索规则"); count != 1 {
+			t.Fatalf("mutating=%v: knowledge policy count=%d, want 1", mutating, count)
+		}
+	}
+}
+
+func TestBuildSystemWithOptionsAndTraceReportsExactUniqueSectionIDs(t *testing.T) {
+	text, ids := BuildSystemWithOptionsAndTrace("sensitive user context", BuildOptions{MutatingToolsEnabled: false})
+	if !strings.Contains(text, "sensitive user context") {
+		t.Fatal("rendered prompt lost user context")
+	}
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		if strings.Contains(id, "sensitive") {
+			t.Fatalf("section metadata leaked prompt content: %q", id)
+		}
+		if _, ok := seen[id]; ok {
+			t.Fatalf("duplicate section id in trace metadata: %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if _, ok := seen["knowledge_turn_policy"]; !ok {
+		t.Fatalf("knowledge policy section absent from metadata: %v", ids)
+	}
+}
+
+func TestBuildSystemWithOptions_MutatingModeDoesNotEmbedWorkflowRoutingTable(t *testing.T) {
+	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
+	for _, text := range []string{
+		"CreateInstanceWorkflow",
+		"StopInstanceWorkflow",
+		"ResetPasswordWorkflow",
+	} {
+		if strings.Contains(prompt, text) {
+			t.Fatalf("central prompt must not embed workflow routing entry %q", text)
+		}
+	}
+}
+
+func TestBuildSystemWithOptions_UsesOneKnowledgePolicyInBothModes(t *testing.T) {
 	for name, prompt := range map[string]string{
 		"mutating":  BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true}),
 		"read_only": BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false}),
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, text := range []string{
-				"未显示全",
-				"剩余 N 台",
-				"还有 X 个",
-				"DescribeCompShareInstance",
-				"UHostSet",
-			} {
-				if !strings.Contains(prompt, text) {
-					t.Fatalf("system prompt should contain complete-listing rule fragment %q", text)
-				}
+			if count := strings.Count(prompt, "## 知识来源与检索规则"); count != 1 {
+				t.Fatalf("knowledge policy count=%d, want 1", count)
 			}
 		})
 	}
@@ -255,6 +299,11 @@ func TestFormatToolResult_SmallResult(t *testing.T) {
 	}
 }
 
+// TestFormatToolResult_ValidJSON was an empty gate: it is named for parseability
+// and its comment says "should produce parseable output", but it only asserted
+// the ABSENCE of the string "...(truncated)" — it never called json.Unmarshal.
+// A byte-cut fragment satisfied it, which is why the hard-cut branch could ship.
+// It now asserts the property it is named for.
 func TestFormatToolResult_ValidJSON(t *testing.T) {
 	// Even large results should produce parseable output
 	items := make([]any, 50)
@@ -264,6 +313,11 @@ func TestFormatToolResult_ValidJSON(t *testing.T) {
 	large := map[string]any{"list": items, "count": 50}
 	result := FormatToolResult(large)
 
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("FormatToolResult must return parseable JSON, got %v\n%s", err, result)
+	}
+
 	// Verify it doesn't cut mid-string
 	if strings.Contains(result, "...(truncated)") {
 		t.Error("should not use old-style truncation")
@@ -271,11 +325,14 @@ func TestFormatToolResult_ValidJSON(t *testing.T) {
 }
 
 // TestFormatToolResult_GiantScalarStaysBounded guards the rune cap for inputs
-// that array-shrink cannot help: a single huge scalar field. truncateMapArrays
-// only trims top-level []any, so without the post-shrink length re-check the
-// result would be returned unbounded — and an oversized tool result silently
-// masquerades as the per-turn token-budget refusal, which is why the cap must
-// hold here, not just for array-heavy results.
+// that array-shrink cannot help: a single huge scalar field. An oversized tool
+// result silently masquerades as the per-turn token-budget refusal, which is why
+// the cap must hold here, not just for array-heavy results.
+//
+// Bounded is necessary but was never sufficient — the old code met this bound by
+// cutting bytes, which is what produced the invalid JSON in the first place.
+// TestFormatToolResult_GiantScalarStaysParseable (tool_result_truncation_test.go)
+// is the gate that says what the model actually needs.
 func TestFormatToolResult_GiantScalarStaysBounded(t *testing.T) {
 	large := map[string]any{"log": strings.Repeat("x", 10000)}
 	result := FormatToolResult(large)
@@ -285,9 +342,10 @@ func TestFormatToolResult_GiantScalarStaysBounded(t *testing.T) {
 }
 
 // TestFormatToolResult_DeepNestedArrayStaysBounded guards the same cap for an
-// array buried one level below the top, which truncateMapArrays (one level
-// deep) does not reach. Without the length re-check the re-marshaled result
-// exceeds the cap unbounded.
+// array buried one level below the top. The shrink used to be one level deep and
+// could not reach this at all, so the result fell straight through to the
+// byte-cut; truncateArrays now recurses, so the elements are dropped and the
+// document stays whole.
 func TestFormatToolResult_DeepNestedArrayStaysBounded(t *testing.T) {
 	items := make([]any, 100)
 	for i := range items {

@@ -193,6 +193,26 @@ func TestFinalizeOutcome_StampsAllAxes(t *testing.T) {
 	}
 }
 
+// TestFinalizeOutcome_StampsDisposition pins the resolver disposition
+// (action_proposal_disposition) onto the persisted trace, so a restart can
+// reconstruct why a create did or did not card without re-running the model. It
+// stays omitted when unset (SHA-stable for turns without it).
+func TestFinalizeOutcome_StampsDisposition(t *testing.T) {
+	rec := TraceRecord{}
+	rec.FinalizeOutcome(FinishSignals{
+		ActionProposalDisposition: "rejected:Zone=invalid_value",
+	})
+	if rec.Outcome.ActionProposalDisposition != "rejected:Zone=invalid_value" {
+		t.Errorf("action_proposal_disposition = %q, want rejected:Zone=invalid_value", rec.Outcome.ActionProposalDisposition)
+	}
+
+	none := TraceRecord{}
+	none.FinalizeOutcome(FinishSignals{ReactRounds: 1})
+	if none.Outcome.ActionProposalDisposition != "" {
+		t.Errorf("disposition must stay empty when unset; got %q", none.Outcome.ActionProposalDisposition)
+	}
+}
+
 func TestFinalizeOutcome_RoundCeilingBudget(t *testing.T) {
 	rec := TraceRecord{}
 	rec.FinalizeOutcome(FinishSignals{RoundCeilingHit: true, ReactRounds: 10})
@@ -204,6 +224,38 @@ func TestFinalizeOutcome_RoundCeilingBudget(t *testing.T) {
 	}
 	if rec.Outcome.ReactRounds != 10 {
 		t.Fatalf("react_rounds = %d, want 10", rec.Outcome.ReactRounds)
+	}
+}
+
+func TestFinalizeOutcome_IntermediateRateLimitDoesNotOverrideSuccessfulCompletion(t *testing.T) {
+	rec := TraceRecord{
+		RateLimit: RateLimitTrace{Checked: true, Allowed: false, Action: "grounded_renderer"},
+		Completion: TurnCompletionTrace{
+			Class:           CompletionClassDeterministicAnswer,
+			Reason:          CompletionReasonDirectDispatch,
+			ContextDecision: CompletionDecisionNotInvoked,
+			ToolScope:       "named",
+		},
+	}
+	rec.FinalizeOutcome(FinishSignals{})
+	if rec.Outcome.TerminatedBy != TerminatedByDone {
+		t.Fatalf("terminated_by = %q, want done after successful fallback", rec.Outcome.TerminatedBy)
+	}
+}
+
+func TestFinalizeOutcome_TerminalRateLimitUsesCompletion(t *testing.T) {
+	rec := TraceRecord{
+		RateLimit: RateLimitTrace{Checked: true, Allowed: false, Action: "main_react_chat"},
+		Completion: TurnCompletionTrace{
+			Class:           CompletionClassSafetyBlock,
+			Reason:          CompletionReasonRateLimit,
+			ContextDecision: CompletionDecisionNotInvoked,
+			ToolScope:       "read_only_full",
+		},
+	}
+	rec.FinalizeOutcome(FinishSignals{})
+	if rec.Outcome.TerminatedBy != TerminatedByBlocked {
+		t.Fatalf("terminated_by = %q, want blocked for terminal denial", rec.Outcome.TerminatedBy)
 	}
 }
 

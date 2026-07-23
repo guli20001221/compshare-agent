@@ -1,9 +1,34 @@
 package tools
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestDiagnoseSSHDeclaresTypedFailureKind(t *testing.T) {
+	var parameters map[string]any
+	for _, tool := range Registry {
+		if tool.Function != nil && tool.Function.Name == "DiagnoseSSH" {
+			parameters, _ = tool.Function.Parameters.(map[string]any)
+			break
+		}
+	}
+	if parameters == nil {
+		t.Fatal("DiagnoseSSH schema not found")
+	}
+	properties, _ := parameters["properties"].(map[string]any)
+	kind, _ := properties["FailureKind"].(map[string]any)
+	got, _ := kind["enum"].([]string)
+	want := []string{"timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FailureKind enum = %#v, want %#v", got, want)
+	}
+	policy := DefaultToolExecutionPolicies()["DiagnoseSSH"]
+	if !containsString(policy.AllowedParams, "FailureKind") {
+		t.Fatal("DiagnoseSSH policy must preserve the typed failure kind")
+	}
+}
 
 func TestCreatePathToolsAllowRegion(t *testing.T) {
 	// The create-path read tools must declare Region (→ AllowedParams) so
@@ -29,6 +54,29 @@ func TestCreatePathToolsAllowRegion(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("%s must allow Region (so filterSafeArgs keeps it for non-default zones)", action)
+		}
+	}
+}
+
+func TestWorkflowSchemasDeclareRequiredSizesForResolver(t *testing.T) {
+	for _, action := range []string{"CreateDiskWorkflow", "ResizeDiskWorkflow"} {
+		var required []string
+		for _, tool := range Registry {
+			if tool.Function == nil || tool.Function.Name != action {
+				continue
+			}
+			params, _ := tool.Function.Parameters.(map[string]any)
+			required, _ = params["required"].([]string)
+			break
+		}
+		if len(required) == 0 {
+			t.Fatalf("%s schema not found", action)
+		}
+		if !containsString(required, "UHostId") {
+			t.Fatalf("%s must still require UHostId", action)
+		}
+		if !containsString(required, "Size") {
+			t.Fatalf("%s must require Size so the Resolver returns a structured missing slot before Workflow", action)
 		}
 	}
 }
@@ -120,9 +168,12 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 		}
 	}
 	mustContain(t, descriptions["DescribeCompShareJupyterToken"], "不要明文展示")
-	mustContain(t, descriptions["EnableNetOptimizerWorkflow"], "确认")
-	mustContain(t, descriptions["CreateCFSWorkflow"], "确认")
-	mustContain(t, descriptions["ResizeCFSWorkflow"], "确认")
+	policies := DefaultToolExecutionPolicies()
+	for _, action := range []string{"EnableNetOptimizerWorkflow", "CreateCFSWorkflow", "ResizeCFSWorkflow"} {
+		if !policies[action].NeedsConfirm {
+			t.Fatalf("%s must require confirmation in the runtime policy", action)
+		}
+	}
 	if strings.Contains(descriptions["CreateCFSWorkflow"], "cn-pod-01") {
 		t.Fatal("CreateCFSWorkflow description must not suggest synthetic Pod zones; real zones come from DescribeCompShareSupportZone")
 	}
@@ -172,6 +223,8 @@ func TestCFSInternalZoneIDIsWorkflowOnly(t *testing.T) {
 	for _, action := range []string{
 		"CheckCompShareNetOptimizer",
 		"SyncCompShareNetOptimizer",
+		"DescribeCompShareSupportZone",
+		"DescribeCompShareGpuInventory",
 		"DescribeCFS",
 		"GetCompShareCFSPrice",
 		"GetCompShareCFSUpgradePrice",
@@ -197,6 +250,18 @@ func TestCFSInternalZoneIDIsWorkflowOnly(t *testing.T) {
 		}
 		if containsString(p.AllowedParams, "az_group") {
 			t.Fatalf("%s must not expose az_group to model-origin calls", action)
+		}
+	}
+
+	for _, action := range []string{"CheckCompShareNetOptimizer", "SyncCompShareNetOptimizer"} {
+		p := policies[action]
+		for _, want := range []string{"Zone", "Region"} {
+			if !containsString(p.InternalAllowedParams, want) {
+				t.Fatalf("%s must preserve backend-derived %s internally", action, want)
+			}
+			if containsString(p.AllowedParams, want) {
+				t.Fatalf("%s must not expose %s to model-origin calls", action, want)
+			}
 		}
 	}
 
@@ -247,10 +312,12 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "具体创建实例配置")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "确认该机型当前是否真实可创建")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "CompShareImageId 和 ChargeType 必填")
-	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "只传 Zone/Region 字符串")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "workflow 会按可用区类型补齐内部位置参数")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "普通区用 Zone/Region")
+	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "Pod 区内部用 zone_id")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "不要手填 zone_id/az_group")
 
-	mustContain(t, descriptions["CreateInstanceWorkflow"], "Pod 区必须使用容器镜像")
+	mustContain(t, descriptions["CreateInstanceWorkflow"], "创建算力实例")
 	mustNotContain(t, descriptions["CreateInstanceWorkflow"], "必须使用此工具")
 }
 
@@ -272,10 +339,24 @@ func TestDescribeCompShareInstanceDoesNotExposeWithoutGpu(t *testing.T) {
 func TestCustomImageWorkflowIsUserFacingButRawImageCreateIsNot(t *testing.T) {
 	descriptions := registryDescriptions()
 
-	mustContain(t, descriptions["CreateCustomImageWorkflow"], "CreateCompShareCustomImage")
-	mustContain(t, descriptions["CreateCustomImageWorkflow"], "GetCompShareImageCreateProgress")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "从已有实例")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "自制镜像")
 	if _, ok := descriptions["CreateCompShareCustomImage"]; ok {
 		t.Fatal("raw CreateCompShareCustomImage must not be exposed as a user-facing tool")
+	}
+	mustContain(t, descriptions["CloneCustomImageWorkflow"], "另一个可用区")
+	if _, ok := descriptions["SyncCompShareCustomImage"]; ok {
+		t.Fatal("raw SyncCompShareCustomImage must not be exposed as a user-facing tool")
+	}
+}
+
+func TestCloneCustomImageTargetZonesAreWorkflowOnly(t *testing.T) {
+	policy := DefaultToolExecutionPolicies()["SyncCompShareCustomImage"]
+	if containsString(policy.AllowedParams, "TargetZoneIds") {
+		t.Fatal("the model must not choose numeric destination ids")
+	}
+	if !containsString(policy.InternalAllowedParams, "TargetZoneIds") {
+		t.Fatal("the workflow must be able to pass the resolver-verified destination")
 	}
 }
 

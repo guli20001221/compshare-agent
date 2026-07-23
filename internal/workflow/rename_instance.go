@@ -1,13 +1,15 @@
 package workflow
 
+import "fmt"
+
 // RenameInstanceDef returns the 3-step workflow definition for renaming a
 // CompShare GPU instance: query instance, confirm rename, then execute.
 func RenameInstanceDef() *Definition {
 	return &Definition{
-		Name:        "RenameInstanceWorkflow",
-		Description: "查询实例 → 确认改名 → 修改名称",
+		Name: "RenameInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForRename(),
+			stepQuerySupportZones(),
 			stepConfirmRename(),
 			stepRenameInstance(),
 		},
@@ -28,12 +30,12 @@ func stepQueryForRename() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			if state == "" {
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			}
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }
@@ -43,8 +45,12 @@ func stepConfirmRename() Step {
 		Name: "确认改名",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			newName := paramStr(wfCtx.Params, "Name", "")
+			if newName == "" {
+				return nil, NewMissingSlotError("改名需要指定新名称。", "name")
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
-			summary["NewName"] = wfCtx.Params["Name"]
+			summary["NewName"] = newName
 			return summary, nil
 		},
 	}
@@ -56,11 +62,15 @@ func stepRenameInstance() Step {
 		Type: StepToolCall,
 		Tool: "ModifyCompShareInstanceName",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			newName := paramStr(wfCtx.Params, "Name", "")
+			if newName == "" {
+				return nil, fmt.Errorf("instance Name is required before renaming")
+			}
 			queried := wfCtx.Result("查询实例")
-			return addRequiredInstanceLocationArgs(map[string]any{
+			return addRequiredPodPlacementArgs(map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
-				"Name":    wfCtx.Params["Name"],
-			}, queried)
+				"Name":    newName,
+			}, queried, wfCtx.Result("查询支持区"))
 		},
 	}
 }

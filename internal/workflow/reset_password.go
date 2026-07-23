@@ -12,10 +12,10 @@ import (
 // support online reset (Running or Stopped).
 func ResetPasswordDef() *Definition {
 	return &Definition{
-		Name:        "ResetPasswordWorkflow",
-		Description: "查询实例 → 确认重置 → 重置密码 → 确认完成",
+		Name: "ResetPasswordWorkflow",
 		Steps: []Step{
 			stepQueryForReset(),
+			stepQuerySupportZones(),
 			stepConfirmReset(),
 			stepResetPassword(),
 			stepVerifyReset(),
@@ -37,29 +37,30 @@ func stepQueryForReset() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			if state == "" {
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			}
 			instanceType := extractInstanceType(result)
 
 			if instanceType == "Container" {
-				// Container supports online reset: Running or Stopped
-				if state == "Running" || state == "Stopped" {
-					return true, ""
+				// Live-verified 2026-07-10: Pod (Container) reset only succeeds
+				// while Running; Stopped returns upstream RetCode 8433.
+				if state == "Running" {
+					return CheckPassed()
 				}
-				return false, "容器实例当前状态为「" + state + "」，仅 Running 或 Stopped 状态可重置密码。"
+				return CheckFailed("容器实例需要先开机才能重置密码。请先执行开机操作。")
 			}
 
 			// Non-container (VM): only Stopped
 			if state == "Stopped" {
-				return true, ""
+				return CheckPassed()
 			}
 			if state == "Running" {
-				return false, "普通主机需要先关机才能重置密码。请先执行关机操作。"
+				return CheckFailed("普通主机需要先关机才能重置密码。请先执行关机操作。")
 			}
-			return false, "实例当前状态为「" + state + "」，不支持重置密码。"
+			return CheckFailed("实例当前状态为「" + state + "」，不支持重置密码。")
 		},
 	}
 }
@@ -96,10 +97,10 @@ func stepResetPassword() Step {
 				}
 			}
 			queried := wfCtx.Result("查询实例")
-			return addRequiredInstanceLocationArgs(map[string]any{
+			return addRequiredPodPlacementArgs(map[string]any{
 				"UHostId":  wfCtx.Params["UHostId"],
 				"Password": base64.StdEncoding.EncodeToString([]byte(password)),
-			}, queried)
+			}, queried, wfCtx.Result("查询支持区"))
 		},
 	}
 }

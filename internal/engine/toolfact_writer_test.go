@@ -5,10 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/intent"
-	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
@@ -223,12 +220,11 @@ func TestRecordMonitorSampleFacts_TwoHosts_ProducesTwoFacts(t *testing.T) {
 // ---------------------------------------------------------------------------
 // SelectedInstanceID tracking from the tool-fact (ReAct) path
 // ---------------------------------------------------------------------------
-// WHY: recordSelectedInstanceFromEnvelope only fires on the direct-dispatch
-// route paths. The intent router routes the SAME monitor/state question to
-// either direct-dispatch OR ReAct (flash jitter); on the ReAct path the
-// instance went untracked, so the next turn's "它的状态 / 重启它" lost it and
-// re-listed all instances (live-reproduced via the local server, 上下文复用
-// cluster). Tracking here unifies both paths.
+// WHY: this is now the ONLY path that binds a session's current instance. The
+// direct-dispatch writers it used to merely complement were deleted with the route
+// stack in P6, so a tool result naming exactly one host is the sole remaining
+// source. The binding is understanding-only — it answers "who is 它" and supplies
+// the default subject of a read-only query; it does not authorize a write.
 
 // TestRecordInstanceStateFacts_SingleHostSetsSelectedInstance: a result naming
 // exactly one instance pins it as the session's current instance.
@@ -242,6 +238,7 @@ func TestRecordInstanceStateFacts_SingleHostSetsSelectedInstance(t *testing.T) {
 	})
 	assert.Equal(t, "uhost-solo", e.sessionState.SelectedInstanceID)
 	assert.Equal(t, "only-one", e.sessionState.SelectedInstanceName)
+	assert.Equal(t, SelectedInstanceSourceObserved, e.sessionState.SelectedInstanceSource)
 }
 
 // TestRecordInstanceStateFacts_MultiHostKeepsSelectedInstanceUnset: a list-all
@@ -267,6 +264,7 @@ func TestRecordMonitorSampleFacts_SingleSubjectSetsSelectedInstance(t *testing.T
 		Metrics: []monitorPayloadMetric{{Key: "uhost_cpu_used", Values: [][2]any{{1716530000, "1.0"}}}},
 	}}))
 	assert.Equal(t, "uhost-mon", e.sessionState.SelectedInstanceID)
+	assert.Equal(t, SelectedInstanceSourceObserved, e.sessionState.SelectedInstanceSource)
 }
 
 // TestRecordMonitorSampleFacts_MultiSubjectKeepsSelectedInstanceUnset: a
@@ -304,7 +302,7 @@ func TestRecordToolFacts_NotHydratedSkipsWrite(t *testing.T) {
 			map[string]any{"UHostId": "uhost-A", "Name": "x", "State": "Running"},
 		},
 	}
-	e.recordToolFacts("DescribeCompShareInstance", &tools.SafeToolResult{RawResult: raw})
+	e.recordToolFacts("DescribeCompShareInstance", nil, &tools.SafeToolResult{RawResult: raw})
 
 	assert.Empty(t, e.sessionState.RecentFacts,
 		"un-hydrated engine must never write RecentFacts — CLI path safety")
@@ -313,8 +311,8 @@ func TestRecordToolFacts_NotHydratedSkipsWrite(t *testing.T) {
 // TestRecordToolFacts_NilResultSkipsWrite covers the defensive nil checks.
 func TestRecordToolFacts_NilResultSkipsWrite(t *testing.T) {
 	e := newEngineForToolFactTest(t)
-	e.recordToolFacts("DescribeCompShareInstance", nil)
-	e.recordToolFacts("DescribeCompShareInstance", &tools.SafeToolResult{RawResult: nil})
+	e.recordToolFacts("DescribeCompShareInstance", nil, nil)
+	e.recordToolFacts("DescribeCompShareInstance", nil, &tools.SafeToolResult{RawResult: nil})
 	assert.Empty(t, e.sessionState.RecentFacts)
 }
 
@@ -326,14 +324,48 @@ func TestRecordToolFacts_UnknownActionSkipsWrite(t *testing.T) {
 	for _, action := range []string{
 		"StartCompShareInstance",
 		"DescribeCompShareImages",
-		"GetCompShareInstancePrice",
-		"DescribeAvailableCompShareInstanceTypes",
 		"DescribeCommunityImages",
 	} {
 		e.sessionState.RecentFacts = nil
-		e.recordToolFacts(action, &tools.SafeToolResult{RawResult: raw})
-		assert.Emptyf(t, e.sessionState.RecentFacts, "action %q must not produce facts in M2 v1", action)
+		e.recordToolFacts(action, nil, &tools.SafeToolResult{RawResult: raw})
+		assert.Emptyf(t, e.sessionState.RecentFacts, "action %q must not produce facts", action)
 	}
+}
+
+func TestRecordToolFacts_RecordsStockPriceAndBillingFacts(t *testing.T) {
+	e := newEngineForToolFactTest(t)
+
+	e.recordToolFacts("DescribeAvailableCompShareInstanceTypes", nil, &tools.SafeToolResult{RawResult: map[string]any{
+		"AvailableInstanceTypes": []any{map[string]any{
+			"Name":   "4090",
+			"Status": "Normal",
+			"Zone":   "cn-wlcb-01",
+		}},
+	}})
+	e.recordToolFacts("GetCompShareInstanceUserPrice", map[string]any{
+		"GpuType":    "4090",
+		"Zone":       "cn-wlcb-01",
+		"ChargeType": "Dynamic",
+	}, &tools.SafeToolResult{RawResult: map[string]any{
+		"PriceDetails": []any{map[string]any{"Price": float64(1.58), "OriginalPrice": float64(1.98)}},
+	}})
+	e.recordToolFacts("GetCompShareRefundPrice", map[string]any{
+		"UHostId": "uhost-1",
+	}, &tools.SafeToolResult{RawResult: map[string]any{
+		"RefundPrice": float64(42.5),
+	}})
+
+	require.Len(t, e.sessionState.RecentFacts, 3)
+	byKind := map[string]ToolFact{}
+	for _, fact := range e.sessionState.RecentFacts {
+		byKind[fact.Kind] = fact
+	}
+	assert.Equal(t, "4090", byKind[FactKindStockSnapshot].Payload["model"])
+	assert.Equal(t, "Normal", byKind[FactKindStockSnapshot].Payload["status"])
+	assert.Equal(t, "4090", byKind[FactKindPriceQuote].Payload["gpu_type"])
+	assert.Equal(t, float64(1.58), byKind[FactKindPriceQuote].Payload["price"])
+	assert.Equal(t, "uhost-1", byKind[FactKindBillingQuote].Payload["resource_id"])
+	assert.Equal(t, float64(42.5), byKind[FactKindBillingQuote].Payload["amount"])
 }
 
 // ---------------------------------------------------------------------------
@@ -508,28 +540,31 @@ func mustRoundTripPersistedContext(t *testing.T, pc PersistedContext) PersistedC
 }
 
 // ---------------------------------------------------------------------------
-// recordSelectedInstanceFromEnvelope / recordLastIntentFromPlan unit tests
+// recordSelectedInstanceIDWithSource unit tests
 // ---------------------------------------------------------------------------
+//
+// These previously drove recordSelectedInstanceFromEnvelope, deleted with the
+// route stack that fed it. The contracts below are NOT the envelope's — they live
+// in the shared choke-point recordSelectedInstanceIDWithSource and are still
+// reachable through recordObservedInstanceID, the only writer left. The
+// envelope-shape rules (exactly-one-subject / wrong-type / empty-ID) went with the
+// envelope path; their surviving equivalent is the single-vs-multi-host rule in
+// recordInstanceStateFacts, covered above.
 
-// TestRecordSelectedInstanceFromEnvelope_SingleSubject is the canonical
-// case: one Subject of type Instance → write SelectedInstanceID/Name.
-func TestRecordSelectedInstanceFromEnvelope_SingleSubject(t *testing.T) {
+func TestRecordSelectedInstanceSourceUpgradesSchemaVersion(t *testing.T) {
 	e := newEngineForToolFactTest(t)
-	env := &envelope.Envelope{
-		Kind: envelope.KindResourceInfo,
-		Subjects: []envelope.Subject{
-			{ID: "uhost-pick", Name: "train-a", Type: envelope.SubjectInstance},
-		},
-	}
-	e.recordSelectedInstanceFromEnvelope(env)
-	assert.Equal(t, "uhost-pick", e.sessionState.SelectedInstanceID)
-	assert.Equal(t, "train-a", e.sessionState.SelectedInstanceName)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV3}, 1)
+
+	e.recordObservedInstanceID("uhost-pick", "train-a")
+
+	state, _, _ := e.SessionStateSnapshot()
+	assert.Equal(t, SessionStateSchemaCurrent, state.SchemaVersion)
+	assert.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource)
 }
 
-// TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips guards the CLI-
-// path safety: same as the fact writer, no mutation without explicit
-// SetSessionState.
-func TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips(t *testing.T) {
+// TestRecordSelectedInstance_NotHydratedSkips guards the CLI-path safety: same as
+// the fact writer, no mutation without explicit SetSessionState.
+func TestRecordSelectedInstance_NotHydratedSkips(t *testing.T) {
 	deps := &SharedDeps{
 		LLMClient:                &mockLLM{},
 		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
@@ -539,110 +574,24 @@ func TestRecordSelectedInstanceFromEnvelope_NotHydratedSkips(t *testing.T) {
 	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
 	require.False(t, e.sessionStateHydrated)
 
-	env := &envelope.Envelope{
-		Subjects: []envelope.Subject{{ID: "uhost-x", Name: "x", Type: envelope.SubjectInstance}},
-	}
-	e.recordSelectedInstanceFromEnvelope(env)
+	e.recordObservedInstanceID("uhost-x", "x")
 	assert.Empty(t, e.sessionState.SelectedInstanceID)
 }
 
-// TestRecordSelectedInstanceFromEnvelope_RejectsAmbiguousOrEmpty enumerates
-// the cases where the engine MUST NOT write SelectedInstance: multiple
-// subjects (ambiguous), zero subjects, wrong type, empty ID, nil envelope.
-func TestRecordSelectedInstanceFromEnvelope_RejectsAmbiguousOrEmpty(t *testing.T) {
-	cases := []struct {
-		name string
-		env  *envelope.Envelope
-	}{
-		{name: "nil envelope", env: nil},
-		{name: "zero subjects", env: &envelope.Envelope{Subjects: []envelope.Subject{}}},
-		{name: "two subjects (ambiguous)", env: &envelope.Envelope{Subjects: []envelope.Subject{
-			{ID: "uhost-a", Type: envelope.SubjectInstance},
-			{ID: "uhost-b", Type: envelope.SubjectInstance},
-		}}},
-		{name: "non-instance subject", env: &envelope.Envelope{Subjects: []envelope.Subject{
-			{ID: "rtx-4090", Type: envelope.SubjectGPUModel},
-		}}},
-		{name: "empty ID", env: &envelope.Envelope{Subjects: []envelope.Subject{
-			{ID: "", Type: envelope.SubjectInstance},
-		}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEngineForToolFactTest(t)
-			e.recordSelectedInstanceFromEnvelope(tc.env)
-			assert.Empty(t, e.sessionState.SelectedInstanceID,
-				"input %q must NOT set SelectedInstance", tc.name)
-		})
-	}
-}
-
-// TestRecordLastIntentFromPlan_AcceptsRuntimeIntents covers the happy path:
-// any intent in RuntimeIntents() is written.
-func TestRecordLastIntentFromPlan_AcceptsRuntimeIntents(t *testing.T) {
+// TestRecordSelectedInstance_EmptyIDIsRejected pins the one input gate that
+// survives in the choke-point itself.
+func TestRecordSelectedInstance_EmptyIDIsRejected(t *testing.T) {
 	e := newEngineForToolFactTest(t)
-	for _, i := range []intent.Intent{
-		intent.IntentResourceInfo,
-		intent.IntentMonitorQuery,
-		intent.IntentGPUSpecsQuery,
-		intent.IntentPricingQuery,
-		intent.IntentStockAvailability,
-	} {
-		e.sessionState.LastIntent = ""
-		e.recordLastIntentFromPlan(intent.IntentRoute{Intent: i})
-		assert.Equalf(t, string(i), e.sessionState.LastIntent, "intent %s must be written", i)
-	}
+	e.recordObservedInstanceID("", "no-id")
+	assert.Empty(t, e.sessionState.SelectedInstanceID, "an empty id must NOT set SelectedInstance")
 }
 
-// TestRecordLastIntentFromPlan_RejectsInvalid covers the gate cases:
-// empty intent, IntentUnknown, and non-RuntimeIntents short aliases.
-func TestRecordLastIntentFromPlan_RejectsInvalid(t *testing.T) {
+// TestSessionState_FieldsRoundTripWithSelectedInstance verifies the M2
+// SelectedInstance additions survive JSON round-trip with reflect.DeepEqual
+// semantics — the multi-replica preservation contract.
+func TestSessionState_FieldsRoundTripWithSelectedInstance(t *testing.T) {
 	e := newEngineForToolFactTest(t)
-	// Pre-set a sentinel so we can verify NO write happens.
-	e.sessionState.LastIntent = "_sentinel_"
-
-	for _, tc := range []struct {
-		name string
-		plan intent.IntentRoute
-	}{
-		{name: "empty intent", plan: intent.IntentRoute{Intent: ""}},
-		{name: "IntentUnknown", plan: intent.IntentRoute{Intent: intent.IntentUnknown}},
-		{name: "short alias 'monitor'", plan: intent.IntentRoute{Intent: intent.Intent("monitor")}},
-		{name: "made-up value", plan: intent.IntentRoute{Intent: intent.Intent("hallucinated_intent")}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e.recordLastIntentFromPlan(tc.plan)
-			assert.Equal(t, "_sentinel_", e.sessionState.LastIntent,
-				"invalid intent %q must NOT overwrite existing LastIntent", tc.plan.Intent)
-		})
-	}
-}
-
-// TestRecordLastIntentFromPlan_NotHydratedSkips mirrors the CLI-path
-// safety for LastIntent.
-func TestRecordLastIntentFromPlan_NotHydratedSkips(t *testing.T) {
-	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
-	}
-	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
-	require.False(t, e.sessionStateHydrated)
-
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentResourceInfo})
-	assert.Empty(t, e.sessionState.LastIntent)
-}
-
-// TestSessionState_FieldsRoundTripWithSelectedAndIntent verifies the M2
-// additions (SelectedInstance / LastIntent) survive JSON round-trip with
-// reflect.DeepEqual semantics — the multi-replica preservation contract.
-func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
-	e := newEngineForToolFactTest(t)
-	e.recordSelectedInstanceFromEnvelope(&envelope.Envelope{Subjects: []envelope.Subject{
-		{ID: "uhost-pick", Name: "train-a", Type: envelope.SubjectInstance},
-	}})
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentMonitorQuery})
+	e.recordObservedInstanceID("uhost-pick", "train-a")
 
 	state, _, _ := e.SessionStateSnapshot()
 	pc := PersistedContext{AgentSessionState: state}
@@ -650,69 +599,8 @@ func TestSessionState_FieldsRoundTripWithSelectedAndIntent(t *testing.T) {
 
 	assert.Equal(t, "uhost-pick", roundTripped.AgentSessionState.SelectedInstanceID)
 	assert.Equal(t, "train-a", roundTripped.AgentSessionState.SelectedInstanceName)
-	assert.Equal(t, string(intent.IntentMonitorQuery), roundTripped.AgentSessionState.LastIntent)
+	assert.Equal(t, SelectedInstanceSourceObserved, roundTripped.AgentSessionState.SelectedInstanceSource)
 }
-
-// TestRouteDispatch_Success_PopulatesSessionState is the P1 integration test
-// pinning the M2 writer wiring at engine.go:1198-1199, 1230-1231, 1284-1285.
-//
-// MUTATION-VERIFIED: deleting `e.recordSelectedInstanceFromEnvelope(...)` and
-// `e.recordLastIntentFromPlan(...)` at the cutover-success branch (engine.go
-// :1230-1231) leaves all M2 unit tests green, but breaks this test —
-// SessionStateSnapshot().SelectedInstanceID stays empty after a successful
-// cutover dispatch. Confirms the wiring is load-bearing.
-//
-// Drives:
-//
-//	ChatWithOptions
-//	  → tryPlannerDispatch
-//	  → tryRouteDispatch
-//	  → HandlerStatusHandled branch (engine.go:1228-1232)
-//	  → assertions on SessionStateSnapshot
-func TestRouteDispatch_Success_PopulatesSessionState(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{Plan: phase1ResourcePlan()}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be called"}}}
-	exec := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": phase1KnownInstanceDescribeResult(),
-	}}
-	eng := NewWithDeps(mock, exec, nil)
-	eng.InitWithContext("test user")
-	require.NoError(t, eng.registry.SyncFromDescribe(phase1KnownInstanceDescribeResult(), "test"))
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-		Model:          "deepseek-v4-flash",
-	})
-
-	// CRITICAL: hydrate the engine before Chat so the writer is allowed
-	// to touch sessionState (matches handlers_chat.go's
-	// ClearSessionState + SetSessionState path).
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 0)
-
-	_, err := eng.Chat(context.Background(), "show phase1-demo resource", noopStep)
-	require.NoError(t, err)
-
-	state, _, _ := eng.SessionStateSnapshot()
-
-	// Wiring at engine.go:1230 must have written SelectedInstance.
-	assert.Equal(t, "uhost-phase1-001", state.SelectedInstanceID,
-		"cutover success must populate SelectedInstanceID — mutation: delete recordSelectedInstanceFromEnvelope at engine.go:1230 to confirm load-bearingness")
-	assert.Equal(t, "phase1-demo", state.SelectedInstanceName)
-
-	// Wiring at engine.go:1231 must have written LastIntent.
-	assert.Equal(t, string(intent.IntentResourceInfo), state.LastIntent,
-		"cutover success must populate LastIntent — mutation: delete recordLastIntentFromPlan at engine.go:1231 to confirm load-bearingness")
-
-	// Bonus: the writer at engine.go:2299 (executeSafeTool) should have
-	// recorded an instance_state fact for the same UHostId, since the
-	// cutover handler calls DescribeCompShareInstance via OriginDirectLLM.
-	require.Len(t, state.RecentFacts, 1, "executeSafeTool must record one instance_state fact during cutover dispatch")
-	assert.Equal(t, FactKindInstanceState, state.RecentFacts[0].Kind)
-	assert.Equal(t, "uhost-phase1-001", state.RecentFacts[0].SubjectID)
-}
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
 
 type monitorPayloadHost struct {
 	UHostID string
@@ -721,11 +609,9 @@ type monitorPayloadHost struct {
 
 type monitorPayloadMetric struct {
 	Key    string
-	Values [][2]any // [timestamp, valueString]
+	Values [][2]any
 }
 
-// monitorPayload constructs a mock GetCompShareInstanceMonitor result
-// matching the shape monitorSemanticFacts walks.
 func monitorPayload(hosts []monitorPayloadHost) map[string]any {
 	listItems := make([]any, 0, len(hosts))
 	for _, h := range hosts {
@@ -733,28 +619,11 @@ func monitorPayload(hosts []monitorPayloadHost) map[string]any {
 		for _, m := range h.Metrics {
 			values := make([]any, 0, len(m.Values))
 			for _, v := range m.Values {
-				values = append(values, map[string]any{
-					"Time":  v[0],
-					"Value": v[1],
-				})
+				values = append(values, map[string]any{"Time": v[0], "Value": v[1]})
 			}
-			metrics = append(metrics, map[string]any{
-				"MetricKey": m.Key,
-				"Results": []any{
-					map[string]any{
-						"Values": values,
-					},
-				},
-			})
+			metrics = append(metrics, map[string]any{"MetricKey": m.Key, "Results": []any{map[string]any{"Values": values}}})
 		}
-		listItems = append(listItems, map[string]any{
-			"UHostId": h.UHostID,
-			"Metrics": metrics,
-		})
+		listItems = append(listItems, map[string]any{"UHostId": h.UHostID, "Metrics": metrics})
 	}
-	return map[string]any{
-		"Data": map[string]any{
-			"List": listItems,
-		},
-	}
+	return map[string]any{"Data": map[string]any{"List": listItems}}
 }

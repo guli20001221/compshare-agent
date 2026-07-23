@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // stopMockExecutor returns a mock with results for the StopInstance workflow.
@@ -76,15 +77,16 @@ func TestStopInstance_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, result.Steps, 3)
+	assert.Len(t, result.Steps, 4)
 	for i := range result.Steps {
 		assert.Equal(t, def.Steps[i].Name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	assert.Len(t, executor.calls, 2)
+	assert.Len(t, executor.calls, 3)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
-	assert.Equal(t, "StopCompShareInstance", executor.calls[1].action)
+	assert.Equal(t, "DescribeCompShareSupportZone", executor.calls[1].action)
+	assert.Equal(t, "StopCompShareInstance", executor.calls[2].action)
 }
 
 func TestStopInstance_ConfirmDenied(t *testing.T) {
@@ -100,9 +102,10 @@ func TestStopInstance_ConfirmDenied(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, def.Steps[1].Name, result.StoppedAt)
-	assert.Len(t, executor.calls, 1)
+	assert.Equal(t, def.Steps[2].Name, result.StoppedAt)
+	assert.Len(t, executor.calls, 2)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+	assert.Equal(t, "DescribeCompShareSupportZone", executor.calls[1].action)
 }
 
 func TestStopInstance_ConfirmHasFeeWarning(t *testing.T) {
@@ -126,10 +129,9 @@ func TestStopInstance_ConfirmHasFeeWarning(t *testing.T) {
 	warning, ok := capturedArgs["warning"].(string)
 	assert.True(t, ok)
 	assert.NotEmpty(t, warning)
-	assert.Contains(t, warning, "系统盘 100GB 免费")
-	assert.Contains(t, warning, "挂载数据盘")
-	assert.Contains(t, warning, "系统盘扩容超出 100GB")
-	assert.NotContains(t, warning, "磁盘费用仍会产生，如需彻底停止计费")
+	assert.Contains(t, warning, "取决于盘型和区域")
+	assert.NotContains(t, warning, "100GB",
+		"the free allowance varies by disk type and region — promising a fixed 100GB is a billing claim we cannot make")
 }
 
 func TestStopInstance_AlreadyStopped(t *testing.T) {
@@ -301,7 +303,11 @@ func TestStartInstance_RunningRejected(t *testing.T) {
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 }
 
-func TestStopInstance_SpotInstanceSendsForce(t *testing.T) {
+// Upstream's StopCompShareInstance request has no Force field and its handler has
+// no branch for one, so the old "Spot -> Force:true" was dead code dressed up as a
+// contract. Sending it told the reader we knew something about spot stops that we
+// did not.
+func TestStopInstance_SpotInstanceOmitsForce(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
@@ -328,9 +334,10 @@ func TestStopInstance_SpotInstanceSendsForce(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	stopCall := executor.calls[1]
+	stopCall := executor.calls[2]
 	assert.Equal(t, "StopCompShareInstance", stopCall.action)
-	assert.Equal(t, true, stopCall.args["Force"], "Spot instance stop must include Force=true")
+	_, hasForce := stopCall.args["Force"]
+	assert.False(t, hasForce, "upstream StopCompShareInstance has no Force field; it must not be sent")
 }
 
 func TestStopInstance_NonSpotOmitsForce(t *testing.T) {
@@ -345,12 +352,12 @@ func TestStopInstance_NonSpotOmitsForce(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
-	stopCall := executor.calls[1]
+	stopCall := executor.calls[2]
 	_, hasForce := stopCall.args["Force"]
 	assert.False(t, hasForce, "Non-Spot instance stop must not include Force")
 }
 
-func TestStartInstance_WithoutGpuResizesThenStarts(t *testing.T) {
+func TestStartInstance_WithoutGpuSendsSpecOnStart(t *testing.T) {
 	executor := startMockExecutor()
 	executor.results["DescribeCompShareInstance"] = map[string]any{
 		"UHostSet": []any{
@@ -372,32 +379,29 @@ func TestStartInstance_WithoutGpuResizesThenStarts(t *testing.T) {
 			},
 		},
 	}
-	executor.results["ResizeCompShareInstance"] = map[string]any{"RetCode": 0}
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	onStep, _ := collectEvents()
 
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":    "uhost-yyy",
-		"WithoutGpu": true,
+		"UHostId":        "uhost-yyy",
+		"WithoutGpuSpec": "B",
 	})
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, executor.calls, 3)
+	// No separate resize call — upstream StartCompShareInstance takes
+	// WithoutGpuSpec directly and resizes internally before starting; a raw
+	// WithoutGpu boolean on ResizeCompShareInstance is rejected outright.
+	assert.Len(t, executor.calls, 2)
 	queryCall := executor.calls[0]
 	assert.Equal(t, "DescribeCompShareInstance", queryCall.action)
 	assert.NotContains(t, queryCall.args, "WithoutGpu", "DescribeCompShareInstance must query the source instance normally")
-	resizeCall := executor.calls[1]
-	assert.Equal(t, "ResizeCompShareInstance", resizeCall.action)
-	assert.Equal(t, true, resizeCall.args["WithoutGpu"])
-	assert.Equal(t, float64(2), resizeCall.args["Cpu"])
-	assert.Equal(t, float64(4096), resizeCall.args["Memory"])
-	assert.Equal(t, float64(0), resizeCall.args["Gpu"])
-	startCall := executor.calls[2]
+	startCall := executor.calls[1]
 	assert.Equal(t, "StartCompShareInstance", startCall.action)
-	assert.NotContains(t, startCall.args, "WithoutGpu", "StartCompShareInstance does not accept WithoutGpu")
+	assert.NotContains(t, startCall.args, "WithoutGpu", "the deprecated boolean must never be sent")
+	assert.Equal(t, "B", startCall.args["WithoutGpuSpec"])
 }
 
 func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
@@ -432,13 +436,14 @@ func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	_, _ = eng.Run(context.Background(), def, map[string]any{
-		"UHostId":    "uhost-yyy",
-		"WithoutGpu": true,
+		"UHostId":        "uhost-yyy",
+		"WithoutGpuSpec": "B",
 	})
 
-	assert.Contains(t, capturedArgs, "mode", "Confirm summary must show mode when WithoutGpu=true")
-	assert.Equal(t, float64(2), capturedArgs["without_gpu_cpu"])
-	assert.Equal(t, float64(4096), capturedArgs["without_gpu_memory"])
+	assert.Contains(t, capturedArgs, "mode", "Confirm summary must show mode when WithoutGpuSpec is set")
+	assert.Equal(t, "B", capturedArgs["without_gpu_spec"])
+	assert.Equal(t, float64(8), capturedArgs["without_gpu_cpu"])
+	assert.Equal(t, float64(16384), capturedArgs["without_gpu_memory"])
 }
 
 func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T) {
@@ -455,29 +460,29 @@ func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T)
 				"GPU":                    float64(1),
 				"ChargeType":             "Dynamic",
 				"SupportWithoutGpuStart": true,
+				// No WithoutGpuSpec sub-object: this instance has never run
+				// in no-GPU mode before, so the live preview is absent — the
+				// confirm-card display falls back to the tier-A defaults, but
+				// the actual start call must still succeed and target tier A.
 			},
 		},
 	}
-	executor.results["ResizeCompShareInstance"] = map[string]any{"RetCode": 0}
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	onStep, _ := collectEvents()
 
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":    "uhost-yyy",
-		"WithoutGpu": true,
+		"UHostId":        "uhost-yyy",
+		"WithoutGpuSpec": "A",
 	})
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, executor.calls, 3)
-	resizeCall := executor.calls[1]
-	assert.Equal(t, "ResizeCompShareInstance", resizeCall.action)
-	assert.Equal(t, true, resizeCall.args["WithoutGpu"])
-	assert.Equal(t, float64(2), resizeCall.args["Cpu"])
-	assert.Equal(t, float64(4096), resizeCall.args["Memory"])
-	assert.Equal(t, float64(0), resizeCall.args["Gpu"])
+	assert.Len(t, executor.calls, 2)
+	startCall := executor.calls[1]
+	assert.Equal(t, "StartCompShareInstance", startCall.action)
+	assert.Equal(t, "A", startCall.args["WithoutGpuSpec"])
 }
 
 func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) {
@@ -506,8 +511,8 @@ func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) 
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":    "uhost-yyy",
-		"WithoutGpu": true,
+		"UHostId":        "uhost-yyy",
+		"WithoutGpuSpec": "A",
 	})
 
 	assert.NoError(t, err)
@@ -515,4 +520,41 @@ func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) 
 	assert.False(t, confirmCalled)
 	assert.Len(t, executor.calls, 1)
 	assert.Contains(t, result.Message, "不支持无卡")
+}
+
+func TestStartInstance_PodRejectsWithoutGpuTierB(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":                "cpod-yyy",
+				"InstanceType":           "Container",
+				"State":                  "Stopped",
+				"Zone":                   "cn-bj2-04",
+				"Region":                 "cn-bj2",
+				"GpuType":                "4090",
+				"GPU":                    float64(1),
+				"ChargeType":             "Dynamic",
+				"SupportWithoutGpuStart": true,
+			},
+		},
+	}
+	confirmCalled := false
+	confirmFn := func(_ string, _ map[string]any) bool {
+		confirmCalled = true
+		return true
+	}
+	onStep, _ := collectEvents()
+
+	result, err := NewEngine(executor, confirmFn, onStep).Run(context.Background(), StartInstanceDef(), map[string]any{
+		"UHostId":        "cpod-yyy",
+		"WithoutGpuSpec": "B",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.False(t, confirmCalled)
+	assert.Contains(t, result.Message, "容器实例")
+	assert.Contains(t, result.Message, "A 档")
+	assert.Len(t, executor.calls, 1)
 }

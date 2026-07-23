@@ -71,6 +71,7 @@ func (h *Handlers) writeError(c *gin.Context, action, requestID string, err erro
 		err = ErrNotFound
 	}
 	apiErr := AsAPIError(err)
+	logInternalCause("action="+action, requestID, apiErr)
 	body := gin.H{
 		"RetCode":   apiErr.RetCode,
 		"Message":   apiErr.Message,

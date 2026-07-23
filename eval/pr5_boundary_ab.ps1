@@ -6,7 +6,7 @@
 # (OLD = base-prompt baseline, NEW = boundary-pack) and diff the per-question
 # intents to prove the directive's relocation did not change classification.
 #
-# Encoding handling mirrors eval/planner_jitter.ps1 (the proven harness): UTF-8
+# Keep all generated fixtures and reports in UTF-8.
 # stdin without BOM, UTF-8 console, intent field is ASCII so trace parse is safe.
 # Needs only LLM_API_KEY (planner is a pure LLM call). Never prints secrets.
 #

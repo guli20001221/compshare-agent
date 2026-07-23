@@ -22,7 +22,15 @@ type metaData struct {
 // handleGetMeta returns static metadata read from configuration.
 func (h *Handlers) handleGetMeta(_ *gin.Context, _ BaseRequest, _ *simplejson.Json) (any, error) {
 	var features []string
-	if h.confirmFormEnabled {
+	if h.turnCoordinator != nil {
+		features = []string{featureTurnReplay}
+		if h.confirmFormEnabled {
+			features = append(features, featureConfirmForm)
+			if h.guidedCreateEnabled {
+				features = append(features, featureGuidedCreate)
+			}
+		}
+	} else if h.confirmFormEnabled {
 		features = append(features, featureConfirmForm)
 		if h.guidedCreateEnabled {
 			features = append(features, featureGuidedCreate)

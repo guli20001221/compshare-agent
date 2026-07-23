@@ -86,6 +86,13 @@ func keptVLLMHit() knowledge.RetrievalHit {
 	}}
 }
 
+// vllmGroundedRepairResponse is the single-model budget/ceiling recovery reply:
+// plain text with a positional [1] citation that resolves to the gathered ledger
+// item (ext-vllm-oom-001). The runtime strips the marker for display.
+func vllmGroundedRepairResponse() llm.ChatResponse {
+	return llm.ChatResponse{Content: `可以把 max-model-len 调小来降低显存占用[1]。`}
+}
+
 func vllmRetriever() *scriptedKnowledgeRetriever {
 	return &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
 		Enabled:  true,
@@ -93,8 +100,13 @@ func vllmRetriever() *scriptedKnowledgeRetriever {
 	}}}
 }
 
+func prepareKnowledgeRecoveryLane(t *testing.T, eng *Engine) {
+	t.Helper()
+	eng.InitWithContext("test user")
+}
+
 // TestChat_RoundCeiling_RecoversFromGatheredEvidence: round 0 calls
-// SearchKnowledge (records a kept hit), rounds 1..9 thrash with GetGPUSpecs and
+// SearchKnowledge (records a kept hit), rounds 1..9 thrash with a plain read and
 // never produce a final text reply, so the loop hits the round ceiling with a
 // non-empty ledger → recovery synthesizes the cited answer instead of refusing.
 func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
@@ -104,16 +116,16 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	}}
 	for i := 1; i < maxReActRounds; i++ {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall("tc", "GetGPUSpecs", `{"GpuType":"4090"}`),
+			toolCall("tc", "DescribeCompShareInstance", `{}`),
 		}}
 	}
-	// Index maxReActRounds is consumed by the recovery synthesis call
-	// (answerWithRetrievedEvidence), NOT the loop — it must be a positionally
-	// cited answer so disciplined synthesis accepts it.
-	responses[maxReActRounds] = llm.ChatResponse{Content: "可以把 max-model-len 调小来降低显存占用 [1]。"}
+	// Index maxReActRounds is consumed by the one-call grounded recovery, NOT
+	// the loop. It returns the answer together with an evidence proof.
+	responses[maxReActRounds] = vllmGroundedRepairResponse()
 
 	mock := &mockLLM{responses: responses}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
@@ -129,7 +141,7 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	require.Len(t, eng.searchKnowledgeHitsThisTurn, 1, "the gathered hit is what recovery grounds on")
 }
 
-func TestChat_RoundCeiling_SummarizesResolvedInstanceFromRegistry(t *testing.T) {
+func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -170,13 +182,10 @@ func TestChat_RoundCeiling_SummarizesResolvedInstanceFromRegistry(t *testing.T) 
 
 	reply, err := eng.Chat(context.Background(), "claude-write-test 这台状态怎么样", noopStep)
 	require.NoError(t, err)
-	assert.NotContains(t, reply, "轮次超限", "resolved instance evidence was available, so the user should not see a bare loop failure")
-	assert.Contains(t, reply, "claude-write-test")
-	assert.Contains(t, reply, "Stopped")
-	assert.Contains(t, reply, "uhost-zzzz-hidden")
+	assert.Equal(t, reactCeilingRefusal, reply)
 }
 
-func TestChat_RoundCeiling_SummarizesRecentInstanceListForAmbiguousFollowup(t *testing.T) {
+func TestChat_RoundCeiling_DoesNotClassifyPunctuationFollowup(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -200,13 +209,10 @@ func TestChat_RoundCeiling_SummarizesRecentInstanceListForAmbiguousFollowup(t *t
 
 	reply, err := eng.Chat(context.Background(), "？", noopStep)
 	require.NoError(t, err)
-	assert.NotContains(t, reply, "轮次超限")
-	assert.Contains(t, reply, "host-a")
-	assert.Contains(t, reply, "host-b")
-	assert.Contains(t, reply, "具体")
+	assert.Equal(t, reactCeilingRefusal, reply)
 }
 
-func TestChat_RoundCeiling_ExplainsMissingInstanceTarget(t *testing.T) {
+func TestChat_RoundCeiling_DoesNotParseTargetFromFreeText(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -234,117 +240,7 @@ func TestChat_RoundCeiling_ExplainsMissingInstanceTarget(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "将autotest这台实例用无卡模式开启", noopStep)
 	require.NoError(t, err)
-	assert.NotContains(t, reply, "轮次超限")
-	assert.Contains(t, reply, "autotest")
-	assert.Contains(t, reply, "没有找到")
-	assert.Contains(t, reply, "实例 ID")
-}
-
-func TestChat_CorrectsFalseInstanceNotFoundWhenRegistryResolvesTarget(t *testing.T) {
-	target := map[string]any{
-		"UHostId": "uhost-zzzz-hidden",
-		"Name":    "claude-write-test",
-		"State":   "Stopped",
-		"GpuType": "4090",
-		"GPU":     float64(1),
-		"CPU":     float64(16),
-		"Memory":  float64(65536),
-		"Zone":    "cn-wlcb-01",
-	}
-	hosts := make([]any, 0, 25)
-	for i := 0; i < 24; i++ {
-		hosts = append(hosts, map[string]any{
-			"UHostId": fmt.Sprintf("uhost-visible-%02d", i),
-			"Name":    fmt.Sprintf("visible-%02d", i),
-			"State":   "Running",
-			"GpuType": "4090",
-			"GPU":     float64(1),
-			"CPU":     float64(16),
-			"Memory":  float64(65536),
-			"Zone":    "cn-wlcb-01",
-		})
-	}
-	hosts = append(hosts, target)
-	describe := map[string]any{"UHostSet": hosts, "TotalCount": float64(len(hosts))}
-	exec := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": describe,
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("list", "DescribeCompShareInstance", `{}`)}},
-		{Content: "抱歉，我查遍了您的实例，没有找到 claude-write-test。"},
-	}}
-	eng := NewWithDeps(mock, exec, nil)
-	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
-	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
-
-	reply, err := eng.Chat(context.Background(), "claude-write-test 这台状态怎么样", noopStep)
-	require.NoError(t, err)
-	assert.NotContains(t, reply, "没有找到", "a registry-resolved instance must override a false not-found final answer")
-	assert.Contains(t, reply, "claude-write-test")
-	assert.Contains(t, reply, "uhost-zzzz-hidden")
-	assert.Contains(t, reply, "Stopped")
-}
-
-func TestCorrectFalseInstanceNotFoundReplyDoesNotOverrideNestedFileMiss(t *testing.T) {
-	describe := map[string]any{"UHostSet": []any{
-		map[string]any{
-			"UHostId": "uhost-zzzz-hidden",
-			"Name":    "claude-write-test",
-			"State":   "Running",
-			"GpuType": "4090",
-		},
-	}, "TotalCount": float64(1)}
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
-
-	_, ok := eng.correctFalseInstanceNotFoundReply(
-		"claude-write-test 里的模型文件找不到",
-		"实例中没有找到模型文件，请检查路径。",
-	)
-	assert.False(t, ok, "missing files inside a real instance must not be rewritten as a false missing-instance correction")
-
-	_, ok = eng.correctFalseInstanceNotFoundReply(
-		"claude-write-test 里的模型文件找不到",
-		"在 claude-write-test 中没有找到模型文件，请检查路径。",
-	)
-	assert.False(t, ok, "target-name mentions in nested file misses must not be rewritten as missing-instance corrections")
-
-	_, ok = eng.correctFalseInstanceNotFoundReply(
-		"claude-write-test 里的模型文件找不到",
-		"没有找到该实例上的模型文件，请检查路径。",
-	)
-	assert.False(t, ok, "generic '该实例' nested misses must not be rewritten as missing-instance corrections")
-}
-
-func TestChat_CorrectedFalseNotFoundBuffersStreamingDeltas(t *testing.T) {
-	describe := map[string]any{"UHostSet": []any{
-		map[string]any{
-			"UHostId": "uhost-zzzz-hidden",
-			"Name":    "claude-write-test",
-			"State":   "Stopped",
-			"GpuType": "4090",
-			"GPU":     float64(1),
-			"CPU":     float64(16),
-			"Memory":  float64(65536),
-			"Zone":    "cn-wlcb-01",
-		},
-	}, "TotalCount": float64(1)}
-	eng := NewWithDeps(deltaScriptLLM{
-		content: "抱歉，没有找到 claude-write-test。",
-		deltas:  []string{"抱歉，", "没有找到 claude-write-test。"},
-	}, &mockExecutor{}, nil)
-	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
-	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
-
-	var deltas []string
-	reply, err := eng.ChatWithOptions(context.Background(), "claude-write-test 这台状态怎么样", noopStep, ChatOptions{
-		OnTextDelta: func(delta string) { deltas = append(deltas, delta) },
-	})
-	require.NoError(t, err)
-	assert.NotContains(t, reply, "没有找到")
-	assert.Contains(t, reply, "claude-write-test")
-	assert.Len(t, deltas, 1, "raw wrong deltas must be buffered and replaced by the corrected final reply")
-	assert.Equal(t, reply, deltas[0])
+	assert.Equal(t, reactCeilingRefusal, reply)
 }
 
 // TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive: round 0 gathers
@@ -356,10 +252,11 @@ func TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive(t *testing.T) {
 		{resp: &llm.ChatResponse{ToolCalls: []openai.ToolCall{
 			toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`),
 		}}},
-		{err: fmt.Errorf("connection reset by peer")},                          // round 1 errors → recovery
-		{resp: &llm.ChatResponse{Content: "可以把 max-model-len 调小来降低显存占用 [1]。"}}, // synthesis call
+		{err: fmt.Errorf("connection reset by peer")}, // round 1 errors → recovery
+		{resp: func() *llm.ChatResponse { r := vllmGroundedRepairResponse(); return &r }()},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
@@ -387,6 +284,7 @@ func TestChat_LLMError_CtxCancelledSkipsRecovery(t *testing.T) {
 		{resp: &llm.ChatResponse{Content: "这条不应被消费 [1]。"}},   // synthesis step — must NOT run
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},

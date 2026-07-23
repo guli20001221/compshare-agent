@@ -160,9 +160,8 @@ func TestBehavioralGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configureSharedDepsFromEnv: %v", err)
 	}
-	t.Logf("wiring: model=%s mutating=%t agentic_search=%s knowledge_qa_loop=%s rag_mode=%s",
-		cfg.Agent.LLM.Model, mutating, getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"),
-		getenv("COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP"), getenv("RAG_RETRIEVAL_MODE"))
+	t.Logf("wiring: model=%s mutating=%t rag_mode=%s",
+		cfg.Agent.LLM.Model, mutating, getenv("RAG_RETRIEVAL_MODE"))
 
 	contractPath := orDefault(*behavioralContract, filepath.Join(root, "eval", "realism", "ci_behavioral_gates_2026-06-22.jsonl"))
 	inputPath := orDefault(*behavioralInput, filepath.Join(root, "eval", "realism", "http_failure_replay_main_20260616_all.jsonl"))

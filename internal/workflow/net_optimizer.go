@@ -7,8 +7,7 @@ import (
 
 func EnableNetOptimizerDef() *Definition {
 	return &Definition{
-		Name:        "EnableNetOptimizerWorkflow",
-		Description: "查询网络加速状态 -> 确认开启 -> 开启/同步网络加速 -> 回查状态",
+		Name: "EnableNetOptimizerWorkflow",
 		Steps: []Step{
 			stepQueryNetOptimizerStatus(),
 			stepConfirmEnableNetOptimizer(),
@@ -39,7 +38,7 @@ func stepQueryNetOptimizerStatus() Step {
 				"Region":   wfCtx.Params["Region"],
 				"az_group": wfCtx.Params["NetOptimizerAzGroup"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -57,7 +56,6 @@ func stepConfirmEnableNetOptimizer() Step {
 			return map[string]any{
 				"Zone":      wfCtx.Params["Zone"],
 				"Region":    wfCtx.Params["Region"],
-				"az_group":  wfCtx.Params["NetOptimizerAzGroup"],
 				"optimized": netOptimizerEnabled(status),
 				"status":    status,
 				"warning":   "将为当前账号同步/开启网络加速配置；本轮 agent 暂不暴露关闭能力，确认后会调用开通同步接口。",
@@ -80,7 +78,7 @@ func stepSyncNetOptimizer() Step {
 				"Region":   wfCtx.Params["Region"],
 				"az_group": wfCtx.Params["NetOptimizerAzGroup"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -98,7 +96,7 @@ func stepRecheckNetOptimizerStatus() Step {
 				"Region":   wfCtx.Params["Region"],
 				"az_group": wfCtx.Params["NetOptimizerAzGroup"],
 			}
-			addWorkflowIdentityArgs(args, wfCtx.Params)
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
 			return args, nil
 		},
 	}
@@ -107,22 +105,26 @@ func stepRecheckNetOptimizerStatus() Step {
 func normalizeNetOptimizerParams(wfCtx *Context) error {
 	zone := strings.TrimSpace(paramStr(wfCtx.Params, "Zone", ""))
 	if zone == "" {
-		return fmt.Errorf("开启网络加速需要指定可用区。")
+		return NewMissingSlotError("开启网络加速需要指定可用区。", "zone")
 	}
-	region := strings.TrimSpace(paramStr(wfCtx.Params, "Region", ""))
-	if region == "" {
-		region = regionFromZone(zone)
+	// One record answers both Region and az_group, and it is the SOLE source — a
+	// model- or param-supplied Region cannot override it, so the two fields can never
+	// disagree. workflowZonePlacement fails closed on a nil/unavailable catalog, so a
+	// record carrying an empty Region is the only way region stays empty here.
+	placement, err := workflowZonePlacement(wfCtx, zone)
+	if err != nil {
+		return err
 	}
+	region := placement.Region
 	if region == "" {
 		return fmt.Errorf("无法从可用区推导地域，请同时指定 Region。")
 	}
-	azGroup := guidedZoneRegionID(wfCtx.Params, zone)
-	if azGroup == 0 {
+	if placement.AzGroup == 0 {
 		return fmt.Errorf("未获取到可用区 %s 的内部区域编号，无法安全开启网络加速。", zone)
 	}
 	wfCtx.Params["Zone"] = zone
 	wfCtx.Params["Region"] = region
-	wfCtx.Params["NetOptimizerAzGroup"] = azGroup
+	wfCtx.Params["NetOptimizerAzGroup"] = placement.AzGroup
 	return nil
 }
 

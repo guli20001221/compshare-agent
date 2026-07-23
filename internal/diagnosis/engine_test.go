@@ -332,28 +332,37 @@ func TestEngine_Run_StepResultsAccumulate(t *testing.T) {
 
 func TestRegistry_IsDiagnosisTool(t *testing.T) {
 	assert.True(t, IsDiagnosisTool("DiagnoseSSH"))
-	assert.True(t, IsDiagnosisTool("DiagnoseInitFailure"))
-	assert.True(t, IsDiagnosisTool("DiagnoseGPU"))
 	assert.True(t, IsDiagnosisTool("DiagnoseBilling"))
-	assert.True(t, IsDiagnosisTool("DiagnosePortOrFirewall"))
-	assert.True(t, IsDiagnosisTool("DiagnoseImageIssue"))
+	// The dormant GPU/image/port chains were deleted, not parked: an unadvertised
+	// diagnosis name must NOT resolve, so a stray or replayed tool call cannot
+	// execute it.
+	assert.False(t, IsDiagnosisTool("DiagnoseGPU"))
+	assert.False(t, IsDiagnosisTool("DiagnoseImageIssue"))
+	assert.False(t, IsDiagnosisTool("DiagnosePortOrFirewall"))
+	assert.False(t, IsDiagnosisTool("DiagnoseInitFailure"))
 	assert.False(t, IsDiagnosisTool("DescribeCompShareInstance"))
 	assert.False(t, IsDiagnosisTool("NonExistent"))
 	assert.False(t, IsDiagnosisTool(""))
 }
 
-func TestRegisteredDiagnosisActionsMatchRegistry(t *testing.T) {
-	actions := RegisteredDiagnosisActions()
-	seen := map[string]bool{}
-	for _, action := range actions {
-		assert.True(t, IsDiagnosisTool(action), "registered action list contains unknown diagnosis %s", action)
-		assert.False(t, seen[action], "duplicate diagnosis action %s", action)
-		seen[action] = true
+// TestDiagnosisRegistryHasNoUnadvertisedChains is the safety invariant that replaces
+// the deleted dormant cohort: every resolvable chain MUST be advertised. The old
+// design kept GPU/image/port chains resolvable-but-unadvertised and relied on the
+// model never naming them — a stray or replayed tool call would still have executed
+// them. chainRegistry must equal RegisteredDiagnosisActions() exactly, so an
+// unadvertised diagnosis name cannot resolve. Re-adding a dormant chain here fails
+// this test; build a future SSH-ops capability in the typed-capability architecture.
+func TestDiagnosisRegistryHasNoUnadvertisedChains(t *testing.T) {
+	advertised := map[string]bool{}
+	for _, action := range RegisteredDiagnosisActions() {
+		assert.True(t, IsDiagnosisTool(action), "advertised action %s must resolve to a chain", action)
+		assert.False(t, advertised[action], "duplicate advertised action %s", action)
+		advertised[action] = true
 	}
-	assert.Len(t, actions, len(chainRegistry), "registered diagnosis action list must match registry size")
 	for action := range chainRegistry {
-		assert.True(t, seen[action], "diagnosis action %s missing from stable list", action)
+		assert.True(t, advertised[action], "chainRegistry holds unadvertised chain %s — delete it or advertise it, never keep it resolvable-but-hidden", action)
 	}
+	assert.Equal(t, len(advertised), len(chainRegistry), "chainRegistry must equal the advertised set exactly")
 }
 
 func TestRegistry_GetChain(t *testing.T) {
@@ -362,20 +371,12 @@ func TestRegistry_GetChain(t *testing.T) {
 	assert.NotNil(t, chain)
 	assert.Equal(t, "DiagnoseSSH", chain.Name)
 
-	chain2, ok2 := GetChain("DiagnoseInitFailure")
-	assert.True(t, ok2)
-	assert.NotNil(t, chain2)
-	assert.Equal(t, "DiagnoseInitFailure", chain2.Name)
-
-	chain4, ok4 := GetChain("DiagnosePortOrFirewall")
-	assert.True(t, ok4)
-	assert.NotNil(t, chain4)
-	assert.Equal(t, "DiagnosePortOrFirewall", chain4.Name)
-
-	chain5, ok5 := GetChain("DiagnoseImageIssue")
-	assert.True(t, ok5)
-	assert.NotNil(t, chain5)
-	assert.Equal(t, "DiagnoseImageIssue", chain5.Name)
+	// Deleted dormant chains no longer resolve.
+	for _, gone := range []string{"DiagnoseGPU", "DiagnoseImageIssue", "DiagnosePortOrFirewall"} {
+		c, okGone := GetChain(gone)
+		assert.False(t, okGone, "%s must not resolve after cohort deletion", gone)
+		assert.Nil(t, c)
+	}
 
 	chain3, ok3 := GetChain("NonExistent")
 	assert.False(t, ok3)

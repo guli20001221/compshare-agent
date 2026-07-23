@@ -1,28 +1,32 @@
 package workflow
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
-	// Upstream ResizeCompShareInstance accepts WithoutGpu=true with the fixed
-	// 2C/4GB/GPU=0 shape. DescribeCompShareInstance.WithoutGpuSpec is not
-	// returned for every normal GPU instance, so start flow must not require it.
-	withoutGPUDefaultCPU    = float64(2)
-	withoutGPUDefaultMemory = float64(4096)
-	withoutGPUDefaultGPU    = float64(0)
+	// Upstream StartCompShareInstance takes WithoutGpuSpec ("A"=2C/4GB or
+	// "B"=8C/16GB) directly and resizes internally before starting
+	// (applyWithoutGpuBeforeStart). Both upstream tiers are exposed: A=2C/4GB,
+	// B=8C/16GB. Pod instances support tier A only. The
+	// older separate resize-then-start pattern (a raw WithoutGpu boolean sent
+	// to ResizeCompShareInstance) is rejected outright by upstream now
+	// (RejectDeprecatedResizeWithoutGpu) — do not reintroduce it.
+	withoutGPUSpecA = "A"
+	withoutGPUSpecB = "B"
 )
 
 // StartInstanceDef returns the workflow definition for starting a CompShare GPU
-// instance. Normal start is query -> confirm -> start. Without-GPU start adds a
-// resize-to-without-GPU step before the final start because the upstream start
-// API does not accept a WithoutGpu parameter.
+// instance. Normal start is query -> confirm -> start. Without-GPU start passes
+// WithoutGpuSpec directly on the start call; upstream resizes internally before
+// starting, so no separate client-side resize step is needed.
 func StartInstanceDef() *Definition {
 	return &Definition{
-		Name:        "StartInstanceWorkflow",
-		Description: "查询实例 → 确认开机 → 开机",
+		Name: "StartInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForStart(),
 			stepConfirmStart(),
-			stepResizeWithoutGPUForStart(),
 			stepStartInstance(),
 		},
 	}
@@ -43,22 +47,22 @@ func stepQueryForStart() Step {
 			}
 			return args, nil
 		},
-		CheckResult: func(wfCtx *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":
-				if startWithoutGPURequested(wfCtx) {
-					return validateWithoutGPUStart(result)
+				if spec := requestedWithoutGPUSpec(wfCtx); spec != "" {
+					return validateWithoutGPUStart(result, spec)
 				}
-				return true, ""
+				return CheckPassed()
 			case "":
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			case "Running":
-				return false, "实例当前已处于运行状态，无需重复开机。"
+				return CheckFailed("实例当前已处于运行状态，无需重复开机。")
 			case "Starting":
-				return false, "实例正在启动中，请稍等。"
+				return CheckFailed("实例正在启动中，请稍等。")
 			default:
-				return false, fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以开机。", state)
+				return CheckFailed(fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以开机。", state))
 			}
 		},
 	}
@@ -70,46 +74,15 @@ func stepConfirmStart() Step {
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
-			if startWithoutGPURequested(wfCtx) {
+			if spec := requestedWithoutGPUSpec(wfCtx); spec != "" {
+				cpu, memory, _ := withoutGPUSpecResources(spec)
 				summary["mode"] = "无卡模式（不分配 GPU，仅用于数据访问/维护）"
-				if spec, ok := extractWithoutGPUSpec(wfCtx.Result("查询实例")); ok {
-					summary["without_gpu_cpu"] = spec["Cpu"]
-					summary["without_gpu_memory"] = spec["Memory"]
-					summary["without_gpu_gpu"] = spec["Gpu"]
-				}
+				summary["without_gpu_spec"] = spec
+				summary["without_gpu_cpu"] = cpu
+				summary["without_gpu_memory"] = memory
+				summary["without_gpu_gpu"] = float64(0)
 			}
 			return summary, nil
-		},
-	}
-}
-
-func stepResizeWithoutGPUForStart() Step {
-	return Step{
-		Name: "切换无卡规格",
-		Type: StepToolCall,
-		Tool: "ResizeCompShareInstance",
-		SkipIf: func(wfCtx *Context) (bool, error) {
-			return !startWithoutGPURequested(wfCtx), nil
-		},
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			queried := wfCtx.Result("查询实例")
-			spec, ok := extractWithoutGPUSpec(queried)
-			if !ok {
-				return nil, fmt.Errorf("未获取到无卡规格，无法安全切换无卡模式。")
-			}
-			region, zone, err := extractRequiredInstanceLocation(queried)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"Region":     region,
-				"Zone":       zone,
-				"UHostId":    wfCtx.Params["UHostId"],
-				"WithoutGpu": true,
-				"Cpu":        spec["Cpu"],
-				"Memory":     spec["Memory"],
-				"Gpu":        spec["Gpu"],
-			}, nil
 		},
 	}
 }
@@ -130,42 +103,56 @@ func stepStartInstance() Step {
 				"Zone":    zone,
 				"UHostId": wfCtx.Params["UHostId"],
 			}
+			if spec := requestedWithoutGPUSpec(wfCtx); spec != "" {
+				args["WithoutGpuSpec"] = spec
+			}
 			return args, nil
 		},
 	}
 }
 
-func startWithoutGPURequested(wfCtx *Context) bool {
+func requestedWithoutGPUSpec(wfCtx *Context) string {
 	if wfCtx == nil || wfCtx.Params == nil {
-		return false
+		return ""
 	}
-	v, ok := wfCtx.Params["WithoutGpu"]
+	v, ok := wfCtx.Params["WithoutGpuSpec"]
 	if !ok {
-		return false
+		return ""
 	}
-	switch typed := v.(type) {
-	case bool:
-		return typed
-	case string:
-		return typed == "true" || typed == "True" || typed == "TRUE"
+	spec, _ := v.(string)
+	return strings.TrimSpace(spec)
+}
+
+func withoutGPUSpecResources(spec string) (cpu, memory float64, ok bool) {
+	switch spec {
+	case withoutGPUSpecA:
+		return 2, 4096, true
+	case withoutGPUSpecB:
+		return 8, 16384, true
 	default:
-		return false
+		return 0, 0, false
 	}
 }
 
-func validateWithoutGPUStart(result map[string]any) (bool, string) {
+func validateWithoutGPUStart(result map[string]any, spec string) CheckOutcome {
+	if _, _, ok := withoutGPUSpecResources(spec); !ok {
+		return CheckFailed("无卡开机档位无效，仅支持 A（2C/4GB）或 B（8C/16GB）。")
+	}
+	if isPodInstanceResult(result) && spec != withoutGPUSpecA {
+		return CheckFailed("容器实例的无卡开机仅支持 A 档（2C/4GB）。")
+	}
 	if !extractFirstBool(result, "SupportWithoutGpuStart") {
 		chargeType := extractField(result, "ChargeType")
 		if chargeType != "" && chargeType != "Dynamic" && chargeType != "Postpay" {
-			return false, "该实例当前计费形态不支持无卡开机。"
+			return CheckFailed("该实例当前计费形态不支持无卡开机。")
 		}
 		gpuType := extractField(result, "GpuType")
 		if gpuType != "" {
-			return false, fmt.Sprintf("该实例当前 GPU 型号 %s 不支持无卡开机。", gpuType)
+			return CheckFailed(fmt.Sprintf("该实例当前 GPU 型号 %s 不支持无卡开机。", gpuType))
 		}
-		return false, "该实例不支持无卡开机。"
+		return CheckFailed("该实例不支持无卡开机。")
 	}
-	return true, ""
+	return CheckPassed()
 }
 
 func extractFirstBool(result map[string]any, key string) bool {
@@ -177,33 +164,6 @@ func extractFirstBool(result map[string]any, key string) bool {
 		return v
 	}
 	return false
-}
-
-func extractWithoutGPUSpec(result map[string]any) (map[string]any, bool) {
-	first := firstUHost(result)
-	if first == nil {
-		return nil, false
-	}
-	raw, ok := first["WithoutGpuSpec"].(map[string]any)
-	if !ok || raw == nil {
-		if extractFirstBool(result, "SupportWithoutGpuStart") {
-			return map[string]any{
-				"Cpu":    withoutGPUDefaultCPU,
-				"Memory": withoutGPUDefaultMemory,
-				"Gpu":    withoutGPUDefaultGPU,
-			}, true
-		}
-		return nil, false
-	}
-	spec := map[string]any{}
-	for _, key := range []string{"Cpu", "Memory", "Gpu"} {
-		v, ok := raw[key]
-		if !ok {
-			return nil, false
-		}
-		spec[key] = v
-	}
-	return spec, true
 }
 
 func firstUHost(result map[string]any) map[string]any {

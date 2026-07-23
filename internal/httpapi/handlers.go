@@ -44,12 +44,24 @@ type Handlers struct {
 	// confirmFormEnabled is the boot half of the editable-confirm-form double
 	// gate (COMPSHARE_CONFIRM_FORM, parsed in cmd/server.go). The per-turn
 	// half is the client's SendCSAgentChat Features opt-in. Both must hold
-	// before a confirmation frame carries a Form / Overrides are accepted.
+	// when a new durable turn is admitted; recovery keeps that turn's frozen
+	// feature choice even if a later boot changes the rollout flag.
 	confirmFormEnabled bool
 	// guidedCreateEnabled is the boot half for the guided GPU create order
 	// flow. It only takes effect together with confirmFormEnabled and the
 	// client's guided_create_v1 feature opt-in.
 	guidedCreateEnabled bool
+	// turnCoordinator is the durable, globally fenced execution path. When set,
+	// every WebSocket chat request (including legacy frames) uses it; the pool
+	// remains only an engine factory/cache and is not a competing writer.
+	turnCoordinator durableTurnCoordinator
+}
+
+// SetTurnCoordinator enables the durable turn protocol for all chat traffic.
+// Passing nil is supported only by legacy unit tests and local compatibility
+// harnesses; production server startup always installs a coordinator.
+func (h *Handlers) SetTurnCoordinator(coordinator durableTurnCoordinator) {
+	h.turnCoordinator = coordinator
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
@@ -80,8 +92,8 @@ func (h *Handlers) SetOCRClient(c OCRRecognizer) {
 }
 
 // SetConfirmFormEnabled flips the boot half of the editable-confirm-form gate
-// (COMPSHARE_CONFIRM_FORM). Default false = feature fully off; confirmation
-// frames stay byte-identical and Overrides are rejected.
+// (COMPSHARE_CONFIRM_FORM). Default false keeps newly admitted turns on the
+// boolean card; already-persisted turns retain their frozen feature choice.
 func (h *Handlers) SetConfirmFormEnabled(enabled bool) {
 	h.confirmFormEnabled = enabled
 }
@@ -108,17 +120,20 @@ func (h *Handlers) buildUserContext(base BaseRequest) (tools.UserContext, error)
 			}
 		}
 	}
-	projectID := base.ProjectID
-	if projectID == "" {
-		projectID = fmt.Sprintf("%d", base.Owner.OrganizationID)
-	}
 	return tools.UserContext{
 		TopOrganizationID: base.Owner.TopOrganizationID,
 		OrganizationID:    base.Owner.OrganizationID,
+		CompanyID:         base.CompanyID,
+		AccountID:         base.AccountID,
+		Channel:           base.Channel,
 		RoleUrn:           roleUrn,
 		SessionName:       fmt.Sprintf("%d-%d", base.Owner.TopOrganizationID, base.Owner.OrganizationID),
-		ProjectId:         projectID,
+		// ProjectId is an upstream project identifier, not an organization ID.
+		// Keep it empty when the gateway did not provide one so CompShare can
+		// apply its account-level default behavior.
+		ProjectId:         base.ProjectID,
 		Region:            h.cfg.Agent.Region,
 		UserEmail:         base.UserEmail,
+		ClientIP:          base.ClientIP,
 	}, nil
 }

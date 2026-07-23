@@ -6,6 +6,11 @@ import (
 	"github.com/compshare-agent/internal/observability"
 )
 
+// LEGACY TRACE COMPAT. This matrix pins the derivation that maps a trace's router
+// status onto the RETIRED routing / terminal_rag / agent runtime-form taxonomy
+// (see observability.ExecutionPath* const note). It guards that historical /
+// cutover-era trace records still classify correctly — it does NOT assert the
+// current architecture, which has one execution form (the central Agent loop).
 func TestActualExecutionPathMatrix(t *testing.T) {
 	cases := []struct {
 		name   string

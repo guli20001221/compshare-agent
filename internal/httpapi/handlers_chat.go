@@ -375,9 +375,10 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			return
 		}
 		traceRecorder.SetTerminalSignals(observability.FinishSignals{
-			ReplyEmpty:      strings.TrimSpace(reply) == "",
-			ReactRounds:     agent.ReactRoundsThisTurn(),
-			RoundCeilingHit: agent.ReactCeilingHitThisTurn(),
+			ReplyEmpty:                strings.TrimSpace(reply) == "",
+			ReactRounds:               agent.ReactRoundsThisTurn(),
+			RoundCeilingHit:           agent.ReactCeilingHitThisTurn(),
+			ActionProposalDisposition: agent.ActionProposalDispositionThisTurn(),
 		})
 		sessState, _, hydrated := agent.SessionStateSnapshot()
 		traceRecorder.SetStateTrace(observability.StateTrace{
@@ -440,6 +441,12 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		})
 		stepIndex++
 	}, engine.ChatOptions{
+		// Legacy (non-durable) transport turn identity. Durable turns carry a
+		// client/gateway turn id; this path has none, so pass the per-request uuid
+		// as a real correlation id for the engine's evidence-binding turn id. The
+		// engine backfills an ephemeral id if this is ever empty, so correctness
+		// never depends on this line — it only makes the id meaningful.
+		TurnID:       base.RequestUUID,
 		ImageContext: prep.ocrText,
 		OnTextDelta: func(s string) {
 			if firstToken.IsZero() {
@@ -559,6 +566,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 				case errors.Is(upErr, store.ErrStaleWrite):
 					log.Printf("warning: session %s stale context_version on persist (expected=%d)",
 						sessionID, expectedVer)
+					h.retryPersistSessionContext(base.Owner, sessionID, newState, prep.clientCtxPreserve)
 				default:
 					log.Printf("warning: session %s UpdateContext failed: %v", sessionID, upErr)
 				}
@@ -566,6 +574,33 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 				log.Printf("warning: session %s marshal envelope failed: %v", sessionID, mErr)
 			}
 		}
+	}
+}
+
+func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	current, err := h.sessions.GetByID(ctx, owner, sessionID)
+	if err != nil {
+		log.Printf("warning: session %s refetch after stale context persist failed: %v", sessionID, err)
+		return
+	}
+	clientCtx := fallbackClientCtx
+	if pc, parseErr := engine.ParsePersistedContext(current.Context); parseErr == nil {
+		clientCtx = pc.ClientContext
+	}
+	raw, err := json.Marshal(engine.PersistedContext{
+		AgentSessionState: newState,
+		ClientContext:     clientCtx,
+	})
+	if err != nil {
+		log.Printf("warning: session %s marshal retry envelope failed: %v", sessionID, err)
+		return
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel2()
+	if _, err := h.sessions.UpdateContext(ctx2, owner, sessionID, raw, current.ContextVersion); err != nil {
+		log.Printf("warning: session %s retry UpdateContext failed: %v", sessionID, err)
 	}
 }
 

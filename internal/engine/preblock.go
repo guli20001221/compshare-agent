@@ -3,10 +3,7 @@ package engine
 import (
 	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/inputguard"
-	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
-
-	openai "github.com/sashabaranov/go-openai"
 )
 
 // enginePreBlock is the package-level Chat()-head decision chain. Static
@@ -72,52 +69,8 @@ var enginePreBlock = inputguard.New(
 	// account_billing + existing_disk_attach keyword hard-blocks removed
 	// (2026-06-10): the planner / agent loop handles these better. Billing
 	// symptoms route to billing_instance; genuine account-data (余额/发票)
-	// now short-circuits from the planner intent in emitAccountBillingHardBlock;
+	// is answered by the account_finance_status Unavailable capability (P3.5);
 	// "挂载已有盘" reaches the create-disk workflow whose tool description
 	// already states it only creates a new disk (不支持挂载已有盘).
 	// Same pattern as the resource_shortage removal (#261).
 )
-
-// emitMonitorHistoryHardBlock centralizes legacy monitor-history refusal side
-// effects. The main product path now supports single-instance history windows;
-// this helper remains for older guard/error paths that still need a consistent
-// trace and canned reply.
-//
-// Post-tool error paths (executeTool / friendlyToolErrorMessage with
-// tools.ErrHistoricalMonitorUnsupported) are deliberately NOT routed
-// through this helper — they have their own outcome-trace path and
-// double-counting them as a pre-LLM hard-block would distort the
-// downstream MySQL aggregation.
-func (e *Engine) emitMonitorHistoryHardBlock() string {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    refusal.CategoryMonitorHistory,
-			TriggeredBy: observability.HardBlockTriggerPlannerIntent,
-		})
-	}
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: refusal.MonitorHistoryUnsupported,
-	})
-	return refusal.MonitorHistoryUnsupported
-}
-
-// emitAccountBillingHardBlock handles planner-classified account-level finance
-// requests. It deliberately does not use keyword matching: the router owns the
-// semantic split between unsupported account ledgers and supported instance
-// pricing/billing/refund routes.
-func (e *Engine) emitAccountBillingHardBlock() string {
-	if e.hardBlockObserver != nil {
-		e.hardBlockObserver(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    refusal.CategoryAccountBilling,
-			TriggeredBy: observability.HardBlockTriggerPlannerIntent,
-		})
-	}
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: refusal.AccountBillingUnsupported,
-	})
-	return refusal.AccountBillingUnsupported
-}

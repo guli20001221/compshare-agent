@@ -18,6 +18,7 @@ func TestIsWorkflowTool(t *testing.T) {
 	assert.True(t, IsWorkflowTool("CancelStopSchedulerWorkflow"))
 	assert.True(t, IsWorkflowTool("ResizeDiskWorkflow"))
 	assert.True(t, IsWorkflowTool("CreateCustomImageWorkflow"))
+	assert.True(t, IsWorkflowTool("CloneCustomImageWorkflow"))
 
 	// Non-workflow actions should return false
 	assert.False(t, IsWorkflowTool("DescribeCompShareInstance"))
@@ -39,47 +40,49 @@ func TestRegisteredWorkflowActionsMatchRegistry(t *testing.T) {
 }
 
 func TestGetWorkflow(t *testing.T) {
-	// CreateInstanceWorkflow: 7 steps
+	// CreateInstanceWorkflow: 12 steps (9 + the three GPU-inventory steps that
+	// feed the purchase-mode gate)
 	def, ok := GetWorkflow("CreateInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 7)
+	assert.Len(t, def.Steps, 12)
 
-	// StopInstanceWorkflow: 3 steps
+	// StopInstanceWorkflow: query -> query support zones -> confirm -> stop
 	def, ok = GetWorkflow("StopInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 3)
+	assert.Len(t, def.Steps, 4)
 
-	// StartInstanceWorkflow: query -> confirm -> optional no-GPU resize -> start
+	// StartInstanceWorkflow: query -> confirm -> start (no-GPU spec passed
+	// directly on start; upstream resizes internally, no separate step)
 	def, ok = GetWorkflow("StartInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 4)
+	assert.Len(t, def.Steps, 3)
 
-	// RebootInstanceWorkflow: 3 steps
+	// RebootInstanceWorkflow: query -> query support zones -> confirm -> reboot
 	def, ok = GetWorkflow("RebootInstanceWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 3)
+	assert.Len(t, def.Steps, 4)
 
-	// RenameInstanceWorkflow: 3 steps
+	// RenameInstanceWorkflow: query -> query support zones -> confirm -> rename
 	def, ok = GetWorkflow("RenameInstanceWorkflow")
-	assert.True(t, ok)
-	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 3)
-
-	// ResetPasswordWorkflow: 4 steps
-	def, ok = GetWorkflow("ResetPasswordWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 4)
 
-	// SetStopSchedulerWorkflow: 3 steps
+	// ResetPasswordWorkflow: query -> query support zones -> confirm -> reset -> verify
+	def, ok = GetWorkflow("ResetPasswordWorkflow")
+	assert.True(t, ok)
+	assert.NotNil(t, def)
+	assert.Len(t, def.Steps, 5)
+
+	// SetStopSchedulerWorkflow: query -> resolve one timestamp -> confirm -> set
 	def, ok = GetWorkflow("SetStopSchedulerWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 3)
+	assert.Len(t, def.Steps, 4)
 
 	// CancelStopSchedulerWorkflow: 3 steps
 	def, ok = GetWorkflow("CancelStopSchedulerWorkflow")
@@ -87,11 +90,17 @@ func TestGetWorkflow(t *testing.T) {
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 3)
 
-	// CreateCustomImageWorkflow: 4 steps
+	// CreateCustomImageWorkflow: query + zone + confirm + optional stop/wait + create + progress
 	def, ok = GetWorkflow("CreateCustomImageWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 4)
+	assert.Len(t, def.Steps, 7)
+
+	// CloneCustomImageWorkflow: confirm -> sync -> optional progress
+	def, ok = GetWorkflow("CloneCustomImageWorkflow")
+	assert.True(t, ok)
+	assert.NotNil(t, def)
+	assert.Len(t, def.Steps, 3)
 
 	// ResizeDiskWorkflow: query instance -> query zones -> check -> price -> confirm -> resize
 	def, ok = GetWorkflow("ResizeDiskWorkflow")

@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,9 +25,10 @@ func TestRefreshSystemPrompt_InjectsSelectedInstance(t *testing.T) {
 	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
 	require.NoError(t, err)
 
-	sysPrompt := eng.messages[0].Content
-	assert.Contains(t, sysPrompt, "当前会话已选实例：my-gpu-box（uhost-abc123）",
-		"system prompt must contain selected instance after refreshSystemPrompt")
+	modelInput := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, modelInput, "my-gpu-box uhost-abc123",
+		"unknown-age legacy identity must remain available for understanding")
+	assert.Contains(t, modelInput, "不授权任何写操作")
 }
 
 func TestRefreshSystemPrompt_SkipsWhenNotHydrated(t *testing.T) {
@@ -57,10 +57,8 @@ func TestRefreshSystemPrompt_IDOnlyWhenNameEmpty(t *testing.T) {
 	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
 	require.NoError(t, err)
 
-	sysPrompt := eng.messages[0].Content
-	assert.Contains(t, sysPrompt, "当前会话已选实例：uhost-xyz789")
-	assert.NotContains(t, sysPrompt, "（uhost-xyz789）",
-		"no parenthetical ID when name is empty — ID is the primary label")
+	modelInput := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, modelInput, "相关对象：uhost-xyz789")
 }
 
 func TestRefreshSystemPrompt_PreservesBaseUserContext(t *testing.T) {
@@ -77,57 +75,11 @@ func TestRefreshSystemPrompt_PreservesBaseUserContext(t *testing.T) {
 	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
 	require.NoError(t, err)
 
-	sysPrompt := eng.messages[0].Content
-	assert.True(t, strings.Contains(sysPrompt, "您有 3 个实例"),
+	modelInput := renderTestMessages(mock.calls[0].Messages)
+	assert.True(t, strings.Contains(modelInput, "您有 3 个实例"),
 		"base user context must be preserved")
-	assert.True(t, strings.Contains(sysPrompt, "当前会话已选实例：train-node-1（uhost-111）"),
-		"session state must be appended")
-}
-
-func TestPlannerInput_ReceivesLastIntent(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
-		Plan: unknownEngineTestPlan(),
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		Model:          "test",
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-	})
-
-	eng.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaV1,
-		LastIntent:    "resource_info",
-	}, 1)
-
-	_, err := eng.ChatWithOptions(context.Background(), "重启它", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Len(t, planner.calls, 1)
-
-	assert.Equal(t, "resource_info", planner.calls[0].LastIntent,
-		"planner must receive LastIntent from session state")
-	assert.Equal(t, "重启它", planner.calls[0].UserText)
-}
-
-func TestPlannerInput_LastIntentEmptyWhenNotHydrated(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
-		Plan: unknownEngineTestPlan(),
-	}}}
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		Model:          "test",
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-	})
-
-	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Len(t, planner.calls, 1)
-
-	assert.Empty(t, planner.calls[0].LastIntent,
-		"planner LastIntent must be empty when session state not hydrated")
+	assert.True(t, strings.Contains(modelInput, "train-node-1 uhost-111"),
+		"legacy session identity must be appended without restoring write trust")
 }
 
 func TestRefreshSystemPrompt_ClearsStaleInstance(t *testing.T) {
@@ -146,8 +98,8 @@ func TestRefreshSystemPrompt_ClearsStaleInstance(t *testing.T) {
 	}, 1)
 	_, err := eng.ChatWithOptions(context.Background(), "turn1", noopStep, ChatOptions{})
 	require.NoError(t, err)
-	assert.Contains(t, eng.messages[0].Content, "uhost-stale",
-		"turn 1 system prompt must contain selected instance")
+	assert.Contains(t, renderTestMessages(mock.calls[0].Messages), "uhost-stale",
+		"turn 1 model context must contain selected instance")
 
 	// Turn 2: ClearSessionState (mirrors HTTP handler flow), then
 	// SetSessionState with empty instance — simulating a turn where the
@@ -156,13 +108,13 @@ func TestRefreshSystemPrompt_ClearsStaleInstance(t *testing.T) {
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 2)
 	_, err = eng.ChatWithOptions(context.Background(), "turn2", noopStep, ChatOptions{})
 	require.NoError(t, err)
-	assert.NotContains(t, eng.messages[0].Content, "uhost-stale",
-		"turn 2 system prompt must NOT contain stale instance from turn 1")
-	assert.NotContains(t, eng.messages[0].Content, "stale-box",
-		"turn 2 system prompt must NOT contain stale instance name")
+	assert.NotContains(t, renderTestMessages(mock.calls[1].Messages), "uhost-stale",
+		"turn 2 model context must NOT contain stale instance from turn 1")
+	assert.NotContains(t, renderTestMessages(mock.calls[1].Messages), "stale-box",
+		"turn 2 model context must NOT contain stale instance name")
 }
 
-func TestRefreshSystemPrompt_FactContextFlagOffByDefault(t *testing.T) {
+func TestAgentContextIncludesFreshFactsWithoutLegacyPromptFlag(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user context")
@@ -180,8 +132,9 @@ func TestRefreshSystemPrompt_FactContextFlagOffByDefault(t *testing.T) {
 	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
 	require.NoError(t, err)
 
-	assert.NotContains(t, eng.messages[0].Content, recentObservationPrefix)
-	assert.NotContains(t, eng.messages[0].Content, "off-box")
+	modelInput := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, modelInput, "off-box")
+	assert.Contains(t, modelInput, "近期可信观测")
 }
 
 func TestRefreshSystemPrompt_FactContextFlagOn(t *testing.T) {
@@ -206,9 +159,9 @@ func TestRefreshSystemPrompt_FactContextFlagOn(t *testing.T) {
 	_, err := eng.ChatWithOptions(context.Background(), "hello", noopStep, ChatOptions{})
 	require.NoError(t, err)
 
-	assert.Contains(t, eng.messages[0].Content, recentObservationPrefix)
-	assert.Contains(t, eng.messages[0].Content, "on-box")
-	assert.Contains(t, eng.messages[0].Content, "实时状态请重新查询")
+	modelInput := renderTestMessages(mock.calls[0].Messages)
+	assert.Contains(t, modelInput, "on-box")
+	assert.Contains(t, modelInput, "近期可信观测")
 }
 
 func TestRefreshSystemPrompt_FactContextDoesNotAccumulate(t *testing.T) {
@@ -232,6 +185,8 @@ func TestRefreshSystemPrompt_FactContextDoesNotAccumulate(t *testing.T) {
 	_, err = eng.ChatWithOptions(context.Background(), "turn2", noopStep, ChatOptions{})
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, strings.Count(eng.messages[0].Content, recentObservationPrefix),
-		"refreshSystemPrompt must rebuild from baseUserContext, not append repeatedly")
+	for _, call := range mock.calls {
+		assert.Equal(t, 1, strings.Count(renderTestMessages(call.Messages), "近期可信观测"),
+			"AgentContext must be rebuilt once per turn, not appended repeatedly")
+	}
 }

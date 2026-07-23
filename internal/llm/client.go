@@ -67,6 +67,14 @@ type ChatResponse struct {
 	Content   string
 	ToolCalls []openai.ToolCall
 	Usage     TokenUsage
+	// ForcedToolChoiceDegraded is true when the request carried a forced
+	// tool_choice ("required" or an object) that the provider rejected in
+	// thinking mode, so Chat silently retried with auto (see Chat). The tool
+	// calls (if any) then come from an UNFORCED call — a caller that depends on
+	// the forcing being honored must treat this response as non-authoritative and
+	// degrade, never score it as a structural guarantee. Callers that only used
+	// forcing as an advisory optimization (SearchKnowledge / monitor) can ignore it.
+	ForcedToolChoiceDegraded bool
 }
 
 type TokenUsage struct {
@@ -99,6 +107,11 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		resp, err = c.chat(ctx, auto, true)
 		if err != nil && isUsageUnsupportedChatError(err) {
 			resp, err = c.chat(ctx, auto, false)
+		}
+		// Signal the silent degrade so a caller that relied on the forcing being
+		// honored can fall back instead of trusting an unforced response.
+		if err == nil && resp != nil {
+			resp.ForcedToolChoiceDegraded = true
 		}
 	}
 	return resp, err
@@ -163,6 +176,10 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 		ccReq.ToolChoice = req.ToolChoice
 	}
 
+	// Count at the last boundary before the SDK attempts the upstream request.
+	// Putting this in Chat or chat would miss internal retries or count logical
+	// calls that never became requests.
+	observeOutboundCall(ctx, OutboundCall{Model: c.model})
 	stream, err := c.client.CreateChatCompletionStream(ctx, ccReq)
 	if err != nil {
 		return nil, fmt.Errorf("llm stream: %w", err)

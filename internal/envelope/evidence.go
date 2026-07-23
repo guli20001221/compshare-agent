@@ -15,8 +15,6 @@ const (
 	EvidenceKindWorkflowResult EvidenceKind = "workflow_result"
 )
 
-const KnowledgeNoEvidenceReply = "我没有在知识库里找到可靠资料来回答这个问题。建议你在控制台对应模块查看，或联系平台客服确认。"
-
 type Evidence struct {
 	sourceTitle        string       `visibility:"user"`
 	snippet            string       `visibility:"user"`
@@ -78,24 +76,6 @@ type LLMView struct {
 	SourceTitle  string       `json:"source_title"`
 	Snippet      string       `json:"snippet"`
 	EvidenceKind EvidenceKind `json:"evidence_kind"`
-}
-
-type TraceHitItem struct {
-	ChunkID string  `json:"chunk_id"`
-	Score   float64 `json:"score"`
-	Kept    bool    `json:"kept"`
-}
-
-type NoEvidenceTraceView struct {
-	EvidenceKind   EvidenceKind   `json:"evidence_kind"`
-	HitItems       []TraceHitItem `json:"hit_items"`
-	NoEvidence     bool           `json:"no_evidence"`
-	FallbackReason string         `json:"fallback_reason"`
-}
-
-type NoEvidenceResult struct {
-	Reply string              `json:"reply"`
-	Trace NoEvidenceTraceView `json:"trace"`
 }
 
 func NewEvidence(input EvidenceInput) (Evidence, error) {
@@ -195,18 +175,6 @@ func (e Evidence) ForLLM() LLMView {
 		SourceTitle:  e.sourceTitle,
 		Snippet:      e.snippet,
 		EvidenceKind: e.evidenceKind,
-	}
-}
-
-func KnowledgeNoEvidence() NoEvidenceResult {
-	return NoEvidenceResult{
-		Reply: KnowledgeNoEvidenceReply,
-		Trace: NoEvidenceTraceView{
-			EvidenceKind:   EvidenceKindKnowledge,
-			HitItems:       []TraceHitItem{},
-			NoEvidence:     true,
-			FallbackReason: "retrieval_zero_hit",
-		},
 	}
 }
 

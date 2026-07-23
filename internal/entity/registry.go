@@ -87,6 +87,12 @@ type RegistrySnapshot struct {
 	LastSyncError string
 	TotalCount    int
 	Truncated     bool
+	// Invalidated mirrors the source registry's invalidated flag: a successful
+	// state-changing action ran after this snapshot's sync, so the snapshot's
+	// inventory/state can no longer be trusted for freshness decisions. Carried on
+	// the copy so a consumer can judge freshness from the snapshot alone, without
+	// reaching back into the live EntityRegistry.
+	Invalidated bool
 }
 
 // RegistryTraceState is the compact entity registry block written into trace.
@@ -119,6 +125,50 @@ func (r *EntityRegistry) Age() time.Duration {
 	return r.now().Sub(r.LastFullSync)
 }
 
+// CanAssertAbsence reports whether this registry has the standing to say an
+// instance is NOT in the user's account.
+//
+// ResolveByID / ResolveByName answer NOT_FOUND_IN_ACCOUNT for anything they have not
+// seen — which is correct only if they have seen EVERYTHING. Three ways they have not:
+//
+//   - never synced (LastFullSync zero). The HTTP path skips engine.Init(), so a session
+//     that never lists instances carries an empty registry for its whole life.
+//   - the last sync FAILED.
+//   - the listing was TRUNCATED: DescribeCompShareInstance pages, and Truncated is set
+//     precisely when TotalCount > len(fetched) (registry.go, refresh). A live account here
+//     holds 20 instances and the call returns 10 — so HALF the user's machines are absent
+//     from a registry that will nonetheless swear they do not exist.
+//
+// In all three the honest answer is "I have not seen it", and "I have not seen it" is not
+// "it does not exist". Callers that turn NOT_FOUND into a hard refusal must consult this
+// first; the resolver is a cache, not the account.
+//
+// A genuinely empty account (synced cleanly, TotalCount 0) IS authoritative — absence is
+// then a fact, not an artefact.
+func (r *EntityRegistry) CanAssertAbsence() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return canAssertAbsence(r.LastFullSync, r.LastSyncEvent, r.Truncated, len(r.Instances), r.TotalCount)
+}
+
+// CanAssertAbsence: see EntityRegistry.CanAssertAbsence. Same rule, immutable copy.
+func (s RegistrySnapshot) CanAssertAbsence() bool {
+	return canAssertAbsence(s.LastFullSync, s.SyncEvent, s.Truncated, len(s.Instances), s.TotalCount)
+}
+
+func canAssertAbsence(lastFullSync time.Time, syncEvent string, truncated bool, known, total int) bool {
+	if lastFullSync.IsZero() || truncated {
+		return false
+	}
+	switch SyncEvent(syncEvent) {
+	case SyncEventUnavailable, SyncEventFailed, "":
+		return false
+	}
+	// Synced cleanly and completely: either we hold instances, or the account really
+	// has none.
+	return known > 0 || total == 0
+}
+
 func (r *EntityRegistry) Snapshot() RegistrySnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -138,6 +188,7 @@ func (r *EntityRegistry) Snapshot() RegistrySnapshot {
 		LastSyncError: r.LastSyncError,
 		TotalCount:    r.TotalCount,
 		Truncated:     r.Truncated,
+		Invalidated:   r.invalidated,
 	}
 }
 
@@ -207,13 +258,46 @@ func (r *EntityRegistry) WarmRefresh(ctx context.Context, exec Executor) <-chan 
 func (r *EntityRegistry) NeedsRefresh(at time.Time) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.invalidated || r.LastFullSync.IsZero() {
+	return needsRefresh(r.LastFullSync, r.LastSyncEvent, r.invalidated, at)
+}
+
+// needsRefresh is the single freshness rule shared by the live registry and its
+// snapshot copy, so no caller re-assembles the TTL / failed / invalidated / never-
+// synced conditions by hand.
+func needsRefresh(lastFullSync time.Time, syncEvent string, invalidated bool, at time.Time) bool {
+	if invalidated || lastFullSync.IsZero() {
 		return true
 	}
-	if r.LastSyncEvent == string(SyncEventFailed) {
+	if SyncEvent(syncEvent) == SyncEventFailed {
 		return true
 	}
-	return at.Sub(r.LastFullSync) > DefaultRegistryFreshnessTTL
+	return at.Sub(lastFullSync) > DefaultRegistryFreshnessTTL
+}
+
+// NeedsRefreshAt is NeedsRefresh for an immutable snapshot: stale, failed, never-
+// synced, or invalidated by a successful state-changing action after the copy.
+func (s RegistrySnapshot) NeedsRefreshAt(at time.Time) bool {
+	return needsRefresh(s.LastFullSync, s.SyncEvent, s.Invalidated, at)
+}
+
+// FreshAndCompleteAt reports whether the snapshot may be trusted as an existence
+// oracle at `at`: it is fresh (not stale/failed/invalidated/never-synced) AND
+// complete (not truncated). A hit in such a snapshot proves the id exists; a miss
+// (with CanAssertAbsenceAt) proves it does not — no point-query needed. A stale or
+// truncated snapshot is neither: it must be re-verified upstream.
+func (s RegistrySnapshot) FreshAndCompleteAt(at time.Time) bool {
+	return !s.NeedsRefreshAt(at) && !s.Truncated
+}
+
+// CanAssertAbsenceAt is CanAssertAbsence with freshness: only a fresh, complete
+// snapshot may say an id is genuinely NOT in the account. A stale-but-complete
+// registry (bug: a released instance can linger, or a new one be missing) can no
+// longer assert absence — a miss there is "unverified", not "absent".
+func (s RegistrySnapshot) CanAssertAbsenceAt(at time.Time) bool {
+	if !s.FreshAndCompleteAt(at) {
+		return false
+	}
+	return len(s.Instances) > 0 || s.TotalCount == 0
 }
 
 // MarkInvalidated records that a successful action changed instance inventory
@@ -362,6 +446,17 @@ func syncEventForReason(reason RefreshReason) SyncEvent {
 	}
 }
 
+// invalidatesRegistry reports whether a completed action changed something this
+// registry caches, and therefore must force a re-Describe rather than serve the
+// snapshot taken before it ran.
+//
+// The bar is "does the action mutate a field of InstanceSnapshot", not "is the
+// action a write" — ResetPassword and CreateCustomImage are writes that change
+// nothing this cache holds, so they deliberately stay out. Every registered
+// workflow must be classified one way or the other; TestEveryWorkflowActionIsClassifiedForInvalidation
+// fails when a new one is added and nobody decides, because the failure mode of
+// forgetting is silent (a stale snapshot served for up to
+// DefaultRegistryFreshnessTTL), not loud.
 func invalidatesRegistry(action string) bool {
 	switch action {
 	case "CreateCompShareInstance",
@@ -377,7 +472,13 @@ func invalidatesRegistry(action string) bool {
 		"UpdateCompShareStopScheduler",
 		"DeleteCompShareStopScheduler",
 		"SetStopSchedulerWorkflow",
-		"CancelStopSchedulerWorkflow":
+		"CancelStopSchedulerWorkflow",
+		// Resize rewrites GPU/GpuType/CPU/Memory and Reinstall rewrites
+		// OsType/ImageType — all InstanceSnapshot fields. Both were absent here
+		// while being registered workflows, so a resize or reinstall left the
+		// cache serving the pre-change spec.
+		"ResizeInstanceWorkflow",
+		"ReinstallInstanceWorkflow":
 		return true
 	default:
 		return false

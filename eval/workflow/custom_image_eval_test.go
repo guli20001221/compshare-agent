@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
@@ -23,8 +24,10 @@ type customImageCase struct {
 }
 
 type recordingExecutor struct {
-	calls []string
-	args  map[string]map[string]any
+	calls     []string
+	args      map[string]map[string]any
+	stopped   bool
+	pollCount int
 }
 
 func (e *recordingExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
@@ -35,9 +38,26 @@ func (e *recordingExecutor) Execute(_ context.Context, action string, args map[s
 	e.args[action] = args
 	switch action {
 	case "DescribeCompShareInstance":
+		state := "Running"
+		if e.stopped {
+			e.pollCount++
+			if e.pollCount == 1 {
+				state = "Stopping"
+			} else {
+				state = "Stopped"
+			}
+		}
 		return map[string]any{"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-src", "Name": "train-env", "State": "Running", "Region": "cn-sh2", "Zone": "cn-sh2-02"},
+			map[string]any{"UHostId": "uhost-src", "Name": "train-env", "State": state, "Region": "cn-sh2", "Zone": "cn-sh2-02"},
 		}}, nil
+	case "DescribeCompShareSupportZone":
+		return map[string]any{"ZoneInfo": []any{map[string]any{
+			"Zone": "cn-sh2-02", "Region": "cn-sh2",
+			"ZoneId": float64(8200), "RegionId": float64(1000009),
+		}}}, nil
+	case "StopCompShareInstance":
+		e.stopped = true
+		return map[string]any{"RetCode": 0}, nil
 	case "CreateCompShareCustomImage":
 		return map[string]any{"CompShareImageId": "cimg-custom-001"}, nil
 	case "GetCompShareImageCreateProgress":
@@ -60,7 +80,13 @@ func TestCustomImageWorkflowEvalCases(t *testing.T) {
 				return true
 			}, nil)
 
-			result, err := eng.Run(context.Background(), workflow.CreateCustomImageDef(), c.Params)
+			def := workflow.CreateCustomImageDef()
+			for i := range def.Steps {
+				if def.Steps[i].Name == "等待源实例关机" {
+					def.Steps[i].Poll = &workflow.PollPolicy{Interval: time.Millisecond, Timeout: time.Second}
+				}
+			}
+			result, err := eng.Run(context.Background(), def, c.Params)
 			require.NoError(t, err)
 			assert.Equal(t, c.ExpectSuccess, result.Success)
 			if c.RequireConfirmation {
@@ -78,6 +104,7 @@ func TestCustomImageWorkflowEvalCases(t *testing.T) {
 			if createArgs, ok := exec.args["CreateCompShareCustomImage"]; ok {
 				assert.Equal(t, "cn-sh2", createArgs["Region"])
 				assert.Equal(t, "cn-sh2-02", createArgs["Zone"])
+				assert.Equal(t, uint32(1000009), createArgs["az_group"])
 				for _, key := range []string{"Softwares", "SoftwarePorts", "FirewallPorts"} {
 					assert.NotContains(t, createArgs, key)
 				}

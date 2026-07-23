@@ -6,14 +6,13 @@ import (
 	"net"
 	"regexp"
 	"strings"
+
+	"github.com/compshare-agent/internal/guardrails"
 )
 
 const redactedValue = "[REDACTED]"
 
 var separatorRE = regexp.MustCompile(`[^a-z0-9]+`)
-var bearerTokenRE = regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9_\-.]{20,})`)
-var tokenQueryParamRE = regexp.MustCompile(`(?i)(\btoken=)([A-Za-z0-9%._~+/=-]+)`)
-var compShareAccessTokenRE = regexp.MustCompile(`\bUCloud-CompShare-[A-Za-z0-9]+\b`)
 
 // RedactForLLM removes credentials and operational tokens before values are
 // passed into model context. It returns a deep-redacted copy and never mutates
@@ -92,31 +91,7 @@ func redactField(key string, value any, mode redactMode) any {
 }
 
 func isSecretKey(key string) bool {
-	normalized := normalizeKey(key)
-	return strings.Contains(normalized, "password") ||
-		strings.Contains(normalized, "privatekey") ||
-		strings.Contains(normalized, "publickey") ||
-		strings.Contains(normalized, "secretkey") ||
-		strings.Contains(normalized, "accesskey") ||
-		strings.Contains(normalized, "apikey") ||
-		strings.Contains(normalized, "apitoken") ||
-		strings.Contains(normalized, "accesstoken") ||
-		strings.Contains(normalized, "authtoken") ||
-		strings.Contains(normalized, "sessiontoken") ||
-		strings.Contains(normalized, "refreshtoken") ||
-		strings.Contains(normalized, "idtoken") ||
-		strings.Contains(normalized, "jupytertoken") ||
-		strings.Contains(normalized, "jupyterlabtoken") ||
-		strings.Contains(normalized, "bearertoken") ||
-		strings.Contains(normalized, "clientsecret") ||
-		strings.Contains(normalized, "webhooksecret") ||
-		strings.Contains(normalized, "credential") ||
-		// Match any SSH access command key, not just "SSHCommand": the upstream
-		// DescribeCompShareInstance field is "SshLoginCommand" (→ "sshlogincommand"),
-		// which the literal "sshcommand" substring misses because the "login" infix
-		// breaks it. ssh+command covers SshCommand / SshLoginCommand / future
-		// variants. B8.3 deploy surfaces this field into saga StepTrace.Result.
-		(strings.Contains(normalized, "ssh") && strings.Contains(normalized, "command"))
+	return guardrails.IsCredentialKey(key)
 }
 
 func isBillingOrCostKey(key string) bool {
@@ -144,18 +119,25 @@ func normalizeKey(key string) string {
 	return separatorRE.ReplaceAllString(key, "")
 }
 
-func containsBearerToken(s string) bool {
-	return bearerTokenRE.MatchString(s)
-}
-
-func redactBearerTokens(s string) string {
-	return bearerTokenRE.ReplaceAllString(s, "Bearer "+redactedValue)
-}
-
 // RedactOperationalTokensInText removes access tokens embedded inside otherwise
 // ordinary strings, such as JupyterLab URLs. It is safe for user-visible text.
 func RedactOperationalTokensInText(s string) string {
 	return redactOperationalTokens(s)
+}
+
+// ContainsToolProtocolMarkup detects provider/tool transport syntax that must
+// never be rendered as assistant prose. It does not infer user intent or parse
+// a tool call; malformed transport is failed closed at the response boundary.
+func ContainsToolProtocolMarkup(s string) bool {
+	for _, marker := range []string{
+		"<｜DSML｜invoke", "<|DSML|invoke", "<tool_call>", "</tool_call>",
+		"<function=", "<｜tool▁call｜>",
+	} {
+		if _, _, found := strings.Cut(s, marker); found {
+			return true
+		}
+	}
+	return false
 }
 
 // RedactKnownSecretsInText removes operational tokens plus explicit secret
@@ -175,12 +157,7 @@ func RedactKnownSecretsInText(s string, secrets []string) string {
 }
 
 func redactOperationalTokens(s string) string {
-	if containsBearerToken(s) {
-		s = redactBearerTokens(s)
-	}
-	s = tokenQueryParamRE.ReplaceAllString(s, "${1}"+redactedValue)
-	s = compShareAccessTokenRE.ReplaceAllString(s, "UCloud-CompShare-"+redactedValue)
-	return s
+	return guardrails.RedactCredentialsWithReplacement(s, redactedValue)
 }
 
 func hashValue(v any) string {

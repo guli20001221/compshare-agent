@@ -1,0 +1,1919 @@
+{
+  "version": 1,
+  "findings": [
+    {
+      "id": "884e90340644463d",
+      "kind": "regex",
+      "path": "internal/engine/deploy_model.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": " {2,}"
+    },
+    {
+      "id": "ca9c9c086dd81bb2",
+      "kind": "regex",
+      "path": "internal/engine/deploy_model.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "!\\[[^\\]]*\\]\\([^)]*\\)"
+    },
+    {
+      "id": "590e2652517db7a1",
+      "kind": "regex",
+      "path": "internal/engine/deploy_model.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?s)\u003c[^\u003e]+\u003e"
+    },
+    {
+      "id": "9cdd1ba90e3b09fd",
+      "kind": "regex",
+      "path": "internal/engine/deploy_model.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\n{3,}"
+    },
+    {
+      "id": "7d2a2e0c5ebfcc81",
+      "kind": "regex",
+      "path": "internal/engine/engine.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "RetCode=(\\d+)\\)?(?::)?\\s*(.*)"
+    },
+    {
+      "id": "766b711da7f15b08",
+      "kind": "regex",
+      "path": "internal/engine/engine.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "^步骤「[^」]*」(?:参数构建失败|执行失败)[：:]\\s*"
+    },
+    {
+      "id": "9afaf99f0fd62a89",
+      "kind": "regex",
+      "path": "internal/envelope/evidence_url_policy.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)/(?:admin|workorder|internal)(?:/|$)"
+    },
+    {
+      "id": "fa39a5e1a0673707",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile"
+    },
+    {
+      "id": "14121438514ccd70",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(DAN|developer\\s+mode|jailbreak|unfiltered|uncensored|evil|opposite|no\\s+restrictions|without\\s+restrictions|different\\s+(AI|assistant|model))\\b"
+    },
+    {
+      "id": "6955d817271329b6",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(ignore|disregard|forget|override|bypass)\\b"
+    },
+    {
+      "id": "f21be25c76c491c5",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(previous|prior|above|all)\\s+(instruction|instructions|rule|rules|prompt|prompts|guideline|guidelines|directive|directives|constraint|constraints)\\b"
+    },
+    {
+      "id": "b4cb836472ad1c3e",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(print|reveal|show|output|disclose|tell\\s+me|leak)\\b"
+    },
+    {
+      "id": "5e86ed665390ab45",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(print|reveal|show|output|disclose|tell\\s+me|leak)\\b",
+      "ordinal": 2
+    },
+    {
+      "id": "6b0d2d1a582b0563",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(you\\s+are\\s+now|pretend|act\\s+as|roleplay|simulate)\\b"
+    },
+    {
+      "id": "4fece724e552d8c3",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(your|the)\\s+(prompt|instructions|rules|directives|guidelines)\\b\\s*([.!?]?\\s*$|in\\s+(full|detail|verbatim)\\b|you\\s+were\\s+(told|given|instructed|asked|prompted)|that\\s+you\\s+were)"
+    },
+    {
+      "id": "ff0dca370415311d",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(your|the)\\s+(system|hidden|secret|underlying|initial|core|original|actual|real|true)\\s+(prompt|instructions|rules|directives|guidelines)\\b"
+    },
+    {
+      "id": "d5c27af34534867c",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(之前|前面|上面|所有|你的|系统|原本|当前)?(的)?(指令|提示词|系统提示|规则|限制|约束|设定|准则)"
+    },
+    {
+      "id": "b22c67868b583549",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(你不是|不受任何限制|不受任何规则|没有任何限制|没有任何规则|没有限制|不受限|不受规则|无任何限制|越狱|DAN|开发者模式|没有规则)"
+    },
+    {
+      "id": "6c8e4bd3971b3e38",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(忽略|无视|忘记|忘掉|绕过|跳过)"
+    },
+    {
+      "id": "f1c2e8f628681cee",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(打印|显示|告诉我|输出|展示|揭示|泄露|说出)"
+    },
+    {
+      "id": "f479f874c02f1d47",
+      "kind": "regex",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(扮演|假装|假设你是|现在你是|从现在(开始|起))"
+    },
+    {
+      "id": "3c6d733589954be3",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)(?:(?:重置|修改|设置)?\\s*(?:登录)?密码(?:重置|修改|设置)?|改密|password)\\s*(为|成|是|:|：)\\s*([^\\s，。；;]+)"
+    },
+    {
+      "id": "110c3ba511f9c44a",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)([\"']?\\b(?:access[_-]?key(?:[_-]?id|[_-]?secret)?|secret[_-]?key|api[_-]?key|x[_-]?api[_-]?key|ak|sk|access[_-]?token|security[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|password|passwd|pwd|private[_-]?key)\\b[\"']?\\s*[:=]\\s*[\"']?)([^\"'\\s,;}\u0026\\]]+)"
+    },
+    {
+      "id": "8c5e5f5be3ea712d",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)(\\bauthorization\\s*[:=]\\s*)(?:(bearer|basic)[\\s:=]+)?([^\\s,;}\\]]+)"
+    },
+    {
+      "id": "a569a55039742fc7",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(?:AKIA|ASIA)[A-Z0-9]{16}\\b|\\bsk-[A-Za-z0-9_\\-]{12,}\\b|\\bgh[pousr]_[A-Za-z0-9]{20,}\\b|\\bxox[baprs]-[A-Za-z0-9-]{16,}\\b"
+    },
+    {
+      "id": "d3fcec980867ab8c",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(bearer|token)[\\s:=]+([A-Za-z0-9+/=_\\-\\.]{20,})\\b"
+    },
+    {
+      "id": "d0c6b6002480548d",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?is)-----BEGIN [^-\\r\\n]*PRIVATE KEY-----.*?-----END [^-\\r\\n]*PRIVATE KEY-----"
+    },
+    {
+      "id": "46888f0bd95dd118",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\bUCloud-CompShare-[A-Za-z0-9]+\\b"
+    },
+    {
+      "id": "2b08c32ac91276ac",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\b"
+    },
+    {
+      "id": "6bfe38c91d24b6c2",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\b\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b"
+    },
+    {
+      "id": "f0c09bd9d5f8f3e4",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\beyJ[A-Za-z0-9_\\-]{16,}\\.[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}\\b"
+    },
+    {
+      "id": "74acaaec2106ab20",
+      "kind": "regex",
+      "path": "internal/guardrails/pii.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}"
+    },
+    {
+      "id": "9ab1961b1b902917",
+      "kind": "regex",
+      "path": "internal/guardrails/pii.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\b1[3-9]\\d{9}\\b"
+    },
+    {
+      "id": "8cbe00a840efa75d",
+      "kind": "regex",
+      "path": "internal/guardrails/pii.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\b[1-9]\\d{5}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]\\b"
+    },
+    {
+      "id": "66858ba119518fd8",
+      "kind": "regex",
+      "path": "internal/guardrails/pii.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\b\\d{16,19}\\b"
+    },
+    {
+      "id": "c50016879a01c8d1",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(I|me)\\b"
+    },
+    {
+      "id": "c196833700935ff5",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(I|my\\s+(family|wife|husband|child|son|daughter|parent|father|mother|kid))\\b"
+    },
+    {
+      "id": "176d3abaf0b40c14",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(buy|sell|short|long|hold|invest\\s+in)\\s+(\\w+\\s+)*(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex|gold|silver|bond)\\b|\\ba\\s+(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex|bond)\\s+to\\s+(buy|invest|sell|hold|short|long)\\b|\\b(hot\\s+)?(pick|tip|recommendation)s?\\s+(for\\s+)?\\w*\\s*(stocks?|crypto|bitcoin|ethereum|fund|etf)\\b|\\b(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex)\\s+(pick|tip|recommendation)s?\\b"
+    },
+    {
+      "id": "f0e14a667830cbe1",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(have|has|got|am\\s+sick\\s+with|been\\s+diagnosed|diagnosed\\s+with)\\s+(\\w+\\s+){0,2}(cancer|tumou?r|diabetes|hypertension|covid|pneumonia|infection|allergy)\\b|what\\s+(medicine|medication|pill|drug)\\s+should\\s+I\\s+take\\s+(for|to\\s+(treat|cure|relieve|manage))\\s+\\w+"
+    },
+    {
+      "id": "ab4d0e6c03b454d4",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(opinion|view|stance|position|support|oppose|endorse|criticize|criticise|think)\\b"
+    },
+    {
+      "id": "11ac635a070770fe",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(president|prime\\s+minister|chancellor|head\\s+of\\s+state|ruling\\s+party|political\\s+party|democrat|republican|elections?|impeach|sanctions?\\s+on|Xi\\s+Jinping|Putin|Trump|Biden|Taiwan\\s+(independence|issue|question)|Hong\\s+Kong\\s+protests?|Tibet\\s+issue)\\b"
+    },
+    {
+      "id": "9ac87be4a4a5ac2c",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(should\\s+I|recommend|advise|tip|hot\\s+pick|what\\s+to|give\\s+me)\\b"
+    },
+    {
+      "id": "5ddab55cc1688d31",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(want\\s+to\\s+(commit\\s+suicide|kill\\s+myself|end\\s+my\\s+life)|am\\s+suicidal|am\\s+going\\s+to\\s+(kill|harm)\\s+myself|planning\\s+to\\s+(end\\s+my\\s+life|kill\\s+myself))\\b|\\bsuicide\\s+hotline\\b|\\bself[-\\s]harm\\s+(plan|intent)\\b"
+    },
+    {
+      "id": "5fe00b011aa4d62e",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(买|入手|持有|抛|卖|清仓|建仓|加仓|减仓|定投)[^。.,;!?]{0,5}(股票|基金|期货|加密货币|比特币|以太|狗狗币|理财产品|外汇|证券)|(股票|基金|币圈|加密货币)\\s*(推荐|建议|怎么选|该不该|哪个好)"
+    },
+    {
+      "id": "36b98c45e0870f3b",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(国家领导人|党中央|总书记|主席|总统|总理|首相|执政党|政党|政府机构|选举|大选|两党|民主党|共和党|共产党|国民党|台独|港独|疆独|藏独|新疆议题|台湾问题|涉港议题|涉疆议题|涉藏议题)"
+    },
+    {
+      "id": "a4cfe8980a6fa582",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(怎么办|该怎么|吃什么药|要不要|要去|去哪|挂号|看医生|去医院|治疗方案|手术|化疗|放疗|住院|开刀)"
+    },
+    {
+      "id": "c5eef84c66f90be3",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(想自杀|想结束生命|想结束自己|寻短|想割腕|想跳楼|想跳河|要自杀|要结束生命|要寻短)"
+    },
+    {
+      "id": "0eb1f7eaa15d0638",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(我|我家|我老婆|我老公|我爸|我妈|我儿子|我女儿|我孩子|父母|家人)\\s*(得了|患了|有了|发现|查出|确诊|被诊断|生病|发烧|咳嗽|疼痛|心脏|肿瘤|癌症|糖尿病|高血压|新冠|肺炎|感染|过敏)"
+    },
+    {
+      "id": "b7a1e940da609aae",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(我|没人|没有人爱|没人在乎)"
+    },
+    {
+      "id": "01c96147c8f7cdf1",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(推荐|建议|该不该|要不要|帮我选|挑一个|哪个好|怎么选)"
+    },
+    {
+      "id": "1e7f4fbda794dd71",
+      "kind": "regex",
+      "path": "internal/guardrails/topic.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(评价|你觉得|怎么看|看法|意见|支持|反对|拥护|批评)"
+    },
+    {
+      "id": "3f455e55b3a1985b",
+      "kind": "regex",
+      "path": "internal/knowledge/grounded_validator.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\[(\\d{1,2})\\]"
+    },
+    {
+      "id": "11b64807b629b19e",
+      "kind": "regex",
+      "path": "internal/knowledge/grounded_validator.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\[[ \\t]*\\[+\\s*([^\\[\\]\\r\\n]+?)\\s*\\]+[ \\t]*\\]"
+    },
+    {
+      "id": "069c933b4c788ed5",
+      "kind": "regex",
+      "path": "internal/knowledge/model_specs.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)(\\d+(?:\\.\\d+)?)\\s*b\\b"
+    },
+    {
+      "id": "6fae8ceaafc04f1d",
+      "kind": "regex",
+      "path": "internal/observability/trace.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\b(\\d{1,3})\\.(\\d{1,3})\\.\\d{1,3}\\.\\d{1,3}\\b"
+    },
+    {
+      "id": "89aab4e54f8276fe",
+      "kind": "regex",
+      "path": "internal/observability/trace.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "\\buhost-[A-Za-z0-9]+\\b"
+    },
+    {
+      "id": "234a29a2b347f374",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b([a-z]{1,3}\\d{2,4}[a-z0-9_]*|\\d{4}(?:_\\d+g)?)\\b"
+    },
+    {
+      "id": "b8e26fe313b4a8c8",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)\\b(\\d{2,3})\\s*(?:gb|g)\\b"
+    },
+    {
+      "id": "38d515a8628832c0",
+      "kind": "regex",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)_(\\d{2,3})g$"
+    },
+    {
+      "id": "499c4e569749d9e4",
+      "kind": "regex",
+      "path": "internal/readprojection/resource_filter.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "^[A-Za-z0-9_.-]+$"
+    },
+    {
+      "id": "9ca65d600aadca13",
+      "kind": "regex",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)(?:过去|最近|近|past|last|previous)\\s*(\\d+)\\s*([a-z]+|分钟|分|小时|时)"
+    },
+    {
+      "id": "0957daf96bfe94ea",
+      "kind": "regex",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseMonitorTime",
+      "callee": "regexp.MustCompile",
+      "value": "(\\d{4}-\\d{2}-\\d{2})T(\\d{1,2}:\\d{2}(?::\\d{2})?(?:Z|[+-]\\d{2}:\\d{2}))"
+    },
+    {
+      "id": "932ac1403f56c51b",
+      "kind": "regex",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseMonitorTime",
+      "callee": "regexp.MustCompile",
+      "value": "(\\d{4}-\\d{2}-\\d{2})\\s+(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?"
+    },
+    {
+      "id": "23f82eb3f63f6b82",
+      "kind": "regex",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseMonitorTimeWithDefaultDate",
+      "callee": "regexp.MustCompile",
+      "value": "(?:^|\\D)(\\d{1,2})(?:\\s*(?::|点|时)\\s*(\\d{1,2})?)?"
+    },
+    {
+      "id": "7937b0b26e125e35",
+      "kind": "regex",
+      "path": "internal/security/secret_boundary.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "[^a-z0-9]+"
+    },
+    {
+      "id": "fcb651138eaebd79",
+      "kind": "regex",
+      "path": "internal/tools/safe_executor.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)(status|status code)\\D*(\\d{3})"
+    },
+    {
+      "id": "57159e23460ed400",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_catalog_helpers.go",
+      "symbol": "entryMatchesSlotQuery",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "2da4ad28320070b1",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_model_repository.go",
+      "symbol": "matchModelRepositoryTags",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "c8c9bbb377608f1c",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingFormatNumber",
+      "callee": "strings.HasPrefix",
+      "value": "$"
+    },
+    {
+      "id": "861f47267699fbaf",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingFormatNumber",
+      "callee": "strings.HasPrefix",
+      "value": "¥"
+    },
+    {
+      "id": "6fabfcef8c2bf667",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingKindIsCatalog",
+      "callee": "strings.Contains",
+      "value": "标准价"
+    },
+    {
+      "id": "21520027be91c074",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_pricing.go",
+      "symbol": "pricingKindIsCatalog",
+      "callee": "strings.Contains",
+      "value": "目录价"
+    },
+    {
+      "id": "865b869432ab8276",
+      "kind": "string_heuristic",
+      "path": "internal/capability/read_stock.go",
+      "symbol": "stockRegionFromZone",
+      "callee": "strings.LastIndex",
+      "value": "-"
+    },
+    {
+      "id": "e7a4e954ca38763b",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalCredential",
+      "callee": "strings.HasPrefix",
+      "value": "$"
+    },
+    {
+      "id": "0ceb04140977bdc3",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalCredential",
+      "callee": "strings.HasPrefix",
+      "value": "${"
+    },
+    {
+      "id": "f0204ba1bcd560a7",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalCredential",
+      "callee": "strings.HasSuffix",
+      "value": "}"
+    },
+    {
+      "id": "48517647dbc21ceb",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalDSN",
+      "callee": "strings.HasPrefix",
+      "value": "$"
+    },
+    {
+      "id": "f58549146244f6bd",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalDSN",
+      "callee": "strings.HasPrefix",
+      "value": "${"
+    },
+    {
+      "id": "b50a12f11d5b6c87",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalDSN",
+      "callee": "strings.HasSuffix",
+      "value": "}"
+    },
+    {
+      "id": "ee934c13eac04604",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalPlaceholder",
+      "callee": "strings.HasPrefix",
+      "value": "$"
+    },
+    {
+      "id": "21a1fc0384b1e96a",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalPlaceholder",
+      "callee": "strings.HasPrefix",
+      "value": "${"
+    },
+    {
+      "id": "376d045a1648ccb7",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveOptionalPlaceholder",
+      "callee": "strings.HasSuffix",
+      "value": "}"
+    },
+    {
+      "id": "988fe18db63d9fe2",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveRequiredSecret",
+      "callee": "strings.HasPrefix",
+      "value": "$"
+    },
+    {
+      "id": "978b98d234c0e5ae",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveRequiredSecret",
+      "callee": "strings.HasPrefix",
+      "value": "${"
+    },
+    {
+      "id": "b27917cbfa35ccd9",
+      "kind": "string_heuristic",
+      "path": "internal/config/config.go",
+      "symbol": "resolveRequiredSecret",
+      "callee": "strings.HasSuffix",
+      "value": "}"
+    },
+    {
+      "id": "2af44c0f99d4954d",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "nameSimilarity",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "08b48109c17b1eb9",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "nameSimilarity",
+      "callee": "strings.Contains",
+      "ordinal": 2
+    },
+    {
+      "id": "7782cd3ae30d19f4",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "sharedSubstring",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "d4ddfb46356aba64",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "substringFold",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "f1b552feba21dfef",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "versionRelated",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "d4794095ca350623",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/image_resolve.go",
+      "symbol": "versionRelated",
+      "callee": "strings.HasPrefix",
+      "ordinal": 2
+    },
+    {
+      "id": "b0a49134acecce96",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/planner.go",
+      "symbol": "ClassifyCreateFailure",
+      "callee": "strings.Contains",
+      "value": "adaptive uhost image id is empty"
+    },
+    {
+      "id": "1502b4de671e950b",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/planner.go",
+      "symbol": "ClassifyCreateFailure",
+      "callee": "strings.Contains",
+      "value": "resource not enough"
+    },
+    {
+      "id": "cfe5e556ae60fcbe",
+      "kind": "string_heuristic",
+      "path": "internal/deployment/planner.go",
+      "symbol": "ClassifyCreateFailure",
+      "callee": "strings.Contains",
+      "value": "resourcenotenough"
+    },
+    {
+      "id": "a7588b85fc998908",
+      "kind": "string_heuristic",
+      "path": "internal/engine/context_assembler.go",
+      "symbol": "renderMonitorFact",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "85feb660b9793a35",
+      "kind": "string_heuristic",
+      "path": "internal/engine/create_image_recovery.go",
+      "symbol": "isImageUnavailableError",
+      "callee": "strings.Contains",
+      "value": "CompShareImageId"
+    },
+    {
+      "id": "8589fb9c1302aef7",
+      "kind": "string_heuristic",
+      "path": "internal/engine/deploy_model.go",
+      "symbol": "extractJSONObject",
+      "callee": "strings.Index",
+      "value": "{"
+    },
+    {
+      "id": "deb5759ae49a680f",
+      "kind": "string_heuristic",
+      "path": "internal/engine/deploy_model.go",
+      "symbol": "extractJSONObject",
+      "callee": "strings.LastIndex",
+      "value": "}"
+    },
+    {
+      "id": "a4c863c6ee04953f",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "cappedTraceForFriendlyError",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "fd3a3c7975f8c691",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "cappedTraceForFriendlyError",
+      "callee": "strings.Contains",
+      "ordinal": 2
+    },
+    {
+      "id": "1774f55cd25b67bb",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "cappedTraceForFriendlyError",
+      "callee": "strings.Contains",
+      "ordinal": 3
+    },
+    {
+      "id": "25ae94fde449536f",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "cappedTraceForFriendlyError",
+      "callee": "strings.Contains",
+      "ordinal": 4
+    },
+    {
+      "id": "0fa15fce3460f6e6",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "cappedTraceForFriendlyError",
+      "callee": "strings.Contains",
+      "ordinal": 5
+    },
+    {
+      "id": "54cbeb449ddd8b75",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "containsAnyKeyword",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "2bb20d01a9b7885c",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "friendlyMessageFromText",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "4e2023fa94343f5e",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "isFinalReply",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "4e23b5fa6400c1b0",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "resourceSelectionCandidatesVisibleInReply",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "e4c3585ae5934d6e",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "resourceSelectionNameVisibleInNumberedLine",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "5dee50adafd965cb",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "resourceSelectionNameVisibleInNumberedLine",
+      "callee": "strings.HasPrefix",
+      "ordinal": 2
+    },
+    {
+      "id": "8b8c3966217defd2",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "resourceSelectionNameVisibleInNumberedLine",
+      "callee": "strings.HasPrefix",
+      "ordinal": 3
+    },
+    {
+      "id": "b3742656cbed2659",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "resourceSelectionNameVisibleInTableLine",
+      "callee": "strings.Contains",
+      "value": "|"
+    },
+    {
+      "id": "a5adf5c70eefbf4b",
+      "kind": "string_heuristic",
+      "path": "internal/engine/history_compaction.go",
+      "symbol": "compactOldRetrievableToolResults",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "22a2400012eb1b5f",
+      "kind": "string_heuristic",
+      "path": "internal/engine/history_compaction.go",
+      "symbol": "parseFirstJSONObject",
+      "callee": "strings.Index",
+      "value": "{"
+    },
+    {
+      "id": "6f3113b5d8378994",
+      "kind": "string_heuristic",
+      "path": "internal/engine/history_compaction.go",
+      "symbol": "parseFirstJSONObject",
+      "callee": "strings.LastIndex",
+      "value": "}"
+    },
+    {
+      "id": "96adc5f2074d142d",
+      "kind": "string_heuristic",
+      "path": "internal/engine/history_compaction.go",
+      "symbol": "toolResultContentCanBeCompacted",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "ef50408508ea342f",
+      "kind": "string_heuristic",
+      "path": "internal/engine/history_compaction.go",
+      "symbol": "validateMemoryDelta",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "11717731fb4706ff",
+      "kind": "string_heuristic",
+      "path": "internal/engine/history_compaction.go",
+      "symbol": "validateMemoryDelta",
+      "callee": "strings.Contains",
+      "ordinal": 2
+    },
+    {
+      "id": "dec1534d6bd6e1ec",
+      "kind": "string_heuristic",
+      "path": "internal/engine/resource_selection.go",
+      "symbol": "extractResourceSelectionOrdinal",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "ece1a95659e6de14",
+      "kind": "string_heuristic",
+      "path": "internal/entity/registry.go",
+      "symbol": "refreshErrorClass",
+      "callee": "strings.Contains",
+      "value": "connection"
+    },
+    {
+      "id": "bc90826693003b2a",
+      "kind": "string_heuristic",
+      "path": "internal/entity/registry.go",
+      "symbol": "refreshErrorClass",
+      "callee": "strings.Contains",
+      "value": "deadline"
+    },
+    {
+      "id": "63ecdd7979bf8847",
+      "kind": "string_heuristic",
+      "path": "internal/entity/registry.go",
+      "symbol": "refreshErrorClass",
+      "callee": "strings.Contains",
+      "value": "decode"
+    },
+    {
+      "id": "77734201e990f86f",
+      "kind": "string_heuristic",
+      "path": "internal/entity/registry.go",
+      "symbol": "refreshErrorClass",
+      "callee": "strings.Contains",
+      "value": "eof"
+    },
+    {
+      "id": "a8f9b8bb7a9fc5c9",
+      "kind": "string_heuristic",
+      "path": "internal/entity/registry.go",
+      "symbol": "refreshErrorClass",
+      "callee": "strings.Contains",
+      "value": "network"
+    },
+    {
+      "id": "dd269905cd56f10d",
+      "kind": "string_heuristic",
+      "path": "internal/entity/registry.go",
+      "symbol": "refreshErrorClass",
+      "callee": "strings.Contains",
+      "value": "parse"
+    },
+    {
+      "id": "a4f5d730b300e299",
+      "kind": "string_heuristic",
+      "path": "internal/entity/registry.go",
+      "symbol": "refreshErrorClass",
+      "callee": "strings.Contains",
+      "value": "timeout"
+    },
+    {
+      "id": "ad5505406baa60b2",
+      "kind": "string_heuristic",
+      "path": "internal/entity/registry.go",
+      "symbol": "refreshErrorClass",
+      "callee": "strings.Contains",
+      "value": "uhostset"
+    },
+    {
+      "id": "d64189fe8ac0dfbf",
+      "kind": "string_heuristic",
+      "path": "internal/entity/resolve.go",
+      "symbol": "fuzzyScore",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "2da1cd90997ae5f2",
+      "kind": "string_heuristic",
+      "path": "internal/entity/resolve.go",
+      "symbol": "fuzzyScore",
+      "callee": "strings.Contains",
+      "ordinal": 2
+    },
+    {
+      "id": "974d955e69021c50",
+      "kind": "string_heuristic",
+      "path": "internal/envelope/evidence_url_policy.go",
+      "symbol": "IsAllowedSurfaceURL",
+      "callee": "strings.HasPrefix",
+      "value": "/docs/"
+    },
+    {
+      "id": "5fd87f9e8170173d",
+      "kind": "string_heuristic",
+      "path": "internal/envelope/evidence_url_policy.go",
+      "symbol": "deniedInternalSurfaceHost",
+      "callee": "strings.Contains",
+      "value": ".feishu."
+    },
+    {
+      "id": "78e21dbbb32dcbd3",
+      "kind": "string_heuristic",
+      "path": "internal/envelope/evidence_url_policy.go",
+      "symbol": "deniedInternalSurfaceHost",
+      "callee": "strings.Contains",
+      "value": "gitlab"
+    },
+    {
+      "id": "27a354be8db9ecce",
+      "kind": "string_heuristic",
+      "path": "internal/envelope/evidence_url_policy.go",
+      "symbol": "deniedInternalSurfaceHost",
+      "callee": "strings.HasSuffix",
+      "value": ".feishu.cn"
+    },
+    {
+      "id": "7b6d4f404102a192",
+      "kind": "string_heuristic",
+      "path": "internal/envelope/evidence_url_policy.go",
+      "symbol": "deniedInternalSurfaceHost",
+      "callee": "strings.HasSuffix",
+      "value": ".lark.com"
+    },
+    {
+      "id": "d38a2e7810b4d189",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "containsAny",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "d928849e2495c290",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "isBenignPlatformJailbreakContext",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "a39d05c055de8bb5",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "isBenignPlatformJailbreakContext",
+      "callee": "strings.Contains",
+      "ordinal": 2
+    },
+    {
+      "id": "9539ead1dae5d2ca",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "isBenignPlatformJailbreakContext",
+      "callee": "strings.Contains",
+      "ordinal": 3
+    },
+    {
+      "id": "9db29712ac0613cd",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "isBenignPlatformJailbreakContext",
+      "callee": "strings.Contains",
+      "value": "系统提示"
+    },
+    {
+      "id": "203cd5842a29de86",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/jailbreak.go",
+      "symbol": "isBenignPlatformJailbreakContext",
+      "callee": "strings.Contains",
+      "value": "系统提示词"
+    },
+    {
+      "id": "0b05f4e1545230f9",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "accesskey"
+    },
+    {
+      "id": "8c6a1280f1e360f5",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "accesstoken"
+    },
+    {
+      "id": "c50fd4fd5125da56",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "apikey"
+    },
+    {
+      "id": "3d60f8e54f01f9c0",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "apitoken"
+    },
+    {
+      "id": "340f4dc39a7f1a8f",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "authtoken"
+    },
+    {
+      "id": "e295bdb9725268c4",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "bearertoken"
+    },
+    {
+      "id": "a54a45e05cee47f1",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "clientsecret"
+    },
+    {
+      "id": "edffa062277c9907",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "command"
+    },
+    {
+      "id": "35bc0e190ea0ec69",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "credential"
+    },
+    {
+      "id": "3b0ee5ca60d12436",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "idtoken"
+    },
+    {
+      "id": "6951a61cb29c0b99",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "jupyterlabtoken"
+    },
+    {
+      "id": "08e37b6e1d56bf4f",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "jupytertoken"
+    },
+    {
+      "id": "48b468e95c2100fe",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "passwd"
+    },
+    {
+      "id": "ecc57dd7ed50cf30",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "password"
+    },
+    {
+      "id": "17c40066fedf0798",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "privatekey"
+    },
+    {
+      "id": "15652538b28993c4",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "publickey"
+    },
+    {
+      "id": "1fe2838f9029ac33",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "refreshtoken"
+    },
+    {
+      "id": "b8a884b707c49f7d",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "secretkey"
+    },
+    {
+      "id": "864ba29a09bedda1",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "sessiontoken"
+    },
+    {
+      "id": "4bf78100f7c69499",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "ssh"
+    },
+    {
+      "id": "43a2d9b3e0af4166",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "IsCredentialKey",
+      "callee": "strings.Contains",
+      "value": "webhooksecret"
+    },
+    {
+      "id": "aed96f01d3cf50e0",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.HasPrefix",
+      "value": "password"
+    },
+    {
+      "id": "60e560f918535b48",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.Contains",
+      "value": "密码"
+    },
+    {
+      "id": "26637632c48f5e6f",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.HasPrefix",
+      "value": "重置"
+    },
+    {
+      "id": "ba4fe8e4419aaf9a",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.HasPrefix",
+      "value": "改密"
+    },
+    {
+      "id": "731dbb6cbf343631",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.HasSuffix",
+      "value": "reset"
+    },
+    {
+      "id": "c5183f6f4fc4f789",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.HasSuffix",
+      "value": "重置"
+    },
+    {
+      "id": "544ce48ef5433cda",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "explicitPasswordReset",
+      "callee": "strings.HasSuffix",
+      "value": "重置",
+      "ordinal": 2
+    },
+    {
+      "id": "365eb449227914d6",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "passwordQuestion",
+      "callee": "strings.HasSuffix",
+      "value": "?"
+    },
+    {
+      "id": "db74bc14610462bc",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "passwordQuestion",
+      "callee": "strings.HasSuffix",
+      "value": "吗"
+    },
+    {
+      "id": "0d867d449be2df14",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "passwordQuestion",
+      "callee": "strings.HasSuffix",
+      "value": "？"
+    },
+    {
+      "id": "3d75772e66d3b925",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "redactAssignmentKeepMarkerWith",
+      "callee": "strings.HasPrefix",
+      "value": "["
+    },
+    {
+      "id": "dffea00a35a724bd",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "redactAuthorizationKeepMarkerNormalized",
+      "callee": "strings.HasPrefix",
+      "value": "["
+    },
+    {
+      "id": "c171faa1d04c60ae",
+      "kind": "string_heuristic",
+      "path": "internal/guardrails/output.go",
+      "symbol": "redactAuthorizationKeepMarkerWith",
+      "callee": "strings.HasPrefix",
+      "value": "["
+    },
+    {
+      "id": "b8a873d4c14b0962",
+      "kind": "string_heuristic",
+      "path": "internal/httpapi/ws_durable.go",
+      "symbol": "durableImageDigest",
+      "callee": "strings.Index"
+    },
+    {
+      "id": "d0289d1d87c33e3e",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/evidence_adapter.go",
+      "symbol": "ValidateNoRawEvidenceLeak",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "b218be6cf6a07839",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/grounded_validator.go",
+      "symbol": "stripCiteMarkersInProse",
+      "callee": "strings.Contains",
+      "value": " \n"
+    },
+    {
+      "id": "52de5578fd59d5da",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/grounded_validator.go",
+      "symbol": "stripCiteMarkersInProse",
+      "callee": "strings.Contains",
+      "value": "  "
+    },
+    {
+      "id": "90e8deb2801dd965",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/grounded_validator.go",
+      "symbol": "stripCiteMarkersInProse",
+      "callee": "strings.HasSuffix",
+      "value": " "
+    },
+    {
+      "id": "1ad9e57b9afaae11",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "NewClient",
+      "callee": "strings.Contains",
+      "value": "127.0.0.1"
+    },
+    {
+      "id": "6a84f4236f9b6963",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "NewClient",
+      "callee": "strings.Contains",
+      "value": "localhost"
+    },
+    {
+      "id": "59f7626f6e927020",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isForcedToolChoiceUnsupportedError",
+      "callee": "strings.Contains",
+      "value": "thinking mode"
+    },
+    {
+      "id": "d97044bbb503de96",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isForcedToolChoiceUnsupportedError",
+      "callee": "strings.Contains",
+      "value": "tool_choice"
+    },
+    {
+      "id": "764fc04932750619",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isTransientChatError",
+      "callee": "strings.Contains",
+      "value": "connection reset"
+    },
+    {
+      "id": "f795fd38c48d5cd1",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isTransientChatError",
+      "callee": "strings.Contains",
+      "value": "timeout"
+    },
+    {
+      "id": "893d65968f6c8fa4",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isTransientChatError",
+      "callee": "strings.Contains",
+      "value": "tls handshake timeout"
+    },
+    {
+      "id": "28d5aa86f6bdb6c8",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isTransientChatError",
+      "callee": "strings.Contains",
+      "value": "unexpected eof"
+    },
+    {
+      "id": "7734926afca3c49a",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "does not support"
+    },
+    {
+      "id": "346d7d75b9596f8e",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "include_usage"
+    },
+    {
+      "id": "b2f3bd4015c80570",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "not allowed"
+    },
+    {
+      "id": "10da46e2a6dbc701",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "not permitted"
+    },
+    {
+      "id": "583db188933a44f1",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "not recognized"
+    },
+    {
+      "id": "e93e88f4fb690117",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "not support"
+    },
+    {
+      "id": "0bdb4f42a47be650",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "stream_options"
+    },
+    {
+      "id": "ffe4c4a3c3132de1",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "unknown parameter"
+    },
+    {
+      "id": "2d6909f1f42c4e86",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "unrecognized"
+    },
+    {
+      "id": "6c7059aec8fc13e4",
+      "kind": "string_heuristic",
+      "path": "internal/llm/client.go",
+      "symbol": "isUsageUnsupportedChatError",
+      "callee": "strings.Contains",
+      "value": "unsupported"
+    },
+    {
+      "id": "5c39ed5efcfc261d",
+      "kind": "string_heuristic",
+      "path": "internal/observability/trace.go",
+      "symbol": "traceFileDate",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "ae3ca8dcb90d89c3",
+      "kind": "string_heuristic",
+      "path": "internal/observability/trace.go",
+      "symbol": "traceFileDate",
+      "callee": "strings.HasSuffix"
+    },
+    {
+      "id": "956cb304e30a7012",
+      "kind": "string_heuristic",
+      "path": "internal/ocr/validate.go",
+      "symbol": "ValidateImageDataURL",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "3587953d229e680a",
+      "kind": "string_heuristic",
+      "path": "internal/ocr/validate.go",
+      "symbol": "ValidateImageDataURL",
+      "callee": "strings.Index"
+    },
+    {
+      "id": "28ff8846cc061ae8",
+      "kind": "string_heuristic",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "ContainsAsWord",
+      "callee": "strings.Index"
+    },
+    {
+      "id": "2cbf2a60ce2b129c",
+      "kind": "string_heuristic",
+      "path": "internal/platform/gpumatch.go",
+      "symbol": "MatchUserGPUVariantAliases",
+      "callee": "strings.HasPrefix"
+    },
+    {
+      "id": "a8b889ef56d01e65",
+      "kind": "string_heuristic",
+      "path": "internal/policy/leakage.go",
+      "symbol": "ContainsQueryLeakage",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "83c81665a2ce9bba",
+      "kind": "string_heuristic",
+      "path": "internal/policy/leakage.go",
+      "symbol": "ContainsQueryLeakage",
+      "callee": "strings.Contains",
+      "ordinal": 2
+    },
+    {
+      "id": "fc791ddd802aa766",
+      "kind": "string_heuristic",
+      "path": "internal/policy/leakage.go",
+      "symbol": "loadStaffNames",
+      "callee": "strings.HasPrefix",
+      "value": "#"
+    },
+    {
+      "id": "13acf66d4f5db286",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "matchesRequestedMetric",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "8b70d246a11668ff",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "presentMonitorMetrics",
+      "callee": "strings.Contains",
+      "value": "cpu"
+    },
+    {
+      "id": "fff4d9284c3838b8",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "presentMonitorMetrics",
+      "callee": "strings.Contains",
+      "value": "gpu"
+    },
+    {
+      "id": "2f381152542ad799",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "presentMonitorMetrics",
+      "callee": "strings.Contains",
+      "value": "memory"
+    },
+    {
+      "id": "e10d95fca33ccf1d",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/render.go",
+      "symbol": "presentMonitorMetrics",
+      "callee": "strings.Contains",
+      "value": "vram"
+    },
+    {
+      "id": "e9aa5ae3a5b3d7f8",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseRelativeMonitorWindow",
+      "callee": "strings.Contains",
+      "value": "yesterday"
+    },
+    {
+      "id": "05146c2d077f44a0",
+      "kind": "string_heuristic",
+      "path": "internal/readprojection/timewindow.go",
+      "symbol": "parseRelativeMonitorWindow",
+      "callee": "strings.Contains",
+      "value": "昨天"
+    },
+    {
+      "id": "fc8ffb7ab5037990",
+      "kind": "string_heuristic",
+      "path": "internal/security/secret_boundary.go",
+      "symbol": "isBillingOrCostKey",
+      "callee": "strings.Contains",
+      "value": "amount"
+    },
+    {
+      "id": "034fa49f66784af3",
+      "kind": "string_heuristic",
+      "path": "internal/security/secret_boundary.go",
+      "symbol": "isBillingOrCostKey",
+      "callee": "strings.Contains",
+      "value": "balance"
+    },
+    {
+      "id": "ecc0cf2e82beccd7",
+      "kind": "string_heuristic",
+      "path": "internal/security/secret_boundary.go",
+      "symbol": "isBillingOrCostKey",
+      "callee": "strings.Contains",
+      "value": "billing"
+    },
+    {
+      "id": "9001888e0eedaf88",
+      "kind": "string_heuristic",
+      "path": "internal/security/secret_boundary.go",
+      "symbol": "isBillingOrCostKey",
+      "callee": "strings.Contains",
+      "value": "charge"
+    },
+    {
+      "id": "ff4df058439b4def",
+      "kind": "string_heuristic",
+      "path": "internal/security/secret_boundary.go",
+      "symbol": "isBillingOrCostKey",
+      "callee": "strings.Contains",
+      "value": "cost"
+    },
+    {
+      "id": "25d20b7842980c2b",
+      "kind": "string_heuristic",
+      "path": "internal/security/secret_boundary.go",
+      "symbol": "isBillingOrCostKey",
+      "callee": "strings.Contains",
+      "value": "price"
+    },
+    {
+      "id": "f8866346a56150c8",
+      "kind": "string_heuristic",
+      "path": "internal/textutil/markdown_code.go",
+      "symbol": "fenceMarker",
+      "callee": "strings.HasPrefix",
+      "value": "```"
+    },
+    {
+      "id": "ad486e3108fdafe9",
+      "kind": "string_heuristic",
+      "path": "internal/textutil/markdown_code.go",
+      "symbol": "fenceMarker",
+      "callee": "strings.HasPrefix",
+      "value": "~~~"
+    },
+    {
+      "id": "f81c8abf1f77577d",
+      "kind": "string_heuristic",
+      "path": "internal/textutil/markdown_code.go",
+      "symbol": "mapInlineCode",
+      "callee": "strings.Contains",
+      "value": "`"
+    },
+    {
+      "id": "8031e35a9bfe84c3",
+      "kind": "string_heuristic",
+      "path": "internal/tools/policies.go",
+      "symbol": "classForAction",
+      "callee": "strings.HasPrefix",
+      "value": "Diagnose"
+    },
+    {
+      "id": "239f59ab7f7b2884",
+      "kind": "string_heuristic",
+      "path": "internal/tools/policies.go",
+      "symbol": "inferredRegistrySecurityLevel",
+      "callee": "strings.HasSuffix",
+      "value": "Workflow"
+    },
+    {
+      "id": "3a9fe7a7ad0eed1d",
+      "kind": "string_heuristic",
+      "path": "internal/tools/policies.go",
+      "symbol": "routeForAction",
+      "callee": "strings.HasPrefix",
+      "value": "Diagnose"
+    },
+    {
+      "id": "851ef8136ee267b6",
+      "kind": "string_heuristic",
+      "path": "internal/tools/policies.go",
+      "symbol": "routeForAction",
+      "callee": "strings.HasSuffix",
+      "value": "Workflow"
+    },
+    {
+      "id": "6943ff4220fa5e66",
+      "kind": "string_heuristic",
+      "path": "internal/tools/safe_executor.go",
+      "symbol": "classifyError",
+      "callee": "strings.Contains",
+      "value": "connection refused"
+    },
+    {
+      "id": "dde1bc7cb2661f4c",
+      "kind": "string_heuristic",
+      "path": "internal/tools/safe_executor.go",
+      "symbol": "classifyError",
+      "callee": "strings.Contains",
+      "value": "connection reset"
+    },
+    {
+      "id": "6fb0065a230bad6c",
+      "kind": "string_heuristic",
+      "path": "internal/tools/safe_executor.go",
+      "symbol": "classifyError",
+      "callee": "strings.Contains",
+      "value": "eof"
+    },
+    {
+      "id": "5d17227aec76d729",
+      "kind": "string_heuristic",
+      "path": "internal/tools/safe_executor.go",
+      "symbol": "classifyError",
+      "callee": "strings.HasPrefix",
+      "value": "5"
+    },
+    {
+      "id": "a69ff080dda1b87e",
+      "kind": "string_heuristic",
+      "path": "internal/tools/safe_executor.go",
+      "symbol": "firstPodUHostID",
+      "callee": "strings.HasPrefix",
+      "value": "cpod-"
+    },
+    {
+      "id": "4081a8dca919d3e2",
+      "kind": "string_heuristic",
+      "path": "internal/tools/uaccount.go",
+      "symbol": "IGetRole",
+      "callee": "strings.Contains",
+      "value": "Role Not Exist"
+    },
+    {
+      "id": "e5a0fae1cca35cf5",
+      "kind": "string_heuristic",
+      "path": "internal/tools/upstream_error.go",
+      "symbol": "retCodeHintForMessage",
+      "callee": "strings.Contains",
+      "value": "existing cfs"
+    },
+    {
+      "id": "9a54f84aacd86e69",
+      "kind": "string_heuristic",
+      "path": "internal/turncoord/action_journal.go",
+      "symbol": "decodeDefiniteActionError",
+      "callee": "strings.HasPrefix",
+      "value": "upstream_api:"
+    },
+    {
+      "id": "d37aea11c1978ea0",
+      "kind": "string_heuristic",
+      "path": "internal/turncoord/coordinator.go",
+      "symbol": "executionEnvelopeFailureReason",
+      "callee": "strings.Contains",
+      "value": "unsupported execution envelope version"
+    },
+    {
+      "id": "101f2083165afd73",
+      "kind": "string_heuristic",
+      "path": "internal/turncoord/coordinator.go",
+      "symbol": "sanitizeInteractionArgs",
+      "callee": "strings.Contains",
+      "value": "accesskey"
+    },
+    {
+      "id": "33fe60ebb4969991",
+      "kind": "string_heuristic",
+      "path": "internal/turncoord/coordinator.go",
+      "symbol": "sanitizeInteractionArgs",
+      "callee": "strings.Contains",
+      "value": "password"
+    },
+    {
+      "id": "0d9ce57f722176bc",
+      "kind": "string_heuristic",
+      "path": "internal/turncoord/coordinator.go",
+      "symbol": "sanitizeInteractionArgs",
+      "callee": "strings.Contains",
+      "value": "privatekey"
+    },
+    {
+      "id": "39e7e289cf7f4be5",
+      "kind": "string_heuristic",
+      "path": "internal/turncoord/coordinator.go",
+      "symbol": "sanitizeInteractionArgs",
+      "callee": "strings.Contains",
+      "value": "secret"
+    },
+    {
+      "id": "d020549c51ecbfbe",
+      "kind": "string_heuristic",
+      "path": "internal/turncoord/coordinator.go",
+      "symbol": "sanitizeInteractionArgs",
+      "callee": "strings.Contains",
+      "value": "token"
+    },
+    {
+      "id": "03a11410d5c96b00",
+      "kind": "string_heuristic",
+      "path": "internal/workflow/instance_shape.go",
+      "symbol": "isPodInstanceResult",
+      "callee": "strings.HasPrefix",
+      "value": "cpod-"
+    },
+    {
+      "id": "03b69fccf8f347fc",
+      "kind": "string_heuristic",
+      "path": "internal/workflow/region.go",
+      "symbol": "regionFromZone",
+      "callee": "strings.LastIndex",
+      "value": "-"
+    },
+    {
+      "id": "f58f082100cd71a6",
+      "kind": "string_heuristic",
+      "path": "internal/zones/catalog.go",
+      "symbol": "ExactZone",
+      "callee": "strings.Contains"
+    },
+    {
+      "id": "6ace07bb6fa7e49d",
+      "kind": "string_heuristic",
+      "path": "internal/zones/catalog.go",
+      "symbol": "ExactZone",
+      "callee": "strings.Contains",
+      "ordinal": 2
+    }
+  ]
+}

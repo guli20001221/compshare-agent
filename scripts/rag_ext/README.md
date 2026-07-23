@@ -72,9 +72,11 @@ python -m scripts.rag_w0.build_corpus_embeddings \
 # 4. Pin the two external digests (corpus + qwen3 sidecar) in
 #    internal/knowledge/corpus_digest.go, then:
 #      - external retrieval eval (Top-3 >= 0.85)  : scripts.rag_w0.evaluate_retrieval
-#      - external answer/faithfulness (judge key) : scripts.rag_w0.evaluate_answers
 #      - Go loads external_w0.jsonl clean + parity (TestLoadPinnedCorpus...)
 ```
 
-The judge for the answer eval uses `RAG_EVAL_JUDGE_API_KEY` (env only, never committed).
-Platform non-regression (377-Q parity + Top-3) must stay unchanged — external is additive.
+The offline answer/faithfulness evaluator (`evaluate_answers`) was removed: it
+simulated the retired terminal-RAG prompt and could report passes unrelated to the
+central Agent's real HTTP/WebSocket answer path. Answer-quality eval should be
+re-derived from real traces. Retrieval recall + platform non-regression (377-Q parity
++ Top-3) still apply and must stay unchanged — external is additive.

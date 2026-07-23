@@ -67,30 +67,32 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 	if agent == nil || recorder == nil {
 		return
 	}
-	agent.SetPlannerTraceObserver(recorder.SetPlannerTrace)
 	agent.SetRetrievalTraceObserver(recorder.SetRetrievalTrace)
 	agent.SetFreshnessTraceObserver(recorder.SetFreshnessTrace)
 	agent.SetDiagnosisTraceObserver(recorder.SetDiagnosisTrace)
 	agent.SetOutcomeTraceObserver(recorder.SetOutcomeTrace)
 	agent.SetRendererTraceObserver(recorder.SetRendererTrace)
 	agent.SetHardBlockObserver(recorder.SetEngineHardBlock)
+	agent.SetTurnCompletionObserver(recorder.SetTurnCompletionTrace)
 	agent.SetRateLimitObserver(recorder.SetRateLimitDecision)
 	agent.SetTokenUsageObserver(recorder.AddTokenUsage)
+	agent.SetAuthorizationTraceObserver(recorder.AddAuthorizationTrace)
 }
 
 func clearChatTraceObservers(agent *engine.Engine) {
 	if agent == nil {
 		return
 	}
-	agent.SetPlannerTraceObserver(nil)
 	agent.SetRetrievalTraceObserver(nil)
 	agent.SetFreshnessTraceObserver(nil)
 	agent.SetDiagnosisTraceObserver(nil)
 	agent.SetOutcomeTraceObserver(nil)
 	agent.SetRendererTraceObserver(nil)
 	agent.SetHardBlockObserver(nil)
+	agent.SetTurnCompletionObserver(nil)
 	agent.SetRateLimitObserver(nil)
 	agent.SetTokenUsageObserver(nil)
+	agent.SetAuthorizationTraceObserver(nil)
 }
 
 func (r *chatTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) observability.EntityRegistryTrace) {
@@ -118,17 +120,16 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	if r == nil {
 		return
 	}
+	state.ContextDecision = r.stateTrace.ContextDecision
+	state.ContextDecisionTarget = r.stateTrace.ContextDecisionTarget
+	state.ContextDecisionReason = r.stateTrace.ContextDecisionReason
+	state.ContextDecisionError = r.stateTrace.ContextDecisionError
+	state.ContextDecisionActiveTask = r.stateTrace.ContextDecisionActiveTask
+	state.ContextDecisionReadSet = append([]string(nil), r.stateTrace.ContextDecisionReadSet...)
+	state.ContextDecisionStateDelta = append([]string(nil), r.stateTrace.ContextDecisionStateDelta...)
+	state.ContextDecisionToolScope = r.stateTrace.ContextDecisionToolScope
+	state.ContextDecisionToolNames = append([]string(nil), r.stateTrace.ContextDecisionToolNames...)
 	r.stateTrace = state
-}
-
-func (r *chatTraceRecorder) SetPlannerTrace(trace observability.RouterTrace) {
-	if r == nil {
-		return
-	}
-	r.record.IntentRouter = trace
-	r.totalTokens += trace.InputTokens + trace.OutputTokens
-	r.promptTokens += trace.InputTokens
-	r.completionTokens += trace.OutputTokens
 }
 
 func (r *chatTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
@@ -161,6 +162,15 @@ func (r *chatTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
 	r.record.Outcome.KBConflictCount = trace.KBConflictCount
 }
 
+// AddAuthorizationTrace appends one write target's dual-proof audit record; the
+// engine calls it once per verified target of a mutating action.
+func (r *chatTraceRecorder) AddAuthorizationTrace(trace observability.AuthorizationTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Authorizations = append(r.record.Authorizations, trace)
+}
+
 func (r *chatTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {
 	if r == nil {
 		return
@@ -173,6 +183,13 @@ func (r *chatTraceRecorder) SetEngineHardBlock(trace observability.EngineHardBlo
 		return
 	}
 	r.record.EngineHardBlock = trace
+}
+
+func (r *chatTraceRecorder) SetTurnCompletionTrace(trace observability.TurnCompletionTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Completion = trace
 }
 
 func (r *chatTraceRecorder) SetRateLimitDecision(decision governance.Decision) {
@@ -266,13 +283,11 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 	}
 }
 
-// EmitStep accumulates one agent-tier saga StepTrace into THIS turn's record
-// (B6.2). The orchestrator saga runner uses the recorder as its StepSink. Steps
-// are folded into record.Steps in memory and persisted ONCE at Finish via
+// EmitStep accumulates one workflow step trace into this turn's record. Steps are
+// folded into record.Steps in memory and persisted once at Finish via
 // Enqueue/Append → prepareForPersist (which redacts Args/Result) — never a
 // per-step INSERT (a per-step INSERT would collide uk_request_uuid: one
-// agent_traces row per turn). This makes *chatTraceRecorder satisfy
-// orchestrator.StepSink. Per-step SSE event:step (live UI) is fanned separately
+// agent_traces row per turn). Per-step SSE event:step (live UI) is fanned separately
 // by the HTTP handler, reusing the existing sw.WriteEvent("step", ...) path.
 func (r *chatTraceRecorder) EmitStep(step observability.StepTrace) error {
 	if r == nil {

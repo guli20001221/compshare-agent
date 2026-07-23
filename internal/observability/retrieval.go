@@ -17,7 +17,7 @@ const (
 // four-state taxonomy. Pure; called at Finish on the merged retrieval trace.
 //
 // The RefusedReason literals mirror the engine's RAG refusal producers
-// (tryStage2BRetrieval / answerWithRetrievedEvidence / emitSearchKnowledgeRetrievalTrace):
+// (the knowledge Agent and emitSearchKnowledgeRetrievalTrace):
 // "no_evidence", "weak_evidence", "refusal", "retry_no_cite", "wrong_domain",
 // plus the infra failures "token_budget" / "llm_error". The engine-side literals
 // are pinned by its own RefusedReason tests; this mapping is pinned by

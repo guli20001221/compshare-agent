@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +40,7 @@ func TestSessionState_MarshalAlwaysIncludesSchemaVersion(t *testing.T) {
 	s := SessionState{} // zero value, no SchemaVersion set
 	raw, err := json.Marshal(s)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"schema_version":"1.0"}`, string(raw))
+	assert.JSONEq(t, fmt.Sprintf(`{"schema_version":%q}`, SessionStateSchemaCurrent), string(raw))
 }
 
 // ---------------------------------------------------------------------------
@@ -48,13 +50,13 @@ func TestSessionState_MarshalAlwaysIncludesSchemaVersion(t *testing.T) {
 func TestPersistedContext_RoundTripBytes(t *testing.T) {
 	pc1 := PersistedContext{
 		AgentSessionState: SessionState{
-			SchemaVersion:        SessionStateSchemaV1,
-			SelectedInstanceID:   "uhost-abc123",
-			SelectedInstanceName: "gpu-prod-01",
-			LastIntent:           string(intent.IntentMonitorQuery),
-			LastDeployWorkload:   "Qwen2.5-32B",
-			LastDeployZone:       "cn-wlcb-01",
-			PendingDeployModel:   "DeepSeek R1",
+			SchemaVersion:          SessionStateSchemaV1,
+			SelectedInstanceID:     "uhost-abc123",
+			SelectedInstanceName:   "gpu-prod-01",
+			SelectedInstanceSource: "user",
+			LastDeployWorkload:     "Qwen2.5-32B",
+			LastDeployZone:         "cn-wlcb-01",
+			PendingDeployModel:     "DeepSeek R1",
 		},
 		ClientContext: json.RawMessage(`{"source":"console","page":"/instance/list"}`),
 	}
@@ -80,7 +82,7 @@ func TestParsePersistedContext_LegacyObjectWrappedAsClientContext(t *testing.T) 
 
 	pc, err := ParsePersistedContext(legacy)
 	require.NoError(t, err)
-	assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaV1}, pc.AgentSessionState)
+	assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaCurrent}, pc.AgentSessionState)
 	assert.JSONEq(t, string(legacy), string(pc.ClientContext))
 }
 
@@ -101,7 +103,7 @@ func TestParsePersistedContext_LegacyNonObjectShapes(t *testing.T) {
 	for _, raw := range cases {
 		pc, err := ParsePersistedContext(raw)
 		require.NoError(t, err, "input: %s", string(raw))
-		assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaV1}, pc.AgentSessionState,
+		assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaCurrent}, pc.AgentSessionState,
 			"input: %s", string(raw))
 		assert.JSONEq(t, string(raw), string(pc.ClientContext), "input: %s", string(raw))
 	}
@@ -117,7 +119,7 @@ func TestParsePersistedContext_NullAndEmpty(t *testing.T) {
 	} {
 		pc, err := ParsePersistedContext(in)
 		require.NoError(t, err, "input: %q", string(in))
-		assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaV1}, pc.AgentSessionState)
+		assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaCurrent}, pc.AgentSessionState)
 		assert.Empty(t, pc.ClientContext)
 	}
 }
@@ -125,6 +127,14 @@ func TestParsePersistedContext_NullAndEmpty(t *testing.T) {
 func TestParsePersistedContext_MalformedJSON_ReturnsError(t *testing.T) {
 	_, err := ParsePersistedContext(json.RawMessage(`{not valid`))
 	assert.Error(t, err)
+}
+
+func TestParsePersistedContext_KnownEnvelopeWithCorruptAgentStateStillReturnsClientContext(t *testing.T) {
+	raw := json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","recent_facts":"not-an-array"},"client_context":{"page":"/gpu","filters":["running"]}}`)
+	pc, err := ParsePersistedContext(raw)
+	require.Error(t, err)
+	assert.JSONEq(t, `{"page":"/gpu","filters":["running"]}`, string(pc.ClientContext),
+		"a corrupt agent-owned field must not erase the independently owned client context")
 }
 
 // TestParsePersistedContext_LegacyShapesShareAgentKey guards against an
@@ -155,7 +165,7 @@ func TestParsePersistedContext_LegacyShapesShareAgentKey(t *testing.T) {
 			pc, err := ParsePersistedContext(tc.raw)
 			require.NoError(t, err)
 			// Must be treated as legacy: empty agent state, whole blob preserved.
-			assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaV1}, pc.AgentSessionState,
+			assert.Equal(t, SessionState{SchemaVersion: SessionStateSchemaCurrent}, pc.AgentSessionState,
 				"strict detection should NOT have claimed this as an envelope")
 			assert.JSONEq(t, string(tc.raw), string(pc.ClientContext),
 				"legacy blob must be preserved verbatim as client_context")
@@ -173,7 +183,7 @@ func TestParsePersistedContext_LegacyShapesShareAgentKey(t *testing.T) {
 func TestParsePersistedContext_UnknownSchemaVersion_ReturnsTypedError(t *testing.T) {
 	cases := []json.RawMessage{
 		json.RawMessage(`{"agent_session_state":{"schema_version":"0.0"},"x":1}`),
-		json.RawMessage(`{"agent_session_state":{"schema_version":"2.0","new_field":"hello"},"client_context":{"app":"console"}}`),
+		json.RawMessage(`{"agent_session_state":{"schema_version":"9.0","new_field":"hello"},"client_context":{"app":"console"}}`),
 		json.RawMessage(`{"agent_session_state":{"schema_version":"v9-beta"}}`),
 	}
 	for _, raw := range cases {
@@ -195,34 +205,67 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	assert.Equal(t, SessionStateSchemaV1, pc.AgentSessionState.SchemaVersion)
 	assert.Equal(t, "u-1", pc.AgentSessionState.SelectedInstanceID)
 	assert.JSONEq(t, `{"app":"console"}`, string(pc.ClientContext))
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"2.0","context_frame":{"version":1,"kind":"deploy_model","status":"failed_recoverable"}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV2, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, ContextFrameKindDeploy, pc.AgentSessionState.ContextFrame.Kind)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"3.0","context_frame":{"version":1,"kind":"workflow_task","workflow":"CreateDiskWorkflow","slots":{"instance_id":"uhost-1"},"missing_slots":["size_gb"]}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV3, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, ContextFrameKindWorkflowTask, pc.AgentSessionState.ContextFrame.Kind)
+	assert.Equal(t, "CreateDiskWorkflow", pc.AgentSessionState.ContextFrame.Workflow)
+	assert.Equal(t, "uhost-1", pc.AgentSessionState.ContextFrame.Slots["instance_id"])
+	assert.Equal(t, []string{"size_gb"}, pc.AgentSessionState.ContextFrame.MissingSlots)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","selected_instance_id":"uhost-1","selected_instance_source":"user","context_frame":{"version":1,"kind":"workflow_task","workflow":"CreateDiskWorkflow","slots":{"instance_id":"uhost-1"},"slot_sources":{"instance_id":"user"},"missing_slots":["size_gb"]}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV4, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, "user", pc.AgentSessionState.SelectedInstanceSource)
+	assert.Equal(t, "user", pc.AgentSessionState.ContextFrame.SlotSources["instance_id"])
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"5.0","task_snapshot":{"goal":"给训练机扩容","status":"active","missing_slots":["target_size_gb"]},"conversation_digest":{"narrative":"目标：给训练机扩容"}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV5, pc.AgentSessionState.SchemaVersion)
+	assert.Equal(t, "给训练机扩容", pc.AgentSessionState.TaskSnapshot.Goal)
+	assert.Equal(t, []string{"target_size_gb"}, pc.AgentSessionState.TaskSnapshot.MissingSlots)
+	assert.Equal(t, "目标：给训练机扩容", pc.AgentSessionState.ConversationDigest.Narrative)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"6.0","verified_knowledge":[{"question":"终端怎么粘贴","answer":"使用 Ctrl+Shift+V","evidence":{"query":"终端怎么粘贴","items":[{"chunk_id":"terminal-paste-001","snippet":"使用 Ctrl+Shift+V 粘贴"}]},"verified_at_unix":1716530100}]}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV6, pc.AgentSessionState.SchemaVersion)
+	require.Len(t, pc.AgentSessionState.VerifiedKnowledge, 1)
+	assert.Equal(t, "terminal-paste-001", pc.AgentSessionState.VerifiedKnowledge[0].Evidence.Items[0].ChunkID)
+
+	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"7.0","conversation_digest":{"decisions":["采用第二种方案"],"sources":{"decisions":[{"value":"采用第二种方案","pair_index":1,"quote":"第二种"}]},"excerpts":[{"user":"继续","assistant":"请确认实例"}],"summary_frontier":8}}}`)
+	pc, err = ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateSchemaV7, pc.AgentSessionState.SchemaVersion)
+	require.Len(t, pc.AgentSessionState.ConversationDigest.Sources.Decisions, 1)
+	assert.Equal(t, "第二种", pc.AgentSessionState.ConversationDigest.Sources.Decisions[0].Quote)
+	assert.Equal(t, int64(8), pc.AgentSessionState.ConversationDigest.SummaryFrontier)
 }
 
-// ---------------------------------------------------------------------------
-// LastIntent vocabulary contract
-// ---------------------------------------------------------------------------
-
-// TestSessionState_LastIntentValuesMatchIntentEnum enforces that any
-// future writer that sets LastIntent uses the exact intent.Intent string
-// values, not short aliases. The engine package stays decoupled from the
-// intent package at compile time (no production-code import); this test
-// imports intent only to assemble the legal-value set.
-func TestSessionState_LastIntentValuesMatchIntentEnum(t *testing.T) {
-	legal := map[string]struct{}{"": {}}
-	for _, it := range intent.RuntimeIntents() {
-		legal[string(it)] = struct{}{}
-	}
-
-	// Spot-check several intents we expect to flow through SessionState writers.
-	assert.Contains(t, legal, string(intent.IntentMonitorQuery))
-	assert.Contains(t, legal, string(intent.IntentResourceInfo))
-	assert.Contains(t, legal, string(intent.IntentGPUSpecsQuery))
-	assert.Contains(t, legal, string(intent.IntentPricingQuery))
-
-	// Reject hypothetical short aliases that might leak in from informal usage.
-	for _, alias := range []string{"monitor", "resource", "gpu_specs", "pricing"} {
-		assert.NotContains(t, legal, alias,
-			"short alias %q must NOT be a legal LastIntent value", alias)
-	}
+func TestSessionState_VerifiedKnowledgeRoundTrip(t *testing.T) {
+	state := SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+		Question: "终端怎么粘贴",
+		Answer:   "使用 Ctrl+Shift+V",
+		Evidence: knowledge.EvidenceLedger{Query: "终端怎么粘贴", Items: []knowledge.EvidenceItem{{
+			ChunkID: "terminal-paste-001", Title: "终端粘贴", Snippet: "使用 Ctrl+Shift+V 粘贴",
+		}}},
+		VerifiedAtUnix: 1716530100,
+	}}}
+	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
+	require.NoError(t, err)
+	parsed, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, state, parsed.AgentSessionState)
 }
 
 // ---------------------------------------------------------------------------
@@ -243,12 +286,12 @@ func TestEngine_SetSessionState_RoundTrip(t *testing.T) {
 	s1 := SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-xyz",
-		LastIntent:         string(intent.IntentResourceInfo),
 	}
 	e.SetSessionState(s1, 7)
 
 	s2, ver, hydrated := e.SessionStateSnapshot()
 	assert.True(t, hydrated)
+	s1.SchemaVersion = SessionStateSchemaCurrent
 	assert.Equal(t, s1, s2)
 	assert.Equal(t, 7, ver)
 }
@@ -263,7 +306,6 @@ func TestEngine_ClearSessionState_ResetsHydrated(t *testing.T) {
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-prev",
-		LastIntent:         string(intent.IntentMonitorQuery),
 	}, 3)
 
 	s, ver, hydrated := e.SessionStateSnapshot()
@@ -288,7 +330,6 @@ func TestEngine_RoundTrip_AcrossReplicas(t *testing.T) {
 	eA.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-roundtrip",
-		LastIntent:         string(intent.IntentGPUSpecsQuery),
 	}, 0)
 
 	stateA, _, _ := eA.SessionStateSnapshot()
@@ -305,6 +346,7 @@ func TestEngine_RoundTrip_AcrossReplicas(t *testing.T) {
 
 	got, ver, hydrated := eB.SessionStateSnapshot()
 	assert.True(t, hydrated)
+	stateA.SchemaVersion = SessionStateSchemaCurrent
 	assert.Equal(t, stateA, got)
 	assert.Equal(t, 1, ver)
 }
@@ -318,7 +360,7 @@ func TestEngine_RoundTrip_AcrossReplicas(t *testing.T) {
 //
 // MUTATION CHECK: removing the `version <= e.sessionStateVersion` guard
 // from SetSessionState (so the function always overwrites) makes this
-// test fail at the SelectedInstance/LastIntent assertions — proven via
+// test fail at the SelectedInstance assertions — proven via
 // mutation experiment during commit 6.
 func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
@@ -328,7 +370,6 @@ func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testin
 		SchemaVersion:        SessionStateSchemaV1,
 		SelectedInstanceID:   "uhost-A",
 		SelectedInstanceName: "train-a",
-		LastIntent:           string(intent.IntentMonitorQuery),
 		RecentFacts: []ToolFact{
 			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 200,
 				Payload: map[string]any{"state": "Running"}},
@@ -346,9 +387,8 @@ func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testin
 	// would clobber if the guard were missing.
 	e.SetSessionState(SessionState{
 		SchemaVersion:        SessionStateSchemaV1,
-		SelectedInstanceID:   "uhost-B-stale",                   // MUST NOT clobber
-		SelectedInstanceName: "stale-name",                      // MUST NOT clobber
-		LastIntent:           string(intent.IntentResourceInfo), // MUST NOT clobber
+		SelectedInstanceID:   "uhost-B-stale", // MUST NOT clobber
+		SelectedInstanceName: "stale-name",    // MUST NOT clobber
 		RecentFacts: []ToolFact{
 			{Kind: FactKindInstanceState, SubjectID: "uhost-A", ProducedAtUnix: 100,
 				Payload: map[string]any{"state": "OLDER"}}, // older — must lose
@@ -365,7 +405,6 @@ func TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber(t *testin
 	assert.Equal(t, "uhost-A", state.SelectedInstanceID,
 		"stale incoming MUST NOT clobber SelectedInstanceID — the engine's in-memory scalar is at-or-newer than the row")
 	assert.Equal(t, "train-a", state.SelectedInstanceName)
-	assert.Equal(t, string(intent.IntentMonitorQuery), state.LastIntent)
 
 	// Facts merged: uhost-A instance_state stays at 200 (local newer than
 	// stale incoming's 100); uhost-A monitor_sample stays at 210; uhost-C
@@ -392,36 +431,19 @@ func TestSetSessionState_HigherVersionOverwrites(t *testing.T) {
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-stale",
-		LastIntent:         string(intent.IntentMonitorQuery),
 	}, 3)
 
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-fresh",
-		LastIntent:         string(intent.IntentResourceInfo),
 	}, 4) // strictly higher
 
 	state, ver, _ := e.SessionStateSnapshot()
 	assert.Equal(t, "uhost-fresh", state.SelectedInstanceID,
 		"higher version must fully overwrite — the in-memory state was stale")
-	assert.Equal(t, string(intent.IntentResourceInfo), state.LastIntent)
 	assert.Equal(t, 4, ver)
 }
 
-func TestRecordLastIntentFromPlan_UnknownClearsPendingDeployModel(t *testing.T) {
-	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{
-		SchemaVersion:      SessionStateSchemaV1,
-		LastIntent:         string(intent.IntentDeployModel),
-		PendingDeployModel: "DeepSeek R1",
-	}, 1)
-
-	e.recordLastIntentFromPlan(intent.IntentRoute{Intent: intent.IntentUnknown})
-
-	state, _, _ := e.SessionStateSnapshot()
-	assert.Equal(t, string(intent.IntentDeployModel), state.LastIntent, "unknown must not replace LastIntent")
-	assert.Empty(t, state.PendingDeployModel, "unknown turns should break stale deploy clarification carry")
-}
 
 // TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the
 // single-replica path: ClearSessionState sets hydrated=false, so a
@@ -462,20 +484,17 @@ func TestSetSessionState_StrictlyLowerVersion_MustNotRegressVersion(t *testing.T
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-A",
-		LastIntent:         string(intent.IntentMonitorQuery),
 	}, 5)
 
 	// Stale incoming with STRICTLY lower version (e.g. cross-replica lag).
 	e.SetSessionState(SessionState{
 		SchemaVersion:      SessionStateSchemaV1,
 		SelectedInstanceID: "uhost-stale",
-		LastIntent:         string(intent.IntentResourceInfo),
 	}, 3)
 
 	state, ver, _ := e.SessionStateSnapshot()
 	assert.Equal(t, 5, ver, "version MUST NOT regress when incoming version < in-memory version (CAS round-trip invariant)")
 	assert.Equal(t, "uhost-A", state.SelectedInstanceID, "scalars MUST NOT clobber on stale-version merge")
-	assert.Equal(t, string(intent.IntentMonitorQuery), state.LastIntent)
 }
 
 // TestSetSessionState_FactTie_LocalWinsOnSameProducedAt closes the P2.2
@@ -561,7 +580,8 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 			SchemaVersion:                   SessionStateSchemaV1,
 			SelectedInstanceID:              "uhost-abc",
 			SelectedInstanceName:            "gpu-prod",
-			LastIntent:                      string(intent.IntentMonitorQuery),
+			SelectedInstanceSource:          "user",
+			SelectedInstanceAtUnix:          1716530000,
 			LastStockGpuModel:               "4090",
 			PendingSelectionKind:            "instance",
 			PendingSelectionIntent:          string(intent.IntentResourceInfo),
@@ -584,6 +604,25 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 					Zone:    "cn-wlcb-01",
 					Region:  "cn-wlcb",
 				},
+			},
+			ContextFrame: ContextFrame{
+				Version:         1,
+				Kind:            ContextFrameKindDeploy,
+				Status:          ContextFrameStatusFailedRecoverable,
+				Intent:          string(intent.IntentDeployModel),
+				OriginalUserMsg: "在华北一C用最新pytorch给我开一台",
+				GPU:             "4090",
+				ImagePref:       "PyTorch",
+				ImageSource:     "platform",
+				Zone:            "cn-bj2-03",
+				ZoneLabel:       "华北一C",
+				FailureReason:   "华北一C暂无库存",
+				AlternativeZones: []ContextFrameZone{
+					{Zone: "cn-wlcb-01", Label: "华北二A"},
+				},
+				CreatedTurn:    4,
+				ProducedAtUnix: 1716530003,
+				TTLSeconds:     ContextFrameTTLSeconds,
 			},
 			RecentFacts: []ToolFact{
 				{
@@ -612,10 +651,11 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pc1.AgentSessionState.SchemaVersion, pc2.AgentSessionState.SchemaVersion)
 	require.Equal(t, pc1.AgentSessionState.SelectedInstanceID, pc2.AgentSessionState.SelectedInstanceID)
-	require.Equal(t, pc1.AgentSessionState.LastIntent, pc2.AgentSessionState.LastIntent)
 	require.Equal(t, pc1.AgentSessionState.PendingSelectionKind, pc2.AgentSessionState.PendingSelectionKind)
 	require.Len(t, pc2.AgentSessionState.PendingSelectionItems, 1)
 	require.Equal(t, "uhost-list-1", pc2.AgentSessionState.PendingSelectionItems[0].ID)
+	require.Equal(t, ContextFrameKindDeploy, pc2.AgentSessionState.ContextFrame.Kind)
+	require.Equal(t, "华北二A", pc2.AgentSessionState.ContextFrame.AlternativeZones[0].Label)
 	require.Len(t, pc2.AgentSessionState.RecentFacts, 2)
 
 	raw2, err := json.Marshal(pc2)
@@ -648,6 +688,89 @@ func TestRecordLastStockGpuModel_UngatedByHydration(t *testing.T) {
 		"a new single referent overwrites the prior one")
 }
 
+func TestRecordLastStockGpuModel_UsesRecentFactsWhenSessionFactContextEnabled(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion:     SessionStateSchemaCurrent,
+		LastStockGpuModel: "4090",
+	}, 1)
+	e.sessionFactContextEnabled = true
+
+	e.recordLastStockGpuModel("5090")
+
+	assert.Empty(t, e.sessionState.LastStockGpuModel,
+		"fact-enabled HTTP path must not keep writing the legacy stock scalar")
+}
+
+func TestRecordLastStockGpuModel_FactContextDoesNotWriteLegacyWithoutHydration(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	require.False(t, e.sessionStateHydrated)
+	e.sessionFactContextEnabled = true
+
+	e.recordLastStockGpuModel("5090")
+
+	assert.Empty(t, e.sessionState.LastStockGpuModel,
+		"fact context enabled must not write the legacy stock scalar even on non-persisted engines")
+}
+
+func TestStockGpuModelFromRecentFacts_UsesLatestFreshSpecificModel(t *testing.T) {
+	now := time.Unix(2_000, 0)
+	facts := []ToolFact{
+		{
+			Kind:           FactKindStockSnapshot,
+			SubjectID:      "stock:4090",
+			Payload:        map[string]any{"model": "4090"},
+			ProducedAtUnix: now.Add(-4 * time.Second).Unix(),
+			TTLSeconds:     factTTLSecondsStockSnapshot,
+		},
+		{
+			Kind:           FactKindStockSnapshot,
+			SubjectID:      "stock:all",
+			Payload:        map[string]any{"model": "all"},
+			ProducedAtUnix: now.Add(-2 * time.Second).Unix(),
+			TTLSeconds:     factTTLSecondsStockSnapshot,
+		},
+		{
+			Kind:           FactKindStockSnapshot,
+			SubjectID:      "stock:5090",
+			Payload:        map[string]any{"model": "5090"},
+			ProducedAtUnix: now.Add(-1 * time.Second).Unix(),
+			TTLSeconds:     factTTLSecondsStockSnapshot,
+		},
+	}
+
+	assert.Equal(t, "5090", stockGpuModelFromRecentFacts(facts, now))
+
+	facts[2].ProducedAtUnix = now.Add(-time.Duration(factTTLSecondsStockSnapshot+1) * time.Second).Unix()
+	assert.Equal(t, "4090", stockGpuModelFromRecentFacts(facts, now))
+}
+
+func TestFallbackStockGpuModel_RecentFactsRequireSessionFactContext(t *testing.T) {
+	now := time.Unix(2_000, 0)
+	eng := newEngineForSessionStateTest(t)
+	eng.sessionState.RecentFacts = []ToolFact{{
+		Kind:           FactKindStockSnapshot,
+		SubjectID:      "stock:5090",
+		Payload:        map[string]any{"model": "5090"},
+		ProducedAtUnix: now.Unix(),
+		TTLSeconds:     factTTLSecondsStockSnapshot,
+	}}
+
+	assert.Empty(t, eng.fallbackStockGpuModel(now), "flag-off must not consume RecentFacts")
+
+	eng.sessionFactContextEnabled = true
+	assert.Equal(t, "5090", eng.fallbackStockGpuModel(now), "flag-on may consume RecentFacts")
+
+	eng.sessionState.LastStockGpuModel = "4090"
+	assert.Equal(t, "5090", eng.fallbackStockGpuModel(now), "fresh RecentFacts should be the primary stock referent when fact context is enabled")
+
+	eng.sessionState.RecentFacts[0].ProducedAtUnix = now.Add(-time.Duration(factTTLSecondsStockSnapshot+1) * time.Second).Unix()
+	assert.Empty(t, eng.fallbackStockGpuModel(now), "fact-on path must not fall back to the legacy scalar after the stock fact expires")
+
+	eng.sessionFactContextEnabled = false
+	assert.Equal(t, "4090", eng.fallbackStockGpuModel(now), "legacy stock memory remains available with flag off")
+}
+
 // TestToolFact_TTLDefaultsByKind verifies the per-kind default TTL constants.
 // Adding a new kind requires adding a TTL constant and the case in
 // ttlSecondsForKind. Renamed from the original TestToolFact_PayloadKeysPerKind
@@ -656,6 +779,9 @@ func TestRecordLastStockGpuModel_UngatedByHydration(t *testing.T) {
 func TestToolFact_TTLDefaultsByKind(t *testing.T) {
 	assert.Equal(t, factTTLSecondsInstanceState, ttlSecondsForKind(FactKindInstanceState))
 	assert.Equal(t, factTTLSecondsMonitorSample, ttlSecondsForKind(FactKindMonitorSample))
+	assert.Equal(t, factTTLSecondsStockSnapshot, ttlSecondsForKind(FactKindStockSnapshot))
+	assert.Equal(t, factTTLSecondsPriceQuote, ttlSecondsForKind(FactKindPriceQuote))
+	assert.Equal(t, factTTLSecondsBillingQuote, ttlSecondsForKind(FactKindBillingQuote))
 	assert.Greater(t, ttlSecondsForKind(FactKindInstanceState), 0,
 		"instance_state TTL must be positive — zero would make M3 assembler treat it as expired")
 	assert.Greater(t, ttlSecondsForKind(FactKindMonitorSample), 0,
@@ -695,6 +821,30 @@ func TestToolFact_PayloadKeysEnforced(t *testing.T) {
 			"vram_usage":        "70.0",
 			"system_disk_usage": "12.0",
 			"data_disk_usage":   "8.0",
+		},
+		FactKindStockSnapshot: {
+			"model":  "4090",
+			"status": "Normal",
+			"zone":   "cn-wlcb-01",
+			"count":  float64(10),
+			"enough": true,
+			"action": "DescribeAvailableCompShareInstanceTypes",
+		},
+		FactKindPriceQuote: {
+			"action":         "GetCompShareInstanceUserPrice",
+			"gpu_type":       "4090",
+			"zone":           "cn-wlcb-01",
+			"charge_type":    "Dynamic",
+			"price":          float64(1.58),
+			"original_price": float64(1.98),
+			"target":         "4090",
+		},
+		FactKindBillingQuote: {
+			"action":      "GetCompShareRefundPrice",
+			"resource_id": "uhost-1",
+			"amount":      float64(42.5),
+			"target":      "refund",
+			"note":        "退费估算",
 		},
 	}
 	for kind, payload := range canonical {

@@ -23,8 +23,8 @@ package engine
 //   — would let session A redirect session B's LLM calls.
 // - "I added UpdateCorpus to KnowledgeRetriever for hot-reload"
 //   — would let session A poison session B's RAG corpus.
-// - "I added ResetState to GroundedGenerator to fix flaky tests"
-//   — would let session A wipe session B's renderer state mid-turn.
+// - "I added ResetCounters to RateLimiter to fix flaky tests"
+//   — would let session A clear session B's quota mid-turn.
 //
 // What this does NOT catch
 // ------------------------
@@ -33,7 +33,7 @@ package engine
 //   leak surface, not here.
 // - Mutating verbs that don't match the verb prefix list (e.g. "RotateKey",
 //   "ApplyOverride"). These need allow-list maintenance when introduced.
-// - Setters on per-session types (e.g. *Engine.SetIntentPlanner is legitimate
+// - Setters on per-session types are legitimate
 //   — *Engine is constructed per session in NewSession, so its setters
 //   don't leak across tenants). These types are intentionally excluded.
 //
@@ -56,7 +56,6 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
-	grounded "github.com/compshare-agent/internal/renderer"
 )
 
 // mutatingVerbPrefixes is the banned-verb list. Any exported method on a
@@ -91,7 +90,6 @@ var allowedSharedDepMethods = map[string]struct{}{}
 var sharedDepConcreteTypes = []reflect.Type{
 	reflect.TypeOf((*llm.Client)(nil)),                     // SharedDeps.LLMClient
 	reflect.TypeOf((*knowledge.Retriever)(nil)),            // SharedDeps.KnowledgeRetriever
-	reflect.TypeOf((*grounded.GroundedGenerator)(nil)),     // SharedDeps.GroundedGenerator
 	reflect.TypeOf((*governance.InMemoryRateLimiter)(nil)), // SharedDeps.RateLimiter
 	reflect.TypeOf((*knowledge.EmbeddingSidecar)(nil)),     // injected into knowledge.Retriever
 	reflect.TypeOf((*embedding.Client)(nil)),               // upstream of knowledge.EmbeddingSidecar
@@ -140,32 +138,14 @@ func TestSharedDeps_NoMutatingSetterLeakage(t *testing.T) {
 // Without this counter-test the audit could silently drift when SharedDeps
 // grows — a new mutable type could slip in unaudited.
 var nonAuditableFields = map[string]string{
-	"IntentPlannerModel":             "string — no methods",
-	"IntentPlannerEnabledIntents":    "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
-	"IntentRouteIntents":             "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
-	"GroundedGeneratorModel":         "string — no methods",
-	"FastTemplateRenderer":           "bool — no methods",
-	"SupportsObjectToolChoice":       "bool — no methods",
-	"SupportsRequiredToolChoice":     "bool — no methods",
-	"MaxTokensPerTurn":               "int — no methods",
-	"SessionFactContextEnabled":      "bool — no methods",
-	"ReactResultProjectionEnabled":   "bool — no methods",
-	"ReactHistoryCompactionEnabled":  "bool — no methods",
-	"IntentScopedReActPromptEnabled": "bool — no methods",
-	"ExternalExecutor":               "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
-	"IntentPlanner":                  "intent.IntentPlanner interface — concrete intent.IntentRouter verified clean (single exported method Plan, see TODO below for promotion criteria)",
+	"IntentRouteIntents":            "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
+	"SupportsObjectToolChoice":      "bool — no methods",
+	"MaxTokensPerTurn":              "int — no methods",
+	"SessionFactContextEnabled":     "bool — no methods",
+	"ReactResultProjectionEnabled":  "bool — no methods",
+	"ReactHistoryCompactionEnabled": "bool — no methods",
+	"ExternalExecutor":              "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
 }
-
-// TODO(future): promote intent.IntentRouter into sharedDepConcreteTypes IF
-// either (a) it gains a second exported method whose semantics aren't
-// trivially obvious, or (b) production wiring starts handing out the
-// concrete *IntentRouter pointer rather than the IntentPlanner interface.
-// Verified at this PR: intent.IntentRouter only exports Plan(ctx,input)
-// (internal/intent/planner.go:101) — non-mutating, no setter. Behind
-// the IntentPlanner interface (engine.go:111), a setter would also
-// have to widen the interface or require an unsafe type assertion to
-// reach, both of which would be caught by code review. Not an
-// acceptance gap for this PR.
 
 func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {
 	sharedDepsType := reflect.TypeOf(SharedDeps{})
@@ -195,15 +175,8 @@ func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {
 		switch field.Name {
 		case "LLMClient":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/llm.Client", field.Name)
-		case "AgentLLMClient":
-			// Same concrete type as LLMClient (router.For(TierAgent) → *llm.Client),
-			// already audited via sharedDepConcreteTypes — the mutating-setter scan
-			// covers it once. Listed explicitly so the field stays classified.
-			requireAudited(t, audited, "github.com/compshare-agent/internal/llm.Client", field.Name)
 		case "KnowledgeRetriever":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/knowledge.Retriever", field.Name)
-		case "GroundedGenerator":
-			requireAudited(t, audited, "github.com/compshare-agent/internal/renderer.GroundedGenerator", field.Name)
 		case "RateLimiter":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/governance.InMemoryRateLimiter", field.Name)
 		default:

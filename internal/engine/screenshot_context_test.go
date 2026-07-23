@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,17 +50,9 @@ func TestWrapScreenshotContext(t *testing.T) {
 // to an inline string, dropping the fence, or appending the raw userMsg
 // un-wrapped) would slip past the pure-function test and the planner-field test.
 func TestChatWithOptions_LiveTurnFencesImageContextToLLM(t *testing.T) {
-	planner := &scriptedIntentPlanner{results: []intent.IntentRouterResult{{
-		Plan: unknownEngineTestPlan(), // unknown intent → falls through to ReAct → calls the LLM
-	}}}
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("test user")
-	eng.SetIntentPlanner(planner, IntentPlannerOptions{
-		Model:          "test",
-		EnabledIntents: []intent.Intent{intent.IntentResourceInfo},
-	})
-
 	const recognized = "场景：训练报错\n错误与可能原因：CUDA out of memory / 显存不足"
 	const user = "这是什么问题？"
 	_, err := eng.ChatWithOptions(context.Background(), user, noopStep, ChatOptions{ImageContext: recognized})

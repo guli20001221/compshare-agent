@@ -68,7 +68,15 @@ func ExecutionContract(def *Definition) []ExecutionStepContract {
 func projectStep(step Step) ExecutionStepContract {
 	c := ExecutionStepContract{Name: step.Name, Type: step.Type}
 	switch {
-	case step.Type == StepConfirm:
+	case step.Type == StepConfirm || step.Type == StepResolve:
+		// Neither calls a tool: a confirm gate asks the user, a resolve step
+		// computes over what earlier steps already returned. Stating StepResolve
+		// here rather than letting it fall to the default is the point — the
+		// default's own comment calls what lands there "a StepToolCall with
+		// neither Tool nor ToolFunc", which a resolve step is not. It would have
+		// reported the same values for the wrong reason, and the next reader would
+		// have had no way to tell an intentional no-tool step from a misdefined
+		// one.
 		c.ToolBinding = ToolBindingNone
 	case step.ToolFunc != nil:
 		// Tool resolved at runtime → risk not knowable from the definition.

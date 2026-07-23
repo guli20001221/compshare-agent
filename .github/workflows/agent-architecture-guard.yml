@@ -1,0 +1,20 @@
+name: Agent Architecture Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Reject new semantic patch sites
+        run: go run ./cmd/architecture-audit
+      - name: Validate migration inventory
+        run: go test ./internal/architectureguard -count=1

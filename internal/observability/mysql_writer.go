@@ -370,7 +370,7 @@ func promotedColumnValues(rec TraceRecord) []any {
 }
 
 // nullableStr maps "" → SQL NULL and any non-empty string to itself, so empty
-// attribution axes store as NULL rather than '' (keeps COUNT / GROUP BY clean).
+// attribution axes store as NULL rather than ” (keeps COUNT / GROUP BY clean).
 func nullableStr(s string) any {
 	if s == "" {
 		return nil

@@ -16,6 +16,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/sanitizer"
 	"github.com/compshare-agent/internal/security"
+	"github.com/compshare-agent/internal/zones"
 )
 
 var (
@@ -27,6 +28,16 @@ var (
 	ErrHistoryWindowExceeded        = errors.New("history window exceeded")
 	ErrHistoricalMonitorUnsupported = errors.New("historical monitor unsupported")
 	ErrMutatingActionDisabled       = errors.New("mutating action disabled")
+	ErrActionJournalRequired        = errors.New("mutating action journal required")
+	ErrActionOutcomeUncertain       = errors.New("mutating action outcome is uncertain; automatic retry refused")
+	// ErrCFSZoneUnresolved is returned when GetCompShareCFSUpgradePrice cannot
+	// resolve the CFS's internal zone_id before dispatch. Without zone_id,
+	// upstream silently returns RetCode 0 with Price 0 (a fake free price)
+	// instead of failing — live-verified 2026-07-10 (finding #15: no zone_id
+	// -> Price=0/RetCode=0; zone_id=5001 -> Price=12.94/OriginalPrice=31.50).
+	// Refusing here is safer than forwarding a request that looks successful
+	// but is meaningless.
+	ErrCFSZoneUnresolved = errors.New("cannot resolve CFS availability zone")
 )
 
 type ExecutionOrigin string
@@ -38,6 +49,20 @@ const (
 )
 
 type ConfirmFunc func(action string, args map[string]any) bool
+
+// ActionCall is the single external side-effect attempt guarded by an
+// ActionJournal. The journal must durably mark the call started before invoking
+// it and must never invoke it for a replayed or uncertain action.
+type ActionCall func(ctx context.Context, action string, args map[string]any) (map[string]any, error)
+
+// ActionJournal is injected per durable v2 turn. It deliberately lives in the
+// tools package so SafeToolExecutor remains the one boundary shared by ReAct,
+// routed handlers, workflows, and deploy sagas, without coupling those paths
+// to the SQL store.
+type ActionJournal interface {
+	Execute(ctx context.Context, action string, args map[string]any, call ActionCall) (map[string]any, error)
+	Err() error
+}
 
 type SafeToolRequest struct {
 	Action string
@@ -66,6 +91,14 @@ type SafeToolExecutor struct {
 	policies             map[string]ToolExecutionPolicy
 	confirm              ConfirmFunc
 	mutatingToolsEnabled bool
+	actionJournal        ActionJournal
+	requireActionJournal bool
+	// zoneCatalog resolves a Zone string to its numeric ZoneID for
+	// resolveJupyterTokenZoneID. Defaults to the shared, process-wide,
+	// TTL-cached zones.Default() (same instance engine.Engine uses for the
+	// create/deploy paths); tests inject zones.NewCatalog(0) for isolation
+	// (same convention as engine.Engine.zoneCatalog).
+	zoneCatalog *zones.Catalog
 }
 
 type SafeOption func(*SafeToolExecutor)
@@ -75,6 +108,7 @@ func NewSafeToolExecutor(inner ToolExecutor, opts ...SafeOption) *SafeToolExecut
 		inner:                inner,
 		policies:             DefaultToolExecutionPolicies(),
 		mutatingToolsEnabled: true,
+		zoneCatalog:          zones.Default(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -85,6 +119,14 @@ func NewSafeToolExecutor(inner ToolExecutor, opts ...SafeOption) *SafeToolExecut
 func WithPolicies(policies map[string]ToolExecutionPolicy) SafeOption {
 	return func(s *SafeToolExecutor) {
 		s.policies = policies
+	}
+}
+
+// WithZoneCatalog overrides the zone catalog used by resolveJupyterTokenZoneID.
+// Tests should pass zones.NewCatalog(0) for isolation from the shared cache.
+func WithZoneCatalog(cat *zones.Catalog) SafeOption {
+	return func(s *SafeToolExecutor) {
+		s.zoneCatalog = cat
 	}
 }
 
@@ -100,12 +142,38 @@ func WithMutatingToolsEnabled(enabled bool) SafeOption {
 	}
 }
 
+func WithActionJournal(journal ActionJournal) SafeOption {
+	return func(s *SafeToolExecutor) {
+		s.actionJournal = journal
+	}
+}
+
+func WithRequireActionJournal(required bool) SafeOption {
+	return func(s *SafeToolExecutor) {
+		s.requireActionJournal = required
+	}
+}
+
 func (s *SafeToolExecutor) SetMutatingToolsEnabled(enabled bool) {
 	s.mutatingToolsEnabled = enabled
 }
 
 func (s *SafeToolExecutor) SetConfirmFunc(fn ConfirmFunc) {
 	s.confirm = fn
+}
+
+// ActionJournalError is the commit barrier for a durable v2 turn. A caller
+// must not commit the assistant answer or session state when this returns an
+// error, even if the database currently has no uncertain action row (for
+// example when a reservation COMMIT acknowledgement was lost after rollback).
+func (s *SafeToolExecutor) ActionJournalError() error {
+	if s.actionJournal == nil {
+		if s.requireActionJournal {
+			return ErrActionJournalRequired
+		}
+		return nil
+	}
+	return s.actionJournal.Err()
 }
 
 func (s *SafeToolExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
@@ -188,6 +256,11 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 	}
 
 	args := filterSafeArgs(req.Args, allowedParamsForOrigin(policy, req.Origin))
+	resolvedArgs, err := s.resolveBackendZoneID(ctx, req.Action, args)
+	if err != nil {
+		return nil, err
+	}
+	args = resolvedArgs
 	if err := checkPolicyCaps(policy, args); err != nil {
 		return nil, err
 	}
@@ -200,15 +273,38 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		}
 	}
 
-	if req.Hooks.OnBeforeCall != nil {
-		req.Hooks.OnBeforeCall(req.Action, args)
+	var raw map[string]any
+	var attempts int
+	if policy.Class == ActionClassMutating && s.requireActionJournal && s.actionJournal == nil {
+		return nil, fmt.Errorf("%w: %s", ErrActionJournalRequired, req.Action)
 	}
-
-	raw, attempts, err := s.executeWithRetry(ctx, policy, req.Action, args)
+	if policy.Class == ActionClassMutating && s.actionJournal != nil {
+		// Mutations get exactly one external attempt. Retrying a write below the
+		// durable journal would bypass its action slot and can duplicate effects.
+		raw, err = s.actionJournal.Execute(ctx, req.Action, args, func(callCtx context.Context, action string, callArgs map[string]any) (map[string]any, error) {
+			if req.Hooks.OnBeforeCall != nil {
+				req.Hooks.OnBeforeCall(action, callArgs)
+			}
+			attemptCtx := callCtx
+			var cancel context.CancelFunc
+			if policy.TimeoutMS > 0 {
+				attemptCtx, cancel = context.WithTimeout(callCtx, time.Duration(policy.TimeoutMS)*time.Millisecond)
+				defer cancel()
+			}
+			return s.inner.Execute(attemptCtx, action, callArgs)
+		})
+		attempts = 1
+	} else {
+		if req.Hooks.OnBeforeCall != nil {
+			req.Hooks.OnBeforeCall(req.Action, args)
+		}
+		raw, attempts, err = s.executeWithRetry(ctx, policy, req.Action, args)
+	}
 	if err != nil {
 		return nil, err
 	}
 	guarded := applyHistoryGuard(policy, args, raw)
+	guarded = dedupeModelRepositoryTags(req.Action, guarded)
 
 	return &SafeToolResult{
 		Action:      req.Action,
@@ -269,6 +365,346 @@ func (s *SafeToolExecutor) executeWithRetry(ctx context.Context, policy ToolExec
 		}
 	}
 	return nil, attempts, lastErr
+}
+
+// resolveBackendZoneID fills args["zone_id"] for the two actions where a raw
+// tool call (ReAct or otherwise) reaches this executor without one — the
+// model is never given the internal numeric zone id (registry.go's schemas
+// for these actions do not declare zone_id/az_group as a param, and it is
+// not in policy.AllowedParams either), yet two upstream calls misbehave
+// without it: GetCompShareCFSUpgradePrice silently returns a fake ¥0
+// "success" (finding #15) and DescribeCompShareJupyterToken fails outright
+// for Pod (cpod-*) instances (finding #9). Both mirror the existing
+// deterministic-route pattern — describe the resource first, then read its
+// zone id off the response — used by intent.resolveCFSZoneIDFromDescribe and
+// workflow.addRequiredInstanceLocationArgs/addInstancePlacementArgs. This is
+// a safety net for calls that bypass those deterministic routes (e.g. a
+// direct ReAct tool call); a caller that already supplied zone_id (the
+// deterministic routes call in with OriginDiagnosisInternal after resolving
+// it themselves) is left untouched, so no extra describe call happens on the
+// already-working path.
+func (s *SafeToolExecutor) resolveBackendZoneID(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	switch action {
+	case "GetCompShareCFSUpgradePrice":
+		return s.resolveCFSUpgradeZoneID(ctx, args)
+	case "DescribeCompShareJupyterToken":
+		return s.resolveJupyterTokenZoneID(ctx, args)
+	default:
+		return args, nil
+	}
+}
+
+// resolveCFSUpgradeZoneID resolves zone_id for a standalone
+// GetCompShareCFSUpgradePrice call by describing the CFS (mirrors
+// intent.resolveCFSZoneIDFromDescribe). Live-verified 2026-07-10: without
+// zone_id upstream returns RetCode=0/Price=0 (looks successful, is actually
+// meaningless); with zone_id=5001 it returns the real Price=12.94. Since a
+// silent fake-zero is worse than a loud failure, an unresolvable zone REJECTS
+// the call rather than forwarding it.
+func (s *SafeToolExecutor) resolveCFSUpgradeZoneID(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if hasNonZeroUint(args["zone_id"]) {
+		return args, nil
+	}
+	cfsID := strings.TrimSpace(stringArg(args["CfsId"]))
+	if cfsID == "" {
+		// Missing CfsId is a separate validation problem the upstream call
+		// will surface on its own; nothing to resolve here.
+		return args, nil
+	}
+	result, err := s.ExecuteSafe(ctx, SafeToolRequest{
+		Action: "DescribeCFS",
+		Args:   map[string]any{"CfsId": cfsID},
+		Origin: OriginDiagnosisInternal,
+	})
+	var zoneID uint32
+	if err == nil && result != nil {
+		zoneID = cfsZoneIDFromDescribeResult(result.RawResult)
+	}
+	if zoneID == 0 {
+		return nil, fmt.Errorf("%w for CFS %s: cannot verify availability zone, refusing to price (upstream would otherwise return a misleading ¥0)", ErrCFSZoneUnresolved, cfsID)
+	}
+	out := copyMap(args)
+	out["zone_id"] = zoneID
+	return out, nil
+}
+
+// resolveJupyterTokenZoneID resolves zone_id for a DescribeCompShareJupyterToken
+// call whose (first) UHostId is a Pod instance (cpod-* prefix).
+//
+// CORRECTED 2026-07-10 after live E2E testing caught the original
+// implementation as a silent no-op: DescribeCompShareInstance does NOT carry
+// a ZoneId/ZoneID/zone_id field on its UHostSet entries (upstream tags it
+// json:"-" — confirmed empirically, 0/6 real instances, during the original
+// conformance audit; instanceZoneIDFromDescribeResult always returned 0). The
+// field that DOES reliably exist is the string Zone (e.g. "cn-bj2-03"), which
+// must be resolved to its numeric id via the support-zone catalog — the same
+// mechanism workflow.addRequiredPodPlacementArgs uses for Pod placement
+// elsewhere. UCloud (uhost-*) instances did not need zone_id in the live
+// evidence, so this is a no-op unless a Pod id is present. Resolution failure
+// falls through unresolved rather than rejecting: without our fix a Pod call
+// with no zone_id already fails loudly upstream (RetCode 8433) instead of
+// succeeding with a wrong answer, so leaving it unresolved is no worse than
+// the pre-fix behavior.
+func (s *SafeToolExecutor) resolveJupyterTokenZoneID(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if hasNonZeroUint(args["zone_id"]) {
+		return args, nil
+	}
+	podID := firstPodUHostID(args["UHostIds"])
+	if podID == "" {
+		return args, nil
+	}
+	result, err := s.ExecuteSafe(ctx, SafeToolRequest{
+		Action: "DescribeCompShareInstance",
+		Args:   map[string]any{"UHostIds": []string{podID}},
+		Origin: OriginDiagnosisInternal,
+	})
+	if err != nil || result == nil {
+		return args, nil
+	}
+	zone := instanceZoneFromDescribeResult(result.RawResult)
+	if zone == "" {
+		return args, nil
+	}
+	topOrg, org := identityFromContext(ctx)
+	zoneList, err := s.zoneCatalog.Get(ctx, originExecutor{safe: s, origin: OriginDiagnosisInternal}, topOrg, org)
+	if err != nil {
+		return args, nil
+	}
+	zoneID := zoneIDForZoneString(zoneList, zone)
+	if zoneID == 0 {
+		return args, nil
+	}
+	out := copyMap(args)
+	out["zone_id"] = zoneID
+	return out, nil
+}
+
+// identityFromContext reads the per-request tenant identity stashed by
+// WithUser, returning zero values when absent (callers treat that as
+// "cannot resolve" and degrade gracefully rather than failing).
+func identityFromContext(ctx context.Context) (topOrg, org uint32) {
+	u, ok := UserFrom(ctx)
+	if !ok {
+		return 0, 0
+	}
+	return u.TopOrganizationID, u.OrganizationID
+}
+
+// instanceZoneFromDescribeResult returns the string Zone (e.g. "cn-bj2-03")
+// off the first UHostSet entry — unlike ZoneId/ZoneID, this field reliably
+// exists on DescribeCompShareInstance responses.
+func instanceZoneFromDescribeResult(raw map[string]any) string {
+	if raw == nil {
+		return ""
+	}
+	hostSet, ok := raw["UHostSet"].([]any)
+	if !ok || len(hostSet) == 0 {
+		return ""
+	}
+	host, ok := hostSet[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	zone, _ := host["Zone"].(string)
+	return strings.TrimSpace(zone)
+}
+
+// zoneIDForZoneString matches a Zone string (case-insensitive) against the
+// support-zone catalog and returns its numeric ZoneID, or 0 if not found.
+func zoneIDForZoneString(list []zones.ZoneInfo, zone string) uint32 {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return 0
+	}
+	for _, z := range list {
+		if strings.EqualFold(z.Zone, zone) {
+			return z.ZoneID
+		}
+	}
+	return 0
+}
+
+func stringArg(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func hasNonZeroUint(v any) bool {
+	switch x := v.(type) {
+	case uint32:
+		return x != 0
+	case uint64:
+		return x != 0
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	}
+	return false
+}
+
+func firstPodUHostID(v any) string {
+	for _, id := range stringSliceArg(v) {
+		if strings.HasPrefix(id, "cpod-") {
+			return id
+		}
+	}
+	return ""
+}
+
+func stringSliceArg(v any) []string {
+	switch x := v.(type) {
+	case []string:
+		return x
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// cfsZoneIDFromDescribeResult mirrors intent.cfsZoneIDFromDescribe's field
+// precedence (ZoneId / ZoneID / zone_id, checked at the top level then inside
+// CFSSet rows) so this SafeToolExecutor safety net for raw tool calls never
+// disagrees with the deterministic CFS route about where the zone id lives
+// in a DescribeCFS response.
+func cfsZoneIDFromDescribeResult(raw map[string]any) uint32 {
+	if raw == nil {
+		return 0
+	}
+	if id := uint32FieldAny(raw, "ZoneId", "ZoneID", "zone_id"); id != 0 {
+		return id
+	}
+	rows, _ := raw["CFSSet"].([]any)
+	for _, rowAny := range rows {
+		row, ok := rowAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id := uint32FieldAny(row, "ZoneId", "ZoneID", "zone_id"); id != 0 {
+			return id
+		}
+	}
+	return 0
+}
+
+func uint32FieldAny(m map[string]any, keys ...string) uint32 {
+	for _, key := range keys {
+		switch v := m[key].(type) {
+		case int:
+			if v > 0 {
+				return uint32(v)
+			}
+		case int32:
+			if v > 0 {
+				return uint32(v)
+			}
+		case int64:
+			if v > 0 {
+				return uint32(v)
+			}
+		case uint32:
+			if v > 0 {
+				return v
+			}
+		case uint64:
+			if v > 0 {
+				return uint32(v)
+			}
+		case float64:
+			if v > 0 {
+				return uint32(v)
+			}
+		}
+	}
+	return 0
+}
+
+// dedupeModelRepositoryTags defensively removes duplicate tag tokens from the
+// model-repository browse actions' responses. Upstream's own tag-dedup logic
+// checks a "seen" map but never writes to it, so duplicates leak through
+// untouched (finding #22, live-verified 2026-07-10: 3 total tag tokens, "AI"
+// appearing twice). Two shapes carry tags here: DescribeModelRepositoryModels
+// puts a comma-separated "Tag" string on each Models[] entry, and its sibling
+// DescribeModelRepositoryTags returns a flat "Tags" array — this only touches
+// those two fields on those two actions; it is not a generic response
+// post-processing hook. (The deterministic model-repository-browse route
+// already deduped DescribeModelRepositoryTags's list client-side via
+// intent.uniqueStrings before rendering; this closes the gap for a raw tool
+// call that bypasses that route and for the per-model Tag field, which no
+// existing code touched.)
+func dedupeModelRepositoryTags(action string, raw map[string]any) map[string]any {
+	if raw == nil {
+		return raw
+	}
+	switch action {
+	case "DescribeModelRepositoryModels":
+		models, ok := raw["Models"].([]any)
+		if !ok {
+			return raw
+		}
+		for _, item := range models {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if tag, ok := entry["Tag"].(string); ok && tag != "" {
+				entry["Tag"] = dedupeCSVTags(tag)
+			}
+		}
+	case "DescribeModelRepositoryTags":
+		if tags, ok := raw["Tags"].([]any); ok {
+			raw["Tags"] = dedupeAnyStrings(tags)
+		}
+	}
+	return raw
+}
+
+func dedupeCSVTags(value string) string {
+	parts := strings.Split(value, ",")
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return strings.Join(out, ",")
+}
+
+func dedupeAnyStrings(values []any) []any {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]any, 0, len(values))
+	for _, v := range values {
+		s, ok := v.(string)
+		if !ok {
+			out = append(out, v)
+			continue
+		}
+		trimmed := strings.TrimSpace(s)
+		key := strings.ToLower(trimmed)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 func checkPolicyCaps(policy ToolExecutionPolicy, args map[string]any) error {

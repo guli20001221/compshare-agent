@@ -1,180 +1,159 @@
-# Agent-Skill Runtime Architecture
+# Agent Runtime Terms
 
 This document defines the runtime terms used by the Youyun CompShare console
-agent. Its purpose is to keep routing workflows, terminal retrieval, true
-skills, tools, saga workflows, MCP, and guardrails separate in both code and
-review language.
+agent. Its purpose is to keep the current primitives — the central Agent loop,
+typed read capabilities, the action resolver, sealed workflows, typed
+observations, the response gateway, RAG-as-a-tool, guardrails, and MCP —
+separate in both code and review language.
+
+> **History.** An earlier design split execution into three runtime *forms*
+> (`routing` / `terminal_rag` / `agent`), used a Planner to predict a
+> `planned_execution_path`, and carried model-read *true skills* with progressive
+> disclosure under `internal/skills`. That whole stack — `internal/routing`,
+> `cmd/routegen`, route manifests, `internal/skills`, `cmd/skillgen`, the
+> terminal-RAG prompt — was **physically deleted in P6**. There is now a single
+> central Agent loop; the terms below describe what actually runs. Retired terms
+> (`routing`, `terminal_rag`, `true skill`, `planned_execution_path`) should be
+> used only when discussing history, and marked as such.
 
 ## Terms
 
 ### Tool
 
-A tool is a typed callable action. It has a name, input schema, policy level,
-and execution result. Console API wrappers such as instance description,
-pricing, stock, image listing, and mutating API calls are tools.
+A tool is a typed callable action. It has a name, input schema, policy level, and
+execution result. Console API wrappers (instance description, pricing, stock,
+image listing) and the mutating API calls are tools; `SearchKnowledge` is the
+read-only knowledge-retrieval tool.
 
-Tools are not playbooks. The model or a deterministic workflow may call them,
-but the tool definition itself is not a set of instructions to read.
+Tools are not playbooks. The central Agent or a deterministic workflow may call
+them, but the tool definition itself is not a set of instructions to read.
 
-### Routing
+### Central Agent
 
-`routing` is deterministic classify-then-dispatch for stable read-only console
-requests. It chooses a known route and runs a fixed handler over typed tools.
+The central Agent is the single reasoning point (`internal/engine/`). It runs one
+ReAct-style loop over a compiled `AgentContext`: each round it selects a read
+capability, calls a knowledge tool, or proposes a write, and observes the typed
+result in the same loop. There is no separate router and no per-request choice
+between three execution forms.
 
-Routing entries may be authored from metadata, but they are not true skills at
-runtime because the model does not read their body and does not select them by
-progressive disclosure.
+### Read Capability
 
-### Terminal RAG
+A read capability is a typed, model-visible read vertical
+(`internal/capability/read_*.go`). Each owns its request struct, its **field
+contract** (`field_contract.go`'s `schemaNode` — the single source for the tool
+schema, runtime validation, and the consistency test), its handler, and its
+renderer. `ReadDefinitions()` is the catalog; the engine dispatches through
+`executeConcreteReadCapability` → `capability.MigratedRead(action)` →
+`RegisteredRead.Run`. There is no route registry.
 
-`terminal_rag` is a retrieval workflow for pure knowledge answers. It retrieves
-knowledge, validates citation requirements, and returns a final answer.
+### Action Resolver
 
-Terminal retrieval is route-protected. It is not the same thing as using
-retrieval as an internal evidence source inside a longer agent process.
+The action resolver (`internal/actionresolver/`) deterministically resolves the
+target instance and spec of a proposed write (e.g. whether an image catalog must
+be re-queried, via `SpecNeedsImageCatalog`). A write target is authorized only
+when the user's reply deterministically resolves to it — the model does not
+"interpret a candidate list" in place of deterministic target selection.
 
-### True Skill
+### Sealed Workflow
 
-A true skill is a model-read playbook. It is selected by name and description,
-then its body is loaded into model context, with deeper files disclosed only
-when needed.
+A sealed workflow (`internal/workflow/`) is a deterministic write process with
+confirmation. It has a fixed step sequence, code-enforced safety checks, and no
+free-form mutating tool calls by the model. Deployment, disk changes, lifecycle
+ops (start/stop/reboot/reset-password/rename) and custom image creation are
+sealed workflows. The `SealedActionContract` separates the confirmed action from
+runtime metadata, and volatile fields (e.g. image) are re-confirmed before
+execution.
 
-True skills belong to the `agent` runtime form. They are appropriate for
-open-ended diagnosis and other read-only reasoning processes where a fixed
-workflow would be too brittle.
+Mutation stays behind workflow code and confirmation gates; a read capability or
+`SearchKnowledge` may help explain or diagnose, but never mutates.
 
-### Saga Workflow
+### Typed Observation
 
-A saga workflow is a deterministic write process with confirmation. It has a
-fixed sequence of steps, code-enforced safety checks, and no free-form mutating
-tool calls by the model.
+A tool result is not free text. A read capability returns a
+`ReadCapabilityObservation` carrying status, a structured envelope, and — when it
+has exact fields to show — a `render_ref` placeholder plus a `RenderContract`
+instruction. The Agent reasons over the observation and places `render_ref` in
+its answer where exact identifiers/quantities/prices/stock/specs/status belong.
 
-Write operations such as deployment, disk changes, and custom image creation
-belong in saga workflows, not true skills. A skill may help explain or diagnose,
-but mutation stays behind workflow code and confirmation gates.
+### Response Gateway
+
+The response gateway (`engine`'s `finalizeResponse` /
+`substituteReadObservationBlocks`) substitutes the Agent-placed `render_ref` with
+the observation's deterministic rendering in the final answer. It also enforces
+the never-0% monitor invariant (all-no-data historical monitor → whole-answer
+"cannot confirm", never 0%/healthy).
+
+Note: `render_ref` insertion is a model instruction, not a machine guarantee.
+"Exact values always reach the final answer" is a P7 acceptance item, not yet
+code-enforced.
 
 ### RAG Evidence
 
-RAG evidence is retrieval used inside another process, such as diagnosis. It is
-not a terminal answer by itself.
+RAG is retrieval used **inside** the Agent loop, via the `SearchKnowledge` tool —
+not a terminal answer form. Retrieval (`internal/knowledge/`, qwen3 RRF) returns
+cited chunks the Agent grounds its answer in. Citation discipline is **fail-open**:
+if the Agent cannot cite, it gets one bounded retry, then the answer ships anyway
+with citation markers stripped — a wrong or missing chunk_id must not destroy a
+likely-correct answer. The only hard stop is a persistent raw-evidence leak
+(security). Citation-marker leakage into the final text is caught by the output
+guard.
 
-Diagnosis may use retrieval as evidence only after a citation-aware adapter
-exists. Until then, diagnosis retrieval probes must stay observability-only and
-must not inject raw chunk text into a skill prompt or final answer.
+### Diagnosis Chain
+
+A diagnosis chain (`internal/diagnosis/`) is a read-only diagnostic tool. Only
+`DiagnoseSSH` and `DiagnoseBilling` are advertised; `chainRegistry` equals the
+advertised set, so an unadvertised diagnosis name cannot resolve (model-invisible
+≠ unreachable). `DiagnoseSSH` is explicitly a cloud-side precheck: it verifies
+the exact instance, lifecycle state, structured login endpoint, and monitor risk
+signals, but does not probe a public port or inspect the guest OS. Symptoms without
+a dedicated chain (GPU/init/port/image) are handled by the central Agent gathering evidence via `SearchKnowledge` +
+`DescribeCompShareInstance`.
 
 ### Memory
 
-Memory is durable context used to preserve decisions, facts, and prior
-verification results. It can guide future changes, but it is not a guardrail and
-must not replace current-state verification.
+Memory is durable context preserving decisions, facts, and prior verification
+results. It can guide future changes, but it is not a guardrail and must not
+replace current-state verification.
 
 ### Guardrail
 
-A guardrail is a code-enforced safety rule. Examples include destructive-action
-blocks, mutating-action confirmation, tool policy checks, provenance gates, and
-citation validation.
+A guardrail is a code-enforced safety rule: destructive-action blocks, mutating
+confirmation, tool policy checks, provenance gates, citation validation, input
+interception, output redaction. Model-generated risk assessments are
+observability signals; they must not become the source of truth for write safety.
 
-Planner labels and model-generated risk assessments are observability signals.
-They must not become the source of truth for write safety.
+### MCP Server / Client
 
-### MCP Server
+MCP is a transport protocol — not a tool, capability, workflow, or RAG system. An
+MCP *server* would expose selected read tools first (destructive actions never by
+default, mutating workflow exposure requires confirmation support); an MCP
+*client* consumes external MCP servers with allowlisting, namespacing, and
+injection protection. Neither exists in the tree yet.
 
-An MCP server exposes selected tools, resources, or prompts to an external host.
-For this project, server exposure should start with read tools. Destructive
-actions are never exposed by default, and mutating workflow exposure requires
-confirmation support.
-
-### MCP Client
-
-An MCP client consumes external MCP servers. External tools must be allowlisted,
-namespaced, and protected against prompt/resource injection.
-
-MCP is a transport protocol. It is not a tool, a skill, a workflow, or a RAG
-system.
-
-## Runtime Forms
-
-The runtime has three observable execution forms:
+## Runtime Shape
 
 ```text
 user request
-  -> planner predicts planned_execution_path
-  -> runtime executes one of:
-       routing
-       terminal_rag
-       agent
+  -> input guard (inputguard / guardrails)
+  -> central Agent loop (engine): each round selects one of
+       read capability  |  SearchKnowledge  |  propose write -> resolver -> sealed workflow
+  -> response gateway (render_ref -> deterministic rendering)
+  -> output guard (sanitizer / policy)
 ```
 
-### routing
-
-`routing` handles stable read-only console questions through deterministic
-handlers. It is the right form for common catalog, status, pricing, and
-availability queries when the behavior is already well-defined.
-
-### terminal_rag
-
-`terminal_rag` handles pure knowledge requests where the correct response is a
-cited answer from the knowledge base.
-
-### agent
-
-`agent` contains both true skills and saga workflows:
-
-- true skills: body-read, model-driven playbooks for open-ended read-only work.
-- saga workflows: deterministic write flows with confirmation and guardrails.
-
-These are both in the agent form because they are outside the deterministic
-read-only route. They are still different runtime primitives and must not be
-merged.
-
-## Current Repo State
-
-- Deterministic read-only routing already exists for several catalog and status
-  requests.
-- `knowledge_qa` already implements terminal retrieval and must keep citation
-  protection.
-- Deployment is a saga workflow arm, not a true body-read skill.
-- Diagnosis body-read execution exists only behind explicit rollout gates and a
-  diagnosis allowlist.
-- Disk creation already has a workflow.
-- Custom image creation is a high-value mutating action, but it still needs a
-  saga workflow with confirmation and progress follow-up.
-- Deterministic routing entries now live in route manifests
-  (`internal/routing/<name>/route.yaml`); the skill-shaped files
-  (`internal/skills/<name>/SKILL.md`) hold only the agent-lane diagnosis
-  skills. The earlier skill-shaped routing entries were an authoring artifact,
-  since migrated — they were never the runtime definition of a true skill.
+There is exactly one execution shape — the central Agent loop. Reads, knowledge
+retrieval, and writes are choices *within* the loop, not separate top-level
+pipelines.
 
 ## Naming Rules
 
-- Use `routing` for deterministic read-only dispatch.
-- Use `terminal_rag` for cited final knowledge answers.
-- Use `agent` for true skills and saga workflows.
-- Use `true skill` only when the model reads the skill body.
-- Use `saga workflow` for deterministic mutating flows.
+- Use `central Agent` for the single engine loop; do not say "router" or "tier".
+- Use `read capability` for a typed model-visible read vertical.
+- Use `action resolver` for deterministic write-target/spec resolution.
+- Use `sealed workflow` for deterministic mutating flows with confirmation.
+- Use `typed observation` / `response gateway` for the result → render path.
+- Use `RAG evidence` for retrieval consumed inside the loop (`SearchKnowledge`).
 - Use `tool` for typed callable actions.
-- Use `RAG evidence` for retrieval consumed inside another process.
-- Use `MCP server` and `MCP client` by direction.
-- Do not call deterministic routing entries true skills at runtime.
-- Do not call saga workflows true skills.
-- Do not call MCP an agent layer.
-
-## Migration Sequence
-
-1. Add observe-only `planned_execution_path` trace derived from existing intent.
-2. Keep this terminology document as the naming source for future reviews.
-3. Add high-value saga workflows one at a time, starting with custom image
-   creation.
-4. Move deterministic routing entries out of skill-shaped authoring files into
-   route manifests.
-5. Stabilize the body-read diagnosis lane with process evals and strict
-   read-only tool visibility.
-6. Add a citation-aware RAG evidence adapter before any diagnosis skill consumes
-   retrieval content.
-7. Add actual `execution_path` trace after trace sources can distinguish what
-   really executed.
-8. Split MCP work into server and client directions only after the internal
-   boundaries are stable.
-9. Expand eval coverage to measure planned form accuracy, actual-form mismatch,
-   true-skill selection, confirmation behavior, citation validation, and
-   retrieval leakage.
+- Use `MCP server` / `MCP client` by direction; do not call MCP an agent layer.
+- Do not use `routing`, `terminal_rag`, `true skill`, or `planned_execution_path`
+  except when explicitly discussing the retired pre-P6 design.

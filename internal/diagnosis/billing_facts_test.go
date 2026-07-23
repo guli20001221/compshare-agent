@@ -7,33 +7,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBillingFactsRunningDynamicUsesInstancePrice(t *testing.T) {
-	summary := BuildBillingFacts([]any{billingFactHost("uhost-run", "running", "Running", "Dynamic", 1.58, 0.05, 0, "4090", 1)})
+func TestBillingFactsRunningPostpayUsesInstancePrice(t *testing.T) {
+	summary := BuildBillingFacts([]any{billingFactHost("uhost-run", "running", "Running", "Postpay", 1.58, 0.05, 0, "4090", 1)})
 
 	require.Len(t, summary.Instances, 1)
 	fact := summary.Instances[0]
 	assert.Equal(t, "uhost-run", fact.UHostID)
 	assert.Equal(t, "running", fact.Name)
 	assert.Equal(t, "Running", fact.State)
-	assert.Equal(t, "Dynamic", fact.ChargeType)
+	assert.Equal(t, "Postpay", fact.ChargeType)
 	assert.Equal(t, "hour", fact.Period)
 	assert.Equal(t, 1.58, fact.ActualComputeCharge)
-	assert.Equal(t, 0.0, fact.RetainedStoppedCharge)
 	assert.InDelta(t, 1.63, summary.HourlyTotal, 0.0001)
 	assert.True(t, summary.HasDynamic)
 	assert.False(t, summary.HasPrepaid)
 	assert.Equal(t, 1, summary.RunningCount)
 }
 
-func TestBillingFactsStoppedDynamicRetainsDiskAndImageOnly(t *testing.T) {
+func TestBillingFactsStoppedPostpayRetainsOnlyUpstreamListedDisk(t *testing.T) {
 	summary := BuildBillingFacts([]any{billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.05, 0.30, "4090", 1)})
 
 	require.Len(t, summary.Instances, 1)
 	fact := summary.Instances[0]
 	assert.Equal(t, 0.0, fact.ActualComputeCharge)
-	assert.Equal(t, 0.35, fact.RetainedStoppedCharge)
-	assert.InDelta(t, 0.35, summary.HourlyTotal, 0.0001)
-	assert.InDelta(t, 0.35, summary.StoppedRetainedTotal, 0.0001)
+	assert.InDelta(t, 0.05, summary.HourlyTotal, 0.0001)
+	assert.InDelta(t, 0.05, summary.StoppedRetainedTotal, 0.0001)
 	assert.Equal(t, 1, summary.StoppedCount)
 	assert.True(t, summary.HasDynamic)
 }
@@ -47,7 +45,6 @@ func TestBillingFactsPrepaidPreservesChargeTypeAndDoesNotPretendStoppedFree(t *t
 	assert.Equal(t, "day", fact.Period)
 	assert.Equal(t, 5.00, fact.InstancePrice)
 	assert.Equal(t, 5.00, fact.ActualComputeCharge)
-	assert.InDelta(t, 0.10, fact.RetainedStoppedCharge, 0.0001)
 	assert.InDelta(t, 0.0, summary.HourlyTotal, 0.0001)
 	assert.True(t, summary.HasPrepaid)
 	assert.False(t, summary.HasDynamic)
@@ -55,14 +52,14 @@ func TestBillingFactsPrepaidPreservesChargeTypeAndDoesNotPretendStoppedFree(t *t
 
 func TestBillingFactsMixedInstancesComputesTotals(t *testing.T) {
 	summary := BuildBillingFacts([]any{
-		billingFactHost("uhost-run", "running", "Running", "Dynamic", 1.58, 0.05, 0, "4090", 1),
-		billingFactHost("uhost-stop", "stopped", "Stopped", "Dynamic", 1.58, 0.05, 0.30, "4090", 1),
+		billingFactHost("uhost-run", "running", "Running", "Postpay", 1.58, 0.05, 0, "4090", 1),
+		billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.05, 0.30, "4090", 1),
 		billingFactHost("uhost-day", "prepaid", "Stopped", "Day", 5.00, 0.10, 0, "A100", 2),
 	})
 
 	require.Len(t, summary.Instances, 3)
-	assert.InDelta(t, 1.98, summary.HourlyTotal, 0.0001)
-	assert.InDelta(t, 0.45, summary.StoppedRetainedTotal, 0.0001)
+	assert.InDelta(t, 1.68, summary.HourlyTotal, 0.0001)
+	assert.InDelta(t, 0.05, summary.StoppedRetainedTotal, 0.0001)
 	assert.Equal(t, 1, summary.RunningCount)
 	assert.Equal(t, 2, summary.StoppedCount)
 	assert.True(t, summary.HasDynamic)
@@ -71,22 +68,110 @@ func TestBillingFactsMixedInstancesComputesTotals(t *testing.T) {
 
 func TestBillingFactsMatchExistingSummaryForMixedInstances(t *testing.T) {
 	hosts := []any{
-		billingFactHost("uhost-run", "running", "Running", "Dynamic", 1.58, 0.05, 0, "4090", 1),
-		billingFactHost("uhost-stop", "stopped", "Stopped", "Dynamic", 1.58, 0.05, 0.30, "4090", 1),
+		billingFactHost("uhost-run", "running", "Running", "Postpay", 1.58, 0.05, 0, "4090", 1),
+		billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.05, 0.30, "4090", 1),
 		billingFactHost("uhost-day", "prepaid", "Stopped", "Day", 5.00, 0.10, 0, "A100", 2),
 	}
 
 	conclusion, suggestion := buildBillingSummary(hosts)
 
 	assert.Contains(t, conclusion, "3 个实例")
-	assert.Contains(t, conclusion, "按量/抢占式实例合计: ¥1.98/时")
-	assert.Contains(t, conclusion, "关机实例（2 个）仍在产生磁盘和镜像保留费用，合计 ¥0.45/时")
-	assert.Contains(t, conclusion, "包月/包日实例按预付费计费")
+	assert.Contains(t, conclusion, "可确定的当前费用合计：¥1.68/时")
+	assert.Contains(t, conclusion, "关机后仍计费")
+	assert.Contains(t, conclusion, "¥5.00/天")
 	assert.Contains(t, suggestion, "释放")
 }
 
+// TestBillingFactsSpotDetectedViaIsSpotFlag: upstream renders a spot instance's
+// ChargeType as "Postpay" (or, under the CHARGE_BY_SPOT enum, empty) and flags it
+// ONLY with IsSpot=true — it never emits ChargeType "Spot". The chain must key off
+// IsSpot so spot is counted/priced as hourly and labelled 抢占式, and (crucially) an
+// empty-ChargeType spot is not silently dropped from the hourly totals.
+func TestBillingFactsSpotDetectedViaIsSpotFlag(t *testing.T) {
+	spotRunning := billingFactHostSpot("uhost-spot", "spot-run", "Running", "Postpay", true, 0.80, 0.05, 0, "4090", 1)
+	summary := BuildBillingFacts([]any{spotRunning})
+	require.Len(t, summary.Instances, 1)
+	fact := summary.Instances[0]
+	assert.True(t, fact.IsSpot)
+	assert.Equal(t, "hour", fact.Period)
+	assert.True(t, summary.HasDynamic)
+	assert.Equal(t, 0.80, fact.ActualComputeCharge) // running → full unit price
+
+	// stopped spot → ¥0 compute (关机不计费), same as postpay
+	stoppedSpot := billingFactHostSpot("uhost-spot2", "spot-stop", "Stopped", "Postpay", true, 0.80, 0.05, 0, "4090", 1)
+	s2 := BuildBillingFacts([]any{stoppedSpot})
+	assert.Equal(t, 0.0, s2.Instances[0].ActualComputeCharge)
+
+	// label surfaces as 抢占式/时, not 按量/时
+	conclusion, _ := buildBillingSummary([]any{spotRunning})
+	assert.Contains(t, conclusion, "抢占式/时")
+
+	// robustness: spot billed under CHARGE_BY_SPOT → ChargeType "" but IsSpot=true
+	// must STILL count as hourly (not dropped from totals, not mislabelled prepaid).
+	emptyCharge := billingFactHostSpot("uhost-spot3", "spot-empty", "Running", "", true, 0.80, 0.05, 0, "4090", 1)
+	s3 := BuildBillingFacts([]any{emptyCharge})
+	assert.True(t, s3.HasDynamic, "spot with empty ChargeType must still be hourly via IsSpot")
+	assert.False(t, s3.HasPrepaid)
+}
+
+func TestBillingFactsKeepsDiskPeriodsAndRolesSeparate(t *testing.T) {
+	host := billingFactHost("uhost-mixed-disk", "mixed", "Running", "Postpay", 2, 999, 0, "A800", 1)
+	host["Region"] = "cn-bj2"
+	host["Zone"] = "cn-bj2-05"
+	host["DiskPriceInfo"] = []any{
+		diskPriceInfo("Postpay", 0.04, true),
+		diskPriceInfo("Month", 12.5, false),
+	}
+
+	summary := BuildBillingFacts([]any{host})
+	require.Len(t, summary.Instances, 1)
+	fact := summary.Instances[0]
+	assert.Equal(t, "cn-bj2", fact.Region)
+	assert.Equal(t, "cn-bj2-05", fact.Zone)
+	assert.InDelta(t, 2.04, summary.CurrentTotals["hour"], 0.0001)
+	assert.InDelta(t, 12.5, summary.CurrentTotals["month"], 0.0001)
+	assert.NotEqual(t, 14.54, summary.HourlyTotal, "monthly data-disk price must never be added to the hourly total")
+
+	text := formatInstanceFactCost(fact)
+	assert.Contains(t, text, "系统盘：¥0.04/时")
+	assert.Contains(t, text, "数据盘/CVolume：¥12.50/月")
+}
+
+func TestBillingFactsPodCVolumeUsesStructuredDiskPriceWithoutFlatDiskPrice(t *testing.T) {
+	host := map[string]any{
+		"UHostId": "cpod-1", "Name": "pod", "State": "Running",
+		"Region": "cn-wlcb", "Zone": "cn-wlcb-01", "InstanceType": "Container",
+		"GpuType": "4090", "GPU": float64(1), "ChargeType": "Postpay",
+		"InstancePrice": float64(1.8), "CompShareImagePrice": float64(0),
+		"DiskPriceInfo": []any{diskPriceInfo("Postpay", 0.12, true)},
+	}
+
+	summary := BuildBillingFacts([]any{host})
+	require.Len(t, summary.Instances, 1)
+	assert.False(t, summary.Instances[0].HasDiskPrice, "pod response legitimately omits flat DiskPrice")
+	assert.True(t, summary.Instances[0].HasDiskBreakdown)
+	assert.InDelta(t, 1.92, summary.HourlyTotal, 0.0001)
+}
+
+func TestBillingFactsStoppedDoesNotGuessRetentionWhenBreakdownMissing(t *testing.T) {
+	host := billingFactHost("uhost-stop", "stopped", "Stopped", "Postpay", 1.58, 0.08, 0.3, "4090", 1)
+	delete(host, "PostPayPowerOffBillingResource")
+
+	summary := BuildBillingFacts([]any{host})
+	assert.Zero(t, summary.StoppedRetainedTotal)
+	assert.True(t, summary.HasUnknownStoppedRetained)
+	assert.True(t, summary.HasUnknownCurrentCost)
+	assert.NotContains(t, formatInstanceFactCost(summary.Instances[0]), "关机后仍计费")
+}
+
+func billingFactHostSpot(id, name, state, chargeType string, isSpot bool, instancePrice, diskPrice, imagePrice float64, gpuType string, gpu float64) map[string]any {
+	h := billingFactHost(id, name, state, chargeType, instancePrice, diskPrice, imagePrice, gpuType, gpu)
+	h["IsSpot"] = isSpot
+	return h
+}
+
 func billingFactHost(id, name, state, chargeType string, instancePrice, diskPrice, imagePrice float64, gpuType string, gpu float64) map[string]any {
-	return map[string]any{
+	h := map[string]any{
 		"UHostId":             id,
 		"Name":                name,
 		"State":               state,
@@ -96,5 +181,10 @@ func billingFactHost(id, name, state, chargeType string, instancePrice, diskPric
 		"CompShareImagePrice": imagePrice,
 		"GpuType":             gpuType,
 		"GPU":                 gpu,
+		"DiskPriceInfo":       []any{diskPriceInfo(chargeType, diskPrice, true)},
 	}
+	if state == "Stopped" && (chargeType == "Postpay" || chargeType == "Dynamic") {
+		h["PostPayPowerOffBillingResource"] = []any{diskPriceInfo(chargeType, diskPrice, true)}
+	}
+	return h
 }

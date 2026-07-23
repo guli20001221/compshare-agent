@@ -17,6 +17,7 @@ type factContextSubject struct {
 	newest    int64
 	instance  []string
 	monitor   []string
+	other     []string
 }
 
 func assembleFactContext(facts []ToolFact, now time.Time) string {
@@ -42,6 +43,12 @@ func assembleFactContext(facts []ToolFact, now time.Time) string {
 			subject.instance = renderInstanceFact(fact.Payload)
 		case FactKindMonitorSample:
 			subject.monitor = renderMonitorFact(fact.Payload)
+		case FactKindStockSnapshot:
+			subject.other = append(subject.other, "库存 "+strings.Join(renderStockFact(fact.Payload), "，"))
+		case FactKindPriceQuote:
+			subject.other = append(subject.other, "价格 "+strings.Join(renderPriceFact(fact.Payload), "，"))
+		case FactKindBillingQuote:
+			subject.other = append(subject.other, "费用 "+strings.Join(renderBillingFact(fact.Payload), "，"))
 		}
 	}
 	if len(bySubject) == 0 {
@@ -49,7 +56,7 @@ func assembleFactContext(facts []ToolFact, now time.Time) string {
 	}
 	subjects := make([]*factContextSubject, 0, len(bySubject))
 	for _, subject := range bySubject {
-		if len(subject.instance) == 0 && len(subject.monitor) == 0 {
+		if len(subject.instance) == 0 && len(subject.monitor) == 0 && len(subject.other) == 0 {
 			continue
 		}
 		subjects = append(subjects, subject)
@@ -72,6 +79,7 @@ func assembleFactContext(facts []ToolFact, now time.Time) string {
 		if len(subject.monitor) > 0 {
 			parts = append(parts, "监控 "+strings.Join(subject.monitor, "，"))
 		}
+		parts = append(parts, subject.other...)
 		lines = append(lines, "- "+subject.subjectID+"："+strings.Join(parts, "；"))
 	}
 	return truncateFactContext(strings.Join(lines, "\n"))
@@ -166,6 +174,66 @@ func renderMonitorFact(payload map[string]any) []string {
 				parts = append(parts, spec.label+"("+suffix+") "+value+"%")
 			}
 		}
+	}
+	return parts
+}
+
+func renderStockFact(payload map[string]any) []string {
+	var parts []string
+	if model := factString(payload, "model"); model != "" {
+		parts = append(parts, "机型 "+model)
+	}
+	if status := factString(payload, "status"); status != "" {
+		parts = append(parts, "状态 "+status)
+	}
+	if zone := factString(payload, "zone"); zone != "" {
+		parts = append(parts, "可用区 "+zone)
+	}
+	if count := factScalar(payload, "count"); count != "" {
+		parts = append(parts, "数量 "+count)
+	}
+	if enough := factScalar(payload, "enough"); enough != "" {
+		parts = append(parts, "容量预检 "+enough)
+	}
+	return parts
+}
+
+func renderPriceFact(payload map[string]any) []string {
+	var parts []string
+	if target := factString(payload, "target"); target != "" {
+		parts = append(parts, "对象 "+target)
+	}
+	if gpu := factString(payload, "gpu_type"); gpu != "" {
+		parts = append(parts, "GPU "+gpu)
+	}
+	if zone := factString(payload, "zone"); zone != "" {
+		parts = append(parts, "可用区 "+zone)
+	}
+	if charge := factString(payload, "charge_type"); charge != "" {
+		parts = append(parts, "计费 "+charge)
+	}
+	if price := factScalar(payload, "price"); price != "" {
+		parts = append(parts, "价格 "+price)
+	}
+	if original := factScalar(payload, "original_price"); original != "" {
+		parts = append(parts, "原价 "+original)
+	}
+	return parts
+}
+
+func renderBillingFact(payload map[string]any) []string {
+	var parts []string
+	if target := factString(payload, "target"); target != "" {
+		parts = append(parts, "对象 "+target)
+	}
+	if id := factString(payload, "resource_id"); id != "" {
+		parts = append(parts, "资源 "+id)
+	}
+	if amount := factScalar(payload, "amount"); amount != "" {
+		parts = append(parts, "金额 "+amount)
+	}
+	if note := factString(payload, "note"); note != "" {
+		parts = append(parts, note)
 	}
 	return parts
 }

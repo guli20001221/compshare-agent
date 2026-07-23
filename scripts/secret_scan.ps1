@@ -57,7 +57,11 @@ if ($Staged) {
         if (IsAllowedSecretFile $path) {
             continue
         }
-        $diff = git diff --cached --unified=0 -- $path
+        # Scan only newly added content. Removed lines may contain the exact
+        # secret-shaped text this change is deleting and must not make cleanup
+        # commits impossible. Diff headers are excluded explicitly.
+        $diff = git diff --cached --unified=0 -- $path |
+            Where-Object { $_ -match '^\+' -and $_ -notmatch '^\+\+\+' }
         foreach ($pattern in $secretPatterns) {
             if ($diff -match $pattern) {
                 Fail "Potential secret detected in staged diff. Replace literals with environment placeholders."

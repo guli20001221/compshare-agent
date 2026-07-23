@@ -4,10 +4,10 @@ package workflow
 // CompShare GPU instance: query state, confirm reboot, then reboot.
 func RebootInstanceDef() *Definition {
 	return &Definition{
-		Name:        "RebootInstanceWorkflow",
-		Description: "查询实例 → 确认重启 → 重启",
+		Name: "RebootInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForReboot(),
+			stepQuerySupportZones(),
 			stepConfirmReboot(),
 			stepRebootInstance(),
 		},
@@ -28,19 +28,19 @@ func stepQueryForReboot() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "":
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			case "Running":
-				return true, ""
+				return CheckPassed()
 			case "Stopped":
-				return false, "实例当前是关机状态，无法重启。请先开机。"
+				return CheckFailed("实例当前是关机状态，无法重启。请先开机。")
 			case "Rebooting":
-				return false, "实例正在重启中，请稍等。"
+				return CheckFailed("实例正在重启中，请稍等。")
 			default:
-				return false, "实例当前状态为「" + state + "」，仅 Running 状态可以重启。"
+				return CheckFailed("实例当前状态为「" + state + "」，仅 Running 状态可以重启。")
 			}
 		},
 	}
@@ -65,9 +65,9 @@ func stepRebootInstance() Step {
 		Tool: "RebootCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
-			return addRequiredInstanceLocationArgs(map[string]any{
+			return addRequiredPodPlacementArgs(map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
-			}, queried)
+			}, queried, wfCtx.Result("查询支持区"))
 		},
 	}
 }

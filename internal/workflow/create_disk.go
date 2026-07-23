@@ -1,15 +1,19 @@
 package workflow
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/compshare-agent/internal/deployment"
+)
 
 const createDiskMissingSizeMessage = "创建数据盘需要指定磁盘大小（GB）。请告诉我要加多大的数据盘，例如 30GB。"
 
 func CreateDiskDef() *Definition {
 	return &Definition{
-		Name:        "CreateDiskWorkflow",
-		Description: "查询实例 → 查询数据盘价格 → 确认创建数据盘 → 创建并挂载",
+		Name: "CreateDiskWorkflow",
 		Steps: []Step{
 			stepQueryForDisk(),
+			stepQuerySupportZones(),
 			stepQueryCreateDiskPrice(),
 			stepConfirmCreateDisk(),
 			stepCreateAndAttachDisk(),
@@ -25,22 +29,26 @@ func stepQueryForDisk() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			size := paramNum(wfCtx.Params, "Size", 0)
 			if size <= 0 {
-				return nil, errors.New(createDiskMissingSizeMessage)
+				return nil, NewMissingSlotError(createDiskMissingSizeMessage, "size_gb")
 			}
 			wfCtx.Params["Size"] = size
 			return map[string]any{
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
+			uhostID, _ := wfCtx.Params["UHostId"].(string)
+			if uhostID != "" && !narrowInstanceResultToUHostID(result, uhostID) {
+				return CheckFailed("未找到该实例。")
+			}
 			state := extractInstanceState(result)
 			if state == "" {
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			}
-			if isPodInstanceResult(result) || isContainerInstanceResult(result) {
-				return false, "Pod/容器 Pod 实例不支持普通新建数据盘。可改用系统盘扩容，或使用平台支持的共享存储能力。"
+			if isPodInstanceResult(result) {
+				return CheckFailed("Pod 实例不支持普通新建数据盘。可改用系统盘扩容，或使用平台支持的共享存储能力。")
 			}
-			return true, ""
+			return CheckPassed()
 		},
 	}
 }
@@ -56,11 +64,11 @@ func stepQueryCreateDiskPrice() Step {
 				"ChargeType": "Postpay",
 				"Disks": []any{map[string]any{
 					"IsBoot": false,
-					"Type":   "SSDDataDisk",
+					"Type":   deployment.DiskTypeCloudSSD,
 					"Size":   wfCtx.Params["Size"],
 				}},
 			}
-			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
 			}
 			if err := addSourceInstanceSpecForDiskPrice(args, queried); err != nil {
@@ -83,6 +91,18 @@ func addSourceInstanceSpecForDiskPrice(args map[string]any, result map[string]an
 	gpu := firstNumberField(host, "GPU", "Gpu")
 	cpu := firstNumberField(host, "CPU", "Cpu")
 	memory := firstNumberField(host, "Memory", "Mem")
+	if gpu <= 0 {
+		src, ok := sourceInstanceConfig(host)
+		if !ok {
+			return errors.New("当前实例是无卡运行状态，上游未返回原带卡规格，无法安全查询数据盘价格。请先恢复带卡，或选择一台带卡实例。")
+		}
+		gpu = firstNumberField(src, "GPU", "Gpu")
+		cpu = firstNumberField(src, "CPU", "Cpu")
+		memory = firstNumberField(src, "Memory", "Mem")
+		if gpu <= 0 || cpu <= 0 || memory <= 0 {
+			return errors.New("当前实例是无卡运行状态，但原带卡规格不完整，无法安全查询数据盘价格。请先恢复带卡，或选择一台带卡实例。")
+		}
+	}
 	if gpuType == "" || gpu <= 0 || cpu <= 0 || memory <= 0 {
 		return errors.New("未获取到源实例完整规格，无法安全查询数据盘价格。")
 	}
@@ -91,6 +111,13 @@ func addSourceInstanceSpecForDiskPrice(args map[string]any, result map[string]an
 	args["Cpu"] = cpu
 	args["Memory"] = memory
 	return nil
+}
+
+func sourceInstanceConfig(host map[string]any) (map[string]any, bool) {
+	if raw, ok := host["SrcInstanceConfig"].(map[string]any); ok && len(raw) > 0 {
+		return raw, true
+	}
+	return nil, false
 }
 
 func firstNumberField(m map[string]any, keys ...string) float64 {
@@ -113,7 +140,7 @@ func stepConfirmCreateDisk() Step {
 			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
 			summary["disk_size_gb"] = wfCtx.Params["Size"]
-			summary["disk_type"] = "SSDDataDisk"
+			summary["disk_type"] = deployment.DataDiskTypeSSD
 			summary["charge_type"] = "Postpay"
 			summary["price"] = price
 			summary["warning"] = "将创建一块 SSD 云数据盘并挂载到该实例，按量计费。"
@@ -137,10 +164,10 @@ func stepCreateAndAttachDisk() Step {
 				"UHostId":    wfCtx.Params["UHostId"],
 				"Size":       wfCtx.Params["Size"],
 				"Name":       name + "-data",
-				"DiskType":   "SSDDataDisk",
+				"DiskType":   deployment.DataDiskTypeSSD,
 				"ChargeType": "Postpay",
 			}
-			return addRequiredInstanceLocationArgs(args, queried)
+			return addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区"))
 		},
 	}
 }

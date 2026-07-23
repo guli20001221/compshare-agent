@@ -93,53 +93,6 @@ func TestTraceWriterFromEnvEnabled(t *testing.T) {
 	}
 }
 
-func TestAgenticSearchKnowledgeEnabledFromEnv_DefaultOn(t *testing.T) {
-	// 2026-06-07: COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE is DEFAULT-ON, enabled together
-	// with COMPSHARE_EXTERNAL_KNOWLEDGE. The joint enablement was eval-gated on merged
-	// main: the 34-probe joint eval showed no platform-hosted-API vs self-hosted-service
-	// confusion + clean regression, and the platform-FAQ faithfulness eval showed zero
-	// external-corpus contamination of platform answers. unset/empty/affirmative => on;
-	// explicit negative => off; unknown => off + non-empty warn string per CLAUDE.md
-	// (never silently coerce). Boot-only reversible (=0 restores).
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
-	for _, v := range on {
-		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should be on (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := agenticSearchKnowledgeEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestGroundedAnswerValidatorEnabledFromEnv_DefaultOff(t *testing.T) {
-	// COMPSHARE_RAG_GROUNDED_VALIDATOR is DEFAULT-OFF (#126): the cite contract on the
-	// agentic SearchKnowledge synthesis stays off until a flag-on eval proves the agent
-	// cites at the 100%-cite/0-leak bar. unset/empty/explicit-negative => off; affirmative
-	// => on; unknown => off + non-empty warn string per CLAUDE.md (never silently coerce).
-	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := groundedAnswerValidatorEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off (default-off)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := groundedAnswerValidatorEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := groundedAnswerValidatorEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
 func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
 	// COMPSHARE_RAG_DOMAIN_MATCH_GUARD is DEFAULT-OFF (#5): the wrong-domain verdict
 	// is always traced, but the refuse arm stays off until a flag-on eval proves
@@ -158,109 +111,6 @@ func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
 		require.Emptyf(t, unknown, "value %q should not warn", v)
 	}
 	got, unknown := domainMatchGuardEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestFlashKnowledgeRouteGuardEnabledFromEnv_DefaultOff(t *testing.T) {
-	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := flashKnowledgeRouteGuardEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off (default-off)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := flashKnowledgeRouteGuardEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := flashKnowledgeRouteGuardEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestCreatePreferenceExtractorEnabledFromEnv_DefaultOn(t *testing.T) {
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := createPreferenceExtractorEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := createPreferenceExtractorEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := createPreferenceExtractorEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestUnifiedCreateEnabledFromEnv_DefaultOn(t *testing.T) {
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := unifiedCreateEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := unifiedCreateEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := unifiedCreateEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestKnowledgeQAAgentLoopEnabledFromEnv_DefaultOn(t *testing.T) {
-	// 2026-06-09: COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP is DEFAULT-ON — a knowledge_qa turn
-	// routes through the agent loop (forced SearchKnowledge first hop + disciplined
-	// synthesis) instead of the terminal-RAG route. Flip gated on the #150 A/B: the
-	// decisive code-heavy probe (DDP N=20) matched terminal RAG at refusal 0.00 / 0 fab
-	// (opus judge). The terminal route is retained as the =0 rollback. unset/empty/
-	// affirmative => on; explicit negative => off; unknown => off + non-empty warn string
-	// per CLAUDE.md (never silently coerce). Boot-only reversible (=0 restores terminal).
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
-	for _, v := range on {
-		got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should be on (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := knowledgeQAAgentLoopEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestDisciplinedKnowledgeQASynthesisEnabledFromEnv_DefaultOn(t *testing.T) {
-	// 2026-06-09: COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS is DEFAULT-ON — when the agent-loop
-	// route is on (also default), the final knowledge_qa answer is written by terminal
-	// RAG's tight cited-synthesis prompt on the gathered evidence (not the free ReAct
-	// write). This is what made the agent loop match terminal on the #150 A/B (DDP N=20:
-	// refusal 0.00, 0 fab). unset/empty/affirmative => on; explicit negative => off;
-	// unknown => off + non-empty warn string per CLAUDE.md (never silently coerce).
-	on := []string{"", "  ", "1", "on", "ON", "true", "TRUE", "yes"}
-	for _, v := range on {
-		got, unknown := disciplinedKnowledgeQASynthesisEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should be on (default-on)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	off := []string{"0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := disciplinedKnowledgeQASynthesisEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should explicitly disable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := disciplinedKnowledgeQASynthesisEnabledFromEnv(func(string) string { return "maybe" })
 	require.False(t, got, "unknown value treated as off")
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
@@ -295,251 +145,6 @@ func TestCleanupTraceWriterDeletesExpiredFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.NoFileExists(t, filepath.Join(dir, "agent-trace-2026-04-07.jsonl"))
 	require.FileExists(t, filepath.Join(dir, "agent-trace-2026-04-08.jsonl"))
-}
-
-func TestIntentPlannerShadowModeFromEnv(t *testing.T) {
-	if intentPlannerShadowEnabled(func(string) string { return "" }) {
-		t.Fatal("unset COMPSHARE_INTENT_ROUTER_MODE must not enable shadow planner")
-	}
-	if !intentPlannerShadowEnabled(func(key string) string {
-		if key == "COMPSHARE_INTENT_ROUTER_MODE" {
-			return "shadow"
-		}
-		return ""
-	}) {
-		t.Fatal("COMPSHARE_INTENT_ROUTER_MODE=shadow should enable shadow planner")
-	}
-	if intentPlannerShadowEnabled(func(key string) string {
-		if key == "COMPSHARE_INTENT_ROUTER_MODE" {
-			return "auto"
-		}
-		return ""
-	}) {
-		t.Fatal("only explicit shadow mode should enable shadow planner")
-	}
-}
-
-func TestIntentPlannerRouteIntentsFromEnv(t *testing.T) {
-	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "resource, monitor, diagnosis, vague_failure, billing, ,RESOURCE"
-		}
-		return ""
-	})
-	if len(unknown) != 1 || unknown[0] != "billing" {
-		t.Fatalf("unknown values = %#v, want billing", unknown)
-	}
-	if len(intents) != 4 {
-		t.Fatalf("enabled intents = %#v, want resource, monitor, diagnosis, vague_failure", intents)
-	}
-	if intents[0] != "resource_info" || intents[1] != "monitor_query" ||
-		intents[2] != "diagnosis" || intents[3] != "vague_failure" {
-		t.Fatalf("enabled intents = %#v", intents)
-	}
-}
-
-func TestIntentPlannerRouteIntentsFromEnv_NetworkAcceleratorAliases(t *testing.T) {
-	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "network_accelerator, network_accelerator_status, net_accelerator"
-		}
-		return ""
-	})
-	require.Empty(t, unknown)
-	require.Len(t, intents, 1)
-	require.Equal(t, "network_accelerator_status", string(intents[0]))
-}
-
-func TestIntentPlannerRouteIntentsFromEnv_BillingAccountUnsupportedAliases(t *testing.T) {
-	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "billing_account_unsupported, account_billing_unsupported"
-		}
-		return ""
-	})
-	require.Empty(t, unknown)
-	require.Len(t, intents, 1)
-	require.Equal(t, "billing_account_unsupported", string(intents[0]))
-}
-
-func TestIntentPlannerRouteIntentsFromEnv_RefundAliases(t *testing.T) {
-	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "refund, refund_estimate"
-		}
-		return ""
-	})
-	require.Empty(t, unknown)
-	require.Len(t, intents, 1)
-	require.Equal(t, "refund_estimate", string(intents[0]))
-}
-
-func TestIntentPlannerRouteIntentsFromEnv_ImageTagAliases(t *testing.T) {
-	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "image_tags, image_tag, image_tag_catalog"
-		}
-		return ""
-	})
-	require.Empty(t, unknown)
-	require.Len(t, intents, 1)
-	require.Equal(t, "image_tag_catalog", string(intents[0]))
-}
-
-func TestIntentPlannerRouteIntentsFromEnv_ModelRepositoryAliases(t *testing.T) {
-	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "model_repo, model_repository, model_repository_browse"
-		}
-		return ""
-	})
-	require.Empty(t, unknown)
-	require.Len(t, intents, 1)
-	require.Equal(t, "model_repository_browse", string(intents[0]))
-}
-
-func TestIntentPlannerRouteIntentsFromEnv_ImageListAliases(t *testing.T) {
-	intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "platform_image, custom_image, community_image, shared_image, sharing_image, shared_image_list"
-		}
-		return ""
-	})
-	require.Empty(t, unknown)
-	require.Len(t, intents, 1)
-	require.Equal(t, "image_list", string(intents[0]))
-}
-
-func TestIntentPlannerRouteIntents_DefaultsWhenEnvUnset(t *testing.T) {
-	intents, unknown := intentPlannerRouteIntentsFromEnv(func(string) string { return "" })
-	require.Empty(t, unknown)
-
-	want := []string{
-		"resource_info",
-		"monitor_query",
-		"billing_account_unsupported",
-		"gpu_specs_query",
-		"stock_availability",
-		"pricing_query",
-		"refund_estimate",
-		"image_tag_catalog",
-		"model_repository_browse",
-		"image_list",
-		"network_accelerator_status",
-	}
-	require.Len(t, intents, len(want))
-	for i, w := range want {
-		require.Equal(t, w, string(intents[i]))
-	}
-}
-
-func TestIntentPlannerRouteIntents_OffDisablesAll(t *testing.T) {
-	for _, val := range []string{"off", "OFF", "none", "  off  "} {
-		intents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-			if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-				return val
-			}
-			return ""
-		})
-		require.Empty(t, unknown)
-		require.Empty(t, intents)
-	}
-}
-
-func TestSeparateShadowRunnerDisabledWhenRouteEnabled(t *testing.T) {
-	if !useSeparateShadowRunner(true, true, false) {
-		t.Fatal("shadow-only tracing should use the existing shadow runner")
-	}
-	if useSeparateShadowRunner(true, true, true) {
-		t.Fatal("shadow + cutover must not create a second planner runner")
-	}
-	if useSeparateShadowRunner(false, true, false) {
-		t.Fatal("trace disabled must not create a shadow runner")
-	}
-	if useSeparateShadowRunner(true, false, false) {
-		t.Fatal("shadow disabled must not create a shadow runner")
-	}
-}
-
-func TestPlannerRuntimeModeLine(t *testing.T) {
-	routeIntents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "resource,monitor"
-		}
-		return ""
-	})
-	require.Empty(t, unknown)
-
-	line := plannerRuntimeModeLine(true, false, routeIntents)
-	require.Equal(t, "router_mode=shadow route_intents=[resource,monitor]", line)
-
-	line = plannerRuntimeModeLine(true, true, routeIntents)
-	require.Equal(t, "router_mode=dispatch route_intents=[resource,monitor]", line)
-
-	line = plannerRuntimeModeLine(false, true, nil)
-	require.Equal(t, "router_mode=dispatch route_intents=[]", line)
-
-	line = plannerRuntimeModeLine(false, false, nil)
-	require.Equal(t, "router_mode=off route_intents=[]", line)
-}
-
-func TestPlannerRuntimeTrace(t *testing.T) {
-	routeIntents, unknown := intentPlannerRouteIntentsFromEnv(func(key string) string {
-		if key == "COMPSHARE_DIRECT_DISPATCH_INTENTS" {
-			return "resource,monitor"
-		}
-		return ""
-	})
-	require.Empty(t, unknown)
-
-	trace := plannerRuntimeTrace(true, false, routeIntents)
-	require.Equal(t, "shadow", trace.RouterMode)
-	require.Equal(t, []string{"resource", "monitor"}, trace.RouteIntents)
-
-	trace = plannerRuntimeTrace(true, true, routeIntents)
-	require.Equal(t, "dispatch", trace.RouterMode)
-	require.Equal(t, []string{"resource", "monitor"}, trace.RouteIntents)
-
-	trace = plannerRuntimeTrace(false, true, nil)
-	require.Equal(t, "dispatch", trace.RouterMode)
-
-	trace = plannerRuntimeTrace(false, false, nil)
-	require.Equal(t, "off", trace.RouterMode)
-	require.Empty(t, trace.RouteIntents)
-}
-
-func TestGroundedGeneratorModeFromEnv(t *testing.T) {
-	mode, unknown := groundedRendererModeFromEnv(func(string) string { return "" })
-	require.Equal(t, "llm", mode)
-	require.Empty(t, unknown)
-
-	mode, unknown = groundedRendererModeFromEnv(func(key string) string {
-		if key == "USE_GROUNDED_RENDERER" {
-			return " llm "
-		}
-		return ""
-	})
-	require.Equal(t, "llm", mode)
-	require.Empty(t, unknown)
-
-	mode, unknown = groundedRendererModeFromEnv(func(key string) string {
-		if key == "USE_GROUNDED_RENDERER" {
-			return "fast_template"
-		}
-		return ""
-	})
-	// B3: fast_template must be a RECOGNIZED mode, not an unknown value —
-	// an unknown value is logged-and-treated-as-off, which would silently
-	// disable the feature with no operator signal.
-	require.Equal(t, "fast_template", mode)
-	require.Empty(t, unknown)
-
-	mode, unknown = groundedRendererModeFromEnv(func(string) string { return "weird" })
-	require.Empty(t, mode)
-	require.Equal(t, "weird", unknown)
-
-	require.Equal(t, "grounded_renderer=llm", groundedRendererRuntimeLine("llm"))
-	require.Equal(t, "grounded_renderer=off", groundedRendererRuntimeLine(""))
 }
 
 func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
@@ -665,90 +270,6 @@ func TestReactHistoryCompactionEnabledFromEnv(t *testing.T) {
 	})
 	require.False(t, enabled)
 	require.Equal(t, "yes", unknown)
-}
-
-func TestIntentScopedReActPromptEnabledFromEnv(t *testing.T) {
-	enabled, unknown := intentScopedReActPromptEnabledFromEnv(func(string) string { return "" })
-	if enabled || unknown != "" {
-		t.Fatalf("unset USE_INTENT_SCOPED_REACT_PROMPT = (%v,%q), want disabled with no warning", enabled, unknown)
-	}
-
-	enabled, unknown = intentScopedReActPromptEnabledFromEnv(func(key string) string {
-		if key == "USE_INTENT_SCOPED_REACT_PROMPT" {
-			return "1"
-		}
-		return ""
-	})
-	if !enabled || unknown != "" {
-		t.Fatalf("USE_INTENT_SCOPED_REACT_PROMPT=1 = (%v,%q), want enabled", enabled, unknown)
-	}
-
-	enabled, unknown = intentScopedReActPromptEnabledFromEnv(func(key string) string {
-		if key == "USE_INTENT_SCOPED_REACT_PROMPT" {
-			return "maybe"
-		}
-		return ""
-	})
-	if enabled || unknown != "maybe" {
-		t.Fatalf("unknown USE_INTENT_SCOPED_REACT_PROMPT = (%v,%q), want disabled with unknown value", enabled, unknown)
-	}
-}
-
-func TestUseSkillExecutorFromEnv(t *testing.T) {
-	enabled, unknown := useSkillExecutorFromEnv(func(string) string { return "" })
-	require.False(t, enabled, "default off")
-	require.Empty(t, unknown)
-
-	enabled, unknown = useSkillExecutorFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR" {
-			return "1"
-		}
-		return ""
-	})
-	require.True(t, enabled)
-	require.Empty(t, unknown)
-
-	enabled, unknown = useSkillExecutorFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR" {
-			return "true"
-		}
-		return ""
-	})
-	require.False(t, enabled, "unknown value treated as off")
-	require.Equal(t, "true", unknown)
-}
-
-func TestSkillExecutorDiagnosisPilotsFromEnv(t *testing.T) {
-	pilots, unknown := skillExecutorDiagnosisPilotsFromEnv(func(string) string { return "" })
-	require.Empty(t, pilots)
-	require.Empty(t, unknown)
-
-	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return " diagnose-port-firewall,diagnose-ssh "
-		}
-		return ""
-	})
-	require.Equal(t, []string{"diagnose-port-firewall", "diagnose-ssh"}, pilots)
-	require.Empty(t, unknown)
-
-	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return "diagnose-port-firewall,typo"
-		}
-		return ""
-	})
-	require.Equal(t, []string{"diagnose-port-firewall"}, pilots)
-	require.Equal(t, []string{"typo"}, unknown)
-
-	pilots, unknown = skillExecutorDiagnosisPilotsFromEnv(func(key string) string {
-		if key == "USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS" {
-			return "diagnose_port_firewall,diagnose_gpu_not_detected"
-		}
-		return ""
-	})
-	require.Equal(t, []string{"diagnose-port-firewall", "diagnose-gpu-not-detected"}, pilots)
-	require.Empty(t, unknown)
 }
 
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
@@ -997,71 +518,6 @@ func TestKnowledgeRetrieverFromEnvHybridLoadsSidecar(t *testing.T) {
 	// with the stub key. Just verify the retriever was constructed.
 }
 
-func TestCLIShadowPlannerInputUsesRegistrySnapshot(t *testing.T) {
-	eng := engine.NewWithDeps(cmdMockLLM{}, cmdRegistryExecutor{}, nil)
-	if _, err := eng.Init(context.Background()); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-
-	input := cliShadowPlannerInput(eng, "check uhost-cli monitor")
-	if input.Resolver == nil {
-		t.Fatal("shadow planner input must include immutable registry resolver")
-	}
-	got, res := input.Resolver.ResolveByID("uhost-cli")
-	if res.Status != entity.ResolveHit || got == nil || got.Name != "cli-host" {
-		t.Fatalf("resolver ResolveByID = (%#v, %#v), want uhost-cli hit", got, res)
-	}
-}
-
-func TestCLITraceRecorderWritesPlannerTrace(t *testing.T) {
-	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	writer, err := observability.NewWriter(observability.WriterOptions{
-		Dir: t.TempDir(),
-		Now: func() time.Time { return start },
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	recorder := newCLITraceRecorder(writer, "", 1, "planner trace", start)
-	recorder.SetPlannerTraceSupplier(func() observability.RouterTrace {
-		return observability.RouterTrace{
-			Enabled:     true,
-			Model:       "deepseek-v4-flash",
-			SchemaValid: true,
-			Intent:      "monitor_query",
-			Slots: observability.PlannerSlots{
-				Metrics: []string{"gpu"},
-			},
-			Confidence: 0.8,
-		}
-	})
-	recorder.OnStep(engine.StepEvent{
-		Type:   engine.StepToolCall,
-		Action: "DescribeCompShareInstance",
-		Source: observability.ToolSourceMainReAct,
-		Args:   map[string]any{"Limit": 10},
-	})
-	recorder.OnStep(engine.StepEvent{
-		Type:        engine.StepToolResult,
-		Action:      "DescribeCompShareInstance",
-		Source:      observability.ToolSourceMainReAct,
-		TraceResult: map[string]any{"RetCode": 0},
-	})
-
-	if err := recorder.Finish(nil, start); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	record := readSingleTraceRecord(t, writer, start)
-	if !record.IntentRouter.Enabled || !record.IntentRouter.SchemaValid ||
-		record.IntentRouter.Model != "deepseek-v4-flash" || record.IntentRouter.Intent != "monitor_query" {
-		t.Fatalf("planner trace = %#v", record.IntentRouter)
-	}
-	if len(record.ToolCalls) != 1 || record.ToolCalls[0].Action != "DescribeCompShareInstance" {
-		t.Fatalf("tool calls changed by planner trace supplier: %#v", record.ToolCalls)
-	}
-}
-
 func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	writer, err := observability.NewWriter(observability.WriterOptions{
@@ -1084,36 +540,6 @@ func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {
 	record := readSingleTraceRecord(t, writer, start)
 	require.Equal(t, "shadow", record.Runtime.RouterMode)
 	require.Equal(t, []string{"resource", "monitor"}, record.Runtime.RouteIntents)
-}
-
-func TestCLITraceRecorderAcceptsEnginePlannerTrace(t *testing.T) {
-	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	writer, err := observability.NewWriter(observability.WriterOptions{
-		Dir: t.TempDir(),
-		Now: func() time.Time { return start },
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	recorder := newCLITraceRecorder(writer, "", 1, "cutover trace", start)
-	recorder.SetPlannerTrace(observability.RouterTrace{
-		Enabled:     true,
-		Model:       "deepseek-v4-flash",
-		SchemaValid: true,
-		Intent:      "resource_info",
-		Confidence:  0.9,
-		RouteStatus: "dispatched",
-	})
-
-	if err := recorder.Finish(nil, start); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	record := readSingleTraceRecord(t, writer, start)
-	if !record.IntentRouter.Enabled || record.IntentRouter.Intent != "resource_info" ||
-		record.IntentRouter.RouteStatus != "dispatched" {
-		t.Fatalf("planner trace = %#v", record.IntentRouter)
-	}
 }
 
 func TestCLITraceRecorderAcceptsRetrievalTrace(t *testing.T) {
@@ -1265,35 +691,6 @@ func TestCLITraceRecorderWritesEngineHardBlockWithoutToolStep(t *testing.T) {
 	}
 }
 
-func TestCLITraceRecorderPlannerInvalidTraceStillWritesLine(t *testing.T) {
-	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	writer, err := observability.NewWriter(observability.WriterOptions{
-		Dir: t.TempDir(),
-		Now: func() time.Time { return start },
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	recorder := newCLITraceRecorder(writer, "", 3, "planner failure", start)
-	recorder.SetPlannerTraceSupplier(func() observability.RouterTrace {
-		return observability.RouterTrace{
-			Enabled:     true,
-			Model:       "deepseek-v4-flash",
-			SchemaValid: false,
-			Intent:      "unknown",
-		}
-	})
-
-	if err := recorder.Finish(nil, start); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	record := readSingleTraceRecord(t, writer, start)
-	if !record.IntentRouter.Enabled || record.IntentRouter.SchemaValid || record.IntentRouter.Intent != "unknown" {
-		t.Fatalf("planner failure trace = %#v", record.IntentRouter)
-	}
-}
-
 func TestCLITraceRecorderWritesOneRedactedTraceLine(t *testing.T) {
 	start := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	end := start.Add(1500 * time.Millisecond)
@@ -1392,25 +789,20 @@ func TestCLITraceRecorderWritesActualTotalTokens(t *testing.T) {
 	}
 	recorder := newCLITraceRecorder(writer, "", 1, "tokens", start)
 	recorder.AddTokenUsage(llm.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10})
-	recorder.SetPlannerTrace(observability.RouterTrace{
-		Enabled:      true,
-		InputTokens:  11,
-		OutputTokens: 5,
-	})
 
 	if err := recorder.Finish(nil, start); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 
 	record := readSingleTraceRecord(t, writer, start)
-	if record.Outcome.TotalTokens != 26 {
-		t.Fatalf("outcome.total_tokens = %d, want 26", record.Outcome.TotalTokens)
+	if record.Outcome.TotalTokens != 10 {
+		t.Fatalf("outcome.total_tokens = %d, want 10", record.Outcome.TotalTokens)
 	}
-	if record.Outcome.PromptTokens != 18 {
-		t.Fatalf("outcome.prompt_tokens = %d, want 18", record.Outcome.PromptTokens)
+	if record.Outcome.PromptTokens != 7 {
+		t.Fatalf("outcome.prompt_tokens = %d, want 7", record.Outcome.PromptTokens)
 	}
-	if record.Outcome.CompletionTokens != 8 {
-		t.Fatalf("outcome.completion_tokens = %d, want 8", record.Outcome.CompletionTokens)
+	if record.Outcome.CompletionTokens != 3 {
+		t.Fatalf("outcome.completion_tokens = %d, want 3", record.Outcome.CompletionTokens)
 	}
 }
 

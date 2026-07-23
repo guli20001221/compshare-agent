@@ -1,24 +1,31 @@
 # eval/execution_path
 
-This package is the architecture-level eval matrix for the three observable
-runtime forms:
+> **LEGACY TRACE COMPAT — not the current architecture.** The `routing` /
+> `terminal_rag` / `agent` runtime-form taxonomy below predates the P6
+> central-Agent cutover. The current runtime has a **single** execution form (the
+> central Agent loop, `internal/engine`). These tests are retained ONLY to guard
+> that `observability.TraceRecord.DeriveActualExecutionPath` /
+> `ExecutionPathMismatch` still classify **historical and cutover-era** trace
+> records correctly, so trace storage / dashboards / the eval harness keep working
+> across the schema migration. Do **not** read this package as a description of how
+> the system routes today — see `docs/architecture.md`. P7 acceptance must judge a
+> turn by its real tools / steps / observations / final answer, not by a derived
+> form label.
 
-- `routing`: deterministic classify-then-dispatch for stable read-only console
-  requests.
-- `terminal_rag`: cited retrieval workflow for pure knowledge answers.
-- `agent`: body-read diagnosis skills, ReAct/tool loops, and saga workflows.
+This package pins the derivation of the retired runtime-form labels:
 
-## Current Coverage
+- `routing`: legacy deterministic classify-then-dispatch label.
+- `terminal_rag`: legacy cited-retrieval-workflow label.
+- `agent`: legacy label for body-read diagnosis, ReAct/tool loops, and saga workflows.
 
-| Metric | Current gate | Status |
+## Coverage (legacy-derivation guards)
+
+| Metric | Gate | Status |
 |---|---|---|
-| actual runtime form derivation | `TestActualExecutionPathMatrix` | covered |
-| diagnosis RAG evidence stays agent | `TestActualExecutionPathMatrix` | covered |
-| terminal RAG stays separate from RAG-as-evidence | `TestActualExecutionPathMatrix` | covered |
-| no-signal hard-block/refusal not mislabeled as agent | `TestActualExecutionPathMatrix` | covered |
-| planned runtime form presence | `internal/intent` and `internal/observability` trace tests | covered |
-| planned/actual mismatch rate input | `TestPlannedActualExecutionPathMismatchMatrix` | covered |
+| legacy form derivation from a trace | `TestActualExecutionPathMatrix` | covered |
+| diagnosis RAG evidence derives to `agent`, not `terminal_rag` | `TestActualExecutionPathMatrix` | covered |
+| no-signal hard-block/refusal not mislabeled `agent` | `TestActualExecutionPathMatrix` | covered |
+| planned/actual legacy-form mismatch input | `TestPlannedActualExecutionPathMismatchMatrix` | covered |
 
-Mismatch is counted only when both forms are observable. No-signal turns, such
-as hard blocks and canned refusals, are excluded instead of being defaulted to
-`agent`.
+Mismatch is counted only when both legacy forms are observable. No-signal turns
+(hard blocks, canned refusals) are excluded rather than defaulted to `agent`.

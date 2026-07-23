@@ -3,11 +3,20 @@ package agentpool
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/store"
 )
+
+// committedTailTurnLimit deliberately reads one complete turn beyond the
+// engine's 120 non-system-message window. ChatWithOptions compacts that overlap
+// into the persisted ConversationDigest before appending the new user message.
+// Reading exactly 60 turns would never overflow at turn entry, so the oldest
+// turn would disappear from the next cold rebuild without ever reaching the
+// durable summary.
+const committedTailTurnLimit = 61
 
 // denyConfirm is used as the ConfirmFunc for HTTP-path engines. All L1
 // mutating actions are denied — confirmation requires human interaction
@@ -53,4 +62,68 @@ func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID str
 
 	eng.RehydrateHistory(filterHistory(msgs))
 	return eng, nil
+}
+
+// NewTurnEngine creates a private mutable engine for one durable turn. It
+// shares process-wide dependencies but is never inserted into the LRU, so a
+// failed/uncommitted attempt cannot contaminate a later turn's memory.
+func (p *Pool) NewTurnEngine(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
+	subject, _ := governance.SubjectKeyFromOrganization(owner.TopOrganizationID, owner.OrganizationID)
+	return p.NewTurnEngineWithOptions(ctx, owner, sessionID, engine.SessionOptions{
+		Subject:              subject,
+		ConfirmFn:            denyConfirm,
+		MutatingToolsEnabled: p.mutatingToolsEnabled,
+	})
+}
+
+// NewTurnEngineWithOptions creates a private durable-turn engine while
+// retaining the pool's process-wide dependency sharing. The boot-level
+// mutation gate is an upper bound: a caller may force read-only, never enable
+// writes that the process disabled.
+func (p *Pool) NewTurnEngineWithOptions(
+	ctx context.Context,
+	owner store.Owner,
+	sessionID string,
+	opts engine.SessionOptions,
+) (*engine.Engine, error) {
+	tailStore, ok := p.messageStore.(store.CommittedTailMessageStore)
+	if !ok {
+		return nil, fmt.Errorf("agentpool: message store lacks committed tail capability")
+	}
+	msgs, err := tailStore.ListCommittedTail(ctx, owner, sessionID, committedTailTurnLimit)
+	if err != nil {
+		return nil, fmt.Errorf("agentpool: list committed tail for session %q: %w", sessionID, err)
+	}
+	history, err := validateCommittedTail(msgs)
+	if err != nil {
+		return nil, fmt.Errorf("agentpool: invalid committed tail for session %q: %w", sessionID, err)
+	}
+
+	if opts.Subject == "" {
+		opts.Subject, _ = governance.SubjectKeyFromOrganization(owner.TopOrganizationID, owner.OrganizationID)
+	}
+	opts.MutatingToolsEnabled = opts.MutatingToolsEnabled && p.mutatingToolsEnabled
+	eng := engine.NewSession(p.deps, opts)
+	eng.RehydrateHistory(history)
+	return eng, nil
+}
+
+func validateCommittedTail(messages []store.Message) ([]engine.HistoryMessage, error) {
+	if len(messages)%2 != 0 {
+		return nil, fmt.Errorf("odd message count %d", len(messages))
+	}
+	history := make([]engine.HistoryMessage, 0, len(messages))
+	for i := 0; i < len(messages); i += 2 {
+		userMsg, assistantMsg := messages[i], messages[i+1]
+		if userMsg.Role != "user" || userMsg.Status != "ok" ||
+			assistantMsg.Role != "assistant" || assistantMsg.Status != "ok" ||
+			strings.TrimSpace(userMsg.Content) == "" || strings.TrimSpace(assistantMsg.Content) == "" {
+			return nil, fmt.Errorf("messages %d-%d are not a committed user/assistant pair", i, i+1)
+		}
+		history = append(history,
+			engine.HistoryMessage{Role: userMsg.Role, Content: userMsg.Content},
+			engine.HistoryMessage{Role: assistantMsg.Role, Content: assistantMsg.Content},
+		)
+	}
+	return history, nil
 }

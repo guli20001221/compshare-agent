@@ -3,7 +3,7 @@
 # Source of gates: golden_two_axis_2026-06-22.jsonl (axisA strong predicates).
 # Signal: replay-output JSONL (http_session_replay.go) per-turn steps[]/confirmations[]/reply.
 #   - steps[].type in {tool_call, tool_result, confirm_needed, blocked, error}
-#   - steps[].action = real tool/workflow name (DescribeCompShareInstance, DiagnosePortOrFirewall,
+#   - steps[].action = real tool/workflow name (DescribeCompShareInstance, SearchKnowledge,
 #     CreateInstanceWorkflow, StopInstanceWorkflow, ...)
 #   - confirmations[].action = confirm-frame workflow identity
 #   - reply / final_reply = text
@@ -46,11 +46,13 @@ READ_TOOLS = {
     "GetCompShareInstanceMonitor":          ["监控","利用率","getcompshareinstancemonitor","gpu/显存/cpu"],
     "GetCompShareInstanceUserPrice":        ["价格","价目","getcompshareinstanceuserprice","getcompshareinstanceprice","真值"],
 }
+# Only DiagnoseBilling survives as a dedicated diagnosis chain (DiagnoseSSH is
+# advertised too but has no golden probe in this set). The GPU / init /
+# port-firewall / image chains were deleted in the pre-P7 convergence; their
+# symptoms now assert diagnose_evidence_call (an evidence-gathering call happened,
+# via the central Agent) in gen(), never a dead tool name.
 DIAG_TOOLS = {
-    "DiagnosePortOrFirewall": ["diagnoseportorfirewall","端口","防火墙","连接被拒","comfyui","err_connection"],
-    "DiagnoseGPU":            ["diagnosegpu","显卡","识别","多卡","nvidia"],
-    "DiagnoseInitFailure":    ["diagnoseinitfailure","启动中","初始化","开机失败","init"],
-    "DiagnoseBilling":        ["diagnosebilling","费率"],
+    "DiagnoseBilling": ["diagnosebilling","费率"],
 }
 CONFIRM_WF = {
     "StopInstanceWorkflow":       ["关机","stop","已 stopped","stopinstance"],
@@ -87,10 +89,19 @@ def gen():
                               params=dict(actions=forbid), note="未误路由到无关 mutating 流程",
                               reply_semantic=not any(k in s for k in ["创建","Terminate","删除实例","注销","Coding"])))
         if "route_to_diagnosis" in a:
-            tool = pick(DIAG_TOOLS, s, default=None)
-            actions = [tool] if tool else list(DIAG_TOOLS.keys())
-            specs.append(dict(case_id=cid, gate="route_to_diagnosis", kind="require_step_action",
-                              params=dict(actions=actions), note="进入对应诊断"))
+            # DiagnoseBilling is the only surviving dedicated chain → keep its route.
+            # Every other symptom (GPU / init / port / image — chains deleted) is now
+            # handled by the central Agent gathering evidence. Assert only that an
+            # evidence-gathering CALL happened (real instance state OR knowledge
+            # retrieval) — NOT that the answer is grounded in the result; verifying
+            # the answer against the evidence is P7 replay work, not this cheap gate.
+            if pick(DIAG_TOOLS, s, default=None) == "DiagnoseBilling":
+                specs.append(dict(case_id=cid, gate="route_to_diagnosis", kind="require_step_action",
+                                  params=dict(actions=["DiagnoseBilling"]), note="进入对应诊断"))
+            else:
+                specs.append(dict(case_id=cid, gate="diagnose_evidence_call", kind="require_step_action",
+                                  params=dict(actions=["DescribeCompShareInstance","SearchKnowledge"]),
+                                  note="取证动作已发生:诊断前至少调 DescribeCompShareInstance 或 SearchKnowledge 之一(专用诊断链已删,改由中央 Agent 取证)。廉价的先取证门,非语义接地——不校验证据相关性或结论是否被结果支撑,那留给 P7 真实回放。"))
         if "read_truth" in a:
             tool = pick(READ_TOOLS, s, default="DescribeCompShareInstance")
             actions = [tool]

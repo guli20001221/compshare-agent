@@ -1,14 +1,36 @@
 package workflow
 
 import (
-	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockInstanceTypes builds a DescribeAvailableCompShareInstanceTypes result
 // for the given GPU type with one size entry per (gpuCount, cpu, memGB) tuple.
+// livePriceDetails is the PriceDetails array a real GetCompShareInstanceUserPrice
+// reply carries, copied from the capture at eval/real_cli_golden_doubao_lite.md:74-79.
+//
+// Two things about it are load-bearing and neither was true of the fixture it
+// replaces. The amount arrives under "Instance"; "Price" appears in no live
+// capture, so a fixture using it exercised only priceAmountFor's fallback — a
+// branch production never reaches. And ONE call quotes EVERY charge type at once,
+// which is what makes the create's exact-charge-type lookup work for 包日/包月/抢占式
+// rather than only for the one that was asked about. A fixture quoting Postpay
+// alone made a Month create look priceless, which is a property of the fixture and
+// not of the platform.
+func livePriceDetails() []any {
+	return []any{
+		map[string]any{"ChargeType": "Postpay", "Instance": 1.58},
+		map[string]any{"ChargeType": "Dynamic", "Instance": 1.58},
+		map[string]any{"ChargeType": "Day", "Instance": 34.9},
+		map[string]any{"ChargeType": "Month", "Instance": 951.85},
+		map[string]any{"ChargeType": "Spot", "Instance": 1.1},
+	}
+}
+
 func mockInstanceTypes(gpuType string, sizes ...struct{ Gpu, Cpu, MemGB float64 }) map[string]any {
 	machineSizes := make([]any, 0, len(sizes))
 	for _, s := range sizes {
@@ -21,7 +43,12 @@ func mockInstanceTypes(gpuType string, sizes ...struct{ Gpu, Cpu, MemGB float64 
 	}
 	return map[string]any{
 		"AvailableInstanceTypes": []any{
-			map[string]any{"Name": gpuType, "MachineSizes": machineSizes},
+			map[string]any{
+				"Name":         gpuType,
+				"MachineSizes": machineSizes,
+				"CpuPlatforms": map[string]any{"Amd": map[string]any{}},
+				"Disks":        []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+			},
 		},
 	}
 }
@@ -31,7 +58,7 @@ func mockInstanceTypes(gpuType string, sizes ...struct{ Gpu, Cpu, MemGB float64 
 func createMockExecutor() *mockExecutor {
 	return &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareImages": {"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu 22.04 CUDA 12"},
+			map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu 22.04 CUDA 12", "Size": float64(102400)},
 		}},
 		"DescribeAvailableCompShareInstanceTypes": mockInstanceTypes("4090",
 			struct{ Gpu, Cpu, MemGB float64 }{1, 16, 64},
@@ -39,10 +66,8 @@ func createMockExecutor() *mockExecutor {
 		"CheckCompShareResourceCapacity": {"Specs": []any{
 			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
 		}},
-		"GetCompShareInstanceUserPrice": {"PriceDetails": []any{
-			map[string]any{"ChargeType": "Postpay", "Price": 1.58},
-		}},
-		"CreateCompShareInstance": {"UHostIds": []any{"uhost-new001"}},
+		"GetCompShareInstanceUserPrice": {"PriceDetails": livePriceDetails()},
+		"CreateCompShareInstance":       {"UHostIds": []any{"uhost-new001"}},
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{"UHostId": "uhost-new001", "State": "Running"},
 		}},
@@ -56,7 +81,7 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -65,19 +90,27 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	assert.Equal(t, "工作流执行完成", result.Message)
 	assert.Equal(t, []any{"uhost-new001"}, result.Data["UHostIds"])
 
-	// All 7 steps completed
-	assert.Len(t, result.Steps, 7)
-	expectedNames := []string{"查询镜像", "查询可用配比", "检查库存", "查询价格", "确认创建", "创建实例", "查看状态"}
+	// All 12 steps completed. The three inventory steps are here so the plain
+	// flow's purchase-mode gate and its confirm card read the same live fact the
+	// guided flow does; without them createInventoryPoolSupport had nothing to
+	// read on this path and every charge type looked supported.
+	assert.Len(t, result.Steps, 12)
+	expectedNames := []string{"查询镜像", "查询可用配比", "查询官方GPU库存", "查询Pod GPU库存", "查询GPU库存", "形成执行草稿", "检查库存", "查询价格", "形成确认快照", "确认创建", "创建实例", "查看状态"}
 	for i, name := range expectedNames {
 		assert.Equal(t, name, result.Steps[i].Name)
 		assert.Equal(t, "success", result.Steps[i].Status)
 	}
 
-	// 6 API calls in order (confirm step does not call executor)
-	assert.Len(t, executor.calls, 6)
+	// 8 API calls in order. Two of them are the split GPU inventory read (the
+	// request's zone_id selects the backend rather than filtering the result, so
+	// the official and Pod pools need one call each). Still neither the confirm
+	// gate NOR any resolve step calls the executor, which is the point.
+	assert.Len(t, executor.calls, 8)
 	expectedActions := []string{
 		"DescribeCompShareImages",
 		"DescribeAvailableCompShareInstanceTypes",
+		"DescribeCompShareGpuInventory",
+		"DescribeCompShareGpuInventory",
 		"CheckCompShareResourceCapacity",
 		"GetCompShareInstanceUserPrice",
 		"CreateCompShareInstance",
@@ -88,6 +121,36 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	}
 }
 
+func TestCreateInstance_ExplicitNameIsConfirmedSealedAndExecuted(t *testing.T) {
+	executor := createMockExecutor()
+	var confirmed map[string]any
+	confirmFn := func(_ string, args map[string]any) bool {
+		confirmed = deepCopyParams(args)
+		return true
+	}
+
+	eng := NewEngine(executor, confirmFn, nil)
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090",
+		"Name":    "my-render-node",
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.NotNil(t, confirmed)
+	assert.Equal(t, "my-render-node", confirmed["Name"], "the confirmation must show the exact requested name")
+
+	var createArgs map[string]any
+	for _, call := range executor.calls {
+		if call.action == "CreateCompShareInstance" {
+			createArgs = call.args
+			break
+		}
+	}
+	require.NotNil(t, createArgs)
+	assert.Equal(t, "my-render-node", createArgs["Name"], "the sealed name must be the name sent upstream")
+}
+
 func TestCreateInstance_DescribeFailureDoesNotHideCreatedInstance(t *testing.T) {
 	executor := createMockExecutor()
 	executor.failOn = "DescribeCompShareInstance"
@@ -95,14 +158,14 @@ func TestCreateInstance_DescribeFailureDoesNotHideCreatedInstance(t *testing.T) 
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, nil)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success, "CreateCompShareInstance returned UHostIds, so a not-ready describe must not flip create success")
 	assert.Empty(t, result.StoppedAt)
-	assert.Contains(t, executor.calls, executorCall{action: "CreateCompShareInstance", args: executor.calls[4].args})
+	assert.Contains(t, executor.calls, executorCall{action: "CreateCompShareInstance", args: executor.calls[6].args})
 	assert.Equal(t, "查看状态", result.Steps[len(result.Steps)-1].Name)
 	assert.Equal(t, "failed", result.Steps[len(result.Steps)-1].Status)
 }
@@ -114,7 +177,7 @@ func TestCreateInstance_ConfirmDenied(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -123,8 +186,9 @@ func TestCreateInstance_ConfirmDenied(t *testing.T) {
 	assert.Equal(t, "确认创建", result.StoppedAt)
 	assert.Equal(t, "用户取消了操作", result.Message)
 
-	// Only 4 API calls before the confirm step; CreateCompShareInstance never called
-	assert.Len(t, executor.calls, 4)
+	// Only 6 API calls before the confirm step (2 images/catalog + 2 inventory
+	// backends + capacity + price); CreateCompShareInstance never called
+	assert.Len(t, executor.calls, 6)
 	for _, call := range executor.calls {
 		assert.NotEqual(t, "CreateCompShareInstance", call.action)
 	}
@@ -137,7 +201,7 @@ func TestCreateInstance_Defaults(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 		// No Zone, ChargeType, Gpu, Cpu, Memory — all should use defaults
 	})
@@ -175,7 +239,12 @@ func TestCreateInstance_Defaults(t *testing.T) {
 	assert.Equal(t, float64(16), priceArgs["CPU"], "UserPrice API uses uppercase CPU")
 	assert.Equal(t, "Postpay", priceArgs["ChargeType"], "default hourly billing should use Postpay for UserPrice API")
 	assert.Equal(t, "img-001", priceArgs["CompShareImageId"], "price query must use the same resolved image as create")
-	assert.Equal(t, defaultDisk, priceArgs["Disks"], "price query must include system disk config")
+	assert.Equal(t, []any{map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": uint32(100)}}, priceArgs["Disks"], "price query must include system disk config from image/catalog")
+
+	assert.Equal(t, "G", createArgs["MachineType"])
+	assert.Equal(t, "Amd/Auto", createArgs["MinimalCpuPlatform"])
+	assert.Equal(t, "Password", createArgs["LoginMode"])
+	assert.Equal(t, []any{map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": uint32(100)}}, createArgs["Disks"])
 }
 
 func TestCreateInstance_PlatformImageSkipsOfflineCandidate(t *testing.T) {
@@ -196,7 +265,7 @@ func TestCreateInstance_PlatformImageSkipsOfflineCandidate(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, nil)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":   "4090",
 		"ImageName": "PyTorch",
 	})
@@ -233,14 +302,17 @@ func TestCreateInstance_PlatformImageAllOfflineBlockedBeforeCapacity(t *testing.
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, nil)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":   "4090",
 		"ImageName": "PyTorch",
 	})
 
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Equal(t, "检查库存", result.StoppedAt)
+	// Stops while forming the draft: an image that cannot be selected is not a
+	// question to ask capacity about. This used to surface one step later, from
+	// 检查库存's own image lookup.
+	assert.Equal(t, "形成执行草稿", result.StoppedAt)
 	assert.Contains(t, result.Message, "未找到可用的 PyTorch 镜像")
 	for _, call := range executor.calls {
 		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
@@ -261,7 +333,7 @@ func TestCreateInstance_DynamicInputNormalizesToPostpay(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":    "4090",
 		"ChargeType": "Dynamic",
 	})
@@ -293,13 +365,13 @@ func TestCreateInstance_UserOverrides(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":    "A100",
 		"Zone":       "cn-bj2-04",
 		"Gpu":        float64(2),
 		"ChargeType": "Month",
 		"Name":       "my-gpu-server",
-	})
+	}, withNormalZone("cn-bj2-04", "cn-bj2", 6004))
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -340,7 +412,7 @@ func TestCreateInstance_CapacityCheckFails(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, nil, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -349,11 +421,14 @@ func TestCreateInstance_CapacityCheckFails(t *testing.T) {
 	assert.Equal(t, "检查库存", result.StoppedAt)
 	assert.Contains(t, result.Message, "检查库存")
 
-	// 3 API calls: DescribeCompShareImages + DescribeAvailableCompShareInstanceTypes + failed CheckCompShareResourceCapacity
-	assert.Len(t, executor.calls, 3)
+	// 5 API calls: images + catalog + the two inventory backends + the failed
+	// CheckCompShareResourceCapacity. Nothing runs after capacity fails.
+	assert.Len(t, executor.calls, 5)
 	assert.Equal(t, "DescribeCompShareImages", executor.calls[0].action)
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", executor.calls[1].action)
-	assert.Equal(t, "CheckCompShareResourceCapacity", executor.calls[2].action)
+	assert.Equal(t, "DescribeCompShareGpuInventory", executor.calls[2].action)
+	assert.Equal(t, "DescribeCompShareGpuInventory", executor.calls[3].action)
+	assert.Equal(t, "CheckCompShareResourceCapacity", executor.calls[4].action)
 }
 
 // --- Community image path tests ---
@@ -377,10 +452,8 @@ func communityMockExecutor() *mockExecutor {
 		"CheckCompShareResourceCapacity": {"Specs": []any{
 			map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
 		}},
-		"GetCompShareInstanceUserPrice": {"PriceDetails": []any{
-			map[string]any{"ChargeType": "Postpay", "Price": 1.58},
-		}},
-		"CreateCompShareInstance": {"UHostIds": []any{"uhost-new002"}},
+		"GetCompShareInstanceUserPrice": {"PriceDetails": livePriceDetails()},
+		"CreateCompShareInstance":       {"UHostIds": []any{"uhost-new002"}},
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{"UHostId": "uhost-new002", "State": "Running"},
 		}},
@@ -394,7 +467,7 @@ func TestCreateInstance_CommunityImage_HappyPath(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "community",
 		"ImageName":   "stable diffusion",
@@ -442,7 +515,7 @@ func TestCreateInstance_CommunityImage_ConfirmShowsImageName(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "community",
 		"ImageName":   "stable diffusion",
@@ -453,24 +526,13 @@ func TestCreateInstance_CommunityImage_ConfirmShowsImageName(t *testing.T) {
 	assert.Equal(t, "Stable Diffusion WebUI", capturedArgs["image"])
 }
 
-func TestPickFirstCommunityImageId_MalformedData(t *testing.T) {
-	assert.Equal(t, "", pickFirstCommunityImageId(nil))
-	assert.Equal(t, "", pickFirstCommunityImageId(map[string]any{}))
-	assert.Equal(t, "", pickFirstCommunityImageId(map[string]any{
-		"CompshareImageGroup": []any{},
-	}))
-	assert.Equal(t, "", pickFirstCommunityImageId(map[string]any{
-		"CompshareImageGroup": []any{map[string]any{"Data": []any{}}},
-	}))
-}
-
 func TestCreateInstance_CommunityImage_NoName_Rejected(t *testing.T) {
 	executor := communityMockExecutor()
 	onStep, _ := collectEvents()
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, nil, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":     "4090",
 		"ImageSource": "community",
 		// ImageName deliberately omitted
@@ -497,7 +559,7 @@ func TestCreateInstance_ConfirmArgsContainSummary(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -520,10 +582,25 @@ func TestCreateInstance_ConfirmArgsContainSummary(t *testing.T) {
 	// the raw GetCompShareInstanceUserPrice object (which the frontend stringified
 	// as "[object Object]"). Default ChargeType is Postpay; the mock returns
 	// PriceDetails [{ChargeType: Postpay, Price: 1.58}] with no list price.
-	assert.Equal(t, "¥1.58/小时", capturedArgs["price"])
+	//
+	// The （预估） is in the VALUE, not only in PriceNote, because upstream returns
+	// no quote id and no validity — it cannot hold this number — and the HTTP
+	// frontend that renders these args is not this repo's to relabel. A bare
+	// number there would read as a commitment the platform never made.
+	assert.Equal(t, "¥1.58/小时（预估）", capturedArgs["price"])
+	assert.Equal(t, "最终费用以实际创建和结算结果为准", capturedArgs["PriceNote"])
 }
 
-func TestConfirmPriceText(t *testing.T) {
+// TestEstimatedPriceDisplayText covers the price rendering, retargeted from
+// confirmPriceText onto extractEstimatedPrice, which absorbed it — there is now
+// one producer of the create's price string, so the card and the sealed record
+// cannot disagree about it.
+//
+// The inputs are unchanged. `want` gained （预估）, which is the point of the
+// change: upstream returns no quote id and no validity, so every one of these
+// numbers is an estimate. An empty `want` means "no snapshot at all" rather than
+// an empty string — an absent price must stay absent, because a 0 renders as free.
+func TestEstimatedPriceDisplayText(t *testing.T) {
 	cases := []struct {
 		name       string
 		price      any
@@ -555,7 +632,11 @@ func TestConfirmPriceText(t *testing.T) {
 			want:       "¥1.58/小时",
 		},
 		{
-			name:       "Instance field fallback (catalog-shape robustness)",
+			// The LIVE shape. Every captured GetCompShareInstancePriceResponse
+			// quotes under "Instance"; the "Price" key the other cases use appears
+			// in none of them. This case was labelled "fallback (catalog-shape
+			// robustness)" — exactly backwards from what upstream actually sends.
+			name:       "Instance field (the shape upstream actually returns)",
 			price:      map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": 2.0}}},
 			chargeType: "Postpay",
 			want:       "¥2.00/小时",
@@ -587,7 +668,13 @@ func TestConfirmPriceText(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, confirmPriceText(tc.price, tc.chargeType))
+			got := extractEstimatedPrice(tc.price, tc.chargeType)
+			if tc.want == "" {
+				assert.Nil(t, got, "nothing usable was quoted — the card must show no price, not a zero")
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, tc.want+estimatedPriceSuffix, got.DisplayText)
 		})
 	}
 }
@@ -601,7 +688,7 @@ func TestCreateInstance_PlatformImage_DefaultQueryDoesNotForceSystem(t *testing.
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 	assert.NoError(t, err)
@@ -626,7 +713,7 @@ func TestCreateInstance_PlatformImage_WithImageName_UsesNameFilter(t *testing.T)
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType":   "4090",
 		"ImageName": "PyTorch",
 	})
@@ -643,106 +730,30 @@ func TestCreateInstance_PlatformImage_WithImageName_UsesNameFilter(t *testing.T)
 	assert.Equal(t, "PyTorch", imageArgs["Name"], "should pass ImageName as Name filter")
 }
 
-func TestPickPlatformImageId_PrefersNameMatch(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},
-			map[string]any{"CompShareImageId": "img-pytorch", "Name": "PyTorch 2.1 CUDA 12"},
-		},
+func TestCreateInstance_PlatformImage_WithImageIDUsesExactFilter(t *testing.T) {
+	executor := createMockExecutor()
+	confirmFn := func(action string, args map[string]any) bool { return true }
+	onStep, _ := collectEvents()
+
+	def := CreateInstanceDef()
+	eng := NewEngine(executor, confirmFn, onStep)
+	_, err := eng.runCreateTest(def, map[string]any{
+		"GpuType":          "4090",
+		"ImageName":        "PyTorch",
+		"CompShareImageId": "img-exact",
+	})
+	assert.NoError(t, err)
+
+	var imageArgs map[string]any
+	for _, call := range executor.calls {
+		if call.action == "DescribeCompShareImages" {
+			imageArgs = call.args
+			break
+		}
 	}
-
-	// With ImageName → should prefer PyTorch over Ubuntu
-	id := pickPlatformImageId(map[string]any{"ImageName": "PyTorch"}, result)
-	assert.Equal(t, "img-pytorch", id)
-
-	// Without ImageName → falls back to first entry
-	id = pickPlatformImageId(map[string]any{}, result)
-	assert.Equal(t, "img-ubuntu", id)
-}
-
-func TestPickPlatformImage_ExactMatchWins(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-1", "Name": "PyTorch 2.1 CUDA 12"},
-			map[string]any{"CompShareImageId": "img-2", "Name": "CUDA"},
-		},
-	}
-	// Exact match (case-insensitive) takes priority over contains
-	id := pickPlatformImageId(map[string]any{"ImageName": "CUDA"}, result)
-	assert.Equal(t, "img-2", id)
-}
-
-func TestPickPlatformImage_ContainsMatch(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},
-			map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI v1.3 CUDA 12"},
-		},
-	}
-	id := pickPlatformImageId(map[string]any{"ImageName": "comfyui"}, result)
-	assert.Equal(t, "img-comfy", id, "case-insensitive contains should match")
-}
-
-func TestPickPlatformImage_PrefersRequestedGPUSupportWithinNameMatches(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-pytorch-a800", "Name": "PyTorch 2.4",
-				"ImageType": "App", "Status": "Available", "SupportedGpuTypes": []any{"A800"}},
-			map[string]any{"CompShareImageId": "img-pytorch-4090", "Name": "PyTorch 2.4-4090",
-				"ImageType": "App", "Status": "Available", "SupportedGpuTypes": []any{"4090"}},
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04",
-				"ImageType": "System", "Status": "Available"},
-		},
-	}
-
-	id := pickPlatformImageId(map[string]any{"ImageName": "PyTorch", "GpuType": "4090"}, result)
-	assert.Equal(t, "img-pytorch-4090", id)
-}
-
-func TestPickPlatformImage_PyTorchLatestMatchesTorchNamedImages(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-torch-old", "Name": "cuda128_torch280_py312", "ImageType": "App", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-torch-new", "Name": "cuda130_torch291_py312", "ImageType": "App", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-comfy", "Name": "ComfyUI基础镜像0.10.0", "ImageType": "App", "Status": "Available"},
-		},
-	}
-
-	id := pickPlatformImageId(map[string]any{"ImageName": "torch", "GpuType": "4090"}, result)
-
-	assert.Equal(t, "img-torch-new", id)
-}
-
-func TestPickPlatformImage_VLLMLatestUsesVersionOrder(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-vllm-010", "Name": "vLLM v0.10.0", "ImageType": "App", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-vllm-012", "Name": "vLLM v0.12.0", "ImageType": "App", "Status": "Available"},
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 24.04 64位", "ImageType": "System", "Status": "Available"},
-		},
-	}
-
-	id := pickPlatformImageId(map[string]any{"ImageName": "vLLM", "GpuType": "4090"}, result)
-
-	assert.Equal(t, "img-vllm-012", id)
-}
-
-func TestPickPlatformImage_NoMatchFallsBackToFirst(t *testing.T) {
-	result := map[string]any{
-		"ImageSet": []any{
-			map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04"},
-		},
-	}
-	id := pickPlatformImageId(map[string]any{"ImageName": "NonExistent"}, result)
-	assert.Equal(t, "img-ubuntu", id, "should fall back to first when no match")
-}
-
-func TestPickPlatformImage_EmptyResult(t *testing.T) {
-	assert.Equal(t, "", pickPlatformImageId(map[string]any{}, nil))
-	assert.Equal(t, "", pickPlatformImageId(map[string]any{}, map[string]any{}))
-	assert.Equal(t, "", pickPlatformImageId(map[string]any{}, map[string]any{"ImageSet": []any{}}))
-	assert.Equal(t, "未知", pickPlatformImageName(map[string]any{}, nil))
+	assert.NotNil(t, imageArgs)
+	assert.Equal(t, "img-exact", imageArgs["CompShareImageId"], "image id must win over fuzzy name filters")
+	assert.NotContains(t, imageArgs, "Name")
 }
 
 // --- Capacity check exact-match tests (bug regression) ---
@@ -763,7 +774,7 @@ func TestCreateInstance_CapacityCheck_WrongGpuCount_Rejected(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, nil, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 		"Gpu":     float64(2),
 	})
@@ -788,7 +799,7 @@ func TestCreateInstance_CapacityCheck_SpecNotInList_Rejected(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, nil, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -864,6 +875,13 @@ func TestResolveTargetSpec_SingleCandidate_AutoSelect(t *testing.T) {
 
 // zoneTaggedTypes builds a catalog where each entry carries a Zone + Status, as the
 // real (un-MachineTypes-filtered) DescribeAvailableCompShareInstanceTypes returns.
+// zoneTaggedTypes is the zone-aware catalog fixture. It carries a BootDisk for the
+// same reason mockInstanceTypes does: without one, catalogBootDiskType returns ""
+// and ResolveBootDisk returns nil, so every draft built on this fixture carried an
+// empty disk list — and a create with no disk is not a create this platform makes.
+// Every seal and aliasing test in the package is built on this, so the omission
+// made them all disk-blind: the field most able to be shared between the candidate
+// and the seal was the one field they never populated.
 func zoneTaggedTypes(entries ...struct {
 	Name, Zone, Status string
 }) map[string]any {
@@ -876,6 +894,7 @@ func zoneTaggedTypes(entries ...struct {
 					map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
 				},
 			}},
+			"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
 		})
 	}
 	return map[string]any{"AvailableInstanceTypes": types}
@@ -944,7 +963,7 @@ func TestCreateInstance_NonDefaultZone_ThreadsZoneToCreate(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{"GpuType": "2080Ti"})
+	result, err := eng.runCreateTest(def, map[string]any{"GpuType": "2080Ti"})
 	assert.NoError(t, err)
 	assert.True(t, result.Success, "2080Ti in a non-default zone must create successfully")
 
@@ -955,6 +974,153 @@ func TestCreateInstance_NonDefaultZone_ThreadsZoneToCreate(t *testing.T) {
 		if call.action == "CheckCompShareResourceCapacity" {
 			assert.Equal(t, "cn-sh2-02", call.args["Zone"], "capacity check must target the GPU's real zone")
 		}
+	}
+}
+
+func TestCreateInstance_PodZoneUsesDynamicZoneIDAndAzGroup(t *testing.T) {
+	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+		map[string]any{
+			"CompShareImageId": "img-001", "Name": "PyTorch Container", "Size": float64(51200),
+			"Status": "Available", "Container": true, "SupportedGpuTypes": []any{"4090"},
+		},
+	}}
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{
+			"Name":         "4090",
+			"Zone":         "cn-newpod-03",
+			"Status":       "Normal",
+			"CpuPlatforms": map[string]any{"Amd": map[string]any{}},
+			"Disks":        []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_RSSD", "MinimalSize": float64(50)}}}},
+			"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+				map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+			}}},
+		},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+
+	eng := NewEngine(executor, confirmFn, nil)
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-newpod-03",
+	}, withPodZone("cn-newpod-03", "cn-newpod", 9103, 3103))
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	var byAction = map[string]map[string]any{}
+	for _, call := range executor.calls {
+		byAction[call.action] = call.args
+	}
+	checkArgs := byAction["CheckCompShareResourceCapacity"]
+	assert.NotContains(t, checkArgs, "Zone")
+	assert.NotContains(t, checkArgs, "Region")
+	assert.NotContains(t, checkArgs, "az_group")
+	assert.Equal(t, uint32(9103), checkArgs["zone_id"])
+
+	for _, action := range []string{"GetCompShareInstanceUserPrice", "CreateCompShareInstance"} {
+		args := byAction[action]
+		assert.Equal(t, "cn-newpod-03", args["Zone"], action)
+		assert.Equal(t, "cn-newpod", args["Region"], action)
+		assert.Equal(t, uint32(9103), args["zone_id"], action)
+		assert.Equal(t, uint32(3103), args["az_group"], action)
+	}
+}
+
+func TestCreateInstance_NormalZoneCapacityKeepsZoneAndRegion(t *testing.T) {
+	executor := createMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{
+			"Name":         "4090",
+			"Zone":         "cn-sh2-02",
+			"Status":       "Normal",
+			"CpuPlatforms": map[string]any{"Intel": map[string]any{}},
+			"Disks":        []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+			"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+				map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+			}}},
+		},
+	}}
+	confirmFn := func(action string, args map[string]any) bool { return true }
+
+	eng := NewEngine(executor, confirmFn, nil)
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090",
+		"Zone":    "cn-sh2-02",
+	}, withNormalZone("cn-sh2-02", "cn-sh2", 2002))
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	var checkArgs map[string]any
+	for _, call := range executor.calls {
+		if call.action == "CheckCompShareResourceCapacity" {
+			checkArgs = call.args
+		}
+	}
+	assert.Equal(t, "cn-sh2-02", checkArgs["Zone"])
+	assert.Equal(t, "cn-sh2", checkArgs["Region"])
+	assert.Equal(t, uint32(2002), checkArgs["zone_id"])
+}
+
+// The catalog query must NOT be scoped to the Spot pool. InstanceType=spot is a
+// value upstream accepts and then answers empty (measured live 2026-07-22:
+// rows=19 for absent/uhost/all, rows=0 for spot), and an empty catalog makes
+// resolveTargetSpec fail listing no GPU types at all — it breaks every Spot
+// create. ChargeType still has to reach the capacity call, which is the request
+// upstream actually validates it on. A mock returns rows either way, so this
+// asserts the ARGUMENT, not the mock's answer.
+func TestCreateInstance_FullySpecifiedPodSpotDoesNotScopeCatalogButScopesCapacity(t *testing.T) {
+	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-pod", "Name": "Pod CUDA", "Container": "True", "Size": float64(102400)},
+	}}
+	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
+
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType":    "4090",
+		"Zone":       "cn-newpod-03",
+		"ChargeType": "Spot",
+	}, withPodZone("cn-newpod-03", "cn-newpod", 9103, 3103))
+
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	var catalogArgs, capacityArgs map[string]any
+	for _, call := range executor.calls {
+		if call.action == "DescribeAvailableCompShareInstanceTypes" {
+			catalogArgs = call.args
+		}
+		if call.action == "CheckCompShareResourceCapacity" {
+			capacityArgs = call.args
+		}
+	}
+	assert.NotContains(t, catalogArgs, "InstanceType",
+		"scoping the catalog to the Spot pool returns an empty catalog and breaks every Spot create")
+	assert.Equal(t, deployment.ChargeTypeSpot, capacityArgs["ChargeType"],
+		"the capacity call is where upstream actually validates the charge type")
+}
+
+func TestCreateInstance_UnsupportedImageBlocksBeforeCapacity(t *testing.T) {
+	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{
+		map[string]any{
+			"CompShareImageId":  "img-v100-only",
+			"Name":              "V100 专用镜像",
+			"SupportedGpuTypes": []any{"V100S"},
+			"Size":              float64(102400),
+		},
+	}}
+	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
+
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090",
+	})
+
+	assert.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "形成执行草稿", result.StoppedAt)
+	assert.Contains(t, result.Message, "不支持当前 GPU")
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
+		assert.NotEqual(t, "CreateCompShareInstance", call.action)
 	}
 }
 
@@ -1037,7 +1203,7 @@ func TestCreateInstance_MultiCandidate_DefaultsToFirst_WorkflowProceeds(t *testi
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 
@@ -1069,7 +1235,7 @@ func TestCreateInstance_ExplicitCpuMemory_OverridesDefault(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	result, err := eng.Run(context.Background(), def, map[string]any{
+	result, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 		"Cpu":     float64(16),
 		"Memory":  float64(94 * 1024),
@@ -1103,7 +1269,7 @@ func TestCreateInstance_SingleCandidate_ConfirmShowsSpec(t *testing.T) {
 
 	def := CreateInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
-	_, err := eng.Run(context.Background(), def, map[string]any{
+	_, err := eng.runCreateTest(def, map[string]any{
 		"GpuType": "4090",
 	})
 

@@ -11,5 +11,3 @@ else
 fi
 
 "$PS" -NoProfile -ExecutionPolicy Bypass -File scripts/secret_scan.ps1 -Staged
-"$PS" -NoProfile -ExecutionPolicy Bypass -File scripts/check_skill_names.ps1
-"$PS" -NoProfile -ExecutionPolicy Bypass -File scripts/check_skill_caps.ps1

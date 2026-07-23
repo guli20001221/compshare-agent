@@ -8,9 +8,51 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestEveryWorkflowActionIsClassifiedForInvalidation forces a decision for every
+// registered workflow: it either invalidates this cache or it is listed below as
+// deliberately not invalidating. It exists because forgetting is silent — a
+// workflow that mutates an InstanceSnapshot field but is missing from
+// invalidatesRegistry leaves the cache serving the pre-change value for up to
+// DefaultRegistryFreshnessTTL, with nothing red and no user-visible error. That
+// is exactly how ResizeInstanceWorkflow and ReinstallInstanceWorkflow (which
+// rewrite GPU/GpuType/CPU/Memory and OsType/ImageType respectively) were both
+// registered as workflows yet absent from the invalidation set.
+//
+// workflow.RegisteredWorkflowActions() is the source of truth on purpose: a
+// hardcoded copy of the list here would drift the same way the thing it guards
+// drifted. Adding a workflow fails this test until its author states which side
+// it is on.
+func TestEveryWorkflowActionIsClassifiedForInvalidation(t *testing.T) {
+	// Writes that change nothing this registry caches. Each needs a reason, not
+	// just an entry — "it is a write" is not why it belongs here.
+	deliberatelyNotInvalidating := map[string]string{
+		"ResetPasswordWorkflow":      "changes the login password; no InstanceSnapshot field holds it",
+		"CreateCustomImageWorkflow":  "creates a new image from the instance; the instance itself is unchanged",
+		"CloneCustomImageWorkflow":   "creates a custom image in another zone; the instance registry is unchanged",
+		"CreateDiskWorkflow":         "attaches a data disk; InstanceSnapshot carries no disk fields",
+		"ResizeDiskWorkflow":         "resizes a data disk; InstanceSnapshot carries no disk fields",
+		"EnableNetOptimizerWorkflow": "network accelerator state is not part of InstanceSnapshot",
+		"CreateCFSWorkflow":          "CFS is a separate resource; no InstanceSnapshot field changes",
+		"ResizeCFSWorkflow":          "CFS is a separate resource; no InstanceSnapshot field changes",
+	}
+
+	for _, action := range workflow.RegisteredWorkflowActions() {
+		t.Run(action, func(t *testing.T) {
+			invalidates := invalidatesRegistry(action)
+			_, exempt := deliberatelyNotInvalidating[action]
+			require.NotEqual(t, invalidates, exempt,
+				"workflow %q is unclassified for cache invalidation: either add it to invalidatesRegistry "+
+					"(if it mutates a field of InstanceSnapshot: %s) or record here why it does not. "+
+					"Leaving it out silently serves a stale snapshot.",
+				action, "UHostId/Name/State/OsType/GPU/GpuType/ImageType/CPU/Memory/Zone/Region/ChargeType/ExpireTime/AutoRenew")
+		})
+	}
+}
 
 func TestResolveByID_Statuses(t *testing.T) {
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
@@ -206,6 +248,31 @@ func TestRegistrySnapshotResolvesIDsAndNames(t *testing.T) {
 	assert.Equal(t, ResolveNotFoundInAccount, res.Status)
 }
 
+func TestRegistrySnapshotInstanceIDRefsInText(t *testing.T) {
+	reg := NewRegistry()
+	require.NoError(t, reg.SyncFromDescribe(describeResult(
+		host("uhost-1qy6d8tkfrl4", "classic", "Running", "4090", 1),
+		host("cpod-1rkv126dxgiq", "pod", "Running", "4090", 1),
+	), "init"))
+	snap := reg.Snapshot()
+
+	assert.Equal(t,
+		[]string{"cpod-1rkv126dxgiq"},
+		snap.InstanceIDTokensInText("请关闭cpod-1rkv126dxgiq这台实例"),
+	)
+	assert.Empty(t, snap.InstanceIDTokensInText("my-gpu-box 今天状态怎样"))
+
+	cpodOnly := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
+		"cpod-1rkv126dxgiq": {UHostId: "cpod-1rkv126dxgiq"},
+	}}
+	assert.Empty(t, cpodOnly.InstanceIDTokensInText("uhost-1qy6d8tkfrl4 的状态"))
+
+	hits, unresolved := snap.ResolveInstanceRefsInText("查 CPOD-1RKV126DXGIQ 和 cpod-1rkv126dxgiq")
+	require.Len(t, hits, 1)
+	assert.Equal(t, "cpod-1rkv126dxgiq", hits[0].UHostId)
+	assert.Equal(t, []string{"CPOD-1RKV126DXGIQ"}, unresolved)
+}
+
 func TestSnapshotIDStableAcrossInputOrder(t *testing.T) {
 	regA := NewRegistry()
 	require.NoError(t, regA.SyncFromDescribe(describeResult(
@@ -377,6 +444,11 @@ func TestNeedsRefreshAndInvalidationWhitelist(t *testing.T) {
 		"DeleteCompShareStopScheduler",
 		"SetStopSchedulerWorkflow",
 		"CancelStopSchedulerWorkflow",
+		// Resize rewrites GPU/GpuType/CPU/Memory; Reinstall rewrites
+		// OsType/ImageType. Both are InstanceSnapshot fields, so both must force
+		// a re-Describe instead of serving the spec from before the change.
+		"ResizeInstanceWorkflow",
+		"ReinstallInstanceWorkflow",
 	}
 	for _, action := range invalidateActions {
 		t.Run(action, func(t *testing.T) {

@@ -1,5 +1,7 @@
 package intent
 
+import "github.com/compshare-agent/internal/platform"
+
 const SchemaVersion = "1.0"
 
 type Intent string
@@ -10,7 +12,6 @@ const (
 	IntentResourceInfo              Intent = "resource_info"
 	IntentBillingInstance           Intent = "billing_instance"
 	IntentBillingAccountUnsupported Intent = "billing_account_unsupported"
-	IntentExpiryRenewal             Intent = "expiry_renewal"
 	IntentDiagnosis                 Intent = "diagnosis"
 	IntentVagueFailure              Intent = "vague_failure"
 	IntentOperationLifecycle        Intent = "operation_lifecycle"
@@ -23,6 +24,7 @@ const (
 	IntentStockAvailability     Intent = "stock_availability"
 	IntentImageList             Intent = "image_list"
 	IntentImageTagCatalog       Intent = "image_tag_catalog"
+	IntentZoneCatalog           Intent = "zone_catalog"
 	IntentModelRepositoryBrowse Intent = "model_repository_browse"
 	IntentNetAcceleratorStatus  Intent = "network_accelerator_status"
 	IntentRefundEstimate        Intent = "refund_estimate"
@@ -47,52 +49,55 @@ const (
 	// confirm-gated create flow. Keep this separate from create_instance, which
 	// covers hardware-first creation.
 	IntentDeployModel Intent = "deploy_model"
-	// create_instance (R2b P1a, 2026-06-26): first-class create-family intent.
-	// It is default-on via COMPSHARE_UNIFIED_CREATE and keeps deploy_model separate;
-	// set the flag off to roll back the create_instance route during soak.
+	// create_instance identifies hardware-first instance creation in legacy trace
+	// and evaluation records. Runtime action discovery is capability-driven.
 	IntentCreateInstance Intent = "create_instance"
 )
 
-type TargetRefType string
+// Value-object vocabulary is owned by internal/platform (a leaf package) so a
+// typed capability can consume it without importing this router package. These
+// aliases keep every existing intent.TargetRef / intent.Metric / … reference
+// compiling unchanged.
+type TargetRefType = platform.TargetRefType
 
 const (
-	TargetRefFilter           TargetRefType = "filter"
-	TargetRefName             TargetRefType = "name"
-	TargetRefUHostIDUserInput TargetRefType = "uhost_id_user_input"
-	TargetRefSlotPosition     TargetRefType = "slot_position"
+	TargetRefFilter           = platform.TargetRefFilter
+	TargetRefName             = platform.TargetRefName
+	TargetRefUHostIDUserInput = platform.TargetRefUHostIDUserInput
+	TargetRefSlotPosition     = platform.TargetRefSlotPosition
 )
 
-type TargetSource string
+type TargetSource = platform.TargetSource
 
 const (
-	SourceUserText  TargetSource = "user_text"
-	SourcePriorTurn TargetSource = "prior_turn"
+	SourceUserText  = platform.SourceUserText
+	SourcePriorTurn = platform.SourcePriorTurn
 )
 
-type Metric string
+type Metric = platform.Metric
 
 const (
-	MetricCPU    Metric = "cpu"
-	MetricMemory Metric = "memory"
-	MetricGPU    Metric = "gpu"
-	MetricVRAM   Metric = "vram"
+	MetricCPU    = platform.MetricCPU
+	MetricMemory = platform.MetricMemory
+	MetricGPU    = platform.MetricGPU
+	MetricVRAM   = platform.MetricVRAM
 )
 
-type TimeWindowType string
+type TimeWindowType = platform.TimeWindowType
 
 const (
-	TimeWindowPreset   TimeWindowType = "preset"
-	TimeWindowRelative TimeWindowType = "relative"
-	TimeWindowAbsolute TimeWindowType = "absolute"
+	TimeWindowPreset   = platform.TimeWindowPreset
+	TimeWindowRelative = platform.TimeWindowRelative
+	TimeWindowAbsolute = platform.TimeWindowAbsolute
 )
 
-type ImageSource string
+type ImageSource = platform.ImageSource
 
 const (
-	ImageSourcePlatform  ImageSource = "platform"
-	ImageSourceCustom    ImageSource = "custom"
-	ImageSourceCommunity ImageSource = "community"
-	ImageSourceShared    ImageSource = "shared"
+	ImageSourcePlatform  = platform.ImageSourcePlatform
+	ImageSourceCustom    = platform.ImageSourceCustom
+	ImageSourceCommunity = platform.ImageSourceCommunity
+	ImageSourceShared    = platform.ImageSourceShared
 )
 
 type IntentRoute struct {
@@ -135,6 +140,15 @@ type Slots struct {
 	Metrics     []Metric    `json:"metrics,omitempty"`
 	TimeWindow  *TimeWindow `json:"time_window,omitempty"`
 	ImageSource ImageSource `json:"image_source,omitempty"`
+	SearchQuery string      `json:"search_query,omitempty"`
+	ListMode    ListMode    `json:"list_mode,omitempty"`
+	PriceKind   PriceKind   `json:"price_kind,omitempty"`
+	GPUCount    int         `json:"gpu_count,omitempty"`
+	CFSKind     CFSKind     `json:"cfs_kind,omitempty"`
+	SizeGB      int         `json:"size_gb,omitempty"`
+	Zone        string      `json:"zone,omitempty"`
+	ChargeType  string      `json:"charge_type,omitempty"`
+	DetailLevel DetailLevel `json:"detail_level,omitempty"`
 	// Action carries the lifecycle/configuration verb when Intent is
 	// IntentOperationLifecycle. PR1 hotfix Bug 4 (2026-05-28): used by
 	// engine.executeTool to deterministically pre-filter the candidate
@@ -144,6 +158,36 @@ type Slots struct {
 	// llm-filter-nondeterministic.
 	Action LifecycleAction `json:"action,omitempty"`
 }
+
+type ListMode = platform.ListMode
+
+const (
+	ListModeAll      = platform.ListModeAll
+	ListModeFiltered = platform.ListModeFiltered
+)
+
+type PriceKind = platform.PriceKind
+
+const (
+	PriceKindAccount = platform.PriceKindAccount
+	PriceKindCatalog = platform.PriceKindCatalog
+)
+
+type CFSKind = platform.CFSKind
+
+const (
+	CFSKindList         = platform.CFSKindList
+	CFSKindCreatePrice  = platform.CFSKindCreatePrice
+	CFSKindUpgradePrice = platform.CFSKindUpgradePrice
+	CFSKindRefund       = platform.CFSKindRefund
+)
+
+type DetailLevel = platform.DetailLevel
+
+const (
+	DetailLevelSummary = platform.DetailLevelSummary
+	DetailLevelFull    = platform.DetailLevelFull
+)
 
 // LifecycleAction is the verb that drives an operation_lifecycle turn. Only
 // the explicit verbs below trigger state pre-filtering; an empty / unknown
@@ -162,17 +206,9 @@ const (
 	LifecycleActionCreateDisk LifecycleAction = "create_disk"
 )
 
-type TargetRef struct {
-	Type       TargetRefType `json:"type"`
-	Value      string        `json:"value"`
-	Source     TargetSource  `json:"source,omitempty"`
-	SourceSpan string        `json:"source_span,omitempty"`
-}
+type TargetRef = platform.TargetRef
 
-type TimeWindow struct {
-	Type  TimeWindowType `json:"type"`
-	Value string         `json:"value"`
-}
+type TimeWindow = platform.TimeWindow
 
 type Retrieval struct {
 	Enabled bool `json:"enabled"`
@@ -185,7 +221,6 @@ func AllIntents() []Intent {
 		IntentResourceInfo,
 		IntentBillingInstance,
 		IntentBillingAccountUnsupported,
-		IntentExpiryRenewal,
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
@@ -194,6 +229,7 @@ func AllIntents() []Intent {
 		IntentStockAvailability,
 		IntentImageList,
 		IntentImageTagCatalog,
+		IntentZoneCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,
 		IntentRefundEstimate,
@@ -213,7 +249,6 @@ func RuntimeIntents() []Intent {
 		IntentResourceInfo,
 		IntentBillingInstance,
 		IntentBillingAccountUnsupported,
-		IntentExpiryRenewal,
 		IntentDiagnosis,
 		IntentVagueFailure,
 		IntentOperationLifecycle,
@@ -222,6 +257,7 @@ func RuntimeIntents() []Intent {
 		IntentStockAvailability,
 		IntentImageList,
 		IntentImageTagCatalog,
+		IntentZoneCatalog,
 		IntentModelRepositoryBrowse,
 		IntentNetAcceleratorStatus,
 		IntentRefundEstimate,

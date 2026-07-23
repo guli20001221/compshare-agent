@@ -45,6 +45,8 @@ func main() {
 		confirm  = flag.String("confirm", "", "auto-reply to a confirmation frame: 'yes' or 'no' (empty = do not reply)")
 		company  = flag.String("company", "1", "X-Company-Id header (top_organization_id)")
 		org      = flag.String("org", "2", "X-Organization-Id header (organization_id)")
+		account  = flag.String("account", "", "X-Account-Id header (gateway user id, optional)")
+		email    = flag.String("email", "", "X-User-Email header (optional)")
 		project  = flag.String("project", "", "ProjectId to include in the chat frame")
 		reqID    = flag.String("request-id", "wsprobe-1", "X-Request-Id header")
 	)
@@ -61,13 +63,15 @@ func main() {
 		confirm: strings.ToLower(*confirm),
 		company: *company,
 		org:     *org,
+		account: *account,
+		email:   *email,
 		project: *project,
 		reqID:   *reqID,
 	})
 }
 
 type clientOpts struct {
-	url, session, message, confirm, company, org, project, reqID string
+	url, session, message, confirm, company, org, account, email, project, reqID string
 }
 
 func runClient(o clientOpts) {
@@ -92,11 +96,17 @@ func runClient(o clientOpts) {
 	if o.org != "" {
 		h.Set("X-Organization-Id", o.org)
 	}
+	if o.account != "" {
+		h.Set("X-Account-Id", o.account)
+	}
+	if o.email != "" {
+		h.Set("X-User-Email", o.email)
+	}
 	if o.reqID != "" {
 		h.Set("X-Request-Id", o.reqID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	fmt.Printf("→ dialing %s\n   headers: X-Company-Id=%q X-Organization-Id=%q X-Request-Id=%q\n",
@@ -129,6 +139,7 @@ func runClient(o clientOpts) {
 	fmt.Printf("→ sent SendCSAgentChat: %q\n\n", o.message)
 
 	var tokens strings.Builder
+	activeSession := o.session
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -143,7 +154,10 @@ func runClient(o clientOpts) {
 		event, _ := f["event"].(string)
 		switch event {
 		case "meta":
-			fmt.Printf("● meta        RequestId=%v MessageId=%v\n", f["RequestId"], f["MessageId"])
+			if sid, _ := f["SessionId"].(string); sid != "" {
+				activeSession = sid
+			}
+			fmt.Printf("● meta        RequestId=%v SessionId=%v MessageId=%v\n", f["RequestId"], activeSession, f["MessageId"])
 		case "step":
 			fmt.Printf("● step        [%v] %v %v\n", f["Index"], f["Type"], f["Action"])
 		case "token":
@@ -156,7 +170,7 @@ func runClient(o clientOpts) {
 				cid, _ := f["ConfirmationId"].(string)
 				reply := map[string]any{
 					"Action":         "ConfirmCSAgentAction",
-					"SessionId":      o.session,
+					"SessionId":      activeSession,
 					"ConfirmationId": cid,
 					"Confirmed":      o.confirm == "yes",
 				}

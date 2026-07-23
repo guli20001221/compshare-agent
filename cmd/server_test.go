@@ -1,20 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/store"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -153,6 +154,106 @@ func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
 	require.True(t, traceMySQLSinkEnabled(getenv))
 }
 
+func TestServerDurableCoordinatorReceivesProductionTraceWriter(t *testing.T) {
+	writer := &captureAppendWriter{}
+	secretKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	opts, err := serverTurnCoordinatorOptions(func(key string) string {
+		if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
+			return "1"
+		}
+		if key == "COMPSHARE_TURN_SECRET_KEY" {
+			return secretKey
+		}
+		return ""
+	}, writer)
+	require.NoError(t, err)
+	require.Same(t, writer, opts.TraceWriter)
+	require.True(t, opts.MutatingToolsEnabled)
+	require.NotEmpty(t, opts.ReplicaID)
+	require.Len(t, opts.SecretKey, 32)
+}
+
+func TestServerDurableCoordinatorRejectsMissingSecretKey(t *testing.T) {
+	_, err := serverTurnCoordinatorOptions(func(string) string { return "" }, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "COMPSHARE_TURN_SECRET_KEY")
+}
+
+type recordingInteractionFeatures struct {
+	confirmForm  bool
+	guidedCreate bool
+}
+
+func (r *recordingInteractionFeatures) SetConfirmFormEnabled(value bool) {
+	r.confirmForm = value
+}
+
+func (r *recordingInteractionFeatures) SetGuidedCreateEnabled(value bool) {
+	r.guidedCreate = value
+}
+
+func TestConfigureInteractionFeaturesEnablesTheDurableHandlerCapabilities(t *testing.T) {
+	tests := []struct {
+		name                    string
+		values                  map[string]string
+		wantConfirm, wantGuided bool
+	}{
+		{name: "both enabled", values: map[string]string{
+			"COMPSHARE_CONFIRM_FORM": "1", "COMPSHARE_GUIDED_CREATE": "1",
+		}, wantConfirm: true, wantGuided: true},
+		{name: "form only", values: map[string]string{
+			"COMPSHARE_CONFIRM_FORM": "1", "COMPSHARE_GUIDED_CREATE": "0",
+		}, wantConfirm: true},
+		{name: "guided requires form", values: map[string]string{
+			"COMPSHARE_CONFIRM_FORM": "0", "COMPSHARE_GUIDED_CREATE": "1",
+		}},
+		{name: "unknown values fail closed", values: map[string]string{
+			"COMPSHARE_CONFIRM_FORM": "maybe", "COMPSHARE_GUIDED_CREATE": "maybe",
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := &recordingInteractionFeatures{}
+			configureInteractionFeatures(got, func(key string) string { return tc.values[key] })
+			assert.Equal(t, tc.wantConfirm, got.confirmForm)
+			assert.Equal(t, tc.wantGuided, got.guidedCreate)
+		})
+	}
+}
+
+func TestNewServerHandlersActuallyAdvertisesConfiguredInteractionFeatures(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{Model: "test-model"},
+		Meta: config.MetaConfig{
+			Welcome: "welcome", SuggestedPrompts: []string{"prompt"}, MaxInputLength: 4000,
+		},
+	}}
+	handlers := newServerHandlers(
+		cfg, nil, serverTestMessageStore{}, nil, nil, nil,
+		func(key string) string {
+			switch key {
+			case "COMPSHARE_CONFIRM_FORM", "COMPSHARE_GUIDED_CREATE":
+				return "1"
+			default:
+				return ""
+			}
+		},
+	)
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"Action":"GetCSAgentMeta","top_organization_id":1,"organization_id":2}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handlers.Dispatch(c)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Features []string `json:"Features"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, []string{"confirm_form_v1", "guided_create_v1"}, response.Features,
+		"removing the server construction wiring must make this gate fail")
+}
+
 type serverTestMessageStore struct{}
 
 func (serverTestMessageStore) Append(context.Context, store.Message) error { return nil }
@@ -173,8 +274,6 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 
 	pool, err := buildHTTPServerPool(cfg, serverTestMessageStore{}, func(key string) string {
 		switch key {
-		case "COMPSHARE_DIRECT_DISPATCH_INTENTS":
-			return "resource"
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
 		}
@@ -185,72 +284,7 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 
 	eng, err := pool.Get(context.Background(), store.Owner{TopOrganizationID: 1, OrganizationID: 2}, "sess")
 	require.NoError(t, err)
-	require.NotNil(t, eng.IntentPlannerPointer(), "HTTP server pool should inherit intent planner env wiring")
-}
-
-func TestConfigureSharedDepsUnifiedCreateReachesServerPlanner(t *testing.T) {
-	engine.SetUnifiedCreateEnabled(false)
-	t.Cleanup(func() { engine.SetUnifiedCreateEnabled(true) })
-
-	var captured map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
-		require.NoError(t, json.Unmarshal(body, &captured))
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"schema_version\\\":\\\"1.0\\\",\\\"intent\\\":\\\"unknown\\\",\\\"slots\\\":{\\\"target_refs\\\":[],\\\"metrics\\\":[],\\\"time_window\\\":null},\\\"confidence\\\":0.1}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer srv.Close()
-
-	capabilityPath := filepath.Join(t.TempDir(), "capabilities.yaml")
-	require.NoError(t, os.WriteFile(capabilityPath, []byte(`capabilities:
-- base_url: "`+srv.URL+`/v1"
-  model: "deepseek-v4-flash"
-  supports_json_schema: true
-  supports_json_object: true
-`), 0o644))
-	t.Setenv("COMPSHARE_LLM_CAPABILITY_FILE", capabilityPath)
-
-	cfg := &config.Config{Agent: config.AgentConfig{
-		LLM: config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "deepseek-v4-flash"},
-	}}
-	deps, _, err := configureSharedDepsFromEnv(cfg, func(key string) string {
-		switch key {
-		case "COMPSHARE_DIRECT_DISPATCH_INTENTS":
-			return "resource"
-		case "COMPSHARE_INTENT_ROUTER_STRUCTURED_OUTPUT":
-			return "json_schema"
-		case "USE_KNOWLEDGE_RETRIEVAL", "USE_GROUNDED_RENDERER":
-			return "off"
-		}
-		return ""
-	})
-	require.NoError(t, err)
-	require.NotNil(t, deps.IntentPlanner)
-
-	_, err = deps.IntentPlanner.Plan(context.Background(), intent.IntentRouterInput{UserText: "创建一台4090"})
-	require.NoError(t, err)
-
-	messages, ok := captured["messages"].([]any)
-	require.True(t, ok)
-	require.NotEmpty(t, messages)
-	system, ok := messages[0].(map[string]any)
-	require.True(t, ok)
-	require.Contains(t, system["content"], "create_instance")
-
-	responseFormat, ok := captured["response_format"].(map[string]any)
-	require.True(t, ok)
-	jsonSchema, ok := responseFormat["json_schema"].(map[string]any)
-	require.True(t, ok)
-	schema, ok := jsonSchema["schema"].(map[string]any)
-	require.True(t, ok)
-	props, ok := schema["properties"].(map[string]any)
-	require.True(t, ok)
-	intentProp, ok := props["intent"].(map[string]any)
-	require.True(t, ok)
-	require.Contains(t, intentProp["enum"], "create_instance")
+	require.Nil(t, eng.KnowledgeRetrieverPointer(), "disabled retrieval must stay disabled in pooled sessions")
 }
 
 func TestApplySharedDepsSessionFactContextFromEnv(t *testing.T) {
@@ -264,8 +298,6 @@ func TestApplySharedDepsSessionFactContextFromEnv(t *testing.T) {
 		case "USE_SESSION_FACT_CONTEXT":
 			return "1"
 		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "off"
-		case "USE_GROUNDED_RENDERER":
 			return "off"
 		default:
 			return ""
@@ -288,8 +320,6 @@ func TestApplySharedDepsReactResultProjectionFromEnv(t *testing.T) {
 			return "1"
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
-		case "USE_GROUNDED_RENDERER":
-			return "off"
 		default:
 			return ""
 		}
@@ -311,8 +341,6 @@ func TestApplySharedDepsReactHistoryCompactionFromEnv(t *testing.T) {
 			return "1"
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
-		case "USE_GROUNDED_RENDERER":
-			return "off"
 		default:
 			return ""
 		}
@@ -322,7 +350,7 @@ func TestApplySharedDepsReactHistoryCompactionFromEnv(t *testing.T) {
 	require.True(t, deps.ReactHistoryCompactionEnabled)
 }
 
-func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
+func TestApplySharedDepsDefaultsToQwenRRF(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{
 			BaseURL: "http://localhost:1",
@@ -345,11 +373,6 @@ func TestApplySharedDepsDefaultsToQwenRRFAndRenderer(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, deps.KnowledgeRetriever, "default runtime should enable qwen3_rrf retrieval")
-	require.NotNil(t, deps.IntentPlanner, "default retrieval needs the intent planner")
-	require.NotNil(t, deps.GroundedGenerator, "default runtime should enable LLM grounded renderer")
-	require.Equal(t, "deepseek-v4-flash", deps.GroundedGeneratorModel)
-	require.Equal(t, "deepseek-v4-flash", deps.IntentPlannerModel)
-	require.Contains(t, deps.IntentRouteIntents, intent.IntentPricingQuery, "default runtime should cut over pricing queries")
 }
 
 func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {

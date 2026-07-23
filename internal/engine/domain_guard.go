@@ -11,14 +11,14 @@ import (
 // the trace (AllCitedOffDomain / DomainInferenceEmpty), but the synthesis is
 // never replaced with a refusal. Flipping it on is a separate, eval-gated PR —
 // it must first prove 0 over-refusal, because an over-eager domain refusal
-// would suppress legitimate answers whenever inferKnowledgeProductArea and the
+// would suppress legitimate answers whenever question-side product routing and
 // chunk product_area tags disagree on a true match. Set once at boot from
 // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (cmd); the Go-package default stays false so
 // engine/knowledge unit tests are unaffected.
 var domainMatchGuardOn bool
 
 // SetDomainMatchGuardEnabled toggles the #5 wrong-domain refuse arm. Boot-only
-// (reversible by restart), mirroring SetGroundedAnswerValidatorEnabled.
+// (reversible by restart).
 func SetDomainMatchGuardEnabled(v bool) { domainMatchGuardOn = v }
 
 // DomainMatchGuardEnabled reports whether the refuse arm is on.

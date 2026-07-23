@@ -3,42 +3,138 @@ package workflow
 import (
 	"fmt"
 	"time"
+
+	"github.com/compshare-agent/internal/deployment"
 )
 
 // StepType identifies the kind of workflow step.
 type StepType int
+
+// ReferenceData is the server-trusted, read-only reference data a workflow run
+// consults but never seals. Each field is an explicit typed snapshot, not a
+// catch-all map: reference data has a known shape, and a map would invite the
+// same untyped scatter this convergence removes. It carries platform facts the
+// user never confirmed (the live zone catalog), so it is deliberately absent
+// from the seal — steps consult it, nothing mutates it.
+type ReferenceData struct {
+	// ZoneCatalog is the live availability-zone catalog for this turn, or nil on
+	// paths with no catalog (CLI, or a failed fetch). Its accessors are nil-safe,
+	// so a consumer reads it the same way whether or not it is present.
+	ZoneCatalog *deployment.ZoneCatalogSnapshot
+	// ImageCatalog is the live image catalog for this turn, resolved once by the
+	// engine and shared with BOTH the action resolver (CodecImage) and the workflow
+	// (selectCreateImage) — the single authority that ends the three-interpreter
+	// image resolution. nil on paths that carry no image field; nil-safe accessors,
+	// so a consumer reads it the same way whether or not it is present.
+	ImageCatalog *deployment.ImageCatalogSnapshot
+	// ImageSelection records whether the create's image was settled by the user or
+	// only suggested by the Agent, so the guided image steps offer a suggestion on
+	// the picker instead of silently sealing it. Zero value (ImageSelectionUnset) on
+	// every non-create run and on a create that named no image.
+	ImageSelection ImageSelectionState
+}
+
+// ImageSelectionState records who settled the create's image, so every image step
+// reads one authority instead of each re-deciding from CompShareImageId != "". The
+// engine derives it from the resolved proposal's provenance before the run, and it
+// rides ReferenceData — never Params, never the seal.
+type ImageSelectionState int
+
+const (
+	// ImageSelectionUnset: the proposal named no image — browse from scratch.
+	ImageSelectionUnset ImageSelectionState = iota
+	// ImageSelectionSuggested: the Agent proposed a concrete image id the user did
+	// not name (no explicit id and no explicit name in their text). It is a default
+	// to preselect on the picker, NOT a decision — the picker still shows the whole
+	// catalog so the user can choose another.
+	ImageSelectionSuggested
+	// ImageSelectionUserPinned: the user's own text named the image (explicit id or
+	// explicit name). Browsing is skipped; a concrete pinned id skips the picker too
+	// (a bare name still shows the ranked picker), and the final confirmation card is
+	// still shown.
+	ImageSelectionUserPinned
+)
 
 const (
 	// StepToolCall executes an API tool via executor.
 	StepToolCall StepType = iota
 	// StepConfirm waits for user confirmation.
 	StepConfirm
+	// StepResolve computes derived values from facts earlier steps already
+	// established. It calls no tool and no model, and it may not write Params:
+	// its product is a CANDIDATE, and a candidate is not a decision the user has
+	// agreed to. See Step.Resolve and Step.PromoteOnConfirm for the two halves of
+	// that rule.
+	StepResolve
 )
 
 // Step defines one step in a workflow.
 type Step struct {
-	Name        string
-	Type        StepType
-	Tool        string                      // API action name (for StepToolCall only)
-	ToolFunc    func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
-	BuildArgs   func(wfCtx *Context) (map[string]any, error)
-	CheckResult func(wfCtx *Context, result map[string]any) (bool, string)
+	Name      string
+	Type      StepType
+	Tool      string                      // API action name (for StepToolCall only)
+	ToolFunc  func(wfCtx *Context) string // dynamic tool name (overrides Tool if set)
+	BuildArgs func(wfCtx *Context) (map[string]any, error)
+	// BuildArgsBatch, when set on a StepToolCall, REPLACES BuildArgs: the step
+	// issues one call to the same Tool per returned BatchCall and stores every
+	// outcome under the step name (read it with BatchResults).
+	//
+	// It exists because some questions are only answerable per candidate.
+	// Creatability is a property of (image, GPU, zone) — the capacity API takes
+	// all three as input — so a card that must gray out the zones you cannot
+	// create in needs one call per candidate zone. The single-call alternative
+	// can only ask about the zone the user ALREADY picked, which reports the
+	// mistake instead of preventing it.
+	//
+	// One call failing does NOT fail the step. An unreachable candidate is
+	// UNKNOWN, and unknown must never render as unavailable — that is the same
+	// rule the option builders already follow for a missing capacity signal. The
+	// step fails only when EVERY call fails, which is indistinguishable from the
+	// upstream being down and is not a fact about any candidate.
+	//
+	// Calls beyond MaxBatchCalls are not made and are recorded as explicit
+	// unknowns rather than dropped: a bound that silently shortens the list would
+	// read downstream as "these candidates were checked and are fine".
+	BuildArgsBatch func(wfCtx *Context) ([]BatchCall, error)
+	// CheckResult inspects a SUCCESSFUL upstream response and decides whether the
+	// workflow may continue. Rejecting here is how a workflow says "the call
+	// worked and the answer is no" — the capacity gate's sold-out is the archetype.
+	//
+	// On a batch step it receives the collected result, so a check that wants to
+	// reject must decide over BatchResults, not over one response.
+	CheckResult func(wfCtx *Context, result map[string]any) CheckOutcome
+	// Resolve computes this step's result from the Context (StepResolve only); the
+	// result lands in StepResults exactly like a tool step's would.
+	//
+	// What is actually guaranteed, and what is not:
+	//   - It is handed no runtime-provided tool, model or network dependency: no
+	//     context.Context, no executor. That is the only thing the signature
+	//     settles — a plain Go function can still reach a global, an HTTP client
+	//     or another package, so "calls no tool" describes today's create
+	//     Resolver (materializeCreateDraft computes locally and nothing else),
+	//     not an invariant of the type.
+	//   - runResolveStep rejects any Resolve that mutates Params.
+	//   - It is NOT otherwise read-only. It holds the live *Context and could
+	//     still write StepResults, InitialParams or Runtime. Nothing stops it.
+	//
+	// So "pure" is a property of each Resolve today, not of the type. Before
+	// StepResolve is used outside the create draft, this should take a read-only
+	// snapshot (deep-copied Params + StepResults, Runtime by value) and return its
+	// result, rather than being handed the Context itself — then replayability
+	// from a trace would follow from the signature instead of from review.
+	Resolve func(wfCtx *Context) (map[string]any, error)
 	// SkipIf lets adaptive workflows omit a step once earlier context has made
 	// that choice unambiguous. nil preserves the legacy "always run" behavior.
 	SkipIf func(wfCtx *Context) (bool, error)
 	// Optional lets a post-success enrichment step fail without failing the
 	// whole workflow. Default false preserves existing fail-stop behavior.
 	Optional bool
-	// Compensate is the compensating action run on a LATER step's failure
-	// (reverse-order rollback). nil = no side effect / nothing to roll back
-	// (read-only or idempotent setter). B6.1 declares it; only the B6.2
-	// orchestrator saga runner consumes it — workflow.Engine.Run ignores it,
-	// so existing sync flows are byte-identical. (ADR-006 §决策2)
-	Compensate *CompensateStep
-	// Timeout is the per-step cancel deadline. 0 = inherit ctx (current
-	// behavior). Consumed only by the B6.2 saga runner; ignored by
-	// workflow.Engine.Run. (ADR-006 §决策2, default 240s applied by the runner)
-	Timeout time.Duration
+	// Poll retries a successful read whose CheckResult reports a pending state.
+	// It is opt-in and intended for asynchronous state transitions after a
+	// confirmed write (for example Running -> Stopping -> Stopped). Mutating
+	// calls must never use it: writes remain single-attempt under the action
+	// journal.
+	Poll *PollPolicy
 
 	// --- Editable confirm form (StepConfirm only; all three nil/empty =
 	// legacy boolean confirm, byte-identical). Consumed only by
@@ -52,14 +148,39 @@ type Step struct {
 	BuildForm func(wfCtx *Context) (*ConfirmForm, error)
 	// ApplyOverrides merges validated form overrides into wfCtx.Params.
 	ApplyOverrides func(wfCtx *Context, overrides map[string]string) error
-	// RevalidateSteps names earlier StepToolCall steps to re-run after
-	// ApplyOverrides, before re-entering this confirm (e.g. stock + price).
-	RevalidateSteps []string
+	// RevalidateFrom names the step this confirm re-runs FROM after
+	// ApplyOverrides, before re-entering the gate. Every step from there up to
+	// (not including) this confirm is discarded and re-run in DEFINITION order.
+	//
+	// It replaced a []string list of step names, which had two defects a boundary
+	// does not have: the list was resolved through a StepToolCall-only lookup that
+	// SILENTLY SKIPPED any name it could not find (a typo, a renamed step, or a
+	// step of any other type simply did not re-run, and the user re-confirmed a
+	// card built on stale results), and its order was the list's rather than the
+	// workflow's. A boundary cannot drift out of order, and an unresolvable one
+	// fail-stops the workflow instead of quietly doing less — see revalidateFrom.
+	RevalidateFrom string
+	// PromoteOnConfirm runs after this gate PASSES and before Run seals, to copy
+	// what the user just approved into Params — the map seal() hashes.
+	//
+	// It exists because a StepResolve may not write Params (an earlier gate's seal
+	// may still be live while it runs, and its output is a candidate nobody has
+	// agreed to yet). This is the one sanctioned crossing from "computed" to
+	// "confirmed", and it is placed exactly where that transition actually
+	// happens. An error here fail-stops: failing to record what the user approved
+	// must never degrade into executing something else.
+	PromoteOnConfirm func(wfCtx *Context) error
 	// ConfirmSubmitMode controls what happens after a form-bearing confirm is
 	// submitted with Overrides. Empty preserves the legacy edit→revalidate→
 	// re-confirm loop. ConfirmSubmitContinue applies the whitelisted selection
 	// and advances to the next workflow step, used by guided multi-step forms.
 	ConfirmSubmitMode ConfirmSubmitMode
+}
+
+// PollPolicy bounds an opt-in read poll. Both fields must be positive.
+type PollPolicy struct {
+	Interval time.Duration
+	Timeout  time.Duration
 }
 
 // ConfirmSubmitMode controls StepConfirm form-submission behavior.
@@ -70,47 +191,229 @@ const (
 	ConfirmSubmitContinue   ConfirmSubmitMode = "continue"
 )
 
-// CompensateStep is the rollback action for a side-effecting Step, run in
-// reverse order by the orchestrator saga when a later step fails (B6.2).
-type CompensateStep struct {
-	Tool      string
-	BuildArgs func(wfCtx *Context, stepResult map[string]any) (map[string]any, error)
-	// BestEffort true = a failed compensate logs and continues the rollback
-	// rather than wedging it ("partial rollback + tell user" > "rollback
-	// deadlock"). Default true is applied by the saga runner.
-	BestEffort bool
-}
-
 // Definition holds a complete workflow.
 type Definition struct {
-	Name        string
-	Description string
-	Steps       []Step
-	ResultData  func(wfCtx *Context) map[string]any
+	Name       string
+	Steps      []Step
+	ResultData func(wfCtx *Context) map[string]any
+	// ImageCatalogSource declares a fixed image source for workflows whose image
+	// id must be resolved against one specific catalog. Empty means the source is
+	// supplied by the proposal (for example reinstall). Keeping this metadata on
+	// the capability avoids exposing a constant ImageSource argument to the model
+	// or hard-coding workflow names in the engine.
+	ImageCatalogSource string
+	// FailureDraft returns the candidate this workflow was working from, encoded,
+	// for the failure record. Like ResultData it is the definition's own way of
+	// naming what only it understands — the engine never interprets what comes
+	// back, it only carries it to a caller that does.
+	//
+	// nil for a workflow that resolves no candidate; its failures then carry the
+	// failed step and its arguments and nothing more, which is honest.
+	FailureDraft func(wfCtx *Context) map[string]any
+	// GuidedIntake declares that this workflow offers a guided, multi-step
+	// selection form for an incomplete-but-well-formed proposal (see
+	// CreateInstanceGuidedDef) instead of a prose back-and-forth. The action
+	// catalog reads this to surface the operation as IntakeGuided, so whether an
+	// operation supports guided intake is a property the workflow declares here —
+	// not a workflow-name switch in the catalog. Default false = prose-only intake.
+	GuidedIntake bool
+	// GuidedIntakeFields is the EXPLICIT set of proposal field names the guided
+	// form can collect AND correct — the only fields whose missing/invalid/
+	// conflicting values may open the form instead of bouncing to prose. It must
+	// be declared (not auto-derived from every non-secret schema field): a create
+	// schema carries fields the form has no input for (e.g. Name), and a resolver
+	// problem on such a field is NOT form-correctable. Required when GuidedIntake
+	// is true. Every name must be a real field of this workflow (BuildCatalog
+	// enforces it).
+	GuidedIntakeFields []string
+}
+
+// FailureReason classifies a failure for callers that must DO something different
+// about different failures, rather than merely retell them.
+//
+// It exists because the alternative is reading the prose. isCreateStockShortage
+// tested strings.Contains(message, "库存不足") — so the sentence a user reads was
+// also a control signal, and the two cannot both be free. Rewording the message
+// changed behaviour; translating it would have removed it. The reason is now
+// produced where the branch is actually taken, and the message is free to be a
+// message again.
+//
+// The zero value classifies nothing, which is the right default: a failure with no
+// declared reason must not accidentally match one.
+type FailureReason string
+
+const (
+	// ReasonCapacitySoldOut: the requested spec exists, and upstream says there is
+	// none of it right now. Alternatives are worth offering. This is NOT the same
+	// as a spec that does not exist (a typo, a wrong combination) — those need a
+	// different answer and must not share a reason.
+	ReasonCapacitySoldOut FailureReason = "capacity_sold_out"
+)
+
+// CheckOutcome is a CheckResult's verdict on a successful upstream response.
+//
+// It is a struct rather than (bool, string) so a rejection can carry WHY without
+// the reason having to be recovered from the prose afterwards. The message and the
+// reason are produced together, at the branch that knows both — the alternative
+// was a caller re-deriving the reason by matching text the workflow had already
+// decided.
+type CheckOutcome struct {
+	OK      bool
+	Message string
+	// Pending asks an opt-in polling step to query again. It is distinct from a
+	// failed check: an asynchronous transition is still in progress, not denied.
+	Pending bool
+	// Reason is optional. Most rejections need only be explained, not classified;
+	// only a caller that must ACT differently needs one, and inventing reasons for
+	// rejections nobody branches on would be inventing a vocabulary.
+	Reason FailureReason
+}
+
+// CheckPassed lets the workflow continue.
+func CheckPassed() CheckOutcome { return CheckOutcome{OK: true} }
+
+// CheckFailed stops the workflow with an explanation and no classification.
+func CheckFailed(message string) CheckOutcome {
+	return CheckOutcome{Message: message}
+}
+
+// CheckPending asks a polling read step to retry until it passes or times out.
+func CheckPending(message string) CheckOutcome {
+	return CheckOutcome{Message: message, Pending: true}
+}
+
+// CheckFailedBecause stops the workflow with an explanation AND a machine-readable
+// reason, for the failures a caller has to act on.
+func CheckFailedBecause(reason FailureReason, message string) CheckOutcome {
+	return CheckOutcome{Message: message, Reason: reason}
+}
+
+// StepFailure is what the workflow knows about its own failure, recorded where
+// the failure happened.
+//
+// It exists because the alternative is reconstruction, and reconstruction from
+// "whichever params survived" gets it wrong in both directions. A caller had to
+// read the spec out of top-level params: on the plain create those params are the
+// user's original request, so a zone the resolver derived was simply not in them
+// and the caller searched every zone; on the guided create they were whatever
+// contract happened to be sealed, which between gates is a SELECTION card's seal
+// and authorises nothing. Both readings are guesses about state the workflow
+// itself knew exactly.
+//
+// The five fields are deliberately separate, because conflating them is the bug:
+// what failed, what kind of failure it was, what it actually sent, what it was
+// working from, and whether any of it was ever approved are five different
+// questions.
+type StepFailure struct {
+	// Step is the step that stopped the workflow. It anchors the others: Args and
+	// Draft are that step's, not the workflow's.
+	Step string
+	// Reason classifies the failure when the step that raised it said what kind it
+	// was. Empty means unclassified, which is most failures — a caller that only
+	// retells a failure needs no vocabulary for it.
+	//
+	// Do not infer one from Message. That is what this replaces.
+	Reason FailureReason
+	// Args are the arguments THAT step actually sent, copied rather than
+	// referenced so the record cannot move afterwards. nil when the step built
+	// none — it failed before BuildArgs, or it calls no tool at all.
+	//
+	// It is a record of the request, NOT a source for the decision behind it: the
+	// two differ on purpose. ApplyCapacityPlacementArgs drops Zone/Region/az_group
+	// for a pod zone, so a capacity request can carry no zone while the draft
+	// behind it names one. Read Draft for what was decided; read Args for what was
+	// asked.
+	Args map[string]any
+	// Draft is the candidate the failed step was working from, encoded, as the
+	// definition's FailureDraft reported it. nil when the workflow resolves no
+	// candidate or none existed yet.
+	Draft map[string]any
+	// ExecutionAuthorized reports whether a contract authorising this workflow's
+	// MUTATING step existed when it failed — which is not the same question as
+	// whether Contract is non-nil, and that difference is the whole reason this
+	// field exists. It is named for the question it answers rather than for the
+	// mechanism behind it: "Sealed" invited exactly the reading that a seal, any
+	// seal, means the user agreed to the thing about to happen.
+	//
+	// The guided create seals after every one of its seven gates, so a failure at
+	// 检查库存 leaves a perfectly real contract that authorised an image choice and
+	// nothing else. Its Operation is "CreateInstanceWorkflow", exactly like a real
+	// create authorisation's, so no reader can tell them apart by inspection.
+	//
+	// True only when every confirmation gate up to and including the failed step
+	// has passed — see confirmGateUnpassed. While any gate has not, whatever is
+	// sealed is a selection the user made along the way, not permission to execute.
+	ExecutionAuthorized bool
 }
 
 // Context accumulates state during workflow execution.
 type Context struct {
+	// Params holds the mutable business parameters (the pre-seal draft). It is an
+	// independent deep copy of the caller's map — a step mutating Params can never
+	// reach the ResolvedAction.Arguments the engine still owns.
 	Params        map[string]any
 	InitialParams map[string]any
 	StepResults   map[string]map[string]any
+	// Runtime carries server-injected identity/trace lifted out of Params, so
+	// business params (and the confirm form / sealed digest) never mix them in.
+	Runtime RuntimeMetadata
+	// referenceData holds server-trusted read-only snapshots (the turn's zone
+	// catalog) attached via a RunOption. It is set once on the fresh context and
+	// persists across confirm-form re-runs, yet — unlike Params — it never passes
+	// through deepCopyParams and is never captured by seal(), so it can neither
+	// alias into a selected placement nor enter the sealed contract.
+	//
+	// It is private on purpose: read-only is a guarantee, not a convention. Step
+	// code reaches it only through ZoneCatalog(), so a step cannot swap the whole
+	// reference out from under the run.
+	referenceData ReferenceData
+	// sealed is set once the user confirms: the immutable snapshot the mutating
+	// step consumes. nil before confirmation.
+	sealed *SealedActionContract
 }
 
-// NewContext creates a workflow context with the given initial parameters.
+// NewContext creates a workflow context with the given initial parameters. The
+// caller's map is never shared or mutated: params are deep-copied (nested maps
+// and slices included) and the identity/trace keys are split into Runtime so the
+// business Params are exactly what the user will confirm.
 func NewContext(params map[string]any) *Context {
-	if params == nil {
-		params = make(map[string]any)
-	}
-	initial := make(map[string]any, len(params))
-	for k, v := range params {
-		initial[k] = v
+	business, runtime := splitRuntimeMetadata(deepCopyParams(params))
+	if business == nil {
+		business = make(map[string]any)
 	}
 	return &Context{
-		Params:        params,
-		InitialParams: initial,
+		Params:        business,
+		InitialParams: deepCopyParams(business),
 		StepResults:   make(map[string]map[string]any),
+		Runtime:       runtime,
 	}
 }
+
+// Sealed returns the sealed contract if the workflow has passed its confirmation
+// gate, or nil. The engine reads this after Run to narrate results from the
+// exact confirmed params rather than re-deriving them from stale input.
+func (c *Context) Sealed() *SealedActionContract { return c.sealed }
+
+// ZoneCatalog returns the turn's zone catalog snapshot, or nil when the run
+// carries none. ZoneCatalogSnapshot's methods are nil-safe, so callers can chain
+// c.ZoneCatalog().Placement(...) without a guard — an absent catalog resolves
+// nothing, exactly as a failed fetch does.
+func (c *Context) ZoneCatalog() *deployment.ZoneCatalogSnapshot { return c.referenceData.ZoneCatalog }
+
+// ImageCatalog returns the turn's image catalog snapshot, or nil when the run
+// carries none. ImageCatalogSnapshot's methods are nil-safe, so callers can chain
+// c.ImageCatalog().ByID(...) without a guard — an absent catalog resolves nothing,
+// exactly as a failed fetch does.
+func (c *Context) ImageCatalog() *deployment.ImageCatalogSnapshot {
+	return c.referenceData.ImageCatalog
+}
+
+// ImageSelection reports who settled the create's image — the user's own text
+// (ImageSelectionUserPinned), an Agent suggestion (ImageSelectionSuggested), or
+// nothing (ImageSelectionUnset). It is the single authority the guided image steps
+// read instead of each inferring intent from CompShareImageId != "". Zero value on
+// a run that carries no image selection state.
+func (c *Context) ImageSelection() ImageSelectionState { return c.referenceData.ImageSelection }
 
 // Result returns the API result from a previous step, or nil.
 func (c *Context) Result(stepName string) map[string]any {
@@ -119,11 +422,61 @@ func (c *Context) Result(stepName string) map[string]any {
 
 // Result of executing a workflow.
 type Result struct {
-	Success   bool           `json:"success"`
-	StoppedAt string         `json:"stopped_at,omitempty"`
-	Message   string         `json:"message"`
-	Data      map[string]any `json:"data,omitempty"`
-	Steps     []StepSummary  `json:"steps"`
+	Success      bool           `json:"success"`
+	StoppedAt    string         `json:"stopped_at,omitempty"`
+	Message      string         `json:"message"`
+	MissingSlots []string       `json:"missing_slots,omitempty"`
+	Data         map[string]any `json:"data,omitempty"`
+	Steps        []StepSummary  `json:"steps"`
+	// Contract is the seal in force when the workflow ended, or nil if it never
+	// passed a confirmation gate. It is server-internal (json:"-": never
+	// serialised to the model — it may carry secret-bearing confirmed params);
+	// the engine reads it to narrate results and recover from the exact confirmed
+	// params instead of stale input.
+	//
+	// It is NOT, on its own, "the contract that gated the mutating step" — this
+	// comment used to say that, and on the guided create it is false. That flow
+	// seals after each of its seven gates, so a run that stopped at 检查库存 ends
+	// with a contract that authorised the image selection and no more. Ask
+	// Failure.Sealed whether a contract authorising execution exists; a non-nil
+	// Contract answers a different question.
+	Contract *SealedActionContract `json:"-"`
+	// Failure describes the step that stopped this workflow, or nil when it
+	// succeeded. Server-internal, like Contract and Err.
+	Failure *StepFailure `json:"-"`
+	// Err is the error that stopped this workflow, unflattened, or nil. Message
+	// keeps the human sentence; Err keeps the typed cause, so a caller deciding
+	// what to DO about a failure can read the upstream error's fields instead of
+	// grepping the sentence. (createImageUnavailable used to match "230" and
+	// "CompShareImageId" as substrings of Message — an unanchored match that any
+	// "230" anywhere in the text could trip.)
+	//
+	// It is deliberately NOT set for failures we raise ourselves from a SUCCESSFUL
+	// upstream response, e.g. the capacity gate's "库存不足" (CheckResult): those
+	// have no upstream error and must not be mistaken for one.
+	//
+	// Server-internal (json:"-"): the model must never see the raw upstream tokens
+	// ("RetCode=230" / "not available"), which the reply_not_contains eval gate
+	// forbids — see internal/tools/upstream_error.go. This field adds no bytes to
+	// the model-facing payload.
+	Err error `json:"-"`
+}
+
+// ConfirmationAccepted reports whether this run got PAST its confirmation gate —
+// i.e. the user authorized the mutating action. It is true on full success AND on
+// a post-confirmation execution failure (the upstream write was attempted on a
+// confirmed target and failed), and false when the run was cancelled, declined,
+// timed out, or stopped before its final confirm gate. This is the honest signal
+// for "was the user's selection authorized", deliberately distinct from Success
+// (did the whole workflow, including the upstream call, complete): a confirmed
+// target must be remembered even when the write then fails, so a retry resolves to
+// it. Built from Failure.ExecutionAuthorized — the single authority for "a gate
+// authorizing execution passed" (see confirmGateUnpassed).
+func (r *Result) ConfirmationAccepted() bool {
+	if r == nil {
+		return false
+	}
+	return r.Success || (r.Failure != nil && r.Failure.ExecutionAuthorized)
 }
 
 // StepSummary records one step's outcome.
@@ -151,7 +504,7 @@ type ConfirmForm struct {
 // v1 forms and legacy clients keep the same JSON shape.
 type ConfirmFormStep struct {
 	Index          int    `json:"Index"`
-	Total          int    `json:"Total"`
+	Total          int    `json:"Total"` // 0 means unknown for a conditional wizard; clients show only Index.
 	Title          string `json:"Title,omitempty"`
 	Description    string `json:"Description,omitempty"`
 	PrimaryLabel   string `json:"PrimaryLabel,omitempty"`

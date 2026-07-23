@@ -2,6 +2,15 @@
 
 Date: 2026-06-03
 
+> **SUPERSEDED / historical (P6).** This is a dated rollout record for the
+> Planner-prompt / skill-executor / terminal-RAG optimization work. That whole
+> stack was physically deleted in the P6 central-Agent cutover — there is no
+> Planner, no `internal/skills` body-read executor, and no terminal RAG — so the
+> flags below (`PLANNER_STRUCTURED_OUTPUT`, `USE_SKILL_EXECUTOR*`,
+> `USE_PLANNER_MINIMAL_CORE`, and `RAG_RETRIEVAL_MODE` as a *terminal-RAG* control)
+> are retired. Kept as a historical record of that rollout; do **not** follow it as
+> current runtime guidance. Current architecture: [`../architecture.md`](../architecture.md).
+
 This document records the rollout gates for the console-agent context and planner-prompt optimization work. Runtime behavior stays default-off unless stated otherwise.
 
 ## Flags

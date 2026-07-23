@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/compshare-agent/internal/deployment"
 )
 
 func ReinstallInstanceDef() *Definition {
 	return &Definition{
-		Name:        "ReinstallInstanceWorkflow",
-		Description: "查询实例 → 查询目标镜像 → 确认重装 → 重装系统",
+		Name: "ReinstallInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForReinstall(),
+			stepQuerySupportZones(),
 			stepQueryPlatformTargetImage(),
 			stepQueryCommunityTargetImage(),
 			stepQueryCustomTargetImage(),
@@ -33,19 +35,19 @@ func stepQueryForReinstall() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) (bool, string) {
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":
-				return true, ""
+				return CheckPassed()
 			case "":
-				return false, "未找到该实例。"
+				return CheckFailed("未找到该实例。")
 			case "Running":
-				return false, "实例当前正在运行，重装系统需要先关机。"
+				return CheckFailed("实例当前正在运行，重装系统需要先关机。")
 			case "Stopping":
-				return false, "实例正在关机中，请稍后再试。"
+				return CheckFailed("实例正在关机中，请稍后再试。")
 			default:
-				return false, fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以重装。", state)
+				return CheckFailed(fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以重装。", state))
 			}
 		},
 	}
@@ -57,10 +59,15 @@ func stepQueryPlatformTargetImage() Step {
 		Type:     StepToolCall,
 		Tool:     "DescribeCompShareImages",
 		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return reinstallShouldSkipSource(wfCtx, "platform"), nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			return map[string]any{
-				"CompShareImageId": wfCtx.Params["CompShareImageId"],
-			}, nil
+			args, ok := reinstallImageLookupArgs(wfCtx, "platform")
+			if !ok {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
+			return args, nil
 		},
 	}
 }
@@ -71,10 +78,15 @@ func stepQueryCommunityTargetImage() Step {
 		Type:     StepToolCall,
 		Tool:     "DescribeCommunityImages",
 		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return reinstallShouldSkipSource(wfCtx, "community"), nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			return map[string]any{
-				"CompShareImageId": wfCtx.Params["CompShareImageId"],
-			}, nil
+			args, ok := reinstallImageLookupArgs(wfCtx, "community")
+			if !ok {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
+			return args, nil
 		},
 	}
 }
@@ -85,10 +97,15 @@ func stepQueryCustomTargetImage() Step {
 		Type:     StepToolCall,
 		Tool:     "DescribeCompShareCustomImages",
 		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return reinstallShouldSkipSource(wfCtx, "custom"), nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			return map[string]any{
-				"CompShareImageId": wfCtx.Params["CompShareImageId"],
-			}, nil
+			args, ok := reinstallImageLookupArgs(wfCtx, "custom")
+			if !ok {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
+			return args, nil
 		},
 	}
 }
@@ -99,10 +116,15 @@ func stepQuerySharingTargetImage() Step {
 		Type:     StepToolCall,
 		Tool:     "DescribeCompShareSharingImages",
 		Optional: true,
+		SkipIf: func(wfCtx *Context) (bool, error) {
+			return reinstallShouldSkipSource(wfCtx, "sharing"), nil
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			return map[string]any{
-				"CompShareImageId": wfCtx.Params["CompShareImageId"],
-			}, nil
+			args, ok := reinstallImageLookupArgs(wfCtx, "sharing")
+			if !ok {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
+			return args, nil
 		},
 	}
 }
@@ -112,13 +134,34 @@ func stepConfirmReinstall() Step {
 		Name: "确认重装",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" && strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", "")) == "" {
+				return nil, NewMissingSlotError("重装系统需要指定目标镜像。", "image_id")
+			}
 			image, ok := targetReinstallImage(wfCtx)
 			if !ok {
-				return nil, fmt.Errorf("未找到目标镜像，请确认镜像 ID 是否正确。")
+				return nil, fmt.Errorf("未找到目标镜像，请确认镜像名称或 ID 是否正确。")
 			}
+			wfCtx.Params["CompShareImageId"] = image.ID
 			queried := wfCtx.Result("查询实例")
 			if (isPodInstanceResult(queried) || isContainerInstanceResult(queried)) && !image.Container {
 				return nil, fmt.Errorf("Pod 实例重装必须选择容器镜像；当前镜像「%s」不是容器镜像。", image.Name)
+			}
+			// In no-card UHost mode DescribeCompShareInstance exposes only the display
+			// GPU name and MachineType=O. The upstream reinstall gate validates the
+			// hidden UhostType instead; it is not present in this API response, so the
+			// Agent cannot prove compatibility from the catalog. Refuse before a
+			// destructive confirmation rather than knowingly send a request that the
+			// upstream rejects with 226603.
+			if strings.EqualFold(firstInstanceField(queried, "MachineType"), "O") {
+				return nil, fmt.Errorf("实例当前处于无卡运行模式，重装接口无法核实底层 GPU 机型与目标镜像的兼容性。请先恢复带卡运行并关机，再发起重装。")
+			}
+			// SupportedGpuTypes is advisory for create capacity ranking, but the
+			// upstream ReinstallCompShareInstance implementation explicitly rejects a
+			// non-member with RetCode 226603. Enforce that operation-specific contract
+			// before asking the user to approve a destructive reinstall.
+			if gpuType := reinstallCurrentGPUType(queried); gpuType != "" &&
+				len(image.SupportedGPUTypes) > 0 && !containsFold(image.SupportedGPUTypes, gpuType) {
+				return nil, fmt.Errorf("目标镜像「%s」不支持当前实例的 GPU 机型 %s，请选择支持该机型的镜像后重试。", image.Name, gpuType)
 			}
 			if requiredGB := image.RequiredSystemDiskGB(); requiredGB > 0 {
 				if currentGB := currentSystemDiskGB(queried); currentGB > 0 && currentGB < requiredGB {
@@ -130,6 +173,10 @@ func stepConfirmReinstall() Step {
 			summary["target_image_name"] = image.Name
 			summary["target_image_source"] = image.Source
 			summary["target_image_container"] = image.Container
+			password, _ := wfCtx.Params["Password"].(string)
+			passwordConfigured := strings.TrimSpace(password) != ""
+			wfCtx.Params["PasswordConfigured"] = passwordConfigured
+			summary["password_will_change"] = passwordConfigured
 			summary["warning"] = "⚠️ 重装系统会清除系统盘上的所有数据，数据盘不受影响。请确保重要数据已备份。"
 			return summary, nil
 		},
@@ -147,12 +194,14 @@ func stepReinstallInstance() Step {
 				"UHostId":          wfCtx.Params["UHostId"],
 				"CompShareImageId": wfCtx.Params["CompShareImageId"],
 			}
-			if _, err := addRequiredInstanceLocationArgs(args, queried); err != nil {
+			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
 			}
 			if pw, ok := wfCtx.Params["Password"].(string); ok && pw != "" {
 				args["Password"] = base64.StdEncoding.EncodeToString([]byte(pw))
 				args["LoginMode"] = "Password"
+			} else if configured, _ := wfCtx.Params["PasswordConfigured"].(bool); configured {
+				return nil, fmt.Errorf("已确认设置新密码，但安全密码输入已丢失，拒绝执行重装。")
 			}
 			return args, nil
 		},
@@ -160,11 +209,12 @@ func stepReinstallInstance() Step {
 }
 
 type reinstallImageInfo struct {
-	ID        string
-	Name      string
-	Source    string
-	Container bool
-	SizeMB    float64
+	ID                string
+	Name              string
+	Source            string
+	Container         bool
+	SupportedGPUTypes []string
+	SizeMB            float64
 }
 
 func (info reinstallImageInfo) RequiredSystemDiskGB() float64 {
@@ -174,8 +224,52 @@ func (info reinstallImageInfo) RequiredSystemDiskGB() float64 {
 	return math.Ceil(info.SizeMB / 1024)
 }
 
+func reinstallImageLookupArgs(wfCtx *Context, source string) (map[string]any, bool) {
+	if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
+		return map[string]any{"CompShareImageId": id}, true
+	}
+	name := strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", ""))
+	if name == "" {
+		return nil, false
+	}
+	switch source {
+	case "platform":
+		return map[string]any{"Name": name, "Limit": 100}, true
+	case "community":
+		return map[string]any{"FuzzySearch": name, "Limit": 30}, true
+	case "custom", "sharing":
+		return map[string]any{"Limit": 100}, true
+	default:
+		return map[string]any{"Limit": 100}, true
+	}
+}
+
+func reinstallShouldSkipSource(wfCtx *Context, source string) bool {
+	selected := reinstallSelectedImageSource(wfCtx)
+	return selected != "" && selected != source
+}
+
+func reinstallSelectedImageSource(wfCtx *Context) string {
+	source := strings.ToLower(strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")))
+	switch source {
+	case "platform", "community", "custom":
+		return source
+	case "shared", "sharing":
+		return "sharing"
+	default:
+		return ""
+	}
+}
+
+// targetReinstallImage resolves the reinstall target through the ONE image
+// interpreter (deployment.ResolveImage), against each candidate source's query
+// result in turn. It replaces the reinstall-specific matcher (exact-id OR
+// name==want||Contains) — the third image interpreter the convergence removes. The
+// snapshot carries the image size too, so the disk-fit check reads it from the same
+// resolved row rather than a parallel walk of the response.
 func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
-	want := paramStr(wfCtx.Params, "CompShareImageId", "")
+	id := paramStr(wfCtx.Params, "CompShareImageId", "")
+	name := paramStr(wfCtx.Params, "ImageName", "")
 	for _, item := range []struct {
 		step   string
 		source string
@@ -185,90 +279,83 @@ func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
 		{step: "查询自制目标镜像", source: "custom"},
 		{step: "查询共享目标镜像", source: "sharing"},
 	} {
-		if img, ok := findReinstallImage(wfCtx.Result(item.step), want, item.source); ok {
-			return img, true
+		if reinstallShouldSkipSource(wfCtx, item.source) {
+			continue
 		}
+		result := wfCtx.Result(item.step)
+		if result == nil {
+			continue
+		}
+		snap := reinstallSnapshot(result, item.source)
+		res := deployment.ResolveImage(snap, deployment.ImageRequest{
+			ID:     id,
+			Name:   name,
+			Source: item.source,
+			// The platform and community reinstall queries filter by name (Name= /
+			// FuzzySearch=), so a non-exact request recommends the best returned row;
+			// the custom/sharing queries return the full list, so client-side name
+			// relevance still applies there.
+			Prefiltered: item.source == "platform" || item.source == "community",
+		})
+		sel, ok := reinstallSelection(res)
+		if !ok {
+			continue
+		}
+		entry, _ := snap.ByID(sel.ID)
+		return reinstallImageInfo{
+			ID:                sel.ID,
+			Name:              sel.Name,
+			Source:            item.source,
+			Container:         sel.Container,
+			SupportedGPUTypes: append([]string(nil), entry.SupportedGPUTypes...),
+			SizeMB:            entry.SizeMB,
+		}, true
 	}
 	return reinstallImageInfo{}, false
 }
 
-func findReinstallImage(result map[string]any, wantID, source string) (reinstallImageInfo, bool) {
-	if result == nil {
-		return reinstallImageInfo{}, false
-	}
-	for _, img := range imageSetMaps(result) {
-		if info, ok := reinstallImageFromMap(img, source); ok && imageIDMatches(info.ID, wantID) {
-			return info, true
-		}
-	}
-	for _, img := range communityImageMaps(result) {
-		if info, ok := reinstallImageFromMap(img, source); ok && imageIDMatches(info.ID, wantID) {
-			return info, true
-		}
-	}
-	return reinstallImageInfo{}, false
-}
-
-func imageSetMaps(result map[string]any) []map[string]any {
-	raw, ok := result["ImageSet"].([]any)
+// reinstallCurrentGPUType returns the GPU identity the upstream reinstall API
+// validates. A no-card instance may carry the original sellable configuration
+// under SrcInstanceConfig, so the current empty GpuType must not erase that fact.
+func reinstallCurrentGPUType(result map[string]any) string {
+	host, ok := firstInstance(result)
 	if !ok {
-		return nil
+		return ""
 	}
-	out := make([]map[string]any, 0, len(raw))
-	for _, item := range raw {
-		if m, ok := item.(map[string]any); ok {
-			out = append(out, m)
+	if gpu := strings.TrimSpace(stringFieldAny(host["GpuType"])); gpu != "" {
+		return gpu
+	}
+	if gpu := strings.TrimSpace(stringFieldAny(host["GPUType"])); gpu != "" {
+		return gpu
+	}
+	if source, ok := sourceInstanceConfig(host); ok {
+		if gpu := strings.TrimSpace(stringFieldAny(source["GpuType"])); gpu != "" {
+			return gpu
 		}
+		return strings.TrimSpace(stringFieldAny(source["GPUType"]))
 	}
-	return out
+	return ""
 }
 
-func communityImageMaps(result map[string]any) []map[string]any {
-	groups, ok := result["CompshareImageGroup"].([]any)
-	if !ok {
-		return nil
+// reinstallSelection picks the resolved image, or the top recommended candidate for
+// a not_found/ambiguous named request, or nothing when the source has no match.
+func reinstallSelection(res deployment.ImageResolution) (deployment.ImageSelection, bool) {
+	if res.Status == deployment.ResolutionResolved {
+		return res.Selection, true
 	}
-	out := []map[string]any{}
-	for _, rawGroup := range groups {
-		group, ok := rawGroup.(map[string]any)
-		if !ok {
-			continue
-		}
-		groupName, _ := group["ImageName"].(string)
-		data, ok := group["Data"].([]any)
-		if !ok {
-			continue
-		}
-		for _, rawData := range data {
-			img, ok := rawData.(map[string]any)
-			if !ok {
-				continue
-			}
-			if _, ok := img["ImageName"]; !ok && groupName != "" {
-				img["ImageName"] = groupName
-			}
-			out = append(out, img)
-		}
+	if len(res.Candidates) > 0 {
+		return res.Candidates[0], true
 	}
-	return out
+	return deployment.ImageSelection{}, false
 }
 
-func reinstallImageFromMap(img map[string]any, source string) (reinstallImageInfo, bool) {
-	id := firstStringValue(img, "CompShareImageId", "ImageId", "Id")
-	if id == "" {
-		return reinstallImageInfo{}, false
+// reinstallSnapshot builds the turn's image catalog for one reinstall source from
+// its query result, parsing the grouped community shape or the flat ImageSet shape.
+func reinstallSnapshot(result map[string]any, source string) *deployment.ImageCatalogSnapshot {
+	if source == "community" {
+		return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(result))
 	}
-	name := firstStringValue(img, "Name", "CompShareImageName", "ImageName")
-	if name == "" {
-		name = id
-	}
-	return reinstallImageInfo{
-		ID:        id,
-		Name:      name,
-		Source:    source,
-		Container: paramBool(img, "Container", false) || paramBool(img, "IsContainer", false),
-		SizeMB:    diskNumber(img, "Size", "ActualSize", "ImageSize"),
-	}, true
+	return deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(result, source))
 }
 
 func currentSystemDiskGB(result map[string]any) float64 {
@@ -278,38 +365,4 @@ func currentSystemDiskGB(result map[string]any) float64 {
 		}
 	}
 	return 0
-}
-
-func firstStringValue(m map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if v, ok := m[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func imageIDMatches(got, want string) bool {
-	return want == "" || strings.EqualFold(got, want)
-}
-
-func extractImageName(result map[string]any) string {
-	if result == nil {
-		return ""
-	}
-	imageSet, ok := result["ImageSet"].([]any)
-	if !ok || len(imageSet) == 0 {
-		return ""
-	}
-	first, ok := imageSet[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	if name, ok := first["Name"].(string); ok && name != "" {
-		return name
-	}
-	if name, ok := first["CompShareImageName"].(string); ok && name != "" {
-		return name
-	}
-	return ""
 }

@@ -45,26 +45,6 @@ func regionFromZone(zone string) string {
 	return zone[:idx]
 }
 
-// RegionFromZone is the exported create-path region derivation (engine-side
-// callers like zoneStockState need the same Region the saga steps add via
-// addZoneRegion, so the per-zone stock probe doesn't 230 on a non-default zone).
-func RegionFromZone(zone string) string { return regionFromZone(zone) }
-
-// addZoneRegion sets the Region the create-path APIs require alongside a
-// non-default Zone. The upstream rejects any zone but the default cn-wlcb-01
-// with RetCode=230 "Params [Zone] not available" unless its Region accompanies
-// it — live-verified 2026-06-16: cn-bj2-03 (华北一C) needs Region=cn-bj2,
-// cn-sh2-02 needs cn-sh2; the default cn-wlcb-01 is accepted with or without.
-// Region is derived from the zone name (regionFromZone); a zone with no
-// derivable region (empty / default-region) leaves args untouched so the API
-// falls back to its implicit default region. Returns args for chaining.
-func addZoneRegion(args map[string]any, zone string) map[string]any {
-	if r := regionFromZone(zone); r != "" {
-		args["Region"] = r
-	}
-	return args
-}
-
 // extractInstanceRegion returns the Region the workflow should use for a
 // mutating call on a queried instance. Resolution order:
 //  1. Region field from the first UHostSet entry (upstream populates this).
@@ -114,29 +94,25 @@ func extractRequiredInstanceLocation(result map[string]any) (region, zone string
 	return region, zone, nil
 }
 
-func addInstancePlacementArgs(args map[string]any, result map[string]any) map[string]any {
-	host, ok := firstInstance(result)
-	if !ok {
-		return args
+// stepQuerySupportZones queries DescribeCompShareSupportZone so a mutating
+// step can resolve the catalog-backed zone_id/az_group a Pod/Container
+// instance's underlying API requires (addRequiredPodPlacementArgs). The
+// UHostSet the same workflow's DescribeCompShareInstance step returns never
+// carries usable ZoneId/RegionId — upstream tags them json:"-" — so this
+// catalog lookup keyed by the Zone string is the only real resolution path.
+// Optional: a failed/slow lookup must not block a VM-only workflow that
+// doesn't need the numeric IDs; addRequiredPodPlacementArgs fails closed on
+// its own once it establishes the target actually is Pod/Container.
+func stepQuerySupportZones() Step {
+	return Step{
+		Name:     "查询支持区",
+		Type:     StepToolCall,
+		Tool:     "DescribeCompShareSupportZone",
+		Optional: true,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return map[string]any{}, nil
+		},
 	}
-	if id, ok := firstUint32Field(host, "ZoneId", "ZoneID", "zone_id"); ok && id != 0 {
-		args["zone_id"] = id
-	}
-	if id, ok := firstUint32Field(host, "RegionId", "RegionID", "region_id", "az_group", "AZGroup"); ok && id != 0 {
-		args["az_group"] = id
-	}
-	return args
-}
-
-func addRequiredInstanceLocationArgs(args map[string]any, result map[string]any) (map[string]any, error) {
-	region, zone, err := extractRequiredInstanceLocation(result)
-	if err != nil {
-		return nil, err
-	}
-	args["Region"] = region
-	args["Zone"] = zone
-	addInstancePlacementArgs(args, result)
-	return args, nil
 }
 
 func addRequiredPodPlacementArgs(args map[string]any, result map[string]any, supportZones map[string]any) (map[string]any, error) {

@@ -1,21 +1,16 @@
 // Package zones resolves CompShare availability zones from the live upstream
 // catalog, including the human "可用区显示名称" (Describe, e.g. "华北一C") that
-// only DescribeCompShareSupportZone exposes. It backs two consumers — the
-// deploy_model saga and the create-instance workflow — so a user who names a
-// zone in Chinese ("华北一C") is matched to its zone id (cn-bj2-03) instead of
-// being silently dropped to the platform default.
+// only DescribeCompShareSupportZone exposes, so a zone named in Chinese ("华北一C")
+// resolves to its zone id (cn-bj2-03) instead of being dropped to the default.
 //
-// Two layers, deliberately split so the fuzzy judgment is testable without a
-// live LLM and the data fetch is testable without a live API:
-//   - Catalog: executor-backed, process-cached (TTL) zone list + exact lookups.
-//   - Match prompt/parse: pure string helpers the caller feeds to its own LLM
-//     client. Fuzzy/partial mentions ("华北一区" → "是华北一C吗？") are the LLM's
-//     job; the zone list it chooses from is always the live authoritative one.
+// It is an executor-backed, process-cached (TTL) zone list plus pure exact-lookup
+// helpers (ExactZone / DescribeFor / Label). Fuzzy or partial zone interpretation
+// is NOT here — that belongs to the action resolver's CodecZone, which canonicalizes
+// a zone against this same live list and refuses (asks) on an ambiguous mention.
 package zones
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +50,14 @@ func FetchSupportZones(ctx context.Context, exec Executor, topOrg, org uint32) (
 	if err != nil {
 		return nil, err
 	}
+	return ParseSupportZones(res), nil
+}
+
+// ParseSupportZones converts one successful upstream response into the shared
+// typed zone catalog. It is exported so internal capability orchestrators can
+// make the same call through their internal-only execution boundary (which is
+// allowed to carry tenant identity fields) without duplicating response parsing.
+func ParseSupportZones(res map[string]any) []ZoneInfo {
 	raw, _ := res["ZoneInfo"].([]any)
 	out := make([]ZoneInfo, 0, len(raw))
 	for _, e := range raw {
@@ -75,7 +78,7 @@ func FetchSupportZones(ctx context.Context, exec Executor, topOrg, org uint32) (
 		}
 		out = append(out, zi)
 	}
-	return out, nil
+	return out
 }
 
 // Catalog is a process-wide TTL cache of the support-zone list. The Describe↔
@@ -109,7 +112,9 @@ func Default() *Catalog { return defaultCatalog }
 
 // Get returns the cached zone list, refreshing via the executor when the cache
 // is empty or stale. On refresh failure it returns the last good cache (stale)
-// when available, so a transient API blip doesn't disable zone resolution.
+// when available, so a transient API blip doesn't disable zone resolution. This
+// lenient read is for READ-ONLY display, where a slightly stale zone list is
+// acceptable — a write path must use GetStrict.
 func (c *Catalog) Get(ctx context.Context, exec Executor, topOrg, org uint32) ([]ZoneInfo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -122,6 +127,29 @@ func (c *Catalog) Get(ctx context.Context, exec Executor, topOrg, org uint32) ([
 			return c.zones, nil // serve stale on transient failure
 		}
 		return nil, err
+	}
+	if len(z) > 0 {
+		c.zones = z
+		c.fetchedAt = c.now()
+	}
+	return z, nil
+}
+
+// GetStrict is Get without the serve-stale fallback: a cache still inside its TTL
+// is reused, but an EXPIRED cache whose refresh fails returns the error rather
+// than stale data. Write paths (create / CFS / net-optimizer) use it so a
+// mutating action never runs on a zone list that may have changed upstream since
+// it was last fetched — the S1 rule that a write must refuse rather than fall
+// back to old zone data. Read-only display keeps the lenient Get.
+func (c *Catalog) GetStrict(ctx context.Context, exec Executor, topOrg, org uint32) ([]ZoneInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.zones) > 0 && c.ttl > 0 && c.now().Sub(c.fetchedAt) < c.ttl {
+		return c.zones, nil
+	}
+	z, err := c.fetch(ctx, exec, topOrg, org)
+	if err != nil {
+		return nil, err // strict: never serve stale on a write path
 	}
 	if len(z) > 0 {
 		c.zones = z
@@ -153,8 +181,7 @@ func Label(list []ZoneInfo, zone string) string {
 
 // ExactZone resolves a user message to a zone id WITHOUT an LLM when the text
 // contains an unambiguous literal: a zone id (cn-bj2-03) or a full display name
-// (华北一C). Returns ("", false) when no exact literal is present — the caller
-// then decides whether to invoke the LLM matcher. Display-name matching is
+// (华北一C). Returns ("", false) when no exact literal is present. Display-name matching is
 // space-insensitive so "华北一 C" still hits "华北一C".
 func ExactZone(list []ZoneInfo, userMsg string) (string, bool) {
 	lower := strings.ToLower(userMsg)
@@ -168,85 +195,6 @@ func ExactZone(list []ZoneInfo, userMsg string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// zoneMentionTokens gate whether a message is even talking about a zone, so the
-// common case (no zone named) never pays for an LLM call. This is a cheap
-// pre-filter, NOT the matching logic — the actual fuzzy match is the LLM's job.
-var zoneMentionTokens = []string{
-	"可用区", "地域", "机房", "区域", "华北", "华东", "华南", "华中", "西南", "西北", "东北", "cn-",
-}
-
-// Mentions reports whether the message plausibly references a zone/region.
-func Mentions(userMsg string) bool {
-	lower := strings.ToLower(userMsg)
-	for _, t := range zoneMentionTokens {
-		if strings.Contains(lower, strings.ToLower(t)) {
-			return true
-		}
-	}
-	return false
-}
-
-// Decision is the parsed result of the LLM zone match.
-type Decision struct {
-	Kind    string // "exact" | "clarify" | "none"
-	Zone    string // set when Kind == "exact"
-	Clarify string // set when Kind == "clarify": a question/message shown verbatim
-}
-
-// MatchSystemPrompt builds the system prompt for the zone matcher over the live
-// zone list. The model returns ONE of three decisions so the caller can act
-// deterministically: exact (a confident single zone), clarify (a partial /
-// ambiguous / unsupported mention → ask the user), none (no zone referenced).
-func MatchSystemPrompt(list []ZoneInfo) string {
-	var b strings.Builder
-	b.WriteString("你是优云智算的可用区匹配器。下面是当前支持的可用区列表（仅这些可选）：\n")
-	for _, z := range list {
-		b.WriteString(fmt.Sprintf("- %s（zone_id=%s）\n", z.Describe, z.Zone))
-	}
-	b.WriteString(`根据用户消息判断其想要的可用区，只输出一个 JSON 对象：
-{"decision":"exact|clarify|none","zone":"<zone_id>","clarify":"<一句中文追问或说明>"}
-规则：
-- 用户明确且唯一指向列表中某个可用区（中文名/zone_id/无歧义简称）→ decision="exact"，zone 填该 zone_id，clarify 留空。
-- 用户提到可用区但不完整或有歧义（如只说"华北一""华北一区"，未指明具体是哪个；或表述可对应多个）→ decision="clarify"，zone 留空，clarify 写一句追问，主动给出最可能的候选（如"您是指 华北一C 吗？"）。
-- 用户想要的可用区不在上面列表中（不支持）→ decision="clarify"，zone 留空，clarify 说明当前仅支持哪些可用区并请其改选。
-- 用户根本没提到可用区/地域 → decision="none"，zone 和 clarify 都留空。
-只输出 JSON，不要任何额外文字。`)
-	return b.String()
-}
-
-// ParseDecision parses the matcher JSON (already stripped to a JSON object by
-// the caller) and validates the chosen zone against the live list: an "exact"
-// decision whose zone is not in the list is downgraded to "none" so a model
-// hallucination can never reach the saga as a real zone.
-func ParseDecision(raw string, list []ZoneInfo, parse func(string, any) error) Decision {
-	var d struct {
-		Decision string `json:"decision"`
-		Zone     string `json:"zone"`
-		Clarify  string `json:"clarify"`
-	}
-	if err := parse(raw, &d); err != nil {
-		return Decision{Kind: "none"}
-	}
-	kind := strings.ToLower(strings.TrimSpace(d.Decision))
-	switch kind {
-	case "exact":
-		zone := strings.TrimSpace(d.Zone)
-		for _, z := range list {
-			if strings.EqualFold(z.Zone, zone) {
-				return Decision{Kind: "exact", Zone: z.Zone}
-			}
-		}
-		return Decision{Kind: "none"} // hallucinated zone → treat as no zone
-	case "clarify":
-		if c := strings.TrimSpace(d.Clarify); c != "" {
-			return Decision{Kind: "clarify", Clarify: c}
-		}
-		return Decision{Kind: "none"}
-	default:
-		return Decision{Kind: "none"}
-	}
 }
 
 func str(v any) string {

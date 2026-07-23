@@ -9,6 +9,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -16,6 +17,16 @@ func writeConfig(t *testing.T, body string) string {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
+}
+
+func TestDeployConfigStagesDurableExecutionOffForSafeClusterCutover(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "conf", "config.yaml"))
+	require.NoError(t, err)
+	var cfg Config
+	require.NoError(t, yaml.Unmarshal(raw, &cfg))
+	require.NotNil(t, cfg.Agent.Features.DurableTurns)
+	assert.False(t, *cfg.Agent.Features.DurableTurns,
+		"the tracked deploy config must not activate durable execution during a rolling binary deploy")
 }
 
 func setRequiredSecretEnv(t *testing.T) {
@@ -788,111 +799,6 @@ func TestValidateSTSConfigRejectsNegativeRefreshBefore(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be non-negative")
 }
 
-// TestLoad_TierRouting_Empty_BackwardCompat verifies that legacy configs
-// without a tier_routing block continue to Load without error — the
-// backward-compat invariant called out in ADR-002 Acceptance #5.
-func TestLoad_TierRouting_Empty_BackwardCompat(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig(""))
-	cfg, err := Load(path)
-	require.NoError(t, err)
-	assert.Empty(t, cfg.Agent.TierRouting, "TierRouting should be empty when block omitted")
-}
-
-// TestLoad_TierRouting_ValidKeys parses a full ADR-002 example tier_routing
-// block and verifies all three tier overrides land in cfg.Agent.TierRouting.
-func TestLoad_TierRouting_ValidKeys(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig(`
-  tier_routing:
-    fast:
-      model: "deepseek-v4-flash"
-    knowledge:
-      model: "deepseek-v4-flash"
-    agent:
-      model: "deepseek-v4-pro"
-`))
-	cfg, err := Load(path)
-	require.NoError(t, err)
-	require.Len(t, cfg.Agent.TierRouting, 3)
-	assert.Equal(t, "deepseek-v4-flash", cfg.Agent.TierRouting["fast"].Model)
-	assert.Equal(t, "deepseek-v4-flash", cfg.Agent.TierRouting["knowledge"].Model)
-	assert.Equal(t, "deepseek-v4-pro", cfg.Agent.TierRouting["agent"].Model)
-}
-
-// TestLoad_TierRouting_UnknownKey_FailsLoud catches the silent-typo
-// regression — "knowlege" (missing d) must reject at boot, not no-op.
-// Fail-loud invariant: unknown key in a routing map silently no-ops the
-// override, which masks a real misconfig until first runtime mis-route.
-func TestLoad_TierRouting_UnknownKey_FailsLoud(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig(`
-  tier_routing:
-    knowlege:
-      model: "deepseek-v4-flash"
-`))
-	_, err := Load(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent.tier_routing.knowlege")
-	assert.Contains(t, err.Error(), "unknown tier")
-}
-
-// TestLoad_TierRouting_APIKey_PlaceholderResolved verifies that a tier
-// override api_key written as ${ENV_VAR} gets resolved from the
-// environment, matching the base agent.llm.api_key behavior. Without
-// this, operators writing tier-specific keys would carry literal env
-// var syntax into runtime LLM calls (silent breakage).
-func TestLoad_TierRouting_APIKey_PlaceholderResolved(t *testing.T) {
-	setRequiredSecretEnv(t)
-	t.Setenv("ALT_LLM_KEY", "resolved-from-env")
-	path := writeConfig(t, baseConfig(`
-  tier_routing:
-    agent:
-      model: "deepseek-v4-pro"
-      api_key: "${ALT_LLM_KEY}"
-`))
-	cfg, err := Load(path)
-	require.NoError(t, err)
-	assert.Equal(t, "resolved-from-env", cfg.Agent.TierRouting["agent"].APIKey)
-}
-
-// TestLoad_TierRouting_APIKey_LiteralAccepted verifies a tier override api_key
-// may be inlined, matching the relaxed resolveOptionalPlaceholder contract for
-// the base path (YAML-first config migration — see
-// TestLoad_AcceptsInlineLiteralSecretValuesInYAML). A ${ENV_VAR} placeholder
-// still resolves from the environment (see the test above); both forms are now
-// allowed.
-func TestLoad_TierRouting_APIKey_LiteralAccepted(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig(`
-  tier_routing:
-    agent:
-      model: "deepseek-v4-pro"
-      api_key: "sk-literal-leaked"
-`))
-	cfg, err := Load(path)
-	require.NoError(t, err)
-	assert.Equal(t, "sk-literal-leaked", cfg.Agent.TierRouting["agent"].APIKey)
-}
-
-// TestLoad_TierRouting_APIKey_EmptyInheritsFromBase verifies the common
-// case where a tier override only sets model and inherits api_key from
-// the base agent.llm config (no explicit api_key in the override).
-func TestLoad_TierRouting_APIKey_EmptyInheritsFromBase(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig(`
-  tier_routing:
-    agent:
-      model: "deepseek-v4-pro"
-`))
-	cfg, err := Load(path)
-	require.NoError(t, err)
-	// Override APIKey stays empty; Router merge logic falls back to base.
-	assert.Empty(t, cfg.Agent.TierRouting["agent"].APIKey)
-	// Base APIKey is still resolved.
-	assert.Equal(t, "llm-from-env", cfg.Agent.LLM.APIKey)
-}
-
 // ---------------------------------------------------------------------------
 // Runtime feature flags — YAML sections + RuntimeGetenv overlay
 // ---------------------------------------------------------------------------
@@ -906,30 +812,20 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     mutating_tools: true
     confirm_form: true
     guided_create: true
-    agentic_search_knowledge: true
-    knowledge_qa_agent_loop: true
-    knowledge_qa_disciplined_synthesis: true
     external_knowledge: true
     session_fact_context: true
     react_result_projection: true
     react_history_compaction: true
-    create_preference_extractor: true
-    unified_create: true
-    grounded_validator: false
     skill_executor_diagnosis_pilots:
       - diagnose-ssh
       - diagnose-billing
   retrieval:
     knowledge_retrieval: curated
     mode: qwen3_rrf
-    grounded_renderer: llm
     hybrid_timeout_ms: 8000
   trace:
     enabled: true
     sink: mysql
-  planner:
-    direct_dispatch_intents: "resource,monitor"
-    structured_output: ""
 `))
 
 	cfg, err := Load(path)
@@ -938,12 +834,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	f := cfg.Agent.Features
 	require.NotNil(t, f.MutatingTools)
 	assert.True(t, *f.MutatingTools)
-	require.NotNil(t, f.GroundedValidator)
-	assert.False(t, *f.GroundedValidator)
-	require.NotNil(t, f.CreatePreferenceExtractor)
-	assert.True(t, *f.CreatePreferenceExtractor)
-	require.NotNil(t, f.UnifiedCreate)
-	assert.True(t, *f.UnifiedCreate)
 	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
 	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
@@ -952,18 +842,14 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	require.NotNil(t, cfg.Agent.Trace.Enabled)
 	assert.True(t, *cfg.Agent.Trace.Enabled)
 	assert.Equal(t, "mysql", cfg.Agent.Trace.Sink)
-	assert.Equal(t, "resource,monitor", cfg.Agent.Planner.DirectDispatchIntents)
 }
 
 func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	cfg := &Config{Agent: AgentConfig{
 		LLM: LLMConfig{APIKey: "resolved-llm-key"},
 		Features: FeaturesConfig{
-			MutatingTools:             boolPtr(true),  // YAML true → "1"
-			AgenticSearchKnowledge:    boolPtr(false), // YAML false → "0" (off; this flag defaults ON)
-			FlashKnowledgeRouteGuard:  boolPtr(true),
-			CreatePreferenceExtractor: boolPtr(false),
-			UnifiedCreate:             boolPtr(false),
+			MutatingTools: boolPtr(true), // YAML true → "1"
+			DurableTurns:  boolPtr(true),
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
@@ -979,12 +865,6 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			return "1" // env fallback (YAML omitted this field)
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
-		case "COMPSHARE_CREATE_PREF_EXTRACTOR":
-			return "1"
-		case "COMPSHARE_UNIFIED_CREATE":
-			return "1"
-		case "COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD":
-			return "0"
 		case "SOME_UNMAPPED_VAR":
 			return "passthrough"
 		}
@@ -993,10 +873,7 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	getenv := cfg.RuntimeGetenv(base)
 
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
-	assert.Equal(t, "0", getenv("COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE"), "YAML false → explicit off, wins over default-on")
-	assert.Equal(t, "1", getenv("COMPSHARE_FLASH_KNOWLEDGE_ROUTE_GUARD"), "YAML true wins over env off")
-	assert.Equal(t, "0", getenv("COMPSHARE_CREATE_PREF_EXTRACTOR"), "YAML false wins over env on")
-	assert.Equal(t, "0", getenv("COMPSHARE_UNIFIED_CREATE"), "YAML false wins over env on")
+	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")
