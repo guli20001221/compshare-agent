@@ -187,6 +187,92 @@ for name, bad in [
         check(name, True)
 
 
+# --- stdout line protocol: @@STEP metadata-only per command, one terminal VERDICT block ------------
+# The Go supervisor parses stdout; these pin the wire shape so a format regression fails offline
+# instead of at the far end of a live run.
+
+# D2 mapping: the six run_command dispositions collapse onto exactly three wire values, and anything
+# unmapped (a future ssh error class, the "" left by an exception) is a failure, never a success.
+check("wire-ran", harness._wire_disposition("ran_read_only") == "ran")
+check("wire-refused-destructive", harness._wire_disposition("refused_destructive") == "refused")
+check("wire-refused-mutating", harness._wire_disposition("refused_mutating_phase1") == "refused")
+check("wire-no-connection", harness._wire_disposition("no_connection") == "failed")
+check("wire-auth-failed", harness._wire_disposition("auth_failed") == "failed")
+check("wire-connect-failed", harness._wire_disposition("connect_failed") == "failed")
+check("wire-empty-is-failed", harness._wire_disposition("") == "failed")
+check("wire-unknown-is-failed", harness._wire_disposition("something_new") == "failed")
+
+import io as _io  # noqa: E402
+import json as _json  # noqa: E402
+
+
+def _capture(fn):
+    real = sys.stdout
+    buf = _io.StringIO()
+    sys.stdout = buf
+    try:
+        fn()
+    finally:
+        sys.stdout = real
+    return buf.getvalue()
+
+
+# run three commands (refused, refused, ran) with the box echoing the credential, then emit a verdict.
+harness.AUDIT.clear()
+_BOXPW = "Pl4in" + "Pwd77x"
+harness.set_conn({"host": "h", "user": "u", "port": 22, "password": _BOXPW})
+ssh_transport.run_ssh = lambda c, command, secrets=(): {
+    "exit_code": 0,
+    "stdout": guardrails.scrub_output(f"secret-in-output {c['password']}", secrets),
+    "stderr": "", "truncated": False}
+
+proto = _capture(lambda: (
+    harness.run_command("rm -rf /"),
+    harness.run_command("systemctl restart vllm"),
+    harness.run_command("nvidia-smi -q"),
+    harness._emit_verdict("结论：显存 512MiB 已用，健康。"),
+))
+_plines = proto.splitlines()
+_psteps = [l for l in _plines if l.startswith("@@STEP ")]
+
+check("proto-one-step-per-command", len(_psteps) == 3)
+
+_pobjs = []
+_ok_json = True
+for s in _psteps:
+    try:
+        _pobjs.append(_json.loads(s[len("@@STEP "):]))
+    except Exception:
+        _ok_json = False
+check("proto-steps-are-json", _ok_json and len(_pobjs) == 3)
+check("proto-dispositions",
+      [o.get("disposition") for o in _pobjs] == ["refused", "refused", "ran"])
+check("proto-step-fields-present",
+      all(set(o) == {"command", "tier", "disposition", "exit", "bytes"} for o in _pobjs))
+
+# INV-6: the box echoed the credential and a marker; NEITHER may appear in an @@STEP line.
+check("proto-inv6-no-output-in-step",
+      all("secret-in-output" not in s for s in _psteps))
+check("proto-inv6-no-credential-in-step",
+      all(_BOXPW not in s for s in _psteps))
+
+# ordering: every @@STEP precedes the single <<<VERDICT>>> block.
+_vidx = next((i for i, l in enumerate(_plines) if l.strip() == "<<<VERDICT>>>"), -1)
+_eidx = next((i for i, l in enumerate(_plines) if l.strip() == "<<<END>>>"), -1)
+_sidx = [i for i, l in enumerate(_plines) if l.startswith("@@STEP ")]
+check("proto-verdict-block-present", _vidx >= 0 and _eidx > _vidx)
+check("proto-exactly-one-verdict", _plines.count("<<<VERDICT>>>") == 1 and _plines.count("<<<END>>>") == 1)
+check("proto-steps-before-verdict", _vidx >= 0 and (not _sidx or max(_sidx) < _vidx))
+
+# a command's bytes count reflects (scrubbed) output length, and refused commands carry 0.
+check("proto-ran-has-bytes", _pobjs[2]["bytes"] > 0)
+check("proto-refused-zero-bytes", _pobjs[0]["bytes"] == 0 and _pobjs[1]["bytes"] == 0)
+
+# the verdict body is scrubbed too (V5): a credential quoted into the model's own text is removed.
+_vbody = _capture(lambda: harness._emit_verdict(f"密码是 {_BOXPW} 请注意"))
+check("proto-verdict-scrubbed", _BOXPW not in _vbody)
+
+
 def main():
     if FAILS:
         print(f"\nFAIL: {len(FAILS)} check(s): {FAILS}")

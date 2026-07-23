@@ -61,6 +61,8 @@ def read_handshake(line: str) -> dict:
             raise ValueError(f"handshake missing required field: {k}")
     if not obj.get("password") and not obj.get("key"):
         raise ValueError("handshake missing password/key")
+    # "task" is optional free-form text; it rides the handshake instead of argv so it stays off the
+    # host process table. "instance_id" and "model" are likewise optional passengers.
     return obj
 
 
@@ -77,12 +79,63 @@ def _secrets():
     return []
 
 
+# --- stdout line protocol (parsed by the Go supervisor) ------------------------------------------
+# Two line shapes, and nothing else the supervisor trusts:
+#   @@STEP {json}                       one per command, emitted the instant it settles
+#   <<<VERDICT>>> … <<<END>>>           the single terminal conclusion block
+# Every @@STEP precedes <<<VERDICT>>>, because commands settle inside the agent loop and the verdict
+# is only written after it ends. The supervisor turns each @@STEP into a live activity event and keeps
+# only the VERDICT body as the answer.
+
+# D2: run_command writes SIX distinct disposition strings; the wire protocol has THREE. This is the
+# only place the mapping is defined, so an unmapped value (e.g. a future SSH error class, or the empty
+# string left by an exception before any branch set it) is a FAILURE, never silently a success.
+_DISPOSITION_MAP = {
+    "ran_read_only": "ran",
+    "refused_destructive": "refused",
+    "refused_mutating_phase1": "refused",
+    "no_connection": "failed",
+}
+
+
+def _wire_disposition(raw: str) -> str:
+    # auth_failed / connect_failed / any other ssh_transport error class, and the never-updated ""
+    # from an exception path, all mean the command did not run.
+    return _DISPOSITION_MAP.get(raw, "failed")
+
+
+def _emit_step(entry: dict) -> None:
+    """Emit one @@STEP line — metadata ONLY, never command output (INV-6)."""
+    line = json.dumps({
+        "command": entry["command"][:200],   # the agent's own classified string, bounded
+        "tier": entry["tier"],
+        "disposition": _wire_disposition(entry["disposition"]),
+        "exit": entry["exit_code"],
+        "bytes": entry.get("bytes", 0),
+    }, ensure_ascii=False)
+    sys.stdout.write("@@STEP " + line + "\n")
+    sys.stdout.flush()
+
+
+def _emit_verdict(text: str) -> None:
+    """Emit the single terminal conclusion block. The body is scrubbed of the literal credential (V5)
+    as defense-in-depth; the primary guarantee is that the credential never enters the model's view."""
+    body = guardrails.scrub_output((text or "").strip(), _secrets())
+    sys.stdout.write("<<<VERDICT>>>\n")
+    sys.stdout.write(body + "\n")
+    sys.stdout.write("<<<END>>>\n")
+    sys.stdout.flush()
+
+
 def run_command(command: str) -> dict:
     """Classify the command and, only for the read_only tier, execute it via SSH + scrub. SDK-free.
-    Returns {text, is_error, tier, executed}. Appends one AUDIT record (never carrying the credential)."""
+    Returns {text, is_error, tier, executed}. Appends one AUDIT record (never carrying the credential)
+    and emits exactly one @@STEP line — from the finally, the sole point all six return paths converge,
+    so a refusal can never be dropped (D1)."""
     command = (command or "").strip()
     tier = guardrails.classify(command)
-    entry = {"command": command, "tier": tier, "executed": False, "exit_code": None, "disposition": ""}
+    entry = {"command": command, "tier": tier, "executed": False, "exit_code": None,
+             "disposition": "", "bytes": 0}
     try:
         if tier == "destructive":
             entry["disposition"] = "refused_destructive"
@@ -105,7 +158,8 @@ def run_command(command: str) -> dict:
                     else "the instance was unreachable")
             return {"text": f"⚠ SSH {res['error']} — {hint}.", "is_error": True,
                     "tier": tier, "executed": False}
-        entry.update(executed=True, exit_code=res["exit_code"], disposition="ran_read_only")
+        entry.update(executed=True, exit_code=res["exit_code"], disposition="ran_read_only",
+                     bytes=len(res["stdout"]))
         text = f"$ {command}\n[exit {res['exit_code']}]\n{res['stdout']}"
         if res["stderr"].strip():
             text += f"\n[stderr] {res['stderr']}"
@@ -114,6 +168,7 @@ def run_command(command: str) -> dict:
         return {"text": text, "is_error": False, "tier": tier, "executed": True}
     finally:
         AUDIT.append(entry)
+        _emit_step(entry)
 
 
 # F2 connectivity fast-fail. One cheap SSH dial BEFORE the (minutes-long) agent loop, so an
@@ -186,17 +241,19 @@ async def main():
         raise SystemExit("no handshake on stdin")
     set_conn(read_handshake(raw))
 
-    # F2: fast-fail if the instance is unreachable, before spawning the agent (which would otherwise
-    # spend its whole budget retrying commands that each hang at the SSH connect timeout).
-    reason = preflight_probe(_CONN)
-    if reason is not None:
-        print("\U0001f9e0", f"⚠ 只读诊断未能开始：{reason}")
-        print(f"  [  preflight] preflight_unreachable   exit=None  <ssh connectivity probe>")
-        return
-
-    task = sys.argv[1] if len(sys.argv) > 1 else (
+    # The task rides the stdin handshake, NOT argv — argv is visible to `ps` on the host, and the task
+    # is free-form operator/model text that must stay off the process table (INV-3/4).
+    task = (_CONN.get("task") or "").strip() or (
         "对这台 GPU 实例做一次只读健康巡检：确认 GPU 型号/驱动/显存占用、磁盘使用、内存、系统负载，"
         "判断是否健康并指出任何异常。")
+
+    # F2: fast-fail if the instance is unreachable, before spawning the agent (which would otherwise
+    # spend its whole budget retrying commands that each hang at the SSH connect timeout). No command
+    # ran, so there is no @@STEP — only the terminal verdict block.
+    reason = preflight_probe(_CONN)
+    if reason is not None:
+        _emit_verdict(f"⚠ 只读诊断未能开始：{reason}")
+        return
 
     @tool("ssh_exec",
           "Run ONE read-only diagnostic shell command on the remote GPU instance over SSH and return "
@@ -210,12 +267,22 @@ async def main():
     server = create_sdk_mcp_server(name="ssh-ops", version="1.0.0", tools=[ssh_exec])
     options = build_options(server, _CONN.get("model", "deepseek-v4-flash"))
 
+    # The activity stream is the @@STEP lines emitted from run_command as each command settles. The
+    # model's mid-loop reasoning TextBlocks are NOT commands and are NOT scrubbed, so they are dropped;
+    # only the SDK's terminal ResultMessage.result becomes the verdict. Falls back to the last assistant
+    # text if the SDK yields no result string.
+    verdict = ""
+    last_assistant = ""
     async for msg in query(prompt=task, options=options):
-        for b in (getattr(msg, "content", None) or []):
-            if type(b).__name__ == "TextBlock" and getattr(b, "text", "").strip():
-                print("\U0001f9e0", b.text.strip())
-    for e in AUDIT:
-        print(f"  [{e['tier']:>11}] {e['disposition']:<22} exit={e['exit_code']}  {e['command']}")
+        kind = type(msg).__name__
+        if kind == "ResultMessage":
+            verdict = getattr(msg, "result", "") or ""
+        elif kind == "AssistantMessage":
+            texts = [getattr(b, "text", "") for b in (getattr(msg, "content", None) or [])
+                     if type(b).__name__ == "TextBlock" and getattr(b, "text", "").strip()]
+            if texts:
+                last_assistant = "\n".join(t.strip() for t in texts)
+    _emit_verdict(verdict.strip() or last_assistant.strip() or "（诊断已结束，但未生成明确结论）")
 
 
 if __name__ == "__main__":
