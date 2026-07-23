@@ -33,6 +33,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 )
 
@@ -235,6 +236,151 @@ func TestLivePlannerFanoutOnRealTraffic(t *testing.T) {
 
 	observations := runFanoutProbes(t, cfg, armA, armB)
 	reportFanout(t, observations)
+}
+
+// TestLivePlannerAAOnRealTraffic measures the A/A noise floor before any A/B is
+// attempted: the same arm, the same real questions, run twice.
+//
+// This has to come first because llm.ChatRequest exposes no temperature/seed —
+// the planner runs at the provider default, fully sampled. Any planner-level A/B
+// (predictive fan-out vs gap-driven second hop) is unreadable while its effect
+// size is under this floor.
+//
+// Retrieval is deliberately pinned to the deterministic BM25 mode so the only
+// thing varying between the two runs is the planner itself. That isolates the
+// noise being measured; it is NOT the production retrieval mode.
+func TestLivePlannerAAOnRealTraffic(t *testing.T) {
+	cfg := loadLiveConfig(t)
+	corpus := loadRealQueries(t)
+	inputs := pairWithinCategory(corpus)
+
+	retriever := deterministicCorpusRetriever(t)
+
+	type runPair struct{ a, b plannerRun }
+	pairs := make([]runPair, len(inputs))
+	var wg sync.WaitGroup
+	ch := make(chan int)
+	for w := 0; w < 6; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range ch {
+				in := inputs[i]
+				pairs[i] = runPair{
+					a: runPlanAndRetrieve(cfg, retriever, in),
+					b: runPlanAndRetrieve(cfg, retriever, in),
+				}
+			}
+		}()
+	}
+	for i := range inputs {
+		ch <- i
+	}
+	close(ch)
+	wg.Wait()
+
+	// Guard against the failure mode that looks exactly like success: if the
+	// planner call errors (bad request, auth, timeout) planKnowledgeQuery
+	// silently returns the fallback — one query, verbatim the input — which is
+	// perfectly stable and would read as "noise eliminated" while the planner is
+	// simply dead. A run where every case carries the fallback signature is not
+	// a low noise floor, it is no planner.
+	fallbackShaped := 0
+	for i, p := range pairs {
+		if len(p.a.Queries) == 1 && p.a.Queries[0] == inputs[i].Current {
+			fallbackShaped++
+		}
+	}
+	if fallbackShaped == len(pairs) {
+		t.Fatalf("all %d cases returned the fallback plan (query == input verbatim): the planner is not running, so this is not a noise measurement", len(pairs))
+	}
+
+	var countFlips, chunkSetFlips int
+	var jaccardSum float64
+	for _, p := range pairs {
+		if len(p.a.Queries) != len(p.b.Queries) {
+			countFlips++
+		}
+		j := jaccard(p.a.ChunkIDs, p.b.ChunkIDs)
+		jaccardSum += j
+		if j < 1.0 {
+			chunkSetFlips++
+		}
+	}
+	n := float64(len(pairs))
+	t.Logf("== A/A 噪声地板 (n=%d, 同一臂跑两次, BM25 确定性检索) ==", len(pairs))
+	t.Logf("  计划条数不一致        : %d/%d (%.0f%%)", countFlips, len(pairs), 100*float64(countFlips)/n)
+	t.Logf("  召回 chunk 集合不一致 : %d/%d (%.0f%%)", chunkSetFlips, len(pairs), 100*float64(chunkSetFlips)/n)
+	t.Logf("  平均 Jaccard          : %.3f", jaccardSum/n)
+	t.Logf("  回落到 fallback 的 case: %d/%d (planner 未改写,原样透传)", fallbackShaped, len(pairs))
+	t.Logf("  => 任何 planner 级 A/B 的 effect 必须显著大于以上翻转率才可信")
+}
+
+type plannerRun struct {
+	Queries  []string
+	ChunkIDs []string
+}
+
+func runPlanAndRetrieve(cfg *config.Config, retriever *knowledge.Retriever, in probeInput) plannerRun {
+	eng := NewWithDeps(llm.NewClient(cfg.Agent.LLM), &mockExecutor{}, nil)
+	eng.turnContextViewThisTurn = TurnContextView{
+		CurrentQuestion:    in.Current,
+		RecentConversation: in.Prior,
+	}
+	eng.turnContextViewReady = true
+	plan := eng.planKnowledgeQuery(context.Background(), in.Current)
+
+	seen := map[string]struct{}{}
+	var ids []string
+	for _, q := range plan.SearchQueries {
+		for _, hit := range retriever.Retrieve(q, "").HitItems {
+			if _, ok := seen[hit.Chunk.ChunkID]; ok {
+				continue
+			}
+			seen[hit.Chunk.ChunkID] = struct{}{}
+			ids = append(ids, hit.Chunk.ChunkID)
+		}
+	}
+	sort.Strings(ids)
+	return plannerRun{Queries: plan.SearchQueries, ChunkIDs: ids}
+}
+
+func deterministicCorpusRetriever(t *testing.T) *knowledge.Retriever {
+	t.Helper()
+	corpus, err := knowledge.LoadPinnedCorpus(filepath.Join("..", "..", "deploy", "kb", "stage2b_w0.jsonl"))
+	if err != nil {
+		t.Fatalf("load pinned corpus: %v", err)
+	}
+	return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{
+		TopK: 10,
+		Mode: knowledge.RetrievalModeBM25Only,
+		Now:  realCorpusRecallNow,
+	})
+}
+
+func jaccard(a, b []string) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 1
+	}
+	set := map[string]struct{}{}
+	for _, x := range a {
+		set[x] = struct{}{}
+	}
+	inter := 0
+	union := map[string]struct{}{}
+	for _, x := range a {
+		union[x] = struct{}{}
+	}
+	for _, x := range b {
+		if _, ok := set[x]; ok {
+			inter++
+		}
+		union[x] = struct{}{}
+	}
+	if len(union) == 0 {
+		return 1
+	}
+	return float64(inter) / float64(len(union))
 }
 
 type probeInput struct {
