@@ -25,6 +25,21 @@ import (
 //
 // This test reports rather than asserts a threshold: the number is the point,
 // and picking a pass/fail line before knowing it would be inventing a contract.
+//
+// Measured, before and after moving the tokenizer from whitespace segmentation
+// to script segmentation:
+//
+//	              top-10 changed   top-3 changed
+//	whitespace          4/5             3/5
+//	script              3/5             2/5
+//
+// The group that is now stable is the one whose only difference was spacing
+// ("HTTPS 地址" vs "https地址"). The two that still move differ by real added
+// words ("产品的", "错误码 ... 原因及解决方案"): to a lexical matcher those are
+// genuinely different queries, and flattening them would be hiding a
+// difference rather than removing an artefact. The whitespace class is gone;
+// what remains is the planner saying more, not the planner saying it
+// differently.
 func TestBM25SensitivityToCosmeticQueryRewrites(t *testing.T) {
 	corpus, err := LoadPinnedCorpus(filepath.Join("..", "..", "deploy", "kb", "stage2b_w0.jsonl"))
 	require.NoError(t, err)

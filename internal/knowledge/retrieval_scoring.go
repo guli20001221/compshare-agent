@@ -104,31 +104,78 @@ func (field bm25FieldIndex) score(chunkIndex int, queryTokens []string) float64 
 	return score
 }
 
+// tokenizeRetrievalText splits on SCRIPT boundaries, not on whitespace.
+//
+// Whitespace used to be the segmenter, which made retrieval depend on how a
+// question happened to be spaced. Two consequences, both measured:
+//
+//   - "监听 端口" and "监听端口" produced different token multisets, because the
+//     spaced form n-grams each half separately and the joined form also yields
+//     the cross-boundary grams. Chinese does not delimit words with spaces, so
+//     the two are the same question.
+//   - "https 地址" tokenized as the whole word "https" plus "地址", while
+//     "https地址" fell into the n-gram branch and produced junk like "s地" with
+//     no "https" token at all — a different query to BM25 entirely.
+//
+// The planner's rewrites differ in exactly these cosmetic ways run to run
+// (TestBM25SensitivityToCosmeticQueryRewrites), and real users type both forms,
+// so this was two users asking the same thing and getting different evidence.
+//
+// Segmenting by script makes whitespace irrelevant: ASCII alphanumeric runs
+// become whole tokens, CJK runs become 2/3-gram multisets, and everything else
+// is already dropped by NormalizeQuery. Note that NormalizeQuery drops
+// punctuation without substituting a space, so CJK either side of a comma was
+// already being joined into one run — this makes spaces behave the same way
+// rather than introducing a new joining rule.
 func tokenizeRetrievalText(value string) []string {
 	normalized := NormalizeQuery(value)
 	if normalized == "" {
 		return nil
 	}
 	var tokens []string
-	for _, segment := range strings.Fields(normalized) {
-		if segment == "" {
-			continue
-		}
-		if isASCIIAlnumSegment(segment) {
-			tokens = append(tokens, segment)
-			continue
-		}
-		runes := []rune(segment)
-		for n := 2; n <= 3; n++ {
-			if len(runes) < n {
-				continue
-			}
-			for index := 0; index <= len(runes)-n; index++ {
-				tokens = append(tokens, string(runes[index:index+n]))
-			}
+	var ascii, cjk strings.Builder
+	flushASCII := func() {
+		if ascii.Len() > 0 {
+			tokens = append(tokens, ascii.String())
+			ascii.Reset()
 		}
 	}
+	flushCJK := func() {
+		if cjk.Len() > 0 {
+			tokens = append(tokens, cjkNgrams(cjk.String())...)
+			cjk.Reset()
+		}
+	}
+	for _, r := range normalized {
+		switch {
+		case isASCIIAlnum(r):
+			flushCJK()
+			ascii.WriteRune(r)
+		case isCJK(r):
+			flushASCII()
+			cjk.WriteRune(r)
+		default:
+			// Whitespace: a separator in neither script, so it must not split a
+			// run. NormalizeQuery has already removed everything else.
+		}
+	}
+	flushASCII()
+	flushCJK()
 	return tokens
+}
+
+func cjkNgrams(run string) []string {
+	runes := []rune(run)
+	var out []string
+	for n := 2; n <= 3; n++ {
+		if len(runes) < n {
+			continue
+		}
+		for index := 0; index <= len(runes)-n; index++ {
+			out = append(out, string(runes[index:index+n]))
+		}
+	}
+	return out
 }
 
 // NormalizeQuery is shared by the runtime retriever and eval parity tests; keep
@@ -154,14 +201,9 @@ func NormalizeQuery(value string) string {
 	return strings.TrimSpace(builder.String())
 }
 
-func isASCIIAlnumSegment(value string) bool {
-	for _, r := range value {
-		if !isASCIIAlnum(r) {
-			return false
-		}
-	}
-	return value != ""
-}
+// isASCIIAlnumSegment was the whitespace-segmented tokenizer's test for "is
+// this whole space-delimited chunk latin"; script-boundary segmentation asks
+// the question per rune instead, so nothing calls it any more.
 
 func isASCIIAlnum(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
