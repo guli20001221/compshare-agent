@@ -307,13 +307,17 @@ type Engine struct {
 	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
-	// knowledgeQAAgentLoopThisTurn marks a knowledge_qa turn sent into the shared
-	// ReAct loop. A first-turn question forces retrieval; a follow-up may reuse
-	// sufficient visible conversation. Set when the engine routes a knowledge_qa
-	// turn into the agent loop; read by the ReAct loop, executeSearchKnowledge /
-	// the semantic evidence verifier. The legacy PlannedExecutionPath=agent trace
-	// projection is emitted for trace continuity (see the ExecutionPath* legacy
-	// note). Reset per turn.
+	// knowledgeQAAgentLoopThisTurn records that the Agent CHOSE to search this
+	// turn. It is set where SearchKnowledge actually executes, so it is a
+	// post-hoc marker, NOT a routing decision — P6 deleted the intent router and
+	// nothing classifies a turn as "knowledge" before the Agent acts (see the
+	// deliberate no-router note in cmd/shared_deps.go). Anything that wants to
+	// gate on "this is a knowledge turn" ahead of time does not have that signal
+	// and must express itself in the prompt instead. Read by the ReAct loop,
+	// executeSearchKnowledge, and the citation finalizer (which is why citation
+	// markers can only appear on turns where they are also stripped). The legacy
+	// PlannedExecutionPath=agent trace projection is emitted for trace continuity
+	// (see the ExecutionPath* legacy note). Reset per turn.
 	knowledgeQAAgentLoopThisTurn bool
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
