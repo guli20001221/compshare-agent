@@ -353,11 +353,12 @@ func actionAllowsBackendIdentity(action string) bool {
 
 func routeForAction(action string) ActionRoute {
 	switch {
-	case action == "SearchKnowledge":
-		// Agentic-RAG read-only tool (P3). Routed locally on a dedicated engine
-		// branch, never through SafeToolExecutor — its Route is Knowledge, not
-		// external_api. It is now the ONLY member of this route: the local GPU
-		// knowledge tools that used to share it were deleted with the static spec
+	case action == "SearchKnowledge", action == "ReadChunk":
+		// Agentic-RAG read-only tools (P3). Routed locally on a dedicated engine
+		// branch, never through SafeToolExecutor — their Route is Knowledge, not
+		// external_api. SearchKnowledge finds chunks and returns bounded snippets;
+		// ReadChunk returns one chunk's full body by id. The local GPU knowledge
+		// tools that used to share this route were deleted with the static spec
 		// table they answered from.
 		return ActionRouteKnowledge
 	case strings.HasSuffix(action, "Workflow"):

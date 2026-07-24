@@ -265,11 +265,22 @@ type Engine struct {
 	lastConfirmationAcceptedThisCall bool
 	deferTaskCarryThisTurn           bool
 	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the agentic
-	// SearchKnowledge tool (P3) so the final-answer no-raw-leak guard validates
-	// the synthesis against exactly the evidence the agent was shown. Reset per
-	// turn. ToolScope controls whether the tool is available for the active intent.
+	// SearchKnowledge tool (P3) so the final-answer citation check runs against
+	// exactly the evidence the agent was shown. Reset per turn. ToolScope controls
+	// whether the tool is available for the active intent.
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
+	// answerEchoedChunkIDThisTurn names the chunk whose body the final answer
+	// reproduced verbatim, or "" for none. TELEMETRY ONLY — it is carried into the
+	// turn-aggregate retrieval trace and must never gate, rewrite or replace an
+	// answer (see finalizeAgentLoopKnowledgeAnswer).
+	answerEchoedChunkIDThisTurn string
+	// readChunkCallsThisTurn / readChunkIDsThisTurn bound the full-body ReadChunk
+	// tool: the call budget withdraws it once spent, and the id set makes a
+	// re-read of the same chunk a no-op instead of a second copy in context.
+	// Per-session/per-turn for the same reason as the hits above. Reset every turn.
+	readChunkCallsThisTurn int
+	readChunkIDsThisTurn   map[string]struct{}
 	// searchKnowledgeCallsThisTurn counts how many times the agent CHOSE to call
 	// SearchKnowledge this turn — one increment per tool call, regardless of how
 	// many query variants the multi-turn planner fans that call out into. The
@@ -1200,6 +1211,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.groundingOutcomeThisTurn = "unavailable"
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
+	e.answerEchoedChunkIDThisTurn = ""
+	e.readChunkCallsThisTurn = 0
+	e.readChunkIDsThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeQueriesThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
@@ -1341,6 +1355,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn &&
 			toolListContainsFunction(req.Tools, "SearchKnowledge") {
 			req.Tools = toolListWithoutFunction(req.Tools, "SearchKnowledge")
+		}
+		// Same rule for full-body reads, on their own budget.
+		if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn &&
+			toolListContainsFunction(req.Tools, "ReadChunk") {
+			req.Tools = toolListWithoutFunction(req.Tools, "ReadChunk")
 		}
 		// A whole-catalog read is complete after one successful observation. The
 		// model may still reason over that observation, but cannot spend later
@@ -2354,6 +2373,8 @@ func (e *Engine) emitSearchKnowledgeTurnTrace(citedChunkIDs []string) {
 		References:      refs,
 		CitedChunkIDs:   append([]string(nil), citedChunkIDs...),
 		CitedRefs:       citedRefsFromChunkIDs(citedChunkIDs, refs),
+		// Telemetry only — see answerEchoedChunkIDThisTurn.
+		AnswerEchoedChunkID: e.answerEchoedChunkIDThisTurn,
 	}
 	e.emitRetrievalTrace(trace)
 }
@@ -2386,20 +2407,6 @@ func retrievalHitsFromLedger(ledger knowledge.EvidenceLedger, hits []knowledge.R
 		}
 	}
 	return out
-}
-
-// emitSearchKnowledgeHardBlock records a post-LLM hardblock trace for the agentic
-// SearchKnowledge synthesis guard (raw-leak or uncited). Shared by both guard arms.
-func (e *Engine) emitSearchKnowledgeHardBlock(category string) {
-	// A failed grounding decision is exactly where the old trace path lost all
-	// but the final SearchKnowledge call. Persist the full verifier-visible set
-	// before recording the block so production failures remain auditable.
-	e.emitSearchKnowledgeTurnTrace(nil)
-	e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
-		Hit:         true,
-		Category:    category,
-		TriggeredBy: observability.HardBlockTriggerPostLLM,
-	})
 }
 
 func searchKnowledgeArg(args map[string]any, key string) string {
@@ -2494,6 +2501,13 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		e.knowledgeQAAgentLoopThisTurn = true
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
+	}
+
+	// ReadChunk shares that lane: it reads the same in-process corpus by id, so it
+	// is local and read-only for the same reasons.
+	if action == "ReadChunk" {
+		args = e.safeExecutor.FilterArgs(action, args)
+		return e.executeReadChunk(args, onStep)
 	}
 
 	if _, ok := capability.ReadIntentForTool(action); ok {

@@ -142,7 +142,7 @@ func TestExecuteSearchKnowledge_CallPastTheBudgetIsRejectedWithoutRetrieval(t *t
 	assert.Contains(t, past, `"search_limit_reached":true`)
 }
 
-func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testing.T) {
+func TestSearchKnowledgeTurnTraceEmitsFullTurnEvidenceWithoutCitations(t *testing.T) {
 	chunkA := knowledge.KBChunk{ChunkID: "chunk-a", KBVersion: "kb.v1", Title: "A", Content: "evidence a"}
 	chunkB := knowledge.KBChunk{ChunkID: "chunk-b", KBVersion: "kb.v1", Title: "B", Content: "evidence b"}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
@@ -157,7 +157,7 @@ func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testin
 
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "q1"}, noopStep)
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "q2"}, noopStep)
-	eng.emitSearchKnowledgeHardBlock("search_knowledge_ungrounded")
+	eng.emitSearchKnowledgeTurnTrace(nil)
 
 	require.NotEmpty(t, traces)
 	final := traces[len(traces)-1]
@@ -205,8 +205,8 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 
 	// The weak (irrelevant) hit is NOT in the ledger the agent sees — no false-grounding.
 	assert.NotContains(t, out, "w0-resource_purchase-irrelevant", "weak hit must be dropped from the agent's ledger")
-	// And it is NOT recorded as evidence the agent grounded on (the no-raw-leak guard
-	// would otherwise validate against content the agent never received).
+	// And it is NOT recorded as evidence the agent grounded on (the echo telemetry
+	// would otherwise be judged against content the agent never received).
 	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "weak hits must not be recorded as grounding evidence")
 	// SearchKnowledge still ran (the raw retrieval is traced as weak for observability).
 	assert.True(t, eng.searchKnowledgeRanThisTurn)

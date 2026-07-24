@@ -33,7 +33,7 @@ func centralAgentToolWindow(mutatingEnabled bool) []openai.Tool {
 		if !capability.ExposedToAgent || capability.Tool.Function == nil {
 			continue
 		}
-		if capability.Name == "SearchKnowledge" || capability.Policy.Route == tools.ActionRouteDiagnosis {
+		if capability.Policy.Route == tools.ActionRouteKnowledge || capability.Policy.Route == tools.ActionRouteDiagnosis {
 			out = append(out, capability.Tool)
 		}
 	}

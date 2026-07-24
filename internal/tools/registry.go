@@ -26,6 +26,24 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "ReadChunk",
+			Description: "按 chunk_id 读取知识条目的完整正文。SearchKnowledge 返回的 snippet 只是节选，正文更长；当节选被截断、只给出结论而没有给出具体参数/步骤/取值，或据此无法确定答案时，必须先用本工具读全文再作答，不要凭节选推测。只能读 SearchKnowledge 已返回过的 chunk_id。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"chunk_ids": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "要读取全文的 chunk_id 列表，一次最多 3 个。",
+					},
+				},
+				"required": []string{"chunk_ids"},
+			},
+		},
+	},
 	// --- External API Tools ---
 	{
 		Type: openai.ToolTypeFunction,

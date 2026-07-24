@@ -44,9 +44,9 @@ type EvidenceItem struct {
 	Summary     string `json:"summary"`
 	// Snippet is a bounded excerpt of the chunk body. Empty on the content-free
 	// diagnosis-lane ledger; populated by BuildSubstantiveEvidenceLedger so the
-	// agent can ground an actionable answer. The no-raw-leak guard
-	// (ValidateNoRawEvidenceLeak) still runs on the FINAL answer, so the agent
-	// must paraphrase/cite rather than echo a >=32-rune verbatim passage.
+	// agent can ground an actionable answer. Echoing a snippet verbatim is
+	// recorded (EchoedEvidenceChunkID) as a synthesis-quality signal; it never
+	// blocks the answer.
 	Snippet string `json:"snippet,omitempty"`
 }
 
@@ -107,8 +107,7 @@ func BuildEvidenceLedger(query string, hits []RetrievalHit, maxItems int) Eviden
 // BuildEvidenceLedger but each item carries a bounded Snippet excerpt of the
 // chunk body so the agent can synthesize an ACTIONABLE answer on a symptom
 // tool-ops turn (where the retrieved evidence is the primary, not supplementary,
-// base). snippetMaxRunes<=0 uses DefaultEvidenceSnippetMaxRunes. The Snippet is
-// content the agent reads; the no-raw-leak guard still runs on the final answer.
+// base). snippetMaxRunes<=0 uses DefaultEvidenceSnippetMaxRunes.
 func BuildSubstantiveEvidenceLedger(query string, hits []RetrievalHit, maxItems, snippetMaxRunes int) EvidenceLedger {
 	if snippetMaxRunes <= 0 {
 		snippetMaxRunes = DefaultEvidenceSnippetMaxRunes
@@ -236,29 +235,35 @@ func evidenceScoreBucket(score float64) string {
 	}
 }
 
-// ValidateNoRawEvidenceLeak rejects text that contains substantial raw KB body
-// content from the supplied hits. It permits safe ledger fields such as chunk_id
-// and title.
-func ValidateNoRawEvidenceLeak(text string, hits []RetrievalHit) error {
+// EchoedEvidenceChunkID reports the chunk whose body the text reproduces
+// verbatim (a contiguous >=32-rune passage), or "" when the text paraphrases.
+// Safe ledger fields such as chunk_id and title do not count as an echo.
+//
+// This is a SYNTHESIS-QUALITY signal, not a security one: every chunk in the
+// corpus is acl=customer_safe, so an echo is an answer that copied instead of
+// writing — undesirable prose, never a disclosure. Callers must RECORD it and
+// nothing more. It previously replaced the whole answer with a canned line,
+// which is the same failure mode as the retired grounding refusal: it fired
+// hardest on correct runbook answers, where the fix IS a command line.
+func EchoedEvidenceChunkID(text string, hits []RetrievalHit) string {
 	haystack := strings.ToLower(compactWhitespace(text))
 	if haystack == "" {
-		return nil
+		return ""
 	}
 	for _, hit := range hits {
-		for _, needle := range rawLeakNeedles(hit.Chunk.Content) {
+		for _, needle := range verbatimEchoNeedles(hit.Chunk.Content) {
 			if strings.Contains(haystack, strings.ToLower(needle)) {
-				chunkID := strings.TrimSpace(hit.Chunk.ChunkID)
-				if chunkID == "" {
-					chunkID = "unknown"
+				if chunkID := strings.TrimSpace(hit.Chunk.ChunkID); chunkID != "" {
+					return chunkID
 				}
-				return fmt.Errorf("raw knowledge evidence leaked from chunk %s", chunkID)
+				return "unknown"
 			}
 		}
 	}
-	return nil
+	return ""
 }
 
-func rawLeakNeedles(content string) []string {
+func verbatimEchoNeedles(content string) []string {
 	clean := compactWhitespace(content)
 	if utf8.RuneCountInString(clean) < 32 {
 		return nil

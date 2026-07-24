@@ -32,10 +32,9 @@ type knowledgeSynthesisOutput struct {
 // It is a SINGLE central-Agent model call (no verifier persona, no repair prompt),
 // and its output goes through the same deterministic, fail-open citation handling
 // as the normal exit: markers that resolve are recorded, all markers are stripped
-// for display, and a non-leaking answer ships even if uncited. Returns ("", false)
-// only when nothing was retrieved (the "no evidence → refuse, never fabricate"
-// guard), the call fails, or the answer would ship a verbatim evidence leak — in
-// which case the caller keeps the canned budget refusal.
+// for display, and the answer ships even if uncited. Returns ("", false) only when
+// nothing was retrieved (the "no evidence → refuse, never fabricate" guard) or the
+// call fails — in which case the caller keeps the canned budget refusal.
 func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string) (string, bool) {
 	resolved := e.resolvedKnowledgeQuestion(userMsg)
 	// The recovery paths can fire before the SearchKnowledge handler folded its
@@ -77,11 +76,10 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 	if answer == "" {
 		return "", false
 	}
-	// A recovery answer must not ship a verbatim evidence dump (security); fall
-	// back to the budget refusal rather than leak.
-	if knowledgeAnswerHasRawLeak(answer, e.searchKnowledgeHitsThisTurn) {
-		return "", false
-	}
+	// A verbatim evidence echo is recorded, never refused: this recovery answer is
+	// the only answer the turn will produce, and the evidence it echoes is
+	// customer-safe corpus text.
+	e.recordAnswerEvidenceEcho(answer)
 	if report := knowledge.ValidateGroundedCitations(answer, ledger); report.HasCitation {
 		e.emitSearchKnowledgeCitationTrace(report)
 		if len(e.readResponseEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
