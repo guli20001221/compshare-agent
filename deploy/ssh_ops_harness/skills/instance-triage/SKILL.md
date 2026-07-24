@@ -101,7 +101,9 @@ ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || cat /proc/net/tcp
 
 `/proc/net/tcp` is the only source present on every image, so it is the authority. It lists the
 local address:port in HEX — convert the port: `8888`=`22B8`, `8188`=`1FFC`, `7860`=`1EB4`, `8080`=
-`1F90`, `22`=`0016`. State `0A` means LISTEN. A row `00000000:1FFC ... 0A` = something is listening
+`1F90`, `22`=`0016`. Filter it with `grep` (e.g. `grep 22B8 /proc/net/tcp`) — **not** `awk`/`sed`,
+which are blocked as code-execution tools, so a pipe through them is refused; `grep`/`cat`/`head`
+are allowed. State `0A` means LISTEN. A row `00000000:1FFC ... 0A` = something is listening
 on `0.0.0.0:8188`; `0100007F:1FFC` = bound to `127.0.0.1` only. When in doubt, confirm the service
 actually answers with a loopback probe: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<port>/`
 (a `200`/`302`/`401` all prove it is up; `curl` too may be absent — then rely on `/proc/net/tcp`).
@@ -113,9 +115,17 @@ actually answers with a loopback probe: `curl -s -o /dev/null -w '%{http_code}' 
   `autorestart`, systemd) — if nothing is, "it died and nothing brought it back" is the finding.
 - **Listening on `127.0.0.1` only** → running but unreachable from outside; the bind address is the
   fault, not the service.
-- **Listening on `0.0.0.0` and healthy** → the service is fine; the problem is upstream (platform
-  port mapping, the access URL, or the user's own network). Say that plainly instead of inventing
-  an in-box fault.
+- **Listening on `0.0.0.0` but on an unexpected port** → the service is up, just not on the port the
+  platform maps / the user's URL targets. Compare the live port against the one its own start script /
+  supervisor conf declares; if they differ, the port is the mismatch — the service is **not** down.
+- **Listening on `0.0.0.0` and on the expected port, healthy** → the service is fine; the problem is
+  upstream (platform port mapping, the access URL, or the user's own network). Say that plainly
+  instead of inventing an in-box fault.
+
+When the fault is a **setting** — a bind address, a port, a launch flag — it lives in the start
+script / supervisor conf, not just in the running process. Recommend fixing it at that **source**
+(edit the conf/script, then restart), not only killing and hand-relaunching the live process: a
+hand-launched fix reverts to the bug on the next restart or reboot. Say which file holds the setting.
 
 Then read the **freshest** log for that service (see §0) to learn *why* it stopped. Distinguish a
 clean shutdown from a crash from an external kill.
