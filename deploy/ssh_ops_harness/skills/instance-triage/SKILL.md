@@ -38,6 +38,26 @@ run `cd /X && python Y`, confirm `/X` and `Y` appeared in your own command outpu
 sounding path that does not exist wastes the user's time and destroys their trust in the answer.
 If you did not verify the start command, say which script you found and quote it.
 
+**Your `env` is NOT the user's `env`.** Each of your commands runs in a *non-login,
+non-interactive* shell, so `/etc/profile`, `/etc/profile.d/*.sh`, `~/.bash_profile` and the
+interactive part of `~/.bashrc` are **never applied to your session**. The user's terminal, their
+Jupyter kernel and their training script all normally DO get them. You therefore cannot see an
+environment variable the user has, and `env | grep FOO` coming back empty proves nothing about
+their shell. You also cannot work around it: `bash -lc '...'` is refused by the read-only policy
+(`-c` is arbitrary code execution). **Read the files instead:**
+
+```
+cat /etc/profile.d/*.sh 2>/dev/null
+cat /etc/environment ~/.bashrc ~/.bash_profile ~/.profile 2>/dev/null
+cat /proc/<pid>/environ | tr '\0' '\n'      # the env a RUNNING process actually got
+```
+
+This was a real miss: a box had `export CUDA_VISIBLE_DEVICES=""` in `/etc/profile.d/`, so every
+program the user started saw zero GPUs while `nvidia-smi` was perfectly healthy. `env` in the
+triage session showed nothing, and the diagnosis went to a plausible-but-wrong second cause. When
+a symptom is "my program behaves differently from what you observe", suspect the environment gap
+first and read those files before concluding anything else.
+
 ## 1. GPU unavailable / nvidia-smi failing ("掉卡")
 
 The GPU stack has **three independent layers**. Check all three before concluding — a fault in one
@@ -79,6 +99,24 @@ module is loaded. You do; say so explicitly, and recommend repointing/restoring 
 Also worth separating: `nvidia-smi` uses **NVML** (`libnvidia-ml`), while CUDA workloads use
 **libcuda**. NVML can be broken while CUDA still runs, and vice versa — so "nvidia-smi is broken"
 does not by itself mean training/inference is broken. Check whichever the user actually cares about.
+
+### When all three layers are healthy but the user still sees no GPU
+
+This is the most common shape of "掉卡" that is not a driver problem at all, and the three layers
+above will all look green. Before reaching for "wrong Python environment" or any other story,
+rule out **GPU masking by environment variable** — it is one `cat` away and it is invisible in
+your own `env` (see §0, "Your `env` is NOT the user's `env`"):
+
+```
+cat /etc/profile.d/*.sh /etc/environment ~/.bashrc ~/.bash_profile 2>/dev/null | grep -n -i -E 'CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|CUDA_DEVICE_ORDER'
+cat /proc/<pid>/environ | tr '\0' '\n' | grep -i CUDA   # for a process that IS working
+```
+
+`CUDA_VISIBLE_DEVICES=""` (or `-1`) makes every CUDA program report zero devices while
+`nvidia-smi` — which does not honour it — keeps printing a perfectly healthy GPU. That exact
+contradiction ("控制台/nvidia-smi 正常，但我的程序说 no CUDA GPUs are available") is the
+signature. A process that currently DOES see the GPU is the control: compare its
+`/proc/<pid>/environ` against the profile files.
 
 ## 2. A web service will not open (ComfyUI / Jupyter / an API)
 
@@ -138,6 +176,32 @@ because the host's totals can look roomy while the container's own ceiling is wh
 ```
 cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null
 ```
+
+### "df says the disk is full but the files are gone"
+
+Deleted-but-still-open files are the classic cause: the space is only released when the last file
+descriptor closes, so `rm` frees nothing while a process holds the file. `du` cannot see it (there
+is no directory entry left), which is exactly why `df` and `du` disagree.
+
+```
+ls -l /proc/[0-9]*/fd/* 2>/dev/null | grep deleted
+stat -L -c '%s %n' /proc/<pid>/fd/<n>      # SIZE OF THE FILE — note the -L
+```
+
+**Use `stat -L`. Without `-L` you measure the symlink, not the file, and every `/proc/<pid>/fd/<n>`
+entry reports 64 bytes.** This is not hypothetical: a real run read `stat -c '%s'` → `64`,
+concluded "只有 64 字节，不是原因", and went on to blame package caches. `stat -L` on the same fd
+said `8589934592` — 8 GiB, which was the entire discrepancy. Killing the holder returned `df` from
+9.0G to 1013M.
+
+Two more traps in the same family, both of which make a cache look like the culprit when it is not:
+
+- **In a container, `du` on a path may be counting the read-only lower layer.** An overlay's `df`
+  reports only what the writable upper layer holds. A 4.6G `~/.cache/pip` that was baked into the
+  image contributes **nothing** to the container's own usage. Do not sum `du` figures from
+  arbitrary paths and present the total as an explanation of `df` — if the parts do not add up,
+  say so instead of inventing a remainder.
+- Sum only what you can attribute. If a residual is unexplained, label it **无法确认**.
 
 **Before blaming OOM, get positive evidence — and in a container the authoritative source is the
 cgroup's own counter, not `dmesg`.** `dmesg` is usually blocked by seccomp in these instances, so
