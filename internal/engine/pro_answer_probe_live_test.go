@@ -59,6 +59,37 @@ func proModelName() string {
 	return "deepseek-v4-pro"
 }
 
+// answerLLMConfig returns the llm config for the ANSWER model only. The
+// retriever's embedder + reranker are always built from cfg's own key (the
+// qwen3 embed/rerank stack is authorized ONLY under the platform key — a
+// gpt-5.6-terra key 400s on qwen3-embedding-8b / qwen3-reranker-8b, verified
+// live 2026-07-24). ModelVerse authorizes models per key, so a cross-vendor
+// answer-model comparison MUST keep retrieval on cfg's key and swap only the
+// answer client:
+//
+//	COMPSHARE_ANSWER_API_KEY set  -> answer runs on that key + COMPSHARE_ANSWER_MODEL
+//	                                 (default gpt-5.6-terra), same base_url as cfg.
+//	COMPSHARE_ANSWER_API_KEY unset -> answer runs on cfg's key + proModelName()
+//	                                 (deepseek-v4-pro) — the pre-existing behavior.
+//
+// The key is never committed: it is read from env at run time only.
+func answerLLMConfig(cfg *config.Config) config.LLMConfig {
+	ac := cfg.Agent.LLM // value copy; retriever keeps cfg.Agent.LLM untouched
+	if k := strings.TrimSpace(os.Getenv("COMPSHARE_ANSWER_API_KEY")); k != "" {
+		ac.APIKey = k
+		ac.Model = "gpt-5.6-terra"
+		if m := strings.TrimSpace(os.Getenv("COMPSHARE_ANSWER_MODEL")); m != "" {
+			ac.Model = m
+		}
+		if b := strings.TrimSpace(os.Getenv("COMPSHARE_ANSWER_BASE_URL")); b != "" {
+			ac.BaseURL = b
+		}
+		return ac
+	}
+	ac.Model = proModelName()
+	return ac
+}
+
 type proAnswer struct {
 	CaseID   string `json:"case_id"`
 	Category string `json:"category"`
@@ -72,18 +103,18 @@ type proAnswer struct {
 
 func TestLiveProAnswersSourceGaps(t *testing.T) {
 	cfg := loadLiveConfig(t)
-	cfg.Agent.LLM.Model = proModelName()
+	answerCfg := answerLLMConfig(cfg) // answer model may run on a separate (terra) key
 
-	// Reachability smoke first: deepseek-v4-pro may live on the Anthropic-compat
+	// Reachability smoke first: the answer model may live on the Anthropic-compat
 	// endpoint rather than this /v1 one, and an unreachable model looks exactly
 	// like a bad answer once it is buried in an agent loop. Fail loud, early.
-	smoke, err := llm.NewClient(cfg.Agent.LLM).Chat(context.Background(), llm.ChatRequest{
+	smoke, err := llm.NewClient(answerCfg).Chat(context.Background(), llm.ChatRequest{
 		Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "回复两个字：在吗"}},
 	})
 	if err != nil {
-		t.Fatalf("model %q not reachable on %s: %v", cfg.Agent.LLM.Model, cfg.Agent.LLM.BaseURL, err)
+		t.Fatalf("model %q not reachable on %s: %v", answerCfg.Model, answerCfg.BaseURL, err)
 	}
-	t.Logf("model=%s reachable; smoke reply=%q", cfg.Agent.LLM.Model, strings.TrimSpace(firstNonEmptyText(smoke.Content, "(empty)")))
+	t.Logf("answer-model=%s reachable; smoke reply=%q", answerCfg.Model, strings.TrimSpace(firstNonEmptyText(smoke.Content, "(empty)")))
 
 	questions := loadQuestionText(t)
 	gaps := loadSourceGapCases(t, questions)
@@ -101,7 +132,7 @@ func TestLiveProAnswersSourceGaps(t *testing.T) {
 	// Serial, not concurrent: pro is slow and the point is to read the replies,
 	// not to race them; serial also keeps one hung call from being ambiguous.
 	for i, g := range gaps {
-		eng := NewWithDeps(llm.NewClient(cfg.Agent.LLM), &mockExecutor{}, nil)
+		eng := NewWithDeps(llm.NewClient(answerCfg), &mockExecutor{}, nil)
 		eng.SetKnowledgeRetriever(retriever)
 		eng.InitWithContext("用户当前没有实例。")
 		reply, cerr := eng.Chat(context.Background(), g.Query, noopStep)

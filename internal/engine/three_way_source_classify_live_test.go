@@ -44,8 +44,9 @@
 //
 // Real customer questions are never committed. Queries come from
 // COMPSHARE_REAL_QUERY_CORPUS; per-case detail (which quotes them) goes only to
-// COMPSHARE_PROBE_OUT, outside the repo. Runs on deepseek-v4-pro
-// (COMPSHARE_PRO_MODEL), the decided production/verification model.
+// COMPSHARE_PROBE_OUT, outside the repo. Classifier runs on the answer model:
+// gpt-5.6-terra when COMPSHARE_ANSWER_API_KEY is set, else deepseek-v4-pro
+// (COMPSHARE_PRO_MODEL). Retrieval always stays on the platform key.
 //
 //	go test ./internal/engine -tags live -run TestLiveThreeWaySourceClassification -v -timeout 40m
 package engine
@@ -128,8 +129,19 @@ type sourceVerdict struct {
 
 func TestLiveThreeWaySourceClassification(t *testing.T) {
 	cfg := loadLiveConfig(t)
-	cfg.Agent.LLM.Model = proModelName() // decided production/verification model
-	t.Logf("classifier model = %s", cfg.Agent.LLM.Model)
+	cases := loadAllRealCases(t)
+	if len(cases) == 0 {
+		t.Fatalf("no real cases loaded")
+	}
+	// Build the retriever from cfg's own platform key BEFORE swapping the classifier
+	// model: the qwen3 embed/rerank stack is authorized only under the platform key,
+	// while the classifier may run on a separate answer key (terra via
+	// COMPSHARE_ANSWER_API_KEY, else deepseek-v4-pro). WITH the reranker, so the
+	// top-5 corpus-coverage evidence shown to the classifier matches production.
+	corpus, sidecar := mergedProductionIndex(t)
+	retriever := rerankedProductionRetriever(t, cfg, corpus, sidecar)
+	cfg.Agent.LLM = answerLLMConfig(cfg)
+	t.Logf("classifier model = %s  |  cases=%d  merged index=%d chunks", cfg.Agent.LLM.Model, len(cases), len(corpus.Chunks))
 
 	// Reachability smoke first: an unreachable model / bad key returns an error on
 	// every one of the 250 classification calls and looks identical to "the model
@@ -138,14 +150,6 @@ func TestLiveThreeWaySourceClassification(t *testing.T) {
 		t.Fatalf("model %q not reachable on %s: %v", cfg.Agent.LLM.Model, cfg.Agent.LLM.BaseURL, err)
 	}
 	t.Logf("model reachable")
-
-	cases := loadAllRealCases(t)
-	if len(cases) == 0 {
-		t.Fatalf("no real cases loaded")
-	}
-	corpus, sidecar := mergedProductionIndex(t)
-	retriever := productionAnswerRetriever(t, cfg, corpus, sidecar)
-	t.Logf("cases=%d  merged index=%d chunks", len(cases), len(corpus.Chunks))
 
 	votes := make([][]sourceVerdict, len(cases))
 	type job struct{ caseIdx, round int }

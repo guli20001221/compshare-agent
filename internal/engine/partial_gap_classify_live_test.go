@@ -187,8 +187,14 @@ func TestLivePartialGapClassification(t *testing.T) {
 	cfg := loadLiveConfig(t)
 	cases := loadGradedCases(t)
 	corpus, sidecar := mergedProductionIndex(t)
+	// wideNet is deliberately reranker-free (it tests membership in a wide pool;
+	// rerank reorders a pool without widening it) and uses cfg's platform key for
+	// qwen3 embed. Build it before swapping the classifier model, which may run on
+	// a separate answer key (terra via COMPSHARE_ANSWER_API_KEY, else pro).
 	retriever := wideNetRetriever(t, cfg, corpus, sidecar)
+	cfg.Agent.LLM = answerLLMConfig(cfg)
 	byID := chunkIndex(corpus)
+	t.Logf("classifier model = %s", cfg.Agent.LLM.Model)
 
 	var partials, misses []gradedCase
 	for _, c := range cases {
