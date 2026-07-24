@@ -178,6 +178,23 @@ func TestInstanceOps_StepEventsBoundedByCap(t *testing.T) {
 	require.LessOrEqual(t, len(over), maxInstanceOpsStepEvents+2)
 }
 
+// 门 8b — a no-SSH-target instance (e.g. Windows: empty SshLoginCommand) is refused
+// HONESTLY and NON-retryably. The card was authorized, so the runner IS reached and
+// returns ErrInstanceOpsNoSSHTarget; the engine must NOT surface the generic
+// "请稍后重试" text for a box that can never be entered.
+func TestInstanceOps_NoSSHTargetRefusedHonestly(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsNoSSHTarget}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+
+	var steps []StepEvent
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
+
+	require.Equal(t, 1, runner.calls, "the card was authorized, so the runner is reached")
+	require.True(t, strings.HasPrefix(out, finalReplyPrefix), "an unenterable box is a terminal refusal")
+	require.Contains(t, out, "没有 SSH 登录入口", "the refusal must name the real cause")
+	require.NotContains(t, out, "请稍后重试", "must not imply a transient, retryable failure")
+}
+
 // 门 8 — at most one in-instance run per turn, even if the model tweaks one word of
 // the Task to dodge the DB dedup key. The second call returns the "already ran"
 // text, distinct from the decline text (V9).

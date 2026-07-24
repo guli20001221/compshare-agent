@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 
@@ -80,6 +81,13 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 
 	res, err := r.diag.Diagnose(ctx, r.describer, owner, req.InstanceID, req.Task, onStep)
 	if err != nil {
+		// Translate the no-SSH-target sentinel into the engine's transport-agnostic
+		// mirror so the engine gives an honest, non-retryable refusal (e.g. a Windows
+		// instance: empty SshLoginCommand) without importing internal/sshops. Every
+		// other error stays the generic "couldn't complete, retry" class.
+		if errors.Is(err, sshops.ErrNoSSHTarget) {
+			return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsNoSSHTarget
+		}
 		return engine.InstanceOpsVerdict{}, err
 	}
 	ran, refused := tallySteps(res.Steps)

@@ -7,11 +7,20 @@ package sshops
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// ErrNoSSHTarget marks an instance that has no SSH entrypoint at all: its describe
+// carries an empty SshLoginCommand. Confirmed live against a CompShare Windows GPU
+// instance (OsType=WINDOWS, SshLoginCommand=""); any image without SSH lands here
+// too. It is NON-retryable — the box can never be entered — so callers distinguish
+// it from a transient describe failure and tell the user honestly instead of
+// "please retry". FetchCredential returns it wrapped; match with errors.Is.
+var ErrNoSSHTarget = errors.New("sshops: instance has no SSH target")
 
 // Describer is the narrow slice of *tools.ExternalExecutor the credential fetch needs. Kept as
 // an interface so this package does not import internal/tools (no cycle) and tests can stub the
@@ -71,7 +80,9 @@ func FetchCredential(ctx context.Context, d Describer, instanceID string) (Crede
 	loginCmd, _ := inst["SshLoginCommand"].(string)
 	if strings.TrimSpace(loginCmd) == "" {
 		// Windows instances (and any without SSH) return an empty SshLoginCommand.
-		return Credential{}, fmt.Errorf("sshops: instance %s has no SshLoginCommand (no SSH target)", instanceID)
+		// Wrap the sentinel so the engine surfaces an honest, non-retryable refusal
+		// instead of the generic "please retry" text (see ErrNoSSHTarget).
+		return Credential{}, fmt.Errorf("%w: instance %s has no SshLoginCommand", ErrNoSSHTarget, instanceID)
 	}
 	host, user, port, err := parseSSHLoginCommand(loginCmd)
 	if err != nil {

@@ -1,6 +1,17 @@
 package engine
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrInstanceOpsNoSSHTarget is returned by a runner when the target instance has no
+// SSH entrypoint (an empty SshLoginCommand — Windows instances, and any image without
+// SSH). It is the engine-side, transport-agnostic mirror of sshops.ErrNoSSHTarget;
+// the cmd adapter translates one to the other, keeping internal/sshops out of the
+// engine import set. executeInstanceOps matches it with errors.Is to give an honest,
+// NON-retryable refusal instead of the generic "please retry" text.
+var ErrInstanceOpsNoSSHTarget = errors.New("engine: instance has no SSH target")
 
 // InstanceOpsRunner executes ONE consented, read-only in-instance diagnosis and
 // streams its activity back through onProgress. The engine depends only on this

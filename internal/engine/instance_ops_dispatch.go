@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -111,6 +112,15 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		Task:       task,
 	}, onProgress)
 	if err != nil {
+		// No SSH entrypoint (empty SshLoginCommand — e.g. a Windows instance): the box
+		// can never be entered, so this is honest and NON-retryable. Never the generic
+		// "请稍后重试" text, which wrongly implies a transient failure the user should
+		// retry. Confirmed live against a CompShare Windows GPU instance.
+		if errors.Is(err, ErrInstanceOpsNoSSHTarget) {
+			msg := "该实例没有 SSH 登录入口（如 Windows 实例），暂不支持实例内排查。"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+			return finalReplyPrefix + msg
+		}
 		// Honest terminal failure — never let the model narrate a root cause the
 		// harness did not reach. The reason class is a constant; the underlying
 		// error (already credential-free) is not surfaced to the user verbatim.

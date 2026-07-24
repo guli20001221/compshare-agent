@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -125,6 +126,19 @@ func TestFetchCredentialErrors(t *testing.T) {
 				t.Fatalf("credential leaked on error path")
 			}
 		})
+	}
+}
+
+// The Windows / no-SSH case must surface the ErrNoSSHTarget sentinel (not just a bare
+// error string) so the engine can give an honest, non-retryable refusal instead of
+// "please retry". Confirmed live: a CompShare Windows GPU instance returns an empty
+// SshLoginCommand. This test fails if the wrap is dropped, silently re-collapsing the
+// distinction into the generic transient-failure path.
+func TestFetchCredentialNoSSHTargetIsSentinel(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	_, err := FetchCredential(context.Background(), stubDescriber{resp: describeResp("", b64)}, "uhost-abc")
+	if !errors.Is(err, ErrNoSSHTarget) {
+		t.Fatalf("empty SshLoginCommand must wrap ErrNoSSHTarget, got %v", err)
 	}
 }
 

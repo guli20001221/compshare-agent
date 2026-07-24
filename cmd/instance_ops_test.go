@@ -160,6 +160,20 @@ func TestInstanceOpsRunner_NilLimiterStillRuns(t *testing.T) {
 	require.Equal(t, 1, diag.calls)
 }
 
+// The runner translates the sshops no-SSH-target sentinel into the engine's mirror so the engine can
+// refuse honestly (e.g. a Windows instance: empty SshLoginCommand) without importing internal/sshops.
+// The sshops sentinel must NOT leak past this adapter boundary.
+func TestInstanceOpsRunner_TranslatesNoSSHTargetSentinel(t *testing.T) {
+	diag := &fakeDiagnoser{err: fmt.Errorf("describe: %w", sshops.ErrNoSSHTarget)}
+	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+
+	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "t", InstanceID: "uhost-x", Task: "diag"},
+		func(engine.InstanceOpsProgress) {})
+
+	require.ErrorIs(t, err, engine.ErrInstanceOpsNoSSHTarget, "no-SSH-target must become the engine sentinel")
+	require.NotErrorIs(t, err, sshops.ErrNoSSHTarget, "the sshops sentinel must not leak past the adapter boundary")
+}
+
 // --- server gate decisions -------------------------------------------------------------------------
 
 // baseGateCfg is a cfg where the ONLY thing preventing a wired lane is the flag under test.
