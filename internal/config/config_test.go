@@ -888,3 +888,28 @@ func TestRuntimeGetenv_NilConfigReturnsBase(t *testing.T) {
 	getenv := cfg.RuntimeGetenv(base)
 	assert.Equal(t, "from-base", getenv("ANYTHING"))
 }
+
+// TestRuntimeGetenv_SeparateRetrievalKey locks the two-key wiring: when
+// agent.retrieval.api_key is set it is exposed as MODELVERSE_API_KEY, which
+// modelverseAPIKeyFromEnv reads BEFORE LLM_API_KEY, so the qwen3 embed/rerank
+// stack runs on its own key while the answer model keeps agent.llm.api_key.
+// This is what lets a gpt-5.6-terra answer key (not authorized for qwen3
+// embed/rerank) coexist with the platform retrieval key. When the field is
+// empty there is NO override, so retrieval falls through to the LLM key — the
+// single-key behavior that predates this field.
+func TestRuntimeGetenv_SeparateRetrievalKey(t *testing.T) {
+	base := func(string) string { return "" }
+
+	twoKey := (&Config{Agent: AgentConfig{
+		LLM:       LLMConfig{APIKey: "terra-answer-key"},
+		Retrieval: RetrievalConfig{APIKey: "qwen3-retrieval-key"},
+	}}).RuntimeGetenv(base)
+	assert.Equal(t, "qwen3-retrieval-key", twoKey("MODELVERSE_API_KEY"), "retrieval key exposed as MODELVERSE_API_KEY (read before LLM_API_KEY)")
+	assert.Equal(t, "terra-answer-key", twoKey("LLM_API_KEY"), "answer key stays on LLM_API_KEY")
+
+	single := (&Config{Agent: AgentConfig{
+		LLM: LLMConfig{APIKey: "one-key"},
+	}}).RuntimeGetenv(base)
+	assert.Equal(t, "", single("MODELVERSE_API_KEY"), "no MODELVERSE_API_KEY override when retrieval key omitted")
+	assert.Equal(t, "one-key", single("LLM_API_KEY"), "retrieval inherits the LLM key via modelverseAPIKeyFromEnv fallback")
+}

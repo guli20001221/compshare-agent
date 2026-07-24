@@ -50,7 +50,9 @@ git config core.hooksPath .githooks
 
 ## Runtime feature flags
 
-**Config is YAML (`deploy/conf/config.yaml`).** Runtime flags have typed fields under `agent.features` / `agent.retrieval` / `agent.trace` (see `internal/config/runtime.go`). The deploy file also carries secrets directly: LLM key, STS service AK/SK, role URN, and PostgreSQL DSN. The env-var names below are still the historical parser names in code, but deployment must set the matching YAML fields instead of exporting environment variables. The default answer path uses the current demo stack: ds-v4-flash and qwen3 RRF retrieval.
+**Config is YAML (`deploy/conf/config.yaml`).** Runtime flags have typed fields under `agent.features` / `agent.retrieval` / `agent.trace` (see `internal/config/runtime.go`). The deploy file also carries secrets directly: LLM key, STS service AK/SK, role URN, and PostgreSQL DSN. The env-var names below are still the historical parser names in code, but deployment must set the matching YAML fields instead of exporting environment variables. The default answer path uses **gpt-5.6-terra** (ModelVerse GPT-5 Codex) with qwen3 RRF retrieval.
+
+**Two-key setup (answer vs retrieval):** `gpt-5.6-terra`'s ModelVerse key is authorized only for terra, **not** for `qwen3-embedding-8b` / `qwen3-reranker-8b`, so the answer model and the retrieval stack use separate keys. `agent.llm.api_key` is the answer key (terra); `agent.retrieval.api_key` is the qwen3 embed/rerank key (`RuntimeGetenv` exposes it as `MODELVERSE_API_KEY`, which `cmd/trace.go::modelverseAPIKeyFromEnv` reads before `LLM_API_KEY`). Both are inlined in `deploy/conf/config.yaml` per deploy convention — like the platform key they live in the repo's git history, so rotate them with the standing key rotation. When `agent.retrieval.api_key` is empty, embed/rerank inherit `agent.llm.api_key` (single-key mode — the pre-terra behavior, e.g. for a `deepseek-v4-pro`/`-flash` answerer whose key also does qwen3).
 
 | Var | Values | Effect |
 |---|---|---|

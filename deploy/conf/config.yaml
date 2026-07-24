@@ -17,11 +17,19 @@ agent:
 
   llm:
     base_url: "https://api.modelverse.cn/v1"
-    api_key: "Q1J7v8S9PewEW16c2e84171e-cBb5-4763-929D-6c03Fe44"
-    # ds-v4-flash is the W0+ baseline answerer (post-PR-#95 prompt fix passed
-    # 5 hard contracts; ~5-10x faster + cheaper than ds-v4-pro). Ops should
-    # monitor ~1.86% empty-return rate on hybrid path (P3 watch-list).
-    model: "deepseek-v4-flash"
+    # Answer model key (gpt-5.6-terra). Authorized ONLY for terra — NOT for qwen3
+    # embed/rerank — so it is a SEPARATE key from the retrieval key
+    # (agent.retrieval.api_key below). Inlined per deploy convention; like the
+    # platform key it is published in this repo's history, so rotate it with the
+    # standing key rotation. To run a pro/flash answerer instead, put a
+    # qwen3-capable key here and change model (then retrieval may inherit it).
+    api_key: "HpiGXzD7p1cuChPiCe8e5841-048D-4e73-9675-E83dD0D1"
+    # gpt-5.6-terra (ModelVerse GPT-5 Codex), default answerer since 2026-07-24:
+    # on the reranked source-gap probes it reproduced in-corpus facts verbatim and
+    # honestly declined true doc-gaps, where deepseek-v4-pro fabricated specifics;
+    # also cheaper. Rollback: deepseek-v4-pro / deepseek-v4-flash (qwen3-capable
+    # key required in LLM_API_KEY for those).
+    model: "gpt-5.6-terra"
 
   # ──────────────────────────────────────────────────────────────────────
   # Runtime feature flags (previously env-only). Configure the whole agent
@@ -69,6 +77,13 @@ agent:
   retrieval:
     knowledge_retrieval: curated        # curated | off
     mode: qwen3_rrf                     # qwen3_rrf | bm25_only | hybrid_cosine | hybrid_rerank | qwen3_full
+    # qwen3 embed + rerank key (authorized for qwen3-embedding-8b /
+    # qwen3-reranker-8b). SEPARATE from the terra answer key in agent.llm above.
+    # Empty = inherit agent.llm.api_key (single-key mode, for a qwen3-capable
+    # answer key). This platform key is already in the repo's git history; rotate
+    # it with the standing key rotation. To move it out of the repo entirely,
+    # replace with ${MODELVERSE_API_KEY} and set that env var.
+    api_key: "Q1J7v8S9PewEW16c2e84171e-cBb5-4763-929D-6c03Fe44"
     # corpus_path: ""                  # COMPSHARE_KNOWLEDGE_CORPUS (default deploy/kb/stage2b_w0.jsonl)
     # embeddings_path: ""              # COMPSHARE_KNOWLEDGE_EMBEDDINGS (default: computed from digest)
     # external_corpus_path: ""        # COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS (default deploy/kb/external_w0.jsonl)
