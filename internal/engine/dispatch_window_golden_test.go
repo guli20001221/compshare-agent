@@ -20,6 +20,19 @@ import (
 // If a change to the window is intended, update the expected slice in the SAME
 // commit that changes behavior, and say in the commit message which tool moved
 // and why. Do not update it to make an unrelated refactor pass.
+//
+// Updated when origin/main was merged into feat/instance-ops-harness. Three
+// moves, all from main, none from this branch:
+//   - DiagnoseSSH      REMOVED  — retired on main; the unified instance_access
+//                                 read capability replaced it.
+//   + ReadCapability_instance_access  ADDED — that replacement.
+//   + ReadChunk        ADDED    — main's knowledge full-body reader; it enters
+//                                 the window because the merge took main's
+//                                 route-based knowledge test (ActionRouteKnowledge)
+//                                 over this branch's `Name == "SearchKnowledge"`.
+// Net 21 -> 22 read-only and 38 -> 39 mutating. DiagnoseInstanceInternals is
+// still absent from BOTH goldens: they are captured with instanceOps=false, so
+// the lane-off window stays byte-identical to a build without the tool (INV-10).
 
 var goldenWindowReadOnly = []string{
 	"UpdateTaskState",
@@ -31,6 +44,7 @@ var goldenWindowReadOnly = []string{
 	"ReadCapability_gpu_specs_query",
 	"ReadCapability_image_list",
 	"ReadCapability_image_tag_catalog",
+	"ReadCapability_instance_access",
 	"ReadCapability_model_repository_browse",
 	"ReadCapability_monitor_history",
 	"ReadCapability_monitor_query",
@@ -41,7 +55,7 @@ var goldenWindowReadOnly = []string{
 	"ReadCapability_stock_availability",
 	"ReadCapability_zone_catalog",
 	"SearchKnowledge",
-	"DiagnoseSSH",
+	"ReadChunk",
 	"DiagnoseBilling",
 }
 
@@ -72,6 +86,7 @@ var goldenWindowMutating = []string{
 	"ReadCapability_gpu_specs_query",
 	"ReadCapability_image_list",
 	"ReadCapability_image_tag_catalog",
+	"ReadCapability_instance_access",
 	"ReadCapability_model_repository_browse",
 	"ReadCapability_monitor_history",
 	"ReadCapability_monitor_query",
@@ -82,7 +97,7 @@ var goldenWindowMutating = []string{
 	"ReadCapability_stock_availability",
 	"ReadCapability_zone_catalog",
 	"SearchKnowledge",
-	"DiagnoseSSH",
+	"ReadChunk",
 	"DiagnoseBilling",
 }
 
@@ -98,6 +113,6 @@ func TestCentralAgentToolWindowGolden(t *testing.T) {
 // makes an accidental duplicate visible as a count mismatch rather than as a
 // slice diff buried in 37 lines.
 func TestCentralAgentToolWindowGoldenCounts(t *testing.T) {
-	require.Len(t, centralAgentToolNames(false, false), 21)
-	require.Len(t, centralAgentToolNames(true, false), 38)
+	require.Len(t, centralAgentToolNames(false, false), 22)
+	require.Len(t, centralAgentToolNames(true, false), 39)
 }

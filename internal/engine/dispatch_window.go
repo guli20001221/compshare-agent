@@ -33,7 +33,10 @@ func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.T
 		if !capability.ExposedToAgent || capability.Tool.Function == nil {
 			continue
 		}
-		if capability.Name == "SearchKnowledge" || capability.Policy.Route == tools.ActionRouteDiagnosis {
+		// Take main's route-based knowledge test, not this branch's older
+		// `Name == "SearchKnowledge"`: main generalized it so ReadChunk (added
+		// there) is exposed too, and matching by name would silently drop it.
+		if capability.Policy.Route == tools.ActionRouteKnowledge || capability.Policy.Route == tools.ActionRouteDiagnosis {
 			// DiagnoseInstanceInternals carries an ActionRouteDiagnosis policy (derived
 			// from its "Diagnose" prefix) so it would append unconditionally here.
 			// Gate it on the in-instance lane being wired, so with the lane off the

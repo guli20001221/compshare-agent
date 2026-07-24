@@ -418,12 +418,12 @@
       "value": "\\[(\\d{1,2})\\]"
     },
     {
-      "id": "11b64807b629b19e",
+      "id": "a8d0a3efad8763e4",
       "kind": "regex",
       "path": "internal/knowledge/grounded_validator.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
-      "value": "\\[[ \\t]*\\[+\\s*([^\\[\\]\\r\\n]+?)\\s*\\]+[ \\t]*\\]"
+      "value": "\\[[ \\t]*\\[+\\s*([^\\[\\]\\s]+)\\s*\\]+[ \\t]*\\]"
     },
     {
       "id": "069c933b4c788ed5",
@@ -1350,10 +1350,10 @@
       "callee": "strings.Index"
     },
     {
-      "id": "d0289d1d87c33e3e",
+      "id": "6bda607b2defb425",
       "kind": "string_heuristic",
       "path": "internal/knowledge/evidence_adapter.go",
-      "symbol": "ValidateNoRawEvidenceLeak",
+      "symbol": "EchoedEvidenceChunkID",
       "callee": "strings.Contains"
     },
     {
@@ -1773,10 +1773,10 @@
       "value": "5"
     },
     {
-      "id": "a69ff080dda1b87e",
+      "id": "0049a5343bf80c65",
       "kind": "string_heuristic",
-      "path": "internal/tools/safe_executor.go",
-      "symbol": "firstPodUHostID",
+      "path": "internal/platform/instance_id.go",
+      "symbol": "IsPodInstanceID",
       "callee": "strings.HasPrefix",
       "value": "cpod-"
     },
@@ -1851,14 +1851,6 @@
       "symbol": "sanitizeInteractionArgs",
       "callee": "strings.Contains",
       "value": "token"
-    },
-    {
-      "id": "03a11410d5c96b00",
-      "kind": "string_heuristic",
-      "path": "internal/workflow/instance_shape.go",
-      "symbol": "isPodInstanceResult",
-      "callee": "strings.HasPrefix",
-      "value": "cpod-"
     },
     {
       "id": "03b69fccf8f347fc",

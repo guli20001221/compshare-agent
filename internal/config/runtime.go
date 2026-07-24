@@ -56,6 +56,12 @@ type RetrievalConfig struct {
 	EmbedModel             string `yaml:"embed_model"`              // MODELVERSE_EMBED_MODEL
 	RerankerModel          string `yaml:"reranker_model"`           // MODELVERSE_RERANKER_MODEL
 	ModelverseBaseURL      string `yaml:"modelverse_base_url"`      // MODELVERSE_BASE_URL
+	// APIKey is the key for the embed + rerank calls (MODELVERSE_API_KEY),
+	// SEPARATE from agent.llm.api_key: the answer model and the qwen3 retrieval
+	// stack can be authorized under different ModelVerse keys (e.g. a gpt-5.6-terra
+	// answer key is NOT authorized for qwen3-embedding-8b / qwen3-reranker-8b).
+	// Empty = inherit agent.llm.api_key (single-key mode).
+	APIKey                 string `yaml:"api_key"`                  // MODELVERSE_API_KEY (embed/rerank; empty = inherit agent.llm.api_key)
 	HybridTimeoutMS        int    `yaml:"hybrid_timeout_ms"`        // RAG_HYBRID_TIMEOUT_MS
 	RerankerTimeoutMS      int    `yaml:"reranker_timeout_ms"`      // RAG_RERANKER_TIMEOUT_MS
 }
@@ -115,6 +121,11 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putStrEnv(overrides, "MODELVERSE_EMBED_MODEL", r.EmbedModel)
 	putStrEnv(overrides, "MODELVERSE_RERANKER_MODEL", r.RerankerModel)
 	putStrEnv(overrides, "MODELVERSE_BASE_URL", r.ModelverseBaseURL)
+	// Separate embed/rerank key. modelverseAPIKeyFromEnv reads MODELVERSE_API_KEY
+	// FIRST, then LLM_API_KEY, so a value here routes retrieval to its own key
+	// while the answer model keeps agent.llm.api_key; empty leaves no override, so
+	// retrieval falls through to the LLM key (single-key mode) — a no-op when unset.
+	putStrEnv(overrides, "MODELVERSE_API_KEY", r.APIKey)
 	putIntEnv(overrides, "RAG_HYBRID_TIMEOUT_MS", r.HybridTimeoutMS)
 	putIntEnv(overrides, "RAG_RERANKER_TIMEOUT_MS", r.RerankerTimeoutMS)
 

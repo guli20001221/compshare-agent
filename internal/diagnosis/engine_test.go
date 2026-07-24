@@ -331,8 +331,8 @@ func TestEngine_Run_StepResultsAccumulate(t *testing.T) {
 }
 
 func TestRegistry_IsDiagnosisTool(t *testing.T) {
-	assert.True(t, IsDiagnosisTool("DiagnoseSSH"))
 	assert.True(t, IsDiagnosisTool("DiagnoseBilling"))
+	assert.False(t, IsDiagnosisTool("DiagnoseSSH"), "SSH moved to the typed instance-access capability")
 	// The dormant GPU/image/port chains were deleted, not parked: an unadvertised
 	// diagnosis name must NOT resolve, so a stray or replayed tool call cannot
 	// execute it.
@@ -366,10 +366,10 @@ func TestDiagnosisRegistryHasNoUnadvertisedChains(t *testing.T) {
 }
 
 func TestRegistry_GetChain(t *testing.T) {
-	chain, ok := GetChain("DiagnoseSSH")
+	chain, ok := GetChain("DiagnoseBilling")
 	assert.True(t, ok)
 	assert.NotNil(t, chain)
-	assert.Equal(t, "DiagnoseSSH", chain.Name)
+	assert.Equal(t, "DiagnoseBilling", chain.Name)
 
 	// Deleted dormant chains no longer resolve.
 	for _, gone := range []string{"DiagnoseGPU", "DiagnoseImageIssue", "DiagnosePortOrFirewall"} {

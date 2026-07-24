@@ -15,6 +15,7 @@ type readResponseEvidence struct {
 	Reply       string
 	Envelope    envelope.Envelope
 	Placeholder string
+	Required    bool
 }
 
 const malformedToolProtocolReply = "本次操作没有进入安全确认流程，请重新提交；系统尚未执行任何修改。"
@@ -46,11 +47,24 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 }
 
 func substituteReadObservationBlocks(reply string, evidence []readResponseEvidence) string {
+	var missingRequired []string
 	for _, item := range evidence {
 		if item.Placeholder == "" || item.Reply == "" {
 			continue
 		}
-		reply = strings.ReplaceAll(reply, item.Placeholder, item.Reply)
+		replaced := strings.ReplaceAll(reply, item.Placeholder, item.Reply)
+		present := replaced != reply
+		reply = replaced
+		if item.Required && !present {
+			missingRequired = append(missingRequired, item.Reply)
+		}
+	}
+	if len(missingRequired) > 0 {
+		prefix := strings.Join(missingRequired, "\n")
+		if strings.TrimSpace(reply) == "" {
+			return prefix
+		}
+		reply = prefix + "\n\n" + strings.TrimSpace(reply)
 	}
 	return reply
 }

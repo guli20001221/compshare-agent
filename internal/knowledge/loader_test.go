@@ -62,12 +62,17 @@ func TestLoadPinnedCorpusLoadsStage2BW0(t *testing.T) {
 	corpus, err := LoadPinnedCorpus(filepath.Join("..", "..", "deploy", "kb", "stage2b_w0.jsonl"))
 	require.NoError(t, err)
 
-	assert.Equal(t, "kb.stage2b.w1-r5.2026-06-24", corpus.KBVersion)
-	assert.Len(t, corpus.Chunks, 689)
+	assert.Equal(t, "kb.platform.v2.2026-07-15", corpus.KBVersion)
+	assert.Len(t, corpus.Chunks, 544)
+	surfaceURLs := 0
 	for _, chunk := range corpus.Chunks {
 		assert.Equal(t, "official", chunk.SourceOrigin)
-		assert.Nil(t, chunk.SurfaceURL)
+		if chunk.SurfaceURL != nil {
+			surfaceURLs++
+			assert.True(t, strings.HasPrefix(*chunk.SurfaceURL, "https://www.compshare.cn/docs/"))
+		}
 	}
+	assert.Positive(t, surfaceURLs)
 }
 
 func TestLoadPinnedCorpusRejectsDigestMismatch(t *testing.T) {

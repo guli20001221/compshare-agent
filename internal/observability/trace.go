@@ -687,6 +687,9 @@ func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 			if next.QueryNormalized != "" {
 				merged.QueryNormalized = next.QueryNormalized
 			}
+			if next.AnswerEchoedChunkID != "" {
+				merged.AnswerEchoedChunkID = next.AnswerEchoedChunkID
+			}
 		}
 		if len(next.References) > 0 {
 			merged.References = next.References
@@ -764,8 +767,13 @@ type RetrievalTrace struct {
 	// TurnAggregate marks the final de-duplicated evidence snapshot for the
 	// entire turn. It is emitted for both grounded answers and grounding
 	// failures so a multi-search failure does not retain only its last call.
-	TurnAggregate   bool                 `json:"turn_aggregate,omitempty"`
-	KBVersion       string               `json:"kb_version"`
+	TurnAggregate bool   `json:"turn_aggregate,omitempty"`
+	KBVersion     string `json:"kb_version"`
+	// AnswerQuestion is the standalone conversational question the answer must
+	// resolve. QueryRaw/Activities are retrieval strings and may be narrower
+	// subqueries; keeping both prevents a search phrase from silently redefining
+	// the user's question.
+	AnswerQuestion  string               `json:"answer_question,omitempty"`
 	QueryRaw        string               `json:"query_raw,omitempty"`
 	QueryNormalized string               `json:"query_normalized,omitempty"`
 	QueryExpansions []string             `json:"query_expansions,omitempty"`
@@ -802,6 +810,12 @@ type RetrievalTrace struct {
 	AllCitedOffDomain     bool `json:"all_cited_off_domain,omitempty"`
 	WeakEvidence          bool `json:"weak_evidence,omitempty"`
 	RankingErrorCandidate bool `json:"ranking_error_candidate,omitempty"`
+	// AnswerEchoedChunkID names the chunk whose body the final answer reproduced
+	// verbatim (>=32 contiguous runes), empty when it paraphrased. Trace-only: a
+	// customer-safe corpus makes an echo a synthesis-quality signal, not a leak,
+	// and it must never gate the answer — it used to, and replaced whole correct
+	// runbook answers with a canned line. Query it to measure copy-instead-of-write.
+	AnswerEchoedChunkID string `json:"answer_echoed_chunk_id,omitempty"`
 	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
 	// One of "bm25_only" | "hybrid_cosine" | "hybrid_rerank" | "qwen3_full"
 	// | "bm25_fallback". Empty when retrieval is disabled.
@@ -1227,6 +1241,7 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.AllCitedOffDomain ||
 		trace.WeakEvidence ||
 		trace.RankingErrorCandidate ||
+		trace.AnswerEchoedChunkID != "" ||
 		trace.HybridMode != "" ||
 		trace.HybridFallbackReason != "" ||
 		trace.EmbeddingLatencyMS != nil ||

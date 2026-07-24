@@ -179,8 +179,13 @@ def write_sidecar(
         }
         fh.write(json.dumps(meta, ensure_ascii=False, sort_keys=True) + "\n")
         for chunk_id, vector in rows:
+            # ModelVerse returns JSON numbers with more decimal digits than a
+            # float32 embedding can carry. Keep eight significant digits so
+            # committed sidecars remain below GitHub's 100 MiB file limit
+            # without changing the model, dimension, or meaningful precision.
+            compact_vector = [float(f"{float(value):.8g}") for value in vector]
             fh.write(
-                json.dumps({"chunk_id": chunk_id, "vector": vector}, ensure_ascii=False) + "\n"
+                json.dumps({"chunk_id": chunk_id, "vector": compact_vector}, ensure_ascii=False, separators=(",", ":")) + "\n"
             )
 
 

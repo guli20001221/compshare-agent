@@ -90,13 +90,14 @@ code-enforced.
 ### RAG Evidence
 
 RAG is retrieval used **inside** the Agent loop, via the `SearchKnowledge` tool —
-not a terminal answer form. Retrieval (`internal/knowledge/`, qwen3 RRF) returns
-cited chunks the Agent grounds its answer in. Citation discipline is **fail-open**:
-if the Agent cannot cite, it gets one bounded retry, then the answer ships anyway
-with citation markers stripped — a wrong or missing chunk_id must not destroy a
-likely-correct answer. The only hard stop is a persistent raw-evidence leak
-(security). Citation-marker leakage into the final text is caught by the output
-guard.
+not a terminal answer form. A multi-turn search first produces one standalone
+answer question and one to three retrieval queries; a first-turn search skips that
+extra planning call. Retrieval (`internal/knowledge/`, qwen3 RRF) returns cited
+chunks the Agent grounds its answer in. Citation discipline is **fail-open**:
+if the Agent cannot cite, the original answer ships with citation markers stripped
+— citation formatting never regenerates user-facing prose. The only hard stop is
+a raw-evidence leak (security). Citation-marker leakage into the final text is
+caught by the output guard.
 
 ### Diagnosis Chain
 

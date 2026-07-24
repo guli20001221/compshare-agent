@@ -31,6 +31,11 @@ func selfElectStopEngine(t *testing.T, confirm ConfirmFunc) (*Engine, *mockExecu
 				"UHostId": "uhost-a", "Name": "alpha", "State": "Running", "Zone": "cn-wlcb-01",
 			}}}, nil
 		}
+		if action == "DescribeCompShareSupportZone" {
+			return map[string]any{"ZoneInfo": []any{map[string]any{
+				"Zone": "cn-wlcb-01", "Region": "cn-wlcb",
+			}}}, nil
+		}
 		return map[string]any{"RetCode": 0}, nil
 	}}
 	eng := NewWithDeps(&mockLLM{}, exec, confirm)

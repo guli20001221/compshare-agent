@@ -52,10 +52,10 @@
 
 **输入**: `SSH连不上`
 **预期行为**:
-- 触发 `DiagnoseSSH`
+- 触发 `ReadCapability_instance_access`
 - 自动执行：检查实例状态 → 检查 SSH 端口 → 检查资源使用
 - 根据实例状态给出结论和建议
-**验证**: 事件日志出现 `DiagnoseSSH`，回复含诊断结论
+**验证**: 事件日志出现 `ReadCapability_instance_access`，回复含诊断结论
 
 ## 9. 知识: 无卡模式
 
@@ -186,5 +186,5 @@
 
 **预期行为**:
 - 第 1 轮：不调用诊断（追问哪台实例）
-- 第 2 轮：调用 `DiagnoseSSH`
-**验证**: 第 1 轮无诊断事件；第 2 轮出现 `DiagnoseSSH`
+- 第 2 轮：调用 `ReadCapability_instance_access`
+**验证**: 第 1 轮无诊断事件；第 2 轮出现 `ReadCapability_instance_access`

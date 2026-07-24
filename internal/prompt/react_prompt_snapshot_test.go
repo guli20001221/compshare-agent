@@ -19,8 +19,48 @@ const (
 	// answer how-to/rules/fee/feasibility questions — with a proactive "适用就立即提交，
 	// 由确认卡补齐参数" framing, validated behaviorally (pro+B4: reliably cards creates,
 	// 0 false-cards on how-to probes). SHAs regenerated for the new segment text.
-	mutatingReActPromptSHA256 = "1072cc6bce17ee3724e2fd440b34a970b11501b10f6ac245eb75947c30ce3a56"
-	readOnlyReActPromptSHA256 = "399a8343e8abe982c7e8e52363a87ce1137a4850ad649200303a50657f799337"
+	// 2026-07-23: platform-specific rules and billing must be retrieved even when
+	// the model considers them familiar; only stable general knowledge may bypass
+	// SearchKnowledge.
+	// 2026-07-23: uncertain tool observations may only become investigation items,
+	// never a ranked cause or evidence that an unobserved layer is healthy.
+	// SHAs regenerated for the merged segment text (A: retrieval discipline; B:
+	// instance-access diagnosis) — both prompt changes are present in this build.
+	// 2026-07-24: the knowledge-turn policy now names the search→read progression —
+	// retrieval returns snippets, and a truncated / conclusion-only snippet must be
+	// read in full (ReadChunk) before answering or denying, not guessed past. Pairs
+	// with the new ReadChunk tool; SHAs regenerated for the added policy line.
+	// 2026-07-24: the knowledge-turn policy now asks for a [[chunk_id]] marker on
+	// evidence-backed sentences. The full validate → strip → trace machinery already
+	// existed (knowledge.ValidateGroundedCitations / StripCiteMarkers /
+	// emitSearchKnowledgeCitationTrace) but nothing ever ASKED the model to cite, so
+	// only 41 of 1739 production RAG turns carried cited_chunk_ids and "did this
+	// sentence come from the chunk it claims" was unmeasurable. Markers never reach
+	// the user (stripped on both exits of finalizeAgentLoopKnowledgeAnswer, which is
+	// entered whenever SearchKnowledge ran); the prompt says so, so the model does not
+	// suppress them for readability. SHAs regenerated for the added policy line.
+	// 2026-07-24 (REVERTED, kept as a warning): the retrieval-trigger enumeration
+	// "平台收费、产品规则、功能支持和操作限制" was briefly replaced by a closed-form
+	// criterion — "只在本平台成立、换一个平台就可能不同的具体事实" — on the argument that a
+	// topic list can never be completed and grows with every production miss. It was
+	// reverted after a live-40 measurement, and the reason generalizes:
+	//
+	// An ABSTRACT criterion asks the model to classify using knowledge it may not
+	// have. "你的 coding plan 好贵" is only recognizable as platform-specific if you
+	// already know Coding Plan is this platform's own product — the exact knowledge
+	// retrieval was supposed to supply. Circular. Under the criterion that turn
+	// stopped retrieving and asked whether the user meant "Codex/ChatGPT 的订阅",
+	// misidentifying a first-party product; under the noun list it answered with the
+	// real ¥99/¥199/¥499/¥799/¥999 tiers. A concrete noun ("收费") triggers on a
+	// surface feature the model can always see, no prior knowledge required.
+	//
+	// So the enumeration is not merely a patch that survived — it is load-bearing for
+	// a reason abstraction cannot replace. Caveat for whoever revisits this: N=1 per
+	// arm, and per-case retrieval flips are noisy at this scale (fresh-001 flipped
+	// between two runs with NO rule change). What the measurement establishes is the
+	// absence of any benefit signal plus a mechanism for harm — not a proven delta.
+	mutatingReActPromptSHA256 = "abf2e9a696d1b13450ad8ef8ceea2eac38d586d94b198ad7c1692b0ee6ac74ac"
+	readOnlyReActPromptSHA256 = "f3335cfd3943a1bce29a37e2c9315c4b24602478a803aa1ab5617941b43c8102"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

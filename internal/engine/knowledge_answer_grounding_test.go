@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,15 +44,14 @@ func TestSanitizedContextRAGRecordsContainNoCustomerIdentifiers(t *testing.T) {
 }
 
 // syntheticGroundedEngine wires an agent-loop turn that already ran SearchKnowledge
-// and kept one hit (chunk id "kb-port-001"). retryResponses are consumed by the ONE
-// bounded same-model retry, in order.
-func syntheticGroundedEngine(t *testing.T, retryResponses ...llm.ChatResponse) (*Engine, *mockLLM) {
+// and kept one hit (chunk id "kb-port-001").
+func syntheticGroundedEngine(t *testing.T) (*Engine, *mockLLM) {
 	t.Helper()
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
 		ChunkID: "kb-port-001", KBVersion: "test.fixture", Title: "端口说明",
 		Content: "防火墙端口在默认情况下处于关闭状态，需要在控制台手动放通。",
 	}}
-	mock := &mockLLM{responses: retryResponses}
+	mock := &mockLLM{}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
@@ -59,26 +59,6 @@ func syntheticGroundedEngine(t *testing.T, retryResponses ...llm.ChatResponse) (
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger("端口默认状态", []knowledge.RetrievalHit{hit}, 3, 0)
 	require.NotEmpty(t, eng.searchKnowledgeLedgerThisTurn.Items, "precondition: the kept hit produced a ledger item")
 	return eng, mock
-}
-
-// The citation rule has ONE source (buildRAGAnswerStrategyNote): both the cite-retry
-// and budget-recovery nudges must carry the exact shared numbering + no-verbatim
-// directive, while each keeps its own framing (state). Re-inlining a divergent rule
-// into either note — the drift this consolidation removes — makes this red.
-func TestRAGAnswerStrategyNote_SingleCitationRuleSource(t *testing.T) {
-	const citeRule = `每条来自本轮资料的事实用 [1]、[2] 这样的编号标注（编号对应本轮证据条目的顺序）；`
-	const noVerbatim = `不要整段复制资料原文，用自己的话概括。`
-	for name, note := range map[string]string{
-		"cite-retry":      searchKnowledgeCiteRetryNote,
-		"budget-recovery": searchKnowledgeBudgetSynthNote,
-	} {
-		assert.Contains(t, note, citeRule, name+": citation numbering rule must come from the shared source")
-		assert.Contains(t, note, noVerbatim, name+": no-verbatim rule must come from the shared source")
-	}
-	// State stays distinct: each exit still addresses its own situation.
-	assert.Contains(t, searchKnowledgeCiteRetryNote, "请重写这条回答", "cite-retry keeps its rewrite framing")
-	assert.Contains(t, searchKnowledgeBudgetSynthNote, "请立即根据本轮已检索到的资料写出最终回答", "budget-recovery keeps its write-now framing")
-	assert.NotEqual(t, searchKnowledgeCiteRetryNote, searchKnowledgeBudgetSynthNote, "the two states remain distinct notes")
 }
 
 // A validly-cited answer is accepted deterministically: markers stripped, no second
@@ -100,40 +80,53 @@ func TestKnowledgeGrounding_PositionalCitationAccepted(t *testing.T) {
 	require.Empty(t, mock.calls)
 }
 
-// An uncited answer with evidence in hand gets exactly one bounded retry; a cited
-// retry result is accepted (groundingRepaired).
-func TestKnowledgeGrounding_UncitedAnswerRetriedThenAccepted(t *testing.T) {
-	eng, mock := syntheticGroundedEngine(t, llm.ChatResponse{Content: "防火墙端口默认是关闭的[1]。"})
+// Citation typography cannot trigger a second model call that rewrites a correct
+// answer. The original prose ships and is not promoted to verified memory.
+func TestKnowledgeGrounding_UncitedAnswerShipsWithoutRewrite(t *testing.T) {
+	eng, mock := syntheticGroundedEngine(t)
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "防火墙端口默认是关闭的。")
 	assert.Equal(t, "防火墙端口默认是关闭的。", got)
-	require.Len(t, mock.calls, 1, "exactly one bounded cite-or-drop retry")
-	require.Equal(t, groundingRepaired, eng.groundingOutcomeThisTurn)
+	require.Empty(t, mock.calls, "citation formatting must never rewrite user-facing prose")
+	require.Empty(t, eng.sessionState.VerifiedKnowledge)
+	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
 }
 
 // THE core fail-open contract: an answer that is correct and evidence-backed but
-// cites the WRONG chunk id (an LLM mis-fill) must NOT be destroyed. The retry also
-// fails to produce a resolving citation, so the bad marker is stripped and the
-// correct answer ships. Historically this exact case blocked 0/50 correct
+// cites the WRONG chunk id (an LLM mis-fill) must NOT be destroyed. The bad marker
+// is stripped and the original correct answer ships. Historically this exact case blocked 0/50 correct
 // production answers with a canned "知识库未覆盖" refusal.
 func TestKnowledgeGrounding_WrongChunkIdShipsNotDestroyed(t *testing.T) {
 	answer := "防火墙端口默认是关闭的[[not-the-real-chunk-id]]。"
-	eng, mock := syntheticGroundedEngine(t, llm.ChatResponse{Content: answer}) // retry repeats the mistake
+	eng, mock := syntheticGroundedEngine(t)
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", answer)
 	assert.Equal(t, "防火墙端口默认是关闭的。", got, "the correct answer survives; the fabricated marker is stripped")
 	assert.NotContains(t, got, "[[", "no fabricated marker reaches the user")
 	assert.NotContains(t, got, "知识库未覆盖", "a correct answer is never replaced by a canned refusal")
-	require.Len(t, mock.calls, 1, "one bounded retry, then fail-open ship")
+	require.Empty(t, mock.calls, "invalid citation syntax is stripped without regenerating the answer")
 	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
 }
 
-// A fully uncited answer that cannot be cited even after the retry still ships
-// (fail-open), never a canned floor.
+func TestKnowledgeGrounding_MixedKnownAndUnknownCitationsAreNotRecordedAsGrounded(t *testing.T) {
+	eng, mock := syntheticGroundedEngine(t)
+	got := eng.finalizeAgentLoopKnowledgeAnswer(
+		context.Background(),
+		"端口默认状态",
+		"防火墙端口默认是关闭的[[kb-port-001]]，更多说明见[[made-up-id]]。",
+	)
+	assert.Equal(t, "防火墙端口默认是关闭的，更多说明见。", got)
+	require.Empty(t, mock.calls)
+	require.Empty(t, eng.sessionState.VerifiedKnowledge,
+		"a partly fabricated citation set may ship fail-open but must never become verified memory")
+	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
+}
+
+// A fully uncited answer ships fail-open without a second model call.
 func TestKnowledgeGrounding_UncitedFailOpenShips(t *testing.T) {
-	eng, mock := syntheticGroundedEngine(t, llm.ChatResponse{Content: "防火墙端口默认是关闭的。"}) // retry still uncited
+	eng, mock := syntheticGroundedEngine(t)
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "防火墙端口默认是关闭的。")
 	assert.Equal(t, "防火墙端口默认是关闭的。", got)
 	assert.NotContains(t, got, "知识库未覆盖")
-	require.Len(t, mock.calls, 1)
+	require.Empty(t, mock.calls)
 	require.Empty(t, eng.sessionState.VerifiedKnowledge, "an uncited answer is shipped but not remembered as verified")
 }
 
@@ -171,8 +164,7 @@ func TestKnowledgeGrounding_IrrelevantSearchDoesNotEraseStableAnswer(t *testing.
 		ChunkID: "kb-billing-001", KBVersion: "test.fixture", Title: "计费说明", Content: "实例按量计费。",
 	}}
 	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
-	// The retry, faced with irrelevant evidence, keeps the general-knowledge answer.
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: answer}}}, &mockExecutor{}, nil)
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
@@ -183,45 +175,50 @@ func TestKnowledgeGrounding_IrrelevantSearchDoesNotEraseStableAnswer(t *testing.
 	require.Empty(t, eng.sessionState.VerifiedKnowledge, "general knowledge must not be persisted against unrelated retrieval evidence")
 }
 
-// A persistent raw-evidence leak cannot ship verbatim evidence: one bounded retry,
-// then a security stop (never the raw dump). Uses a real sanitized record so the
-// leak needle is real evidence text.
-func TestKnowledgeGrounding_RawLeakRetriedThenBlocked(t *testing.T) {
+// A verbatim evidence dump is a prose problem, not a security one: every chunk is
+// customer-safe corpus text, so the answer SHIPS and the dump is recorded instead
+// of triggering the canned reply that used to eat the whole turn. Uses a real
+// sanitized record so the echo needle is real evidence text.
+func TestKnowledgeGrounding_VerbatimDumpShipsAndIsRecorded(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[2]
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
 		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
 	}}
-	leak := "资料原文：" + record.Evidence
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: leak}}}, &mockExecutor{}, nil) // retry still leaks
+	dump := "资料原文：" + record.Evidence
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: dump}}}, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
+	var traces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) { traces = append(traces, trace) })
 
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, leak)
-	assert.Equal(t, ragUngroundableReply, got, "a persistent verbatim dump is a security stop, not shipped")
-	assert.NotContains(t, got, record.Evidence)
-	require.Len(t, eng.llmClient.(*mockLLM).calls, 1, "exactly one bounded retry before the security stop")
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, dump)
+	assert.Equal(t, dump, got, "the answer ships; a dump is never replaced by a canned reply")
+	require.Empty(t, eng.llmClient.(*mockLLM).calls, "no second model reviews or rewrites the answer")
+	// The signal survives as telemetry, so copy-instead-of-write stays measurable.
+	assert.Equal(t, record.ChunkID, eng.answerEchoedChunkIDThisTurn)
+	require.NotEmpty(t, traces, "an echo must reach the turn-aggregate retrieval trace")
+	assert.Equal(t, record.ChunkID, traces[len(traces)-1].AnswerEchoedChunkID)
 }
 
-// A raw leak that the retry rewrites into a clean cited answer ships.
-func TestKnowledgeGrounding_RawLeakRetriedThenFixed(t *testing.T) {
+// The counterpart: a paraphrased answer records no echo, so the signal above is a
+// real discriminator rather than a constant.
+func TestKnowledgeGrounding_ParaphraseRecordsNoEcho(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[2]
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
 		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
 	}}
-	leak := "资料原文：" + record.Evidence
-	fixed := "简要说明[[" + record.ChunkID + "]]。"
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: fixed}}}, &mockExecutor{}, nil)
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
 
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, leak)
-	assert.Equal(t, "简要说明。", got)
-	assert.NotContains(t, got, record.Evidence)
-	require.Len(t, eng.llmClient.(*mockLLM).calls, 1)
+	answer := "按资料所述处理即可，具体步骤已在上面说明。"
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, answer)
+	assert.Equal(t, answer, got)
+	assert.Empty(t, eng.answerEchoedChunkIDThisTurn)
 }
 
 // Outside the knowledge_qa agent loop the finalizer is a pass-through: it must not

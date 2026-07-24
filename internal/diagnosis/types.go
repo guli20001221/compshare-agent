@@ -16,10 +16,19 @@ const (
 )
 
 type Verdict struct {
-	Action     VerdictAction
-	Conclusion string
-	Suggestion string
+	Action         VerdictAction
+	Conclusion     string
+	Suggestion     string
+	PrecheckStatus PrecheckStatus
 }
+
+type PrecheckStatus string
+
+const (
+	PrecheckConfigured PrecheckStatus = "configured"
+	PrecheckBlocked    PrecheckStatus = "blocked"
+	PrecheckUnknown    PrecheckStatus = "unknown"
+)
 
 type Step struct {
 	Name      string
@@ -72,11 +81,12 @@ func (c *Context) RequireUHostId() (string, error) {
 }
 
 type DiagResult struct {
-	Success    bool          `json:"success"`
-	Conclusion string        `json:"conclusion"`
-	Suggestion string        `json:"suggestion"`
-	StoppedAt  string        `json:"stopped_at,omitempty"`
-	Steps      []StepSummary `json:"steps"`
+	Success        bool           `json:"success"`
+	Conclusion     string         `json:"conclusion"`
+	Suggestion     string         `json:"suggestion"`
+	PrecheckStatus PrecheckStatus `json:"precheck_status,omitempty"`
+	StoppedAt      string         `json:"stopped_at,omitempty"`
+	Steps          []StepSummary  `json:"steps"`
 }
 
 type StepSummary struct {

@@ -90,7 +90,7 @@ func keptVLLMHit() knowledge.RetrievalHit {
 // plain text with a positional [1] citation that resolves to the gathered ledger
 // item (ext-vllm-oom-001). The runtime strips the marker for display.
 func vllmGroundedRepairResponse() llm.ChatResponse {
-	return llm.ChatResponse{Content: `可以把 max-model-len 调小来降低显存占用[1]。`}
+	return llm.ChatResponse{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。"}`}
 }
 
 func vllmRetriever() *scriptedKnowledgeRetriever {

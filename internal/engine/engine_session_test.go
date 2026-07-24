@@ -319,15 +319,29 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"lastConfirmationAcceptedThisCall": true,
 		"deferTaskCarryThisTurn":           true,
 		// Per-turn agentic SearchKnowledge state (P3): whether the tool ran this
-		// turn and the hits it returned, used by the final-answer no-raw-leak
-		// guard. Per-session by design — sharing would validate one tenant's
-		// answer against another tenant's retrieved evidence. Reset every turn.
+		// turn and the hits it returned, used by the final-answer citation check.
+		// Per-session by design — sharing would check one tenant's answer against
+		// another tenant's retrieved evidence. Reset every turn.
 		"searchKnowledgeRanThisTurn":  true,
 		"searchKnowledgeHitsThisTurn": true,
-		// Per-turn SearchKnowledge call counter feeding the agent-loop search cap.
-		// Per-session/per-turn by design — a shared counter would let one tenant's
-		// searches withdraw the tool from another's turn. Reset every turn.
-		"searchKnowledgeCallsThisTurn": true,
+		// Per-turn verbatim-echo telemetry: which chunk this turn's answer copied.
+		// Per-session for the same reason as the hits it is derived from. Reset
+		// every turn.
+		"answerEchoedChunkIDThisTurn": true,
+		// Per-turn ReadChunk budget + already-read set. Per-session by design —
+		// a shared read budget would let one tenant withdraw the tool from
+		// another's turn, and a shared read set would suppress a chunk body the
+		// other tenant never saw. Reset every turn.
+		"readChunkCallsThisTurn": true,
+		"readChunkIDsThisTurn":   true,
+		// Per-turn SearchKnowledge budgets: calls counts the agent's decisions to
+		// search (feeds the agent-loop search cap that withdraws the tool);
+		// queries counts the retrievals those calls cost, including the planner's
+		// per-call fan-out. Both per-session/per-turn by design — a shared counter
+		// would let one tenant's searches withdraw the tool from another's turn.
+		// Reset every turn.
+		"searchKnowledgeCallsThisTurn":   true,
+		"searchKnowledgeQueriesThisTurn": true,
 		// Per-turn ChunkID-keyed evidence ledger (#126), the union of this turn's
 		// SearchKnowledge items, consumed by the grounded-answer cite validator.
 		// Per-session by design — same cross-tenant-leak reasoning as the hits
@@ -438,12 +452,25 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 7, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 83, len(perSessionFields); want != got {
+	// 80 -> 81 / 87 -> 88: searchKnowledgeQueriesThisTurn was added when the
+	// SearchKnowledge budget was split into calls (anti-thrash) and retrievals
+	// (cost). It is per-turn, per-session, and reset alongside its sibling.
+	// 81 -> 82 / 88 -> 89: answerEchoedChunkIDThisTurn, the telemetry left behind
+	// when the verbatim-dump guard was retired.
+	// 82 -> 84 / 89 -> 91: readChunkCallsThisTurn + readChunkIDsThisTurn, the
+	// ReadChunk full-body budget and its already-read set.
+	// 84 -> 87 / 91 -> 94: the in-instance SSH-ops lane, merged from
+	// feat/instance-ops-harness — instanceOps (the runner), instanceOpsRanThisTurn
+	// (per-turn self-selection latch) and currentTurnID (evidence-binding id).
+	// This branch and main each grew the struct independently (+3 and +4 from the
+	// same merge-base of 80/87), so the merged counts are the sum of both deltas,
+	// not either side's number.
+	if want, got := 87, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 90, typ.NumField(); want != got {
+	if want, got := 94, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

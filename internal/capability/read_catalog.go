@@ -51,6 +51,7 @@ func ReadDefinitions() []ReadDefinition {
 		migratedReadDefinition(intent.IntentZoneCatalog, NewReadCapability(zoneCatalogReadSpec())),
 		migratedReadDefinition(intent.IntentModelRepositoryBrowse, NewReadCapability(modelRepositoryReadSpec())),
 		migratedReadDefinition(intent.IntentNetAcceleratorStatus, NewReadCapability(netAcceleratorReadSpec())),
+		migratedReadDefinition(intent.IntentInstanceAccess, NewReadCapability(instanceAccessReadSpec())),
 		migratedReadDefinition(intent.IntentPricingQuery, NewReadCapability(pricingReadSpec())),
 		migratedReadDefinition(intent.IntentRefundEstimate, NewReadCapability(refundReadSpec())),
 		migratedReadDefinition(intent.IntentCFSInfo, NewReadCapability(cfsListReadSpec())),

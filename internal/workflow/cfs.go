@@ -323,7 +323,7 @@ func resolveCreateCFSZone(wfCtx *Context, requested string) (isPod bool, zoneID 
 	}
 	if strings.TrimSpace(placement.Region) == "" {
 		// Fail closed: a record the catalog carries but with no Region must NOT be
-		// back-filled by a zone-string guess (regionFromZone) — that reintroduces the
+		// back-filled by trimming the zone string — that reintroduces the
 		// split-source Region the snapshot exists to end.
 		return false, 0, 0, "", "", fmt.Errorf("未获取到可用区 %s 的地域，无法安全创建 CFS。", placement.Zone)
 	}

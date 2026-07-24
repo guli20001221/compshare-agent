@@ -23,7 +23,13 @@ import (
 // line-wrapped marker fail closed (no match → refusal) rather than spanning prose.
 // The captured group is the raw chunk_id; ValidateGroundedCitations validates it
 // against the per-turn evidence ledger.
-var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\r\n]+?)\s*\]+[ \t]*\]`)
+// The captured id itself must contain NO whitespace. Spaces are still tolerated
+// AROUND it (the `[ [w0-init_failure-001] ]` case above), but a chunk_id never
+// contains a space, and allowing one made the marker indistinguishable from an
+// unfenced shell conditional: `用 [[ -f /root/m.bin ]] 判断` stripped to `用 判断`,
+// handing the user a broken command. Fenced and inline code were already safe
+// (StripCiteMarkers maps over prose only), so this closes the bare-prose case.
+var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\s]+)\s*\]+[ \t]*\]`)
 
 // positionalCiteRE parses an optional positional citation [n] (single bracket,
 // 1-2 digits) that cites the n-th evidence item, 1-based in ledger order. It is

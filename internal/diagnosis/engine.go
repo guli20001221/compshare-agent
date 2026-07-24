@@ -65,6 +65,7 @@ func (e *Engine) Run(ctx context.Context, chain *Chain, params map[string]any) (
 			result.StoppedAt = step.Name
 			result.Conclusion = verdict.Conclusion
 			result.Suggestion = verdict.Suggestion
+			result.PrecheckStatus = verdict.PrecheckStatus
 			return result, nil
 		}
 
@@ -75,6 +76,7 @@ func (e *Engine) Run(ctx context.Context, chain *Chain, params map[string]any) (
 	result.Success = true
 	result.Conclusion = chain.Fallback.Conclusion
 	result.Suggestion = chain.Fallback.Suggestion
+	result.PrecheckStatus = chain.Fallback.PrecheckStatus
 	return result, nil
 }
 

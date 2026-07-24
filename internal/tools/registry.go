@@ -26,6 +26,24 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "ReadChunk",
+			Description: "按 chunk_id 读取知识条目的完整正文。SearchKnowledge 返回的 snippet 只是节选，正文更长；当节选被截断、只给出结论而没有给出具体参数/步骤/取值，或据此无法确定答案时，必须先用本工具读全文再作答，不要凭节选推测。只能读 SearchKnowledge 已返回过的 chunk_id。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"chunk_ids": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "要读取全文的 chunk_id 列表，一次最多 3 个。",
+					},
+				},
+				"required": []string{"chunk_ids"},
+			},
+		},
+	},
 	// --- External API Tools ---
 	{
 		Type: openai.ToolTypeFunction,
@@ -732,24 +750,6 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
-			Name:        "DescribeCompShareJupyterToken",
-			Description: "查询实例 Jupyter 入口所需 token 的只读接口。token 属于敏感凭据，回答时不要明文展示完整 token；只用于判断 Jupyter 是否需要 token、入口是否可用，必要时提示用户到控制台安全查看。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostIds": map[string]any{
-						"type":        "array",
-						"items":       map[string]any{"type": "string"},
-						"description": "实例 ID 列表，通常只传一台实例。",
-					},
-				},
-				"required": []string{"UHostIds"},
-			},
-		},
-	},
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
 			Name:        "CheckCompShareNetOptimizer",
 			Description: "查询当前账号/地域的网络加速状态，只读。用于回答网络加速是否已开通、哪些地域已加速；不会修改网络配置。用户要求开启加速时应使用 EnableNetOptimizerWorkflow。",
 			Parameters: map[string]any{
@@ -1139,28 +1139,6 @@ var Registry = []openai.Tool{
 		},
 	},
 	// --- Diagnosis Meta-Tools ---
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "DiagnoseSSH",
-			Description: "对已有实例执行云侧 SSH 预检。核对实例状态、平台返回的登录入口和监控风险信号，并按用户实际遇到的错误给出只读排查建议；不会探测公网端口、进入实例或执行修复。需要明确实例。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"UHostId": map[string]any{
-						"type":        "string",
-						"description": "要诊断的实例 ID",
-					},
-					"FailureKind": map[string]any{
-						"type":        "string",
-						"description": "用户实际报告的 SSH 失败类型。仅按用户给出的错误选择；无法确定时用 unknown，不要根据实例状态或监控数据推断。",
-						"enum":        []string{"timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown"},
-					},
-				},
-				"required": []string{"UHostId"},
-			},
-		},
-	},
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{

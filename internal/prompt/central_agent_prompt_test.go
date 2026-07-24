@@ -36,4 +36,5 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 
 	require.Contains(t, text, "动作建议不会直接执行")
 	require.Equal(t, 1, strings.Count(text, "动作建议不会直接执行"), "shared write behavior must have one prompt source")
+	require.Equal(t, 1, strings.Count(text, "只能并列列为待核查项"), "uncertain observations must have one shared rule")
 }
