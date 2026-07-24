@@ -19,64 +19,73 @@ import (
 // boundary it gates is meant to fail loudly.
 func TestIsWeakEvidenceByHybridMode(t *testing.T) {
 	cases := []struct {
-		name       string
-		hybridMode string
-		top1Score  float64
-		wantWeak   bool
+		name           string
+		hybridMode     string
+		top1Score      float64
+		rerankerScored bool
+		wantWeak       bool
 	}{
 		// BM25 scale (0..100). 55.0 is the pre-existing threshold preserved
 		// for backward compat with engine_test.go:3585,3626 fixtures.
-		{"bm25_only above threshold", "bm25_only", 80.0, false},
-		{"bm25_only at boundary 55", "bm25_only", 55.0, false},
-		{"bm25_only just below 55", "bm25_only", 54.9, true},
-		{"bm25_only well below", "bm25_only", 30.0, true},
+		// rerankerScored is irrelevant for every mode except qwen3_rrf.
+		{"bm25_only above threshold", "bm25_only", 80.0, false, false},
+		{"bm25_only at boundary 55", "bm25_only", 55.0, false, false},
+		{"bm25_only just below 55", "bm25_only", 54.9, false, true},
+		{"bm25_only well below", "bm25_only", 30.0, false, true},
 
 		// bm25_fallback shares BM25 scale (hybrid path degraded to BM25 mid-flight).
-		{"bm25_fallback above threshold", "bm25_fallback", 80.0, false},
-		{"bm25_fallback below threshold", "bm25_fallback", 54.9, true},
+		{"bm25_fallback above threshold", "bm25_fallback", 80.0, false, false},
+		{"bm25_fallback below threshold", "bm25_fallback", 54.9, false, true},
 
 		// hybrid_cosine: cosine similarity, theoretically [-1,1], in practice
 		// 0..1 per trace evidence. 0.5 is the conservative weak floor.
-		{"hybrid_cosine strong 0.93", "hybrid_cosine", 0.93, false},
-		{"hybrid_cosine at boundary 0.5", "hybrid_cosine", 0.5, false},
-		{"hybrid_cosine just below 0.5", "hybrid_cosine", 0.49, true},
-		{"hybrid_cosine very low", "hybrid_cosine", 0.05, true},
+		{"hybrid_cosine strong 0.93", "hybrid_cosine", 0.93, false, false},
+		{"hybrid_cosine at boundary 0.5", "hybrid_cosine", 0.5, false, false},
+		{"hybrid_cosine just below 0.5", "hybrid_cosine", 0.49, false, true},
+		{"hybrid_cosine very low", "hybrid_cosine", 0.05, false, true},
 
 		// hybrid_rerank: cross-encoder relevance_score, 0..1 family (not a
 		// calibrated probability). Same threshold as cosine for now.
-		{"hybrid_rerank strong 0.93", "hybrid_rerank", 0.93, false},
-		{"hybrid_rerank just below 0.5", "hybrid_rerank", 0.49, true},
+		{"hybrid_rerank strong 0.93", "hybrid_rerank", 0.93, false, false},
+		{"hybrid_rerank just below 0.5", "hybrid_rerank", 0.49, false, true},
 
 		// qwen3_full: qwen3-reranker-8b cross-encoder, 0..1 by convention.
-		{"qwen3_full strong 0.93", "qwen3_full", 0.93, false},
-		{"qwen3_full at boundary 0.5", "qwen3_full", 0.5, false},
-		{"qwen3_full just below 0.5", "qwen3_full", 0.49, true},
+		{"qwen3_full strong 0.93", "qwen3_full", 0.93, false, false},
+		{"qwen3_full at boundary 0.5", "qwen3_full", 0.5, false, false},
+		{"qwen3_full just below 0.5", "qwen3_full", 0.49, false, true},
 
-		// qwen3_rrf: same qwen3-reranker-8b cross-encoder produces final
-		// Score (the RRF fusion happens BEFORE the reranker, which then
-		// overwrites Score with relevance_score). Same 0..1 threshold as
-		// qwen3_full. Without this case isWeakEvidence would default to
-		// the BM25 threshold (54.9) and false-refuse on a 0..1 cross-
-		// encoder score — the e03 regression caught by CLI judge.
-		{"qwen3_rrf strong 0.93", "qwen3_rrf", 0.93, false},
-		{"qwen3_rrf at boundary 0.5", "qwen3_rrf", 0.5, false},
-		{"qwen3_rrf just below 0.5", "qwen3_rrf", 0.49, true},
+		// qwen3_rrf WHEN THE RERANKER SCORED: final Score is the qwen3-reranker-8b
+		// [0,1] relevance score (the reranker overwrites the fused score), so the
+		// 0.5 semantic floor applies exactly like qwen3_full.
+		{"qwen3_rrf reranked strong 0.93", "qwen3_rrf", 0.93, true, false},
+		{"qwen3_rrf reranked at boundary 0.5", "qwen3_rrf", 0.5, true, false},
+		{"qwen3_rrf reranked just below 0.5", "qwen3_rrf", 0.49, true, true},
+
+		// qwen3_rrf WHEN THE RERANKER DID NOT SCORE (fallback / not configured):
+		// the label stays qwen3_rrf but Score reverts to the RRF-fusion scale
+		// (~0.03). The 0.5 reranker floor must NOT apply — otherwise every query is
+		// weak, the ledger empties, and the agent fabricates from prior (the
+		// floor_reranker probe's demonstrated failure). Never weak here, even at a
+		// tiny fusion score.
+		{"qwen3_rrf fallback fusion 0.03 not weak", "qwen3_rrf", 0.031, false, false},
+		{"qwen3_rrf fallback even 0.001 not weak", "qwen3_rrf", 0.001, false, false},
+		{"qwen3_rrf fallback high fusion not weak", "qwen3_rrf", 0.2, false, false},
 
 		// Empty / unknown HybridMode defaults to BM25 — protects existing
 		// engine_test.go mocks that don't set HybridMode explicitly.
-		{"empty mode defaults to BM25 80", "", 80.0, false},
-		{"empty mode defaults to BM25 54.9", "", 54.9, true},
-		{"unknown mode defaults to BM25 80", "unknown_future_mode", 80.0, false},
-		{"unknown mode defaults to BM25 30", "unknown_future_mode", 30.0, true},
+		{"empty mode defaults to BM25 80", "", 80.0, false, false},
+		{"empty mode defaults to BM25 54.9", "", 54.9, false, true},
+		{"unknown mode defaults to BM25 80", "unknown_future_mode", 80.0, false, false},
+		{"unknown mode defaults to BM25 30", "unknown_future_mode", 30.0, false, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			items := []knowledge.RetrievalHit{{Score: tc.top1Score, Kept: true}}
-			got := isWeakEvidence(items, tc.hybridMode)
+			got := isWeakEvidence(items, tc.hybridMode, tc.rerankerScored)
 			if got != tc.wantWeak {
-				t.Fatalf("isWeakEvidence(top1=%v, mode=%q) = %v; want %v",
-					tc.top1Score, tc.hybridMode, got, tc.wantWeak)
+				t.Fatalf("isWeakEvidence(top1=%v, mode=%q, reranked=%v) = %v; want %v",
+					tc.top1Score, tc.hybridMode, tc.rerankerScored, got, tc.wantWeak)
 			}
 		})
 	}
@@ -87,10 +96,10 @@ func TestIsWeakEvidenceByHybridMode(t *testing.T) {
 // handled upstream — the Agent answers directly and the final gate ships it
 // fail-open, never a canned no-evidence refusal).
 func TestIsWeakEvidenceEmptyItems(t *testing.T) {
-	if isWeakEvidence(nil, "qwen3_full") {
+	if isWeakEvidence(nil, "qwen3_full", true) {
 		t.Fatal("nil items must not be weak (caller short-circuits on no_evidence)")
 	}
-	if isWeakEvidence([]knowledge.RetrievalHit{}, "bm25_only") {
+	if isWeakEvidence([]knowledge.RetrievalHit{}, "bm25_only", false) {
 		t.Fatal("empty items slice must not be weak")
 	}
 }

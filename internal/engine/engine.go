@@ -1784,8 +1784,22 @@ func citedRefsFromChunkIDs(chunkIDs []string, refs []observability.RetrievalRefe
 // not the user-configured RAG_RETRIEVAL_MODE. Treat unknown / empty values as
 // BM25 — that preserves pre-mode-aware test fixtures whose mock RetrievalResult
 // leaves HybridMode unset.
-func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string) bool {
+//
+// rerankerScored says whether the qwen3-reranker actually produced these scores.
+// It matters for exactly one mode: qwen3_rrf KEEPS its "qwen3_rrf" label on a
+// reranker fallback (unlike the cascade modes, which relabel to hybrid_cosine /
+// bm25_fallback), but its Score then reverts from the reranker [0,1] scale to the
+// RRF-fusion scale (~0.03). Applying the 0.5 reranker floor to those fusion
+// scores rejects every query, empties the ledger, and forces the agent to
+// fabricate from prior — the failure the floor_reranker probe demonstrated. So
+// when qwen3_rrf's reranker did NOT score, skip the floor and keep the RRF top-k:
+// a degraded ledger is far better than an empty one. The reranker fallback is
+// still observable via RerankerFallbackReason.
+func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerScored bool) bool {
 	if len(items) == 0 {
+		return false
+	}
+	if hybridMode == "qwen3_rrf" && !rerankerScored {
 		return false
 	}
 	return items[0].Score < weakEvidenceThresholdFor(hybridMode)
@@ -2239,7 +2253,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		rawHits := retrieved.HitItems
 		hits := rawHits
 		floorDroppedAll := false
-		if isWeakEvidence(rawHits, retrieved.HybridMode) {
+		if isWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") {
 			hits = nil
 			floorDroppedAll = len(rawHits) > 0
 		}
@@ -2320,7 +2334,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		trace.RefusedReason = "no_evidence"
 		trace.RankingErrorCandidate = true
 	} else {
-		if isWeakEvidence(hitItems, retrieved.HybridMode) {
+		if isWeakEvidence(hitItems, retrieved.HybridMode, retrieved.RerankerMode != "") {
 			trace.WeakEvidence = true
 		}
 		if isRankingAmbiguous(hitItems, retrieved.HybridMode) {
