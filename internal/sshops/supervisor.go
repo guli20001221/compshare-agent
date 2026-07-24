@@ -90,7 +90,13 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onSte
 	}
 	timeout := s.Timeout
 	if timeout <= 0 {
-		timeout = 5 * time.Minute
+		// Wall clock must cover the WHOLE command sequence, not a typical one. ssh_transport caps a
+		// single command at 30s, and a real diagnosis runs 20-45 of them; once the read allowlist was
+		// removed the agent also began issuing genuinely expensive reads (a `du` over a 117G tree, a
+		// 1.2MB log). A live run died at the old 5-6m ceiling with the diagnosis nearly complete and
+		// returned nothing, which is the worst outcome for a read-only probe — so the default is
+		// sized to the sequence. The lane streams every step live, so a long run stays observable.
+		timeout = 12 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -163,7 +169,11 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onSte
 const (
 	maxHarnessStdoutBytes = 1 << 20   // 1 MiB total stdout ceiling — verdict+steps are small; a firehose is a bug
 	maxHarnessStepLine    = 256 << 10 // 256 KiB per-line cap — a step line is metadata; a huge one is malformed
-	maxHarnessSteps       = 50        // step-count ceiling (mirrors the engine's maxInstanceOpsStepEvents)
+	// Step-count ceiling. MUST stay >= the harness's turn budget (DEFAULT_MAX_TURNS in harness.py):
+	// a cap below it silently truncates the tail of the activity stream, so the audit tally under-counts
+	// and the operator stops seeing commands while the agent is still running. Live runs hit the old
+	// value of 50 exactly, which is what surfaced this.
+	maxHarnessSteps = 120
 )
 
 // parseHarnessStream consumes the harness stdout line protocol and returns the terminal VERDICT body

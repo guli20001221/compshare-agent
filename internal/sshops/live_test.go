@@ -71,7 +71,7 @@ func liveSupervisor() Supervisor {
 		HarnessPath: os.Getenv("SSHH_HARNESS"),
 		GatewayURL:  envOr("SSHH_GATEWAY", "http://127.0.0.1:3456"),
 		Model:       envOr("SSHH_MODEL", "deepseek-v4-flash"),
-		Timeout:     6 * time.Minute,
+		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
 	}
 }
 
@@ -96,7 +96,9 @@ func TestLiveKeystone(t *testing.T) {
 			"先运行 nvidia-smi 看具体报错，再 cat /proc/driver/nvidia/version 与 cat /etc/os-release 核对，"+
 			"判断是宿主机驱动问题还是容器内用户态 NVIDIA 驱动/库缺失，给出根因和修复建议。")
 
-	res, err := liveSupervisor().Run(context.Background(), cred, task)
+	res, err := liveSupervisor().Run(context.Background(), cred, task, func(st Step) {
+		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
+	})
 	t.Logf("\n========== HARNESS OUTPUT ==========\n%s\n====================================", res.Output)
 	if err != nil {
 		t.Fatalf("Supervisor.Run: %v (timedOut=%v)", err, res.TimedOut)
@@ -128,9 +130,12 @@ func TestLiveFullFlow(t *testing.T) {
 
 	// The model already selected DiagnoseInstanceInternals{UHostId, Task} and the user authorized it
 	// on the engine's card. Enter the instance and diagnose (real harness, real SSH, default 掉卡 probe).
-	t.Logf("[授权后] 进入实例 %s 只读排查", instanceID)
+	// SSHH_TASK carries the REAL user phrasing for the scenario under test (the Task the model would
+	// have passed). Empty => the harness falls back to its generic read-only health sweep.
+	task := os.Getenv("SSHH_TASK")
+	t.Logf("[授权后] 进入实例 %s 只读排查 · task=%q", instanceID, task)
 	owner := Owner{TopOrganizationID: 1, OrganizationID: 2, RequestUUID: "live-req-1", TurnID: "live-turn-1"}
-	res, err := svc.Diagnose(context.Background(), d, owner, instanceID, "", func(st Step) {
+	res, err := svc.Diagnose(context.Background(), d, owner, instanceID, task, func(st Step) {
 		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
 	})
 	t.Logf("\n========== [beat 4] 进入实例排查 · 诊断结论 ==========\n%s\n====================================================", res.Output)

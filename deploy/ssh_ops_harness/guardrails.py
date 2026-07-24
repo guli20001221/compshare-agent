@@ -21,6 +21,7 @@ transport's hard per-command timeout backstops any streaming command that still 
 Read tier is deny-by-default: anything not positively matching the allowlist is >= mutating.
 """
 import re
+import shlex
 from typing import Iterable
 
 # A lone `binary --help/--version` mutates nothing — classify as read_only before anything else.
@@ -104,6 +105,8 @@ _SAFE_REDIR = re.compile(r"(?:\d*>&\d+|&>\s*/dev/null|\d*>\s*/dev/null)")
 # (F6): they are shell-LITERAL, so a `grep '8188'` pattern reaches the filter as inert text and can
 # never be executed; DOUBLE quotes stay banned because inside them $()/`` ` ``/$VAR still expand.
 _HARD_META = re.compile(r"""[;&`$<>(){}\[\]~"]|\.\.|\n""")
+# Command substitution — denied on the RAW command even inside single quotes (see F14).
+_SUBSTITUTION = re.compile(r"\$\(|`")
 # Pure stdin->stdout text filters (no file writes, no exec, no file-arg reads).
 # Deliberately EXCLUDES awk/sed (system()/-i/w-file), xargs/tee (exec/write), dd.
 _SAFE_FILTERS = {"grep", "egrep", "fgrep", "head", "tail", "wc", "sort",
@@ -134,6 +137,10 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"pip3?\s+(list|show|freeze)(\s+\S+)*",
     r"conda\s+(list|info|env\s+list)(\s+\S+)*",
     r"docker\s+(ps|images|info|version|stats\s+--no-stream)(\s+\S+)*",
+    # Process-manager state: on these GPU images the web app (ComfyUI/Jupyter/filebrowser) is run by
+    # supervisord, so "is my service supposed to be running, and did it die?" is answered here.
+    # ONLY the reporting subcommands — start/stop/restart/reload/update stay unmatched => mutating.
+    r"supervisorctl(\s+-c\s+\S+)?\s+(status|avail|pid|version)(\s+\S+)*",
     # package / shared-lib inventory — read-only, central to driver/CUDA diagnosis.
     # `ldconfig` with NO flag rebuilds the cache (mutating), so require -p/--print-cache.
     r"dpkg\s+(-l|--list|-s|--status|-L|--listfiles)(\s+\S+)*",
@@ -168,10 +175,17 @@ _SAFE_READ_PREFIXES = (
     "/proc/driver/nvidia/",
     # kernel module / PCI / DRM / device state — content is hardware+driver info, no user secrets.
     "/sys/module/", "/sys/bus/pci/", "/sys/class/drm/", "/sys/devices/",
+    # F10: image service-launch definitions. "Why isn't ComfyUI running / how is it supposed to
+    # start / what flags does it get (is `--listen` there?)" is answered ONLY by these files, and
+    # the launch flags are the root cause for the bind-127.0.0.1 class. These are image build
+    # artifacts, not user data; any token/password that a conf inlines is still value-scrubbed on
+    # the way out by scrub_output, and _DENY_PATH_SUBSTR still tripwires secret file names.
+    "/start.d/", "/etc/supervisor/", "/usr/supervisor/",
 )
 _SAFE_READ_EXACT = {
     "/etc/os-release", "/etc/lsb-release", "/etc/hostname", "/etc/machine-id",
     "/etc/timezone", "/etc/issue",
+    "/entrypoint.sh",                                    # F10: container launch script
     # F8: mount/partition config — the core of data-disk "为什么 df 看不到我的盘" diagnosis. A
     # fresh cloud data disk is raw+unmounted, and a WRONG /etc/fstab entry is the classic reason a
     # mount silently fails on boot; both are diagnosed by reading these. fstab/mtab hold device
@@ -204,6 +218,41 @@ def _basename(tok: str) -> str:
     return tok.rsplit("/", 1)[-1]
 
 
+def _mask_single_quoted(s: str) -> str:
+    """Blank out the CONTENT of single-quoted spans, preserving length/offsets. Used only for the
+    metachar scan and pipe-boundary detection (F14) — never for path validation."""
+    out, inq = [], False
+    for ch in s:
+        if ch == "'":
+            inq = not inq
+            out.append("'")
+        else:
+            out.append("x" if inq else ch)
+    return "".join(out)
+
+
+def _mask_quoted(s: str) -> str:
+    """Blank out the CONTENT of BOTH single- and double-quoted spans, preserving length/offsets.
+    Used for chain-boundary detection, where quoted data must not look like shell syntax."""
+    out, quote = [], ""
+    for ch in s:
+        if quote:
+            out.append(ch if ch == quote else "x")
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+            out.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _unquote(p: str) -> str:
+    """Strip balanced surrounding single quotes so a quoted path is validated on its real value."""
+    return p[1:-1] if len(p) >= 2 and p[0] == "'" and p[-1] == "'" else p
+
+
 # Metadata-only reads (ls/stat/file/readlink/wc/*sum; `du` is broader, see F5 below) reveal a
 # name/size/perms/hash but never file CONTENT, so they are safe across the introspection tree —
 # binaries, libs, device nodes, kernel / hardware state — which is far broader than the content-read
@@ -211,6 +260,9 @@ def _basename(tok: str) -> str:
 # sensitive; content reads stay narrow).
 _META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
                        "/bin/", "/sbin/", "/opt/")
+# F11: non-home application/data dirs, where these GPU images put the served app (/workspace/ComfyUI,
+# /data/..., mounted volumes). Metadata-only, and deliberately NOT /root or /home — see _safe_meta_path.
+_META_APP_PREFIXES = ("/workspace", "/data", "/mnt")
 
 # --- F7: venv / Python-package introspection (content + metadata) ------------------------------
 # Python-env diagnosis ("torch.cuda.is_available() 是 False / import 报没这个模块") fundamentally
@@ -238,9 +290,30 @@ def _pkg_safe_path(p: str) -> bool:
             or p.endswith("/pyvenv.cfg"))
 
 
+# F13: application log files. "Why did my service die?" is answered by the service's OWN log and
+# nothing else — a live run showed the agent trying `tail` on the app log on nearly every round, being
+# refused every time, and then INVENTING a cause ("核心包未安装" / "启动脚本本轮未执行"). Scope is a
+# path SHAPE (a .log/.out/.err under an application dir), never /var/log — system/auth logs there leak
+# credentials and login records. Values inside are still secret-scrubbed by scrub_output on the way
+# out (a Jupyter `token=` in a startup log is redacted), and the secret-FILE tripwires still deny.
+_APP_LOG_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/", "/start.d/", "/usr/local/")
+_APP_LOG_SHAPE = re.compile(r"(?:\.(?:log|out|err)|(?:^|/)nohup\.out)$", re.I)
+
+
+def _app_log_path(p: str) -> bool:
+    if ".." in p or p.startswith("/var/log"):
+        return False
+    if any(d in p.lower() for d in _DU_DENY_SUBSTR):     # secret files still deny
+        return False
+    return bool(_APP_LOG_SHAPE.search(p)) and any(p.startswith(pre) for pre in _APP_LOG_PREFIXES)
+
+
 def _safe_path(p: str) -> bool:
+    p = _unquote(p)
     if ".." in p:
         return False
+    if _app_log_path(p):                                 # F13: the service's own log
+        return True
     if _pkg_safe_path(p):                                # F7: venv package internals (minus secret files)
         return True
     low = p.lower()
@@ -255,13 +328,29 @@ def _safe_path(p: str) -> bool:
 
 def _safe_meta_path(p: str) -> bool:
     """Broader path check for metadata-only reads. A content-safe path is trivially meta-safe; beyond
-    that, allow the introspection tree (still minus any _DENY_PATH_SUBSTR secret location)."""
+    that, allow the introspection tree AND the user/app data dirs (still minus any secret-FILE
+    location).
+
+    F11 — why the non-home APP dirs are included: a live run proved the cost of denying them. With
+    the app dir unlistable the agent could not find ComfyUI's source checkout at /workspace/ComfyUI,
+    searched pip site-packages instead, and confidently concluded "镜像没装 ComfyUI 本体" — while the
+    app was fully installed and merely STOPPED. Evidence starvation produced a WRONG root cause,
+    which is worse than the disclosure it avoided: these reads return names/sizes/perms, never file
+    CONTENT.
+
+    /root and /home stay EXCLUDED: a red-team round locked `ls /root` / `ls -la /root/models` as
+    refused (a filename in a home dir is itself potentially sensitive) and that gate is unchanged.
+    Where the app lives under /root, its existence is still provable with the size-only `du`
+    allowance (F5) — so the agent is never forced to guess."""
+    p = _unquote(p)
     if _safe_path(p):
         return True
     if ".." in p:
         return False
     if any(d in p.lower() for d in _DENY_PATH_SUBSTR):
         return False
+    if any(p == pre or p.startswith(pre + "/") for pre in _META_APP_PREFIXES):
+        return True
     return any(p == pre.rstrip("/") or p.startswith(pre) for pre in _META_SAFE_PREFIXES)
 
 
@@ -299,13 +388,30 @@ _DU_USER_PREFIXES = ("/root", "/home", "/workspace", "/data", "/mnt")
 _DU_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
 
 
+# F12: a `du` walk rooted at `/` may descend ONE level (top-level dirs + their sizes). Deeper walks
+# would enumerate subdirectory NAMES inside home dirs, which the `ls /root` red-team lock forbids.
+_DU_DEPTH = re.compile(r"(?:--max-depth[=\s]\s*|(?:^|\s)-d\s*)(\d+)")
+
+
 def _du_safe_path(p: str) -> bool:
+    p = _unquote(p)
     if ".." in p:
         return False
     low = p.lower()
     if any(d in low for d in _DU_DENY_SUBSTR):
         return False
     if _safe_meta_path(p):                               # F4 introspection tree: a size read is fine
+        return True
+    # F12: the filesystem ROOT only — `du -d 1 /` and `du -sh /*`. "Disk is full, WHERE did it go?" is
+    # answered by exactly these two shapes, and refusing them is not a safe default: a live 95%-full
+    # repro proved the agent then blamed "容器镜像层" and recommended clearing apt/pip caches while a
+    # single 46G file sat unmentioned. They emit standard FHS directory names plus SIZES, never file
+    # contents; the secret-file tripwires and the F12 depth cap still apply.
+    #
+    # Deliberately NOT "any top-level dir": a red-team round locked `du -sh /etc` as refused, and that
+    # gate is unchanged. Drill-down after the root sweep still works through the F5 user-dir allowance
+    # (`du -sh /root`, `du -sh /root/data`).
+    if p == "/" or re.fullmatch(r"/\*+", p):
         return True
     return any(p == pre or p.startswith(pre + "/") for pre in _DU_USER_PREFIXES)
 
@@ -317,6 +423,12 @@ def _du_read_ok(tokens) -> bool:
         if ".." in t:
             return False
         if "/" in t and not _du_safe_path(t):
+            return False
+    # F12 depth cap: only when the walk is rooted at `/`. A bounded walk elsewhere (e.g.
+    # `du -d 2 /workspace`) stays allowed — that tree is already listable (F11).
+    if any(t == "/" for t in tokens[1:]):
+        m = _DU_DEPTH.search(" ".join(tokens))
+        if m and int(m.group(1)) > 1:
             return False
     return True
 
@@ -374,11 +486,84 @@ def _interval_ok(tokens) -> bool:
     return False
 
 
+# --- F10: loopback-only HTTP probe -------------------------------------------
+# "Does the service actually answer on its port?" is THE discriminator between the two most common
+# real web-service failures — process DEAD vs process ALIVE but bound to 127.0.0.1 (the classic
+# missing `--listen 0.0.0.0`, which makes the public/pod URL 403 while the box is perfectly healthy).
+# Neither `ss` nor `ps` can answer it: only asking the port does. A live run proved the agent burns
+# its whole turn budget when this is refused.
+#
+# Scope is deliberately airtight so this can never exfiltrate or mutate:
+#   - every non-flag argument MUST be a loopback URL (127.0.0.1 / localhost / ::1 / 0.0.0.0),
+#   - flags are a closed allowlist; anything unknown DENIES (deny-by-default preserved),
+#   - every flag that sends a body, uploads, overrides the HTTP method, attaches auth/headers, or
+#     writes a real file is banned (`-o` is permitted ONLY to /dev/null).
+# So the worst case is a GET against a service already running on this box, whose response is then
+# capped + secret-scrubbed like any other command output.
+_LOOPBACK_URL = re.compile(
+    r"^https?://(?:127(?:\.\d{1,3}){3}|localhost|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:/[^\s]*)?$", re.I)
+_PROBE_VALUE_FLAGS = {"-m", "--max-time", "--connect-timeout", "--max-redirs", "-o", "--output",
+                      "--timeout", "--tries", "-t", "-w", "--write-out"}
+_PROBE_BOOL_FLAGS = {"-s", "--silent", "-S", "--show-error", "-I", "--head", "-i", "--include",
+                     "-L", "--location", "-f", "--fail", "-k", "--insecure", "-4", "-6",
+                     "-q", "--quiet", "--spider", "-nv", "--no-verbose", "-O-", "--server-response"}
+# Short-flag letters that are boolean (take no value) — used to accept clusters like `-sS`.
+_PROBE_BOOL_SHORT = set("sSIiLfk46q")
+# Anything that can send data, upload, re-method, authenticate, or name an output file.
+# case-SENSITIVE on purpose: CLI flags are, and `-O` (write file) must not be conflated with the
+# permitted `-o /dev/null`. `-T` is banned outright — it is --upload-file in curl even though it is
+# --timeout in wget, and the safe wget form (`--timeout=N`) is still available.
+_PROBE_BANNED = re.compile(
+    r"(?:^|\s)(?:-d|--data\S*|-F|--form\S*|-T|--upload-file|-X|--request|-u|--user|-H|--header|"
+    r"-b|--cookie|-c|--cookie-jar|-K|--config|-e|--referer|-A|--user-agent|-O|--remote-name|"
+    r"-D|--dump-header|--output-document\S*|-P|--directory-prefix)(?:[=\s]|$)")
+
+
+def _http_probe_ok(tokens) -> bool:
+    joined = " ".join(tokens)
+    if _PROBE_BANNED.search(joined):
+        return False
+    try:
+        # Re-tokenize with quote awareness: `-w "%{http_code} %{time_total}"` is ONE value, and
+        # naive whitespace splitting turned its tail into a bogus non-loopback "URL".
+        tokens = shlex.split(joined)
+    except ValueError:
+        return False                                     # unbalanced quotes -> cannot reason -> deny
+    urls = []
+    i = 1
+    while i < len(tokens):
+        t = tokens[i]
+        base, _, inline = t.partition("=")
+        if base in _PROBE_VALUE_FLAGS:
+            val = inline if inline else (tokens[i + 1] if i + 1 < len(tokens) else "")
+            if base in ("-o", "--output") and val != "/dev/null":
+                return False                             # never write a real file
+            if base in ("-w", "--write-out") and "%output{" in val.lower():
+                return False                             # curl >=7.87: %output{f} WRITES a file
+            i += 1 if inline else 2
+            continue
+        if t.startswith("-"):
+            if t in _PROBE_BOOL_FLAGS:
+                i += 1
+                continue
+            # clustered short booleans (`-sS`, `-sSL`): accept only when EVERY letter is itself an
+            # allowlisted boolean. A value-taking or unknown letter (`-so /dev/null`, `-sO`) denies.
+            if re.fullmatch(r"-[a-zA-Z0-9]+", t) and all(c in _PROBE_BOOL_SHORT for c in t[1:]):
+                i += 1
+                continue
+            return False                                 # unknown flag -> deny
+        urls.append(t)
+        i += 1
+    return bool(urls) and all(_LOOPBACK_URL.match(u) for u in urls)
+
+
 def _is_read_only(cmd: str) -> bool:
     tokens = cmd.split()
     if not tokens:
         return False
     binary = _basename(tokens[0])
+    if binary in ("curl", "wget"):                       # F10: loopback-only service probe
+        return _http_probe_ok(tokens)
     blk = _STREAM_BLOCK.get(binary)
     if blk and blk.search(cmd):
         return False
@@ -396,7 +581,13 @@ def _is_read_only(cmd: str) -> bool:
         return _interval_ok(tokens)
     if binary == "nvidia-smi":
         return _NVIDIA.fullmatch(cmd) is not None
-    if any(p.fullmatch(cmd) for p in _STRUCTURED_DIAG):
+    # Match the allowlist on the BASENAME-normalized command as well: a venv/conda interpreter is
+    # invoked by absolute path (`/usr/local/miniconda3/envs/comfyui/bin/python --version`), which is
+    # exactly as read-only as the bare form. `_HELP` above already permits the path-qualified
+    # `--version`, so this only closes the gap for forms that carry a redirect (`2>&1`) and for the
+    # other allowlisted read-only subcommands (`pip list`, `conda env list`, ...).
+    norm = " ".join([binary] + tokens[1:])
+    if any(p.fullmatch(cmd) or p.fullmatch(norm) for p in _STRUCTURED_DIAG):
         return True
     if binary == "du":                                   # F5: size-only, broader user-dir allowlist
         return _du_read_ok(tokens)
@@ -430,9 +621,28 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     stripped = _SAFE_REDIR.sub(" ", cmd)
     if stripped.count("'") % 2 != 0:                      # unbalanced single quote -> refuse (fail closed)
         return False
-    if _HARD_META.search(stripped):
+    # F14: scan for hard metachars on a copy whose SINGLE-QUOTED spans are blanked out. Inside single
+    # quotes the shell expands nothing, so `grep 'comfy$'` / `grep 'a|b'` are inert text — yet the flat
+    # scan refused them, and anchoring a grep is routine (a live run lost ~1/4 of its budget to exactly
+    # this). Masking preserves offsets, so pipe boundaries are located outside quotes too. Path safety
+    # is UNAFFECTED: segments are taken from the ORIGINAL text and every path token is still validated,
+    # so `cat '/etc/shadow'` remains refused.
+    masked = _mask_single_quoted(stripped)
+    if _HARD_META.search(masked):
         return False
-    segs = [s.strip() for s in stripped.split("|")]
+    # Command substitution stays refused even when quoted. Inside single quotes `$(...)` is inert in a
+    # correct shell, but this is the one construct where a quoting bug turns into arbitrary execution,
+    # so it is belt-and-braces denied on the RAW text (a red-team round locked `grep '$(whoami)'`).
+    # A bare `$` anchor (`grep 'comfy$'`) carries no such risk and stays allowed.
+    if _SUBSTITUTION.search(stripped):
+        return False
+    segs, prev = [], 0
+    for i, ch in enumerate(masked):
+        if ch == "|":
+            segs.append(stripped[prev:i])
+            prev = i + 1
+    segs.append(stripped[prev:])
+    segs = [s.strip() for s in segs]
     if any(not s for s in segs):                          # empty => `||` or dangling pipe
         return False
     if not _is_read_only(segs[0]):
@@ -467,16 +677,215 @@ def _strip_sudo(cmd: str) -> str:
     return " ".join(toks[i:]) if i < len(toks) else cmd
 
 
+# A command refused for its FORM (chaining / substitution / find) rather than because it mutates.
+# This is ONLY used to word the refusal message — it never grants execution, so it cannot widen the
+# security boundary. It matters because the refusal text is the model's sole feedback channel: a live
+# run showed a form-refused `ls /a; ls /b` answered with "this changes the box" makes the model retry
+# ANOTHER chained variant instead of splitting into single commands, burning the whole turn budget
+# (24/50 commands refused, max_turns hit, no verdict).
+# =============================================================================
+# Tier 2: mutating — refused in Phase 1. Everything NOT matching is read_only.
+#
+# POLICY CHANGE (2026-07-23, product owner's call). This lane is read-only
+# DIAGNOSIS, so the boundary is now defined by EFFECT instead of by a curated
+# allowlist of blessed commands. Two things forced the change:
+#   * the allowlist was a treadmill — every new image/scenario needed new entries;
+#   * it actively produced WRONG answers. A live N=3 repro went from 1/3 to 3/3
+#     correct root causes purely by widening what the agent could READ; every
+#     fabrication traced to evidence starvation, not to bad reasoning.
+# Reads are therefore allowed by default, and only these classes stay refused:
+#   1. writes / state changes on the box
+#   2. execution of arbitrary code (a `python -c` is an unbounded write primitive)
+#   3. network egress off the box (exfil channel; loopback probes stay allowed)
+#   4. commands that stream or block forever (they burn the entire turn budget)
+#
+# Secret-bearing READS (env, cloud-init logs, /proc/*/environ, `ps auxe`) are now
+# ALLOWED by explicit product decision: on this platform those are the operator's
+# own platform keys, and the instance password is already visible in the console,
+# so reading them discloses nothing the requesting tenant cannot already see. The
+# literal SSH credential is still stripped from output by scrub_output as defense
+# in depth, and the destructive tier above is unchanged and still checked first.
+# =============================================================================
+
+# Binaries whose invocation changes the box (or holds the session open forever).
+_MUTATING_BINARIES = {
+    "cp", "mv", "ln", "mkdir", "rmdir", "touch", "tee", "install", "patch", "rename",
+    "chmod", "chown", "chgrp", "setfacl", "chattr", "mktemp",
+    "mount", "umount", "swapon", "swapoff", "mkswap", "fallocate", "resize2fs",
+    "xfs_growfs", "growpart", "e2fsck", "fsck", "sfdisk", "dd", "shred", "truncate",
+    "tar", "unzip", "zip", "gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "7z", "cpio",
+    "kill", "pkill", "killall", "renice", "modprobe", "insmod", "rmmod", "depmod",
+    "nvidia-modprobe", "useradd", "adduser", "groupadd", "usermod",
+    "logrotate", "updatedb", "mandb", "make", "cmake", "gcc", "g++", "ld", "strip",
+    # interactive / pager / streaming: these hold the channel until the hard timeout
+    "vi", "vim", "nano", "emacs", "ed", "less", "more", "man", "watch", "htop",
+    "screen", "tmux", "at", "batch", "systemd-run",
+}
+# Running arbitrary code is an unbounded write primitive, so these stay refused even
+# though they can look read-only.
+_EXEC_BINARIES = {
+    "eval", "exec", "source", "xargs", "awk", "gawk", "mawk", "nawk",
+    # shells: `nvidia-smi | sh` executes whatever the box printed — untrusted output
+    # becoming code is the XPIA hole this whole module exists to prevent.
+    "sh", "bash", "zsh", "ksh", "dash", "fish", "csh", "tcsh", "su", "sudo",
+    # `ldd` runs the dynamic loader against its target (LD_* hooks), so it is execution.
+    "ldd",
+}
+# Interpreters are execution UNLESS the invocation only asks for a version/help banner
+# (`python --version` is a genuine, and heavily used, environment probe).
+_INTERPRETERS = {"python", "python2", "python3", "perl", "ruby", "node", "php", "lua", "Rscript"}
+_VERSION_ONLY = re.compile(r"^(--version|-V|--help|version|help)$")
+# Executing a file on the box (a script, or anything invoked by relative path) is
+# execution regardless of what it is named — this is what keeps an unknown binary from
+# becoming an arbitrary write primitive now that the read allowlist is gone.
+_SCRIPT_SHAPE = re.compile(r"\.(sh|bash|py|pl|rb|js|php|lua|ksh|zsh|run|bin|out)$", re.I)
+# Reads that never terminate or that stream a whole block device.
+_BLOCKING_PATHS = re.compile(r"^/proc/kmsg$|^/dev/(sd|nvme|vd|hd|xvd|loop|zero|random|urandom|full|port|mem|kmem)")
+# Readers that emit raw byte CONTENT — only these turn a device path into an endless stream.
+_RAW_READERS = {"cat", "tac", "nl", "strings", "od", "xxd", "hexdump", "base64",
+                "head", "tail", "split", "cmp", "diff", "wc"}
+# Leaving the box is an exfil channel. curl/wget are handled separately below, since
+# loopback probes are how "is my service actually up?" gets answered.
+_NET_BINARIES = {"nc", "ncat", "netcat", "socat", "telnet", "ftp", "tftp", "sftp",
+                 "scp", "rsync", "ssh"}
+
+# Subcommand-sensitive: the binary is fine but a particular verb is not. Anchored to
+# the START of the segment so a PATH that merely contains the word (e.g.
+# `cat /var/log/cuda-installer.log`) cannot trip it.
+_MUTATING_FORMS = [re.compile(p, re.I) for p in [
+    r"^(apt|apt-get|aptitude|yum|dnf|apk|pacman|zypper)\b.*\b(install|remove|purge|upgrade|update|autoremove)\b",
+    r"^(pip|pip3|conda|mamba|npm|yarn|pnpm|cargo|gem|poetry|uv)\b.*\b(install|uninstall|remove|update|upgrade|add|sync|clean)\b",
+    r"^go\b\s+(get|install|mod|build|run|clean)\b",
+    r"^systemctl\b.*\b(start|stop|restart|reload|enable|disable|mask|unmask|daemon-reload|set-property|edit|kill)\b",
+    r"^service\b\s+\S+\s+(start|stop|restart|reload)\b",
+    r"^supervisorctl\b.*\b(start|stop|restart|reload|update|add|remove|clear|shutdown)\b",
+    r"^(docker|podman|nerdctl)\b\s+(run|exec|start|stop|restart|kill|rm|rmi|build|pull|push|create|cp|commit|load|import|tag|prune|compose)\b",
+    r"^kubectl\b\s+(apply|create|delete|edit|patch|scale|drain|cordon|uncordon|exec|cp|rollout|label|annotate)\b",
+    r"^helm\b\s+(install|upgrade|uninstall|delete|rollback)\b",
+    r"^git\b\s+(clone|pull|fetch|push|checkout|switch|reset|revert|merge|rebase|commit|add|rm|mv|clean|init|stash|apply|cherry-pick)\b",
+    r"^crontab\b\s+(-e|-r)\b",
+    r"^sysctl\b\s+(-w\b|\S+=)",
+    r"^(iptables|ip6tables|nft|ufw|firewall-cmd)\b\s*(-A|-I|-D|-F|-P|-X|add|delete|insert|allow|deny|enable|disable|reload)\b",
+    r"^ip\b\s+.*\b(set|add|del|change|replace|flush)\b",
+    r"^(nmcli|hostnamectl|timedatectl|localectl|loginctl)\b\s+\S*set",
+    r"^date\b\s+(-s|--set)\b", r"^hwclock\b\s+(-w|--systohc)\b",
+    r"^journalctl\b.*--(vacuum|rotate|flush|sync|relinquish|setup-keys|update-catalog)",
+    r"^nvidia-smi\b.*\s(-r|--gpu-reset|-pl|-pm|-e\b|--ecc-config|-ac|-lgc|-rgc|--applications-clocks|--persistence-mode)",
+    r"^sed\b.*\s-i",
+    r"^(python\d?(\.\d+)?|perl|ruby|node|php|lua)\b.*\s-(c|e)\b",
+    r"^(sh|bash|zsh|ksh|dash)\b.*\s-c\b",
+    r"^find\b.*\s-(exec|execdir|delete|ok)\b",
+    r"^ldconfig\b(?!\s+(-p|--print-cache))",             # a bare ldconfig REBUILDS the cache
+]]
+
+
+def _env_is_read(tokens) -> bool:
+    """`env` is dual-use: bare `env` prints the environment (a read), but
+    `env FOO=1 cmd` EXECUTES cmd. Only the printing form is a read."""
+    for t in tokens[1:]:
+        if t.startswith("-") or "=" in t:
+            continue
+        return False                                      # a bare word => a command to run
+    return True
+
+
+def _is_mutating_segment(seg: str) -> bool:
+    """True if this ONE command changes the box, executes code, leaves the box, or
+    blocks forever. Deny-by-effect — anything else is a read."""
+    seg = _strip_sudo(seg.strip())
+    if not seg:
+        return False
+    if ">" in _SAFE_REDIR.sub(" ", seg):                  # real-file redirection writes
+        return True
+    # `2>/dev/null` / `2>&1` / `>/dev/null` change nothing, but they are bare WORDS to a naive
+    # tokenizer: `env 2>/dev/null` read as the executing form `env <cmd>` and was refused live.
+    # Drop them before any token-position rule looks at the segment.
+    seg = _SAFE_REDIR.sub(" ", seg).strip()
+    tokens = seg.split()
+    if not tokens:
+        return False
+    raw0 = tokens[0]
+    binary = _basename(raw0).lower()
+    if _SUBSTITUTION.search(seg):                         # substitution executes, even quoted
+        return True
+    # running a file on the box: a script by name, or anything by relative path
+    if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
+        return True
+    if binary in _MUTATING_BINARIES or binary in _EXEC_BINARIES or binary in _NET_BINARIES:
+        return True
+    if binary in _INTERPRETERS:
+        return not all(_VERSION_ONLY.match(t) for t in tokens[1:]) or len(tokens) == 1
+    if binary in ("curl", "wget"):
+        return not _http_probe_ok(tokens)                 # loopback probe stays allowed
+    if binary == "env":
+        return not _env_is_read(tokens)
+    if binary == "top":                                   # needs BOTH batch mode and an iteration cap
+        return not (re.search(r"(?:^|\s)-\w*b", seg) and re.search(r"-\w*n\s*\d+", seg))
+    if binary == "nvidia-smi" and re.search(r"(?:^|\s)(dmon|pmon|-l\b|--loop)", seg):
+        return True                                       # continuous monitors never return
+    # `-f` means FOLLOW only on log readers; on ps/lsblk/df it means full-format/filesystem,
+    # and treating it as streaming wrongly refused plain `ps -f` (seen live).
+    if binary in ("tail", "head", "journalctl", "logread", "dmesg") and _FOLLOW.search(seg):
+        return True
+    # Reads that block forever or stream a raw block device. Scoped to readers that dump raw
+    # CONTENT: `cat /dev/sda` streams the whole disk, but `blkid /dev/vdb` / `fdisk -l` /
+    # `smartctl -a` only query metadata and are core disk diagnostics (red-team-approved).
+    if binary in _RAW_READERS and any(
+            _BLOCKING_PATHS.match(_unquote(t)) for t in tokens[1:] if t.startswith("/")):
+        return True
+    blk = _STREAM_BLOCK.get(binary)
+    if blk and blk.search(seg):                           # free -s1 / netstat -c
+        return True
+    if binary in ("vmstat", "iostat", "mpstat", "pidstat") and not _interval_ok(tokens):
+        return True
+    return any(p.search(seg) for p in _MUTATING_FORMS)
+
+
+# Chaining is ACCEPTED now: each segment is classified independently and every one of
+# them must be a read. This removes the single largest source of refusals seen live
+# (the model naturally writes `ls /a; ls /b`) without widening what any one command
+# may do — and it lets the refusal message stop lying about "this changes the box".
+_CHAIN_SPLIT = re.compile(r"\|\||&&|[;|]")
+
+
+def _split_chain(cmd: str):
+    """Split a chain into its individual commands on `;` `|` `||` `&&`.
+
+    Boundaries are located on a QUOTE-MASKED copy, then sliced out of the original, so a
+    metachar inside quoted DATA is not a boundary. `grep -E 'nginx|caddy|socat|proxy' f` is ONE
+    command whose pattern merely contains `|`; splitting it raw manufactured phantom segments and
+    the middle alternative `socat` (a net binary name) refused the whole command — seen live.
+    """
+    masked = _mask_quoted(cmd)
+    parts, last = [], 0
+    for m in _CHAIN_SPLIT.finditer(masked):
+        parts.append(cmd[last:m.start()])
+        last = m.end()
+    parts.append(cmd[last:])
+    return [s for s in (x.strip() for x in parts) if s]
+
+
+def is_form_violation(command: str) -> bool:
+    """Refused for SHAPE rather than effect. Now only command substitution, since
+    chaining and pipes are accepted. Used solely to word the refusal message."""
+    return bool(_SUBSTITUTION.search(command or ""))
+
+
 def classify(command: str) -> str:
     """Return 'destructive' | 'read_only' | 'mutating'. Reasoning-blind: command text only."""
-    cmd = command.strip()
+    cmd = (command or "").strip()
+    if not cmd:
+        return "mutating"
     if _HELP.fullmatch(cmd):                              # 0) help/version is always safe
         return "read_only"
-    if any(p.search(cmd) for p in _DESTRUCTIVE):          # 1) destructive precedes everything (sudo-inclusive)
+    if any(p.search(cmd) for p in _DESTRUCTIVE):          # 1) destructive precedes everything
         return "destructive"
-    if _is_safe_readonly_command(_strip_sudo(cmd)):       # 2) curated read-only: a bare command, a safe
-        return "read_only"                                #    <source>|<filter> pipeline, or sudo <read-only>
-    return "mutating"                                     # 3) deny-first: unknown => confirm
+    if "\n" in cmd:                                       # 2) never accept a multi-line script
+        return "mutating"
+    for seg in _split_chain(cmd):                         # 3) every segment must be a read
+        if _is_mutating_segment(seg):
+            return "mutating"
+    return "read_only"
 
 
 # ===========================================================================

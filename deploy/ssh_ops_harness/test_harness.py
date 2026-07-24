@@ -8,6 +8,7 @@ monkeypatched so nothing actually connects.
 """
 import os
 import sys
+import time
 import types
 
 import guardrails
@@ -118,20 +119,45 @@ _PW = "Pl4in" + "Pwd77x"
 _AWS = "wJalr" + "XUtnFE" + "MIK7MD" + "ENGbPx"
 
 
-def _make_fake_paramiko():
+def _make_fake_paramiko(never_exits=False):
     m = types.ModuleType("paramiko")
 
     class _Chan:
+        """Models the paramiko Channel surface the transport pumps. `never_exits` reproduces a
+        blocking command (`cat` with no file, a wedged mount): bytes arrive, the exit status never
+        does. That is the shape that silently ate the whole 12m wall clock in 3 of 9 live runs."""
+
+        def __init__(self, out, err):
+            self._out, self._err, self._done = out, err, False
+
+        def recv_ready(self):
+            return bool(self._out)
+
+        def recv_stderr_ready(self):
+            return bool(self._err)
+
+        def recv(self, n):
+            d, self._out = self._out[:n], self._out[n:]
+            if not self._out:
+                self._done = True
+            return d
+
+        def recv_stderr(self, n):
+            d, self._err = self._err[:n], self._err[n:]
+            return d
+
+        def exit_status_ready(self):
+            return self._done and not never_exits
+
         def recv_exit_status(self):
             return 0
 
-    class _Stream:
-        def __init__(self, data):
-            self._d = data
-            self.channel = _Chan()
+        def close(self):
+            pass
 
-        def read(self):
-            return self._d
+    class _Stream:
+        def __init__(self, chan):
+            self.channel = chan
 
     class _Client:
         def set_missing_host_key_policy(self, *a):
@@ -142,7 +168,8 @@ def _make_fake_paramiko():
 
         def exec_command(self, command, timeout=None):
             out = f"role pw {_PW} and AWS_SECRET_ACCESS_KEY={_AWS}".encode()
-            return (None, _Stream(out), _Stream(b""))
+            chan = _Chan(out, b"")
+            return (None, _Stream(chan), _Stream(chan))
 
         def close(self):
             pass
@@ -159,18 +186,35 @@ _res = _REAL_RUN_SSH(                          # the real transport, not the dis
     secrets=[_PW, "ignored"])
 check("transport-scrubs-literal-credential", _PW not in _res["stdout"])
 check("transport-scrubs-labeled-secret", _AWS not in _res["stdout"])
+
+# A command that never returns must be cut at _EXEC_TIMEOUT, not left to eat the run's wall clock.
+# The classifier refuses the KNOWN blockers, but it cannot prove termination, so the transport is
+# the only place this can be enforced.
+sys.modules["paramiko"] = _make_fake_paramiko(never_exits=True)
+_saved_to = ssh_transport._EXEC_TIMEOUT
+ssh_transport._EXEC_TIMEOUT = 1                # keep the suite fast; the mechanism is what matters
+_t0 = time.monotonic()
+_hung = _REAL_RUN_SSH({"host": "1.2.3.4", "user": "ubuntu", "port": 22, "password": _PW},
+                      "cat", secrets=[_PW])
+_elapsed = time.monotonic() - _t0
+ssh_transport._EXEC_TIMEOUT = _saved_to
+check("blocking-command-times-out", _hung.get("error") == "exec_timeout")
+check("blocking-command-bounded-by-timeout", _elapsed < 5)
+check("blocking-command-keeps-partial-output", "role pw" in _hung.get("partial", ""))
+check("blocking-command-partial-is-scrubbed", _PW not in _hung.get("partial", ""))
 check("transport-keeps-benign", "role pw" in _res["stdout"])
 
 
-# --- INV-9: only ssh_exec exposed; built-ins stripped; settings isolated. Fail CLOSED otherwise. ---
+# --- INV-9: only ssh_exec + the text-only Skill tool; every other built-in stripped; only the
+# "project" setting source (needed for skill discovery). Fail CLOSED otherwise. ---
 def opts(allowed, disallowed, sources, tools="DEFAULT"):
     if tools == "DEFAULT":
-        tools = []                                       # valid: all built-ins disabled by existence
+        tools = list(harness.TOOLS_BASE)                 # valid: only Skill exists, no Bash/Read/Write
     return types.SimpleNamespace(tools=tools, allowed_tools=allowed, disallowed_tools=disallowed,
                                  setting_sources=sources)
 
 
-good = opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [])
+good = opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"])
 try:
     harness.assert_single_tool(good)
     check("inv9-accepts-good", True)
@@ -178,22 +222,43 @@ except SystemExit:
     check("inv9-accepts-good", False)
 
 for name, bad in [
-    ("inv9-rejects-extra-allowed", opts(harness.ALLOWED_TOOLS + ["Bash"], harness.DISALLOWED_TOOLS, [])),
-    ("inv9-rejects-missing-disallowed", opts(harness.ALLOWED_TOOLS, ["Read"], [])),
-    ("inv9-rejects-nonempty-sources", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["user"])),
-    ("inv9-rejects-empty-allowed", opts([], harness.DISALLOWED_TOOLS, [])),
-    # tools=[] is the existence off-switch: a non-empty base set, None (the SDK default), or a missing
-    # field (an older SDK without `tools`) all mean built-ins could exist — each must fail closed.
-    ("inv9-rejects-tools-with-builtin", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], tools=["Bash"])),
-    ("inv9-rejects-tools-none", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], tools=None)),
+    ("inv9-rejects-extra-allowed", opts(harness.ALLOWED_TOOLS + ["Bash"], harness.DISALLOWED_TOOLS, ["project"])),
+    ("inv9-rejects-missing-disallowed", opts(harness.ALLOWED_TOOLS, ["Read"], ["project"])),
+    ("inv9-rejects-empty-allowed", opts([], harness.DISALLOWED_TOOLS, ["project"])),
+    # setting_sources must be EXACTLY ["project"]: "user"/"local" would pull in the operator's own
+    # ~/.claude config, and [] would stop the CLI discovering the staged skill at all.
+    ("inv9-rejects-user-source", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["user"])),
+    ("inv9-rejects-project-plus-user", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project", "user"])),
+    ("inv9-rejects-empty-sources", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [])),
+    # `tools` is the existence off-switch. Only the exact Skill-only base passes: adding an executing
+    # built-in, None (the SDK default = everything exists), or a missing field (an older SDK without
+    # `tools`) all mean Bash/Read could exist on the CONTROL-PLANE host — each must fail closed.
+    ("inv9-rejects-tools-with-builtin",
+     opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"], tools=["Skill", "Bash"])),
+    ("inv9-rejects-tools-none", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"], tools=None)),
+    ("inv9-rejects-tools-empty-kills-skill",
+     opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"], tools=[])),
     ("inv9-rejects-tools-missing", types.SimpleNamespace(
-        allowed_tools=harness.ALLOWED_TOOLS, disallowed_tools=harness.DISALLOWED_TOOLS, setting_sources=[])),
+        allowed_tools=harness.ALLOWED_TOOLS, disallowed_tools=harness.DISALLOWED_TOOLS,
+        setting_sources=["project"])),
 ]:
     try:
         harness.assert_single_tool(bad)
         check(name, False)
     except SystemExit:
         check(name, True)
+
+
+# The staging root must be reachable-CLAUDE.md-free: the CLI walks up from cwd for both skills AND
+# CLAUDE.md, so a root inside the repo would inject this project's architecture doc — and one under
+# $HOME the operator's personal one — into an agent whose verdict is shown to the customer.
+_stage_root = harness.stage_skills()
+check("stage-skill-present",
+      os.path.isfile(os.path.join(_stage_root, ".claude", "skills", "instance-triage", "SKILL.md")))
+check("stage-chdir-took-effect", os.path.realpath(os.getcwd()) == os.path.realpath(_stage_root))
+check("stage-no-claude-md-leak", harness._claude_md_ancestors(_stage_root) == [])
+check("stage-outside-repo",
+      not os.path.realpath(_stage_root).startswith(os.path.realpath(os.path.dirname(harness.__file__))))
 
 
 # --- stdout line protocol: @@STEP metadata-only per command, one terminal VERDICT block ------------
