@@ -22,9 +22,10 @@
 //     is recorded per case, and a 0 there means the agent chose not to retrieve,
 //     which is itself worth seeing.
 //   - Retrieval is production qwen3_rrf over the merged platform+external index,
-//     but WITHOUT the reranker (it only reorders the top window and the adapter
-//     lives in package cmd). Absolute chunk order is thus close to, not identical
-//     to, production.
+//     WITH the qwen3-reranker-8b stage (rerankedProductionRetriever). The reranker
+//     is load-bearing here, not cosmetic: without it qwen3_rrf emits RRF-fusion
+//     scores (~0.03) that the engine's isWeakEvidence 0.5 floor rejects on every
+//     query, emptying the ledger and starving the agent (floor_reranker probe).
 //   - Context is "用户当前没有实例", the no-instance shape, so the agent cannot
 //     lean on a live instance API and must answer from knowledge — which is the
 //     condition under which the "no doc" exit would fire.
@@ -90,7 +91,11 @@ func TestLiveProAnswersSourceGaps(t *testing.T) {
 		t.Fatalf("no source_document_gap case joined a question")
 	}
 	corpus, sidecar := mergedProductionIndex(t)
-	retriever := productionAnswerRetriever(t, cfg, corpus, sidecar)
+	// MUST include the reranker: without it qwen3_rrf emits RRF-fusion scores
+	// (~0.03) that the engine's isWeakEvidence 0.5 floor rejects on every query,
+	// starving the agent of evidence (see floor_reranker_probe). This mirrors
+	// production, which wires the reranker for qwen3_rrf (cmd/trace.go).
+	retriever := rerankedProductionRetriever(t, cfg, corpus, sidecar)
 
 	results := make([]proAnswer, len(gaps))
 	// Serial, not concurrent: pro is slow and the point is to read the replies,
@@ -201,9 +206,12 @@ func loadQuestionText(t *testing.T) map[string]string {
 	return out
 }
 
-// productionAnswerRetriever mirrors the production answer path: qwen3_rrf over
-// the merged index. Reranker omitted (see file header). TopK is the modest
-// window the agent actually reads, not the wide net used by the classifier.
+// productionAnswerRetriever builds a qwen3_rrf retriever over the merged index
+// WITHOUT the reranker. NOT floor-faithful: its RRF-fusion Score (~0.03) fails the
+// engine's 0.5 isWeakEvidence floor, so it must not drive an engine turn that
+// applies the floor — use rerankedProductionRetriever for that. Fine for the
+// rank-only 3-way classifier (which never floors) and as the no-reranker arm of
+// the floor_reranker probe. TopK is the modest window the agent actually reads.
 func productionAnswerRetriever(t *testing.T, cfg *config.Config, corpus knowledge.Corpus, sidecar knowledge.EmbeddingSidecar) *knowledge.Retriever {
 	t.Helper()
 	embedModel := "qwen3-embedding-8b"
