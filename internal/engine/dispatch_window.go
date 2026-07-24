@@ -159,3 +159,30 @@ func centralAgentToolNames(mutatingEnabled bool) []string {
 	}
 	return names
 }
+
+// ModelVisibleToolNames returns every tool name the model can be offered, over
+// all runtime flag combinations, de-duplicated and sorted.
+//
+// It exists because the window is assembled from three unrelated sources —
+// tools.Registry (+ ShadowCapabilityDefinitions), capability.ReadDefinitions()
+// (the "ReadCapability_" + intent family), and the Request<Operation> proposal
+// tools generated from the write catalog — and those names are what the console
+// prints in its activity stream. A hand-kept display map missed one source at a
+// time, three separate times, each caught only by a live run. Presentation code
+// covers THIS list instead of re-deriving it, so adding a tool anywhere fails
+// the label test rather than shipping a raw English name to users.
+func ModelVisibleToolNames() []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, mutatingEnabled := range []bool{false, true} {
+		for _, name := range centralAgentToolNames(mutatingEnabled) {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
