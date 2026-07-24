@@ -15,6 +15,11 @@ const (
 	maxKnowledgePlanQueryRunes    = 400
 )
 
+// knowledgeQueryPlannerTemperature pins this call's sampling. It is a var only
+// because ChatRequest.Temperature is a pointer (nil = provider default, so every
+// other caller is untouched); nothing mutates it.
+var knowledgeQueryPlannerTemperature float32 = 0
+
 const knowledgeQueryPlannerPrompt = `你是知识检索问题整理器。仅输出 JSON，不回答问题。
 把当前用户问题结合必要的对话历史整理成：
 {"answer_question":"用户现在真正要解决的、脱离历史也能理解的完整问题","search_queries":["用于检索的完整问题"]}
@@ -64,6 +69,23 @@ func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowle
 		ResponseFormat: &openai.ChatCompletionResponseFormat{
 			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
 		},
+		// Pinned sampling. This call resolves references and restates one
+		// question as retrieval queries — a rewrite, not a judgement, so the
+		// same input should not produce a different retrieval set run to run.
+		//
+		// It still does. A/A over 50 real 2026-06-26..07-09 questions (same arm
+		// twice, deterministic BM25 retrieval so only this call varied):
+		//
+		//	provider default : chunk-set flip 56%, mean Jaccard 0.708, count flip 16%
+		//	pinned to 0      : chunk-set flip 50%, mean Jaccard 0.754, count flip 10%
+		//
+		// So the pin removes one confound and little else — the residual is not
+		// sampling temperature. Anything that compares retrieval arms case by
+		// case is unreadable at a 50% self-flip rate; such a comparison needs
+		// repeated runs per case, or a metric that does not key on chunk-set
+		// identity. Keeping the pin because a rewrite should not be sampled, NOT
+		// because it made this call reproducible.
+		Temperature: &knowledgeQueryPlannerTemperature,
 	})
 	if err != nil || resp == nil {
 		return fallback

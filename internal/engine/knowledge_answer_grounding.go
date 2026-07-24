@@ -37,16 +37,21 @@ func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
 // answers (0/50 blocks in production were真无证据; every one shredded a correct,
 // evidence-backed answer that merely mis-cited a chunk id).
 //
-// Policy (fail-open):
+// Policy — fail-open, NO hard stop:
 //   - An answer carrying >=1 citation that resolves to a real per-turn ledger
 //     chunk is accepted (markers stripped for display).
 //   - Otherwise the original answer SHIPS with all citation markers (including
 //     fabricated ones) stripped. Citation typography never gets to rewrite a
 //     semantically correct answer.
 //
-// The only hard stop is a raw-evidence leak (a security concern — the answer
-// pastes verbatim evidence, which may include read-tool payloads). Precise
-// platform facts do not travel this path; they are server-rendered from read tools.
+// A verbatim evidence echo is RECORDED (retrieval.answer_echoed_chunk_id) and
+// never acted on. It used to replace the whole answer with a canned line on the
+// stated rationale that raw evidence "may include read-tool payloads" — but only
+// KB chunks are ever passed here, and all 1744 of them are acl=customer_safe, so
+// there was nothing to protect. What it did cost is real: it is the same
+// whole-answer-replacement failure mode as the retired grounding refusal, and it
+// fires hardest on runbook answers (36% of the corpus), where the correct fix IS
+// a command line.
 func (e *Engine) finalizeAgentLoopKnowledgeAnswer(_ context.Context, fallbackQuestion, candidate string) string {
 	if !e.knowledgeQAAgentLoopThisTurn {
 		return candidate
@@ -54,21 +59,19 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(_ context.Context, fallbackQue
 	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
 	ledger := e.knowledgeLedgerForVerification(resolved)
 
-	leak := knowledgeAnswerHasRawLeak(candidate, e.searchKnowledgeHitsThisTurn)
+	echoed := e.recordAnswerEvidenceEcho(candidate)
 	report := knowledge.ValidateGroundedCitations(candidate, ledger)
-	if !leak && report.Grounded() {
+	if report.Grounded() {
 		return e.acceptGroundedKnowledgeAnswer(resolved, candidate, report, groundingSupported)
 	}
 
-	// Raw evidence can contain operational payloads and never ships verbatim.
-	if leak {
-		e.emitSearchKnowledgeHardBlock("search_knowledge_raw_leak")
-		e.groundingOutcomeThisTurn = groundingUnsupported
-		return ragUngroundableReply
-	}
-
 	// Fail-open floor: strip any (incl. fabricated) citation markers, ship clean
-	// prose. Never a canned whole-answer replacement.
+	// prose. Never a canned whole-answer replacement. The accepted arm carries the
+	// echo signal out on its citation trace; this arm emits none, so an echo here
+	// needs its own turn-aggregate emission to stay measurable.
+	if echoed {
+		e.emitSearchKnowledgeTurnTrace(nil)
+	}
 	e.groundingOutcomeThisTurn = groundingUnavailable
 	return knowledge.StripCiteMarkers(candidate)
 }
@@ -87,15 +90,22 @@ func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report k
 	return display
 }
 
-func knowledgeAnswerHasRawLeak(answer string, hits []knowledge.RetrievalHit) bool {
-	if knowledge.ValidateNoRawEvidenceLeak(answer, hits) != nil {
-		return true
+// recordAnswerEvidenceEcho stamps the turn with the chunk this answer reproduced
+// verbatim, for telemetry only, and reports whether there was one. Callers must
+// not branch on it beyond making it observable.
+func (e *Engine) recordAnswerEvidenceEcho(answer string) bool {
+	chunkID := knowledge.EchoedEvidenceChunkID(answer, e.searchKnowledgeHitsThisTurn)
+	if chunkID == "" {
+		// Citation markers can be inserted inside a 32+ rune excerpt and break the
+		// contiguous needle. The user sees the markers stripped, so check that
+		// exact display text too.
+		chunkID = knowledge.EchoedEvidenceChunkID(knowledge.StripCiteMarkers(answer), e.searchKnowledgeHitsThisTurn)
 	}
-	// Citation markers can be inserted inside a raw 32+ rune excerpt to break the
-	// leak detector's contiguous needle. The user sees the markers stripped, so
-	// validate that exact display text as well.
-	display := knowledge.StripCiteMarkers(answer)
-	return knowledge.ValidateNoRawEvidenceLeak(display, hits) != nil
+	if chunkID == "" {
+		return false
+	}
+	e.answerEchoedChunkIDThisTurn = chunkID
+	return true
 }
 
 func (e *Engine) emitKnowledgeHardBlock(trace observability.EngineHardBlockTrace) {

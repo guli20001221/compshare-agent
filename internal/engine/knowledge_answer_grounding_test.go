@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -174,25 +175,50 @@ func TestKnowledgeGrounding_IrrelevantSearchDoesNotEraseStableAnswer(t *testing.
 	require.Empty(t, eng.sessionState.VerifiedKnowledge, "general knowledge must not be persisted against unrelated retrieval evidence")
 }
 
-// A raw-evidence leak cannot ship verbatim evidence: it is stopped immediately,
-// never sent through a rewrite call. Uses a real sanitized record so the
-// leak needle is real evidence text.
-func TestKnowledgeGrounding_RawLeakBlockedWithoutRewrite(t *testing.T) {
+// A verbatim evidence dump is a prose problem, not a security one: every chunk is
+// customer-safe corpus text, so the answer SHIPS and the dump is recorded instead
+// of triggering the canned reply that used to eat the whole turn. Uses a real
+// sanitized record so the echo needle is real evidence text.
+func TestKnowledgeGrounding_VerbatimDumpShipsAndIsRecorded(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[2]
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
 		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
 	}}
-	leak := "资料原文：" + record.Evidence
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: leak}}}, &mockExecutor{}, nil)
+	dump := "资料原文：" + record.Evidence
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: dump}}}, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
+	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
+	var traces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) { traces = append(traces, trace) })
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, dump)
+	assert.Equal(t, dump, got, "the answer ships; a dump is never replaced by a canned reply")
+	require.Empty(t, eng.llmClient.(*mockLLM).calls, "no second model reviews or rewrites the answer")
+	// The signal survives as telemetry, so copy-instead-of-write stays measurable.
+	assert.Equal(t, record.ChunkID, eng.answerEchoedChunkIDThisTurn)
+	require.NotEmpty(t, traces, "an echo must reach the turn-aggregate retrieval trace")
+	assert.Equal(t, record.ChunkID, traces[len(traces)-1].AnswerEchoedChunkID)
+}
+
+// The counterpart: a paraphrased answer records no echo, so the signal above is a
+// real discriminator rather than a constant.
+func TestKnowledgeGrounding_ParaphraseRecordsNoEcho(t *testing.T) {
+	record := loadSanitizedContextRAGRecords(t)[2]
+	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
+	}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.knowledgeQAAgentLoopThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
 
-	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, leak)
-	assert.Equal(t, ragUngroundableReply, got, "a persistent verbatim dump is a security stop, not shipped")
-	assert.NotContains(t, got, record.Evidence)
-	require.Empty(t, eng.llmClient.(*mockLLM).calls, "raw evidence is blocked, not handed to a rewrite prompt")
+	answer := "按资料所述处理即可，具体步骤已在上面说明。"
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), record.UserMessage, answer)
+	assert.Equal(t, answer, got)
+	assert.Empty(t, eng.answerEchoedChunkIDThisTurn)
 }
 
 // Outside the knowledge_qa agent loop the finalizer is a pass-through: it must not

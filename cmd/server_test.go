@@ -31,7 +31,7 @@ func TestLoadConfigUsesTrackedConfigForDefaultPath(t *testing.T) {
 
 	cfg, err := loadConfig()
 	require.NoError(t, err)
-	require.Equal(t, "deepseek-v4-flash", cfg.Agent.LLM.Model)
+	require.Equal(t, "gpt-5.6-terra", cfg.Agent.LLM.Model)
 }
 
 func TestValidateServerConfigRequiresMySQLDSN(t *testing.T) {

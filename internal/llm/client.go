@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"sort"
@@ -57,6 +58,21 @@ type ChatRequest struct {
 	// string ("auto"/"required"/"none") or an openai.ToolChoice struct
 	// naming a specific function. Leave nil for default auto behavior.
 	ToolChoice any
+	// Temperature pins the sampling temperature for this call. nil leaves the
+	// field off the wire entirely, so every existing caller keeps the provider
+	// default and this addition changes no current behaviour.
+	//
+	// Set it only for calls that are closer to a transform than to a judgement.
+	// The knowledge query planner is the first such caller.
+	//
+	// Do not expect this to buy reproducibility on its own. Measured A/A over 50
+	// real questions (same arm twice, deterministic BM25 retrieval so only the
+	// planner varied): pinning the planner to 0 moved the retrieved-chunk-set
+	// flip rate 56% -> 50% and mean Jaccard 0.708 -> 0.754. Real, small, and
+	// nowhere near enough — whatever dominates that residual is not sampling
+	// temperature, so treat this as removing one confound, not as a determinism
+	// guarantee.
+	Temperature *float32
 	// OnTextDelta, if non-nil, is invoked synchronously for each non-empty
 	// text delta chunk received from the upstream stream.
 	OnTextDelta func(string)
@@ -157,6 +173,20 @@ func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool) (
 	return nil, lastErr
 }
 
+// wireTemperature makes a requested temperature survive serialization.
+//
+// go-openai tags ChatCompletionRequest.Temperature as `json:"temperature,omitempty"`,
+// so a literal 0 is dropped from the request body and the provider applies its
+// own default — silently giving the caller the OPPOSITE of the pinned sampling
+// they asked for. The smallest positive float32 serializes, and is
+// indistinguishable from 0 as a sampling temperature.
+func wireTemperature(requested float32) float32 {
+	if requested == 0 {
+		return math.SmallestNonzeroFloat32
+	}
+	return requested
+}
+
 func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage bool) (*ChatResponse, error) {
 	ccReq := openai.ChatCompletionRequest{
 		Model:    c.model,
@@ -174,6 +204,9 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 	}
 	if req.ToolChoice != nil {
 		ccReq.ToolChoice = req.ToolChoice
+	}
+	if req.Temperature != nil {
+		ccReq.Temperature = wireTemperature(*req.Temperature)
 	}
 
 	// Count at the last boundary before the SDK attempts the upstream request.

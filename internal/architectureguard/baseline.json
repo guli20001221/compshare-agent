@@ -1374,10 +1374,10 @@
       "callee": "strings.Index"
     },
     {
-      "id": "d0289d1d87c33e3e",
+      "id": "6bda607b2defb425",
       "kind": "string_heuristic",
       "path": "internal/knowledge/evidence_adapter.go",
-      "symbol": "ValidateNoRawEvidenceLeak",
+      "symbol": "EchoedEvidenceChunkID",
       "callee": "strings.Contains"
     },
     {

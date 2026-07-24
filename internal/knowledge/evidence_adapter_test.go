@@ -111,7 +111,7 @@ func TestMergeEvidenceLedgersKeepsEarlierSearchEvidence(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestValidateNoRawEvidenceLeakCatchesChunkBody(t *testing.T) {
+func TestEchoedEvidenceChunkIDNamesTheCopiedChunk(t *testing.T) {
 	chunk := KBChunk{
 		ChunkID: "runbook-port-001",
 		Title:   "Service port reachability",
@@ -119,14 +119,12 @@ func TestValidateNoRawEvidenceLeakCatchesChunkBody(t *testing.T) {
 	}
 	hits := []RetrievalHit{{Chunk: chunk, Score: 0.95, Kept: true}}
 
-	assert.NoError(t, ValidateNoRawEvidenceLeak(
+	assert.Empty(t, EchoedEvidenceChunkID(
 		"Evidence runbook-port-001 says to inspect service reachability next.",
 		hits,
-	))
-	err := ValidateNoRawEvidenceLeak(
+	), "naming a chunk_id and paraphrasing is not an echo")
+	assert.Equal(t, "runbook-port-001", EchoedEvidenceChunkID(
 		"For service ports, first verify the instance is Running, then compare exposed software ports.",
 		hits,
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "runbook-port-001")
+	), "a verbatim body passage is attributed to its chunk")
 }

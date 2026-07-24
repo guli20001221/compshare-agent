@@ -26,8 +26,12 @@ const (
 	// never a ranked cause or evidence that an unobserved layer is healthy.
 	// SHAs regenerated for the merged segment text (A: retrieval discipline; B:
 	// instance-access diagnosis) — both prompt changes are present in this build.
-	mutatingReActPromptSHA256 = "2185eeec0b33cadbe966391018d6f1ac6a9b40737180e041f9865fcf0f215b4a"
-	readOnlyReActPromptSHA256 = "af0600c9c16bba10db3dab03eabfafd035ee109495bcb17c5a04ab77d901aa7e"
+	// 2026-07-24: the knowledge-turn policy now names the search→read progression —
+	// retrieval returns snippets, and a truncated / conclusion-only snippet must be
+	// read in full (ReadChunk) before answering or denying, not guessed past. Pairs
+	// with the new ReadChunk tool; SHAs regenerated for the added policy line.
+	mutatingReActPromptSHA256 = "8d3e34455bc2b408b6eb3b844a28d29024c23189db7c93aef13f7b099d0fd9c5"
+	readOnlyReActPromptSHA256 = "5b59514be27e21717926fafbda1d7af743965e383d2aea11e098cbb0718af18b"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

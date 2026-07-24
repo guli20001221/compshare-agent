@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
@@ -117,23 +118,31 @@ func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(
 	assert.Equal(t, []string{"chunk-a", "chunk-b"}, final.CitedChunkIDs)
 }
 
-func TestExecuteSearchKnowledge_ThirdCallIsRejectedWithoutRetrieval(t *testing.T) {
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
-		{Enabled: true},
-		{Enabled: true},
-	}}
+// TestExecuteSearchKnowledge_CallPastTheBudgetIsRejectedWithoutRetrieval keeps
+// the original contract — past the per-turn call budget SearchKnowledge stops
+// retrieving and says so — while no longer hard-coding the budget's value. The
+// count moved (2 -> maxSearchKnowledgeCallsPerTurn) because the constant was
+// deliberately raised; the assertion shape is unchanged, and binding the loop to
+// the constant means removing the enforcement still fails this test.
+func TestExecuteSearchKnowledge_CallPastTheBudgetIsRejectedWithoutRetrieval(t *testing.T) {
+	results := make([]knowledge.RetrievalResult, 0, maxSearchKnowledgeCallsPerTurn)
+	for i := 0; i < maxSearchKnowledgeCallsPerTurn; i++ {
+		results = append(results, knowledge.RetrievalResult{Enabled: true})
+	}
+	retriever := &scriptedKnowledgeRetriever{results: results}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
 
-	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "first"}, noopStep)
-	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "second"}, noopStep)
-	third := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "third"}, noopStep)
+	for i := 0; i < maxSearchKnowledgeCallsPerTurn; i++ {
+		_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": fmt.Sprintf("q%d", i)}, noopStep)
+	}
+	past := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "past-budget"}, noopStep)
 
-	require.Len(t, retriever.calls, 2)
-	assert.Contains(t, third, `"search_limit_reached":true`)
+	require.Len(t, retriever.calls, maxSearchKnowledgeCallsPerTurn)
+	assert.Contains(t, past, `"search_limit_reached":true`)
 }
 
-func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testing.T) {
+func TestSearchKnowledgeTurnTraceEmitsFullTurnEvidenceWithoutCitations(t *testing.T) {
 	chunkA := knowledge.KBChunk{ChunkID: "chunk-a", KBVersion: "kb.v1", Title: "A", Content: "evidence a"}
 	chunkB := knowledge.KBChunk{ChunkID: "chunk-b", KBVersion: "kb.v1", Title: "B", Content: "evidence b"}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
@@ -148,7 +157,7 @@ func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testin
 
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "q1"}, noopStep)
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "q2"}, noopStep)
-	eng.emitSearchKnowledgeHardBlock("search_knowledge_ungrounded")
+	eng.emitSearchKnowledgeTurnTrace(nil)
 
 	require.NotEmpty(t, traces)
 	final := traces[len(traces)-1]
@@ -167,10 +176,14 @@ func TestSearchKnowledgeHardBlockEmitsFullTurnEvidenceWithoutCitations(t *testin
 // drops them to an EMPTY ledger so the agent gives honest general guidance instead of
 // false-grounding on irrelevant chunks. Verified live: relevant ext-* hits score
 // 0.60-0.99 (kept); irrelevant platform hits at external-off score 0.01-0.07 (dropped).
+// RerankerMode is set: the 0.07 is a genuine low reranker relevance score, so the
+// floor legitimately applies (the reranker actually scored these hits — distinct
+// from a reranker fallback, where a ~0.03 RRF-fusion score must NOT be floored).
 func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-		Enabled:    true,
-		HybridMode: "qwen3_rrf",
+		Enabled:      true,
+		HybridMode:   "qwen3_rrf",
+		RerankerMode: "qwen3-reranker-8b",
 		HitItems: []knowledge.RetrievalHit{{
 			Kept:  true,
 			Score: 0.07, // below the 0.5 semantic floor — topically irrelevant top-K
@@ -196,9 +209,47 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 
 	// The weak (irrelevant) hit is NOT in the ledger the agent sees — no false-grounding.
 	assert.NotContains(t, out, "w0-resource_purchase-irrelevant", "weak hit must be dropped from the agent's ledger")
-	// And it is NOT recorded as evidence the agent grounded on (the no-raw-leak guard
-	// would otherwise validate against content the agent never received).
+	// And it is NOT recorded as evidence the agent grounded on (the echo telemetry
+	// would otherwise be judged against content the agent never received).
 	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "weak hits must not be recorded as grounding evidence")
 	// SearchKnowledge still ran (the raw retrieval is traced as weak for observability).
 	assert.True(t, eng.searchKnowledgeRanThisTurn)
+}
+
+// TestExecuteSearchKnowledge_RerankerFallbackKeepsHits is the counterpart: when
+// qwen3_rrf's reranker falls back (RerankerMode empty, RerankerFallbackReason
+// set), the label stays qwen3_rrf but Score is the RRF-fusion value (~0.03). The
+// 0.5 reranker floor must NOT fire — otherwise every fallback query empties the
+// ledger and the agent fabricates from prior (the floor_reranker probe's failure).
+// The fused top-k is kept so the agent grounds on a degraded-but-real ledger.
+func TestExecuteSearchKnowledge_RerankerFallbackKeepsHits(t *testing.T) {
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:                true,
+		HybridMode:             "qwen3_rrf",
+		RerankerFallbackReason: "reranker_timeout", // reranker did NOT score; scores are RRF-fusion
+		HitItems: []knowledge.RetrievalHit{{
+			Kept:  true,
+			Score: 0.031, // RRF-fusion scale, far below 0.5 — but not a relevance signal
+			Chunk: knowledge.KBChunk{
+				ChunkID:    "v2-resource_purchase-ac94d9679403ee37",
+				Title:      "套餐包规格及扣除模式",
+				SourceType: "platform",
+				Content:    "Coding Plan 档位：Mini/Lite/Basic/Pro/Max/Ultra。",
+			},
+		}},
+	}}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
+
+	tc := openai.ToolCall{
+		ID:       "call-sk",
+		Type:     openai.ToolTypeFunction,
+		Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"coding plan 套餐 档位 区别"}`},
+	}
+	out := eng.executeTool(context.Background(), tc, noopStep)
+
+	// The chunk survives to the agent's ledger — no reranker-fallback blackout.
+	assert.Contains(t, out, "v2-resource_purchase-ac94d9679403ee37", "reranker fallback must not empty the ledger")
+	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1, "the fused hit is kept as grounding evidence on fallback")
 }

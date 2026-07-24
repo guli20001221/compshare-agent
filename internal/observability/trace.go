@@ -687,6 +687,9 @@ func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 			if next.QueryNormalized != "" {
 				merged.QueryNormalized = next.QueryNormalized
 			}
+			if next.AnswerEchoedChunkID != "" {
+				merged.AnswerEchoedChunkID = next.AnswerEchoedChunkID
+			}
 		}
 		if len(next.References) > 0 {
 			merged.References = next.References
@@ -807,6 +810,12 @@ type RetrievalTrace struct {
 	AllCitedOffDomain     bool `json:"all_cited_off_domain,omitempty"`
 	WeakEvidence          bool `json:"weak_evidence,omitempty"`
 	RankingErrorCandidate bool `json:"ranking_error_candidate,omitempty"`
+	// AnswerEchoedChunkID names the chunk whose body the final answer reproduced
+	// verbatim (>=32 contiguous runes), empty when it paraphrased. Trace-only: a
+	// customer-safe corpus makes an echo a synthesis-quality signal, not a leak,
+	// and it must never gate the answer — it used to, and replaced whole correct
+	// runbook answers with a canned line. Query it to measure copy-instead-of-write.
+	AnswerEchoedChunkID string `json:"answer_echoed_chunk_id,omitempty"`
 	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
 	// One of "bm25_only" | "hybrid_cosine" | "hybrid_rerank" | "qwen3_full"
 	// | "bm25_fallback". Empty when retrieval is disabled.
@@ -1232,6 +1241,7 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.AllCitedOffDomain ||
 		trace.WeakEvidence ||
 		trace.RankingErrorCandidate ||
+		trace.AnswerEchoedChunkID != "" ||
 		trace.HybridMode != "" ||
 		trace.HybridFallbackReason != "" ||
 		trace.EmbeddingLatencyMS != nil ||
