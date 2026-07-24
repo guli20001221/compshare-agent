@@ -159,13 +159,25 @@ func runClient(o clientOpts) {
 			}
 			fmt.Printf("● meta        RequestId=%v SessionId=%v MessageId=%v\n", f["RequestId"], activeSession, f["MessageId"])
 		case "step":
-			fmt.Printf("● step        [%v] %v %v\n", f["Index"], f["Type"], f["Action"])
+			// Label and Message are what the console actually renders — Action
+			// alone tells you the frame arrived, not what the user would read.
+			// Printing all three is how a label regression becomes visible here
+			// instead of only in a browser.
+			fmt.Printf("● step        [%v] %v %v%s%s\n",
+				f["Index"], f["Type"], f["Action"],
+				optionalField(" | ", f["Label"]), optionalField(" | ", f["Message"]))
 		case "token":
 			t, _ := f["Text"].(string)
 			tokens.WriteString(t)
 			fmt.Printf("● token       %q\n", t)
 		case "confirmation":
-			fmt.Printf("● confirmation Action=%v ConfirmationId=%v\n", f["Action"], f["ConfirmationId"])
+			// Summary is the card body the user reads before authorizing, and
+			// TimeoutSeconds is how long they have — both were invisible here.
+			fmt.Printf("● confirmation Action=%v ConfirmationId=%v TimeoutSeconds=%v\n",
+				f["Action"], f["ConfirmationId"], f["TimeoutSeconds"])
+			if summary, _ := json.Marshal(f["Summary"]); len(summary) > 0 && string(summary) != "null" {
+				fmt.Printf("               Summary=%s\n", summary)
+			}
 			if o.confirm == "yes" || o.confirm == "no" {
 				cid, _ := f["ConfirmationId"].(string)
 				reply := map[string]any{
@@ -208,6 +220,17 @@ func writeJSON(ctx context.Context, conn *websocket.Conn, v any) error {
 		return err
 	}
 	return conn.Write(ctx, websocket.MessageText, raw)
+}
+
+// optionalField renders " | value" for a frame field that may be absent or
+// empty, so a missing Label/Message costs nothing visually instead of printing
+// "<nil>".
+func optionalField(sep string, v any) string {
+	s, _ := v.(string)
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	return sep + s
 }
 
 func firstNonEmptyStr(vals ...any) string {
