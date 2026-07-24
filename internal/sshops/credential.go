@@ -22,6 +22,39 @@ import (
 // "please retry". FetchCredential returns it wrapped; match with errors.Is.
 var ErrNoSSHTarget = errors.New("sshops: instance has no SSH target")
 
+// ErrInstanceNotRunning marks an instance that exists and may well have an SSH
+// entrypoint, but is not in Running state — ImageMaking, Stopped, Starting. The
+// box cannot be entered NOW and the reason is knowable, so callers name the state
+// instead of falling back to "请稍后重试，或到控制台查看实例状态", which tells the
+// user nothing they did not already know.
+//
+// Found by a live probe: uhost-…9dd126 sat in ImageMaking with no public address,
+// so the SSH dial failed and the whole lane collapsed into that generic line —
+// while the read-only instance_access capability, reading the SAME describe
+// response, correctly reported 「实例当前状态为 ImageMaking，云侧预检不能确认」.
+// The state was one field away the whole time.
+//
+// The error text carries the raw upstream state verbatim; nothing here translates
+// or enumerates states, because only Running/Stopped are attested in this repo and
+// ImageMaking was learned from a live response. Callers show it as-is.
+var ErrInstanceNotRunning = errors.New("sshops: instance is not running")
+
+// NotRunningError carries the raw upstream state so a caller can name it without
+// parsing an error string. errors.Is(err, ErrInstanceNotRunning) matches it;
+// errors.As recovers the state itself.
+type NotRunningError struct {
+	InstanceID string
+	State      string
+}
+
+func (e *NotRunningError) Error() string {
+	return fmt.Sprintf("%s: instance %s is in state %s", ErrInstanceNotRunning.Error(), e.InstanceID, e.State)
+}
+
+// Is makes the typed error satisfy errors.Is(err, ErrInstanceNotRunning) without
+// a wrapping Errorf, so the state stays a field instead of becoming text to re-parse.
+func (e *NotRunningError) Is(target error) bool { return target == ErrInstanceNotRunning }
+
 // Describer is the narrow slice of *tools.ExternalExecutor the credential fetch needs. Kept as
 // an interface so this package does not import internal/tools (no cycle) and tests can stub the
 // upstream call.
@@ -76,6 +109,15 @@ func FetchCredential(ctx context.Context, d Describer, instanceID string) (Crede
 	inst, resolvedID, err := resolveInstance(raw, instanceID)
 	if err != nil {
 		return Credential{}, err
+	}
+	// State is checked BEFORE SshLoginCommand on purpose. A stopped Linux box can
+	// also come back with an empty SshLoginCommand, and telling that user
+	// 「没有 SSH 登录入口（如 Windows 实例）」 would be actively wrong. Not-running is
+	// the more accurate and more common explanation; a Running instance with no
+	// entrypoint still falls through to the structural refusal below.
+	stateValue, _ := inst["State"].(string)
+	if state := strings.TrimSpace(stateValue); state != "" && !strings.EqualFold(state, "Running") {
+		return Credential{}, &NotRunningError{InstanceID: resolvedID, State: state}
 	}
 	loginCmd, _ := inst["SshLoginCommand"].(string)
 	if strings.TrimSpace(loginCmd) == "" {

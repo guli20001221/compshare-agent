@@ -49,6 +49,11 @@ func main() {
 		email    = flag.String("email", "", "X-User-Email header (optional)")
 		project  = flag.String("project", "", "ProjectId to include in the chat frame")
 		reqID    = flag.String("request-id", "wsprobe-1", "X-Request-Id header")
+		// The in-instance diagnosis lane runs on its own budget (agent.ssh_ops.timeout,
+		// 12m in the P3 config). A 5-minute client deadline cut a real run off mid-probe
+		// and printed "context deadline exceeded", which reads exactly like a server
+		// failure and is not one. Make the client wait longer than the server can.
+		timeout = flag.Duration("timeout", 20*time.Minute, "client-side deadline for the whole exchange")
 	)
 	flag.Parse()
 
@@ -67,11 +72,13 @@ func main() {
 		email:   *email,
 		project: *project,
 		reqID:   *reqID,
+		timeout: *timeout,
 	})
 }
 
 type clientOpts struct {
 	url, session, message, confirm, company, org, account, email, project, reqID string
+	timeout                                                                      time.Duration
 }
 
 func runClient(o clientOpts) {
@@ -106,7 +113,11 @@ func runClient(o clientOpts) {
 		h.Set("X-Request-Id", o.reqID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	deadline := o.timeout
+	if deadline <= 0 {
+		deadline = 20 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 
 	fmt.Printf("→ dialing %s\n   headers: X-Company-Id=%q X-Organization-Id=%q X-Request-Id=%q\n",

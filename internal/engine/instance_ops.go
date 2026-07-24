@@ -13,6 +13,13 @@ import (
 // NON-retryable refusal instead of the generic "please retry" text.
 var ErrInstanceOpsNoSSHTarget = errors.New("engine: instance has no SSH target")
 
+// ErrInstanceOpsNotRunning is the engine-side mirror of sshops.ErrInstanceNotRunning:
+// the instance is not in Running state, so the box cannot be entered right now and
+// the reason is knowable. executeInstanceOps names the state instead of emitting the
+// generic retry text. Unlike ErrInstanceOpsNoSSHTarget this IS retryable once the
+// instance is running, and the message says so.
+var ErrInstanceOpsNotRunning = errors.New("engine: instance is not running")
+
 // InstanceOpsRunner executes ONE consented, read-only in-instance diagnosis and
 // streams its activity back through onProgress. The engine depends only on this
 // structural interface; the concrete runner (a Python Agent-SDK harness spawned

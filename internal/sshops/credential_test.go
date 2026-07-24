@@ -150,3 +150,80 @@ func TestParseSSHLoginCommand(t *testing.T) {
 		t.Fatalf("non-ssh command should error")
 	}
 }
+
+// describeRespWithState is describeResp plus the upstream State field. Kept separate
+// so the existing fixtures stay stateless and keep proving that an absent State does
+// NOT block the fetch (an upstream that stops sending it must not break the lane).
+func describeRespWithState(loginCmd, b64pw, state string) map[string]any {
+	resp := describeResp(loginCmd, b64pw)
+	resp["UHostSet"].([]any)[0].(map[string]any)["State"] = state
+	return resp
+}
+
+// A box that is not Running cannot be entered, and the reason is sitting in the same
+// describe response we already fetched. Before this, every such case fell into the
+// generic "请稍后重试，或到控制台查看实例状态" — telling the user to go look up the one
+// fact we were holding. Live case: uhost-…9dd126 in ImageMaking.
+func TestFetchCredentialNotRunningNamesTheState(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	for _, state := range []string{"ImageMaking", "Stopped", "Starting"} {
+		t.Run(state, func(t *testing.T) {
+			c, err := FetchCredential(context.Background(), stubDescriber{resp: describeRespWithState("ssh -p 23 root@10.0.0.6", b64, state)}, "uhost-abc")
+			if !errors.Is(err, ErrInstanceNotRunning) {
+				t.Fatalf("state %s must wrap ErrInstanceNotRunning, got %v", state, err)
+			}
+			var notRunning *NotRunningError
+			if !errors.As(err, &notRunning) {
+				t.Fatalf("state %s must surface a typed *NotRunningError, got %T", state, err)
+			}
+			// The state must travel as a FIELD. If it only lived in the error text the
+			// caller would have to parse a sentence to render it.
+			if notRunning.State != state {
+				t.Fatalf("State field = %q, want %q", notRunning.State, state)
+			}
+			if c.HasSecret() {
+				t.Fatalf("credential leaked on the not-running path")
+			}
+		})
+	}
+}
+
+// The ordering rule, and the reason it exists: a STOPPED Linux box can also come back
+// with an empty SshLoginCommand. Checking SshLoginCommand first would tell that user
+// 「没有 SSH 登录入口（如 Windows 实例）」 — a structural, non-retryable refusal about a
+// box that is merely switched off. Not-running must win.
+func TestFetchCredentialStoppedWithoutLoginCommandIsNotReportedAsWindows(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	_, err := FetchCredential(context.Background(), stubDescriber{resp: describeRespWithState("", b64, "Stopped")}, "uhost-abc")
+	if !errors.Is(err, ErrInstanceNotRunning) {
+		t.Fatalf("a stopped box with no login command must report not-running, got %v", err)
+	}
+	if errors.Is(err, ErrNoSSHTarget) {
+		t.Fatalf("a stopped box must NOT be reported as having no SSH entrypoint: %v", err)
+	}
+}
+
+// ...but a RUNNING box with no entrypoint is still the structural case. This is the
+// other half of the ordering rule; without it the check above could be satisfied by
+// simply never returning ErrNoSSHTarget again.
+func TestFetchCredentialRunningWithoutLoginCommandIsStillNoSSHTarget(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	_, err := FetchCredential(context.Background(), stubDescriber{resp: describeRespWithState("", b64, "Running")}, "uhost-abc")
+	if !errors.Is(err, ErrNoSSHTarget) {
+		t.Fatalf("a running box with no login command must still be ErrNoSSHTarget, got %v", err)
+	}
+}
+
+// Running is the only state that proceeds, and it must proceed normally.
+func TestFetchCredentialRunningProceeds(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	for _, state := range []string{"Running", "running"} { // upstream casing is not guaranteed
+		c, err := FetchCredential(context.Background(), stubDescriber{resp: describeRespWithState("ssh -p 23 root@10.0.0.6", b64, state)}, "uhost-abc")
+		if err != nil {
+			t.Fatalf("state %q must proceed, got %v", state, err)
+		}
+		if c.Host != "10.0.0.6" {
+			t.Fatalf("state %q: host = %q", state, c.Host)
+		}
+	}
+}

@@ -121,6 +121,16 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
+		// Not running: name the state. This used to fall into the generic branch below
+		// and tell the user 「请稍后重试，或到控制台查看实例状态」 — advice to go look up
+		// the one fact we already had in hand. The state comes verbatim from the same
+		// describe response; nothing here translates or guesses it.
+		if errors.Is(err, ErrInstanceOpsNotRunning) {
+			msg := fmt.Sprintf("该实例当前状态为 %s，不是运行中（Running），无法进入实例排查。等实例恢复运行后可以再试。",
+				instanceOpsStateFromError(err))
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+			return finalReplyPrefix + msg
+		}
 		// Honest terminal failure — never let the model narrate a root cause the
 		// harness did not reach. The reason class is a constant; the underlying
 		// error (already credential-free) is not surfaced to the user verbatim.
@@ -178,4 +188,21 @@ func truncateCommandForStep(s string) string {
 		return s
 	}
 	return string(r[:maxCommandRunes]) + "…"
+}
+
+// instanceOpsStateFromError recovers the instance state the runner reported, from
+// the "<sentinel>: <state>" wrapping the cmd adapter applies. The engine cannot
+// import internal/sshops (that dependency is exactly what the sentinel exists to
+// avoid), so this is the seam where the string is read back — one place, and it
+// degrades to a neutral word rather than printing a malformed message.
+func instanceOpsStateFromError(err error) string {
+	if err == nil {
+		return "未知"
+	}
+	if _, state, found := strings.Cut(err.Error(), ErrInstanceOpsNotRunning.Error()+": "); found {
+		if state = strings.TrimSpace(state); state != "" {
+			return state
+		}
+	}
+	return "未知"
 }

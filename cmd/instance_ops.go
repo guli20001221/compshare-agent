@@ -88,6 +88,13 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		if errors.Is(err, sshops.ErrNoSSHTarget) {
 			return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsNoSSHTarget
 		}
+		// Not-running is knowable and worth naming. Carry the raw upstream state
+		// through so the engine can quote it, instead of saying "please retry" about
+		// a box that is, for instance, mid-image-creation.
+		var notRunning *sshops.NotRunningError
+		if errors.As(err, &notRunning) {
+			return engine.InstanceOpsVerdict{}, fmt.Errorf("%w: %s", engine.ErrInstanceOpsNotRunning, notRunning.State)
+		}
 		return engine.InstanceOpsVerdict{}, err
 	}
 	ran, refused := tallySteps(res.Steps)
