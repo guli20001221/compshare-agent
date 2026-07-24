@@ -43,3 +43,20 @@ func TestStripCiteMarkers_CodeSurvives(t *testing.T) {
 	assert.NotContains(t, got, "[[kb-001]]", "chunk-id markers must be removed from prose")
 	assert.NotContains(t, got, "再跑 [1]", "positional citations must be removed from prose")
 }
+
+// A shell `[[ ... ]]` conditional written WITHOUT a fence or backticks is prose as
+// far as MapOutsideCode is concerned, and it used to match the citation marker: the
+// whole test collapsed away and the user was handed `if; then echo ok; fi`. A
+// chunk_id never contains whitespace, so the id class excludes it and the shell
+// form no longer matches. Fenced/inline code was never affected (covered above).
+func TestStripCiteMarkers_UnfencedShellConditionalSurvives(t *testing.T) {
+	assert.Equal(t, "先确认 if [[ -f /root/model.bin ]]; then echo ok; fi 再继续。",
+		StripCiteMarkers("先确认 if [[ -f /root/model.bin ]]; then echo ok; fi 再继续。"))
+	assert.Equal(t, "用 [[ -d /data ]] 判断目录",
+		StripCiteMarkers("用 [[ -d /data ]] 判断目录"))
+
+	// The tolerated spaced-bracket citation form must still be recognized and
+	// stripped — spaces around the id are fine, spaces inside it are not.
+	assert.Equal(t, "实例已欠费，请支付订单。",
+		StripCiteMarkers("实例已欠费，请支付订单 [ [w0-init_failure-001] ]。"))
+}
