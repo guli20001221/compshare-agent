@@ -66,6 +66,12 @@ type replayCaseRecord struct {
 	Turns      []turnRec `json:"turns"`
 	FinalReply string    `json:"final_reply,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	// CitedChunkIDs is the chunk_ids the answer cited. Markers are stripped
+	// before display, so the reply text can never show whether an answer was
+	// evidence-backed; only the retrieval trace can. Filled by callers that
+	// attach a retrieval observer (the live probe); empty otherwise.
+	CitedChunkIDs   []string `json:"cited_chunk_ids,omitempty"`
+	RetrievalTraces int      `json:"retrieval_traces,omitempty"`
 }
 
 type turnRec struct {
@@ -83,6 +89,13 @@ type stepRec struct {
 	Type    string `json:"type,omitempty"`
 	Action  string `json:"action,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Args / Result are additive debug fields (the Python checker reads only
+	// type+action). Without them a transcript proves only THAT a tool was
+	// called, not that the reply's specifics came from it — which is the whole
+	// question a live tool probe exists to answer. Result is StepEvent.TraceResult,
+	// the already-redacted payload the trace layer uses.
+	Args   map[string]any `json:"args,omitempty"`
+	Result map[string]any `json:"result,omitempty"`
 }
 
 type confirmRec struct {
@@ -192,7 +205,7 @@ func TestBehavioralGate(t *testing.T) {
 			continue
 		}
 		t0 := time.Now()
-		rec := runCaseInProcess(deps, mutating, cid, turns, *behavioralTimeout)
+		rec := runCaseInProcess(context.Background(), deps, mutating, governance.AnonymousSubjectKey, cid, turns, *behavioralTimeout)
 		records[cid] = rec
 		ordered = append(ordered, rec)
 		status := "ok"
@@ -217,12 +230,31 @@ func TestBehavioralGate(t *testing.T) {
 // (agentpool.buildEngine): NewSession + RehydrateHistory(nil), no Init(), and a
 // per-turn ConfirmFunc that DECLINES (confirm=false) while recording the
 // confirmation frame. onStep records every StepEvent.
-func runCaseInProcess(deps *engine.SharedDeps, mutating bool, caseID string, userTurns []string, timeout time.Duration) *replayCaseRecord {
+//
+// base carries the caller's tenant identity: with legacy AK/SK empty the
+// executor is STS-only, and tools.UserContext is what STSProvider.Get needs to
+// AssumeRole. The gate passes context.Background() (no identity — CompShare
+// tool calls surface an auth error, which the behavioral contract tolerates
+// because it asserts WHICH tool was selected, not what it returned); the live
+// tool probe passes a real tenant so the calls actually reach the API.
+//
+// subject is the rate-limit bucket. Cases replayed back-to-back under ONE
+// subject trip agent.rate_limit.user_turn_qps (2/s per tenant) and answer
+// "请求过于频繁", which looks like a model failure but is our own limiter; a
+// caller replaying N distinct users' questions passes N distinct subjects.
+// configure runs against the fresh session before its first turn — the seam for
+// attaching trace observers (variadic so the gate's call site is unchanged).
+func runCaseInProcess(base context.Context, deps *engine.SharedDeps, mutating bool, subject, caseID string, userTurns []string, timeout time.Duration, configure ...func(*engine.Engine)) *replayCaseRecord {
 	eng := engine.NewSession(deps, engine.SessionOptions{
-		Subject:              governance.AnonymousSubjectKey,
+		Subject:              subject,
 		ConfirmFn:            func(string, map[string]any) bool { return false },
 		MutatingToolsEnabled: mutating,
 	})
+	for _, fn := range configure {
+		if fn != nil {
+			fn(eng)
+		}
+	}
 	eng.RehydrateHistory(nil) // fresh session: system prompt + empty history
 
 	rec := &replayCaseRecord{CaseID: caseID}
@@ -230,13 +262,19 @@ func runCaseInProcess(deps *engine.SharedDeps, mutating bool, caseID string, use
 		var steps []stepRec
 		var confirms []confirmRec
 		onStep := func(ev engine.StepEvent) {
-			steps = append(steps, stepRec{Type: stepTypeWire(ev.Type), Action: ev.Action, Message: ev.Message})
+			steps = append(steps, stepRec{
+				Type:    stepTypeWire(ev.Type),
+				Action:  ev.Action,
+				Message: ev.Message,
+				Args:    ev.Args,
+				Result:  ev.TraceResult,
+			})
 		}
 		confirmFn := func(action string, _ map[string]any) bool {
 			confirms = append(confirms, confirmRec{Action: action})
 			return false // decline — confirm=false replay mode
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(base, timeout)
 		reply, cerr := eng.ChatWithOptions(ctx, user, onStep, engine.ChatOptions{ConfirmFunc: confirmFn})
 		cancel()
 

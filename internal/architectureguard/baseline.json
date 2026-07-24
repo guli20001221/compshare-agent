@@ -418,12 +418,12 @@
       "value": "\\[(\\d{1,2})\\]"
     },
     {
-      "id": "11b64807b629b19e",
+      "id": "a8d0a3efad8763e4",
       "kind": "regex",
       "path": "internal/knowledge/grounded_validator.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
-      "value": "\\[[ \\t]*\\[+\\s*([^\\[\\]\\r\\n]+?)\\s*\\]+[ \\t]*\\]"
+      "value": "\\[[ \\t]*\\[+\\s*([^\\[\\]\\s]+)\\s*\\]+[ \\t]*\\]"
     },
     {
       "id": "069c933b4c788ed5",
