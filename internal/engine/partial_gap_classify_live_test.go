@@ -554,7 +554,7 @@ func wideNetRetriever(t *testing.T, cfg *config.Config, corpus knowledge.Corpus,
 	embedModel := "qwen3-embedding-8b"
 	embedClient, err := embedding.NewClient(embedding.ClientOptions{
 		BaseURL: cfg.Agent.LLM.BaseURL,
-		APIKey:  cfg.Agent.LLM.APIKey,
+		APIKey:  retrievalKey(cfg),
 		Model:   embedModel,
 	})
 	if err != nil {

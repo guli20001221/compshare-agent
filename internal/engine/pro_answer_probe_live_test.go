@@ -90,6 +90,18 @@ func answerLLMConfig(cfg *config.Config) config.LLMConfig {
 	return ac
 }
 
+// retrievalKey returns the key for the qwen3 embed/rerank stack: the separate
+// agent.retrieval.api_key when set (the two-key production layout, where the
+// answer key may be a gpt-5.6-terra key NOT authorized for qwen3), else
+// agent.llm.api_key (single-key mode). Mirrors production's
+// modelverseAPIKeyFromEnv precedence (MODELVERSE_API_KEY before LLM_API_KEY).
+func retrievalKey(cfg *config.Config) string {
+	if k := strings.TrimSpace(cfg.Agent.Retrieval.APIKey); k != "" {
+		return k
+	}
+	return cfg.Agent.LLM.APIKey
+}
+
 type proAnswer struct {
 	CaseID   string `json:"case_id"`
 	Category string `json:"category"`
@@ -248,7 +260,7 @@ func productionAnswerRetriever(t *testing.T, cfg *config.Config, corpus knowledg
 	embedModel := "qwen3-embedding-8b"
 	embedClient, err := embedding.NewClient(embedding.ClientOptions{
 		BaseURL: cfg.Agent.LLM.BaseURL,
-		APIKey:  cfg.Agent.LLM.APIKey,
+		APIKey:  retrievalKey(cfg),
 		Model:   embedModel,
 	})
 	if err != nil {

@@ -48,13 +48,13 @@ func rerankedProductionRetriever(t *testing.T, cfg *config.Config, corpus knowle
 	t.Helper()
 	embedModel := "qwen3-embedding-8b"
 	embedClient, err := embedding.NewClient(embedding.ClientOptions{
-		BaseURL: cfg.Agent.LLM.BaseURL, APIKey: cfg.Agent.LLM.APIKey, Model: embedModel,
+		BaseURL: cfg.Agent.LLM.BaseURL, APIKey: retrievalKey(cfg), Model: embedModel,
 	})
 	if err != nil {
 		t.Fatalf("embedding client: %v", err)
 	}
 	rClient, err := reranker.NewModelverseClient(reranker.ClientOptions{
-		BaseURL: cfg.Agent.LLM.BaseURL, APIKey: cfg.Agent.LLM.APIKey, Model: "qwen3-reranker-8b",
+		BaseURL: cfg.Agent.LLM.BaseURL, APIKey: retrievalKey(cfg), Model: "qwen3-reranker-8b",
 	})
 	if err != nil {
 		t.Fatalf("reranker client: %v", err)
