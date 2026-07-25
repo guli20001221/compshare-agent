@@ -51,6 +51,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if domainMatchGuard {
 		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
 	}
+	forcedKnowledgeHop, unknownForcedKnowledgeHop := forcedKnowledgeHopEnabledFromEnv(getenv)
+	if unknownForcedKnowledgeHop != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_FORCED_KNOWLEDGE_HOP value %q", unknownForcedKnowledgeHop)
+	}
+	engine.SetForcedKnowledgeHopEnabled(forcedKnowledgeHop)
+	if forcedKnowledgeHop {
+		log.Printf("runtime: HTTP forced first-hop retrieval enabled (COMPSHARE_FORCED_KNOWLEDGE_HOP=1)")
+	}
 	return deps, mutating, nil
 }
 

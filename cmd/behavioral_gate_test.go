@@ -72,6 +72,17 @@ type replayCaseRecord struct {
 	// attach a retrieval observer (the live probe); empty otherwise.
 	CitedChunkIDs   []string `json:"cited_chunk_ids,omitempty"`
 	RetrievalTraces int      `json:"retrieval_traces,omitempty"`
+	// RetrievedChunks is everything retrieval surfaced this turn, kept or
+	// floor-dropped. Cited ids alone cannot tell a retrieval failure from a
+	// synthesis failure: "the answer did not use chunk X" and "chunk X never
+	// reached the agent" look identical without this.
+	RetrievedChunks []retrievedChunkRec `json:"retrieved_chunks,omitempty"`
+}
+
+type retrievedChunkRec struct {
+	ChunkID string  `json:"chunk_id"`
+	Kept    bool    `json:"kept"`
+	Score   float64 `json:"score"`
 }
 
 type turnRec struct {

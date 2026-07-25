@@ -47,8 +47,22 @@ type knowledgeQueryPlanInput struct {
 // query, so retrieval availability never depends on the planner.
 func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowledgeQueryPlan {
 	fallback := fallbackKnowledgeQueryPlan(proposed)
-	if e == nil || e.llmClient == nil || strings.TrimSpace(proposed) == "" ||
-		!e.turnContextViewReady || len(e.turnContextViewThisTurn.RecentConversation) == 0 {
+	if e == nil || e.llmClient == nil || strings.TrimSpace(proposed) == "" || !e.turnContextViewReady {
+		return fallback
+	}
+	// A first turn has no references to resolve, which is why this call was
+	// skipped there — the planner's whole stated job was contextualization.
+	//
+	// The forced-hop arm gives it a second job. That arm searches on the user's
+	// raw words, and the raw words are exactly the input the arm exists to
+	// handle: a complaint or a bare statement ("Coding Plan 套餐好贵"), which the
+	// Agent never turned into a query at all. Restating it is a rewrite, not a
+	// judgement, and it is the only stage that can do so before retrieval runs.
+	//
+	// Gated on the same flag rather than enabled outright: on a first turn with
+	// nothing to resolve, this call earns its latency and tokens only when the
+	// engine is committing to a retrieval regardless.
+	if len(e.turnContextViewThisTurn.RecentConversation) == 0 && !forcedKnowledgeHopEnabled {
 		return fallback
 	}
 
