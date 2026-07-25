@@ -307,8 +307,10 @@ type Engine struct {
 	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
-	// knowledgeQAAgentLoopThisTurn records that the Agent CHOSE to search this
-	// turn. It is set where SearchKnowledge actually executes, so it is a
+	// knowledgeQAAgentLoopThisTurn records that SearchKnowledge ran this turn —
+	// normally because the Agent chose it, and under the forced-hop arm also when
+	// the engine searched on the Agent's behalf before its first model call. It is
+	// set where SearchKnowledge actually executes, so it is a
 	// post-hoc marker, NOT a routing decision — P6 deleted the intent router and
 	// nothing classifies a turn as "knowledge" before the Agent acts (see the
 	// deliberate no-router note in cmd/shared_deps.go). Anything that wants to
@@ -1308,6 +1310,15 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorWindow = false
 	e.displayedResourceSelectionThisTurn = nil
 
+	// Experiment arm: retrieve once on the user's own words BEFORE the Agent's
+	// first model call, because "should I search" is the measured failure (a
+	// complaint retrieves 0/5 where the same question retrieves 5/5) and there is
+	// no ex-ante signal left to condition a prompt rule on. Placed here, after the
+	// hard-block chain and after the user message is in history, so a turn that
+	// never reaches the loop never pays for a retrieval. No-op unless the flag was
+	// frozen on at boot.
+	e.runForcedKnowledgeHop(ctx, userMsg, onStep)
+
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
 		round := runtimeRound.Index()
@@ -1327,8 +1338,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// (disciplined cited synthesis) instead of discarding the turn for
 			// a bare "请简化问题". Only fall back to the budget refusal when
 			// nothing groundable was retrieved (the "no evidence → refuse,
-			// never fabricate" guard). round 0 reaches this with an empty
-			// ledger (no tool has run yet) and so still refuses.
+			// never fabricate" guard). Round 0 normally reaches this with an
+			// empty ledger (no tool has run yet) and so still refuses — EXCEPT
+			// under the forced-hop arm, where the engine has already retrieved
+			// before the loop, so a round-0 budget trip can now synthesize from
+			// evidence the Agent never got to vet. Reaching that state requires
+			// one planner call alone to exhaust max_tokens_per_turn (400000 in
+			// the deploy config), so it is documented rather than special-cased.
 			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
