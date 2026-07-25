@@ -29,7 +29,18 @@ import (
 // unfenced shell conditional: `用 [[ -f /root/m.bin ]] 判断` stripped to `用 判断`,
 // handing the user a broken command. Fenced and inline code were already safe
 // (StripCiteMarkers maps over prose only), so this closes the bare-prose case.
-var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\s]+)\s*\]+[ \t]*\]`)
+//
+// The OPENING requires >=2 brackets (`\[` + `\[+`) — that doubled bracket is the
+// unambiguous "this is a cite marker" signal, since prose rarely doubles a
+// bracket. The CLOSING only requires >=1 (`\]+(?:[ \t]*\])*`), NOT the symmetric
+// >=2 an earlier version demanded: flash sometimes emits an unbalanced `[[id]`
+// (two open, one close), which the >=2-close form skipped, leaking the raw
+// internal chunk_id straight into the user's reply. Once the `[[` opener is seen,
+// consume through every trailing `]` (with optional spaces between, so `[ [id] ]`
+// leaves no ` ]` orphan) however many there are. The shell-conditional guard is
+// unaffected: `[[ -f … ]]` still fails because the id class stops at the space
+// before any `]`.
+var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\s]+)\s*\]+(?:[ \t]*\])*`)
 
 // positionalCiteRE parses an optional positional citation [n] (single bracket,
 // 1-2 digits) that cites the n-th evidence item, 1-based in ledger order. It is
