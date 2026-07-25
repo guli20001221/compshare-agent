@@ -32,6 +32,7 @@ type FeaturesConfig struct {
 	GuidedCreate           *bool `yaml:"guided_create"`            // COMPSHARE_GUIDED_CREATE (server-only, default off)
 	ExternalKnowledge      *bool `yaml:"external_knowledge"`       // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
 	DomainMatchGuard       *bool `yaml:"domain_match_guard"`       // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
+	ForcedKnowledgeHop     *bool `yaml:"forced_knowledge_hop"`     // COMPSHARE_FORCED_KNOWLEDGE_HOP (Go default off; deploy on)
 	SessionFactContext     *bool `yaml:"session_fact_context"`     // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
 	ReactResultProjection  *bool `yaml:"react_result_projection"`  // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
 	ReactHistoryCompaction *bool `yaml:"react_history_compaction"` // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
@@ -106,6 +107,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "USE_REACT_RESULT_PROJECTION", f.ReactResultProjection, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_HISTORY_COMPACTION", f.ReactHistoryCompaction, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
+	putBoolEnv(overrides, "COMPSHARE_FORCED_KNOWLEDGE_HOP", f.ForcedKnowledgeHop, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE", f.ExternalKnowledge, "1", "0")
 	if len(f.SkillExecutorDiagnosisPilots) > 0 {
 		overrides["USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"] = strings.Join(f.SkillExecutorDiagnosisPilots, ",")

@@ -221,6 +221,29 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// forcedKnowledgeHopEnabledFromEnv gates the forced first-hop retrieval arm
+// (COMPSHARE_FORCED_KNOWLEDGE_HOP): before the Agent's first model call the engine
+// retrieves once on the user's own words and injects the result, because "should I
+// search" is the measured failure (a complaint retrieves where the same question
+// worded as a question retrieves, and there is no ex-ante turn classifier to gate a
+// prompt rule on). Two real-machine A/Bs cleared it (target statements 4→14 search /
+// 2→8 cite with correctness fixes, no fabrication introduced, control bucket net-zero
+// live-tool displacement, action confirmations preserved). ""/0/off/... => off;
+// 1/true/yes/on => on; unknown => off + non-empty warn string (never silently
+// coerce). Boot-only; the Go-package default (engine.forcedKnowledgeHopEnabled) stays
+// false so engine unit tests are unaffected.
+func forcedKnowledgeHopEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("COMPSHARE_FORCED_KNOWLEDGE_HOP"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
 const defaultExternalKnowledgeCorpusPath = "deploy/kb/external_w0.jsonl"
 
