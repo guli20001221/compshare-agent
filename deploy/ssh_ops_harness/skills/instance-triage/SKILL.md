@@ -118,6 +118,24 @@ contradiction ("控制台/nvidia-smi 正常，但我的程序说 no CUDA GPUs ar
 signature. A process that currently DOES see the GPU is the control: compare its
 `/proc/<pid>/environ` against the profile files.
 
+**Confirming what the framework itself sees.** Arbitrary `python -c` is refused (it is an
+unbounded write primitive), but a small allowlist of **exact, read-only GPU probes** is permitted —
+use them verbatim (any deviation is refused, so do not add imports, f-strings, or extra prints):
+
+```
+python3 -c "import torch; print(torch.cuda.is_available())"
+python3 -c "import torch; print(torch.cuda.device_count())"
+python3 -c "import torch; print(torch.__version__)"
+python3 -c "import torch; print(torch.version.cuda)"
+```
+
+Note this runs in YOUR shell, which does **not** load the user's profile (see §0). So if the user's
+program reports no GPU but this probe prints `True`, that gap IS the finding: the fault is in the
+user's environment (a masking var, a wrong interpreter/venv), not the GPU. Run the probe with the
+env-file reads above, not instead of them. If torch lives in a specific env, call that interpreter by
+absolute path (`/usr/local/miniconda3/envs/<env>/bin/python -c "..."`) — the same allowlisted payload
+is accepted.
+
 ## 2. A web service will not open (ComfyUI / Jupyter / an API)
 
 Work outside-in and stop at the first layer that is actually broken:

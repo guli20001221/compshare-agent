@@ -774,9 +774,101 @@ _MUTATING_FORMS = [re.compile(p, re.I) for p in [
     r"^sed\b.*\s-i",
     r"^(python\d?(\.\d+)?|perl|ruby|node|php|lua)\b.*\s-(c|e)\b",
     r"^(sh|bash|zsh|ksh|dash)\b.*\s-c\b",
-    r"^find\b.*\s-(exec|execdir|delete|ok)\b",
+    # find's -exec/-execdir are handled by _find_is_mutating (below): they run a command per match,
+    # so the inner command is classified with this SAME gate and only a read-only inner is allowed.
+    # The primaries here always write or block regardless of any inner command, so they stay a flat
+    # refusal (backstop; the find branch already covers them).
+    r"^find\b.*\s-(delete|ok|okdir|fprint|fprintf|fls)\b",
     r"^ldconfig\b(?!\s+(-p|--print-cache))",             # a bare ldconfig REBUILDS the cache
 ]]
+
+# ---------------------------------------------------------------------------
+# Two NARROW escape hatches, both preserving "never trust an arbitrary payload".
+#
+# `python -c` stays refused as a class (an arbitrary payload cannot be proven
+# read-only). The ONLY exception is an EXACT, whitespace-normalized match against
+# a handful of canonical GPU-visibility probes — the same category as the
+# `python --version` exception above: a fixed, known-safe invocation, not a
+# semantic judgement about what the code does. A payload that is not byte-for-byte
+# (whitespace aside) one of these is refused. Extend the list only with probes
+# hand-verified to have no filesystem/state effect.
+#
+# find `-exec`/`-execdir` runs a command per matched file; instead of refusing
+# the whole class, _find_is_mutating extracts the inner command and classifies it
+# with this very gate — so `-exec grep`/`cat`/`ls` is allowed and `-exec rm`,
+# `-exec sh -c ...`, `-exec python -c ...`, `-exec chmod ...` are refused, exactly
+# as those commands would be on their own. `-delete`/`-ok*`/`-fprint*` always write
+# or block and stay refused above.
+# ---------------------------------------------------------------------------
+def _norm_probe(code: str) -> str:
+    """Whitespace-insensitive match key. Whitespace is not semantically load-bearing
+    in these probes, and both the allowlist and the input are normalized the same way,
+    so spacing/quoting variants collapse to one key. The key is never executed."""
+    return "".join(code.split())
+
+
+_READONLY_PY_PROBE_SRC = [
+    "import torch; print(torch.cuda.is_available())",
+    "import torch; print(torch.cuda.device_count())",
+    "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())",
+    "import torch; print(torch.__version__)",
+    "import torch; print(torch.__version__, torch.cuda.is_available())",
+    "import torch; print(torch.version.cuda)",
+    "import torch; print(torch.cuda.get_device_name(0))",
+]
+_READONLY_PY_PROBES = {_norm_probe(s) for s in _READONLY_PY_PROBE_SRC}
+
+
+def _is_readonly_py_probe(binary: str, seg: str) -> bool:
+    """True only for `pythonX -c <payload>` where <payload> is EXACTLY one of the
+    canonical read-only probes. Any extra flag/arg, a different interpreter, or an
+    unlisted payload returns False (so the caller refuses it). Fail closed on any
+    parse error."""
+    if binary not in ("python", "python2", "python3"):
+        return False
+    try:
+        argv = shlex.split(seg)
+    except ValueError:
+        return False
+    if len(argv) != 3 or argv[1] != "-c":                 # exactly `python -c <one payload>`
+        return False
+    return _norm_probe(argv[2]) in _READONLY_PY_PROBES
+
+
+# find primaries that write or block no matter what any -exec inner command is.
+_FIND_WRITE_PRIMARIES = re.compile(r"(?:^|\s)-(delete|ok|okdir|fprint|fprintf|fls)\b")
+
+
+def _find_is_mutating(seg: str, depth: int) -> bool:
+    """A find is a read UNLESS it uses a writing/blocking primary, or an -exec/-execdir
+    whose inner command is not itself read-only. The inner command is classified with
+    the SAME gate (destructive + mutating), so `-exec rm`/`sh -c`/`python -c` are refused
+    exactly as they would be standalone."""
+    if depth > 3:
+        return True                                       # runaway -exec nesting: fail closed
+    if _FIND_WRITE_PRIMARIES.search(seg):
+        return True
+    try:
+        argv = shlex.split(seg)
+    except ValueError:
+        return True                                       # unparseable: fail closed
+    saw_exec = False
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("-exec", "-execdir"):
+            saw_exec = True
+            inner, i = [], i + 1
+            while i < len(argv) and argv[i] not in (";", "+"):
+                if argv[i] != "{}":
+                    inner.append(argv[i])
+                i += 1
+            if not inner:
+                return True                               # -exec with no command
+            inner_str = " ".join(inner)
+            if any(p.search(inner_str) for p in _DESTRUCTIVE) or _is_mutating_segment(inner_str, depth + 1):
+                return True
+        i += 1
+    return False                                          # pure search, or -exec of a read-only inner
 
 
 def _env_is_read(tokens) -> bool:
@@ -789,9 +881,10 @@ def _env_is_read(tokens) -> bool:
     return True
 
 
-def _is_mutating_segment(seg: str) -> bool:
+def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     """True if this ONE command changes the box, executes code, leaves the box, or
-    blocks forever. Deny-by-effect — anything else is a read."""
+    blocks forever. Deny-by-effect — anything else is a read. `_depth` bounds the
+    recursion when classifying a find -exec inner command against this same gate."""
     seg = _strip_sudo(seg.strip())
     if not seg:
         return False
@@ -814,7 +907,12 @@ def _is_mutating_segment(seg: str) -> bool:
     if binary in _MUTATING_BINARIES or binary in _EXEC_BINARIES or binary in _NET_BINARIES:
         return True
     if binary in _INTERPRETERS:
-        return not all(_VERSION_ONLY.match(t) for t in tokens[1:]) or len(tokens) == 1
+        if len(tokens) == 1:
+            return True                                   # bare `python` is a REPL — blocks forever
+        if all(_VERSION_ONLY.match(t) for t in tokens[1:]):
+            return False                                  # `python --version` / `--help` only
+        # Arbitrary `-c`/`-e` code stays refused, except an EXACT canonical read-only probe.
+        return not _is_readonly_py_probe(binary, seg)
     if binary in ("curl", "wget"):
         return not _http_probe_ok(tokens)                 # loopback probe stays allowed
     if binary == "env":
@@ -838,6 +936,8 @@ def _is_mutating_segment(seg: str) -> bool:
         return True
     if binary in ("vmstat", "iostat", "mpstat", "pidstat") and not _interval_ok(tokens):
         return True
+    if binary == "find":
+        return _find_is_mutating(seg, _depth)
     return any(p.search(seg) for p in _MUTATING_FORMS)
 
 
@@ -859,6 +959,18 @@ def _split_chain(cmd: str):
     masked = _mask_quoted(cmd)
     parts, last = [], 0
     for m in _CHAIN_SPLIT.finditer(masked):
+        # A backslash-escaped metachar (`\;`, `\|`) is a literal argument, not a shell
+        # separator: `find … -exec grep x {} \;` is ONE command, and the shell passes the
+        # `;` to find. Count the backslashes immediately before the match — an ODD count
+        # means it is escaped, so it is not a boundary. (`\\;` = escaped backslash + real
+        # separator → even count → still splits.)
+        bs = 0
+        j = m.start() - 1
+        while j >= 0 and masked[j] == "\\":
+            bs += 1
+            j -= 1
+        if bs % 2 == 1:
+            continue
         parts.append(cmd[last:m.start()])
         last = m.end()
     parts.append(cmd[last:])
