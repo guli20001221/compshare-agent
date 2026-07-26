@@ -119,7 +119,12 @@ func (e *Engine) runForcedKnowledgeHop(ctx context.Context, userMsg string, onSt
 	}
 
 	e.knowledgeQAAgentLoopThisTurn = true
+	// Scoped to this one call: the query planner expands only the words the user
+	// never aimed at retrieval. Cleared immediately so an Agent-issued search
+	// later in the same turn is planned normally.
+	e.forcedHopSearchInFlight = true
 	result := annotateForcedKnowledgeHop(e.executeSearchKnowledge(ctx, args, onStep))
+	e.forcedHopSearchInFlight = false
 
 	// Register under the key executeTool would have computed for the same call,
 	// so an Agent that re-issues this exact query gets the reused-observation

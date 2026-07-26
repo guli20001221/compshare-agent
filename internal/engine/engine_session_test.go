@@ -356,6 +356,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Reset every turn.
 		"searchKnowledgeActivitiesThisTurn":   true,
 		"searchKnowledgeActivityIDsByChunkID": true,
+		// Scoped to the forced hop's own retrieval so the query planner expands
+		// that query instead of de-referencing it. Left set across sessions it
+		// would apply the expander to another tenant's Agent-issued search.
+		// Cleared immediately after the call, and reset every turn.
+		"forcedHopSearchInFlight": true,
 		// Per-turn knowledge_qa route marker.
 		// Per-session by design — it carries the turn-scoped cite-or-refuse coupling and
 		// the runtime-form projection; sharing it would cross one tenant's route decision
@@ -449,12 +454,14 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// when the verbatim-dump guard was retired.
 	// 82 -> 84 / 89 -> 91: readChunkCallsThisTurn + readChunkIDsThisTurn, the
 	// ReadChunk full-body budget and its already-read set.
-	if want, got := 84, len(perSessionFields); want != got {
+	// 84 -> 85 / 91 -> 92: forcedHopSearchInFlight, the scope marker that routes
+	// the forced hop's own query through the expanding planner.
+	if want, got := 85, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 91, typ.NumField(); want != got {
+	if want, got := 92, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

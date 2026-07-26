@@ -73,9 +73,11 @@ func TestForcedKnowledgeHopRetrievesOnAComplaintTheAgentWouldNotSearch(t *testin
 	_, err := eng.Chat(context.Background(), "Coding Plan 套餐好贵", noopStep)
 	require.NoError(t, err)
 
-	require.Len(t, retriever.calls, 1, "the engine must retrieve once without being asked")
+	require.Len(t, retriever.calls, 2, "the engine must retrieve without being asked: the expansion, then the raw form")
 	assert.Equal(t, "Coding Plan 套餐价格档位", retriever.calls[0].question,
 		"the arm's whole value is that the complaint is rewritten before retrieval")
+	assert.Equal(t, "Coding Plan 套餐好贵", retriever.calls[1].question,
+		"the user's own words are retained as the last query, so expansion can only add recall")
 	assert.True(t, eng.knowledgeQAAgentLoopThisTurn,
 		"the citation finalizer must run on a turn where the model can see chunk ids")
 	assert.NotEmpty(t, eng.searchKnowledgeLedgerThisTurn.Items, "evidence must land in the per-turn ledger")
@@ -103,8 +105,11 @@ func TestForcedKnowledgeHopBudgetsLikeAnAgentSearch(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, eng.searchKnowledgeCallsThisTurn, "the forced hop costs exactly one call unit")
-	assert.Len(t, retriever.calls, 1,
-		"re-issuing the forced query must reuse the observation, not spend a second retrieval")
+	// Two retrievals is the forced hop's own fan-out (expansion + the retained
+	// raw form). What this guards is that the Agent's identical re-issue adds
+	// NOTHING on top of it.
+	assert.Len(t, retriever.calls, 2,
+		"re-issuing the forced query must reuse the observation, not spend another retrieval")
 }
 
 // TestForcedKnowledgeHopSkipsWhenTheModelCannotSearch covers the two states
@@ -212,6 +217,83 @@ func TestFirstTurnRequeryIsGatedOnTheForcedHopArm(t *testing.T) {
 		require.Len(t, client.calls, 1, "the arm searches regardless, so the rewrite is worth its call")
 		assert.Equal(t, "Coding Plan 套餐怎么收费", plan.AnswerQuestion)
 		assert.Equal(t, []string{"Coding Plan 套餐价格档位"}, plan.SearchQueries)
+	})
+}
+
+// TestForcedHopQueryIsExpandedNotJustDereferenced pins the fix for the failure
+// this arm turned out to have. The forced hop searches on words the user never
+// aimed at retrieval, and the default planner — whose job is de-referencing —
+// correctly finds nothing to resolve in an already-grammatical question and
+// echoes it back. Measured on real traffic: the raw form retrieved hits that the
+// relevance floor then dropped in full, and 9 of 10 empty-evidence turns never
+// searched again, so the turn answered with no evidence at all. Re-running those
+// questions with expanded queries reached usable evidence from the SAME index.
+//
+// So the forced hop must be planned by the EXPANDER, and an Agent-issued search
+// must not be — the Agent writes its own retrieval queries and measurement says
+// it writes better ones than either the raw words or a restatement of them.
+func TestForcedHopQueryIsExpandedNotJustDereferenced(t *testing.T) {
+	newTurn := func(reply string) (*Engine, *mockLLM) {
+		client := &mockLLM{responses: []llm.ChatResponse{directAnswer(reply)}}
+		eng := NewWithDeps(client, &mockExecutor{}, nil)
+		eng.turnContextViewThisTurn = TurnContextView{CurrentQuestion: "配置创建后是否可以修改？"}
+		eng.turnContextViewReady = true
+		return eng, client
+	}
+	systemPromptOf := func(t *testing.T, req llm.ChatRequest) string {
+		t.Helper()
+		require.NotEmpty(t, req.Messages)
+		return req.Messages[0].Content
+	}
+	const expansions = `{"answer_question":"实例创建后能否修改配置",` +
+		`"search_queries":["算力实例创建后修改 CPU 内存 GPU 配置 是否需要关机","GPU 实例变配 规格调整 条件"]}`
+
+	t.Run("forced hop expands and keeps the user's words last", func(t *testing.T) {
+		withForcedKnowledgeHop(t, true)
+		eng, client := newTurn(expansions)
+		eng.forcedHopSearchInFlight = true
+
+		plan := eng.planKnowledgeQuery(context.Background(), "配置创建后是否可以修改？")
+
+		require.Len(t, client.calls, 1)
+		assert.Equal(t, knowledgeQueryExpanderPrompt, systemPromptOf(t, client.calls[0]),
+			"the forced hop's query needs expansion, not de-referencing")
+		assert.Equal(t, []string{
+			"算力实例创建后修改 CPU 内存 GPU 配置 是否需要关机",
+			"GPU 实例变配 规格调整 条件",
+			"配置创建后是否可以修改？",
+		}, plan.SearchQueries,
+			"expansions first (they get the budget), the user's own words retained last")
+		assert.Equal(t, "实例创建后能否修改配置", plan.AnswerQuestion,
+			"answer_question stays the question the answer is verified against")
+	})
+
+	t.Run("an Agent-issued search keeps the de-referencing planner", func(t *testing.T) {
+		withForcedKnowledgeHop(t, true)
+		eng, client := newTurn(expansions)
+		// Not in flight: this is the Agent asking, mid-turn.
+		eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{User: "上一轮", Assistant: "上一轮回答"}}
+
+		plan := eng.planKnowledgeQuery(context.Background(), "实例变配要关机吗")
+
+		require.Len(t, client.calls, 1)
+		assert.Equal(t, knowledgeQueryPlannerPrompt, systemPromptOf(t, client.calls[0]),
+			"expansion must not leak onto queries the Agent wrote itself")
+		assert.NotContains(t, plan.SearchQueries, "实例变配要关机吗",
+			"only the forced hop pins the caller's raw text into the query set")
+	})
+
+	t.Run("the user's words survive a maximally wide expansion", func(t *testing.T) {
+		withForcedKnowledgeHop(t, true)
+		eng, _ := newTurn(`{"answer_question":"实例创建后能否修改配置",` +
+			`"search_queries":["扩写一","扩写二","扩写三","扩写四","扩写五"]}`)
+		eng.forcedHopSearchInFlight = true
+
+		plan := eng.planKnowledgeQuery(context.Background(), "配置创建后是否可以修改？")
+
+		require.Len(t, plan.SearchQueries, maxForcedHopPlanQueries)
+		assert.Equal(t, "配置创建后是否可以修改？", plan.SearchQueries[len(plan.SearchQueries)-1],
+			"a reply that fills every slot must not push the raw form out — that is the no-recall-loss guarantee")
 	})
 }
 

@@ -307,6 +307,14 @@ type Engine struct {
 	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
+	// forcedHopSearchInFlight marks the one retrieval the engine performs on the
+	// user's own words before the Agent's first model call, so the query planner
+	// can expand that query instead of merely de-referencing it. It is set only
+	// around runForcedKnowledgeHop's own call and is false for every search the
+	// Agent issues — the Agent writes its own retrieval queries, and measurement
+	// says it writes better ones than either the raw user words or the planner's
+	// restatement of them, so expansion must not be applied to those.
+	forcedHopSearchInFlight bool
 	// knowledgeQAAgentLoopThisTurn records that SearchKnowledge ran this turn —
 	// normally because the Agent chose it, and under the forced-hop arm also when
 	// the engine searched on the Agent's behalf before its first model call. It is
@@ -1226,6 +1234,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
+	e.forcedHopSearchInFlight = false
 	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
 	e.readResponseEvidenceThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
