@@ -469,6 +469,11 @@ type Engine struct {
 	selectedInstanceIDAtTurnStart     string
 	instanceResolutionSourceThisTurn  string
 	factCacheOldestAgeSecondsThisTurn int
+	// verbatimBlocksThisTurn holds text that must reach the user byte-identical
+	// (see verbatimReplyPrefix) without ending the turn. Accumulated as tools
+	// return it and composed in front of the Agent's reply at the turn exit.
+	// Reset per turn; per-session so one turn's block cannot bleed into another's.
+	verbatimBlocksThisTurn []string
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -1232,6 +1237,17 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.actionProposalRanThisTurn = false
 	e.actionProposalDispositionThisTurn = ""
 	e.knowledgeQAAgentLoopThisTurn = false
+	e.verbatimBlocksThisTurn = nil
+	// Single composition site for verbatim blocks: every success path — normal
+	// answer, deterministic reply, token-budget recovery, round-ceiling recovery —
+	// returns through this one function, so a block already streamed to the user
+	// can never be missing from the reply that gets persisted. Skipped on error, so
+	// a failed turn is never dressed up as a successful one.
+	defer func() {
+		if err == nil {
+			reply = e.composeWithVerbatimBlocks(reply)
+		}
+	}()
 	continuityNow := time.Now()
 	e.expireContextFrame(continuityNow)
 	e.expireStaleSelectedInstance(continuityNow)
@@ -1462,6 +1478,14 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// liveStream rounds have already streamed deltas as they arrived;
 			// nothing to replay.
 			if opts.OnTextDelta != nil && !liveStream {
+				// A verbatim block was already streamed; composeWithVerbatimBlocks will
+				// put a paragraph break between it and this text, so the stream must
+				// carry that break too. Emitted only when the Agent actually adds text —
+				// mirroring compose, which returns the block alone when the reply is
+				// empty (the pure-billing shape), so nothing trails the card there.
+				if len(e.verbatimBlocksThisTurn) > 0 && content != "" {
+					opts.OnTextDelta(verbatimBlockSeparator)
+				}
 				if content == rawContent {
 					for _, delta := range streamedDeltas {
 						opts.OnTextDelta(delta)
@@ -1477,15 +1501,22 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				// branch entirely.
 				opts.OnTextDelta(content)
 			}
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: content,
-			})
+			// An empty content here means the Agent deliberately added nothing after a
+			// verbatim block (finalizeResponse only returns "" in that case). Recording
+			// an empty assistant message would put a contentless turn into history for
+			// every later request; the block itself is intentionally NOT recorded, so the
+			// figures stay out of the model's context.
+			if content != "" {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: content,
+				})
+			}
 			return agentruntime.Final(content, agentruntime.FinishFinalAnswer), nil
 		}
 
 		// Has tool calls → execute each and feed results back.
-		return e.runToolCallsRound(ctx, resp, runtimeRound, onStep)
+		return e.runToolCallsRound(ctx, resp, runtimeRound, onStep, opts.OnTextDelta)
 	})
 	if runtimeErr == nil {
 		return runtimeResult.Reply, nil
@@ -1544,11 +1575,16 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 
 // runToolCallsRound executes every tool call in resp, feeding results back into
 // history, and returns the round result. A deterministic final reply (a tool that
-// returns via isFinalReply — e.g. a confirmation card) terminates the turn; any
-// other tool result continues the loop. A model-chosen write proposal reaches
-// Resolver → intake/confirm here, including its non-terminal (error / prose)
-// continuations.
-func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, runtimeRound *agentruntime.Round, onStep func(StepEvent)) (agentruntime.Result, error) {
+// returns via isFinalReply — e.g. a confirmation card) terminates the turn; a
+// verbatim block (isVerbatimReply) is delivered to the user as-is and the loop
+// CONTINUES; any other tool result continues the loop. A model-chosen write
+// proposal reaches Resolver → intake/confirm here, including its non-terminal
+// (error / prose) continuations.
+//
+// emitDelta streams user-visible text (nil when the caller does not stream). A
+// verbatim block is emitted through it at the point the tool returns, so the
+// streamed order matches the composed reply: block first, Agent's answer after.
+func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, runtimeRound *agentruntime.Round, onStep func(StepEvent), emitDelta func(string)) (agentruntime.Result, error) {
 	assistantMsg := openai.ChatCompletionMessage{
 		Role:      openai.ChatMessageRoleAssistant,
 		Content:   resp.Content,
@@ -1559,6 +1595,23 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 	for idx, tc := range resp.ToolCalls {
 		toolResult := e.executeTool(ctx, tc, onStep)
 		runtimeRound.Observation(tc.Function.Name)
+
+		// Verbatim user block — deliver as-is, keep the turn alive. The model's
+		// history gets an amount-free note in place of the text, so it cannot
+		// restate or recompute the figures (see verbatimReplyPrefix).
+		if block, ok := isVerbatimReply(toolResult); ok {
+			block = security.RedactOperationalTokensInText(block)
+			e.verbatimBlocksThisTurn = append(e.verbatimBlocksThisTurn, block)
+			if emitDelta != nil {
+				emitDelta(block)
+			}
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:       openai.ChatMessageRoleTool,
+				Content:    verbatimBlockObservation,
+				ToolCallID: tc.ID,
+			})
+			continue
+		}
 
 		// Deterministic final reply — return directly without LLM narration
 		if finalMsg, ok := isFinalReply(toolResult); ok {
@@ -2199,6 +2252,68 @@ func isFinalReply(result string) (string, bool) {
 	}
 	return "", false
 }
+
+// verbatimReplyPrefix marks a tool result whose text must reach the user
+// BYTE-IDENTICAL but which must NOT end the turn.
+//
+// finalReplyPrefix couples two separate guarantees — "deliver this text exactly"
+// and "stop here" — and the second one silently destroyed answers. A real turn
+// ("这台 CPU 一直 100% 跑满，而且费用也一直在扣") had the Agent gather the CPU evidence
+// first, then call DiagnoseBilling; the billing result ended the turn, so the user
+// got a price card, the CPU question went unanswered, and the monitoring evidence
+// already fetched was thrown away.
+//
+// This marker keeps the verbatim guarantee and drops the termination: the block is
+// handed straight to the user and the loop continues, so the Agent still answers
+// everything else. The model's context receives a short amount-free note in place
+// of the block, so the three failures the deterministic exit was built to stop
+// (re-summing periods, extrapolating an hourly quote into monthly spend, inferring
+// a free quota from a zero price) stay impossible by construction — they all
+// require seeing the figures, and the figures are never in its context.
+const verbatimReplyPrefix = "\x00VERBATIM:"
+
+// isVerbatimReply checks if a tool result is a verbatim, non-terminal user block.
+func isVerbatimReply(result string) (string, bool) {
+	if strings.HasPrefix(result, verbatimReplyPrefix) {
+		return strings.TrimPrefix(result, verbatimReplyPrefix), true
+	}
+	return "", false
+}
+
+// verbatimBlockObservation is what the model sees instead of a verbatim block. It
+// states the fact (the user already has the detail) and withholds the figures, so
+// the Agent neither re-derives an amount nor claims it cannot look pricing up.
+// Each clause answers a failure observed live, and the length was measured rather than
+// assumed. The structural half (finalizeResponse treating a delivered block as a
+// non-empty turn) is necessary but NOT sufficient: with it in place and this string cut
+// back to one factual sentence, the Agent went straight back to padding the card with
+// generic prose in 5/5 live runs (128–235 chars of tail). Naming "add nothing" and "stop"
+// as outcomes is what actually buys tail=0 in 5/5. Do not trim this without re-measuring;
+// the pure-billing shape is the property at stake.
+const verbatimBlockObservation = "费用明细已按上游结构化数据逐字呈现给用户，本结果不含金额。" +
+	"不要自行给出金额，也不要复述或补充通用费用说明；若用户没有其他问题需要处理，直接结束本回合、不要再输出文字。"
+
+// composeWithVerbatimBlocks puts this turn's verbatim blocks in front of the
+// Agent's own reply. Called from one deferred site at the single turn exit so
+// every success path composes identically — including the round-ceiling recovery,
+// which would otherwise drop a block that was already shown to the user.
+func (e *Engine) composeWithVerbatimBlocks(reply string) string {
+	if e == nil || len(e.verbatimBlocksThisTurn) == 0 {
+		return reply
+	}
+	blocks := strings.Join(e.verbatimBlocksThisTurn, verbatimBlockSeparator)
+	if strings.TrimSpace(reply) == "" {
+		return blocks
+	}
+	return blocks + verbatimBlockSeparator + reply
+}
+
+// verbatimBlockSeparator is the paragraph break between a verbatim block and what
+// follows it. Shared by composeWithVerbatimBlocks (which builds the persisted
+// reply) and the token-stream emission site, because the browser renders the
+// bubble from the stream and reloads it from the reply — if the two disagree the
+// same turn reads as one run-on paragraph live and two paragraphs after a reload.
+const verbatimBlockSeparator = "\n\n"
 
 // executeTool handles security check + execution for one tool call.
 // executeSearchKnowledge runs the agentic-RAG SearchKnowledge tool (P3): it
@@ -4261,11 +4376,18 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 		// Letting the model narrate this result previously re-summed periods,
 		// extrapolated hourly quotes to monthly spend and inferred a free quota
 		// from a zero price. Exact financial facts have one deterministic exit.
+		//
+		// That exit is VERBATIM, not TERMINAL. It used to be finalReplyPrefix, which
+		// also ended the turn — so "CPU 跑满 + 一直扣费" got a price card and no CPU
+		// answer, discarding monitoring evidence the Agent had already gathered.
+		// verbatimReplyPrefix keeps the figures byte-exact and out of the model's
+		// context (the three failures above all need to SEE them) while letting the
+		// turn continue, so the rest of the question still gets answered.
 		reply := strings.TrimSpace(result.Conclusion)
 		if suggestion := strings.TrimSpace(result.Suggestion); suggestion != "" {
 			reply += "\n\n" + suggestion
 		}
-		return finalReplyPrefix + reply, intent.HandlerFailureNone
+		return verbatimReplyPrefix + reply, intent.HandlerFailureNone
 	}
 
 	b, _ := json.Marshal(result)
