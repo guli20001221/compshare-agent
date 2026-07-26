@@ -20,6 +20,7 @@ transport's hard per-command timeout backstops any streaming command that still 
 
 Read tier is deny-by-default: anything not positively matching the allowlist is >= mutating.
 """
+import ast
 import re
 import shlex
 from typing import Iterable
@@ -785,13 +786,25 @@ _MUTATING_FORMS = [re.compile(p, re.I) for p in [
 # ---------------------------------------------------------------------------
 # Two NARROW escape hatches, both preserving "never trust an arbitrary payload".
 #
-# `python -c` stays refused as a class (an arbitrary payload cannot be proven
-# read-only). The ONLY exception is an EXACT, whitespace-normalized match against
-# a handful of canonical GPU-visibility probes — the same category as the
-# `python --version` exception above: a fixed, known-safe invocation, not a
-# semantic judgement about what the code does. A payload that is not byte-for-byte
-# (whitespace aside) one of these is refused. Extend the list only with probes
-# hand-verified to have no filesystem/state effect.
+# `python -c` is classified STRUCTURALLY: the payload is parsed and every node must
+# be on an allowlist, every call must resolve to a read-only callable, and `open`
+# must be in a read mode. Default-deny — anything unrecognized is refused.
+#
+# This replaced an allowlist of seven literal torch payloads. That list was sound but
+# useless in practice: reading a YAML/JSON config field, or checking any library's
+# version other than torch's, was refused even though it is plainly read-only, and
+# every new probe needed a code change. Judging structure instead accepts any
+# composition of read-only primitives while keeping the same guarantee — the gate
+# never has to "trust" a payload, it proves each construct.
+#
+# Imports are deliberately NOT restricted, because imports are not the dangerous
+# part: reaching `os.system` requires CALLING it, and a call is refused unless its
+# resolved dotted path is allowlisted. Aliases are resolved through the payload's own
+# imports, so `from os import system as s; s(...)` is judged as `os.system` and
+# refused exactly like the spelled-out form. Dunder attribute access is refused apart
+# from a few metadata names, which closes the `__class__.__bases__.__subclasses__`
+# style escapes. Reading a file is allowed because `cat FILE` already is — same
+# threat model, no new exposure.
 #
 # find `-exec`/`-execdir` runs a command per matched file; instead of refusing
 # the whole class, _find_is_mutating extracts the inner command and classifies it
@@ -800,39 +813,174 @@ _MUTATING_FORMS = [re.compile(p, re.I) for p in [
 # as those commands would be on their own. `-delete`/`-ok*`/`-fprint*` always write
 # or block and stay refused above.
 # ---------------------------------------------------------------------------
-def _norm_probe(code: str) -> str:
-    """Whitespace-insensitive match key. Whitespace is not semantically load-bearing
-    in these probes, and both the allowlist and the input are normalized the same way,
-    so spacing/quoting variants collapse to one key. The key is never executed."""
-    return "".join(code.split())
+# Calls allowed by resolved dotted path. Everything here is read-only: it inspects
+# state or parses data, and none of it touches the filesystem, processes or network.
+_PY_SAFE_CALLS = {
+    "print", "len", "str", "repr", "int", "float", "bool", "list", "tuple", "set", "dict",
+    "sorted", "sum", "min", "max", "round", "abs", "type", "enumerate", "zip", "range",
+    "any", "all", "format", "hex", "oct", "bin", "chr", "ord", "divmod",
+    "open",                                              # mode-checked below
+    "json.load", "json.loads", "json.dumps",
+    "yaml.safe_load", "yaml.safe_load_all",
+    "glob.glob", "glob.iglob",
+    "pkg_resources.get_distribution",
+    "shutil.which",                                      # PATH lookup only; no copy/move
+    "socket.gethostname",                                # local name, opens nothing
+}
+# Read-only namespaces. A prefix is used only where EVERY public callable under it is
+# an inspector. `sys.` is deliberately absent: `sys.stdin.read()` would block until the
+# hard timeout, and version data is an attribute read that needs no call.
+_PY_SAFE_CALL_PREFIXES = (
+    "torch.cuda.", "torch.backends.", "torch.version.",
+    "os.path.", "platform.", "sysconfig.", "importlib.metadata.",
+)
+# Methods safe on any value: string/dict/list inspection and file reads. Judged by name
+# because the receiver is a local whose type is not knowable statically.
+_PY_SAFE_METHODS = {
+    "read", "readline", "readlines", "close", "decode", "encode",
+    "split", "rsplit", "splitlines", "strip", "lstrip", "rstrip", "partition",
+    "lower", "upper", "title", "startswith", "endswith", "count", "find", "index",
+    "replace", "zfill", "ljust", "rjust", "join", "format",
+    "get", "keys", "values", "items", "isdigit", "isalpha", "group", "groups",
+}
+# Attribute reads that look like dunders but are plain metadata. Anything else starting
+# with "__" is refused: __class__/__bases__/__subclasses__/__globals__/__builtins__ are
+# the standard route from a harmless object to arbitrary execution.
+_PY_SAFE_DUNDERS = {"__version__", "__file__", "__name__", "__doc__", "__path__", "__spec__"}
+# `python -m <module>`: fixed set of read-only module entrypoints.
+_PY_SAFE_MODULE_RUNS = {"json.tool", "platform", "sysconfig", "site", "torch.utils.collect_env"}
+# Receivers whose reads never return. Refused ahead of the by-name method fallback.
+_PY_BLOCKING_CALL_PREFIXES = ("sys.stdin",)
+_PIP_READ_SUBCOMMANDS = {"list", "show", "freeze", "--version", "-V"}
+
+_PY_ALLOWED_NODES = tuple(node for node in (
+    ast.Module, ast.Expr, ast.Assign, ast.If, ast.For, ast.Try, ast.ExceptHandler,
+    ast.Pass, ast.Break, ast.Continue, ast.Import, ast.ImportFrom, ast.alias,
+    ast.Call, ast.keyword, ast.Name, ast.Attribute, ast.Subscript, ast.Slice,
+    ast.Constant, ast.JoinedStr, ast.FormattedValue, ast.Tuple, ast.List, ast.Dict,
+    ast.Set, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
+    ast.comprehension, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp,
+    ast.Starred, ast.expr_context, ast.operator, ast.cmpop, ast.boolop, ast.unaryop,
+    # 3.8 shapes; absent on newer interpreters.
+    getattr(ast, "Index", None), getattr(ast, "ExtSlice", None),
+) if node is not None)
+# Deliberately absent, therefore refused: FunctionDef/ClassDef/Lambda (code objects),
+# While (can never terminate), Delete/AugAssign (mutation), Global/Nonlocal, Await/
+# AsyncFor/Yield, and the walrus-free rest of the grammar.
 
 
-_READONLY_PY_PROBE_SRC = [
-    "import torch; print(torch.cuda.is_available())",
-    "import torch; print(torch.cuda.device_count())",
-    "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())",
-    "import torch; print(torch.__version__)",
-    "import torch; print(torch.__version__, torch.cuda.is_available())",
-    "import torch; print(torch.version.cuda)",
-    "import torch; print(torch.cuda.get_device_name(0))",
-]
-_READONLY_PY_PROBES = {_norm_probe(s) for s in _READONLY_PY_PROBE_SRC}
+def _py_import_aliases(tree) -> dict:
+    """Map each name the payload binds via import to the dotted path it refers to, so a
+    call can be judged by what it actually resolves to rather than how it is spelled."""
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for entry in node.names:
+                if entry.asname:
+                    aliases[entry.asname] = entry.name
+                else:
+                    root = entry.name.split(".")[0]      # `import os.path` binds `os`
+                    aliases[root] = root
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for entry in node.names:
+                full = module + "." + entry.name if module else entry.name
+                aliases[entry.asname or entry.name] = full
+    return aliases
 
 
-def _is_readonly_py_probe(binary: str, seg: str) -> bool:
-    """True only for `pythonX -c <payload>` where <payload> is EXACTLY one of the
-    canonical read-only probes. Any extra flag/arg, a different interpreter, or an
-    unlisted payload returns False (so the caller refuses it). Fail closed on any
-    parse error."""
+def _py_dotted(node, aliases):
+    """Resolve a call target to its dotted path, or None when the target is not a plain
+    name/attribute chain (a call result or subscript — never allowlistable, because what
+    it evaluates to is not decidable here)."""
+    parts = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(aliases.get(current.id, current.id))
+    return ".".join(reversed(parts))
+
+
+def _py_open_is_read(call) -> bool:
+    """`open(path)` and `open(path, 'r...')` are reads. Any mode carrying w/a/x/+ writes,
+    and a computed mode cannot be proven a read, so both are refused. A literal path that
+    never ends (a raw block device, /proc/kmsg, stdin, a tty) is refused too — the same
+    endless-stream rule the raw readers get above, applied to this new surface."""
+    path = call.args[0] if call.args else None
+    if isinstance(path, ast.Constant) and isinstance(path.value, str):
+        if _BLOCKING_PATHS.match(path.value) or path.value in ("/dev/stdin", "/dev/tty"):
+            return False
+    mode = call.args[1] if len(call.args) >= 2 else None
+    for kw in call.keywords:
+        if kw.arg == "mode":
+            mode = kw.value
+    if mode is None:
+        return True                                      # default mode is 'r'
+    if not isinstance(mode, ast.Constant) or not isinstance(mode.value, str):
+        return False
+    return not any(ch in mode.value for ch in "wax+")
+
+
+def _py_payload_is_readonly(payload: str) -> bool:
+    """True when every construct in a `python -c` payload is provably read-only."""
+    try:
+        tree = ast.parse(payload)
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return False                                     # unparseable: fail closed
+    aliases = _py_import_aliases(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, _PY_ALLOWED_NODES):
+            return False
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") and node.attr not in _PY_SAFE_DUNDERS:
+                return False
+        if isinstance(node, ast.Call):
+            dotted = _py_dotted(node.func, aliases)
+            if dotted == "open" and not _py_open_is_read(node):
+                return False
+            # Reading a stream that never ends holds the channel until the hard
+            # timeout. Checked before the by-name method fallback, which would
+            # otherwise accept `sys.stdin.read()` on the strength of `read` alone.
+            if dotted is not None and dotted.startswith(_PY_BLOCKING_CALL_PREFIXES):
+                return False
+            if dotted is not None and (dotted in _PY_SAFE_CALLS
+                                       or dotted.startswith(_PY_SAFE_CALL_PREFIXES)):
+                continue
+            # A method on a local value (`fh.read()`, `cfg.get(...)`) is judged by name.
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _PY_SAFE_METHODS:
+                continue
+            return False
+    return True
+
+
+def _py_module_run_is_readonly(argv) -> bool:
+    """`python -m <module> …` for read-only entrypoints only. pip is accepted solely
+    with a reading subcommand — `pip install` writes."""
+    module = argv[2]
+    rest = argv[3:]
+    if module in ("pip", "pip3"):
+        return bool(rest) and rest[0] in _PIP_READ_SUBCOMMANDS
+    return module in _PY_SAFE_MODULE_RUNS
+
+
+def _is_readonly_py_invocation(binary: str, seg: str) -> bool:
+    """True for `pythonX -c <provably read-only payload>` and `pythonX -m <read-only
+    module>`. Any other interpreter, extra flags, or an unprovable payload returns False
+    (so the caller refuses it). Fail closed on any parse error."""
     if binary not in ("python", "python2", "python3"):
         return False
     try:
         argv = shlex.split(seg)
     except ValueError:
         return False
-    if len(argv) != 3 or argv[1] != "-c":                 # exactly `python -c <one payload>`
-        return False
-    return _norm_probe(argv[2]) in _READONLY_PY_PROBES
+    if len(argv) == 3 and argv[1] == "-c":               # exactly `python -c <payload>`
+        return _py_payload_is_readonly(argv[2])
+    if len(argv) >= 3 and argv[1] == "-m":
+        return _py_module_run_is_readonly(argv)
+    return False
 
 
 # find primaries that write or block no matter what any -exec inner command is.
@@ -911,8 +1059,9 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
             return True                                   # bare `python` is a REPL — blocks forever
         if all(_VERSION_ONLY.match(t) for t in tokens[1:]):
             return False                                  # `python --version` / `--help` only
-        # Arbitrary `-c`/`-e` code stays refused, except an EXACT canonical read-only probe.
-        return not _is_readonly_py_probe(binary, seg)
+        # `-c` payloads are proven read-only structurally (AST); `-m` accepts a fixed set
+        # of read-only entrypoints. Anything unproven stays refused.
+        return not _is_readonly_py_invocation(binary, seg)
     if binary in ("curl", "wget"):
         return not _http_probe_ok(tokens)                 # loopback probe stays allowed
     if binary == "env":

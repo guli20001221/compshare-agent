@@ -60,7 +60,11 @@ STILL_REFUSED = [
     # in-place edit of /etc is caught by the (stricter) destructive tier, not merely mutating
     ("sed -i s/a/b/ /etc/hosts", "destructive"),
     ("sed -i s/a/b/ /workspace/app.conf", "mutating"),
-    ("python -c 'import torch'", "mutating"),
+    # 2026-07-26: `python -c` payloads are proven read-only structurally (AST) instead of
+    # matched against a literal list, so an import with no call is a read. The dangerous
+    # part is the CALL, and an unallowlisted call is still refused — see the pairs below.
+    ("python -c 'import torch'", "read_only"),
+    ("python -c 'import os; os.system(1)'", "mutating"),
     ("bash -c 'ls'", "mutating"),
     ("cat /proc/meminfo | grep '$(whoami)'", "mutating"),
     ("env FOO=1 python train.py", "mutating"),       # env as an exec wrapper
@@ -83,8 +87,12 @@ STILL_REFUSED = [
     # --- holes found by running the old locked corpus against the new policy ---
     ("nvidia-smi | sh", "mutating"),                 # untrusted box output piped into a shell
     ("cat /etc/passwd | bash", "mutating"),
-    ("/root/badenv/bin/python -c 'import torch'", "mutating"),   # path-qualified interpreter
-    ("python3 -c 'print(1)'", "mutating"),
+    # A path-qualified interpreter was never the deciding factor (`--version` on this same
+    # path was already read_only); the payload was. Executing a RELATIVE path is what stays
+    # refused, and that case is asserted below (`./deploy.sh`).
+    ("/root/badenv/bin/python -c 'import torch'", "read_only"),
+    ("python3 -c 'print(1)'", "read_only"),
+    ("python3 -c 'open(chr(47),chr(119))'", "mutating"),          # write mode, computed: unprovable
     ("python", "mutating"),                          # bare REPL never returns
     ("sudo -i", "mutating"),
     ("sudo bash", "mutating"),

@@ -250,22 +250,65 @@ CLASSIFY_CASES = [
     ("cat /root/badenv/lib/python3.10/site-packages/../../../.ssh/id_rsa", "mutating"),  # traversal out
     ("cat /root/.bashrc", "mutating"),                                    # /root content still denied
     ("ls /root", "mutating"),                                             # /root listing still denied
-    ("/root/badenv/bin/python -c 'import torch'", "mutating"),            # running python stays mutating
+    # An interpreter under /root never got special treatment: `--version` on this very path
+    # was already read_only. What made this refused was the payload, and `import torch` is
+    # now provably read-only (2026-07-26 AST rule below). Executing a RELATIVE path
+    # (`./python …`) is still refused, which is the rule that guards unknown binaries.
+    ("/root/badenv/bin/python -c 'import torch'", "read_only"),
 
-    # === 2026-07-25: python -c is allowed ONLY for an EXACT canonical read-only probe ===
-    # `-c` remains refused as a class (an arbitrary payload cannot be proven read-only); the
-    # exception is a byte-for-byte (whitespace-insensitive) match against a tiny allowlist of
-    # GPU-visibility probes — same category as the `python --version` exception, not a semantic
-    # judgement. Everything else, including anything built on top of a probe, stays refused.
-    ('python3 -c "import torch; print(torch.cuda.is_available())"', "read_only"),   # canonical probe
-    ('python3 -c "import torch;print(torch.cuda.is_available())"', "read_only"),     # spacing variant, same key
+    # === 2026-07-26: `python -c` is classified STRUCTURALLY (AST), not by literal match ===
+    # The previous rule allowed exactly seven torch payloads. It was sound but unusable:
+    # reading a field out of a YAML/JSON config, or checking any library's version other than
+    # torch's, was refused although plainly read-only — and every new probe needed a code
+    # change. Now the payload is PARSED: every node must be allowlisted, every CALL must
+    # resolve to a read-only callable (aliases resolved through the payload's own imports),
+    # `open` must be in a read mode on a non-endless path, and dunder walking is refused.
+    # Imports are deliberately unrestricted: reaching os.system requires CALLING it, and the
+    # call is what gets refused — which is why `import os` alone is now a read.
+    ('python3 -c "import torch; print(torch.cuda.is_available())"', "read_only"),
+    ('python3 -c "import torch;print(torch.cuda.is_available())"', "read_only"),     # spacing irrelevant
     ("python3 -c 'import torch; print(torch.cuda.device_count())'", "read_only"),
     ("python -c 'import torch; print(torch.__version__)'", "read_only"),             # `python`, not `python3`
     ("/opt/conda/envs/comfyui/bin/python -c 'import torch; print(torch.cuda.is_available())'", "read_only"),  # abs-path env python
-    ('python3 -c "import os; os.system(chr(114))"', "mutating"),                     # not a probe
-    ('python3 -c "open(chr(47)+chr(120),chr(119))"', "mutating"),                    # write
-    ('python3 -c "import torch; print(torch.cuda.is_available()); import os"', "mutating"),  # probe + tail is NOT the probe
-    ('python3 -c "import torch; print(torch.save)"', "mutating"),                    # torch, but not an allowlisted line
+    # WIDENED — each of these was refused by the literal allowlist; all are reads.
+    ("python -c 'import torch'", "read_only"),                                       # an import alone changes nothing
+    ("python3 -c 'print(1)'", "read_only"),
+    ('python3 -c "import torch; print(torch.cuda.is_available()); import os"', "read_only"),  # importing os != calling it
+    ('python3 -c "import torch; print(torch.save)"', "read_only"),                   # printing a function object is a read
+    ("./python -c 'import torch'", "mutating"),                                       # relative path: unknown binary
+    ("""python3 -c 'import yaml; print(yaml.safe_load(open("/root/cfg.yaml"))["port"])'""", "read_only"),
+    ("""python3 -c 'import json; print(json.load(open("/root/a.json")).get("model"))'""", "read_only"),
+    ("python3 -c 'import vllm; print(vllm.__version__)'", "read_only"),              # any library's version
+    ("""python3 -c 'import importlib.metadata as m; print(m.version("transformers"))'""", "read_only"),
+    ("python3 -c 'import torch; print([torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())])'", "read_only"),
+    ("python3 -m json.tool /root/a.json", "read_only"),                              # read-only -m entrypoints
+    ("python3 -m pip list", "read_only"),
+    ("python3 -m torch.utils.collect_env", "read_only"),
+    # STILL REFUSED — widening the shape must not widen the effect.
+    ('python3 -c "import os; os.system(chr(114))"', "mutating"),                     # call, not import
+    ('python3 -c "open(chr(47)+chr(120),chr(119))"', "mutating"),                    # computed mode is unprovable
+    ("python -c 'from os import system as s; s(1)'", "mutating"),                    # alias resolves to os.system
+    ("python -c 'import os; os.popen(1)'", "mutating"),
+    ("python -c 'import os; os.remove(1)'", "mutating"),
+    ("python -c 'import os; os.chmod(1,2)'", "mutating"),
+    ("python -c 'import shutil; shutil.rmtree(1)'", "mutating"),
+    ("python -c 'import subprocess; subprocess.run(1)'", "mutating"),
+    ("python -c 'import numpy; numpy.save(1,2)'", "mutating"),                       # a read-only import with a writing call
+    ("python -c '__import__(1)'", "mutating"),
+    ("python -c 'exec(1)'", "mutating"),
+    ("python -c 'eval(1)'", "mutating"),
+    ("python -c 'print([].__class__.__bases__)'", "mutating"),                       # dunder walk to arbitrary code
+    ("python -c 'import os; getattr(os,1)'", "mutating"),                            # indirection defeats the path check
+    ("python -c 'import socket; socket.socket()'", "mutating"),                      # exfil channel
+    ("python -c 'import ctypes; ctypes.CDLL(1)'", "mutating"),
+    ("python -c 'import pty; pty.spawn(1)'", "mutating"),
+    ("python -c 'import time; time.sleep(1)'", "mutating"),                          # holds the channel
+    ("python -c 'while True: pass'", "mutating"),                                    # never terminates
+    ("python -c 'def f(): pass'", "mutating"),                                       # code objects stay out
+    ("python -c 'import sys; print(sys.stdin.read())'", "mutating"),                 # a read that never returns
+    ("python -m pip install evil", "mutating"),                                      # pip reads only
+    ("python -m http.server", "mutating"),                                           # not a read-only entrypoint
+    ("python -u -c 'import torch'", "mutating"),                                     # extra flag: not the proven shape
     ("perl -e 'print 1'", "mutating"),                                              # allowlist is python-only
 
     # === F9: sudo-stripped read-only + root-privileged read-only hardware/disk introspection ===
