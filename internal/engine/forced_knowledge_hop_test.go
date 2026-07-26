@@ -185,6 +185,80 @@ func TestAnnotateForcedKnowledgeHopShipsUnparseableResultsUnchanged(t *testing.T
 	assert.Equal(t, "not json", annotateForcedKnowledgeHop("not json"))
 }
 
+// TestEmptyForcedHopSaysItFailedRatherThanInvitingARetry is the safety net for
+// the residual failures the query expansion does not catch. An empty ledger and
+// a full one used to carry the same note, whose only nod to failure was the
+// optional "需要更准确的证据时…再检索一次" — and that invitation is not taken: of the
+// ten turns that ended with an empty ledger, nine had searched exactly once.
+//
+// The empty note has three jobs, and dropping any one of them makes it harmful
+// rather than merely useless: it must ask for another search, it must not let
+// the agent report the absence to the user (an empty retrieval here is a query
+// failure far more often than a corpus gap), and it must keep the contamination
+// guard so a 关机 / 确认 turn is not pulled into a documentation detour.
+func TestEmptyForcedHopSaysItFailedRatherThanInvitingARetry(t *testing.T) {
+	noteFor := func(t *testing.T, result string) string {
+		t.Helper()
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(annotateForcedKnowledgeHop(result)), &payload))
+		note, _ := payload["note"].(string)
+		require.NotEmpty(t, note)
+		return note
+	}
+
+	t.Run("empty evidence reports the search failed", func(t *testing.T) {
+		note := noteFor(t, searchKnowledgeResultJSON(
+			knowledge.EvidenceLedger{Query: "扩容之后要重启吗"}, true, ""))
+
+		assert.Contains(t, note, "结果为空", "the agent must be told the search came back with nothing")
+		assert.Contains(t, note, "再检索一次", "and told to search again")
+		assert.Contains(t, note, "不能当作知识库里没有",
+			"an empty retrieval is a query failure far more often than a corpus gap")
+		assert.Contains(t, note, "不要因此改变话题或改变要执行的操作",
+			"the contamination guard applies to an action turn whether or not evidence came back")
+	})
+
+	t.Run("evidence that survived keeps the original note", func(t *testing.T) {
+		ledger := knowledge.EvidenceLedger{
+			Query: "扩容之后要重启吗",
+			Items: []knowledge.EvidenceItem{{ChunkID: "chunk-1", Title: "扩容", Summary: "evidence"}},
+		}
+		note := noteFor(t, searchKnowledgeResultJSON(ledger, false, ""))
+
+		assert.Equal(t, forcedKnowledgeHopNote, note)
+		assert.NotContains(t, note, "结果为空",
+			"a turn holding evidence must not be told the search failed")
+	})
+
+	t.Run("the failure signal reaches the model", func(t *testing.T) {
+		withForcedKnowledgeHop(t, true)
+
+		// No scripted results: the retriever returns an empty hit set, which is
+		// the shape the floor produces when it drops every hit.
+		client := &mockLLM{responses: []llm.ChatResponse{
+			directAnswer(`{"answer_question":"扩容之后要重启吗","search_queries":["云盘扩容是否需要重启实例"]}`),
+			directAnswer("扩容后是否需要重启……"),
+		}}
+		eng := NewWithDeps(client, &mockExecutor{}, nil)
+		eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{})
+		eng.InitWithContext("用户当前没有实例。")
+
+		_, err := eng.Chat(context.Background(), "扩容之后要重启吗", noopStep)
+		require.NoError(t, err)
+
+		require.Len(t, client.calls, 2, "one planner call, then the Agent's first call")
+		var observation string
+		for _, msg := range client.calls[1].Messages {
+			if msg.Role == openai.ChatMessageRoleTool && msg.ToolCallID == forcedKnowledgeHopCallID {
+				observation = msg.Content
+			}
+		}
+		require.NotEmpty(t, observation, "the empty hop must still be observable to the Agent")
+		assert.Contains(t, observation, "结果为空",
+			"the note has to survive the annotate/marshal round trip into the request")
+	})
+}
+
 // TestFirstTurnRequeryIsGatedOnTheForcedHopArm pins the second half of the
 // change. planKnowledgeQuery skipped first turns because there were no
 // references to resolve; the arm needs it there for a different job (normalising
