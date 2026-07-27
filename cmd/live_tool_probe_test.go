@@ -56,6 +56,22 @@ var (
 	liveToolEmail   = flag.String("live-tool-email", "", "user_email injected the way the gateway injects it (only some actions need it)")
 	liveToolTimeout = flag.Duration("live-tool-timeout", 300*time.Second, "per-turn engine timeout")
 	liveToolCases   = flag.Int("live-tool-cases", 0, "limit to the first N cases in file order; 0 = all")
+	// One arm per run, selected here rather than by editing engine source between
+	// runs — an earlier A/B did the latter and a mid-run quota kill left the two
+	// arms unequally sampled with no record of which build produced which file.
+	// Encode the arm in -live-tool-out; nothing in the record does.
+	liveToolForcedHop = flag.Bool("live-tool-forced-hop", false, "run with the forced first-hop retrieval arm on (engine.SetForcedKnowledgeHopEnabled)")
+	// DescribeCompShareInstance is region-scoped (external.go stamps the request
+	// Region from the user context), so a fixed config region only ever lists that
+	// region's instances. Left as the config default this silently reads empty for
+	// an account whose instances live elsewhere — which looks identical to "the
+	// account has none". Override per run to sweep regions.
+	liveToolRegion = flag.String("live-tool-region", "", "override the tenant Region (e.g. cn-bj2, cn-sh2); empty = agent.region from config")
+	// Instance-owning APIs are project-scoped; config ships project_id empty (fine
+	// for the demo's read-only catalog calls) so a probe that inherits it queries
+	// the account default project, not the one the frontend user's instances live
+	// in. Override to the real ProjectId when verifying instance-bound behavior.
+	liveToolProject = flag.String("live-tool-project", "", "override the tenant ProjectId (org-XXXX); empty = agent.project_id from config")
 )
 
 func TestLiveToolProbe(t *testing.T) {
@@ -98,12 +114,24 @@ func TestLiveToolProbe(t *testing.T) {
 		t.Fatalf("configureSharedDepsFromEnv: %v", err)
 	}
 
+	if region := strings.TrimSpace(*liveToolRegion); region != "" {
+		cfg.Agent.Region = region
+	}
+	if project := strings.TrimSpace(*liveToolProject); project != "" {
+		cfg.Agent.ProjectId = project
+	}
 	ctx, err := liveProbeUserContext(cfg, uint32(*liveToolTopOrg), uint32(*liveToolOrg), *liveToolEmail)
 	if err != nil {
 		t.Fatalf("build tenant context: %v", err)
 	}
-	t.Logf("wiring: model=%s mutating=%t rag_mode=%s sts=%t region=%s",
-		cfg.Agent.LLM.Model, mutating, getenv("RAG_RETRIEVAL_MODE"), cfg.Agent.STS.ServiceAK != "", cfg.Agent.Region)
+	if *liveToolForcedHop {
+		previous := engine.ForcedKnowledgeHopEnabled()
+		engine.SetForcedKnowledgeHopEnabled(true)
+		t.Cleanup(func() { engine.SetForcedKnowledgeHopEnabled(previous) })
+	}
+	t.Logf("wiring: model=%s mutating=%t rag_mode=%s sts=%t region=%s forced_hop=%t",
+		cfg.Agent.LLM.Model, mutating, getenv("RAG_RETRIEVAL_MODE"), cfg.Agent.STS.ServiceAK != "", cfg.Agent.Region,
+		engine.ForcedKnowledgeHopEnabled())
 
 	cases := loadLiveToolQueries(t, *liveToolQueries)
 	if len(cases) == 0 {
@@ -122,6 +150,7 @@ func TestLiveToolProbe(t *testing.T) {
 		// retrieval trace. Capture it per case.
 		var cited []string
 		var searches int
+		hits := map[string]retrievedChunkRec{}
 		observe := func(eng *engine.Engine) {
 			eng.SetRetrievalTraceObserver(func(tr observability.RetrievalTrace) {
 				if len(tr.CitedChunkIDs) > 0 {
@@ -129,6 +158,21 @@ func TestLiveToolProbe(t *testing.T) {
 				}
 				if len(tr.HitItems) > 0 || tr.Hits > 0 {
 					searches++
+				}
+				// Union across hops: a multi-hop turn emits one trace per search,
+				// and the question is whether the chunk reached the agent AT ALL.
+				// Kept wins over dropped if any hop kept it.
+				for _, h := range tr.HitItems {
+					id := strings.TrimSpace(h.ChunkID)
+					if id == "" {
+						continue
+					}
+					if prev, seen := hits[id]; seen && (prev.Kept || prev.Score >= h.Score) {
+						if prev.Kept || !h.Kept {
+							continue
+						}
+					}
+					hits[id] = retrievedChunkRec{ChunkID: id, Kept: h.Kept, Score: h.Score}
 				}
 			})
 		}
@@ -138,6 +182,14 @@ func TestLiveToolProbe(t *testing.T) {
 		rec := runCaseInProcess(ctx, deps, mutating, "live-tool-probe:"+c.caseID, c.caseID, c.turns, *liveToolTimeout, observe)
 		rec.CitedChunkIDs = dedupeStrings(cited)
 		rec.RetrievalTraces = searches
+		ids := make([]string, 0, len(hits))
+		for id := range hits {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids) // deterministic order for diffing runs
+		for _, id := range ids {
+			rec.RetrievedChunks = append(rec.RetrievedChunks, hits[id])
+		}
 		records = append(records, rec)
 
 		acts := allStepActions(rec)

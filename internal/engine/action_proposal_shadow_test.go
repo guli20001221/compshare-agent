@@ -234,6 +234,35 @@ func TestSameIdVerifiedReadIsExistenceForInferredTarget(t *testing.T) {
 	require.Equal(t, "uhost-1", resolved.action.Arguments["UHostId"])
 }
 
+// TestAmbiguousInferredInstanceTargetAsksInsteadOfConfirming reproduces the live
+// "关闭当前我租界的卡" bug (terra, 16 running instances): the user names no instance,
+// so the Agent lists them and then proposes the FIRST as the stop target. That id
+// exists, so under the old existence-only rule it reached the confirmation card —
+// and a reflexive confirm would stop an instance the user never chose. This turn's
+// own evidence names MORE THAN ONE instance, so an Agent-inferred target is a pick
+// among many and must ask "请明确指定要操作的实例" (a Conflict), never confirm a guess.
+// It is the exact counterpart of the single-verified pronoun case above, which
+// still reaches the card.
+func TestAmbiguousInferredInstanceTargetAsksInsteadOfConfirming(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.lastUserMsg = "关掉我的实例"
+	// The turn's reads surfaced a LISTING, not one referent — more than one
+	// instance was verified this turn.
+	eng.verifiedInstanceEvidenceThisTurn = map[string]struct{}{"uhost-1": {}, "uhost-2": {}, "uhost-3": {}}
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-ambig", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-ambig", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "agent_inference"}},
+	})
+
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation, "an arbitrary pick among many must not reach the confirmation card")
+	require.NotEmpty(t, resolved.action.Conflicts, "it must ASK which instance (a conflict), not silently reject the id as nonexistent")
+	require.Empty(t, resolved.action.Arguments["UHostId"], "the guessed id must not survive as a resolved argument")
+}
+
 // TestUserExplicitTargetTrustedByPointQueryWhenRegistryCold: the user typed the
 // exact id (SelectionProof), the registry is cold, and a this-turn point Describe
 // returns that same id (ExistenceProof) — the write is authorized (acceptance #1),
