@@ -110,12 +110,38 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 	}
 	switch ev.Verdict {
 	case entity.ExistenceVerified:
+		// The id exists — but if the Agent INFERRED it (no user reference bound to
+		// it) AND this turn's own reads surfaced MORE THAN ONE instance, the pick is
+		// arbitrary among many: on a live sample "关闭当前我租界的卡" made terra list 16
+		// running instances and then build a stop confirmation for the FIRST one,
+		// which a reflexive confirm would act on. Route that to the same
+		// "请明确指定要操作的实例" ask channel as a conflicting reference. A pronoun the
+		// Agent resolved to the turn's SINGLE verified instance ("停止它" after reading
+		// one) is unambiguous and still reaches the card; a user_explicit id (even one
+		// a cold registry could not pre-bind) is SourceUserExplicit, and a bound target
+		// is SourceVerifiedContext — only a bare guess among many is caught.
+		if field.TargetKind == "instance" && candidate.Source == actionresolver.SourceAgentInference &&
+			!v.binding.bound() && v.inferredInstanceIsAmbiguous() {
+			return actionresolver.TargetConflict
+		}
 		return actionresolver.TargetAccept
 	case entity.ExistenceUnavailable:
 		return actionresolver.TargetDependencyFailure
 	default:
 		return actionresolver.TargetReject
 	}
+}
+
+// inferredInstanceIsAmbiguous reports whether this turn's own evidence points at
+// more than one instance, so an Agent-inferred target is a pick among many rather
+// than a resolved unique referent. It reads the same verified-instance evidence
+// set the existence check trusts: >1 distinct instance verified this turn means a
+// listing was surfaced (a "关掉我的实例"/"关闭当前…卡" among N), whereas exactly one
+// is a pronoun resolved to the single instance just read ("停止它"). A bare guess
+// with no this-turn read (empty set) is left to existence as before — that far
+// rarer case is out of scope for this guard.
+func (v agentContextEvidenceVerifier) inferredInstanceIsAmbiguous() bool {
+	return v.engine != nil && len(v.engine.verifiedInstanceEvidenceThisTurn) > 1
 }
 
 func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolver.SlotCandidate, codec actionresolver.SlotCodecKind) bool {

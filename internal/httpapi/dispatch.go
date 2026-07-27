@@ -11,9 +11,8 @@ import (
 
 // Dispatch routes an incoming gateway request to the appropriate Action handler.
 // These are the non-streaming Actions sent over HTTP POST (meta, session,
-// feedback, confirm). Streaming chat (SendCSAgentChat) moved to the WebSocket
-// path (HandleWS) because the gateway does not pass through SSE — see
-// docs/plans/2026-06-03-websocket-transport-refactor.md.
+// feedback, confirm). Streaming chat (SendCSAgentChat) lives on the WebSocket
+// path (HandleWS) instead, because the gateway does not pass through SSE.
 func (h *Handlers) Dispatch(c *gin.Context) {
 	raw, base, err := ParseBaseRequest(c)
 	if err != nil {

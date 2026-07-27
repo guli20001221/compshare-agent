@@ -206,7 +206,7 @@ func TestUpstreamShapesDifferPerCall(t *testing.T) {
 // "Price" — a key that appears in ZERO live captures — so a snapshot test written
 // against fixtures would be testing a response upstream never sends.
 //
-// Source: eval/reports/real_cli_golden_doubao_lite_runner.md:49-119.
+// Source: a live capture of the real GetCompShareInstancePrice response.
 func livePriceResponse() map[string]any {
 	return map[string]any{
 		"Action": "GetCompShareInstancePriceResponse",

@@ -101,14 +101,17 @@ caught by the output guard.
 
 ### Diagnosis Chain
 
-A diagnosis chain (`internal/diagnosis/`) is a read-only diagnostic tool. Only
-`DiagnoseSSH` and `DiagnoseBilling` are advertised; `chainRegistry` equals the
+A diagnosis chain (`internal/diagnosis/`) is a read-only diagnostic tool.
+`DiagnoseBilling` is the only advertised one; `chainRegistry` equals the
 advertised set, so an unadvertised diagnosis name cannot resolve (model-invisible
-≠ unreachable). `DiagnoseSSH` is explicitly a cloud-side precheck: it verifies
-the exact instance, lifecycle state, structured login endpoint, and monitor risk
-signals, but does not probe a public port or inspect the guest OS. Symptoms without
-a dedicated chain (GPU/init/port/image) are handled by the central Agent gathering evidence via `SearchKnowledge` +
-`DescribeCompShareInstance`.
+≠ unreachable). The SSH chain still exists and still runs, but not as a
+`DiagnoseSSH` tool — `internal/capability/read_instance_access.go` constructs it
+directly, so SSH reaches the model as `ReadCapability_instance_access`. That
+precheck is explicitly cloud-side: it verifies the exact instance, lifecycle
+state, structured login endpoint, and monitor risk signals, but does not probe a
+public port or inspect the guest OS. Symptoms without a dedicated chain
+(GPU/init/port/image) are handled by the central Agent gathering evidence via
+`SearchKnowledge` + `DescribeCompShareInstance`.
 
 ### Memory
 

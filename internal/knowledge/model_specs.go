@@ -32,9 +32,9 @@ var bytesPerParam = map[string]float64{
 }
 
 // vramBufferFactor pads the raw weight footprint to cover KV-cache, activations
-// and framework overhead. ADR-003 deploy_model skill note: "VRAM 估算保守,加
-// 20-30% buffer". 1.2 is the conservative single-request floor; long context or
-// high concurrency needs more.
+// and framework overhead. The deploy_model rule is to keep the estimate
+// conservative with a 20-30% buffer; 1.2 is the single-request floor, and long
+// context or high concurrency needs more.
 const vramBufferFactor = 1.2
 
 // paramCountRE matches a parameter count embedded in a model name: an integer

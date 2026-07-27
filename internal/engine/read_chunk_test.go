@@ -149,10 +149,15 @@ func TestReadChunk_NoChunkReaderIsUnavailable(t *testing.T) {
 // ReadChunk is advertised to the agent on the same read-only knowledge lane as
 // SearchKnowledge, in both read-only and mutating windows.
 func TestReadChunk_AdvertisedOnKnowledgeLane(t *testing.T) {
+	// The window also takes the in-instance SSH-ops flag (merged from
+	// feat/instance-ops-harness). The knowledge lane must not depend on it, so
+	// assert across both values rather than pinning one.
 	for _, mutating := range []bool{false, true} {
-		names := toolNames(centralAgentToolWindow(mutating))
-		assert.Contains(t, names, "ReadChunk")
-		assert.Contains(t, names, "SearchKnowledge")
+		for _, instanceOps := range []bool{false, true} {
+			names := toolNames(centralAgentToolWindow(mutating, instanceOps))
+			assert.Contains(t, names, "ReadChunk")
+			assert.Contains(t, names, "SearchKnowledge")
+		}
 	}
 }
 

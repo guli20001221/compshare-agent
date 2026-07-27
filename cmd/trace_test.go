@@ -115,6 +115,27 @@ func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
 	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
 }
 
+func TestForcedKnowledgeHopEnabledFromEnv(t *testing.T) {
+	// COMPSHARE_FORCED_KNOWLEDGE_HOP is Go-default OFF (the deploy config turns it
+	// on). unset/empty/explicit-negative => off; affirmative => on; unknown => off +
+	// non-empty warn string per CLAUDE.md (never silently coerce).
+	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
+	for _, v := range off {
+		got, unknown := forcedKnowledgeHopEnabledFromEnv(func(string) string { return v })
+		require.Falsef(t, got, "value %q should be off (default-off)", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
+	for _, v := range on {
+		got, unknown := forcedKnowledgeHopEnabledFromEnv(func(string) string { return v })
+		require.Truef(t, got, "value %q should enable", v)
+		require.Emptyf(t, unknown, "value %q should not warn", v)
+	}
+	got, unknown := forcedKnowledgeHopEnabledFromEnv(func(string) string { return "maybe" })
+	require.False(t, got, "unknown value treated as off")
+	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
+}
+
 func TestMultiTraceWriterEnqueuePreservesTenantForMySQLLikeSink(t *testing.T) {
 	fileSink := &captureAppendWriter{}
 	mysqlSink := &captureEnqueueWriter{}

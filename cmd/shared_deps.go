@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 
@@ -10,8 +11,8 @@ import (
 	"github.com/compshare-agent/internal/store"
 )
 
-func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, getenv getenvFunc) (*agentpool.Pool, error) {
-	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv)
+func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, getenv getenvFunc, db *sql.DB) (*agentpool.Pool, error) {
+	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv, db)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +31,7 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 // that drifted from the server's. Returns the configured deps and whether
 // mutating tools are enabled. Behavior is byte-identical to the original inline
 // body of buildHTTPServerPool.
-func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.SharedDeps, bool, error) {
+func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.DB) (*engine.SharedDeps, bool, error) {
 	deps, err := engine.NewSharedDeps(cfg)
 	if err != nil {
 		return nil, false, fmt.Errorf("shared deps: %w", err)
@@ -38,6 +39,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	if err := applySharedDepsFromEnv(deps, cfg, getenv); err != nil {
 		return nil, false, fmt.Errorf("apply shared deps from env: %w", err)
 	}
+	// Wire the consent-gated SSH-ops runner (server path). Off by default; the gate returns nil with a
+	// logged reason unless SSH_OPS + durable + per-tenant STS + a DB all hold (see serverInstanceOpsRunner).
+	// deps.ExternalExecutor (a tools.ToolExecutor) satisfies sshops.Describer for the credential fetch.
+	instanceOps, err := serverInstanceOpsRunner(cfg, getenv, deps.ExternalExecutor, db)
+	if err != nil {
+		return nil, false, fmt.Errorf("ssh-ops runner: %w", err)
+	}
+	deps.InstanceOps = instanceOps
 	mutating := getenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1"
 	if mutating {
 		log.Printf("runtime: HTTP mutating tools enabled (COMPSHARE_ENABLE_MUTATING_TOOLS=1)")
@@ -50,6 +59,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc) (*engine.
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
 	if domainMatchGuard {
 		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
+	}
+	forcedKnowledgeHop, unknownForcedKnowledgeHop := forcedKnowledgeHopEnabledFromEnv(getenv)
+	if unknownForcedKnowledgeHop != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_FORCED_KNOWLEDGE_HOP value %q", unknownForcedKnowledgeHop)
+	}
+	engine.SetForcedKnowledgeHopEnabled(forcedKnowledgeHop)
+	if forcedKnowledgeHop {
+		log.Printf("runtime: HTTP forced first-hop retrieval enabled (COMPSHARE_FORCED_KNOWLEDGE_HOP=1)")
 	}
 	return deps, mutating, nil
 }

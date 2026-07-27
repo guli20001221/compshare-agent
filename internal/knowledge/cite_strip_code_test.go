@@ -60,3 +60,24 @@ func TestStripCiteMarkers_UnfencedShellConditionalSurvives(t *testing.T) {
 	assert.Equal(t, "实例已欠费，请支付订单。",
 		StripCiteMarkers("实例已欠费，请支付订单 [ [w0-init_failure-001] ]。"))
 }
+
+// A model that emits an UNBALANCED marker — two opening brackets, one closing —
+// used to slip past the strip (it demanded >=2 closing brackets) and leak the raw
+// internal chunk_id into the user's reply. Seen live: an agent answer ended with
+// `…关自动续费。[[v2-resource_purchase-1aa5f4052663d9bd]`. The doubled `[[` is
+// signal enough; strip through the single `]`.
+func TestStripCiteMarkers_UnbalancedTrailingMarkerStripped(t *testing.T) {
+	assert.Equal(t, "在财务中心关闭自动续费。",
+		StripCiteMarkers("在财务中心关闭自动续费。[[v2-resource_purchase-1aa5f4052663d9bd]"))
+	// Mid-sentence, and the three-open/one-close variant, both leave no residue.
+	assert.Equal(t, "先付款，再重试。",
+		StripCiteMarkers("先付款[[kb-001]，再重试。"))
+	assert.Equal(t, "见文档。",
+		StripCiteMarkers("见文档[[[kb-002]。"))
+	// A validated unbalanced marker must still register as a real citation so a
+	// grounded answer is not misjudged as uncited.
+	ledger := EvidenceLedger{Items: []EvidenceItem{{ChunkID: "kb-001"}}}
+	report := ValidateGroundedCitations("先付款[[kb-001]，再重试。", ledger)
+	assert.True(t, report.Grounded(), "an unbalanced but resolvable marker is a real citation")
+	assert.Equal(t, []string{"kb-001"}, report.CitedChunkIDs)
+}

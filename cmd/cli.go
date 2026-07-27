@@ -143,6 +143,12 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_ENABLE_MUTATING_TOOLS value %q\n", unknownMutatingTools)
 	}
 	eng.SetMutatingToolsEnabled(mutatingToolsEnabled)
+	// Consent-gated read-only in-instance SSH-ops lane (CLI path, F13: no durable dependency). Off
+	// unless COMPSHARE_SSH_OPS=1; nil (logged) when off or misconfigured. The CLI injects it via the
+	// per-session setter because engine.New builds SharedDeps internally and does not return it (B1).
+	if r := cliInstanceOpsRunner(cfg, getenv); r != nil {
+		eng.SetInstanceOps(r)
+	}
 	reactResultProjection, unknownReactResultProjection := reactResultProjectionEnabledFromEnv(getenv)
 	if unknownReactResultProjection != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_RESULT_PROJECTION value %q\n", unknownReactResultProjection)
@@ -158,6 +164,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
 	}
 	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
+	forcedKnowledgeHop, unknownForcedKnowledgeHop := forcedKnowledgeHopEnabledFromEnv(getenv)
+	if unknownForcedKnowledgeHop != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_FORCED_KNOWLEDGE_HOP value %q\n", unknownForcedKnowledgeHop)
+	}
+	engine.SetForcedKnowledgeHopEnabled(forcedKnowledgeHop)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)

@@ -2,7 +2,7 @@
 
 面向前端接入的 HTTP 接口文档。所有业务接口走同一个网关入口，按请求体中的 `Action` 字段路由。
 
-- Base URL（默认）：`http://<server-host>:8080`
+- Base URL（默认）：`http://<server-host>:7429` —— 端口来自 `deploy/conf/config.yaml` 的 `agent.http.listen_addr`（当前 `0.0.0.0:7429`），`--addr` 可覆盖。
 - 业务入口：`POST /`（根路径直接打）
 - 健康探测：`GET /healthz` → `{"status":"ok"}`
 - Content-Type：`application/json`（也接受 `application/x-www-form-urlencoded`）
@@ -82,7 +82,7 @@ HTTP 状态码与 `Code` 一一对应：
   "RequestId": "req-uuid",
   "Code": "Success",
   "Message": "",
-  "Model": "deepseek-v4-flash",
+  "Model": "gpt-5.6-terra",
   "Version": "0.1.0",
   "Welcome": "我是优云算力共享平台 AI 助手，可以问我控制台相关问题。",
   "SuggestedPrompts": ["我有哪些实例", "4090 现在有库存吗", "创建实例的操作步骤"],

@@ -47,6 +47,11 @@ var stepActionLabels = map[string]string{
 	"SearchKnowledge":                         "搜索知识库",
 	"ReadChunk":                               "查看知识原文",
 	"DiagnoseBilling":                         "诊断扣费异常",
+	// Byte-identical to the console's own STEP_LABELS entry, so shipping the
+	// server-sent label changes no rendered text — it only stops the console
+	// having to keep guessing. The confirmation card says 进入实例只读排查
+	// instead; that is a different string for a different frame, not a drift.
+	"DiagnoseInstanceInternals": "实例内只读排查",
 
 	// --- internal/tools/registry.go: mutating workflows ---------------------
 	// Reachable as steps even in the P6 proposal world: an unaccepted workflow

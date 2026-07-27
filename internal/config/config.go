@@ -62,6 +62,21 @@ type AgentConfig struct {
 	Features  FeaturesConfig  `yaml:"features"`
 	Retrieval RetrievalConfig `yaml:"retrieval"`
 	Trace     TraceConfig     `yaml:"trace"`
+	SSHOps    SSHOpsConfig    `yaml:"ssh_ops"`
+}
+
+// SSHOpsConfig configures the consent-gated, read-only in-instance SSH-ops lane
+// (COMPSHARE_SSH_OPS). Enabled is tri-state like the FeaturesConfig bools: nil = fall through to
+// the COMPSHARE_SSH_OPS env, then to the built-in default (off). The remaining fields configure the
+// harness subprocess and have no env fallback — deployment sets them in YAML. The lane also requires
+// durable turns on the server path and a non-static STS provider (INV-12); see cmd/instance_ops.go.
+type SSHOpsConfig struct {
+	Enabled     *bool         `yaml:"enabled"`      // COMPSHARE_SSH_OPS (default off)
+	HarnessPath string        `yaml:"harness_path"` // absolute path to deploy/ssh_ops_harness/harness.py
+	GatewayURL  string        `yaml:"gateway_url"`  // ANTHROPIC_BASE_URL of the local claude-code-router gateway
+	Python      string        `yaml:"python"`       // interpreter; empty = "python3"
+	Model       string        `yaml:"model"`        // third-party model id; empty = agent.llm.model
+	Timeout     time.Duration `yaml:"timeout"`      // hard per-task wall clock; empty = 5m
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).
@@ -147,6 +162,12 @@ type RateLimitConfig struct {
 	ReadExpensiveQPS   int `yaml:"read_expensive_qps"`
 	ReadExpensiveDaily int `yaml:"read_expensive_daily"`
 
+	// SSHExecQPS / SSHExecDaily: per-tenant cap on consent-gated in-instance
+	// SSH-ops diagnoses. Same shape as the other classes — zero is promoted to
+	// the built-in default (governance.DefaultSSHExec*).
+	SSHExecQPS   int `yaml:"ssh_exec_qps"`
+	SSHExecDaily int `yaml:"ssh_exec_daily"`
+
 	// UserTurnQPS / UserTurnDaily: per-tenant cap on user-initiated chat
 	// turns (one ClientMsgUserMessage frame = 1 turn; confirm responses
 	// and pings do NOT count). 0 = disabled. Unlike the other classes
@@ -175,6 +196,8 @@ func (c RateLimitConfig) Limits() governance.Limits {
 		MutatingDaily:      c.MutatingDaily,
 		ReadExpensiveQPS:   c.ReadExpensiveQPS,
 		ReadExpensiveDaily: c.ReadExpensiveDaily,
+		SSHExecQPS:         c.SSHExecQPS,
+		SSHExecDaily:       c.SSHExecDaily,
 		UserTurnQPS:        c.UserTurnQPS,
 		UserTurnDaily:      c.UserTurnDaily,
 	}
@@ -288,6 +311,12 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 	if rateLimit.ReadExpensiveDaily < 0 {
 		return negativeRateLimitError("agent.rate_limit.read_expensive_daily")
 	}
+	if rateLimit.SSHExecQPS < 0 {
+		return negativeRateLimitError("agent.rate_limit.ssh_exec_qps")
+	}
+	if rateLimit.SSHExecDaily < 0 {
+		return negativeRateLimitError("agent.rate_limit.ssh_exec_daily")
+	}
 	if rateLimit.UserTurnQPS < 0 {
 		return negativeRateLimitError("agent.rate_limit.user_turn_qps")
 	}
@@ -314,6 +343,12 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 	}
 	if rateLimit.ReadExpensiveDaily == 0 {
 		rateLimit.ReadExpensiveDaily = defaults.ReadExpensiveDaily
+	}
+	if rateLimit.SSHExecQPS == 0 {
+		rateLimit.SSHExecQPS = defaults.SSHExecQPS
+	}
+	if rateLimit.SSHExecDaily == 0 {
+		rateLimit.SSHExecDaily = defaults.SSHExecDaily
 	}
 	return nil
 }

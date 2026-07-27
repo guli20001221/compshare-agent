@@ -6,7 +6,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-// StepState is the lifecycle state of one orchestrated step (ADR-006 §决策1).
+// StepState is the lifecycle state of one orchestrated step.
 // The `timeout` state keeps a step-timeout from collapsing into `failed`.
 type StepState string
 

@@ -72,6 +72,28 @@ type replayCaseRecord struct {
 	// attach a retrieval observer (the live probe); empty otherwise.
 	CitedChunkIDs   []string `json:"cited_chunk_ids,omitempty"`
 	RetrievalTraces int      `json:"retrieval_traces,omitempty"`
+	// RetrievedChunks is everything retrieval surfaced this turn, kept or
+	// floor-dropped. Cited ids alone cannot tell a retrieval failure from a
+	// synthesis failure: "the answer did not use chunk X" and "chunk X never
+	// reached the agent" look identical without this.
+	RetrievedChunks []retrievedChunkRec `json:"retrieved_chunks,omitempty"`
+	// History is the prior conversation rehydrated before the live turn. It is
+	// carried into the transcript because a follow-up cannot be judged without
+	// it: "如何生成密钥？" is a complete question only against the exchange it
+	// followed, and a judge reading the question alone would score the answer
+	// for ambiguity the agent did not actually face.
+	History []historyRec `json:"history,omitempty"`
+}
+
+type historyRec struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type retrievedChunkRec struct {
+	ChunkID string  `json:"chunk_id"`
+	Kept    bool    `json:"kept"`
+	Score   float64 `json:"score"`
 }
 
 type turnRec struct {
@@ -169,7 +191,7 @@ func TestBehavioralGate(t *testing.T) {
 	}
 
 	getenv := cfg.RuntimeGetenv(os.Getenv)
-	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv)
+	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv, nil)
 	if err != nil {
 		t.Fatalf("configureSharedDepsFromEnv: %v", err)
 	}
@@ -205,7 +227,7 @@ func TestBehavioralGate(t *testing.T) {
 			continue
 		}
 		t0 := time.Now()
-		rec := runCaseInProcess(context.Background(), deps, mutating, governance.AnonymousSubjectKey, cid, turns, *behavioralTimeout)
+		rec := runCaseInProcess(context.Background(), deps, mutating, governance.AnonymousSubjectKey, cid, nil, turns, *behavioralTimeout)
 		records[cid] = rec
 		ordered = append(ordered, rec)
 		status := "ok"
@@ -244,7 +266,15 @@ func TestBehavioralGate(t *testing.T) {
 // caller replaying N distinct users' questions passes N distinct subjects.
 // configure runs against the fresh session before its first turn — the seam for
 // attaching trace observers (variadic so the gate's call site is unchanged).
-func runCaseInProcess(base context.Context, deps *engine.SharedDeps, mutating bool, subject, caseID string, userTurns []string, timeout time.Duration, configure ...func(*engine.Engine)) *replayCaseRecord {
+//
+// history is the prior conversation to rehydrate before the first live turn,
+// exactly as the HTTP path loads a session's messages out of PostgreSQL. Pass
+// nil for a fresh session. It exists for replaying a production transcript: the
+// alternative — re-sending the user's earlier turns live and letting the agent
+// generate its own replies — reconstructs a conversation that never happened,
+// and the question under test is how the agent handles the follow-up given what
+// the user ACTUALLY saw.
+func runCaseInProcess(base context.Context, deps *engine.SharedDeps, mutating bool, subject, caseID string, history []engine.HistoryMessage, userTurns []string, timeout time.Duration, configure ...func(*engine.Engine)) *replayCaseRecord {
 	eng := engine.NewSession(deps, engine.SessionOptions{
 		Subject:              subject,
 		ConfirmFn:            func(string, map[string]any) bool { return false },
@@ -255,9 +285,12 @@ func runCaseInProcess(base context.Context, deps *engine.SharedDeps, mutating bo
 			fn(eng)
 		}
 	}
-	eng.RehydrateHistory(nil) // fresh session: system prompt + empty history
+	eng.RehydrateHistory(history) // nil = fresh session: system prompt + empty history
 
 	rec := &replayCaseRecord{CaseID: caseID}
+	for _, m := range history {
+		rec.History = append(rec.History, historyRec{Role: m.Role, Content: m.Content})
+	}
 	for i, user := range userTurns {
 		var steps []stepRec
 		var confirms []confirmRec
