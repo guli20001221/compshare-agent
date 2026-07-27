@@ -1007,8 +1007,8 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 // has hydrated state with a higher-or-equal version, the incoming state
 // is treated as STALE — its RecentFacts are merged in via
 // mergeFactsByProducedAt, but the scalar fields (SelectedInstance{ID,Name},
-// PendingSelection*) keep the in-memory values. This is the M1
-// forward-note (docs/agent/plan/m1-session-state-cas.md:429) implementation.
+// PendingSelection*) keep the in-memory values. This implements the
+// forward-note M1 left for it.
 //
 // When does the merge path fire?
 //

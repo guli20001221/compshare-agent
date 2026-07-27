@@ -131,8 +131,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// GET / is the WebSocket upgrade for streaming chat (gateway Action
 	// CreateCSAgentWS); POST / serves the non-streaming Actions (meta, session,
 	// feedback) the frontend still sends over HTTP. The gateway does not pass
-	// through SSE, so chat streaming moved to WS — see
-	// docs/plans/2026-06-03-websocket-transport-refactor.md.
+	// through SSE, which is why chat streaming lives on WS rather than POST.
 	router.GET("/", handlers.HandleWS)
 	router.POST("/", handlers.Dispatch)
 	router.OPTIONS("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })

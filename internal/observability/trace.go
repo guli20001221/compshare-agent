@@ -273,7 +273,7 @@ func traceContinuityObserved(trace ContinuityTrace) bool {
 // TestActualExecutionTierAndExecutionPathAreSeparateAxes pins the divergence.
 //
 //   - Work-tier axis (TaskTier predicted / ActualExecutionTier realized): WHAT KIND of
-//     work the turn did, on the ADR-001 complexity scale fast < knowledge < agent.
+//     work the turn did, on the complexity scale fast < knowledge < agent.
 //   - Runtime-form axis (PlannedExecutionPath / ActualExecutionPath): the LEGACY
 //     runtime-form label — routing / terminal_rag / agent (see the ExecutionPath*
 //     const note). Retained for trace continuity; the current runtime has one form
@@ -286,7 +286,7 @@ func traceContinuityObserved(trace ContinuityTrace) bool {
 // DeriveActualExecutionTier / DeriveActualExecutionPath).
 
 // ActualExecutionTier* are the work-tier-axis values for TraceRecord.ActualExecutionTier (and
-// the predicted TaskTier). Mirror the ADR-001 task-complexity tiers.
+// the predicted TaskTier). Mirror the task-complexity tiers.
 const (
 	ActualExecutionTierFast      = "fast"
 	ActualExecutionTierKnowledge = "knowledge"

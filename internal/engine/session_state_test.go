@@ -352,8 +352,8 @@ func TestEngine_RoundTrip_AcrossReplicas(t *testing.T) {
 }
 
 // TestSetSessionState_VersionAwareMerge_StaleIncomingDoesNotClobber is the
-// load-bearing test for the M2 version-aware merge. It pins the M1
-// forward-note (docs/agent/plan/m1-session-state-cas.md:429) — a
+// load-bearing test for the M2 version-aware merge. It pins the contract M1
+// left as a forward-note — a
 // stale-or-equal-version incoming state must NOT overwrite the engine's
 // in-memory scalar fields, but its RecentFacts ARE reconciled via
 // mergeFactsByProducedAt.

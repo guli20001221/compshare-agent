@@ -767,9 +767,9 @@ func readJSONMap(t *testing.T, path string) map[string]any {
 	return payload
 }
 
-// TaskTier (ADR-002 reserved schema slot) must serialize when populated
+// TaskTier (a reserved schema slot) must serialize when populated
 // and stay absent when empty (omitempty). The "empty" branch protects
-// legacy consumers parsing pre-ADR-002 traces from seeing an unexpected
+// legacy consumers parsing older traces from seeing an unexpected
 // "task_tier":"" key. Populator is B2-B4 territory; this test only
 // covers the schema contract added in B1.
 func TestTraceRecord_TaskTier_Serialization(t *testing.T) {

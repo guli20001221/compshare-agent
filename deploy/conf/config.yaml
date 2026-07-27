@@ -68,8 +68,11 @@ agent:
     # guards only when their flag-on path is the validated production path.
     domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
     forced_knowledge_hop: true          # retrieve once on the user's words before the Agent's first call (eval-gated on: complaint/statement retrieval 4→14, no fab, control net-zero)
-    skill_executor: false               # body-driven skill executor gate (P2a gray-rollout)
-    skill_executor_diagnosis_pilots: [] # e.g. [diagnose-ssh, diagnose-billing] — requires skill_executor: true
+    # INERT — parsed and forwarded, but nothing reads the overrides they emit;
+    # the body-driven skill executor these gated no longer exists. Kept so an
+    # older config file still loads. Setting either changes no behavior.
+    skill_executor: false
+    skill_executor_diagnosis_pilots: []
 
   # Knowledge retrieval / RAG. The default answer stack: curated retrieval,
   # qwen3 RRF. corpus/embeddings/model/timeout fields

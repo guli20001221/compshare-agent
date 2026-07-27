@@ -6,7 +6,7 @@ That gate and its `eval/intent/` package were removed with the P6 router deletio
 the label data is retained here for the planned central-Agent HTTP/WebSocket replay
 gate that will replace it.
 
-Full provenance + methodology: `docs/research/routing_eval_set_637_2026-06-22.md`.
+Full provenance + methodology lived in a research note retired by the 2026-07-27 pre-July docs sweep; recover it from git history if needed.
 
 ## Committed files
 

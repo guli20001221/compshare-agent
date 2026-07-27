@@ -17,7 +17,7 @@ import (
 // Source: eval/trace_gate/before_state_observations.jsonl, captured 2026-06-06
 // by eval/agentic_rag_probe.ps1 at N=5/probe, COMPSHARE_EXTERNAL_KNOWLEDGE=1,
 // against the exec branch (routing byte-identical to origin/main 293f944). Zero
-// jitter across all 25 turns (see before_state_report.md). This is REAL data
+// jitter across all 25 turns. This is REAL data
 // from the runtime entry path, not a hand-authored fixture.
 //
 // Contract (the gap):
