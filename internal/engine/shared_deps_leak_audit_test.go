@@ -145,6 +145,7 @@ var nonAuditableFields = map[string]string{
 	"ReactResultProjectionEnabled":  "bool — no methods",
 	"ReactHistoryCompactionEnabled": "bool — no methods",
 	"ExternalExecutor":              "tools.ToolExecutor — already covered by TestSessionIsolation_NoProjectIdLeak (PR #135)",
+	"InstanceOps":                   "engine.InstanceOpsRunner — the read-only in-instance SSH diagnosis runner. Deliberately NOT added to sharedDepConcreteTypes: the concrete sshops.Service is constructed once in cmd and injected read-only; it exposes no shared setter that could cross sessions (the per-session SetInstanceOps lives on *Engine, which is per-session and intentionally excluded from this audit). Auditing the concrete type would subject the ported sshops package to the mutating-verb scan, a constraint this lane does not impose.",
 }
 
 func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {

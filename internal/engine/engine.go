@@ -469,6 +469,24 @@ type Engine struct {
 	selectedInstanceIDAtTurnStart     string
 	instanceResolutionSourceThisTurn  string
 	factCacheOldestAgeSecondsThisTurn int
+	// instanceOps runs the read-only in-instance SSH diagnosis lane. nil = lane
+	// off, and the tool is then absent from the model window
+	// (centralAgentToolWindow). Copied from SharedDeps.InstanceOps in NewSession
+	// and overridable per session via SetInstanceOps (the CLI path has no
+	// SharedDeps handle). Per-session by classification: the slot is independently
+	// settable, so a session can hold a different runner than its siblings — it is
+	// not treated as a shared singleton.
+	instanceOps InstanceOpsRunner
+	// instanceOpsRanThisTurn enforces at most one in-instance run per turn
+	// (INV-11). Set at executeInstanceOps entry, BEFORE confirm, so a declined card
+	// still spends the slot. Reset per turn. Per-session/per-turn — sharing would
+	// let one tenant's run withdraw the lane from another's turn.
+	instanceOpsRanThisTurn bool
+	// currentTurnID is the server-side turn identity for THIS turn, the audit dedup
+	// key the in-instance lane uses so a durable replay cannot re-enter the box
+	// (INV-9). Set at ChatWithOptions entry from the resolved turnID, cleared on
+	// return. Per-session/per-turn — it is one turn's identity.
+	currentTurnID string
 	// verbatimBlocksThisTurn holds text that must reach the user byte-identical
 	// (see verbatimReplyPrefix) without ending the turn. Accumulated as tools
 	// return it and composed in front of the Agent's reply at the turn exit.
@@ -505,6 +523,14 @@ type SharedDeps struct {
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
 	ExternalExecutor tools.ToolExecutor
+	// InstanceOps is the shared read-only in-instance SSH diagnosis runner (nil =
+	// lane off). The server wires it here; the CLI injects it per session via
+	// Engine.SetInstanceOps (it has no SharedDeps handle). It is NOT a
+	// mutating-setter leak vector: the concrete sshops.Service is constructed once
+	// in cmd and never mutated through a shared setter (see the leak audit's
+	// nonAuditableFields entry — deliberately kept out of sharedDepConcreteTypes so
+	// the ported sshops package is not subjected to the mutating-verb scan).
+	InstanceOps InstanceOpsRunner
 }
 
 // SessionOptions configures a per-session Engine. Server passes a freshly
@@ -588,6 +614,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn, opts.ActionJournal, opts.RequireActionJournal)
 	eng.safeExecutor.SetMutatingToolsEnabled(opts.MutatingToolsEnabled)
 	eng.externalExecutor = deps.ExternalExecutor
+	eng.instanceOps = deps.InstanceOps
 	return eng
 }
 
@@ -648,6 +675,15 @@ func (e *Engine) SetMutatingToolsEnabled(v bool) {
 	if e.safeExecutor != nil {
 		e.safeExecutor.SetMutatingToolsEnabled(v)
 	}
+}
+
+// SetInstanceOps injects the read-only in-instance SSH diagnosis runner for this
+// session. The CLI needs this because it builds its Engine through New() and has
+// no SharedDeps handle to populate InstanceOps; the server sets it via SharedDeps
+// instead. A nil runner leaves the lane off — the DiagnoseInstanceInternals tool
+// then stays out of the model's window (centralAgentToolWindow).
+func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
+	e.instanceOps = r
 }
 
 // SetSessionFactContextEnabled toggles advisory RecentFacts prompt injection.
@@ -1145,6 +1181,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if turnID == "" {
 		turnID = e.ephemeralTurnID()
 	}
+	// Capture the server-side turn identity for the in-instance lane's audit dedup
+	// key (INV-9). Taken from the raw resolved turnID (NOT any safeContext-derived
+	// text) and cleared on return so it never bleeds into the next turn.
+	e.currentTurnID = turnID
+	defer func() { e.currentTurnID = "" }()
 	e.resetTurnCompletion()
 	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
 		e.turnModelCallsThisTurn++
@@ -1237,6 +1278,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.actionProposalRanThisTurn = false
 	e.actionProposalDispositionThisTurn = ""
 	e.knowledgeQAAgentLoopThisTurn = false
+	e.instanceOpsRanThisTurn = false
 	e.verbatimBlocksThisTurn = nil
 	// Single composition site for verbatim blocks: every success path — normal
 	// answer, deterministic reply, token-budget recovery, round-ceiling recovery —
@@ -1379,7 +1421,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
 		messages := e.buildMessagesForLLM()
-		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled)
+		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
 		req := llm.ChatRequest{
 			Messages: messages,
 			Tools:    toolWindow,
@@ -2688,6 +2730,15 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		msg := "write workflows are unavailable until a verified ActionProposal is accepted"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return friendlyToolResultJSON(msg)
+	}
+
+	// In-instance SSH diagnosis lane → its own dispatch, BEFORE the diagnosis-chain
+	// and mutating branches so it never inherits the SafeToolExecutor per-attempt
+	// wall-clock ceiling. It is NOT an IsDiagnosisTool (not in chainRegistry), so
+	// without this branch it would fall through to the mutating handler and be
+	// blocked. executeInstanceOps fails closed when the lane is off (nil runner).
+	if action == "DiagnoseInstanceInternals" {
+		return e.executeInstanceOps(ctx, action, args, onStep)
 	}
 
 	// Diagnosis meta-tools → delegate to diagnosis engine. Keys on chainRegistry

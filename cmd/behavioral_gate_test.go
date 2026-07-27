@@ -180,7 +180,7 @@ func TestBehavioralGate(t *testing.T) {
 	}
 
 	getenv := cfg.RuntimeGetenv(os.Getenv)
-	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv)
+	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv, nil)
 	if err != nil {
 		t.Fatalf("configureSharedDepsFromEnv: %v", err)
 	}

@@ -280,7 +280,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 7 shared + 79 per-session = 86 fields. Any drift
+// Whitelist totals: 7 shared + 83 per-session = 90 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -437,6 +437,16 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"secretInputsThisTurn":                true,
 		"baseUserContext":                     true,
 		"displayedResourceSelectionThisTurn":  true,
+		// In-instance SSH diagnosis lane (INV-9/INV-11). instanceOps is copied from
+		// SharedDeps but is per-session-overridable via SetInstanceOps (the CLI path),
+		// so a session can hold a different runner than its siblings — classified
+		// per-session, not shared like externalExecutor. The two *ThisTurn fields are
+		// turn-local: sharing them would let one tenant's in-instance run (or its
+		// one-per-turn slot) bleed into another tenant's turn. All reset per turn /
+		// cleared on return.
+		"instanceOps":            true,
+		"instanceOpsRanThisTurn": true,
+		"currentTurnID":          true,
 		// Verbatim user blocks accumulated this turn (see verbatimReplyPrefix).
 		// Turn-local: sharing it would splice one tenant's rendered billing figures
 		// into another tenant's reply — the exact cross-user leak this test exists to
@@ -454,15 +464,22 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// when the verbatim-dump guard was retired.
 	// 82 -> 84 / 89 -> 91: readChunkCallsThisTurn + readChunkIDsThisTurn, the
 	// ReadChunk full-body budget and its already-read set.
-	// 84 -> 85 / 91 -> 92: verbatimBlocksThisTurn, added when the billing exit
-	// stopped terminating the turn (verbatimReplyPrefix) and its rendered text had
-	// to be carried to the turn's single composition site instead.
-	if want, got := 85, len(perSessionFields); want != got {
+	// 84 -> 87 / 91 -> 94: the in-instance SSH-ops lane — instanceOps (the runner),
+	// instanceOpsRanThisTurn (per-turn self-selection latch) and currentTurnID
+	// (evidence-binding id).
+	// 87 -> 88 / 94 -> 95: verbatimBlocksThisTurn, added on main by #471 when the
+	// billing exit stopped terminating the turn (verbatimReplyPrefix) and its
+	// rendered text had to be carried to the turn's single composition site.
+	// This lane and main each grew the struct independently off the same 84/91 base
+	// (+3 here, +1 there), so the merged counts are the SUM of both deltas — not
+	// either side's number. Taking one side's figure is how this test goes green
+	// while silently dropping the other side's field from the leak whitelist.
+	if want, got := 88, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 92, typ.NumField(); want != got {
+	if want, got := 95, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

@@ -106,7 +106,11 @@ func (e *Engine) runForcedKnowledgeHop(ctx context.Context, userMsg string, onSt
 	if query == "" {
 		return
 	}
-	if !toolListContainsFunction(centralAgentToolWindow(e.mutatingToolsEnabled), "SearchKnowledge") {
+	// Same two gates the real window is built from (engine.go), so this check sees
+	// exactly the tool list the model will see. The in-instance lane only adds
+	// DiagnoseInstanceInternals, but reading the window through a different set of
+	// gates than the one that produces it is how the two silently drift apart.
+	if !toolListContainsFunction(centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil), "SearchKnowledge") {
 		return
 	}
 

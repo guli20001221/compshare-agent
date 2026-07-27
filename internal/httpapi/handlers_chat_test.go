@@ -442,7 +442,6 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	assert.Contains(t, body, "1.2.3.4")
 	assert.Contains(t, body, "12345678-1234-1234-1234-1234567890ab")
 	assert.NotContains(t, body, "AKIAIOSFODNN7EXAMPLE")
-	assert.NotContains(t, body, guardrails.IPRedacted)
 	assert.NotContains(t, body, guardrails.ProjectIDRedacted)
 	assert.True(t,
 		strings.Contains(body, guardrails.CredentialRedactedOutput) || strings.Contains(body, "[REDACTED]"),
@@ -450,7 +449,13 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	)
 
 	persisted := messages.patch.Content
-	assert.Contains(t, persisted, guardrails.IPRedacted)
+	// The stored copy must match what was streamed, for IPs specifically: only
+	// the persisted side used to be IP-redacted, so an answer containing an SSH
+	// login line read fine live and came back as "root@[已脱敏:IP]" after the
+	// page was reloaded and history rehydrated. Credentials stay redacted on
+	// both sides — that asymmetry is intentional and asserted below.
+	assert.Contains(t, persisted, "1.2.3.4",
+		"a reload must not turn an actionable endpoint into a placeholder")
 	assert.Contains(t, persisted, guardrails.ProjectIDRedacted)
 	assert.True(t,
 		strings.Contains(persisted, guardrails.CredentialRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
@@ -460,7 +465,6 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 		strings.Contains(persisted, guardrails.TokenRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
 		"persisted assistant output must redact token bodies, got: %s", persisted,
 	)
-	assert.NotContains(t, persisted, "1.2.3.4")
 	assert.NotContains(t, persisted, "12345678-1234-1234-1234-1234567890ab")
 	assert.NotContains(t, persisted, "AKIAIOSFODNN7EXAMPLE")
 	assert.Contains(t, persisted, "uhost-abc123")

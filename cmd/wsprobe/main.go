@@ -49,6 +49,11 @@ func main() {
 		email    = flag.String("email", "", "X-User-Email header (optional)")
 		project  = flag.String("project", "", "ProjectId to include in the chat frame")
 		reqID    = flag.String("request-id", "wsprobe-1", "X-Request-Id header")
+		// The in-instance diagnosis lane runs on its own budget (agent.ssh_ops.timeout,
+		// 12m in the P3 config). A 5-minute client deadline cut a real run off mid-probe
+		// and printed "context deadline exceeded", which reads exactly like a server
+		// failure and is not one. Make the client wait longer than the server can.
+		timeout = flag.Duration("timeout", 20*time.Minute, "client-side deadline for the whole exchange")
 	)
 	flag.Parse()
 
@@ -67,11 +72,13 @@ func main() {
 		email:   *email,
 		project: *project,
 		reqID:   *reqID,
+		timeout: *timeout,
 	})
 }
 
 type clientOpts struct {
 	url, session, message, confirm, company, org, account, email, project, reqID string
+	timeout                                                                      time.Duration
 }
 
 func runClient(o clientOpts) {
@@ -106,7 +113,11 @@ func runClient(o clientOpts) {
 		h.Set("X-Request-Id", o.reqID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	deadline := o.timeout
+	if deadline <= 0 {
+		deadline = 20 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 
 	fmt.Printf("→ dialing %s\n   headers: X-Company-Id=%q X-Organization-Id=%q X-Request-Id=%q\n",
@@ -159,13 +170,25 @@ func runClient(o clientOpts) {
 			}
 			fmt.Printf("● meta        RequestId=%v SessionId=%v MessageId=%v\n", f["RequestId"], activeSession, f["MessageId"])
 		case "step":
-			fmt.Printf("● step        [%v] %v %v\n", f["Index"], f["Type"], f["Action"])
+			// Label and Message are what the console actually renders — Action
+			// alone tells you the frame arrived, not what the user would read.
+			// Printing all three is how a label regression becomes visible here
+			// instead of only in a browser.
+			fmt.Printf("● step        [%v] %v %v%s%s\n",
+				f["Index"], f["Type"], f["Action"],
+				optionalField(" | ", f["Label"]), optionalField(" | ", f["Message"]))
 		case "token":
 			t, _ := f["Text"].(string)
 			tokens.WriteString(t)
 			fmt.Printf("● token       %q\n", t)
 		case "confirmation":
-			fmt.Printf("● confirmation Action=%v ConfirmationId=%v\n", f["Action"], f["ConfirmationId"])
+			// Summary is the card body the user reads before authorizing, and
+			// TimeoutSeconds is how long they have — both were invisible here.
+			fmt.Printf("● confirmation Action=%v ConfirmationId=%v TimeoutSeconds=%v\n",
+				f["Action"], f["ConfirmationId"], f["TimeoutSeconds"])
+			if summary, _ := json.Marshal(f["Summary"]); len(summary) > 0 && string(summary) != "null" {
+				fmt.Printf("               Summary=%s\n", summary)
+			}
 			if o.confirm == "yes" || o.confirm == "no" {
 				cid, _ := f["ConfirmationId"].(string)
 				reply := map[string]any{
@@ -208,6 +231,17 @@ func writeJSON(ctx context.Context, conn *websocket.Conn, v any) error {
 		return err
 	}
 	return conn.Write(ctx, websocket.MessageText, raw)
+}
+
+// optionalField renders " | value" for a frame field that may be absent or
+// empty, so a missing Label/Message costs nothing visually instead of printing
+// "<nil>".
+func optionalField(sep string, v any) string {
+	s, _ := v.(string)
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	return sep + s
 }
 
 func firstNonEmptyStr(vals ...any) string {

@@ -180,3 +180,29 @@ func TestHTTPMigrationsAddActionAbandonment(t *testing.T) {
 	assert.Contains(t, ddl, "'abandoned'")
 	assert.Contains(t, ddl, "ck_turn_action_status")
 }
+
+// TestHTTPMigrationsCreateSSHOpsAudit pins the 0011 fail-closed audit table to the exact columns the
+// writer (store.SSHOpsAuditStore.Begin/Finish) references and to the INV-9 replay-dedup constraint. A
+// drift on either side — a renamed/removed column, or a dropped UNIQUE — silently breaks the audit
+// INSERT (failing closed, refusing every diagnosis) or reopens the durable-replay re-entry hole.
+func TestHTTPMigrationsCreateSSHOpsAudit(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0011_create_ssh_ops_audit.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	assert.Contains(t, ddl, "CREATE TABLE IF NOT EXISTS ssh_ops_audit")
+	// every column the Begin INSERT / Finish UPDATE names must exist
+	for _, column := range []string{
+		"id", "request_uuid", "turn_id", "task_hash",
+		"top_organization_id", "organization_id", "instance_id", "task", "phase",
+		"disposition", "exit_code", "timed_out", "output_bytes", "err_class",
+		"started_at", "finished_at",
+	} {
+		assert.Contains(t, ddl, column, "0011 must define column %s", column)
+	}
+	// INV-9: the (turn_id, task_hash) UNIQUE is the replay-dedup key. Losing it reopens re-entry.
+	assert.Contains(t, ddl, "UNIQUE (turn_id, task_hash)")
+	// the crown-jewel secret must never have a column to land in (its field name is "password")
+	assert.NotContains(t, strings.ToLower(ddl), "password")
+}

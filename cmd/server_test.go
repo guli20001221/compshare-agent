@@ -278,7 +278,7 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 			return "off"
 		}
 		return ""
-	})
+	}, nil) // nil db: this test does not exercise the SSH-ops lane
 	require.NoError(t, err)
 	defer pool.Close()
 
