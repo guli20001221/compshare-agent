@@ -85,3 +85,16 @@ dist/
 eval/traces_comfyui_smoke/
 eval/traces_linuxpt_smoke/
 eval/traces_pr5_ab/
+
+# Production chat exports, judge dumps and replay packages under eval/reports/.
+# These are raw customer conversations — IPs, passwords, instance ids, order
+# numbers — and THIS REPOSITORY IS PUBLIC. As of 2026-07-27 the main checkout
+# carried 360 MB / 371 untracked entries here (prod_chat_export_*,
+# chat_resolution_judge_*, prod_chat_judgement_*), none of it ignored, so a
+# single `git add -A` would have published all of it.
+#
+# Nothing in the deploy path reads eval/ — cmd/, internal/ and deploy/ have zero
+# references to it — so ignoring the directory costs production nothing. Files
+# already tracked under it are unaffected: git never ignores a tracked path. To
+# add a genuinely publishable report here, use `git add -f`.
+eval/reports/
