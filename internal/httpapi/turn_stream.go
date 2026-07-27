@@ -67,6 +67,14 @@ func coordinatorStreamEvent(turn store.Turn, event turncoord.Event) (string, map
 		legacyEvent = "step"
 		copyPayloadField(frame, payload, "Action", "action")
 		copyPayloadField(frame, payload, "Message", "message")
+		// Display name for Action, same registry the legacy stream uses
+		// (step_label.go). Additive and omitted when unlabelled; the durable
+		// Payload itself is never rewritten.
+		if action, _ := payload["action"].(string); action != "" {
+			if label := stepActionLabel(action); label != "" {
+				frame["Label"] = label
+			}
+		}
 		// Type is reserved for the canonical durable event name. New clients
 		// read the step subtype from Payload.type; StepType is an additive aid
 		// for compatibility adapters.

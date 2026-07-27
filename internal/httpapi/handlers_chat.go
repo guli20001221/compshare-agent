@@ -60,9 +60,14 @@ type streamErrorEvent struct {
 // stepEvent is the streamed projection of engine.StepEvent — only fields safe
 // for the frontend are included. Args, Display, TraceResult, and cap info are
 // intentionally omitted.
+//
+// Label is the display name for Action (step_label.go). It is additive and
+// omitted when the action has no label, so a client that ignores it sees the
+// exact frame it saw before.
 type stepEvent struct {
 	Type    string `json:"Type"`
 	Action  string `json:"Action,omitempty"`
+	Label   string `json:"Label,omitempty"`
 	Message string `json:"Message,omitempty"`
 	Index   int    `json:"Index"`
 }
@@ -436,6 +441,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		_ = sw.WriteEvent("step", stepEvent{
 			Type:    stepTypeString(ev.Type),
 			Action:  ev.Action,
+			Label:   stepActionLabel(ev.Action),
 			Message: guardrails.RedactOutputLeak(guardrails.RedactPII(ev.Message)),
 			Index:   stepIndex,
 		})

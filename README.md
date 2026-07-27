@@ -45,6 +45,13 @@ done
 postgresql://user:pass@host:5432/compshare_agent?sslmode=disable
 ```
 
+## 实例内只读排查（SSH-ops）
+
+可选功能，**默认关闭**：用户在授权卡上同意后，助手 SSH 进他自己的实例执行只读命令定位问题。
+开启需要额外的配置字段、Python 运行时依赖、一个常驻网关进程和一条数据库迁移。
+
+部署步骤、字段填写分工和排错见 [`deploy/ssh_ops_harness/README.md`](deploy/ssh_ops_harness/README.md)。
+
 ## 测试
 
 ```bash
