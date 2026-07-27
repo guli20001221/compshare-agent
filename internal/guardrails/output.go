@@ -2,7 +2,6 @@ package guardrails
 
 import (
 	"regexp"
-	"strconv"
 	"strings"
 	"unicode"
 )
@@ -33,19 +32,32 @@ import (
 //
 // NOT in scope (deliberately preserved):
 //   - GPU model numbers (4090 / 5090 / A100 / H200) — pricing/spec
-//     answers depend on these. The 4-digit token can't accidentally
-//     match an IPv4 octet because IPv4 requires three dots.
+//     answers depend on these.
 //   - Instance IDs (uhost-xxx) — answers about specific instances
 //     remain readable.
 //   - Zone codes (cn-wlcb-01) — needed for region-specific answers.
 //   - Prices ("¥1.69/小时") — must be preserved verbatim.
+//   - IPv4 addresses — see below.
+//
+// IPv4 used to be redacted here and no longer is. It was never a secret in
+// this product: the addresses that appear are the user's OWN instance
+// endpoints, shown back to the user who owns them. Masking them cost real
+// information and bought nothing:
+//   - The SSH login line ("ssh root@203.0.113.9 -p 23") stayed intact while
+//     streaming but came back as "root@[已脱敏:IP]" after a reload, because
+//     only the persisted copy was redacted — the same answer, useless.
+//   - In the in-instance diagnosis activity stream, "--ip=127.0.0.1" and
+//     "--ip=0.0.0.0" collapsed to the same token — and loopback-vs-wildcard
+//     is precisely the discriminator in a "service is up but unreachable"
+//     diagnosis.
+//   - Version-shaped strings ("1.2.3.4-rc1") matched the dotted-quad regex
+//     and were mangled.
+//
+// What this boundary is for is credentials — AK/SK, tokens, signatures — and
+// that redaction is untouched. Do not reintroduce IPv4 masking without a
+// concrete leak it prevents.
 //
 // Known false-positive surface (acceptable per ticket):
-//   - Localhost / loopback (127.0.0.1) is also redacted. Acceptable
-//     — operator dashboards don't lose information by masking it.
-//   - Public IP ranges legitimately quoted in documentation snippets
-//     (e.g. example IPs in a how-to) will redact. Acceptable in the
-//     persistence boundary even though it looks odd in transcripts.
 //   - Marker-prefixed prose: `AccessKey: <opaque-value>`
 //     redacts because an assigned credential field is treated as sensitive
 //     regardless of value shape.
@@ -57,18 +69,12 @@ import (
 // operator scanning persisted messages can attribute redactions to the
 // right Guardrails layer ("[output]:" vs "[已脱敏:..]").
 const (
-	IPRedacted               = "[已脱敏:IP]"
 	ProjectIDRedacted        = "[已脱敏:项目ID]"
 	CredentialRedactedOutput = "[已脱敏:凭据]"
 	TokenRedactedOutput      = "[已脱敏:令牌]"
 )
 
 var (
-	// IPv4 candidate. Each octet pre-validated 0-255 in callback because
-	// `\d{1,3}` allows 999 which is invalid; the post-match filter
-	// converts FPs (like "300.0.0.1") back to passthrough.
-	ipv4Regex = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
-
 	// 8-4-4-4-12 hex UUID. Used for CompShare project_id values and
 	// (incidentally) any standard UUID the LLM might quote.
 	uuidRegex = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
@@ -281,9 +287,9 @@ func allHanText(value string) bool {
 // replaced. Designed for assistant-reply persistence (HTTP messages
 // role=assistant messages.content). Routing-relevant tokens are preserved.
 //
-// Credential cleanup runs through RedactCredentials first; IP and UUID
-// cleanup is independent. Idempotent — placeholders contain no
-// digits in IP-octet positions, no dashes in UUID grouping, no eyJ
+// Credential cleanup runs through RedactCredentials first; UUID cleanup is
+// independent. IPv4 is deliberately NOT redacted — see the package doc.
+// Idempotent — placeholders contain no dashes in UUID grouping, no eyJ
 // prefix, etc., so re-running is a no-op.
 func RedactOutputLeak(s string) string {
 	if s == "" {
@@ -291,32 +297,7 @@ func RedactOutputLeak(s string) string {
 	}
 	out := RedactCredentials(s)
 	out = uuidRegex.ReplaceAllString(out, ProjectIDRedacted)
-	out = ipv4Regex.ReplaceAllStringFunc(out, redactIPv4IfValid)
 	return out
-}
-
-// redactIPv4IfValid validates each dotted octet is 0-255 before
-// redacting. A match like "300.0.0.1" passes the regex (digits + dots)
-// but is not a real IPv4 — leave it alone so legitimate phrasings
-// (chunk IDs, version strings) aren't mangled.
-func redactIPv4IfValid(match string) string {
-	octets := strings.Split(match, ".")
-	if len(octets) != 4 {
-		return match
-	}
-	for _, o := range octets {
-		n, err := strconv.Atoi(o)
-		if err != nil || n < 0 || n > 255 {
-			return match
-		}
-		// Disallow leading zeros (except "0" itself) to match
-		// strict IPv4 textual form. "01.02.03.04" is not a valid
-		// dotted-quad presentation.
-		if len(o) > 1 && o[0] == '0' {
-			return match
-		}
-	}
-	return IPRedacted
 }
 
 // redactBearerKeepMarker preserves the "Bearer"/"token" prefix and

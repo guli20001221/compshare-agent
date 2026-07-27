@@ -2,7 +2,7 @@
 
 > 优云算力共享平台 AI 助手。本文描述**当前**系统架构、各组件职责与关键设计取舍。
 >
-> 历史说明:早期版本按 `fast / knowledge / agent` 三个 tier 分流,并用一个 Planner 语义路由 + 渐进式加载的 `internal/skills` playbook。该三层路由栈(`internal/routing`、`cmd/routegen`、route manifests、`internal/skills`、`cmd/skillgen`)已在 **P6 物理删除**。当前是单一中心 Agent 循环 + typed capability。旧设计参见 `docs/adr/` 下标记 superseded 的 ADR。
+> 历史说明:早期版本按 `fast / knowledge / agent` 三个 tier 分流,并用一个 Planner 语义路由 + 渐进式加载的 `internal/skills` playbook。该三层路由栈(`internal/routing`、`cmd/routegen`、route manifests、`internal/skills`、`cmd/skillgen`)已在 **P6 物理删除**。当前是单一中心 Agent 循环 + typed capability。描述旧三层设计的 ADR、plan 与实验报告已在 2026-07-27 清理(它们记录的是被删掉的架构,且大多是更弱模型时代的实验);要追溯设计过程请查 git 历史。
 
 ## 1. 概述
 
@@ -76,7 +76,7 @@ graph TD
 
 1. **输入守卫** — 命中拦截规则(越狱 / off-topic / 特定关键词)→ 直接返回固定话术,不进 LLM。
 2. **上下文装配** — 恢复未决的实例选择、注入近端事实缓存与压缩历史,编译成 `AgentContext`。
-3. **中心 Agent 循环**(`maxReActRounds=10`,`maxHistoryMessages=120`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=20`),每轮:
+3. **中心 Agent 循环**(`maxReActRounds=16`,`maxHistoryMessages=120`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=30`;检索另有两层预算:`maxSearchKnowledgeCallsPerTurn=4` 管"决定检索几次",`maxRetrievalQueriesPerTurn=8` 管"实际发出几条 query"——一次决策会扇出多条),每轮:
    - 选一个 **read capability** → `executeConcreteReadCapability` → `capability.MigratedRead(action)` → `RegisteredRead.Run` → 返回 Typed Observation(见 §5、§7)。
    - 调 **`SearchKnowledge`** → 在循环内检索平台知识 / 排障资料作为证据(见 §8)。
    - 提出**写操作** → Action Resolver 确定性定目标 → Sealed Workflow 暂停等确认(见 §6)。
@@ -134,7 +134,11 @@ RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不�
 
 ## 9. Diagnosis — 只读诊断
 
-`internal/diagnosis/` 是只读诊断链,当前只广告**两条**:`DiagnoseSSH` 和 `DiagnoseBilling`(hand-written registry,非 codegen)。init-failure / GPU-not-detected / image-issue / port-firewall 链在 pre-P7 收敛中删除(无诊断价值,或改由中心 Agent 经 `SearchKnowledge` + `DescribeCompShareInstance` 取证)。`chainRegistry` 恒等于广告集,未广告的诊断名无法 resolve(`TestDiagnosisRegistryHasNoUnadvertisedChains` 强制:model 看不见 ≠ 不可达)。`DiagnoseSSH` 只做云侧预检:精确核对目标实例、生命周期状态、结构化登录入口和监控风险信号,不探测公网端口,也不进入实例检查 SSH 服务或认证日志。边界规则:只读自检命令可作为用户动作建议,改环境的命令须标"可选修复",绝不自动执行。
+`internal/diagnosis/` 是只读诊断链,**模型可见的只有一条**:`DiagnoseBilling`(hand-written registry,非 codegen)。init-failure / GPU-not-detected / image-issue / port-firewall 链在 pre-P7 收敛中删除(无诊断价值,或改由中心 Agent 经 `SearchKnowledge` + `DescribeCompShareInstance` 取证)。`chainRegistry` 恒等于广告集,未广告的诊断名无法 resolve(`TestDiagnosisRegistryHasNoUnadvertisedChains` 强制:model 看不见 ≠ 不可达)。
+
+SSH 是个需要知道的例外:`SSHFailureChain` 的代码仍在、仍会跑,但**不再是 `DiagnoseSSH` 工具**——由 `internal/capability/read_instance_access.go` 直接构造该链,所以 SSH 对模型呈现为 `ReadCapability_instance_access`。它只做云侧预检:精确核对目标实例、生命周期状态、结构化登录入口和监控风险信号,不探测公网端口,也不进入实例检查 SSH 服务或认证日志。
+
+边界规则:只读自检命令可作为用户动作建议,改环境的命令须标"可选修复",绝不自动执行。
 
 ## 10. 横切关注点
 

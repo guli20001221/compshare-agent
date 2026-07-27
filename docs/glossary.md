@@ -85,6 +85,14 @@ Naming changes follow the same risk discipline as any change here:
 2. **New code uses canonical names only.** Don't add new `Planner`/`cutover`/`Saga`-style names.
 3. **Internal Go symbols + filenames** rename freely (byte-stable — the rendered prompts don't change; the planner/router-prompt SHA pin proves it). Keep a deprecated alias for one release where external-ish call sites exist.
 4. **Prompt text** that the model reads (e.g. "You are the … planner") is a behavior surface — rename behind an eval-gated A/B, not byte-stable.
-5. **Wire/ops contracts are NOT free to rename**: the trace JSON tags (`json:"planner"`, `json:"cutover_status"`, `json:"cutover_intents"`) and env flags (`USE_INTENT_PLANNER*`) are consumed by trace storage/dashboards **and the eval harness itself**. These move behind a compat window (dual-emit / dual-read) with consumers updated in the same change.
+5. **Wire/ops contracts are NOT free to rename**: the trace JSON tags (`json:"planner"`, `json:"cutover_status"`, `json:"cutover_intents"`) are still readable for historical trace records and are consumed by trace storage/dashboards **and the eval harness itself**, so they move behind a compat window (dual-emit / dual-read) with consumers updated in the same change. The `USE_INTENT_PLANNER*` env flags no longer exist — see the retired rows in Section 2.
 
-Priority order (highest naming-debt first): **Planner → IntentRouter**, **cutover → direct dispatch**, the **three routers** split, then env-prefix unification, then the remaining over-promising names (`Saga`, `MemoryLimiter`, …).
+Priority order (highest naming-debt first). The first three entries are **closed**: P6 deleted the code they named, so there is nothing left to rename.
+
+| Item | Status |
+|---|---|
+| ~~Planner → IntentRouter~~ | closed — `internal/intent/planner.go` deleted in P6 |
+| ~~cutover → direct dispatch~~ | closed — direct dispatch and its env flags retired with the route stack |
+| ~~the three routers split~~ | closed — `internal/router` / `internal/orchestrator` deleted in P6 |
+| env-prefix unification (`USE_*` / `RAG_*` → `COMPSHARE_*`) | open — the surviving flags still mix prefixes (see the flag table in `CLAUDE.md`) |
+| remaining over-promising names (`Saga`, `MemoryLimiter`, …) | open |

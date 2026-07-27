@@ -15,7 +15,7 @@ import (
 // does not expose the underlying API tools used by deterministic handlers. Each
 // high-level read is a distinct, catalog-generated tool, while every platform
 // fact still crosses the same EvidenceEnvelope adapter.
-func centralAgentToolWindow(mutatingEnabled bool) []openai.Tool {
+func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.Tool {
 	registry := tools.DefaultCapabilityRegistry()
 	var out []openai.Tool
 	if capability, ok := registry.Lookup(tools.UpdateTaskStateName); ok {
@@ -33,7 +33,17 @@ func centralAgentToolWindow(mutatingEnabled bool) []openai.Tool {
 		if !capability.ExposedToAgent || capability.Tool.Function == nil {
 			continue
 		}
+		// Take main's route-based knowledge test, not this branch's older
+		// `Name == "SearchKnowledge"`: main generalized it so ReadChunk (added
+		// there) is exposed too, and matching by name would silently drop it.
 		if capability.Policy.Route == tools.ActionRouteKnowledge || capability.Policy.Route == tools.ActionRouteDiagnosis {
+			// DiagnoseInstanceInternals carries an ActionRouteDiagnosis policy (derived
+			// from its "Diagnose" prefix) so it would append unconditionally here.
+			// Gate it on the in-instance lane being wired, so with the lane off the
+			// window is byte-identical to before this tool existed (INV-10).
+			if capability.Name == "DiagnoseInstanceInternals" && !instanceOpsEnabled {
+				continue
+			}
 			out = append(out, capability.Tool)
 		}
 	}
@@ -149,8 +159,8 @@ func cloneSchemaObject(value any) (map[string]any, bool) {
 	return cloned, true
 }
 
-func centralAgentToolNames(mutatingEnabled bool) []string {
-	window := centralAgentToolWindow(mutatingEnabled)
+func centralAgentToolNames(mutatingEnabled, instanceOpsEnabled bool) []string {
+	window := centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled)
 	names := make([]string, 0, len(window))
 	for _, tool := range window {
 		if tool.Function != nil && tool.Function.Name != "" {

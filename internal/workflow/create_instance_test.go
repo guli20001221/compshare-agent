@@ -11,7 +11,7 @@ import (
 // mockInstanceTypes builds a DescribeAvailableCompShareInstanceTypes result
 // for the given GPU type with one size entry per (gpuCount, cpu, memGB) tuple.
 // livePriceDetails is the PriceDetails array a real GetCompShareInstanceUserPrice
-// reply carries, copied from the capture at eval/real_cli_golden_doubao_lite.md:74-79.
+// reply carries, transcribed from a live capture of that call.
 //
 // Two things about it are load-bearing and neither was true of the fixture it
 // replaces. The amount arrives under "Instance"; "Price" appears in no live

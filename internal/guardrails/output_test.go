@@ -6,26 +6,41 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestRedactOutputLeak_IPv4(t *testing.T) {
+// TestRedactOutputLeak_IPv4IsPreserved is the inverse of the test it replaces.
+// IPv4 was redacted here and is not any more: the addresses this product prints
+// are the user's own instance endpoints, handed back to the user who owns them,
+// so masking them removed information and prevented nothing. The two cases that
+// made it concrete are the last two below — an SSH login line the user cannot
+// act on, and a loopback-vs-wildcard bind that is the entire answer in a
+// "service is up but unreachable" diagnosis.
+func TestRedactOutputLeak_IPv4IsPreserved(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		want string
 	}{
-		{"bare public IP", "1.2.3.4", IPRedacted},
-		{"private IP", "192.168.1.1", IPRedacted},
-		{"loopback", "127.0.0.1", IPRedacted},
-		{"嵌中文", "实例 IP 是 1.2.3.4 请连接", "实例 IP 是 " + IPRedacted + " 请连接"},
-		{"两个 IP", "from 1.2.3.4 to 5.6.7.8", "from " + IPRedacted + " to " + IPRedacted},
-		{"非法 octet >255 跳过", "300.0.0.1", "300.0.0.1"},
-		{"leading zero 跳过", "01.02.03.04", "01.02.03.04"},
-		{"非 IPv4 数字串", "version 1.2.3.4-rc1 build", "version " + IPRedacted + "-rc1 build"},
+		{"bare public IP", "1.2.3.4"},
+		{"private IP", "192.168.1.1"},
+		{"loopback", "127.0.0.1"},
+		{"嵌中文", "实例 IP 是 1.2.3.4 请连接"},
+		{"两个 IP", "from 1.2.3.4 to 5.6.7.8"},
+		{"曾被误伤的版本号", "version 1.2.3.4-rc1 build"},
+		{"SSH 登录行必须可直接照抄", "ssh root@203.0.113.9 -p 23"},
+		{"环回与通配必须可区分", "--ip=127.0.0.1 vs --ip=0.0.0.0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, RedactOutputLeak(tc.in))
+			assert.Equal(t, tc.in, RedactOutputLeak(tc.in), "IPv4 must pass through untouched")
 		})
 	}
+}
+
+// TestRedactOutputLeak_StillRedactsCredentialsAlongsideIPs pins the half that did
+// NOT change: dropping IPv4 masking must not become an excuse to let an AK/SK or
+// token ride out next to the address it was printed with.
+func TestRedactOutputLeak_StillRedactsCredentialsAlongsideIPs(t *testing.T) {
+	got := RedactOutputLeak(`ssh root@203.0.113.9 -p 23 AccessKey="AKIAIOSFODNN7EXAMPLE"`)
+	assert.Contains(t, got, "203.0.113.9", "the endpoint the user needs survives")
+	assert.NotContains(t, got, "AKIAIOSFODNN7EXAMPLE", "the credential next to it does not")
 }
 
 // TestRedactOutputLeak_PreservesRouting pins the contract that
@@ -183,9 +198,13 @@ Jupyter token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.signa
 		assert.Contains(t, got, must, "routing/spec %q must survive", must)
 	}
 
+	// Endpoints the user needs in order to act survive alongside them.
+	for _, must := range []string{"1.2.3.4", "192.168.1.10"} {
+		assert.Contains(t, got, must, "instance endpoint %q must survive", must)
+	}
+
 	// Sensitive values gone.
 	for _, leak := range []string{
-		"1.2.3.4", "192.168.1.10",
 		"12345678-1234-1234-1234-1234567890ab",
 		"AKIAIOSFODNN7EXAMPLE",
 		"signaturevalue123abc",
@@ -194,7 +213,7 @@ Jupyter token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.signa
 	}
 
 	// Placeholders present.
-	for _, want := range []string{IPRedacted, ProjectIDRedacted, CredentialRedactedOutput, TokenRedactedOutput} {
+	for _, want := range []string{ProjectIDRedacted, CredentialRedactedOutput, TokenRedactedOutput} {
 		assert.Contains(t, got, want, "placeholder %q missing", want)
 	}
 }

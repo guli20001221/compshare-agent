@@ -170,6 +170,53 @@ func TestLoad_OmittedRateLimitUsesDefaults(t *testing.T) {
 	assert.Equal(t, governance.DefaultLimits(), cfg.Agent.RateLimit.Limits())
 }
 
+// The SSH-ops lane is configured under agent.ssh_ops. This loads a real config through Load (not a
+// hand-filled struct) so the whole YAML→SSHOpsConfig mapping is exercised: the tri-state Enabled *bool,
+// the harness strings, the time.Duration timeout, and the RuntimeGetenv precedence where enabled: true
+// wins as COMPSHARE_SSH_OPS=1 over the env fallback.
+func TestLoad_SSHOpsConfigParses(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+  ssh_ops:
+    enabled: true
+    harness_path: /opt/harness.py
+    gateway_url: http://127.0.0.1:3456
+    python: python3
+    model: ""
+    timeout: "5m"
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.Agent.SSHOps.Enabled)
+	assert.True(t, *cfg.Agent.SSHOps.Enabled)
+	assert.Equal(t, "/opt/harness.py", cfg.Agent.SSHOps.HarnessPath)
+	assert.Equal(t, "http://127.0.0.1:3456", cfg.Agent.SSHOps.GatewayURL)
+	assert.Equal(t, 5*time.Minute, cfg.Agent.SSHOps.Timeout)
+	// enabled: true must win over the env fallback (COMPSHARE_SSH_OPS unset here).
+	assert.Equal(t, "1", cfg.RuntimeGetenv(func(string) string { return "" })("COMPSHARE_SSH_OPS"))
+}
+
+// Omitted agent.ssh_ops leaves Enabled nil (tri-state), so RuntimeGetenv falls through to the env,
+// then to the built-in default (off) — the lane stays off for an unconfigured deploy.
+func TestLoad_SSHOpsOmittedFallsThroughToEnv(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(""))
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	require.Nil(t, cfg.Agent.SSHOps.Enabled, "omitted ssh_ops must stay tri-state nil")
+	// with the field omitted, RuntimeGetenv does not override — the env fallback is returned verbatim.
+	assert.Equal(t, "envval", cfg.RuntimeGetenv(func(k string) string {
+		if k == "COMPSHARE_SSH_OPS" {
+			return "envval"
+		}
+		return ""
+	})("COMPSHARE_SSH_OPS"))
+}
+
 func TestLoad_OCRModelDefaultsFromModelVerseEnv(t *testing.T) {
 	setRequiredSecretEnv(t)
 	t.Setenv("MODELVERSE_QWEN_VL_MODEL", "qwen3-vl-flash")
@@ -231,6 +278,8 @@ func TestLoad_RateLimitPartialOverridesMergeWithDefaults(t *testing.T) {
 		MutatingDaily:      7,
 		ReadExpensiveQPS:   2,
 		ReadExpensiveDaily: governance.DefaultReadExpensiveDaily,
+		SSHExecQPS:         governance.DefaultSSHExecQPS,
+		SSHExecDaily:       governance.DefaultSSHExecDaily,
 	}, cfg.Agent.RateLimit.Limits())
 }
 

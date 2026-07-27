@@ -41,6 +41,15 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	content = substituteReadObservationBlocks(content, e.readResponseEvidenceThisTurn)
 
 	if strings.TrimSpace(content) == "" {
+		// A turn that already handed the user a verbatim block (the billing card,
+		// see verbatimReplyPrefix) is NOT an empty turn — the block is the answer and
+		// the Agent correctly had nothing to add. Without this, "本次没有生成有效回复"
+		// would be appended underneath a complete answer, which is why the Agent
+		// padded with generic prose instead of stopping: silence was not a legal
+		// outcome. The caller composes the block, so returning "" yields the card alone.
+		if len(e.verbatimBlocksThisTurn) > 0 {
+			return ""
+		}
 		content = emptyReplyFallbackMessage
 	}
 	return content

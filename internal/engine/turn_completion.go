@@ -48,7 +48,7 @@ func (e *Engine) emitTurnCompletion() {
 		ModelCalls:      e.turnModelCallsThisTurn,
 		ContextDecision: observability.CompletionDecisionNotInvoked,
 		ToolScope:       string(tools.ToolScopeNamed),
-		ToolNames:       centralAgentToolNames(e.mutatingToolsEnabled),
+		ToolNames:       centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
 	}
 
 	trace.Class, trace.Reason = e.classifyTurnCompletion()

@@ -1634,10 +1634,9 @@ func imageMapByID(images map[string]any, id string) map[string]any {
 // price arrays.
 //
 // It accepts both "Instance" and "Price". "Instance" is what upstream ACTUALLY
-// returns — every live capture of GetCompShareInstancePriceResponse uses it
-// (eval/reports/real_cli_golden_doubao_lite_runner.md,
-// eval/shadow_qa/2026-04-17-real-account-round2/platform_failures_report.md) and
-// "Price" appears in none of them. This function's doc used to say the opposite:
+// returns — every live capture of GetCompShareInstancePriceResponse taken from
+// the real API uses it, and "Price" appears in none of them. This function's doc
+// used to say the opposite:
 // that "Price" was the API field and "Instance" a robustness fallback. It was
 // written to match this repo's fixtures, which invented "Price" — so the branch
 // production has always taken was documented as the fallback, and the branch no
@@ -2058,10 +2057,9 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	// upstream of this gate. What is left is a RetCode-0 response quoting nothing
 	// usable for the resolved charge type — which no capture in this repo shows,
 	// and which the live response makes unlikely, since one call returns a row for
-	// every charge type at once (Postpay/Dynamic/Day/Month/Spot — see
-	// eval/real_cli_golden_doubao_lite.md:74-79, the reason this is a no-op on all
-	// four charge types the form offers rather than a new failure mode for three of
-	// them).
+	// every charge type at once (Postpay/Dynamic/Day/Month/Spot, confirmed against
+	// a live capture — the reason this is a no-op on all four charge types the form
+	// offers rather than a new failure mode for three of them).
 	if snapshot.EstimatedPrice == nil {
 		return nil, fmt.Errorf(missingWorkflowPriceMessage)
 	}

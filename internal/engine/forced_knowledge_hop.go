@@ -87,6 +87,26 @@ const forcedKnowledgeHopCallID = "forced_knowledge_hop"
 const forcedKnowledgeHopNote = "本次检索由系统在你决策前自动执行，检索词由用户本轮原话整理而来，不代表本轮一定需要文档证据。" +
 	"与用户当前意图无关时忽略这些证据，不要因此改变话题或改变要执行的操作；需要更准确的证据时，用更具体的问题再检索一次。"
 
+// forcedKnowledgeHopEmptyNote replaces the note above when the automatic search
+// came back with nothing. The distinction matters because the two states read
+// identically to the model otherwise — an empty ledger with a note that ends in
+// "需要更准确的证据时…再检索一次" is an invitation, and the measurement says the
+// invitation is not taken: of the ten turns that ended with an empty ledger,
+// nine had searched exactly once.
+//
+// Two things it must not say. It must not say the knowledge base lacks the
+// answer: an empty result here is a query failure far more often than a corpus
+// gap — rewriting the same 24 failed questions into explicit queries reached
+// usable evidence on 23 of them, and six turned out to be fully documented. And
+// it must not order an unconditional re-search, because this observation also
+// lands on turns that never needed documentation at all; a 关机 or 确认 turn
+// would spend a retrieval on nothing. So the imperative is conditional on the
+// turn actually needing platform documentation, and the escape stays first.
+const forcedKnowledgeHopEmptyNote = "本次检索由系统在你决策前自动执行，检索词由用户本轮原话整理而来，结果为空。" +
+	"本轮不需要平台文档证据时，忽略这条观察正常继续，不要因此改变话题或改变要执行的操作。" +
+	"本轮需要平台文档证据时，这个空结果只说明这次的检索词没检到，不能当作知识库里没有、也不能据此告诉用户没有相关文档或资料；" +
+	"请补全用户省略的主语和场景（实例、镜像、计费、存储、网络、控制台等），换成平台文档里会出现的说法，再检索一次。"
+
 // runForcedKnowledgeHop retrieves once on the user's own words and appends the
 // result to history as an ordinary assistant tool_call / tool result pair, so the
 // Agent's first model call of the turn already has evidence in front of it.
@@ -106,7 +126,11 @@ func (e *Engine) runForcedKnowledgeHop(ctx context.Context, userMsg string, onSt
 	if query == "" {
 		return
 	}
-	if !toolListContainsFunction(centralAgentToolWindow(e.mutatingToolsEnabled), "SearchKnowledge") {
+	// Same two gates the real window is built from (engine.go), so this check sees
+	// exactly the tool list the model will see. The in-instance lane only adds
+	// DiagnoseInstanceInternals, but reading the window through a different set of
+	// gates than the one that produces it is how the two silently drift apart.
+	if !toolListContainsFunction(centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil), "SearchKnowledge") {
 		return
 	}
 
@@ -119,7 +143,12 @@ func (e *Engine) runForcedKnowledgeHop(ctx context.Context, userMsg string, onSt
 	}
 
 	e.knowledgeQAAgentLoopThisTurn = true
+	// Scoped to this one call: the query planner expands only the words the user
+	// never aimed at retrieval. Cleared immediately so an Agent-issued search
+	// later in the same turn is planned normally.
+	e.forcedHopSearchInFlight = true
 	result := annotateForcedKnowledgeHop(e.executeSearchKnowledge(ctx, args, onStep))
+	e.forcedHopSearchInFlight = false
 
 	// Register under the key executeTool would have computed for the same call,
 	// so an Agent that re-issues this exact query gets the reused-observation
@@ -160,7 +189,15 @@ func annotateForcedKnowledgeHop(result string) string {
 		return result
 	}
 	payload["auto_retrieved"] = true
-	payload["note"] = forcedKnowledgeHopNote
+	// searchKnowledgeResultJSON sets "empty" only when the ledger has no items,
+	// and omits the key otherwise, so its presence is the signal. Reading the key
+	// rather than re-deriving emptiness keeps the two in step if the ledger shape
+	// changes.
+	if empty, _ := payload["empty"].(bool); empty {
+		payload["note"] = forcedKnowledgeHopEmptyNote
+	} else {
+		payload["note"] = forcedKnowledgeHopNote
+	}
 	annotated, err := json.Marshal(payload)
 	if err != nil {
 		return result
