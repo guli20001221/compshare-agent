@@ -13,9 +13,11 @@
 | `harness_path` | **部署方** | 该机器上 `deploy/ssh_ops_harness/harness.py` 的绝对路径 |
 | `gateway_url` | **部署方** | 该机器可达的 claude-code-router 地址（见下文「运行时依赖」） |
 | `python` | **部署方** | 装好依赖的解释器绝对路径（venv，**不要用系统 python3**） |
-| `model` | **研发** | 填错不会报错，只会静默降级 —— 见下面的警告 |
-| `timeout` | **研发** | |
+| `model` | **研发** | **`deploy/conf/config.yaml` 里已经填好，不要改** —— 填错不会报错，只会静默降级，见下面的警告 |
+| `timeout` | **研发** | 已填好（`12m`），不要改回默认的 `5m` |
 | `enabled` | **研发** | 发布开关 |
+
+所以部署方要填的只有三个：`harness_path`、`gateway_url`、`python`；`enabled` 等我们确认后再改成 `true`。
 
 ## 配置
 
@@ -31,12 +33,12 @@ pwd    # 例如 /home/ubuntu/compshare-agent —— 下面用 <部署目录> 代
 
 ```yaml
   ssh_ops:
-    enabled: true
-    harness_path: "<部署目录>/deploy/ssh_ops_harness/harness.py"
-    gateway_url: "http://127.0.0.1:3456"
-    python: "<venv>/bin/python"
-    model: "modelverse,deepseek-v4-pro"
-    timeout: "12m"
+    enabled: true                                                   # 改
+    harness_path: "<部署目录>/deploy/ssh_ops_harness/harness.py"      # 填
+    gateway_url: "http://127.0.0.1:3456"                            # 填
+    python: "<venv>/bin/python"                                     # 填
+    model: "modelverse,deepseek-v4-pro"                             # 已填好，别动
+    timeout: "12m"                                                  # 已填好，别动
 ```
 
 `harness_path` 必须写绝对路径（其余像 `deploy/kb/` 那些是相对工作目录的，这个不是）。
