@@ -59,13 +59,13 @@ func TestUpdateTaskStatePersistsIntoNextAgentContextWithoutExecutor(t *testing.T
 }
 
 func TestCentralToolWindowSeparatesUnderstandingFromWriteAuthority(t *testing.T) {
-	readOnly := toolNames(centralAgentToolWindow(false))
+	readOnly := toolNames(centralAgentToolWindow(false, false))
 	require.Contains(t, readOnly, tools.UpdateTaskStateName)
 	require.NotContains(t, readOnly, tools.ProposeActionName)
 	require.NotContains(t, readOnly, proposalToolName("StopInstanceWorkflow"))
 	require.NotContains(t, readOnly, "StopInstanceWorkflow")
 
-	mutating := toolNames(centralAgentToolWindow(true))
+	mutating := toolNames(centralAgentToolWindow(true, false))
 	require.Contains(t, mutating, tools.UpdateTaskStateName)
 	require.NotContains(t, mutating, tools.ProposeActionName)
 	require.Contains(t, mutating, proposalToolName("StopInstanceWorkflow"))

@@ -107,7 +107,11 @@ func TestLiveToolProbe(t *testing.T) {
 	}
 
 	getenv := cfg.RuntimeGetenv(os.Getenv)
-	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv)
+	// nil DB: this probe exercises the read/knowledge tool surface, not the
+	// in-instance SSH lane. serverInstanceOpsRunner needs a DB for its audit
+	// writer and returns a nil runner (with a logged reason) without one, so the
+	// lane stays off here — which is what we want, not an accident.
+	deps, mutating, err := configureSharedDepsFromEnv(cfg, getenv, nil)
 	if err != nil {
 		t.Fatalf("configureSharedDepsFromEnv: %v", err)
 	}

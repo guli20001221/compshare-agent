@@ -136,6 +136,11 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putStrEnv(overrides, "COMPSHARE_TRACE_SINK", t.Sink)
 	putStrEnv(overrides, "COMPSHARE_TRACE_DIR", t.Dir)
 
+	// ssh_ops.enabled is tri-state like the feature bools; a YAML "false" WINS over
+	// COMPSHARE_SSH_OPS=1 in the env (P2 gate 3). The non-bool harness settings are read
+	// straight off cfg.Agent.SSHOps by the cmd wiring, not through getenv.
+	putBoolEnv(overrides, "COMPSHARE_SSH_OPS", c.Agent.SSHOps.Enabled, "1", "0")
+
 	// The RAG embedding/reranker clients read the API key through getenv
 	// (MODELVERSE_API_KEY, falling back to LLM_API_KEY). Expose the resolved
 	// LLM key so a fully-inlined config.yaml (no env) still powers hybrid /

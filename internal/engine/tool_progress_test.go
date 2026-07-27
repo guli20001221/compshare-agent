@@ -25,7 +25,7 @@ func TestRepeatedConcreteReadReusesOnlyTheIdenticalCall(t *testing.T) {
 	require.Contains(t, second, "reused_observation")
 	require.Contains(t, second, "same_call_blocked")
 	require.Len(t, executor.calls, 1)
-	require.Contains(t, toolNames(centralAgentToolWindow(false)), action, "复用一次调用不能撤掉整个能力")
+	require.Contains(t, toolNames(centralAgentToolWindow(false, false)), action, "复用一次调用不能撤掉整个能力")
 }
 
 func TestDifferentArgumentsRemainExecutableWhenResultsMatch(t *testing.T) {
@@ -42,7 +42,7 @@ func TestDifferentArgumentsRemainExecutableWhenResultsMatch(t *testing.T) {
 	require.NotContains(t, first, "reused_observation")
 	require.NotContains(t, second, "reused_observation")
 	require.Len(t, executor.calls, 2, "不同参数即使结果相同也必须真正执行")
-	require.Contains(t, toolNames(centralAgentToolWindow(false)), action)
+	require.Contains(t, toolNames(centralAgentToolWindow(false, false)), action)
 }
 
 func TestMonitorUniqueCallBudgetStopsThirdVariant(t *testing.T) {
