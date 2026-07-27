@@ -131,8 +131,14 @@ type accRunView struct {
 	// the corpus. Not serialized — it is judge input, and writing it out would
 	// multiply the verdict file by the size of the knowledge base.
 	Evidence []judgeEvidence `json:"-"`
-	Reply    string          `json:"reply"`
-	Verdict  accVerdict      `json:"verdict"`
+	// ToolResults is what each tool actually RETURNED, not just which tools ran.
+	// Without it the judge can verify a corpus-sourced claim (the evidence text is
+	// right there) but not a tool-sourced one, so a correct answer built from live
+	// API data reads as an unsupported assertion — a false fabrication finding on
+	// exactly the cases a tool exists to serve. Not serialized; judge input only.
+	ToolResults []string `json:"-"`
+	Reply       string   `json:"reply"`
+	Verdict     accVerdict `json:"verdict"`
 	// Repeat is a second judge call on the SAME reply, run only for run 1. It
 	// measures the judge's disagreement with itself, which is the floor any
 	// between-run difference has to clear before it means anything.
@@ -202,6 +208,18 @@ func TestLiveAcceptanceJudge(t *testing.T) {
 			// Kept chunks only: a floor-dropped chunk never reached the agent, so
 			// holding the answer to it would penalise the agent for evidence it
 			// was not shown.
+			for _, tn := range rec.Turns {
+				for _, st := range tn.Steps {
+					if st.Type != "tool_result" || st.Action == "" || st.Result == nil {
+						continue
+					}
+					blob, mErr := json.Marshal(st.Result)
+					if mErr != nil {
+						continue
+					}
+					view.ToolResults = append(view.ToolResults, st.Action+" → "+truncateForLog(string(blob), 1800))
+				}
+			}
 			for _, rc := range rec.RetrievedChunks {
 				if !rc.Kept {
 					continue
@@ -292,7 +310,13 @@ func accJudgePayload(rec *replayCaseRecord, lb accLabel, view accRunView) string
 	for i, ev := range view.Evidence {
 		sb.WriteString("[" + strconv.Itoa(i+1) + "] " + ev.Title + "\n" + ev.Content + "\n\n")
 	}
-	sb.WriteString("\n【系统调用的工具】\n" + orDefault(strings.Join(view.Tools, ", "), "(未调用任何工具)") + "\n")
+	sb.WriteString("\n【系统调用的工具及其返回】\n")
+	if len(view.ToolResults) == 0 {
+		sb.WriteString("(未调用任何工具)\n")
+	}
+	for _, tr := range view.ToolResults {
+		sb.WriteString("· " + tr + "\n")
+	}
 	sb.WriteString("【弹出确认卡次数】" + strconv.Itoa(view.Confirms) + "（本次回放一律拒绝确认，所以任何写操作都没有真正执行）\n")
 	sb.WriteString("\n【系统给出的答案】\n" + rec.FinalReply + "\n")
 	return sb.String()
