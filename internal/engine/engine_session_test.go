@@ -447,6 +447,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"instanceOps":            true,
 		"instanceOpsRanThisTurn": true,
 		"currentTurnID":          true,
+		// Verbatim user blocks accumulated this turn (see verbatimReplyPrefix).
+		// Turn-local: sharing it would splice one tenant's rendered billing figures
+		// into another tenant's reply — the exact cross-user leak this test exists to
+		// prevent. Reset at turn entry, composed at the turn exit.
+		"verbatimBlocksThisTurn": true,
 	}
 
 	if want, got := 7, len(sharedFields); want != got {
@@ -459,18 +464,22 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// when the verbatim-dump guard was retired.
 	// 82 -> 84 / 89 -> 91: readChunkCallsThisTurn + readChunkIDsThisTurn, the
 	// ReadChunk full-body budget and its already-read set.
-	// 84 -> 87 / 91 -> 94: the in-instance SSH-ops lane, merged from
-	// feat/instance-ops-harness — instanceOps (the runner), instanceOpsRanThisTurn
-	// (per-turn self-selection latch) and currentTurnID (evidence-binding id).
-	// This branch and main each grew the struct independently (+3 and +4 from the
-	// same merge-base of 80/87), so the merged counts are the sum of both deltas,
-	// not either side's number.
-	if want, got := 87, len(perSessionFields); want != got {
+	// 84 -> 87 / 91 -> 94: the in-instance SSH-ops lane — instanceOps (the runner),
+	// instanceOpsRanThisTurn (per-turn self-selection latch) and currentTurnID
+	// (evidence-binding id).
+	// 87 -> 88 / 94 -> 95: verbatimBlocksThisTurn, added on main by #471 when the
+	// billing exit stopped terminating the turn (verbatimReplyPrefix) and its
+	// rendered text had to be carried to the turn's single composition site.
+	// This lane and main each grew the struct independently off the same 84/91 base
+	// (+3 here, +1 there), so the merged counts are the SUM of both deltas — not
+	// either side's number. Taking one side's figure is how this test goes green
+	// while silently dropping the other side's field from the leak whitelist.
+	if want, got := 88, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 94, typ.NumField(); want != got {
+	if want, got := 95, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
