@@ -437,6 +437,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"secretInputsThisTurn":                true,
 		"baseUserContext":                     true,
 		"displayedResourceSelectionThisTurn":  true,
+		// Verbatim user blocks accumulated this turn (see verbatimReplyPrefix).
+		// Turn-local: sharing it would splice one tenant's rendered billing figures
+		// into another tenant's reply — the exact cross-user leak this test exists to
+		// prevent. Reset at turn entry, composed at the turn exit.
+		"verbatimBlocksThisTurn": true,
 	}
 
 	if want, got := 7, len(sharedFields); want != got {
@@ -449,12 +454,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// when the verbatim-dump guard was retired.
 	// 82 -> 84 / 89 -> 91: readChunkCallsThisTurn + readChunkIDsThisTurn, the
 	// ReadChunk full-body budget and its already-read set.
-	if want, got := 84, len(perSessionFields); want != got {
+	// 84 -> 85 / 91 -> 92: verbatimBlocksThisTurn, added when the billing exit
+	// stopped terminating the turn (verbatimReplyPrefix) and its rendered text had
+	// to be carried to the turn's single composition site instead.
+	if want, got := 85, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 91, typ.NumField(); want != got {
+	if want, got := 92, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

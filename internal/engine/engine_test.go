@@ -1355,6 +1355,175 @@ func TestDiagnosisInternalReadExpensiveCountsTurnBudget(t *testing.T) {
 	assertNoStepTypeForAction(t, *events, StepError, "DescribeCompShareInstance")
 }
 
+// A turn that reports two symptoms at once ("CPU 跑满" + "一直在扣费") must get BOTH
+// answered. The billing exit used to be finalReplyPrefix, which ended the turn:
+// live probes (N=5, both description arms) showed the Agent fetch the monitoring
+// evidence, then call DiagnoseBilling, then return a bare price card — the CPU
+// question unanswered and the evidence already gathered discarded, 5/5 runs.
+//
+// The two guarantees are now separate: the figures are delivered byte-exact, and
+// the turn survives. The model's context must never contain the rendered figures —
+// that, not turn termination, is what makes re-summing periods / extrapolating an
+// hourly quote to monthly spend / inferring a free quota from a zero price
+// impossible, since all three require seeing the numbers.
+func TestDiagnoseBillingAnswersTheRestOfTheTurnAndHidesFiguresFromTheModel(t *testing.T) {
+	const cpuAnswer = "CPU 100% 的原因是 3 个 kworkerd 进程占满了核心。"
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-bill-001", "State": "Running", "ChargeType": "Dynamic",
+				"InstancePrice": float64(1), "DiskPrice": float64(0.1),
+			}},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`)}},
+		{Content: cpuAnswer},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "这台 CPU 一直 100% 跑满，而且费用也一直在扣", noopStep)
+	require.NoError(t, err)
+
+	// The turn continued past billing: a second LLM round happened at all.
+	require.Len(t, mock.calls, 2, "billing must not terminate the turn — the Agent needs a round to answer the CPU half")
+	// Both halves are in the one reply.
+	require.Contains(t, reply, cpuAnswer, "the non-billing half of the question must still be answered")
+	require.Contains(t, reply, "uhost-bill-001", "the deterministic billing card must still reach the user")
+
+	// Isolate the verbatim card and prove the model never received it. Guarded
+	// against vacuity: an empty or figure-free card would make the loop below pass
+	// no matter what the engine did.
+	card := strings.TrimSpace(strings.TrimSuffix(reply, cpuAnswer))
+	require.Contains(t, card, "uhost-bill-001", "test setup: the isolated card must be the real rendered block")
+	require.Regexp(t, `\d`, card, "test setup: the card must carry figures, else the leak assertion is vacuous")
+	for callIdx, call := range mock.calls {
+		for msgIdx, msg := range call.Messages {
+			require.NotContains(t, msg.Content, card,
+				"rendered billing figures leaked into the model's context (call %d, message %d)", callIdx, msgIdx)
+		}
+	}
+	// What the model saw instead: the amount-free note.
+	var sawObservation bool
+	for _, msg := range mock.calls[1].Messages {
+		if strings.Contains(msg.Content, verbatimBlockObservation) {
+			sawObservation = true
+		}
+	}
+	require.True(t, sawObservation, "the model must be told the figures were already shown, or it will claim it cannot look pricing up")
+}
+
+// A turn asking ONLY about price must come back as the card and nothing else.
+//
+// Making the billing exit non-terminal created this hazard: the Agent gets a round it
+// did not previously have, and an empty final answer used to be overwritten with
+// "本次没有生成有效回复" — so stopping was illegal and it padded with generic prose
+// instead ("费用通常按以下部分拆分…", vaguer than the card above it, observed 3/5 live).
+// A delivered verbatim block now counts as a non-empty turn, which makes silence the
+// cheap, correct move.
+func TestPureBillingTurnReturnsTheCardAloneWhenTheAgentAddsNothing(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-bill-001", "State": "Running", "ChargeType": "Dynamic",
+				"InstancePrice": float64(1), "DiskPrice": float64(0.1),
+			}},
+		},
+	}}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`)}},
+		{Content: ""}, // nothing to add: the card already answers the question
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	reply, err := eng.Chat(context.Background(), "这台实例现在每小时多少钱？", noopStep)
+	require.NoError(t, err)
+
+	require.Contains(t, reply, "uhost-bill-001", "the card must still be delivered")
+	require.NotContains(t, reply, emptyReplyFallbackMessage,
+		"a turn that already delivered the card is not an empty turn")
+	require.Equal(t, strings.TrimSpace(reply), strings.TrimSpace(eng.verbatimBlocksThisTurn[0]),
+		"the reply must be exactly the card — no trailing prose, no apology")
+}
+
+// streamingScriptedLLM replays a script AND fires OnTextDelta for each text
+// response, the way the real client streams. The plain mockLLM never streams, so
+// a bug that only shows on the token stream hides behind it.
+type streamingScriptedLLM struct {
+	responses []llm.ChatResponse
+	idx       int
+	calls     []llm.ChatRequest
+}
+
+func (m *streamingScriptedLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.calls = append(m.calls, req)
+	var resp llm.ChatResponse
+	if m.idx < len(m.responses) {
+		resp = m.responses[m.idx]
+		m.idx++
+	}
+	if req.OnTextDelta != nil && resp.Content != "" {
+		req.OnTextDelta(resp.Content)
+	}
+	return &resp, nil
+}
+
+// The web client renders the assistant bubble from the token stream, not from the
+// returned reply — the reply is only what gets persisted. So a verbatim block that
+// lands in one but not the other is a user-visible bug, and every test and live
+// probe so far ran with a nil emitter, leaving this path unexercised.
+//
+// The ordinary answer path already holds reply == join(deltas)
+// (TestOnTextDeltaReplaysRawDeltasWhenNoOverride); composing a block in at the turn
+// exit must not break that, or the streamed bubble and the reloaded conversation
+// disagree about what the assistant said.
+func TestVerbatimBillingBlockStreamsExactlyAsItIsPersisted(t *testing.T) {
+	const cpuAnswer = "CPU 100% 的原因是 3 个 kworkerd 进程占满了核心。"
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-bill-001", "State": "Running", "ChargeType": "Dynamic",
+				"InstancePrice": float64(1), "DiskPrice": float64(0.1),
+			}},
+		},
+	}}
+	mock := &streamingScriptedLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`)}},
+		{Content: cpuAnswer},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "这台 CPU 一直 100% 跑满，而且费用也一直在扣", noopStep, ChatOptions{
+		OnTextDelta: func(d string) { deltas = append(deltas, d) },
+	})
+	require.NoError(t, err)
+
+	// Non-vacuity: without a real card carrying figures the assertions below would
+	// pass on an engine that streamed nothing at all.
+	require.Len(t, eng.verbatimBlocksThisTurn, 1, "test setup: this turn must produce exactly one billing card")
+	card := eng.verbatimBlocksThisTurn[0]
+	require.Regexp(t, `\d`, card, "test setup: the card must carry figures")
+	require.Contains(t, reply, cpuAnswer, "test setup: the turn must have continued past billing")
+
+	streamed := strings.Join(deltas, "")
+	assert.Equal(t, reply, streamed,
+		"the streamed bubble must be byte-identical to the persisted reply")
+	assert.Equal(t, 1, strings.Count(streamed, card),
+		"the card must be streamed exactly once — twice renders it twice in the bubble")
+	assert.Less(t, strings.Index(streamed, card), strings.Index(streamed, cpuAnswer),
+		"the card must stream before the answer that follows it")
+}
+
 func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -1372,7 +1541,10 @@ func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
 	reply := eng.executeDiagnosis(context.Background(), "DiagnoseBilling", map[string]any{}, noopStep)
 
 	assert.Contains(t, reply, "uhost-bill-001")
-	assert.True(t, strings.HasPrefix(reply, finalReplyPrefix), "billing facts must bypass model re-calculation")
+	assert.True(t, strings.HasPrefix(reply, verbatimReplyPrefix),
+		"billing figures must reach the user verbatim so the model never re-derives them")
+	assert.False(t, strings.HasPrefix(reply, finalReplyPrefix),
+		"verbatim must not also mean terminal: ending the turn here discarded every other symptom in the question")
 	var readExpensive []governance.Request
 	for _, req := range limiter.requests {
 		if req.Class == governance.ClassReadExpensiveTool {

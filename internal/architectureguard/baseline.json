@@ -839,6 +839,13 @@
       "callee": "strings.HasPrefix"
     },
     {
+      "id": "46ee08d4ab8cdc38",
+      "kind": "string_heuristic",
+      "path": "internal/engine/engine.go",
+      "symbol": "isVerbatimReply",
+      "callee": "strings.HasPrefix"
+    },
+    {
       "id": "4e23b5fa6400c1b0",
       "kind": "string_heuristic",
       "path": "internal/engine/engine.go",
