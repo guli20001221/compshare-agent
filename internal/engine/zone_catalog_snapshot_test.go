@@ -77,6 +77,9 @@ func TestZoneCatalogSnapshot_BuildsOneRecordPerZone(t *testing.T) {
 	if got := snap.Label("cn-bj2-03"); got != "华北一C" {
 		t.Errorf("display name comes from the same row, got %q", got)
 	}
+	if sh2, ok := snap.Entry("cn-sh2-02"); !ok || !sh2.DisableImageSync {
+		t.Errorf("image-sync capability must come from the same live catalog row, got %+v ok=%v", sh2, ok)
+	}
 	// A normal (non-pod) zone's flags also come from its own row.
 	if wlcb, _ := snap.Placement("cn-wlcb-01"); wlcb.IsPod || wlcb.ZoneID != 10027 {
 		t.Errorf("cn-wlcb-01 must be a non-pod zone with its own id, got %+v", wlcb)

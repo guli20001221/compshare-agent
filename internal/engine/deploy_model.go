@@ -81,7 +81,8 @@ func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalo
 				AzGroup: z.RegionID,
 				IsPod:   z.IsPod,
 			},
-			DisplayName: z.Describe,
+			DisplayName:      z.Describe,
+			DisableImageSync: z.DisableImageSync,
 		})
 	}
 	snapshot = deployment.NewZoneCatalogSnapshot(true, entries)

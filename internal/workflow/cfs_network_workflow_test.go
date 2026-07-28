@@ -84,8 +84,7 @@ func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 		"GetCompShareCFSPrice": {
 			"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Disks": float64(99)}},
 		},
-		"CreateCFS":   {"CfsId": "cfs-new", "Name": "shared-train", "Size": float64(100)},
-		"DescribeCFS": cfsDescribeResult(),
+		"CreateCFS": {"CfsId": "cfs-new", "Name": "shared-train", "Size": float64(100)},
 	}}
 	var confirmed bool
 	eng := NewEngine(executor, func(action string, args map[string]any) bool {
@@ -128,6 +127,42 @@ func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 	assert.Equal(t, uint32(202), createCall.args["organization_id"])
 	assert.Equal(t, "Month", createCall.args["ChargeType"])
 	assert.Equal(t, float64(100), createCall.args["Size"])
+}
+
+func TestCreateCFSWorkflowRejectsExistingSameZoneBeforePriceAndConfirmation(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCFS": cfsDescribeResult(),
+		"GetCompShareCFSPrice": {
+			"PriceDetails": []any{map[string]any{"ChargeType": "Month", "Disks": float64(99)}},
+		},
+		"CreateCFS": {"CfsId": "must-not-be-created"},
+	}}
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("同区已有 CFS 时不能进入确认")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
+		"Name":       "duplicate-cfs",
+		"Size":       float64(100),
+		"Zone":       "cn-bj2-03",
+		"ChargeType": "Month",
+	}, withCFSZone("cn-bj2-03", "cn-bj2", "华北一C", 9001, 3103, true))
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "已经有 CFS")
+	assert.Contains(t, result.Message, "cfs-test")
+	_, priced := findExecutorCall(executor.calls, "GetCompShareCFSPrice")
+	assert.False(t, priced)
+	_, created := findExecutorCall(executor.calls, "CreateCFS")
+	assert.False(t, created)
+
+	preflight, ok := findExecutorCall(executor.calls, "DescribeCFS")
+	require.True(t, ok)
+	assert.Equal(t, uint32(9001), preflight.args["zone_id"])
+	assert.Equal(t, "cn-bj2-03", preflight.args["Zone"])
+	assert.Equal(t, "cn-bj2", preflight.args["Region"])
 }
 
 func TestCreateCFSWorkflowRejectsUnknownZoneBeforePrice(t *testing.T) {

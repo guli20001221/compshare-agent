@@ -91,6 +91,29 @@ func TestCloneCustomImage_RejectsSameZoneBeforeConfirmation(t *testing.T) {
 	assert.Empty(t, executor.calls)
 }
 
+func TestCloneCustomImage_RejectsLiveDisabledDestinationBeforeConfirmation(t *testing.T) {
+	executor := cloneCustomImageExecutor()
+	ref := cloneCustomImageReferenceData(deployment.ImageStatusAvailable, "cn-wlcb-01", 10027)
+	ref.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{
+		Placement:        deployment.ZonePlacement{Zone: "us-den-01", Region: "us-den", ZoneID: 10049, IsPod: true},
+		DisplayName:      "丹佛",
+		DisableImageSync: true,
+	}})
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("上游标记为禁用的目标区必须在确认前拒绝")
+		return false
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CloneCustomImageDef(), map[string]any{
+		"CompShareImageId": "cimg-source", "Zone": "us-den-01", "TargetImageName": "invalid-copy",
+	}, WithReferenceData(ref))
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "当前不支持镜像跨区同步")
+	assert.Empty(t, executor.calls)
+}
+
 func TestCloneCustomImage_RejectsVMImageToPodZoneBeforeConfirmation(t *testing.T) {
 	executor := cloneCustomImageExecutor()
 	ref := cloneCustomImageReferenceData(deployment.ImageStatusAvailable, "cn-wlcb-01", 10027)

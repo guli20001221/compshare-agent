@@ -136,6 +136,9 @@ func cloneCustomImageSelection(wfCtx *Context) (deployment.ImageCatalogEntry, de
 	if target.Placement.ZoneID == 0 {
 		return deployment.ImageCatalogEntry{}, deployment.ZoneCatalogEntry{}, fmt.Errorf("目标可用区缺少内部编号，无法安全克隆")
 	}
+	if target.DisableImageSync {
+		return deployment.ImageCatalogEntry{}, deployment.ZoneCatalogEntry{}, fmt.Errorf("目标可用区 %s 当前不支持镜像跨区同步，请选择其他可用区", target.DisplayName)
+	}
 	// A VM custom image is backed by a UHost image and cannot be migrated into a
 	// Pod-only zone. Container custom images use the independent registry-sync
 	// path and remain valid in both kinds of zone. This is derived entirely from

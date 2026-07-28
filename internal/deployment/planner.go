@@ -3,6 +3,8 @@ package deployment
 import (
 	"sort"
 	"strings"
+
+	"github.com/compshare-agent/internal/platform"
 )
 
 const (
@@ -144,19 +146,45 @@ var explicitChargeTypeVocabulary = []struct {
 	{"抢占", ChargeTypeSpot}, {"竞价", ChargeTypeSpot},
 }
 
-// ExplicitChargeTypeFromPhrase maps a bounded product vocabulary from an exact
-// user quote to the platform wire value. This is deliberately not a fuzzy
-// classifier: provenance may skip the purchase-mode card only when the entire
-// quoted phrase has one unambiguous meaning. Anything else stays an Agent
-// inference and the user gets the card.
+// ExplicitChargeTypeFromPhrase maps a bounded product vocabulary from a user
+// quote to the platform wire value. This is deliberately not a fuzzy
+// classifier: provenance may skip the purchase-mode card only when the quote
+// names exactly one purchase mode. No product term, or two different ones,
+// stays an Agent inference and the user gets the card.
+//
+// The vocabulary term must be a literal span of the quote rather than the whole
+// quote, because where the quote ends is the Agent's choice and requiring
+// equality made an explicit choice depend on that: live over 6 runs,
+// "抢占式创建一台 4090" skipped the card only 2 times — the Agent quoted
+// "抢占式创建" — against 6/6 for "按量". The failure was in the safe direction,
+// an extra card rather than a wrong mode, but it made the skip unreliable.
+//
+// Enumerating the vocabulary in the tool schema instead was measured and is
+// WORSE: the span check still requires the term the user actually typed, so an
+// Agent offered every synonym picks 包日 for a user who wrote 按天 and loses the
+// pin (live: day and month each missed once in 5 runs, against zero here).
+//
+// Uniqueness is judged on the resolved VALUE, not the phrase, so a quote
+// spanning two entries that mean the same thing ("按量付费" also contains "按量")
+// stays one unambiguous choice, while a quote spanning a comparison
+// ("包月和按量") resolves to two and refuses.
 func ExplicitChargeTypeFromPhrase(phrase string) (string, bool) {
-	normalized := strings.ToLower(strings.Join(strings.Fields(phrase), ""))
+	value := ""
 	for _, item := range explicitChargeTypeVocabulary {
-		if normalized == item.Phrase {
-			return item.Value, true
+		// platform.ContainsLiteralSpan is the repo's single reviewed primitive
+		// for "is this a literal span of that" (architectureguard/scanner.go
+		// exempts it by name). Using it here keeps this a provenance check
+		// rather than a new string-heuristic site, and it already applies the
+		// shared whitespace/case folding.
+		if !platform.ContainsLiteralSpan(phrase, item.Phrase) {
+			continue
 		}
+		if value != "" && value != item.Value {
+			return "", false
+		}
+		value = item.Value
 	}
-	return "", false
+	return value, value != ""
 }
 
 func BuildCapacityArgs(draft DeploymentDraft) map[string]any {
