@@ -16,6 +16,27 @@ func TestStockZoneMentionsMustComeFromCurrentTurn(t *testing.T) {
 		"the model may not silently replace a named zone with a different canonical id")
 }
 
+func TestImageListQueryMustBeGroundedInCurrentTurnPurpose(t *testing.T) {
+	userText := "为我推荐一个做数字人的镜像"
+
+	require.NoError(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "数字人", QuerySourceSpan: "做数字人", Mode: platform.ListModeFiltered,
+	}, userText))
+	require.NoError(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourceCommunity, Mode: platform.ListModeAll,
+	}, userText), "an unfiltered browse does not need a query source span")
+
+	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "LiveTalking", QuerySourceSpan: "做数字人", Mode: platform.ListModeFiltered,
+	}, userText), "the Agent may not guess a candidate name and use it to narrow the catalog")
+	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "LiveTalking", QuerySourceSpan: "LiveTalking", Mode: platform.ListModeFiltered,
+	}, userText), "a fabricated source span must not pass current-turn verification")
+	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "数字人", Mode: platform.ListModeFiltered,
+	}, userText), "a non-empty catalog query requires current-turn provenance")
+}
+
 func TestZoneCatalogQueryMustComeFromCurrentTurn(t *testing.T) {
 	require.NoError(t, ValidateCurrentTurnGrounding(ZoneCatalogRequest{Query: "华北一 C"}, "华北一C对应哪个 Zone？"))
 	require.NoError(t, ValidateCurrentTurnGrounding(ZoneCatalogRequest{}, "平台有哪些可用区？"))

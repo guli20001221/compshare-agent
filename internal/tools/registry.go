@@ -527,6 +527,7 @@ var Registry = []openai.Tool{
 					"ChargeType": map[string]any{
 						"type":        "string",
 						"description": "计费方式：Postpay(按量/按小时后付费) / Month(包月) / Day(包日) / Spot(抢占式)，默认 Postpay。",
+						"enum":        []string{"Postpay", "Spot", "Day", "Month"},
 					},
 					"Cpu": map[string]any{
 						"type":        "number",

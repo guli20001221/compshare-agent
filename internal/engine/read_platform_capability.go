@@ -158,7 +158,7 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 			Required:    result.RenderRequired,
 		})
 		observation.RenderRef = placeholder
-		observation.RenderContract = "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
+		observation.RenderContract = "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。若 render_ref 已完整回答用户问题，只输出 render_ref，不要在前后复述；只有用户还要求解释或建议时才补充。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
 	}
 	if result.Status != platform.ReadStatusHandled || result.NeedsClarification {
 		observation.Guidance = result.Reply

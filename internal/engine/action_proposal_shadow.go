@@ -154,10 +154,29 @@ func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolve
 		return false
 	}
 	value, ok := candidate.Value.(string)
-	if !ok || value != evidence.Quote {
+	if !ok {
 		return false
 	}
+	if value != evidence.Quote &&
+		(!evidence.SemanticNormalized || codec != actionresolver.CodecEnum) {
+		return false
+	}
+	if evidence.SemanticNormalized {
+		return semanticNormalizedQuoteSpan(question, evidence.Start, evidence.End)
+	}
 	return evidenceSpanForCodec(question, evidence.Start, evidence.End, codec)
+}
+
+func semanticNormalizedQuoteSpan(text []rune, start, end int) bool {
+	for _, r := range text[start:end] {
+		if r > unicode.MaxASCII {
+			// CJK selections normally sit directly inside a sentence ("按量创建").
+			// Exact-span uniqueness is the meaningful boundary; treating adjacent
+			// Chinese characters as one identifier would reject every such quote.
+			return true
+		}
+	}
+	return standaloneSpan(text, start, end)
 }
 
 func evidenceSpanForCodec(text []rune, start, end int, codec actionresolver.SlotCodecKind) bool {
@@ -437,6 +456,10 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 	for index := range proposal.Slots {
 		candidate := &proposal.Slots[index]
 		present[candidate.Name] = struct{}{}
+		claimedQuote := ""
+		if candidate.Evidence != nil {
+			claimedQuote = strings.TrimSpace(candidate.Evidence.Quote)
+		}
 		candidate.Source = actionresolver.SourceAgentInference
 		candidate.Evidence = nil
 
@@ -464,6 +487,28 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 					Start:     start,
 					End:       end,
 					Quote:     value,
+				}
+				continue
+			}
+		}
+		// Enum values are often semantic normalizations rather than literal user
+		// text: "按量" becomes Postpay, for example. The Agent owns that semantic
+		// mapping, while the server still owns provenance. Accept a separate quote
+		// only when it is a unique span of this turn's question (ASCII selections
+		// must also be standalone; CJK selections may sit inside a sentence). This
+		// affects selection-card UX, never target authorization or the final
+		// confirmation gate.
+		if field.Codec == actionresolver.CodecEnum && claimedQuote != "" {
+			if start, end, ok := uniqueSemanticNormalizedQuote(
+				[]rune(view.CurrentQuestion), []rune(claimedQuote),
+			); ok {
+				candidate.Source = actionresolver.SourceUserExplicit
+				candidate.Evidence = &actionresolver.SourceEvidence{
+					MessageID:          view.TurnID,
+					Start:              start,
+					End:                end,
+					Quote:              claimedQuote,
+					SemanticNormalized: true,
 				}
 				continue
 			}
@@ -596,6 +641,28 @@ func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {
 	start := -1
 	for offset := 0; offset+len(quote) <= len(text); offset++ {
 		if string(text[offset:offset+len(quote)]) != string(quote) || !standaloneSpan(text, offset, offset+len(quote)) {
+			continue
+		}
+		if start >= 0 {
+			return 0, 0, false
+		}
+		start = offset
+	}
+	if start < 0 {
+		return 0, 0, false
+	}
+	return start, start + len(quote), true
+}
+
+func uniqueSemanticNormalizedQuote(text, quote []rune) (int, int, bool) {
+	if len(quote) == 0 || len(quote) > len(text) {
+		return 0, 0, false
+	}
+	start := -1
+	for offset := 0; offset+len(quote) <= len(text); offset++ {
+		end := offset + len(quote)
+		if string(text[offset:end]) != string(quote) ||
+			!semanticNormalizedQuoteSpan(text, offset, end) {
 			continue
 		}
 		if start >= 0 {

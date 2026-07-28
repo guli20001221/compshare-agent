@@ -29,6 +29,11 @@ const (
 
 	noStockReply      = "未获取到机型库存数据。"
 	soldOutDisclaimer = "（CompShare 平台不公开精确剩余数量，仅 Normal/SoldOut 两态。）"
+
+	// Terra fills optional enum properties even when the user did not choose one.
+	// Represent the absent state explicitly so the first business value
+	// (Exclusive) cannot silently become a user selection.
+	stockInventoryPoolUnspecified = "Unspecified"
 )
 
 // StockAvailabilityRequest is the capability's own request contract.
@@ -81,7 +86,7 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 		Params: objectParam(map[string]schemaNode{
 			"gpu_type":       stringParam(),
 			"zone_mentions":  arrayParam(stringParam()).described("用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。"),
-			"inventory_pool": enumParam(deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时省略。"),
+			"inventory_pool": enumParam(stockInventoryPoolUnspecified, deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时填 Unspecified。"),
 		}),
 		Handle:  stockHandle,
 		Render:  stockRender,
@@ -136,6 +141,10 @@ func stockRender(resp StockAvailabilityResponse) ReadResult {
 	r := ReadHandled(resp.Reply)
 	r.ToolAction = stockAction
 	r.Envelope = resp.Envelope
+	// Capacity and inventory wording is server-derived from several upstream
+	// sources. Require its verbatim block so the model cannot flatten the
+	// per-zone card-count table back into prose or omit a checked zone.
+	r.RenderRequired = true
 	return r
 }
 
@@ -367,7 +376,12 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 		eligibleChecks, poolReply := requestedInventoryPoolView(inventory, checks, pool)
 		return joinStockReply(renderStockCapacityReply(eligibleChecks), poolReply), true, ReadResult{}
 	}
-	return joinStockReply(renderStockCapacityReply(checks), inventoryReply), true, ReadResult{}
+	// A positive capacity precheck is already the user-facing answer. The raw
+	// inventory snapshot is a different, weaker signal and used to be appended
+	// underneath it, re-expanding the concise per-zone card-count table with
+	// approximate pool totals. Keep the snapshot for pool validation and degraded
+	// paths, but do not duplicate a successful capacity answer with it.
+	return renderStockCapacityReply(checks), true, ReadResult{}
 }
 
 func stockGPUInventorySnapshot(ctx context.Context, rt ReadRuntime, supportZones []zones.ZoneInfo) *deployment.GPUInventorySnapshot {

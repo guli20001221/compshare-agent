@@ -12,6 +12,17 @@ import (
 // chat text: this check runs at the engine boundary before dispatch.
 func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText string) error {
 	switch req := request.(type) {
+	case ImageListRequest:
+		query := strings.TrimSpace(req.Query)
+		if query == "" {
+			return nil
+		}
+		if err := requireLiteralSpan(currentUserText, req.QuerySourceSpan, "query_source_span"); err != nil {
+			return err
+		}
+		if !platform.ContainsLiteralSpan(req.QuerySourceSpan, query) {
+			return fmt.Errorf("query: %q 必须逐字出现在 query_source_span 中；请使用用户原话中的用途、约束或明确点名的镜像", query)
+		}
 	case ZoneCatalogRequest:
 		if strings.TrimSpace(req.Query) != "" {
 			if err := requireLiteralSpan(currentUserText, req.Query, "query"); err != nil {

@@ -848,6 +848,62 @@ func TestPruneBlankSlotsKeepsMeaningfulZeroValues(t *testing.T) {
 	require.Equal(t, []string{"Zero", "False", "EmptyList", "Text"}, names)
 }
 
+func TestNormalizedEnumQuotePinsTheUsersChargeType(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "帮我按量创建一台 4090 实例"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-normalized-charge", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
+		"GpuType":    "4090",
+		"ChargeType": "Postpay",
+		proposalExplicitUserQuotesField: map[string]any{
+			"ChargeType": "按量",
+		},
+	})
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), args)
+
+	require.NoError(t, err)
+	require.True(t, resolved.referenceData.ChargeTypeUserPinned)
+	slot := resolved.action.Provenance["ChargeType"]
+	require.Equal(t, actionresolver.SourceUserExplicit, slot.Source)
+	require.Equal(t, "Postpay", slot.Value)
+}
+
+func TestNormalizedEnumQuoteMustExistInTheCurrentQuestion(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "帮我创建一台 4090 实例"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-false-charge-quote", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
+		"GpuType":    "4090",
+		"ChargeType": "Month",
+		proposalExplicitUserQuotesField: map[string]any{
+			"ChargeType": "包月",
+		},
+	})
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), args)
+
+	require.NoError(t, err)
+	require.False(t, resolved.referenceData.ChargeTypeUserPinned)
+	require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ChargeType"].Source)
+}
+
 func TestResolvedProposalDisposition(t *testing.T) {
 	cases := []struct {
 		name   string

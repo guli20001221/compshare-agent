@@ -103,6 +103,7 @@ func TestJupyterTokenReturnsOpaqueRequiredObservation(t *testing.T) {
 	require.Len(t, eng.readResponseEvidenceThisTurn, 1)
 	require.True(t, eng.readResponseEvidenceThisTurn[0].Required)
 	require.Contains(t, eng.readResponseEvidenceThisTurn[0].Reply, token)
+	require.Contains(t, observation.RenderContract, "只输出 render_ref，不要在前后复述")
 }
 
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {

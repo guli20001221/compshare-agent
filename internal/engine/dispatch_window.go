@@ -11,6 +11,8 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
+const proposalExplicitUserQuotesField = "explicit_user_quotes"
+
 // centralAgentToolWindow is the grouped P6 capability surface. It intentionally
 // does not expose the underlying API tools used by deterministic handlers. Each
 // high-level read is a distinct, catalog-generated tool, while every platform
@@ -98,10 +100,27 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 	}
 	properties, _ := root["properties"].(map[string]any)
 	hasSensitiveField := false
+	hasNormalizedEnumField := false
 	for name, field := range spec.Fields {
 		if field.Codec == actionresolver.CodecSensitiveText {
 			delete(properties, name)
 			hasSensitiveField = true
+		}
+		if field.Codec == actionresolver.CodecEnum {
+			hasNormalizedEnumField = true
+			property, ok := properties[name].(map[string]any)
+			if ok {
+				description, _ := property["description"].(string)
+				property["description"] = strings.TrimSpace(description +
+					" 若该标准值是根据用户原话做的语义归一化而非逐字复制，同时在 explicit_user_quotes 中用同名字段填写用户原话片段。")
+			}
+		}
+	}
+	if hasNormalizedEnumField {
+		properties[proposalExplicitUserQuotesField] = map[string]any{
+			"type":                 "object",
+			"description":          "可选的用户原话证据。仅为经过语义归一化的枚举字段填写：键为字段名，值为当前消息中表达该选择的连续原文片段；用户没有明确选择时不要填写。",
+			"additionalProperties": map[string]any{"type": "string"},
 		}
 	}
 	// A proposal may be intentionally incomplete: Resolver returns the exact
@@ -125,14 +144,22 @@ func proposalArgsForOperation(operation string, direct map[string]any) map[strin
 	if slots, ok := direct["slots"]; ok {
 		return map[string]any{"operation": operation, "slots": slots}
 	}
+	quotes, _ := direct[proposalExplicitUserQuotesField].(map[string]any)
 	names := make([]string, 0, len(direct))
 	for name := range direct {
+		if name == proposalExplicitUserQuotesField {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	slots := make([]any, 0, len(names))
 	for _, name := range names {
-		slots = append(slots, map[string]any{"name": name, "value": direct[name]})
+		slot := map[string]any{"name": name, "value": direct[name]}
+		if quote, ok := quotes[name].(string); ok && strings.TrimSpace(quote) != "" {
+			slot["evidence"] = map[string]any{"quote": strings.TrimSpace(quote)}
+		}
+		slots = append(slots, slot)
 	}
 	return map[string]any{"operation": operation, "slots": slots}
 }

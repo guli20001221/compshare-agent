@@ -50,9 +50,10 @@ var imageDisplaySkipFields = map[string]struct{}{
 
 // ImageListRequest is the capability's own request contract.
 type ImageListRequest struct {
-	Source platform.ImageSource `json:"source,omitempty"`
-	Query  string               `json:"query,omitempty"`
-	Mode   platform.ListMode    `json:"mode,omitempty"`
+	Source          platform.ImageSource `json:"source,omitempty"`
+	Query           string               `json:"query,omitempty"`
+	QuerySourceSpan string               `json:"query_source_span,omitempty"`
+	Mode            platform.ListMode    `json:"mode,omitempty"`
 }
 
 // MissingFields: none — an unfiltered platform listing is valid.
@@ -70,10 +71,19 @@ type ImageListResponse struct {
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的真实目录及结构化属性。用于浏览、筛选或核实镜像，不用于模型仓库或镜像标签分类目录。",
-		Params:      objectParam(map[string]schemaNode{"source": enumParam(platform.ImageSourceValues()...), "query": stringParam(), "mode": enumParam(platform.ListModeValues()...)}),
-		Handle:      imageListHandle,
-		Render:      imageListRender,
+		Description: "查询平台、自制、社区或共享镜像的真实目录及结构化属性。用于浏览、筛选或核实镜像，不用于模型仓库或镜像标签分类目录。推荐镜像时，query 只能提取用户原话中的用途、约束或用户明确点名的镜像；不要先猜候选镜像名再用它查询。",
+		Params: objectParam(map[string]schemaNode{
+			"source": enumParam(platform.ImageSourceValues()...),
+			"query": stringParam().described(
+				"目录查询词。只能使用 query_source_span 中出现的用户原话，不得填写 Agent 猜测的候选镜像名；无查询条件时留空。",
+			),
+			"query_source_span": stringParam().described(
+				"query 非空时必填：从本轮用户消息逐字复制、且包含 query 的原文片段。服务端会核验；query 为空时留空。",
+			),
+			"mode": enumParam(platform.ListModeValues()...),
+		}),
+		Handle: imageListHandle,
+		Render: imageListRender,
 	}
 }
 

@@ -84,4 +84,35 @@ func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {
 	require.Contains(t, description, "敏感值已由服务端安全接收")
 	properties := parameters.(map[string]any)["properties"].(map[string]any)
 	require.NotContains(t, properties, "Password")
+	require.NotContains(t, properties, proposalExplicitUserQuotesField,
+		"a request with no normalized enum fields must not gain an irrelevant quote object")
+}
+
+func TestRequestToolCarriesNormalizedEnumUserQuotes(t *testing.T) {
+	var parameters map[string]any
+	for _, tool := range centralAgentToolWindow(true, false) {
+		if tool.Function != nil && tool.Function.Name == "RequestCreateInstance" {
+			parameters = tool.Function.Parameters.(map[string]any)
+			break
+		}
+	}
+	require.NotNil(t, parameters)
+	properties := parameters["properties"].(map[string]any)
+	require.Contains(t, properties, proposalExplicitUserQuotesField)
+	charge := properties["ChargeType"].(map[string]any)
+	require.Contains(t, charge["description"], "explicit_user_quotes")
+
+	got := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
+		"GpuType":    "4090",
+		"ChargeType": "Postpay",
+		proposalExplicitUserQuotesField: map[string]any{
+			"ChargeType": "按量",
+		},
+	})
+	slots := got["slots"].([]any)
+	require.Len(t, slots, 2)
+	require.NotContains(t, slots, proposalExplicitUserQuotesField)
+	chargeSlot := slots[0].(map[string]any)
+	require.Equal(t, "ChargeType", chargeSlot["name"])
+	require.Equal(t, map[string]any{"quote": "按量"}, chargeSlot["evidence"])
 }

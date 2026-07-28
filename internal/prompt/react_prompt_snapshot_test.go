@@ -59,8 +59,12 @@ const (
 	// arm, and per-case retrieval flips are noisy at this scale (fresh-001 flipped
 	// between two runs with NO rule change). What the measurement establishes is the
 	// absence of any benefit signal plus a mechanism for harm — not a proven delta.
-	mutatingReActPromptSHA256 = "abf2e9a696d1b13450ad8ef8ceea2eac38d586d94b198ad7c1692b0ee6ac74ac"
-	readOnlyReActPromptSHA256 = "f3335cfd3943a1bce29a37e2c9315c4b24602478a803aa1ab5617941b43c8102"
+	// 2026-07-28: catalog recommendation policy now keeps model guesses out of
+	// search filters and uses observed popularity only as a tie breaker after
+	// matching the user's explicit constraints. The rule is catalog-generic and
+	// contains no product names, keyword tables or regular expressions.
+	mutatingReActPromptSHA256 = "1630fa9e201fec5f61c1fec5c8b30dcbe8688db4aed3c63745bdb26c5d36cf5c"
+	readOnlyReActPromptSHA256 = "deeb2d38fb0a7d59c3770dce18180572e96323e83b481904e764ba81f7341095"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

@@ -228,10 +228,12 @@ func TestStockHandle_HuabeiCZonesUsePodInventoryInsteadOfOfficialZeros(t *testin
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	assert.Contains(t, result.Reply, "华北一C (cn-bj2-03) / 4090：独占约 12 张")
-	assert.Contains(t, result.Reply, "华北二C (cn-wlcb-03) / 4090：抢占约 7 张")
-	assert.NotContains(t, result.Reply, "华北一C (cn-bj2-03) / 4090：原始快照为 0")
-	assert.NotContains(t, result.Reply, "华北二C (cn-wlcb-03) / 4090：原始快照为 0")
+	assert.Contains(t, result.Reply, "- 4090 / 华北一C (cn-bj2-03)：1 卡")
+	assert.Contains(t, result.Reply, "- 4090 / 华北二C (cn-wlcb-03)：1 卡")
+	assert.NotContains(t, result.Reply, "约 12 张",
+		"successful capacity output stays a card-count table; raw pool totals are only validation evidence")
+	assert.NotContains(t, result.Reply, "约 7 张")
+	assert.True(t, result.RenderRequired, "the exact capacity table must survive model wording")
 
 	var inventoryCalls []fakeReadExecCall
 	for _, call := range exec.calls {
@@ -302,6 +304,11 @@ func TestStockHandle_PrechecksEverySaleZone(t *testing.T) {
 				map[string]any{"CompShareImageId": "img-system", "Name": "Base System", "Status": "Available", "ImageType": "System"},
 			},
 		},
+		"DescribeCompShareGpuInventory": {
+			"GpuInventory": map[string]any{
+				"Exclusive": map[string]any{"2": map[string]any{"4090": float64(30)}},
+			},
+		},
 		"CheckCompShareResourceCapacity": {
 			"Specs": []any{
 				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
@@ -321,7 +328,9 @@ func TestStockHandle_PrechecksEverySaleZone(t *testing.T) {
 	assert.Equal(t, 2, capacityCalls, "each advertised zone must be checked; a first-zone success cannot stop the scan")
 	assert.Contains(t, result.Reply, "华北二A")
 	assert.Contains(t, result.Reply, "上海二B")
-	assert.NotContains(t, result.Reply, "原始 GPU 库存")
+	assert.NotContains(t, result.Reply, "原始 GPU 库存",
+		"a successful per-zone card-count table must not be followed by approximate pool totals")
+	assert.NotContains(t, result.Reply, "约 30 张")
 }
 
 func TestStockHandle_MultipleNamedZonesAreExactAndNeverCrossZone(t *testing.T) {
@@ -581,6 +590,19 @@ func TestRequestedInventoryPoolNeverConfusesSpotAndExclusive(t *testing.T) {
 		assert.Empty(t, eligible)
 		assert.Contains(t, reply, "当前不支持抢占式购买方式")
 	})
+}
+
+func TestUnspecifiedInventoryPoolDoesNotBecomeExclusive(t *testing.T) {
+	assert.Equal(t, "", normalizeInventoryPool(stockInventoryPoolUnspecified))
+
+	spec := NewReadCapability(stockReadSpec())
+	props := spec.Schema()["properties"].(map[string]any)
+	pool := props["inventory_pool"].(map[string]any)
+	require.Equal(t, []string{
+		stockInventoryPoolUnspecified,
+		deployment.GPUInventoryPoolExclusive,
+		deployment.GPUInventoryPoolSpot,
+	}, pool["enum"])
 }
 
 func TestRequestedInventoryPoolZeroIsSnapshotNotGlobalDenial(t *testing.T) {
