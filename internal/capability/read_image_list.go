@@ -549,78 +549,139 @@ func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode pl
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(byID), Source: envelope.FactSourceComputed},
 	)
 
-	seen := map[string]bool{}
+	// Breadth before depth. Every version of a family carries the SAME name, so
+	// filling the cap family-by-family spends it on rows the Agent cannot tell
+	// apart: measured live 2026-07-28, 数字人 matches 62 families / 98 images, and
+	// depth-first handed the Agent 7 InfiniteTalk versions + 3 LTX versions — a
+	// two-family menu, with HeyGem and every other digital-human family invisible.
+	// Round-robin instead: one version per family in popularity order, then a
+	// second each, and so on. A broad search now shows the field; a narrow one
+	// (few families) still spends the remaining cap on that family's versions.
+	families := groupCommunityVersionRows(filtered, byID)
 	shown := 0
-	for _, group := range filtered {
-		if shown >= imageListDisplayCap {
-			break
-		}
-		groupName := communityGroupName(group)
-		groupAuthor := safeString(group, "Author")
-		deployCount := communityDeployCount(group)
-		for _, v := range mapSliceAt(group, "Data") {
+	for depth := 0; shown < imageListDisplayCap; depth++ {
+		advanced := false
+		for _, rows := range families {
+			if depth >= len(rows) {
+				continue
+			}
+			advanced = true
+			appendCommunityImageSubject(&env, rows[depth])
+			shown++
 			if shown >= imageListDisplayCap {
 				break
 			}
+		}
+		if !advanced {
+			break
+		}
+	}
+	if len(byID) > shown {
+		// Name the family coverage too: "10 of 98 images" reads like a deep slice
+		// of a shallow catalog, when what the Agent needs to know before it
+		// recommends one is how much of the FIELD it was shown.
+		env.Computed = append(env.Computed, envelope.Fact{
+			Key: "display_truncated", Label: "Display truncated",
+			Value: fmt.Sprintf("showing %d of %d community images across %d of %d image families; ask with a keyword to narrow",
+				shown, len(byID), countCommunityFamiliesShown(families, shown), len(families)),
+			Source: envelope.FactSourceComputed,
+		})
+	}
+	return env
+}
+
+// communityVersionRow is one community image version paired with the family row
+// it came from, so the round-robin pass can emit group provenance (author,
+// 部署次数) without re-walking the groups.
+type communityVersionRow struct {
+	id      string
+	version map[string]any
+	entry   deployment.ImageCatalogEntry
+	group   map[string]any
+}
+
+// groupCommunityVersionRows flattens each family's version rows in catalog order,
+// keeping only versions that carry an id AND parsed into a typed catalog entry
+// (an id-less or unparsed row is an honest drop, never a synthetic subject).
+// Families keep their incoming popularity order; families that contribute no
+// usable version are omitted entirely rather than left as empty slots.
+func groupCommunityVersionRows(groups []map[string]any, byID map[string]deployment.ImageCatalogEntry) [][]communityVersionRow {
+	seen := map[string]bool{}
+	families := make([][]communityVersionRow, 0, len(groups))
+	for _, group := range groups {
+		rows := make([]communityVersionRow, 0, 4)
+		for _, v := range mapSliceAt(group, "Data") {
 			ver, ok := v.(map[string]any)
 			if !ok {
 				continue
 			}
 			id := safeString(ver, "CompShareImageId")
 			if id == "" {
-				continue // honest drop — no synthetic id for an id-less version row
+				continue
 			}
 			key := strings.ToLower(id)
 			if seen[key] {
 				continue
 			}
-			catalogEntry, ok := byID[key]
+			entry, ok := byID[key]
 			if !ok {
 				continue
 			}
 			seen[key] = true
-			subjectID := "image:" + id
-			name := catalogEntry.Name
-			if name == "" {
-				name = groupName
-			}
-			env.Subjects = append(env.Subjects, envelope.Subject{
-				ID: subjectID, Name: name, Type: envelope.SubjectImage,
-			})
-			appendStructuredImageFacts(&env, subjectID, catalogEntry)
-			// Group provenance, attached per subject (never a filter): author, the
-			// family's 部署次数 popularity, and the version's own label (distinct from
-			// the family name that became the subject name).
-			if author := safeString(ver, "Author"); author != "" {
-				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: subjectID, Key: "author", Label: "作者", Value: author, Source: envelope.FactSourceAPI,
-				})
-			} else if groupAuthor != "" {
-				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: subjectID, Key: "author", Label: "作者", Value: groupAuthor, Source: envelope.FactSourceAPI,
-				})
-			}
-			if label := communityVersionLabel(ver); label != "" {
-				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: subjectID, Key: "version", Label: "版本", Value: label, Source: envelope.FactSourceAPI,
-				})
-			}
-			if deployCount > 0 {
-				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: subjectID, Key: "deploy_count", Label: "部署次数", Value: int(deployCount), Source: envelope.FactSourceAPI,
-				})
-			}
-			shown++
+			rows = append(rows, communityVersionRow{id: id, version: ver, entry: entry, group: group})
+		}
+		if len(rows) > 0 {
+			families = append(families, rows)
 		}
 	}
-	if len(byID) > shown {
-		env.Computed = append(env.Computed, envelope.Fact{
-			Key: "display_truncated", Label: "Display truncated",
-			Value:  fmt.Sprintf("showing %d of %d community images; ask with a keyword to narrow", shown, len(byID)),
-			Source: envelope.FactSourceComputed,
+	return families
+}
+
+// countCommunityFamiliesShown reports how many families the first `shown`
+// round-robin emissions covered — the breadth figure the truncation note quotes.
+// Depth 0 visits every family exactly once (a family with no usable version was
+// dropped when the rows were grouped), so the count is simply whichever ran out
+// first: the cap or the field.
+func countCommunityFamiliesShown(families [][]communityVersionRow, shown int) int {
+	if shown < len(families) {
+		return shown
+	}
+	return len(families)
+}
+
+// appendCommunityImageSubject emits one community version as an image subject
+// with the same structured per-candidate facts the platform path emits, plus the
+// group provenance attached per subject (never a filter): author, the family's
+// 部署次数 popularity, and the version's own label.
+func appendCommunityImageSubject(env *envelope.Envelope, row communityVersionRow) {
+	subjectID := "image:" + row.id
+	name := row.entry.Name
+	if name == "" {
+		name = communityGroupName(row.group)
+	}
+	env.Subjects = append(env.Subjects, envelope.Subject{
+		ID: subjectID, Name: name, Type: envelope.SubjectImage,
+	})
+	appendStructuredImageFacts(env, subjectID, row.entry)
+	author := safeString(row.version, "Author")
+	if author == "" {
+		author = safeString(row.group, "Author")
+	}
+	if author != "" {
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: "author", Label: "作者", Value: author, Source: envelope.FactSourceAPI,
 		})
 	}
-	return env
+	if label := communityVersionLabel(row.version); label != "" {
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: "version", Label: "版本", Value: label, Source: envelope.FactSourceAPI,
+		})
+	}
+	if deployCount := communityDeployCount(row.group); deployCount > 0 {
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: "deploy_count", Label: "部署次数", Value: int(deployCount), Source: envelope.FactSourceAPI,
+		})
+	}
 }
 
 // communityVersionLabel returns the version-specific label (e.g. "v26.0529",

@@ -307,6 +307,100 @@ func TestImageListEnvelope_CommunityHonestAbsence(t *testing.T) {
 	}
 }
 
+// digitalHumanCommunityCatalog mirrors the live shape of a 数字人 community search
+// (measured 2026-07-28): a runaway top family with many versions, a second
+// multi-version family, and a tail of one-version families. Every version of a
+// family carries the SAME name, which is what makes a depth-first fill useless
+// as evidence — the Agent gets ten rows it cannot tell apart.
+func digitalHumanCommunityCatalog() map[string]any {
+	family := func(name string, created int, versions int) map[string]any {
+		data := make([]any, 0, versions)
+		for i := 0; i < versions; i++ {
+			data = append(data, map[string]any{
+				"CompShareImageId": fmt.Sprintf("cimg-%s-%d", name, i),
+				"Name":             name,
+				"VersionName":      fmt.Sprintf("v%d", versions-i),
+			})
+		}
+		return map[string]any{"ImageName": name, "Author": "author-" + name, "CreatedCount": float64(created), "Data": data}
+	}
+	return map[string]any{"CompshareImageGroup": []any{
+		family("InfiniteTalk", 17667, 7),
+		family("LTX", 5021, 6),
+		family("HeyGem", 1076, 1),
+		family("LongCatAvatar", 390, 1),
+		family("Fay", 251, 2),
+	}}
+}
+
+func subjectNames(env envelope.Envelope) []string {
+	out := make([]string, 0, len(env.Subjects))
+	for _, s := range env.Subjects {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+// The recommendation defect this fixes: the browse listing's Reply never reaches
+// the model (buildReadObservation drops it for a browse listing), so these ten
+// subjects ARE the evidence a "推荐一个做数字人的镜像" turn reasons over. Spending
+// them depth-first showed two families out of five — the Agent could not have
+// recommended HeyGem because it was never told HeyGem exists. Breadth first: one
+// version per family before any family gets a second.
+func TestImageListEnvelope_CommunityCapBuysDistinctFamiliesNotDuplicateVersions(t *testing.T) {
+	env := buildCommunityImageEnvelope(digitalHumanCommunityCatalog(), "数字人", platform.ListMode(""))
+
+	require.Len(t, env.Subjects, imageModelBrowseDisplayCap)
+	assert.Equal(t,
+		[]string{"InfiniteTalk", "LTX", "HeyGem", "LongCatAvatar", "Fay"},
+		subjectNames(env)[:5],
+		"the cap first buys one version of every family, in 部署次数 order")
+
+	distinct := map[string]bool{}
+	for _, name := range subjectNames(env) {
+		distinct[name] = true
+	}
+	assert.Len(t, distinct, 5, "all five families reach the Agent; depth-first showed only two")
+	assert.Contains(t, distinct, "HeyGem", "a one-version family must not be starved by a seven-version one")
+}
+
+// The other half of the same rule: when the search already narrowed to one
+// family, the cap must still spend itself on that family's versions rather than
+// reporting a single row. Breadth-first must not become breadth-only.
+func TestImageListEnvelope_CommunityStillShowsVersionsWhenTheFieldIsNarrow(t *testing.T) {
+	raw := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "LiveTalking", "CreatedCount": float64(4596), "Data": []any{
+			map[string]any{"CompShareImageId": "cimg-lt-22", "Name": "LiveTalking", "VersionName": "v2.2"},
+			map[string]any{"CompShareImageId": "cimg-lt-21", "Name": "LiveTalking", "VersionName": "v2.1"},
+			map[string]any{"CompShareImageId": "cimg-lt-20", "Name": "LiveTalking", "VersionName": "v2.0"},
+		}},
+	}}
+
+	env := buildCommunityImageEnvelope(raw, "LiveTalking", platform.ListMode(""))
+
+	require.Len(t, env.Subjects, 3, "a single-family search still surfaces every version")
+	assert.Equal(t,
+		[]string{"image:cimg-lt-22", "image:cimg-lt-21", "image:cimg-lt-20"},
+		[]string{env.Subjects[0].ID, env.Subjects[1].ID, env.Subjects[2].ID},
+		"catalog version order is preserved within a family")
+}
+
+// The truncation note is the Agent's only signal about what it did NOT see. For a
+// recommendation the missing figure is coverage of the FIELD, not of the rows.
+func TestImageListEnvelope_CommunityTruncationNoteReportsFamilyCoverage(t *testing.T) {
+	env := buildCommunityImageEnvelope(digitalHumanCommunityCatalog(), "数字人", platform.ListMode(""))
+
+	note := ""
+	for _, c := range env.Computed {
+		if c.Key == "display_truncated" {
+			note = fmt.Sprint(c.Value)
+		}
+	}
+	require.NotEmpty(t, note, "17 images do not fit in 10 subjects; the Agent must be told")
+	assert.Contains(t, note, "showing 10 of 17 community images")
+	assert.Contains(t, note, "across 5 of 5 image families")
+}
+
 // --- handler source-facet dispatch ----------------------------------------------
 
 func TestImageListHandle_SourceFacetDispatch(t *testing.T) {
