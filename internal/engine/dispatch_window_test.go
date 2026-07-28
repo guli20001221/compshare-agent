@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/require"
 )
@@ -70,6 +72,33 @@ func TestRequestToolDescriptionsDoNotRepeatSharedPromptOrExecutionChains(t *test
 	}
 }
 
+func TestKnowledgeToolExcludesCurrentPlatformFacts(t *testing.T) {
+	var description string
+	for _, tool := range centralAgentToolWindow(false, false) {
+		if tool.Function != nil && tool.Function.Name == "SearchKnowledge" {
+			description = tool.Function.Description
+			break
+		}
+	}
+	require.Contains(t, description, "平台当前目录")
+	require.Contains(t, description, "对应只读能力")
+}
+
+func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
+	for _, mutating := range []bool{false, true} {
+		system := prompt.BuildSystemWithOptions("context", prompt.BuildOptions{MutatingToolsEnabled: mutating})
+		toolJSON, err := json.Marshal(centralAgentToolWindow(mutating, false))
+		require.NoError(t, err)
+		t.Logf("mutating=%t system_bytes=%d system_runes=%d tool_bytes=%d tool_runes=%d total_bytes=%d total_runes=%d",
+			mutating, len(system), len([]rune(system)), len(toolJSON), len([]rune(string(toolJSON))),
+			len(system)+len(toolJSON), len([]rune(system))+len([]rune(string(toolJSON))))
+		require.LessOrEqual(t, len(system), 4500, "central system prompt grew past its reviewed byte budget")
+		require.LessOrEqual(t, len(toolJSON), 30000, "model-visible tool window grew past its reviewed byte budget")
+		require.LessOrEqual(t, len(system)+len(toolJSON), 35000,
+			"static prompt plus tool schemas grew past its reviewed byte budget")
+	}
+}
+
 func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {
 	var description string
 	var parameters any
@@ -101,6 +130,9 @@ func TestRequestToolCarriesNormalizedEnumUserQuotes(t *testing.T) {
 	require.Contains(t, properties, proposalChargeTypeUserQuoteField)
 	quoteField := properties[proposalChargeTypeUserQuoteField].(map[string]any)
 	require.Equal(t, "string", quoteField["type"])
+	require.Contains(t, quoteField["description"], "明确肯定选择")
+	require.Contains(t, quoteField["description"], "否定、比较、询价、转述他人意见")
+	require.Contains(t, parameters["required"], proposalChargeTypeUserQuoteField)
 	charge := properties["ChargeType"].(map[string]any)
 	require.Contains(t, charge["description"], proposalChargeTypeUserQuoteField)
 

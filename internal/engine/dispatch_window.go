@@ -113,20 +113,24 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 			if ok {
 				description, _ := property["description"].(string)
 				property["description"] = strings.TrimSpace(description +
-					" 若该标准值是根据用户原话做的语义归一化而非逐字复制，同时在 charge_type_user_quote 中填写用户原话片段。")
+					" 若该标准值是根据用户原话做的语义归一化而非逐字复制，同时在 charge_type_user_quote 中填写用户原话片段；用户明确选择按量/Postpay 时也必须填写，不能因为它是默认值而省略。")
 			}
 		}
 	}
 	if hasChargeTypePhraseField {
 		properties[proposalChargeTypeUserQuoteField] = map[string]any{
 			"type":        "string",
-			"description": "可选的计费方式原话证据。仅当用户本轮明确说出计费方式时，填写当前消息中的连续原文片段；用户没有明确选择时不要填写。",
+			"description": "计费方式原话证据。用户把该方式作为本次创建的明确肯定选择时，必须填写当前消息中的连续原文片段，包括按量/Postpay；否定、比较、询价、转述他人意见或仅提到某方式都不是选择，此时填写空字符串。",
 		}
 	}
 	// A proposal may be intentionally incomplete: Resolver returns the exact
 	// missing fields and the Agent then asks only for those. Requiring workflow
 	// fields in the model schema makes the model ask in prose before it can call.
-	root["required"] = []string{}
+	required := []string{}
+	if hasChargeTypePhraseField {
+		required = append(required, proposalChargeTypeUserQuoteField)
+	}
+	root["required"] = required
 	function.Name = proposalToolName(spec.Operation)
 	// The system prompt owns the action-first / partial-proposal / confirmation
 	// rules once. A tool description owns only this operation's semantic boundary;

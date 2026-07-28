@@ -9,7 +9,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SearchKnowledge",
-			Description: "检索平台文档和技术证据。用于产品规则、操作方法、技术原理和故障知识；实例状态、库存、价格等实时账号数据应使用对应只读能力。返回本轮可引用的证据条目。",
+			Description: "检索平台文档和技术证据。用于稳定的产品规则、操作方法、技术原理和故障知识；平台当前目录、可用性、状态、价格、库存或热度使用对应只读能力。返回本轮可引用的证据条目。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

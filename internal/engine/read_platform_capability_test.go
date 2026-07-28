@@ -124,6 +124,37 @@ func TestRecentPriorUserTextsExcludesCurrentTurnAndAssistantText(t *testing.T) {
 	require.Equal(t, []string{"第二轮 ComfyUI", "第一轮 InfiniteTalk"}, eng.recentPriorUserTexts(4))
 }
 
+func TestRecentPriorUserTextsExcludesScreenshotOCRAndWrappedCurrentTurn(t *testing.T) {
+	current := "请推荐别的数字人镜像"
+	eng := &Engine{lastUserMsg: current, messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system"},
+		{Role: openai.ChatMessageRoleUser, Content: WrapScreenshotContext("旧截图出现 LiveTalking", "上一轮请看截图")},
+		{Role: openai.ChatMessageRoleAssistant, Content: "助手提到 HeyGem"},
+		{Role: openai.ChatMessageRoleUser, Content: WrapScreenshotContext("本轮截图出现 MuseTalk", current)},
+	}}
+
+	prior := eng.recentPriorUserTexts(4)
+	require.Equal(t, []string{"上一轮请看截图"}, prior)
+	require.Error(t, capability.ValidateCurrentTurnGrounding(
+		capability.ImageListRequest{
+			Source: platform.ImageSourceCommunity,
+			Query:  "LiveTalking",
+			Mode:   platform.ListModeFiltered,
+		},
+		current,
+		prior...,
+	))
+	require.NoError(t, capability.ValidateCurrentTurnGrounding(
+		capability.ImageListRequest{
+			Source: platform.ImageSourceCommunity,
+			Query:  "数字人镜像",
+			Mode:   platform.ListModeFiltered,
+		},
+		current,
+		prior...,
+	))
+}
+
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
 	executor := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{}, executor, nil)

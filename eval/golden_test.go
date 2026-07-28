@@ -59,6 +59,27 @@ func singleInstanceExecutor() *goldenExecutor {
 	}}
 }
 
+func communityImageRecommendationExecutor() *goldenExecutor {
+	return &goldenExecutor{results: map[string]map[string]any{
+		"DescribeCommunityImages": {
+			"CompshareImageGroup": []any{
+				map[string]any{
+					"ImageName": "最强AI数字人InfiniteTalk-图片和视频数字人", "CreatedCount": float64(17710),
+					"Data": []any{map[string]any{
+						"CompShareImageId": "community-infinite-talk", "Name": "InfiniteTalk", "VersionName": "v26.0201",
+					}},
+				},
+				map[string]any{
+					"ImageName": "LiveTalking", "CreatedCount": float64(4599),
+					"Data": []any{map[string]any{
+						"CompShareImageId": "community-live-talking", "Name": "LiveTalking", "VersionName": "v2.2",
+					}},
+				},
+			},
+		},
+	}}
+}
+
 // billingExecutor returns a mock with one running + one stopped instance, with pricing fields
 // including CompShareImagePrice for paid community image testing.
 // NOTE: The mock returns full pricing data on every call regardless of args.
@@ -355,6 +376,14 @@ var engineGoldenCases = []goldenCase{
 		ExpectNoToolCall: true,
 		RejectToolCalls:  []string{"SetStopSchedulerWorkflow"},
 		ReplyContains:    []string{"哪"},
+	},
+	{
+		ID:              "golden_22_recommend_current_catalog_image",
+		Executor:        communityImageRecommendationExecutor(),
+		Input:           "为我推荐一个做数字人的镜像",
+		UserContext:     "用户当前没有实例。",
+		ExpectToolCalls: []string{"ReadCapability_image_list", "DescribeCommunityImages"},
+		ReplyContains:   []string{"InfiniteTalk"},
 	},
 
 	// ── Multi-turn golden cases ─────────────────────────────────────────

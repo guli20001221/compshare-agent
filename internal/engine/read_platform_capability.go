@@ -76,7 +76,7 @@ func (e *Engine) recentPriorUserTexts(limit int) []string {
 		if message.Role != openai.ChatMessageRoleUser {
 			continue
 		}
-		text := strings.TrimSpace(message.Content)
+		text := userAuthoredText(message.Content)
 		if !skippedCurrent && current != "" && text == current {
 			skippedCurrent = true
 			continue

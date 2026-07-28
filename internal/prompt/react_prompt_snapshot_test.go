@@ -59,15 +59,15 @@ const (
 	// arm, and per-case retrieval flips are noisy at this scale (fresh-001 flipped
 	// between two runs with NO rule change). What the measurement establishes is the
 	// absence of any benefit signal plus a mechanism for harm — not a proven delta.
-	// 2026-07-28: catalog recommendation policy now preserves the user's literal
-	// purpose as the baseline and lets semantic technology/category searches add
-	// candidates without replacing it. Catalog recommendations must consult the
-	// live catalog; knowledge may explain a candidate but cannot nominate one.
-	// Observed popularity remains only a tie breaker after matching explicit
-	// constraints. The rule is catalog-generic and contains no product names,
-	// recommendation keyword tables or regexes.
-	mutatingReActPromptSHA256 = "62955638f169a336ffa4a48f8a466efa0074ef243dbd04e6329154b67d880f28"
-	readOnlyReActPromptSHA256 = "f1ee08d0dbaa5cd6416d339e6ee85c66a7c4a7a5ec669b3a47c933c23f82545c"
+	// 2026-07-28: current-data source selection is stated once in the knowledge
+	// policy for every live platform fact (catalog, availability, state, price,
+	// stock and popularity). The behavior segment keeps only the catalog decision
+	// rule: model guesses cannot replace user criteria and supported expansions
+	// may only add candidates. A failed live read cannot be replaced by a
+	// knowledge-base candidate. Capability-specific parameter names stay in
+	// tool schemas rather than the shared prompt.
+	mutatingReActPromptSHA256 = "e1c4caa53a07d07cde3d54f9c26a5b6733a11a693069fcabe09ff028adf2e7b2"
+	readOnlyReActPromptSHA256 = "87be136d91ad5002418ec45c283ae7e62d205be93afc6ae104a78fa90ad65bb0"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

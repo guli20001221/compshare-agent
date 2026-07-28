@@ -77,6 +77,37 @@ func TestCommunitySemanticQueriesUnionWithGroundedUserQuery(t *testing.T) {
 		"the guessed expansion cannot exclude the more popular candidate found by the user's own purpose")
 }
 
+func TestCommunitySemanticQueriesFilterAndDedupeFlatFallback(t *testing.T) {
+	exec := &communityQueryExec{results: map[string]map[string]any{
+		"数字人": {
+			"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-infinite", "Name": "数字人 InfiniteTalk"},
+				map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu"},
+			},
+		},
+		"LiveTalking": {
+			"ImageSet": []any{
+				map[string]any{"CompShareImageId": "img-live", "Name": "LiveTalking"},
+				map[string]any{"CompShareImageId": "img-infinite", "Name": "数字人 InfiniteTalk"},
+				map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu"},
+			},
+		},
+	}}
+
+	result := runImageList(t, exec, ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "数字人",
+		SemanticQueries: []string{"LiveTalking"}, Mode: platform.ListModeFiltered,
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.NotNil(t, result.Envelope)
+	names := make([]string, 0, len(result.Envelope.Subjects))
+	for _, subject := range result.Envelope.Subjects {
+		names = append(names, subject.Name)
+	}
+	require.Equal(t, []string{"数字人 InfiniteTalk", "LiveTalking"}, names)
+}
+
 // TestImageListHandle_PlatformEmpty: an empty platform image catalog is a
 // structured Empty read (issue 1) — no subjects populated, so no envelope.
 func TestImageListHandle_PlatformEmpty(t *testing.T) {

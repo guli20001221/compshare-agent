@@ -71,7 +71,7 @@ type ImageListResponse struct {
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的真实目录及结构化属性。用于浏览、筛选或核实镜像，不用于模型仓库或镜像标签分类目录。推荐社区镜像时，以用户原话中的用途作为 query；需要把中文用途转换为项目或技术类别时放入 semantic_queries。各查询结果会合并，语义扩展不能排除用户原话命中的候选。",
+		Description: "查询平台、自制、社区或共享镜像的当前目录及结构化属性。用于浏览、筛选、核实或推荐镜像；不用于模型仓库或镜像标签分类目录。具体查询与语义扩展规则以参数说明为准。",
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
@@ -164,7 +164,7 @@ func communityImageListHandle(ctx context.Context, req ImageListRequest, rt Read
 		if err != nil {
 			return ImageListResponse{}, ReadFailureAfterTool(communityImageAction, imageListCapabilityLabel, err)
 		}
-		results = append(results, raw)
+		results = append(results, filterFlatCommunityImageResult(raw, query))
 	}
 	raw := mergeCommunityImageResults(results)
 	// Upstream already applied every individual query. The merged catalog is the
@@ -224,9 +224,71 @@ func mergeCommunityImageResults(results []map[string]any) map[string]any {
 		merged["TotalCount"] = len(items)
 	}
 	if len(flat) > 0 {
-		merged["ImageSet"] = flat
+		deduped := dedupeFlatImageRows(flat)
+		merged["ImageSet"] = deduped
+		if len(groups) == 0 {
+			merged["TotalCount"] = len(deduped)
+		}
 	}
 	return merged
+}
+
+// filterFlatCommunityImageResult preserves the compatibility path for community
+// APIs that return ImageSet instead of CompshareImageGroup. Group responses are
+// already filtered upstream; a flat response is filtered again locally so an
+// upstream implementation that ignores FuzzySearch cannot turn one semantic
+// expansion into an unfiltered catalog.
+func filterFlatCommunityImageResult(raw map[string]any, query string) map[string]any {
+	if strings.TrimSpace(query) == "" || len(mapSliceAt(raw, "CompshareImageGroup")) > 0 {
+		return raw
+	}
+	items := mapSliceAt(raw, "ImageSet")
+	if len(items) == 0 {
+		return raw
+	}
+	filtered := make([]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok || !entryMatchesSlotQuery(entry, query,
+			[]string{"Name", "ImageName", "CompShareImageName", "Author"}) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	out := make(map[string]any, len(raw))
+	for key, value := range raw {
+		out[key] = value
+	}
+	out["ImageSet"] = filtered
+	out["TotalCount"] = len(filtered)
+	return out
+}
+
+func dedupeFlatImageRows(items []any) []any {
+	seen := map[string]bool{}
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(safeString(entry, "CompShareImageId")))
+		if key == "" {
+			name := strings.ToLower(strings.TrimSpace(bestImageName(entry)))
+			author := strings.ToLower(strings.TrimSpace(safeString(entry, "Author")))
+			if name != "" || author != "" {
+				key = name + "\x00" + author
+			}
+		}
+		if key != "" && seen[key] {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
