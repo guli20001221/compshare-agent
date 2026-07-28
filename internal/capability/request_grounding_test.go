@@ -20,21 +20,51 @@ func TestImageListQueryMustBeGroundedInCurrentTurnPurpose(t *testing.T) {
 	userText := "为我推荐一个做数字人的镜像"
 
 	require.NoError(t, ValidateCurrentTurnGrounding(ImageListRequest{
-		Source: platform.ImageSourceCommunity, Query: "数字人", QuerySourceSpan: "做数字人", Mode: platform.ListModeFiltered,
+		Source: platform.ImageSourceCommunity, Query: "数字人", Mode: platform.ListModeFiltered,
 	}, userText))
 	require.NoError(t, ValidateCurrentTurnGrounding(ImageListRequest{
 		Source: platform.ImageSourceCommunity, Mode: platform.ListModeAll,
 	}, userText), "an unfiltered browse does not need a query source span")
 
 	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
-		Source: platform.ImageSourceCommunity, Query: "LiveTalking", QuerySourceSpan: "做数字人", Mode: platform.ListModeFiltered,
+		Source: platform.ImageSourceCommunity, Query: "LiveTalking", Mode: platform.ListModeFiltered,
 	}, userText), "the Agent may not guess a candidate name and use it to narrow the catalog")
+}
+
+func TestImageListSemanticExpansionKeepsTheGroundedBaseline(t *testing.T) {
+	require.NoError(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "大模型推理",
+		SemanticQueries: []string{"vllm", "sglang"}, Mode: platform.ListModeFiltered,
+	}, "推荐一个大模型推理镜像"))
+	require.NoError(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "AI绘画",
+		SemanticQueries: []string{"ComfyUI"}, Mode: platform.ListModeFiltered,
+	}, "找一个AI绘画镜像"))
+
 	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
-		Source: platform.ImageSourceCommunity, Query: "LiveTalking", QuerySourceSpan: "LiveTalking", Mode: platform.ListModeFiltered,
-	}, userText), "a fabricated source span must not pass current-turn verification")
+		Source:          platform.ImageSourceCommunity,
+		SemanticQueries: []string{"LiveTalking"}, Mode: platform.ListModeFiltered,
+	}, "推荐数字人镜像"), "an expansion cannot replace the grounded user query")
 	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
-		Source: platform.ImageSourceCommunity, Query: "数字人", Mode: platform.ListModeFiltered,
-	}, userText), "a non-empty catalog query requires current-turn provenance")
+		Source: platform.ImageSourcePlatform, Query: "AI绘画",
+		SemanticQueries: []string{"ComfyUI"}, Mode: platform.ListModeFiltered,
+	}, "找一个AI绘画镜像"), "semantic expansions are implemented only for the community catalog")
+	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "AI绘画",
+		SemanticQueries: []string{"a", "b", "c", "d"}, Mode: platform.ListModeFiltered,
+	}, "找一个AI绘画镜像"), "the expansion fan-out is bounded")
+}
+
+func TestImageListQueryMayReuseARecentUserPhraseButNotAssistantProse(t *testing.T) {
+	request := ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "InfiniteTalk", Mode: platform.ListModeFiltered,
+	}
+	require.NoError(t, ValidateCurrentTurnGrounding(
+		request, "那个还有别的版本吗", "上轮我问的是 InfiniteTalk",
+	))
+	require.Error(t, ValidateCurrentTurnGrounding(
+		request, "那个还有别的版本吗",
+	), "assistant or tool text is intentionally not an evidence source")
 }
 
 func TestZoneCatalogQueryMustComeFromCurrentTurn(t *testing.T) {

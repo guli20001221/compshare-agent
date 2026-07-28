@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/compshare-agent/internal/actionresolver"
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
@@ -157,17 +158,18 @@ func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolve
 	if !ok {
 		return false
 	}
-	if value != evidence.Quote &&
-		(!evidence.SemanticNormalized || codec != actionresolver.CodecEnum) {
-		return false
-	}
-	if evidence.SemanticNormalized {
-		return semanticNormalizedQuoteSpan(question, evidence.Start, evidence.End)
+	if value != evidence.Quote {
+		normalized, ok := deployment.ExplicitChargeTypeFromPhrase(evidence.Quote)
+		if candidate.Name != "ChargeType" || codec != actionresolver.CodecEnum ||
+			!ok || normalized != value {
+			return false
+		}
+		return chargeTypeQuoteSpan(question, evidence.Start, evidence.End)
 	}
 	return evidenceSpanForCodec(question, evidence.Start, evidence.End, codec)
 }
 
-func semanticNormalizedQuoteSpan(text []rune, start, end int) bool {
+func chargeTypeQuoteSpan(text []rune, start, end int) bool {
 	for _, r := range text[start:end] {
 		if r > unicode.MaxASCII {
 			// CJK selections normally sit directly inside a sentence ("按量创建").
@@ -326,10 +328,10 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 }
 
 // chargeTypeUserPinned reports whether the purchase mode came from the user's own
-// words rather than the Agent's default. Only SourceUserExplicit counts: that
-// source is granted solely by span-verification against the current question
-// (deriveProposalProvenance), so the Agent cannot label its own default as the
-// user's choice.
+// words rather than the Agent's default. Only SourceUserExplicit counts. A
+// canonical wire value is literal current-turn text, or the server has
+// deterministically mapped an exact current-turn billing phrase to that value;
+// the Agent cannot promote an unrelated quote to the user's choice.
 func chargeTypeUserPinned(provenance map[string]actionresolver.ResolvedSlot) bool {
 	slot, ok := provenance["ChargeType"]
 	return ok && slot.Source == actionresolver.SourceUserExplicit
@@ -491,24 +493,25 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 				continue
 			}
 		}
-		// Enum values are often semantic normalizations rather than literal user
-		// text: "按量" becomes Postpay, for example. The Agent owns that semantic
-		// mapping, while the server still owns provenance. Accept a separate quote
-		// only when it is a unique span of this turn's question (ASCII selections
-		// must also be standalone; CJK selections may sit inside a sentence). This
-		// affects selection-card UX, never target authorization or the final
-		// confirmation gate.
-		if field.Codec == actionresolver.CodecEnum && claimedQuote != "" {
-			if start, end, ok := uniqueSemanticNormalizedQuote(
+		// ChargeType is the one enum whose localized user phrase may differ from
+		// its wire value. The Agent points at a quote; the server independently
+		// maps the entire phrase and grants user-explicit provenance only when that
+		// deterministic mapping equals the proposed value. Every other enum keeps
+		// the ordinary value-equals-quote rule.
+		if candidate.Name == "ChargeType" && field.Codec == actionresolver.CodecEnum && claimedQuote != "" {
+			normalized, mapped := deployment.ExplicitChargeTypeFromPhrase(claimedQuote)
+			if !mapped || normalized != value {
+				continue
+			}
+			if start, end, ok := uniqueChargeTypeQuote(
 				[]rune(view.CurrentQuestion), []rune(claimedQuote),
 			); ok {
 				candidate.Source = actionresolver.SourceUserExplicit
 				candidate.Evidence = &actionresolver.SourceEvidence{
-					MessageID:          view.TurnID,
-					Start:              start,
-					End:                end,
-					Quote:              claimedQuote,
-					SemanticNormalized: true,
+					MessageID: view.TurnID,
+					Start:     start,
+					End:       end,
+					Quote:     claimedQuote,
 				}
 				continue
 			}
@@ -654,7 +657,7 @@ func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {
 	return start, start + len(quote), true
 }
 
-func uniqueSemanticNormalizedQuote(text, quote []rune) (int, int, bool) {
+func uniqueChargeTypeQuote(text, quote []rune) (int, int, bool) {
 	if len(quote) == 0 || len(quote) > len(text) {
 		return 0, 0, false
 	}
@@ -662,7 +665,7 @@ func uniqueSemanticNormalizedQuote(text, quote []rune) (int, int, bool) {
 	for offset := 0; offset+len(quote) <= len(text); offset++ {
 		end := offset + len(quote)
 		if string(text[offset:end]) != string(quote) ||
-			!semanticNormalizedQuoteSpan(text, offset, end) {
+			!chargeTypeQuoteSpan(text, offset, end) {
 			continue
 		}
 		if start >= 0 {

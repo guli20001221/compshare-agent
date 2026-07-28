@@ -145,6 +145,7 @@ func stockRender(resp StockAvailabilityResponse) ReadResult {
 	// sources. Require its verbatim block so the model cannot flatten the
 	// per-zone card-count table back into prose or omit a checked zone.
 	r.RenderRequired = true
+	r.RenderExclusive = true
 	return r
 }
 

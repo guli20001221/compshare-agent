@@ -84,7 +84,7 @@ func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {
 	require.Contains(t, description, "敏感值已由服务端安全接收")
 	properties := parameters.(map[string]any)["properties"].(map[string]any)
 	require.NotContains(t, properties, "Password")
-	require.NotContains(t, properties, proposalExplicitUserQuotesField,
+	require.NotContains(t, properties, proposalChargeTypeUserQuoteField,
 		"a request with no normalized enum fields must not gain an irrelevant quote object")
 }
 
@@ -98,21 +98,31 @@ func TestRequestToolCarriesNormalizedEnumUserQuotes(t *testing.T) {
 	}
 	require.NotNil(t, parameters)
 	properties := parameters["properties"].(map[string]any)
-	require.Contains(t, properties, proposalExplicitUserQuotesField)
+	require.Contains(t, properties, proposalChargeTypeUserQuoteField)
+	quoteField := properties[proposalChargeTypeUserQuoteField].(map[string]any)
+	require.Equal(t, "string", quoteField["type"])
 	charge := properties["ChargeType"].(map[string]any)
-	require.Contains(t, charge["description"], "explicit_user_quotes")
+	require.Contains(t, charge["description"], proposalChargeTypeUserQuoteField)
 
 	got := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
-		"GpuType":    "4090",
-		"ChargeType": "Postpay",
-		proposalExplicitUserQuotesField: map[string]any{
-			"ChargeType": "按量",
-		},
+		"GpuType":                        "4090",
+		"ChargeType":                     "Postpay",
+		proposalChargeTypeUserQuoteField: "按量",
 	})
 	slots := got["slots"].([]any)
 	require.Len(t, slots, 2)
-	require.NotContains(t, slots, proposalExplicitUserQuotesField)
+	require.NotContains(t, slots, proposalChargeTypeUserQuoteField)
 	chargeSlot := slots[0].(map[string]any)
 	require.Equal(t, "ChargeType", chargeSlot["name"])
 	require.Equal(t, map[string]any{"quote": "按量"}, chargeSlot["evidence"])
+}
+
+func TestOnlyCreateChargeTypeAdvertisesNormalizedUserQuotes(t *testing.T) {
+	for _, tool := range centralAgentToolWindow(true, false) {
+		if tool.Function == nil || tool.Function.Name == "RequestCreateInstance" {
+			continue
+		}
+		properties, _ := tool.Function.Parameters.(map[string]any)["properties"].(map[string]any)
+		require.NotContains(t, properties, proposalChargeTypeUserQuoteField, tool.Function.Name)
+	}
 }

@@ -52,7 +52,7 @@ var imageDisplaySkipFields = map[string]struct{}{
 type ImageListRequest struct {
 	Source          platform.ImageSource `json:"source,omitempty"`
 	Query           string               `json:"query,omitempty"`
-	QuerySourceSpan string               `json:"query_source_span,omitempty"`
+	SemanticQueries []string             `json:"semantic_queries,omitempty"`
 	Mode            platform.ListMode    `json:"mode,omitempty"`
 }
 
@@ -71,14 +71,14 @@ type ImageListResponse struct {
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的真实目录及结构化属性。用于浏览、筛选或核实镜像，不用于模型仓库或镜像标签分类目录。推荐镜像时，query 只能提取用户原话中的用途、约束或用户明确点名的镜像；不要先猜候选镜像名再用它查询。",
+		Description: "查询平台、自制、社区或共享镜像的真实目录及结构化属性。用于浏览、筛选或核实镜像，不用于模型仓库或镜像标签分类目录。推荐社区镜像时，以用户原话中的用途作为 query；需要把中文用途转换为项目或技术类别时放入 semantic_queries。各查询结果会合并，语义扩展不能排除用户原话命中的候选。",
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
-				"目录查询词。只能使用 query_source_span 中出现的用户原话，不得填写 Agent 猜测的候选镜像名；无查询条件时留空。",
+				"用户原话中的目录查询词；复制最短且有意义的用途、约束或用户明确点名的镜像，可取用户表达中的子串，不要先猜候选镜像名。无查询条件时留空。",
 			),
-			"query_source_span": stringParam().described(
-				"query 非空时必填：从本轮用户消息逐字复制、且包含 query 的原文片段。服务端会核验；query 为空时留空。",
+			"semantic_queries": arrayParam(stringParam()).described(
+				"仅社区镜像可用，最多 3 个。Agent 根据用户用途提炼的技术或类别查询词，例如用途的常见项目类别；不得替代 query，结果会与 query 的结果合并。原话查询无结果或候选不合适时，可保留同一个 query 后重试并补充这里。",
 			),
 			"mode": enumParam(platform.ListModeValues()...),
 		}),
@@ -153,20 +153,80 @@ func customImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRun
 }
 
 func communityImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
-	args := map[string]any{}
-	if query := strings.TrimSpace(req.Query); query != "" {
-		args["FuzzySearch"] = query
+	queries := communityImageSearchQueries(req)
+	results := make([]map[string]any, 0, len(queries))
+	for _, query := range queries {
+		args := map[string]any{}
+		if query != "" {
+			args["FuzzySearch"] = query
+		}
+		raw, err := imageExecuteAll(ctx, rt, communityImageAction, "CompshareImageGroup", args)
+		if err != nil {
+			return ImageListResponse{}, ReadFailureAfterTool(communityImageAction, imageListCapabilityLabel, err)
+		}
+		results = append(results, raw)
 	}
-	raw, err := imageExecuteAll(ctx, rt, communityImageAction, "CompshareImageGroup", args)
-	if err != nil {
-		return ImageListResponse{}, ReadFailureAfterTool(communityImageAction, imageListCapabilityLabel, err)
-	}
-	env := buildCommunityImageEnvelope(raw, req.Query, req.Mode)
+	raw := mergeCommunityImageResults(results)
+	// Upstream already applied every individual query. The merged catalog is the
+	// union; applying the primary query again here would erase the semantic
+	// expansions and restore the self-narrowing bug.
+	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
 	return ImageListResponse{
-		Reply:    renderCommunityImageReply(raw, req.Query, req.Mode),
+		Reply:    renderCommunityImageReply(raw, "", platform.ListModeAll),
 		Action:   communityImageAction,
 		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
+}
+
+func communityImageSearchQueries(req ImageListRequest) []string {
+	if req.Mode == platform.ListModeAll {
+		return []string{""}
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, 1+len(req.SemanticQueries))
+	for _, query := range append([]string{req.Query}, req.SemanticQueries...) {
+		query = strings.TrimSpace(query)
+		key := strings.ToLower(query)
+		if query == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, query)
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
+}
+
+func mergeCommunityImageResults(results []map[string]any) map[string]any {
+	if len(results) == 0 {
+		return map[string]any{}
+	}
+	groups := make([]map[string]any, 0)
+	flat := make([]any, 0)
+	for _, raw := range results {
+		for _, item := range mapSliceAt(raw, "CompshareImageGroup") {
+			if group, ok := item.(map[string]any); ok {
+				groups = append(groups, group)
+			}
+		}
+		flat = append(flat, mapSliceAt(raw, "ImageSet")...)
+	}
+	merged := map[string]any{}
+	if len(groups) > 0 {
+		deduped := dedupeCommunityImageGroups(groups)
+		items := make([]any, 0, len(deduped))
+		for _, group := range deduped {
+			items = append(items, group)
+		}
+		merged["CompshareImageGroup"] = items
+		merged["TotalCount"] = len(items)
+	}
+	if len(flat) > 0 {
+		merged["ImageSet"] = flat
+	}
+	return merged
 }
 
 func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {

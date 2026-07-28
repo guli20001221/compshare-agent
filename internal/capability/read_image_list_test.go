@@ -23,6 +23,60 @@ func TestImageListRequestHasNoRequiredFields(t *testing.T) {
 	require.Nil(t, ImageListRequest{}.MissingFields())
 }
 
+type communityQueryExec struct {
+	results map[string]map[string]any
+	calls   []string
+}
+
+func (e *communityQueryExec) Execute(_ context.Context, _ string, args map[string]any) (map[string]any, error) {
+	query, _ := args["FuzzySearch"].(string)
+	e.calls = append(e.calls, query)
+	return e.results[query], nil
+}
+
+func (e *communityQueryExec) ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	return e.Execute(ctx, action, args)
+}
+
+func TestCommunitySemanticQueriesUnionWithGroundedUserQuery(t *testing.T) {
+	group := func(name, id string, deploys int) map[string]any {
+		return map[string]any{
+			"ImageName": name, "CreatedCount": float64(deploys),
+			"Data": []any{map[string]any{"CompShareImageId": id, "Name": name + " v1"}},
+		}
+	}
+	exec := &communityQueryExec{results: map[string]map[string]any{
+		"数字人": {
+			"CompshareImageGroup": []any{
+				group("InfiniteTalk", "infinite-1", 17710),
+				group("HeyGem", "heygem-1", 1076),
+			},
+		},
+		"LiveTalking": {
+			"CompshareImageGroup": []any{
+				group("LiveTalking", "live-1", 4599),
+			},
+		},
+	}}
+
+	result := runImageList(t, exec, ImageListRequest{
+		Source: platform.ImageSourceCommunity, Query: "数字人",
+		SemanticQueries: []string{"LiveTalking"}, Mode: platform.ListModeFiltered,
+	})
+
+	require.Equal(t, []string{"数字人", "LiveTalking"}, exec.calls)
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.NotNil(t, result.Envelope)
+	names := make([]string, 0, len(result.Envelope.Subjects))
+	for _, subject := range result.Envelope.Subjects {
+		names = append(names, subject.Name)
+	}
+	require.Contains(t, names, "InfiniteTalk")
+	require.Contains(t, names, "LiveTalking")
+	require.Equal(t, "InfiniteTalk", names[0],
+		"the guessed expansion cannot exclude the more popular candidate found by the user's own purpose")
+}
+
 // TestImageListHandle_PlatformEmpty: an empty platform image catalog is a
 // structured Empty read (issue 1) — no subjects populated, so no envelope.
 func TestImageListHandle_PlatformEmpty(t *testing.T) {

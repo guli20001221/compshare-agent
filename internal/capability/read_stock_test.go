@@ -191,7 +191,7 @@ func (e *stockDualInventoryExec) ExecuteInternal(ctx context.Context, action str
 	return e.official, nil
 }
 
-func TestStockHandle_HuabeiCZonesUsePodInventoryInsteadOfOfficialZeros(t *testing.T) {
+func TestStockHandle_PositiveCapacityUsesGroupedCardCountsAndQueriesBothInventoryBackends(t *testing.T) {
 	base := &mapReadExec{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
 			map[string]any{"Name": "4090", "Zone": "cn-bj2-03", "Status": "Normal"},
@@ -234,6 +234,7 @@ func TestStockHandle_HuabeiCZonesUsePodInventoryInsteadOfOfficialZeros(t *testin
 		"successful capacity output stays a card-count table; raw pool totals are only validation evidence")
 	assert.NotContains(t, result.Reply, "约 7 张")
 	assert.True(t, result.RenderRequired, "the exact capacity table must survive model wording")
+	assert.True(t, result.RenderExclusive, "the complete stock table must not be duplicated by model prose")
 
 	var inventoryCalls []fakeReadExecCall
 	for _, call := range exec.calls {

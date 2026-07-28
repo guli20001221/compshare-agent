@@ -132,6 +132,27 @@ func NormalizeChargeType(chargeType string) string {
 	}
 }
 
+// ExplicitChargeTypeFromPhrase maps a bounded product vocabulary from an exact
+// user quote to the platform wire value. This is deliberately not a fuzzy
+// classifier: provenance may skip the purchase-mode card only when the entire
+// quoted phrase has one unambiguous meaning. Anything else stays an Agent
+// inference and the user gets the card.
+func ExplicitChargeTypeFromPhrase(phrase string) (string, bool) {
+	normalized := strings.ToLower(strings.Join(strings.Fields(phrase), ""))
+	switch normalized {
+	case "按量", "按量付费", "按小时", "按小时付费", "后付费":
+		return ChargeTypePostpay, true
+	case "包日", "按日", "按天":
+		return ChargeTypeDay, true
+	case "包月", "按月":
+		return ChargeTypeMonth, true
+	case "抢占", "抢占式", "竞价", "竞价实例":
+		return ChargeTypeSpot, true
+	default:
+		return "", false
+	}
+}
+
 func BuildCapacityArgs(draft DeploymentDraft) map[string]any {
 	args := map[string]any{
 		"Zone":               draft.Zone,

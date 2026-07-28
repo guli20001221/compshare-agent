@@ -37,8 +37,10 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 	require.Contains(t, text, "动作建议不会直接执行")
 	require.Equal(t, 1, strings.Count(text, "动作建议不会直接执行"), "shared write behavior must have one prompt source")
 	require.Equal(t, 1, strings.Count(text, "只能并列列为待核查项"), "uncertain observations must have one shared rule")
-	require.Equal(t, 1, strings.Count(text, "不要先猜一个候选名称再用它收窄查询"),
-		"catalog recommendation must not turn an ungrounded guess into its own search filter")
+	require.Equal(t, 1, strings.Count(text, "扩展只能增加候选"),
+		"catalog recommendation must preserve the user's grounded baseline when expanding a lexical search")
+	require.Equal(t, 1, strings.Count(text, "必须先调用对应的真实目录查询能力"),
+		"knowledge snippets must not replace the live catalog for catalog recommendations")
 	require.Equal(t, 1, strings.Count(text, "真实使用量或热度作为取舍依据"),
 		"equally suitable catalog candidates need one evidence-based tie breaker")
 	require.Equal(t, 1, strings.Count(text, "可选筛选条件只填写用户已经明确表达的条件"),

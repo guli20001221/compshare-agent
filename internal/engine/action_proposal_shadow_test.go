@@ -862,11 +862,9 @@ func TestNormalizedEnumQuotePinsTheUsersChargeType(t *testing.T) {
 	eng.turnContextViewReady = true
 
 	args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
-		"GpuType":    "4090",
-		"ChargeType": "Postpay",
-		proposalExplicitUserQuotesField: map[string]any{
-			"ChargeType": "按量",
-		},
+		"GpuType":                        "4090",
+		"ChargeType":                     "Postpay",
+		proposalChargeTypeUserQuoteField: "按量",
 	})
 	resolved, err := eng.resolveActionProposalShadow(context.Background(), args)
 
@@ -891,17 +889,54 @@ func TestNormalizedEnumQuoteMustExistInTheCurrentQuestion(t *testing.T) {
 	eng.turnContextViewReady = true
 
 	args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
-		"GpuType":    "4090",
-		"ChargeType": "Month",
-		proposalExplicitUserQuotesField: map[string]any{
-			"ChargeType": "包月",
-		},
+		"GpuType":                        "4090",
+		"ChargeType":                     "Month",
+		proposalChargeTypeUserQuoteField: "包月",
 	})
 	resolved, err := eng.resolveActionProposalShadow(context.Background(), args)
 
 	require.NoError(t, err)
 	require.False(t, resolved.referenceData.ChargeTypeUserPinned)
 	require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ChargeType"].Source)
+}
+
+func TestChargeTypeQuoteCannotPromoteAMismatchedOrMeaninglessValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		question string
+		value    string
+		quote    string
+	}{
+		{name: "wrong mapping", question: "帮我按量创建一台 4090 实例", value: "Month", quote: "按量"},
+		{name: "unrelated span", question: "帮我创建一台 4090 实例", value: "Month", quote: "帮我"},
+		{name: "ambiguous character", question: "帮我跑一个月", value: "Month", quote: "月"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &mockExecutor{results: map[string]map[string]any{
+				"DescribeAvailableCompShareInstanceTypes": {
+					"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
+				},
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			eng.lastUserMsg = tt.question
+			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+				eng, eng.lastUserMsg, "turn-rejected-charge-quote", time.Now(),
+			)
+			eng.turnContextViewReady = true
+
+			args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
+				"GpuType":                        "4090",
+				"ChargeType":                     tt.value,
+				proposalChargeTypeUserQuoteField: tt.quote,
+			})
+			resolved, err := eng.resolveActionProposalShadow(context.Background(), args)
+
+			require.NoError(t, err)
+			require.False(t, resolved.referenceData.ChargeTypeUserPinned)
+			require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ChargeType"].Source)
+		})
+	}
 }
 
 func TestResolvedProposalDisposition(t *testing.T) {

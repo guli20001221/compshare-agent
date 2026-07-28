@@ -8,20 +8,42 @@ import (
 )
 
 // ValidateCurrentTurnGrounding verifies the small subset of read arguments that
-// must be literal current-turn evidence. The typed handler still never receives
-// chat text: this check runs at the engine boundary before dispatch.
-func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText string) error {
+// must be grounded in user-authored text. Mutating-adjacent facts such as zones
+// and time windows stay current-turn-only. A read-only image catalog query may
+// also reuse a literal phrase from recent user turns, which preserves normal
+// follow-ups without trusting assistant prose or tool output. The typed handler
+// still never receives chat text: this runs at the engine boundary.
+func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText string, priorUserTexts ...string) error {
 	switch req := request.(type) {
 	case ImageListRequest:
 		query := strings.TrimSpace(req.Query)
-		if query == "" {
-			return nil
+		if query != "" {
+			grounded := platform.ContainsLiteralSpan(currentUserText, query)
+			for _, prior := range priorUserTexts {
+				grounded = grounded || platform.ContainsLiteralSpan(prior, query)
+			}
+			if !grounded {
+				return fmt.Errorf("query: %q 不是本轮或近期用户原文的字面子串", query)
+			}
 		}
-		if err := requireLiteralSpan(currentUserText, req.QuerySourceSpan, "query_source_span"); err != nil {
-			return err
+		if len(req.SemanticQueries) > 3 {
+			return fmt.Errorf("semantic_queries: 最多提供 3 个语义扩展查询词")
 		}
-		if !platform.ContainsLiteralSpan(req.QuerySourceSpan, query) {
-			return fmt.Errorf("query: %q 必须逐字出现在 query_source_span 中；请使用用户原话中的用途、约束或明确点名的镜像", query)
+		if len(req.SemanticQueries) > 0 {
+			if req.Source != platform.ImageSourceCommunity {
+				return fmt.Errorf("semantic_queries: 仅社区镜像目录支持语义扩展")
+			}
+			if query == "" {
+				return fmt.Errorf("semantic_queries: 必须同时保留来自用户原话的 query，语义扩展不能替代原话查询")
+			}
+			if req.Mode == platform.ListModeAll {
+				return fmt.Errorf("semantic_queries: mode=all 时不要提供筛选查询")
+			}
+			for _, expansion := range req.SemanticQueries {
+				if strings.TrimSpace(expansion) == "" {
+					return fmt.Errorf("semantic_queries: 查询词不能为空")
+				}
+			}
 		}
 	case ZoneCatalogRequest:
 		if strings.TrimSpace(req.Query) != "" {

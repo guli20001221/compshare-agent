@@ -78,7 +78,12 @@ type ReadResult struct {
 	// RenderRequired keeps an opaque value out of model-authored prose and makes
 	// the response gateway insert Reply after output redaction. It does not end
 	// the Agent loop.
-	RenderRequired     bool
+	RenderRequired bool
+	// RenderExclusive is narrower: the verbatim block already fully answers the
+	// question, so surrounding model prose would only duplicate it. A capability
+	// must opt in explicitly; opaque credentials and access diagnostics still
+	// need the Agent to explain or continue reasoning around their render_ref.
+	RenderExclusive    bool
 	NeedsClarification bool
 	FailureClass       platform.ReadFailureClass
 	FallbackReason     platform.ReadFallbackReason

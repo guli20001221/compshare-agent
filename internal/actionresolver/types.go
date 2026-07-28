@@ -16,12 +16,11 @@ const (
 )
 
 type SourceEvidence struct {
-	MessageID          string `json:"message_id,omitempty"`
-	ContextField       string `json:"context_field,omitempty"`
-	Start              int    `json:"start,omitempty"`
-	End                int    `json:"end,omitempty"`
-	Quote              string `json:"quote,omitempty"`
-	SemanticNormalized bool   `json:"semantic_normalized,omitempty"`
+	MessageID    string `json:"message_id,omitempty"`
+	ContextField string `json:"context_field,omitempty"`
+	Start        int    `json:"start,omitempty"`
+	End          int    `json:"end,omitempty"`
+	Quote        string `json:"quote,omitempty"`
 }
 
 type SlotCandidate struct {

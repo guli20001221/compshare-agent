@@ -59,12 +59,15 @@ const (
 	// arm, and per-case retrieval flips are noisy at this scale (fresh-001 flipped
 	// between two runs with NO rule change). What the measurement establishes is the
 	// absence of any benefit signal plus a mechanism for harm — not a proven delta.
-	// 2026-07-28: catalog recommendation policy now keeps model guesses out of
-	// search filters and uses observed popularity only as a tie breaker after
-	// matching the user's explicit constraints. The rule is catalog-generic and
-	// contains no product names, keyword tables or regular expressions.
-	mutatingReActPromptSHA256 = "1630fa9e201fec5f61c1fec5c8b30dcbe8688db4aed3c63745bdb26c5d36cf5c"
-	readOnlyReActPromptSHA256 = "deeb2d38fb0a7d59c3770dce18180572e96323e83b481904e764ba81f7341095"
+	// 2026-07-28: catalog recommendation policy now preserves the user's literal
+	// purpose as the baseline and lets semantic technology/category searches add
+	// candidates without replacing it. Catalog recommendations must consult the
+	// live catalog; knowledge may explain a candidate but cannot nominate one.
+	// Observed popularity remains only a tie breaker after matching explicit
+	// constraints. The rule is catalog-generic and contains no product names,
+	// recommendation keyword tables or regexes.
+	mutatingReActPromptSHA256 = "62955638f169a336ffa4a48f8a466efa0074ef243dbd04e6329154b67d880f28"
+	readOnlyReActPromptSHA256 = "f1ee08d0dbaa5cd6416d339e6ee85c66a7c4a7a5ec669b3a47c933c23f82545c"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

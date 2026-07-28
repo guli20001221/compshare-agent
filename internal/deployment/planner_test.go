@@ -62,6 +62,32 @@ func TestNormalizeChargeTypeUsesExplicitPostpayDefault(t *testing.T) {
 	assert.Equal(t, ChargeTypeMonth, NormalizeChargeType("Month"))
 }
 
+func TestExplicitChargeTypeFromPhraseIsExactAndUnambiguous(t *testing.T) {
+	tests := []struct {
+		phrase string
+		want   string
+		ok     bool
+	}{
+		{"按量", ChargeTypePostpay, true},
+		{"按小时付费", ChargeTypePostpay, true},
+		{"按天", ChargeTypeDay, true},
+		{"包月", ChargeTypeMonth, true},
+		{"抢占式", ChargeTypeSpot, true},
+		{"竞价实例", ChargeTypeSpot, true},
+		{"帮我", "", false},
+		{"月", "", false},
+		{"跑一个月", "", false},
+		{"按量创建", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.phrase, func(t *testing.T) {
+			got, ok := ExplicitChargeTypeFromPhrase(tt.phrase)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestBuildCapacityArgsUsesCreatePreflightCoreArgs(t *testing.T) {
 	disks := []any{map[string]any{"IsBoot": true, "Type": "CLOUD_RSSD", "Size": 120}}
 	args := BuildCapacityArgs(DeploymentDraft{

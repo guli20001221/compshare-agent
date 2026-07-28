@@ -11,7 +11,7 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
-const proposalExplicitUserQuotesField = "explicit_user_quotes"
+const proposalChargeTypeUserQuoteField = "charge_type_user_quote"
 
 // centralAgentToolWindow is the grouped P6 capability surface. It intentionally
 // does not expose the underlying API tools used by deterministic handlers. Each
@@ -100,27 +100,27 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 	}
 	properties, _ := root["properties"].(map[string]any)
 	hasSensitiveField := false
-	hasNormalizedEnumField := false
+	hasChargeTypePhraseField := false
 	for name, field := range spec.Fields {
 		if field.Codec == actionresolver.CodecSensitiveText {
 			delete(properties, name)
 			hasSensitiveField = true
 		}
-		if field.Codec == actionresolver.CodecEnum {
-			hasNormalizedEnumField = true
+		if name == "ChargeType" && field.Codec == actionresolver.CodecEnum &&
+			spec.Operation == "CreateInstanceWorkflow" {
+			hasChargeTypePhraseField = true
 			property, ok := properties[name].(map[string]any)
 			if ok {
 				description, _ := property["description"].(string)
 				property["description"] = strings.TrimSpace(description +
-					" 若该标准值是根据用户原话做的语义归一化而非逐字复制，同时在 explicit_user_quotes 中用同名字段填写用户原话片段。")
+					" 若该标准值是根据用户原话做的语义归一化而非逐字复制，同时在 charge_type_user_quote 中填写用户原话片段。")
 			}
 		}
 	}
-	if hasNormalizedEnumField {
-		properties[proposalExplicitUserQuotesField] = map[string]any{
-			"type":                 "object",
-			"description":          "可选的用户原话证据。仅为经过语义归一化的枚举字段填写：键为字段名，值为当前消息中表达该选择的连续原文片段；用户没有明确选择时不要填写。",
-			"additionalProperties": map[string]any{"type": "string"},
+	if hasChargeTypePhraseField {
+		properties[proposalChargeTypeUserQuoteField] = map[string]any{
+			"type":        "string",
+			"description": "可选的计费方式原话证据。仅当用户本轮明确说出计费方式时，填写当前消息中的连续原文片段；用户没有明确选择时不要填写。",
 		}
 	}
 	// A proposal may be intentionally incomplete: Resolver returns the exact
@@ -144,10 +144,10 @@ func proposalArgsForOperation(operation string, direct map[string]any) map[strin
 	if slots, ok := direct["slots"]; ok {
 		return map[string]any{"operation": operation, "slots": slots}
 	}
-	quotes, _ := direct[proposalExplicitUserQuotesField].(map[string]any)
+	chargeTypeQuote, _ := direct[proposalChargeTypeUserQuoteField].(string)
 	names := make([]string, 0, len(direct))
 	for name := range direct {
-		if name == proposalExplicitUserQuotesField {
+		if name == proposalChargeTypeUserQuoteField {
 			continue
 		}
 		names = append(names, name)
@@ -156,8 +156,10 @@ func proposalArgsForOperation(operation string, direct map[string]any) map[strin
 	slots := make([]any, 0, len(names))
 	for _, name := range names {
 		slot := map[string]any{"name": name, "value": direct[name]}
-		if quote, ok := quotes[name].(string); ok && strings.TrimSpace(quote) != "" {
-			slot["evidence"] = map[string]any{"quote": strings.TrimSpace(quote)}
+		if name == "ChargeType" {
+			if quote := strings.TrimSpace(chargeTypeQuote); quote != "" {
+				slot["evidence"] = map[string]any{"quote": quote}
+			}
 		}
 		slots = append(slots, slot)
 	}
