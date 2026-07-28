@@ -198,7 +198,42 @@ func decodeActionProposal(args map[string]any) (actionresolver.ActionProposal, e
 	if strings.TrimSpace(proposal.Operation) == "" {
 		return actionresolver.ActionProposal{}, fmt.Errorf("operation is required")
 	}
+	proposal.Slots = pruneBlankSlots(proposal.Slots)
 	return proposal, nil
+}
+
+// pruneBlankSlots drops slots the Agent left blank. A null or empty value is not
+// a bad value the user supplied — it is the Agent saying nothing, which the
+// system prompt explicitly asks for ("带上此刻已明确的值、其余留空"). Carried into
+// Resolve, such a slot fails its codec and lands in Rejected, and a rejection
+// blocks the guided form outright: one blank optional Name was enough to kill a
+// whole create card while the model narrated that it had submitted a draft.
+//
+// This cannot let a new value reach a workflow. Every codec already refuses nil
+// and blank strings (normalizeValue), and no declared enum has an empty member,
+// so the only values pruned here are ones Resolve was certain to reject. What
+// changes is the CHANNEL: a value nobody supplied is reported as absent (or
+// Missing when the field is required), not as one the user got wrong.
+func pruneBlankSlots(slots []actionresolver.SlotCandidate) []actionresolver.SlotCandidate {
+	kept := slots[:0:0]
+	for _, candidate := range slots {
+		if blankProposalValue(candidate.Value) {
+			continue
+		}
+		kept = append(kept, candidate)
+	}
+	return kept
+}
+
+// blankProposalValue is deliberately narrow: only JSON null and a whitespace-only
+// string. Zero, false and empty collections are real values for their codecs and
+// must keep reaching adjudication.
+func blankProposalValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	text, isString := value.(string)
+	return isString && strings.TrimSpace(text) == ""
 }
 
 // resolvedProposal carries a resolved action together with the SAME zone catalog
@@ -263,7 +298,22 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
-	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog, ImageSelection: deriveImageSelection(resolved.Provenance)}, targetEvidence: targetEvidence}, nil
+	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{
+		ZoneCatalog:          zoneCatalog,
+		ImageCatalog:         imageCatalog,
+		ImageSelection:       deriveImageSelection(resolved.Provenance),
+		ChargeTypeUserPinned: chargeTypeUserPinned(resolved.Provenance),
+	}, targetEvidence: targetEvidence}, nil
+}
+
+// chargeTypeUserPinned reports whether the purchase mode came from the user's own
+// words rather than the Agent's default. Only SourceUserExplicit counts: that
+// source is granted solely by span-verification against the current question
+// (deriveProposalProvenance), so the Agent cannot label its own default as the
+// user's choice.
+func chargeTypeUserPinned(provenance map[string]actionresolver.ResolvedSlot) bool {
+	slot, ok := provenance["ChargeType"]
+	return ok && slot.Source == actionresolver.SourceUserExplicit
 }
 
 func proposalImageCatalogSource(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) string {

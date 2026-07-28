@@ -338,6 +338,12 @@ func CreateInstanceDef() *Definition {
 		// an explicit user proposal and sealed below, but remains optional rather
 		// than turning the guided flow into an extra question for most users.
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
+		// Neither field is a form input, but a bad value in either is safe to drop
+		// and let the guided form proceed: Name is cosmetic and the platform
+		// generates one, and an image id the live catalog does not contain (an
+		// invented or remembered one) is exactly what the form's whitelist picker
+		// exists to replace. Without this, either one killed the card entirely.
+		DiscardableOnRejectFields: []string{"Name", "CompShareImageId"},
 	}
 }
 
@@ -455,10 +461,21 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 					args["CompShareImageId"] = id
 					return args, nil
 				}
-				if name := paramStr(wfCtx.Params, "ImageName", ""); name != "" {
-					args["Name"] = name
-				}
 			}
+			// A settled NAME deliberately does not narrow the query, although an id
+			// does. Upstream matches Name case-sensitively — measured live on the
+			// platform catalog: no Name = 75 rows, "pytorch" = 7, "PyTorch" = 1,
+			// "Pytorch" = 0. And the Agent cannot spell it any other way than the
+			// user did: a slot only earns SourceUserExplicit by being a verbatim span
+			// of the user's message, so "用最新Pytorch镜像" can only ever produce
+			// Name="Pytorch". Narrowing on it returned an empty catalog and the
+			// picker died with 未找到可选镜像 — the more faithfully the Agent quoted
+			// the user, the more certainly the query found nothing.
+			//
+			// The whole catalog costs one larger response and is what the ranker was
+			// written for: nameSimilarity lowercases both sides, and rankRecommendations
+			// tiebreaks the same framework by FrameworkVersionIndex descending, so
+			// "最新pytorch" lands the newest PyTorch at the top of the picker.
 			return args, nil
 		},
 	}
@@ -2283,8 +2300,12 @@ func selectCreateImage(wfCtx *Context) SelectedImage {
 // name-based resolution rather than being sealed under the caller's ImageName
 // (invariant 1). A named request with no exact match returns the best ranked
 // recommendation (real catalog name), which rides the confirm gate — never a silent
-// swap. Prefiltered: the query already filtered by name, so a non-exact request
-// recommends the best returned row rather than re-rejecting the API's own hits.
+// swap. Prefiltered says whether the QUERY already applied the name, so a
+// non-exact request recommends the best returned row rather than re-rejecting the
+// API's own hits. Only the community query does that now (FuzzySearch=); the
+// platform query stopped narrowing by name because upstream matches it
+// case-sensitively — see stepQueryImages. Claiming prefiltered over an
+// un-narrowed catalog would keep every unrelated row as a candidate.
 func resolveSelectedImage(params map[string]any, snap *deployment.ImageCatalogSnapshot) SelectedImage {
 	source := paramStr(params, "ImageSource", "platform")
 	if id := paramStr(params, "CompShareImageId", ""); id != "" {
@@ -2299,8 +2320,9 @@ func resolveSelectedImage(params map[string]any, snap *deployment.ImageCatalogSn
 			Zone:  paramStr(params, "Zone", ""),
 			IsPod: paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false),
 		},
-		Source:      source,
-		Prefiltered: true,
+		Source: source,
+		// Community FuzzySearch narrows upstream; the platform query no longer does.
+		Prefiltered: source == "community" && strings.TrimSpace(paramStr(params, "ImageName", "")) != "",
 	})
 	if res.Status == deployment.ResolutionResolved {
 		return selectedImageFrom(res.Selection, source)
@@ -2429,9 +2451,19 @@ const (
 	// result. Categorisation is therefore client-side over whatever this fetch
 	// returns, which is why the fetch has to be worth categorising.
 	//
-	// Rows are sorted by CreatedCount desc, so this is the 100 most-deployed image
-	// groups rather than an arbitrary page — and it costs no model tokens: workflow
-	// step results stay in wfCtx and only ResultData (UHostIds) leaves the workflow.
+	// It costs no model tokens: workflow step results stay in wfCtx and only
+	// ResultData (UHostIds) leaves the workflow.
+	//
+	// ⚠️ The SortCondition sent with this query does NOT reach the ordering.
+	// Measured live 2026-07-28 against the full catalog (832 groups, fetched by
+	// paging): page 1 of 100 contains only 8 of the catalog's 20 most-deployed
+	// families — RVC (#2, 9683 deploys), vLLM-DeepSeek-R1-Distill (#6) and
+	// GPT-SoVITS (#10) are all absent — and all four argument shapes (plain,
+	// SortCondition, ExcludeReadme, both) return byte-identical coverage. So this
+	// is an ARBITRARY 100 of 832 with respect to popularity, not the top 100. The
+	// picker still works (it classifies and ranks whatever it gets), but nothing
+	// here may claim the browse corpus is popularity-ordered, and a "most popular"
+	// answer cannot be derived from it without fetching every page.
 	maxGuidedCommunityImageQueryLimit = 100
 	// maxPlatformImageQueryLimit asks for the whole platform catalog in one call.
 	//
@@ -3005,9 +3037,15 @@ func guidedChargeTypeOptions(wfCtx *Context) []ConfirmFormOption {
 }
 
 func shouldSkipGuidedChargeTypeStep(wfCtx *Context) (bool, error) {
-	// The user already said it ("用抢占式创建一台…"), so asking again is asking them to
+	// The USER already said it ("用抢占式创建一台…"), so asking again is asking them to
 	// repeat themselves. Same rule the GPU and zone cards use for an explicit value.
-	if initialParamSet(wfCtx, "ChargeType") {
+	//
+	// This reads the provenance-derived flag, not the presence of ChargeType in
+	// Params. The two are not the same question: the create tool's schema says
+	// "默认 Postpay", so the Agent fills the field in on requests that never
+	// mentioned billing, and key-presence therefore skipped the card for precisely
+	// the users who had chosen nothing. See ReferenceData.ChargeTypeUserPinned.
+	if wfCtx != nil && wfCtx.referenceData.ChargeTypeUserPinned {
 		return true, nil
 	}
 	// Nothing to choose between: one selectable mode is an answer, not a question.
@@ -3025,6 +3063,23 @@ func shouldSkipGuidedChargeTypeStep(wfCtx *Context) (bool, error) {
 	// there would interrogate the one user who asked for nothing. The charge type
 	// keeps its default and the final card states it.
 	return guidedChargeTypeIsTheOnlyCard(wfCtx), nil
+}
+
+// chargeTypeChangeHint says where the purchase mode can be changed. The final
+// card deliberately cannot change it — a late switch would desync the resource
+// pool every earlier step queried against — so the honest answer depends on
+// whether this run actually showed the purchase-mode card. It did: point back at
+// it. It did not (the user named the mode in their request): starting over is
+// genuinely the only way.
+//
+// This sentence was a constant that always said "重新发起创建", written when the
+// card did not exist. Once it did, the final card was telling users to redo the
+// whole request to change something they had just been asked.
+func chargeTypeChangeHint(wfCtx *Context) string {
+	if guidedStepSkipped(wfCtx, guidedStepChargeType) {
+		return "需要包日、包月或抢占式，请重新发起创建并直接说明（例如「用抢占式创建一台…」）。"
+	}
+	return "需要改用其他计费方式，请返回上面的「购买方式」一步重新选择。"
 }
 
 func guidedChargeTypeIsTheOnlyCard(wfCtx *Context) bool {
@@ -3738,8 +3793,9 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 			// exist. Naming the current value and how to change it is the honest
 			// version — the Summary carries it too, alongside the price it produced.
 			Description: fmt.Sprintf(
-				"镜像决定开机即用的预装环境（框架与驱动）。当前计费方式为「%s」，价格按此计算；需要包日、包月或抢占式，请重新发起创建并直接说明（例如「用抢占式创建一台…」）。确认无误后点击下方按钮即开始创建。",
-				chargeTypeLabel(createChargeType(wfCtx.Params))),
+				"镜像决定开机即用的预装环境（框架与驱动）。当前计费方式为「%s」，价格按此计算；%s确认无误后点击下方按钮即开始创建。",
+				chargeTypeLabel(createChargeType(wfCtx.Params)),
+				chargeTypeChangeHint(wfCtx)),
 			PrimaryLabel:   "确认部署",
 			SecondaryLabel: "取消",
 			Final:          true,
