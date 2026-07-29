@@ -415,6 +415,21 @@ type Engine struct {
 	// central read capabilities. The Response Gateway can submit these facts
 	// without asking the model to retype identifiers, counts or measurements.
 	readResponseEvidenceThisTurn []readResponseEvidence
+	// committedWriteRepliesThisTurn holds one model-free sentence per mutating
+	// workflow that COMMITTED this turn, in execution order.
+	//
+	// Data-bearing writes (create instance / CFS / custom image) deliberately do
+	// not short-circuit narration — their ids and next steps are worth a model
+	// round (see deterministicWorkflowReply). That leaves a window in which the
+	// write is already irreversible upstream and the only thing left is prose.
+	// Measured 2026-07-29: a create committed (cpod-…, spot 4090, billing) and
+	// the closing model call then died on a provider 503, so the turn ended as an
+	// error and the console rendered 「创建实例 — 未创建成功」 — the user was told the
+	// opposite of what happened, and the obvious next move is to create it again.
+	// This record is what lets the error path tell the truth without a model.
+	//
+	// Per-turn; reset at the top of Chat.
+	committedWriteRepliesThisTurn []string
 	// Tool progress is turn-local. Replaying an identical read cannot create new
 	// evidence, so the runtime returns the prior observation and withdraws that
 	// concrete capability on the next round instead of spending ten rounds on it.
@@ -1315,6 +1330,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.forcedHopSearchInFlight = false
 	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
 	e.readResponseEvidenceThisTurn = nil
+	e.committedWriteRepliesThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
 	e.actionProposalRanThisTurn = false
 	e.actionProposalDispositionThisTurn = ""
@@ -1514,6 +1530,22 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		resp, err := e.llmClient.Chat(ctx, req)
 		if err != nil {
+			// A write that already committed outranks every other recovery here,
+			// and it is the one recovery that cannot itself fail: no model, no
+			// upstream call, just the sentence recorded at the commit. Reporting a
+			// landed create as a failed turn is worse than reporting nothing — the
+			// user's next move is to create it again. This runs even on a cancelled
+			// ctx, because "the write happened" stays true after a disconnect.
+			if reply, ok := e.committedWriteRecoveryReply(); ok {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				if opts.OnTextDelta != nil {
+					opts.OnTextDelta(reply)
+				}
+				return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), nil
+			}
 			// The per-call LLM error — including the http.Client timeout
 			// (internal/llm/client.go) behind the long-running 超时 cases — would
 			// otherwise discard the turn. If a prior round already gathered groundable
@@ -4074,6 +4106,11 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 
 	if result.Success {
 		e.markRegistryInvalidated(action)
+		// Record the commit BEFORE choosing how to narrate it. From here the write
+		// is irreversible upstream, so every later exit — including one where the
+		// model never speaks again — has to be able to say so.
+		e.committedWriteRepliesThisTurn = append(e.committedWriteRepliesThisTurn,
+			committedWriteFallbackReply(action, finalParams, result))
 		// Successful no-return-data or password-bearing workflows return a
 		// deterministic final reply so the engine SKIPS the post-workflow LLM
 		// narration round. That extra model call can stall; for
@@ -4161,6 +4198,75 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	default:
 		return "", false
 	}
+}
+
+// committedWriteFallbackReply is the sentence the user gets when a write has
+// landed and the model is not available to narrate it. It must be composable
+// with no model call and no further upstream call — the situations that reach
+// it are exactly the ones where those are what broke.
+//
+// It reuses deterministicWorkflowReply where that already has a sentence, so
+// the lifecycle workflows read identically whether or not the turn survived.
+// The data-bearing ones fall through to their result payload: for create, the
+// ids the workflow already returned. The generic branch names the action rather
+// than claiming a specific effect — "已执行成功" with nothing to point at is the
+// weakest true statement available, and a weak truth beats a confident guess.
+func committedWriteFallbackReply(action string, params map[string]any, result *workflow.Result) string {
+	if reply, ok := deterministicWorkflowReply(action, params); ok {
+		return reply
+	}
+	if ids := committedInstanceIDs(result); len(ids) > 0 {
+		return fmt.Sprintf("✅ 已创建实例 %s。", strings.Join(ids, "、"))
+	}
+	return fmt.Sprintf("✅ %s已执行成功。", friendlyActionName(action))
+}
+
+// committedWriteNarrationFailedNote tells the user the missing half explicitly.
+// Without it the reply reads like a complete answer that simply chose to say
+// very little, and the user cannot tell that the next-steps guidance they
+// normally get was lost rather than withheld.
+const committedWriteNarrationFailedNote = "（本次未能生成完整说明，但上述操作已经执行完成，请勿重复提交。）"
+
+// committedWriteRecoveryReply renders this turn's committed writes as a final
+// answer, or reports that there were none. Callers use the bool: an empty
+// record must fall through to the normal error path rather than produce a
+// cheerful empty confirmation.
+func (e *Engine) committedWriteRecoveryReply() (string, bool) {
+	if len(e.committedWriteRepliesThisTurn) == 0 {
+		return "", false
+	}
+	return strings.Join(e.committedWriteRepliesThisTurn, "\n") + "\n\n" + committedWriteNarrationFailedNote, true
+}
+
+// committedInstanceIDs reads the created instance ids out of a workflow result.
+// The create workflow already publishes them as ResultData["UHostIds"]
+// (internal/workflow/create_instance.go::createInstanceResultData), so this
+// re-reads the workflow's own output rather than re-deriving it — there is no
+// second source that could disagree.
+func committedInstanceIDs(result *workflow.Result) []string {
+	if result == nil || result.Data == nil {
+		return nil
+	}
+	raw, ok := result.Data["UHostIds"]
+	if !ok {
+		return nil
+	}
+	var out []string
+	switch ids := raw.(type) {
+	case []string:
+		for _, id := range ids {
+			if s := strings.TrimSpace(id); s != "" {
+				out = append(out, s)
+			}
+		}
+	case []any:
+		for _, id := range ids {
+			if s := strings.TrimSpace(fmt.Sprint(id)); s != "" && s != "<nil>" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 func workflowSecretValues(args map[string]any) []string {

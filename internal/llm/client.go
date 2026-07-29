@@ -169,6 +169,18 @@ func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool) (
 		if !isTransientChatError(ctx, err) {
 			return nil, err
 		}
+		// Only pause when another attempt actually follows — sleeping before
+		// returning the final error just delays the user's error by a second.
+		if attempt+1 >= maxChatAttempts {
+			break
+		}
+		if _, overloaded := providerOverloadStatus(err); overloaded {
+			select {
+			case <-ctx.Done():
+				return nil, err
+			case <-time.After(providerOverloadBackoff):
+			}
+		}
 	}
 	return nil, lastErr
 }
@@ -315,6 +327,49 @@ func isUsageUnsupportedChatError(err error) bool {
 	return false
 }
 
+// providerOverloadStatus reports the upstream HTTP status when the provider
+// answered "not now" rather than "your request is wrong": 429 (rate/quota) and
+// the 5xx family the ModelVerse relay returns when its account pool is
+// momentarily empty. Measured 2026-07-29: a real turn died on
+// `503 ... No available accounts`, and a direct probe with the same key and the
+// same model answered 200 minutes later — the request was never the problem.
+//
+// A 4xx deliberately does NOT match. Retrying a deterministic rejection just
+// pays for it twice, which is what TestClientChatDoesNotRetryProviderStatusError
+// pins (400). Both go-openai error shapes carry the status: APIError for a
+// decoded provider error body, RequestError for the streaming path, which is
+// where the 503 above surfaced (client.go wraps it with %w, so errors.As sees
+// through).
+func providerOverloadStatus(err error) (int, bool) {
+	status := 0
+	var apiErr *openai.APIError
+	var reqErr *openai.RequestError
+	switch {
+	case errors.As(err, &apiErr):
+		status = apiErr.HTTPStatusCode
+	case errors.As(err, &reqErr):
+		status = reqErr.HTTPStatusCode
+	default:
+		return 0, false
+	}
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return status, true
+	}
+	return status, false
+}
+
+// providerOverloadBackoff is the pause before re-sending a request the provider
+// refused for capacity. An immediate retry mostly re-hits the same exhausted
+// pool; a short wait is what makes the second attempt worth making at all. Kept
+// well under the confirmation timeout (60s) so a retried turn still lands
+// inside the card the user is looking at.
+const providerOverloadBackoff = 900 * time.Millisecond
+
 func isTransientChatError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
@@ -331,6 +386,12 @@ func isTransientChatError(ctx context.Context, err error) bool {
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
+	}
+	// Status classification precedes the message match on purpose: a 4xx whose
+	// prose happens to contain "timeout" ("request timeout is not a valid
+	// parameter") is a rejection, not a transient, and must not be retried.
+	if status, overloaded := providerOverloadStatus(err); status != 0 {
+		return overloaded
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "unexpected eof") ||
