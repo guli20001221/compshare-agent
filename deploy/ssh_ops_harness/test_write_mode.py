@@ -118,6 +118,31 @@ check("write-prompt-authorizes-repair", "authorized repair" in harness.system_pr
 check("write-prompt-overrides-the-skill", "OVERRIDE" in harness.system_prompt(True))
 check("write-prompt-names-hard-limits", "hard-refused" in harness.system_prompt(True))
 
+# --- and so does the TOOL DESCRIPTION, which is the one the model actually believes --------------
+# A live write-enabled run diagnosed the box correctly, produced the right fix command, and then
+# reported 「当前 SSH 诊断接口仅允许只读命令，无法直接执行启动/修改操作」 — a direct restatement of
+# the tool description, which still said "Read-only commands only" while the system prompt said
+# repair was authorized. The model was not being cautious; it was believing its tool. Whatever the
+# system prompt says, a tool whose own description forbids writing will not be used to write.
+check("write-tool-desc-does-not-forbid-writes",
+      "Read-only commands only" not in harness.tool_description(True))
+check("write-tool-desc-says-changes-run",
+      "CHANGES the box" in harness.tool_description(True))
+# The specific failure was describe-instead-of-do, so the description says so in those words.
+check("write-tool-desc-says-send-not-describe",
+      "do not describe it and stop" in harness.tool_description(True))
+# Hard limits stay stated so the agent does not plan around commands the executor will reject.
+check("write-tool-desc-keeps-hard-limits",
+      "refused outright" in harness.tool_description(True))
+# Read-only mode must be BYTE-IDENTICAL to what was measured — this is the description that was in
+# the decorator literal before it became mode-dependent.
+check("readonly-tool-desc-byte-identical",
+      harness.tool_description(False) == (
+          "Run ONE read-only diagnostic shell command on the remote GPU instance over SSH and return "
+          "its output. Read-only commands only; one command per call; no chaining/pipes/redirection."))
+check("tool-desc-differs-by-mode",
+      harness.tool_description(True) != harness.tool_description(False))
+
 ssh_transport.run_ssh = _REAL_RUN_SSH
 
 print(f"\n{'FAILED: ' + ', '.join(FAILS) if FAILS else 'all write-mode checks passed'}")

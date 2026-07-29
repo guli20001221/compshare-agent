@@ -92,6 +92,35 @@ SYSTEM_PROMPT_WRITE = (
 )
 
 
+# The description of the ONE tool the model gets. Of the three places that tell it
+# what it may do — this, SYSTEM_PROMPT_WRITE above, and the instance-triage skill —
+# this is the one it trusts, because a tool description IS the contract for what
+# that tool does. Making the system prompt write-aware and leaving this saying
+# "Read-only commands only" produced exactly the failure you would predict: a
+# write-enabled run diagnosed the box correctly, found the right fix, and then
+# reported 「当前 SSH 诊断接口仅允许只读命令，无法直接执行启动/修改操作」 — reading
+# its own tool's description back. That is not timidity, it is believing the tool.
+#
+# TOOL_DESC stays BYTE-IDENTICAL so read-only runs remain exactly as measured.
+TOOL_DESC = (
+    "Run ONE read-only diagnostic shell command on the remote GPU instance over SSH and return "
+    "its output. Read-only commands only; one command per call; no chaining/pipes/redirection."
+)
+
+TOOL_DESC_WRITE = (
+    "Run ONE shell command on the remote GPU instance over SSH and return its output. Read-only "
+    "commands run immediately. A command that CHANGES the box also runs, once the operator approves "
+    "that exact command — so when you know the fix, SEND it; do not describe it and stop. "
+    "Destructive commands (deleting data, wiping disks, power off/reboot, accounts/passwords, "
+    "disabling ssh or networking) are refused outright, as is command substitution. One command per "
+    "call; no chaining/pipes/redirection."
+)
+
+
+def tool_description(allow_writes: bool) -> str:
+    return TOOL_DESC_WRITE if allow_writes else TOOL_DESC
+
+
 def system_prompt(allow_writes: bool) -> str:
     return SYSTEM_PROMPT_WRITE if allow_writes else SYSTEM_PROMPT
 
@@ -470,10 +499,7 @@ async def main():
         _emit_verdict(f"⚠ {'实例内排查' if _ALLOW_WRITES else '只读诊断'}未能开始：{reason}")
         return
 
-    @tool("ssh_exec",
-          "Run ONE read-only diagnostic shell command on the remote GPU instance over SSH and return "
-          "its output. Read-only commands only; one command per call; no chaining/pipes/redirection.",
-          {"command": str})
+    @tool("ssh_exec", tool_description(_ALLOW_WRITES), {"command": str})
     async def ssh_exec(args):
         r = run_command(args.get("command") or "")
         return {"content": [{"type": "text", "text": r["text"]}],
