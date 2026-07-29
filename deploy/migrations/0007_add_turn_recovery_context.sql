@@ -5,7 +5,10 @@
 -- are deliberately advisory and structurally incapable of carrying authority.
 
 ALTER TABLE chat_turns
-  ADD COLUMN execution_envelope JSONB;
+  ADD COLUMN IF NOT EXISTS execution_envelope JSONB;
+
+ALTER TABLE chat_turns
+  DROP CONSTRAINT IF EXISTS ck_chat_turn_execution_envelope;
 
 ALTER TABLE chat_turns
   ADD CONSTRAINT ck_chat_turn_execution_envelope CHECK (
@@ -13,7 +16,10 @@ ALTER TABLE chat_turns
   );
 
 ALTER TABLE turn_actions
-  ADD COLUMN context_hint JSONB;
+  ADD COLUMN IF NOT EXISTS context_hint JSONB;
+
+ALTER TABLE turn_actions
+  DROP CONSTRAINT IF EXISTS ck_turn_action_context_hint;
 
 ALTER TABLE turn_actions
   ADD CONSTRAINT ck_turn_action_context_hint CHECK (
@@ -35,7 +41,7 @@ ALTER TABLE turn_actions
     )
   );
 
-CREATE INDEX idx_chat_turns_recovery
+CREATE INDEX IF NOT EXISTS idx_chat_turns_recovery
   ON chat_turns (status, updated_at)
   WHERE execution_envelope IS NOT NULL
     AND status IN (

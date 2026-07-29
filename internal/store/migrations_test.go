@@ -37,7 +37,7 @@ func TestHTTPMigrationsAddSessionContextVersion(t *testing.T) {
 
 	ddl := string(data)
 	assert.Contains(t, ddl, "ALTER TABLE sessions")
-	assert.Contains(t, ddl, "ADD COLUMN context_version INT NOT NULL DEFAULT 0")
+	assert.Contains(t, ddl, "ADD COLUMN IF NOT EXISTS context_version INT NOT NULL DEFAULT 0")
 	// PostgreSQL appends columns at the end of the row; MySQL's `AFTER context`
 	// positional clause has no equivalent and was dropped in the migration.
 }
@@ -63,7 +63,7 @@ func TestHTTPMigrationsAddAgentTracesOutcomeColumns(t *testing.T) {
 		"refusal_type",
 		"resolution_source",
 	} {
-		assert.Contains(t, ddl, "ADD COLUMN "+column, "0004 must add column %s", column)
+		assert.Contains(t, ddl, "ADD COLUMN IF NOT EXISTS "+column, "0004 must add column %s", column)
 	}
 	// Columns must be NULLable so an axis that did not fire stores NULL (clean
 	// GROUP BY / COUNT semantics) — never NOT NULL with a default.
@@ -77,11 +77,11 @@ func TestHTTPMigrationsCreateTurnExecutionKernel(t *testing.T) {
 
 	ddl := string(data)
 	for _, fragment := range []string{
-		"CREATE TABLE chat_turns",
-		"CREATE TABLE conversation_leases",
-		"CREATE TABLE turn_actions",
-		"ADD COLUMN turn_id",
-		"ADD COLUMN turn_role",
+		"CREATE TABLE IF NOT EXISTS chat_turns",
+		"CREATE TABLE IF NOT EXISTS conversation_leases",
+		"CREATE TABLE IF NOT EXISTS turn_actions",
+		"ADD COLUMN IF NOT EXISTS turn_id",
+		"ADD COLUMN IF NOT EXISTS turn_role",
 		"UNIQUE (top_organization_id, organization_id, session_id, client_turn_id)",
 		"PRIMARY KEY (turn_id, action_index)",
 		"active_turn_id",
@@ -107,8 +107,8 @@ func TestHTTPMigrationsCreateTurnProtocol(t *testing.T) {
 
 	ddl := string(data)
 	for _, fragment := range []string{
-		"CREATE TABLE chat_turn_events",
-		"CREATE TABLE turn_interactions",
+		"CREATE TABLE IF NOT EXISTS chat_turn_events",
+		"CREATE TABLE IF NOT EXISTS turn_interactions",
 		"PRIMARY KEY (turn_id, seq)",
 		"UNIQUE (turn_id, interaction_key)",
 		"provisional",
@@ -128,8 +128,8 @@ func TestHTTPMigrationsAddTurnRecoveryContext(t *testing.T) {
 
 	ddl := string(data)
 	for _, fragment := range []string{
-		"ADD COLUMN execution_envelope JSONB",
-		"ADD COLUMN context_hint JSONB",
+		"ADD COLUMN IF NOT EXISTS execution_envelope JSONB",
+		"ADD COLUMN IF NOT EXISTS context_hint JSONB",
 		"context_hint - 'resource_ids' - 'region' - 'zone'",
 		"idx_chat_turns_recovery",
 		"'awaiting_confirmation'",
@@ -148,8 +148,8 @@ func TestHTTPMigrationsAddDurableTurnRetryPolicy(t *testing.T) {
 
 	ddl := string(data)
 	for _, fragment := range []string{
-		"ADD COLUMN retry_count INT NOT NULL DEFAULT 0",
-		"ADD COLUMN next_retry_at TIMESTAMPTZ",
+		"ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0",
+		"ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ",
 		"'failed_final'",
 		"ck_chat_turn_retry_schedule",
 		"jsonb_path_exists",

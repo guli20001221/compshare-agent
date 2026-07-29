@@ -31,15 +31,13 @@ make deploy
 
 ## 本地数据库
 
-后端存储使用 PostgreSQL。首次使用前按顺序执行迁移：
+后端存储使用 PostgreSQL。新库和升级都执行同一条命令，迁移可重复执行，已应用过的会跳过：
 
 ```bash
 for f in deploy/migrations/*.sql; do
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < "$f"
 done
 ```
-
-迁移不幂等，升级已有库时只执行本库缺的那几个；漏了会启动失败，且报错指向列而不是迁移（如 `column "turn_id" does not exist`，该列来自 `0005`）。详见 [`deploy/migrations/README.md`](deploy/migrations/README.md)。
 
 `deploy/conf/config.yaml` 中的 `agent.mysql.dsn` 需要填 PostgreSQL libpq URL，例如：
 

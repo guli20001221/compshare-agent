@@ -23,14 +23,14 @@
 -- equivalent and are unnecessary.)
 
 ALTER TABLE agent_traces
-  ADD COLUMN terminated_by     VARCHAR(32),
-  ADD COLUMN abort_cause       VARCHAR(32),
-  ADD COLUMN error_class       VARCHAR(32),
-  ADD COLUMN resolution        VARCHAR(32),
-  ADD COLUMN route_status      VARCHAR(48),
-  ADD COLUMN refusal_type      VARCHAR(32),
-  ADD COLUMN resolution_source VARCHAR(32);
+  ADD COLUMN IF NOT EXISTS terminated_by     VARCHAR(32),
+  ADD COLUMN IF NOT EXISTS abort_cause       VARCHAR(32),
+  ADD COLUMN IF NOT EXISTS error_class       VARCHAR(32),
+  ADD COLUMN IF NOT EXISTS resolution        VARCHAR(32),
+  ADD COLUMN IF NOT EXISTS route_status      VARCHAR(48),
+  ADD COLUMN IF NOT EXISTS refusal_type      VARCHAR(32),
+  ADD COLUMN IF NOT EXISTS resolution_source VARCHAR(32);
 
-CREATE INDEX idx_terminated_time   ON agent_traces (terminated_by, created_at);
-CREATE INDEX idx_refusal_time      ON agent_traces (refusal_type, created_at);
-CREATE INDEX idx_route_status_time ON agent_traces (route_status, created_at);
+CREATE INDEX IF NOT EXISTS idx_terminated_time   ON agent_traces (terminated_by, created_at);
+CREATE INDEX IF NOT EXISTS idx_refusal_time      ON agent_traces (refusal_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_route_status_time ON agent_traces (route_status, created_at);

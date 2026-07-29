@@ -50,9 +50,14 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0011_create_ssh_ops_audit.sql
 ```
 
-Not idempotent: apart from `0002` and `0011` these are bare `CREATE TABLE` /
-`ADD COLUMN`, so re-running an applied file fails under `ON_ERROR_STOP=1`. On an
-upgrade, apply only what the target database is missing.
+Every file is idempotent, so the whole list can be applied to any database
+regardless of how far it already is — a new one, or a deployment still on 0004.
+`TestMigrationsApplyTwiceCleanly` (internal/store, needs
+`COMPSHARE_TEST_MYSQL_DSN`) applies them all twice and compares the resulting
+schema, so a new migration that drops an `IF NOT EXISTS` fails the build rather
+than the next upgrade. Keep it that way: `CREATE TRIGGER` has no `IF NOT EXISTS`
+before PG 14, so precede one with `DROP TRIGGER IF EXISTS`, and precede every
+`ADD CONSTRAINT` with `DROP CONSTRAINT IF EXISTS`.
 
 For a throwaway local Docker PostgreSQL (no host `psql` needed), see README §3 —
 it pipes each file through `docker exec -i cs-pg psql ...`.
