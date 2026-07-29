@@ -180,10 +180,20 @@ check("readonly-prompt-has-no-repair-skill", "instance-repair" not in harness.sy
 # The model never loads a playbook, so a rule that only exists in SKILL.md does not exist. These are
 # the three behaviours it provably gets wrong unaided, each with a real failure behind it.
 _wp = harness.system_prompt(True)
-check("prompt-rule-prefer-image-launcher", "prefer the image's OWN launcher" in _wp)
-check("prompt-rule-names-the-bypass-it-makes", "main.py" in _wp)   # the exact entrypoint it reaches for
-check("prompt-rule-port-inventory-diff",
-      "list the listening ports" in _wp and "is not up now" in _wp)
+_td = harness.tool_description(True)
+# The launcher rule was stated in the system prompt and IGNORED (the run went straight to main.py and
+# never opened /start.d — its log mtime never moved). It lives in the TOOL DESCRIPTION now: that is
+# the only channel with evidence of landing (detach protocol adopted verbatim 2/2, system prompt
+# rules 0/3). Asserted in BOTH directions so it cannot quietly drift back to the dead channel.
+check("tooldesc-rule-prefer-image-launcher", "start it the way the image starts it" in _td)
+check("tooldesc-rule-names-the-bypass-it-makes", "main.py" in _td)  # the exact entrypoint it reaches for
+check("prompt-no-longer-carries-launcher-rule", "prefer the image's OWN launcher" not in _wp)
+# Replaces the before/after diff, which could not fire: in the fault under test BOTH ports start
+# down, so "was up before" is empty. This asks about the ports the LAUNCHER defines instead, which is
+# exactly the 7860 case — a port the repair never restored rather than one it broke.
+check("tooldesc-rule-verify-every-launcher-port",
+      "confirm EVERY port it starts is listening" in _td)
+check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
 check("prompt-rule-verdict-sections-inline", "已执行的修复 / 验证 / 未处理" in _wp)
 check("prompt-rule-own-failed-commands",
       "INCLUDING any that failed" in _wp and "never fold a command of yours" in _wp)
@@ -193,7 +203,7 @@ check("prompt-does-not-delegate-verdict-to-skill",
 # argv ceiling: a prior length probe (N=3/size) initialized cleanly through 6000 chars and died with
 # an instant exit-1 near 12000. Stay inside the VERIFIED band, not merely under the cliff.
 check("prompt-within-verified-length-band", len(_wp) < 6000)
-check("readonly-prompt-untouched-by-repair-rules", "prefer the image's OWN launcher" not in harness.system_prompt(False))
+check("readonly-prompt-untouched-by-repair-rules", "start it the way the image starts it" not in harness.tool_description(False))
 
 _repair = os.path.join(os.path.dirname(os.path.abspath(harness.__file__)),
                        "skills", "instance-repair", "SKILL.md")
