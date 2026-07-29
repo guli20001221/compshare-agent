@@ -142,8 +142,30 @@ var explicitChargeTypeVocabulary = []struct {
 	{"按量", ChargeTypePostpay}, {"按小时", ChargeTypePostpay}, {"后付费", ChargeTypePostpay},
 	{"包日", ChargeTypeDay}, {"按日", ChargeTypeDay}, {"按天", ChargeTypeDay},
 	{"包月", ChargeTypeMonth}, {"按月", ChargeTypeMonth},
-	{"竞价实例", ChargeTypeSpot}, {"抢占式", ChargeTypeSpot},
+	// 抢占式 leads its group because it is the product's own label for the mode
+	// (it is what the purchase-mode card shows), and ExplicitChargeTypePhrase
+	// hands the first entry to user-facing copy. Order does not affect parsing:
+	// ExplicitChargeTypeFromPhrase scans every entry and decides on the resolved
+	// VALUE being unique, so this is presentation only.
+	{"抢占式", ChargeTypeSpot}, {"竞价实例", ChargeTypeSpot},
 	{"抢占", ChargeTypeSpot}, {"竞价", ChargeTypeSpot},
+}
+
+// ExplicitChargeTypePhrase returns the canonical phrase a user can type to ask
+// for this purchase mode: the first vocabulary entry that maps to it.
+//
+// It exists so that UI copy suggesting "say X to change the billing mode" draws
+// X from the same table the server parses. A hand-written suggestion can drift
+// out of the vocabulary, and the failure is silent — the user retypes the
+// request using the wording we printed, the phrase no longer resolves, and they
+// get the purchase-mode card they were told they could skip.
+func ExplicitChargeTypePhrase(value string) (string, bool) {
+	for _, item := range explicitChargeTypeVocabulary {
+		if item.Value == value {
+			return item.Phrase, true
+		}
+	}
+	return "", false
 }
 
 // ExplicitChargeTypeFromPhrase maps a bounded product vocabulary from a user

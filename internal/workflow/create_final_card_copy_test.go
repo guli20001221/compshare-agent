@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/compshare-agent/internal/deployment"
 )
 
 // TestFinalCardStatesTheChargeTypeItNoLongerOffers guards a card that promises a
@@ -72,6 +74,67 @@ func TestFinalCardPointsBackAtTheChargeTypeCardWhenItWasShown(t *testing.T) {
 		"the user was offered a purchase-mode card; sending them to redo the request is wrong")
 	assert.Contains(t, form.Step.Description, "购买方式",
 		"point back at the step that owns the choice")
+}
+
+// TestChargeTypeChangeHintNeverOffersTheModeAlreadyInForce is the gate on the
+// sentence a real 抢占式 request produced: "需要包日、包月或抢占式，请重新发起创建并直接
+// 说明（例如「用抢占式创建一台…」）" — the way to change AWAY from 抢占式 was 抢占式, and
+// the example was verbatim what the user had just typed. A card that answers a
+// request by quoting it back gives the user no way to tell it was understood.
+//
+// The example is checked by PARSING it, not by matching text: the whole promise
+// of "例如「用X创建一台…」" is that retyping it works, so X has to resolve — and to
+// something other than the mode already in force.
+// It iterates createFormChargeTypes rather than a hand-listed set, so a billing
+// mode added to the product is covered the day it appears. A hardcoded list would
+// make this test a patch on the four modes that existed when it was written.
+func TestChargeTypeChangeHintNeverOffersTheModeAlreadyInForce(t *testing.T) {
+	require.NotEmpty(t, createFormChargeTypes, "premise: there are modes to iterate")
+	for _, mode := range createFormChargeTypes {
+		t.Run(mode.Value, func(t *testing.T) {
+			wfCtx := formWfCtx(t, map[string]any{
+				"GpuType": "A800", "Zone": "cn-wlcb-01",
+				"Gpu": float64(1), "Cpu": float64(32), "Memory": float64(131072),
+				"ChargeType": mode.Value,
+			})
+			wfCtx.referenceData.ChargeTypeUserPinned = true
+			require.True(t, guidedStepSkipped(wfCtx, guidedStepChargeType), "premise: the user named the mode")
+
+			hint := chargeTypeChangeHint(wfCtx)
+			assert.NotContains(t, hint, mode.Label,
+				"%s is in force; offering it as the way to change away from it is not an option", mode.Value)
+
+			example := chargeTypeHintExample(t, hint)
+			resolved, ok := deployment.ExplicitChargeTypeFromPhrase(example)
+			require.True(t, ok, "the example %q must be a phrase the server resolves, or retyping it silently loses the pin", example)
+			assert.NotEqual(t, mode.Value, resolved,
+				"the example must ask for a DIFFERENT mode than the one in force")
+		})
+	}
+}
+
+// Every selectable billing mode needs a phrase the parser accepts, or the hint
+// degrades to a sentence with no example at all — silently, on the mode that was
+// added last. This is the check that makes the hint generic rather than correct
+// for exactly today's four modes.
+func TestEverySelectableChargeTypeHasATypeablePhrase(t *testing.T) {
+	for _, mode := range createFormChargeTypes {
+		phrase, ok := deployment.ExplicitChargeTypePhrase(mode.Value)
+		require.True(t, ok, "%s has no phrase a user could type", mode.Value)
+		resolved, ok := deployment.ExplicitChargeTypeFromPhrase(phrase)
+		require.True(t, ok, "%s: phrase %q does not parse back", mode.Value, phrase)
+		assert.Equal(t, mode.Value, resolved, "%s: phrase %q resolves to a different mode", mode.Value, phrase)
+	}
+}
+
+// chargeTypeHintExample lifts X out of 例如「用X创建一台…」.
+func chargeTypeHintExample(t *testing.T, hint string) string {
+	t.Helper()
+	_, after, ok := strings.Cut(hint, "例如「用")
+	require.True(t, ok, "hint must carry an example: %q", hint)
+	example, _, ok := strings.Cut(after, "创建一台")
+	require.True(t, ok, "hint example must be phrased as 用X创建一台: %q", hint)
+	return example
 }
 
 // TestChargeTypeLabelReusesTheOptionLabels keeps one name per billing mode. Two

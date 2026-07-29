@@ -45,10 +45,26 @@ func TestImageListSemanticExpansionKeepsTheGroundedBaseline(t *testing.T) {
 		Source:          platform.ImageSourceCommunity,
 		SemanticQueries: []string{"LiveTalking"}, Mode: platform.ListModeFiltered,
 	}, "推荐数字人镜像"), "an expansion cannot replace the grounded user query")
+	// The platform catalog expands too, as of the recommendation fix: its images
+	// are named after the runtime (vLLM v0.25.1 / SGLang v0.5.15 / Ollama v0.32.1),
+	// so a 用途 word matches none of them and the Agent could only ever answer a
+	// recommendation from the community side. An omitted source is platform
+	// (imageListHandle's default branch), so it expands on the same terms.
+	require.NoError(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Source: platform.ImageSourcePlatform, Query: "大模型推理",
+		SemanticQueries: []string{"vLLM", "SGLang"}, Mode: platform.ListModeFiltered,
+	}, "推荐一个大模型推理镜像"))
+	require.NoError(t, ValidateCurrentTurnGrounding(ImageListRequest{
+		Query: "大模型推理", SemanticQueries: []string{"vLLM"}, Mode: platform.ListModeFiltered,
+	}, "推荐一个大模型推理镜像"), "an omitted source routes to platform, so it must expand like one")
+
+	// Custom and shared stay out: those catalogs hold the tenant's own artifacts,
+	// and expanding the user's words into guessed technology terms there surfaces
+	// images by a name the user never used.
 	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
-		Source: platform.ImageSourcePlatform, Query: "AI绘画",
+		Source: platform.ImageSourceCustom, Query: "AI绘画",
 		SemanticQueries: []string{"ComfyUI"}, Mode: platform.ListModeFiltered,
-	}, "找一个AI绘画镜像"), "semantic expansions are implemented only for the community catalog")
+	}, "找一个AI绘画镜像"), "the custom catalog does not expand")
 	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
 		Source: platform.ImageSourceCommunity, Query: "AI绘画",
 		SemanticQueries: []string{"a", "b", "c", "d"}, Mode: platform.ListModeFiltered,

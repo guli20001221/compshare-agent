@@ -78,7 +78,7 @@ func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse]
 				"用户原话中的目录查询词；复制最短且有意义的用途、约束或用户明确点名的镜像，可取用户表达中的子串，不要先猜候选镜像名。无查询条件时留空。",
 			),
 			"semantic_queries": arrayParam(stringParam()).described(
-				"仅社区镜像可用，最多 3 个。Agent 根据用户用途提炼的技术或类别查询词，例如用途的常见项目类别；不得替代 query，结果会与 query 的结果合并。原话查询无结果或候选不合适时，可保留同一个 query 后重试并补充这里。",
+				"社区或平台镜像可用，最多 3 个。Agent 根据用户用途提炼的技术或类别查询词，例如用途的常见项目类别或运行时名称；不得替代 query，结果会与 query 的结果合并。原话查询无结果或候选不合适时，可保留同一个 query 后重试并补充这里。推荐类问题应同时查平台与社区两个来源后再作答，平台镜像按运行时命名，只有配合语义扩展才能被用途词命中。",
 			),
 			"mode": enumParam(platform.ListModeValues()...),
 		}),
@@ -130,12 +130,74 @@ func platformImageListHandle(ctx context.Context, req ImageListRequest, rt ReadR
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(platformImageAction, imageListCapabilityLabel, err)
 	}
-	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Query, req.Mode, platformImageAction, "platform")
+	query, mode := req.Query, req.Mode
+	// Semantic expansion on the platform catalog costs NOTHING extra: unlike the
+	// community path (one upstream FuzzySearch per query), the platform listing is
+	// fetched whole and filtered here, so the expansion is just a wider client-side
+	// match over rows already in hand.
+	//
+	// Why it is needed at all: the platform's inference images are named after the
+	// runtime — vLLM v0.25.1, SGLang v0.5.15, Ollama v0.32.1 — so a user asking for
+	// 大模型推理 matches ZERO of them by name, while the same intent on the community
+	// side expands and matches. The Agent could only answer from the side that had
+	// matches, which is why platform-maintained images never appeared in a
+	// recommendation even though they exist.
+	if queries := imageSearchQueries(req); len(queries) > 1 {
+		raw = filterImageSetByAnyQuery(raw, "ImageSet", queries, imageQueryMatchFields(fieldOrder))
+		// The union IS the filter; re-applying the primary query below would
+		// narrow back to it and erase every expansion (the same self-narrowing
+		// bug the community path documents).
+		query, mode = "", platform.ListModeAll
+	}
+	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, query, mode, platformImageAction, "platform")
 	return ImageListResponse{
-		Reply:    renderImageListReply(raw, "ImageSet", fieldOrder, req.Query, req.Mode),
+		Reply:    renderImageListReply(raw, "ImageSet", fieldOrder, query, mode),
 		Action:   platformImageAction,
 		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
+}
+
+// imageQueryMatchFields picks the fields a catalog query matches against, from
+// the same fieldOrder buildImageListEnvelope uses — so a pre-filter and the
+// envelope's own filter can never disagree about what "matches" means.
+func imageQueryMatchFields(fieldOrder []string) []string {
+	out := make([]string, 0, len(fieldOrder))
+	for _, f := range fieldOrder {
+		switch f {
+		case "Name", "ImageName", "CompShareImageName", "Author":
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// filterImageSetByAnyQuery keeps every row matching AT LEAST ONE query. Union,
+// never intersection: an expansion may only add candidates, so a bad expansion
+// term costs nothing and cannot hide the images the user's own words found.
+func filterImageSetByAnyQuery(raw map[string]any, listKey string, queries []string, fields []string) map[string]any {
+	if len(queries) == 0 || len(fields) == 0 {
+		return raw
+	}
+	items := mapSliceAt(raw, listKey)
+	kept := make([]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, query := range queries {
+			if strings.TrimSpace(query) == "" || entryMatchesSlotQuery(entry, query, fields) {
+				kept = append(kept, item)
+				break
+			}
+		}
+	}
+	out := make(map[string]any, len(raw))
+	for k, v := range raw {
+		out[k] = v
+	}
+	out[listKey] = kept
+	return out
 }
 
 func customImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
@@ -153,7 +215,7 @@ func customImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRun
 }
 
 func communityImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
-	queries := communityImageSearchQueries(req)
+	queries := imageSearchQueries(req)
 	results := make([]map[string]any, 0, len(queries))
 	for _, query := range queries {
 		args := map[string]any{}
@@ -178,7 +240,7 @@ func communityImageListHandle(ctx context.Context, req ImageListRequest, rt Read
 	}, ReadResult{}
 }
 
-func communityImageSearchQueries(req ImageListRequest) []string {
+func imageSearchQueries(req ImageListRequest) []string {
 	if req.Mode == platform.ListModeAll {
 		return []string{""}
 	}

@@ -30,8 +30,21 @@ func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText 
 			return fmt.Errorf("semantic_queries: 最多提供 3 个语义扩展查询词")
 		}
 		if len(req.SemanticQueries) > 0 {
-			if req.Source != platform.ImageSourceCommunity {
-				return fmt.Errorf("semantic_queries: 仅社区镜像目录支持语义扩展")
+			// Community and platform both expand; custom and shared do not.
+			// The two that do are the two catalogs a recommendation draws from,
+			// and platform is the one that NEEDS it: its images are named after
+			// the runtime (vLLM / SGLang / Ollama), so a 用途 word matches none of
+			// them and the Agent could previously only answer from community.
+			// Custom and shared stay out because their contents are the tenant's
+			// own artifacts — expanding a user's words into guessed technology
+			// terms there surfaces images by a name the user never used.
+			//
+			// An empty source IS platform: imageListHandle routes it there via its
+			// default branch, so rejecting "" would refuse expansion on exactly the
+			// request shape a model that omits the optional field produces.
+			if req.Source != platform.ImageSourceCommunity &&
+				req.Source != platform.ImageSourcePlatform && req.Source != "" {
+				return fmt.Errorf("semantic_queries: 仅社区或平台镜像目录支持语义扩展")
 			}
 			if query == "" {
 				return fmt.Errorf("semantic_queries: 必须同时保留来自用户原话的 query，语义扩展不能替代原话查询")

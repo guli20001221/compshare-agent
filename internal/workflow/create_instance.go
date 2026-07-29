@@ -2921,11 +2921,39 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 // concrete image yet), which is exactly the case the two-stage flow serves. An Agent
 // SUGGESTION is not settlement, so these steps show for it too — the user still chooses.
 func shouldSkipGuidedImageSourceStep(wfCtx *Context) (bool, error) {
-	return imageUserSettled(wfCtx), nil
+	return imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx), nil
+}
+
+// imageSuggestionSettlesAxis reports that the Agent's suggestion has already
+// answered the SOURCE and 用途 questions, so re-asking them is a question whose
+// answer is visible in the suggestion itself.
+//
+// The distinction this draws is between the axes an image implies and the image
+// itself. After 「推荐一个做数字人的镜像」→「用该镜像开一台」, asking 平台还是社区 and
+// then 想跑哪一类 makes the user re-derive facts already fixed by the image the
+// assistant named — measured on the real stack 2026-07-29, that flow re-opened
+// at step 1 of the guided create. The picker still shows (it stays gated on
+// imageUserSettled), so the guarantee that closed the original bug — an
+// Agent-pinned id never seals unseen — is untouched: the user still sees and
+// confirms the image, just without two cards that could only be answered one way.
+//
+// It requires the proposal to have NAMED the source rather than reading the
+// defaulted value: paramStr falls back to "platform", so a community suggestion
+// whose source the Agent left out would otherwise skip the source card while
+// carrying the wrong catalog into the picker. initialParamSet is the same
+// "the request actually said this" test the spec cards use.
+func imageSuggestionSettlesAxis(wfCtx *Context) bool {
+	if wfCtx == nil || wfCtx.ImageSelection() != ImageSelectionSuggested {
+		return false
+	}
+	if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+		return false
+	}
+	return initialParamSet(wfCtx, "ImageSource")
 }
 
 func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
-	if imageUserSettled(wfCtx) {
+	if imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx) {
 		return true, nil
 	}
 	// No empty card: the facets step earns its place only when the chosen source's
@@ -2947,7 +2975,7 @@ func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
 // means exactly "no tag would have led anywhere". A one-option card (only 不限标签)
 // is not a choice, so it is skipped too.
 func shouldSkipGuidedImageTagStep(wfCtx *Context) (bool, error) {
-	if imageUserSettled(wfCtx) {
+	if imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx) {
 		return true, nil
 	}
 	set := createImageCandidates(wfCtx)
@@ -3075,11 +3103,54 @@ func shouldSkipGuidedChargeTypeStep(wfCtx *Context) (bool, error) {
 // This sentence was a constant that always said "重新发起创建", written when the
 // card did not exist. Once it did, the final card was telling users to redo the
 // whole request to change something they had just been asked.
+// The alternatives are computed by SUBTRACTING the mode in force, not listed as
+// a constant. The constant version named all three of 包日/包月/抢占式 whatever the
+// user had asked for, so a 抢占式 request produced "需要包日、包月或抢占式，请重新发起
+// 创建（例如「用抢占式创建一台…」）" — it offered the mode already in force as the way
+// to change away from it, and the example was verbatim what the user had just
+// typed. The user is left unable to tell whether the card understood them.
 func chargeTypeChangeHint(wfCtx *Context) string {
-	if guidedStepSkipped(wfCtx, guidedStepChargeType) {
-		return "需要包日、包月或抢占式，请重新发起创建并直接说明（例如「用抢占式创建一台…」）。"
+	if !guidedStepSkipped(wfCtx, guidedStepChargeType) {
+		return "需要改用其他计费方式，请返回上面的「购买方式」一步重新选择。"
 	}
-	return "需要改用其他计费方式，请返回上面的「购买方式」一步重新选择。"
+	others := chargeTypeAlternativeLabels(createChargeType(wfCtx.Params))
+	example, ok := chargeTypeAlternativeExample(createChargeType(wfCtx.Params))
+	if len(others) == 0 || !ok {
+		return "需要改用其他计费方式，请重新发起创建并直接说明。"
+	}
+	return fmt.Sprintf("需要改用%s，请重新发起创建并直接说明（例如「用%s创建一台…」）。",
+		strings.Join(others, "、"), example)
+}
+
+// chargeTypeAlternativeLabels names the purchase modes OTHER than the one in
+// force, reusing the option labels so the card cannot call a mode something the
+// purchase-mode card does not.
+func chargeTypeAlternativeLabels(current string) []string {
+	out := make([]string, 0, len(createFormChargeTypes))
+	for _, opt := range createFormChargeTypes {
+		if strings.EqualFold(opt.Value, current) {
+			continue
+		}
+		out = append(out, opt.Label)
+	}
+	return out
+}
+
+// chargeTypeAlternativeExample picks the phrase for the "例如「用X创建一台…」" hint.
+// It comes from deployment's parsing vocabulary rather than from the display
+// label: the label may carry a parenthetical ("按量付费（按小时计费）") that reads
+// wrong inside a quoted sentence and, more importantly, the point of the example
+// is that retyping it works — so it has to be a phrase the server resolves.
+func chargeTypeAlternativeExample(current string) (string, bool) {
+	for _, opt := range createFormChargeTypes {
+		if strings.EqualFold(opt.Value, current) {
+			continue
+		}
+		if phrase, ok := deployment.ExplicitChargeTypePhrase(opt.Value); ok {
+			return phrase, true
+		}
+	}
+	return "", false
 }
 
 func guidedChargeTypeIsTheOnlyCard(wfCtx *Context) bool {
