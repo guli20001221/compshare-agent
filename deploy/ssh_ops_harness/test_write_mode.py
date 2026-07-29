@@ -175,6 +175,26 @@ check("write-prompt-names-repair-skill", "`instance-repair`" in harness.system_p
 check("write-prompt-says-which-skill-wins", "instance-repair` wins" in harness.system_prompt(True))
 check("readonly-prompt-has-no-repair-skill", "instance-repair" not in harness.system_prompt(False))
 
+# --- the three load-bearing rules live in the SYSTEM PROMPT, not in a skill ----------------------
+# Measured 2026-07-29: an instrumented live run logged 21 tool_use blocks — 21 ssh_exec, 0 Skill.
+# The model never loads a playbook, so a rule that only exists in SKILL.md does not exist. These are
+# the three behaviours it provably gets wrong unaided, each with a real failure behind it.
+_wp = harness.system_prompt(True)
+check("prompt-rule-prefer-image-launcher", "prefer the image's OWN launcher" in _wp)
+check("prompt-rule-names-the-bypass-it-makes", "main.py" in _wp)   # the exact entrypoint it reaches for
+check("prompt-rule-port-inventory-diff",
+      "list the listening ports" in _wp and "is not up now" in _wp)
+check("prompt-rule-verdict-sections-inline", "已执行的修复 / 验证 / 未处理" in _wp)
+check("prompt-rule-own-failed-commands",
+      "INCLUDING any that failed" in _wp and "never fold a command of yours" in _wp)
+# The verdict shape must NOT be delegated to a skill the model never opens.
+check("prompt-does-not-delegate-verdict-to-skill",
+      "in the form `instance-repair` specifies" not in _wp)
+# argv ceiling: a prior length probe (N=3/size) initialized cleanly through 6000 chars and died with
+# an instant exit-1 near 12000. Stay inside the VERIFIED band, not merely under the cliff.
+check("prompt-within-verified-length-band", len(_wp) < 6000)
+check("readonly-prompt-untouched-by-repair-rules", "prefer the image's OWN launcher" not in harness.system_prompt(False))
+
 _repair = os.path.join(os.path.dirname(os.path.abspath(harness.__file__)),
                        "skills", "instance-repair", "SKILL.md")
 _repair_text = open(_repair, encoding="utf-8").read()
