@@ -41,15 +41,42 @@ type harnessRunner interface {
 }
 
 type Service struct {
-	sup   harnessRunner
-	audit AuditWriter
+	sup         harnessRunner
+	audit       AuditWriter
+	allowWrites bool
+}
+
+// ServiceOption configures a Service at construction. Options exist so the write gate cannot be
+// flipped after the fact: nothing on Service mutates it, so every task a given Service runs is
+// recorded under the same phase it actually ran in.
+type ServiceOption func(*Service)
+
+// WithWrites records that this lane's harness may execute the mutating tier. It does NOT itself
+// authorize anything — Supervisor.AllowWrites is what the harness reads — but the two are set from
+// the same config field, and this one makes the audit row say which product ran.
+func WithWrites(allow bool) ServiceOption {
+	return func(s *Service) { s.allowWrites = allow }
 }
 
 // NewService wires a Service. sup is normally a sshops.Supervisor value. audit is REQUIRED: Diagnose
 // refuses to run (fail-closed) when it is nil, so an in-instance access can never happen unlogged.
 // Production passes store.SSHOpsAuditStore; tests pass MemAuditWriter.
-func NewService(sup harnessRunner, audit AuditWriter) *Service {
-	return &Service{sup: sup, audit: audit}
+func NewService(sup harnessRunner, audit AuditWriter, opts ...ServiceOption) *Service {
+	s := &Service{sup: sup, audit: audit}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// phaseFor names the authority the box was entered under. These two strings are the audit's only
+// vocabulary for it, and the read_write row is the record that a human consented to a repair — so
+// the mapping lives in one place rather than being spelled at the call site.
+func phaseFor(allowWrites bool) string {
+	if allowWrites {
+		return "read_write"
+	}
+	return "read_only"
 }
 
 // Diagnose runs ONE consented, read-only in-instance diagnosis. Consent MUST already be verified
@@ -89,7 +116,10 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		OrganizationID:    owner.OrganizationID,
 		InstanceID:        cred.InstanceID,
 		Task:              task,
-		Phase:             "read_only",
+		// The phase is what the box was ENTERED under, so it is taken from the lane's gate rather
+		// than from what the harness happened to run: a write-authorized session that ended up
+		// issuing only reads still entered under write authority, and the audit has to say so.
+		Phase: phaseFor(s.allowWrites),
 	}
 	auditID, err := s.audit.Begin(ctx, ev)
 	if err != nil {

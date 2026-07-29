@@ -128,6 +128,12 @@ agent:
     # and 0/3). This field is ours to set, not the deployer's; the values below are inert until enabled.
     model: "modelverse,deepseek-v4-pro"
     timeout: "12m"                     # 5m truncates a heavy diagnosis mid-run, and the symptom reads as model failure
+    # Let the agent REPAIR the box, not just describe the repair. Off = it reports fixes as optional
+    # steps; on = it runs them and verifies. Destructive commands (delete, wipe, reboot, password /
+    # account changes, ssh/network lockout) are refused either way, as is command substitution.
+    # Turning this on changes what the user is asked to authorize: the consent card, the tool
+    # description and the audit phase all switch with it, so it is one field, not a set.
+    allow_writes: false
 
   # 0 or omitted uses the built-in defaults for llm / mutating /
   # read_expensive. The user_turn_* and max_tokens_per_turn fields are

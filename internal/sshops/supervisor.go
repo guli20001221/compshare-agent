@@ -27,6 +27,11 @@ type Supervisor struct {
 	GatewayURL  string        // ANTHROPIC_BASE_URL of the local claude-code-router gateway
 	Model       string        // third-party model id (e.g. deepseek-v4-flash)
 	Timeout     time.Duration // hard wall-clock per task; default 5m
+	// AllowWrites rides the same one-shot handshake as the credential, for the same reason: it is
+	// per-task state the harness must not be able to acquire any other way (no env var, no argv, no
+	// later message). The harness latches it together with the connection, so a command can never be
+	// classified under one gate and executed under another. Default false = the read-only lane.
+	AllowWrites bool
 }
 
 // Result is what the supervisor returns to the engine. Output is the harness's scrubbed VERDICT body
@@ -118,9 +123,10 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onSte
 		"user":        cred.User,
 		"port":        cred.Port,
 		"password":    cred.password, // plaintext -> stdin only, never logged/returned
-		"instance_id": cred.InstanceID,
-		"model":       s.Model,
-		"task":        task, // NL request -> stdin, off the host process table
+		"instance_id":  cred.InstanceID,
+		"model":        s.Model,
+		"task":         task, // NL request -> stdin, off the host process table
+		"allow_writes": s.AllowWrites,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: marshal handshake: %w", err)

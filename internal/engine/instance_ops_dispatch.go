@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/tools"
 )
 
 // maxInstanceOpsStepEvents caps the per-command activity events the engine emits
@@ -95,7 +96,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 				Type:    StepToolCall,
 				Action:  action,
 				Source:  observability.ToolSourceDiagnosisInternal,
-				Message: fmt.Sprintf("已连接到实例 %s，开始只读排查", instanceID),
+				Message: fmt.Sprintf("已连接到实例 %s，开始%s", instanceID, instanceOpsPhaseNoun()),
 			})
 		case InstanceOpsProgressCommand:
 			if commandsEmitted >= maxInstanceOpsStepEvents {
@@ -171,7 +172,7 @@ func instanceOpsCommandStep(action string, p InstanceOpsProgress) StepEvent {
 		}
 	case "refused":
 		stepType = StepBlocked
-		msg = fmt.Sprintf("`%s` → 已拒绝：会修改实例环境（只读模式）", cmd)
+		msg = fmt.Sprintf("`%s` → 已拒绝：%s", cmd, instanceOpsRefusalReason())
 	default: // "failed" and any unexpected value → honest failure on the constant sink
 		stepType = StepBlocked
 		msg = fmt.Sprintf("`%s` → 执行失败", cmd)
@@ -205,4 +206,24 @@ func instanceOpsStateFromError(err error) string {
 		}
 	}
 	return "未知"
+}
+
+// instanceOpsPhaseNoun and instanceOpsRefusalReason keep the live activity stream truthful about
+// which product is running. Both read the same boot flag the tool description does, so the card the
+// user approved, the tool the model was offered, and the line it watches scroll all say one thing.
+func instanceOpsPhaseNoun() string {
+	if tools.InstanceOpsWritesEnabled() {
+		return "排查"
+	}
+	return "只读排查"
+}
+
+// A refusal in write mode is NOT "只读模式" — that wording sent the operator looking for a switch
+// that was already on. In write mode the only refusals left are the destructive tier and the shape
+// gate, so the reason has to name those instead.
+func instanceOpsRefusalReason() string {
+	if tools.InstanceOpsWritesEnabled() {
+		return "属于高危操作或命令形式不被接受"
+	}
+	return "会修改实例环境（只读模式）"
 }

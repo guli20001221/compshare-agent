@@ -1,6 +1,10 @@
 package httpapi
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/compshare-agent/internal/tools"
+)
 
 // stepActionLabels maps a step frame's Action — an internal tool name — to the
 // Chinese label the console shows in its activity stream.
@@ -108,6 +112,13 @@ var stepActionLabels = map[string]string{
 // stepActionLabel returns the console label for a step Action, or "" when the
 // action has none (unknown/ad-hoc actions, which the console renders raw).
 func stepActionLabel(action string) string {
+	// The in-instance lane's label is the sentence on the authorization card the user
+	// clicks. With writes authorized it is no longer a 只读 operation, and a card that
+	// under-describes what it authorizes is the one defect here that cannot be fixed
+	// after the fact — the user has already consented to the wrong thing.
+	if action == "DiagnoseInstanceInternals" && tools.InstanceOpsWritesEnabled() {
+		return "实例内排查与修复"
+	}
 	if label, ok := stepActionLabels[action]; ok {
 		return label
 	}

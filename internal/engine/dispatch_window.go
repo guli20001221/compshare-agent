@@ -44,6 +44,18 @@ func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.T
 			if capability.Name == "DiagnoseInstanceInternals" && !instanceOpsEnabled {
 				continue
 			}
+			// The lane's description depends on whether writes are authorized, and this
+			// window is the ONLY copy the model reads — so the substitution happens here
+			// rather than by mutating the shared registry entry, which several other
+			// readers (tests, the label coverage gate) expect to stay literal.
+			if capability.Name == "DiagnoseInstanceInternals" {
+				tool := capability.Tool
+				fn := *tool.Function
+				fn.Description = tools.InstanceOpsDescription()
+				tool.Function = &fn
+				out = append(out, tool)
+				continue
+			}
 			out = append(out, capability.Tool)
 		}
 	}

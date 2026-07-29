@@ -129,14 +129,25 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback string, audit ssho
 	if model == "" {
 		model = modelFallback
 	}
+	// Freeze the wording gate here rather than at each call site: this function is the one place
+	// that has both the config and the knowledge that the lane is actually being built, and it runs
+	// once per process before any session exists. Setting it unconditionally (not only when true)
+	// matters — a CLI run after a server run in the same test binary must not inherit the other's
+	// mode and quietly describe the wrong product.
+	tools.SetInstanceOpsWritesEnabled(sc.AllowWrites)
 	sup := sshops.Supervisor{
 		Python:      sc.Python,
 		HarnessPath: sc.HarnessPath,
 		GatewayURL:  sc.GatewayURL,
 		Model:       model,
 		Timeout:     sc.Timeout,
+		AllowWrites: sc.AllowWrites,
 	}
-	return sshops.NewService(sup, audit), nil
+	// Both halves come from the same config field on purpose. AllowWrites on the Supervisor is what
+	// actually authorizes the harness; WithWrites only labels the audit. Wiring them from one source
+	// is what keeps "what the row says we entered under" and "what the harness was allowed to do"
+	// from drifting apart.
+	return sshops.NewService(sup, audit, sshops.WithWrites(sc.AllowWrites)), nil
 }
 
 // serverInstanceOpsRunner decides whether the HTTP server wires the SSH-ops lane, and builds it if so.
