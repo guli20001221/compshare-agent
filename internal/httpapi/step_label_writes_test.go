@@ -7,9 +7,10 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
-// The label is the sentence on the card the user clicks to let us into their machine. Every other
-// defect in this lane can be corrected after the fact; this one cannot — once they have approved
-// "实例内只读排查" and the harness then writes, the consent we hold is for something we did not do.
+// This pins the RUNNING-ACTIVITY label, not the authorization card — the card is
+// covered by TestLaneConfirmCardFollowsTheWriteGate. The original version of this
+// comment said "the sentence on the card the user clicks", and believing it is why
+// the card went unfixed: making this test green read as having fixed consent too.
 func TestInstanceOpsLabelFollowsTheWriteGate(t *testing.T) {
 	defer tools.SetInstanceOpsWritesEnabled(tools.InstanceOpsWritesEnabled())
 
