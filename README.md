@@ -29,19 +29,17 @@ make deploy
 
 `make deploy` 不会编译；它会直接使用项目根目录已有的 `./compshare-agent`，然后调用 `deploy/scripts/deploy.sh` 用 `deploy/conf/config.yaml` 注册服务。管理机上部署前，先在本地编译并把二进制上传到项目根目录。
 
-## 数据库
+## 本地数据库
 
-后端存储使用 PostgreSQL，迁移由运维执行，二进制不会自动建表。新库按顺序执行全部迁移：
+后端存储使用 PostgreSQL。首次使用前按顺序执行迁移：
 
 ```bash
 for f in deploy/migrations/*.sql; do
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < "$f"
 done
 ```
 
-通配符要用 `*.sql`（`000*.sql` 会漏掉 `0010`、`0011`）。迁移不幂等，升级已有库时只执行本库缺的那几个；顺序、两阶段切换和排错见 [`deploy/migrations/README.md`](deploy/migrations/README.md)。
-
-漏迁移的表现是启动失败、且报错指向列而不是迁移，例如 `verify schema messages.turn_protocol: column "turn_id" does not exist`（该列来自 `0005`）。
+迁移不幂等，升级已有库时只执行本库缺的那几个；漏了会启动失败，且报错指向列而不是迁移（如 `column "turn_id" does not exist`，该列来自 `0005`）。详见 [`deploy/migrations/README.md`](deploy/migrations/README.md)。
 
 `deploy/conf/config.yaml` 中的 `agent.mysql.dsn` 需要填 PostgreSQL libpq URL，例如：
 
