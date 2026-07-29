@@ -14,6 +14,8 @@ The shape gate is not part of the read-only policy: classify() only ever sees th
 string, so `$(printf '\\x72\\x6d') -rf /` is destructive in effect and harmless in text. Refusing
 substitution outright is what keeps the destructive tier meaningful at all.
 """
+import os
+import shutil
 import sys
 
 import confirm_stub
@@ -142,6 +144,62 @@ check("readonly-tool-desc-byte-identical",
           "its output. Read-only commands only; one command per call; no chaining/pipes/redirection."))
 check("tool-desc-differs-by-mode",
       harness.tool_description(True) != harness.tool_description(False))
+
+# --- the description must not forbid what the executor allows ------------------------------------
+# The clause "no chaining/pipes/redirection" predates the 2026-07-23 deny-by-EFFECT gate and is now
+# false: measured, `nohup ... > /root/x.log 2>&1 &` classifies `mutating` (approve -> run) and
+# `ps aux | grep x` classifies `read_only`. It is not a cosmetic staleness — redirection is exactly
+# what starting a service requires, so the sentence forbade the repair itself. These two checks are
+# the gate and the text asserted TOGETHER, so the text cannot drift from the gate again silently.
+check("gate-actually-allows-redirect",
+      guardrails.classify("nohup python3 /root/app/start.py > /root/app.log 2>&1 &") == "mutating"
+      and guardrails.is_form_violation("nohup python3 /root/app/start.py > /root/app.log 2>&1 &")
+      is False)
+check("gate-actually-allows-pipe", guardrails.classify("ps aux | grep -i comfy") == "read_only")
+check("write-tool-desc-drops-false-shape-clause",
+      "no chaining/pipes/redirection" not in harness.tool_description(True))
+# The BrokenPipe death: a live repair started the service, the exec returned, the pipe closed and the
+# process died seconds later. `nohup` alone does not fix it (nohup only diverts to nohup.out when
+# stdout is a TTY; over an ssh exec it is a pipe — verified on a real box: no nohup.out is created).
+# So the description must name the REDIRECT, not just backgrounding.
+check("write-tool-desc-teaches-detach", "> /path/to/log 2>&1 &" in harness.tool_description(True))
+check("write-tool-desc-says-nohup-insufficient", "`nohup` alone does not" in harness.tool_description(True))
+
+# --- the second skill: write mode gets a repair playbook, read-only mode must not -----------------
+# instance-triage is read-only THROUGHOUT (H1, opening job definition, and its section-4 verdict
+# template), so one OVERRIDE clause in the system prompt does not settle it — the observed failure
+# was 「请授权我执行安全修复」, i.e. that template executed faithfully AFTER repair was authorized.
+check("readonly-skills-unchanged", harness.skills_for(False) == ["instance-triage"])
+check("write-skills-add-repair", harness.skills_for(True) == ["instance-triage", "instance-repair"])
+check("write-prompt-names-repair-skill", "`instance-repair`" in harness.system_prompt(True))
+check("write-prompt-says-which-skill-wins", "instance-repair` wins" in harness.system_prompt(True))
+check("readonly-prompt-has-no-repair-skill", "instance-repair" not in harness.system_prompt(False))
+
+_repair = os.path.join(os.path.dirname(os.path.abspath(harness.__file__)),
+                       "skills", "instance-repair", "SKILL.md")
+_repair_text = open(_repair, encoding="utf-8").read()
+# The three things this skill exists to fix. Asserted on content, not on the file existing: an empty
+# skill would load fine and change nothing.
+check("repair-skill-replaces-section-4", "replaces `instance-triage` section 4" in _repair_text)
+check("repair-skill-has-executed-section", "已执行的修复" in _repair_text)
+check("repair-skill-teaches-redirect", "> /path/to/some.log 2>&1 &" in _repair_text)
+check("repair-skill-says-nohup-insufficient", "`nohup` on its own is **not enough**" in _repair_text)
+check("repair-skill-owns-failed-attempts",
+      "report it as your own failed attempt" in _repair_text)
+
+# Staging is the real boundary, not the `skills=` list: the CLI discovers skills by walking up from
+# cwd, so a repair playbook left on disk is reachable by a read-only run — a card that says 只读排查
+# over an agent that has been handed a repair procedure.
+_cwd = os.getcwd()
+try:
+    for allow, want in ((False, ["instance-triage"]),
+                        (True, ["instance-repair", "instance-triage"])):
+        root = harness.stage_skills(allow)
+        staged = sorted(os.listdir(os.path.join(root, ".claude", "skills")))
+        check(f"staged-skills-match-mode::allow={allow}", staged == want)
+        shutil.rmtree(root, ignore_errors=True)
+finally:
+    os.chdir(_cwd)
 
 ssh_transport.run_ssh = _REAL_RUN_SSH
 
