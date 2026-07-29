@@ -9,6 +9,15 @@ import (
 
 type BuildOptions struct {
 	MutatingToolsEnabled bool
+	// InstanceOpsWritesEnabled is the SSH-ops repair lane (agent.ssh_ops.allow_writes). It is a
+	// SECOND, independent way the agent can change something, and the read-only boundary below was
+	// written when the mutating gate was the only one. Left unaware of this, that boundary tells
+	// the agent "当前工具只允许查询和诊断，不执行资源变更" while a repair lane sits in its window —
+	// and the agent believes the sentence: measured on a stopped ollama, with the lane authorized
+	// and the tool present, it replied "我目前没有可直接执行实例内终端命令、修改服务或重启进程的
+	// 权限，无法替你进实例修复" and handed the user a command list instead. The boundary has to
+	// name the exception or it silently disables the feature it does not know about.
+	InstanceOpsWritesEnabled bool
 }
 
 type PromptSection struct {
@@ -60,7 +69,11 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 
 	sections := []PromptSection{{ID: "identity", Text: segmentIdentity}}
 	if !opts.MutatingToolsEnabled {
-		sections = append(sections, PromptSection{ID: "readonly_boundary", Text: segmentReadOnlyBoundary})
+		boundary := segmentReadOnlyBoundary
+		if opts.InstanceOpsWritesEnabled {
+			boundary = segmentReadOnlyBoundaryWithInstanceRepair
+		}
+		sections = append(sections, PromptSection{ID: "readonly_boundary", Text: boundary})
 	}
 	sections = append(sections, PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
 		PromptSection{ID: "behavior", Text: segmentCentralAgentBehavior},

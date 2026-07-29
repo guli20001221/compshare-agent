@@ -712,6 +712,11 @@ func (e *Engine) SetReactHistoryCompactionEnabled(v bool) {
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	return prompt.BuildOptions{
 		MutatingToolsEnabled: e.mutatingToolsEnabled,
+		// Two conditions, both required: the lane has to be wired at all (same nil check the tool
+		// window uses, so the prompt can never advertise a tool the model cannot see) AND writes
+		// have to be authorized. Either alone would put a promise in the prompt that the runtime
+		// does not keep.
+		InstanceOpsWritesEnabled: e.instanceOps != nil && tools.InstanceOpsWritesEnabled(),
 	}
 }
 
