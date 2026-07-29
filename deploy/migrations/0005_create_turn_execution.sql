@@ -4,7 +4,7 @@
 -- external actions. All additions are nullable/new-table only so binaries that
 -- predate the turn protocol continue to operate during a migration-first roll.
 
-CREATE TABLE chat_turns (
+CREATE TABLE IF NOT EXISTS chat_turns (
   id                         CHAR(36)      NOT NULL PRIMARY KEY,
   session_id                 CHAR(36)      NOT NULL,
   top_organization_id        BIGINT        NOT NULL,
@@ -37,14 +37,15 @@ CREATE TABLE chat_turns (
     'committed', 'failed_retryable', 'ambiguous_after_action', 'aborted'
   ))
 );
-CREATE INDEX idx_chat_turns_session_created
+CREATE INDEX IF NOT EXISTS idx_chat_turns_session_created
   ON chat_turns (session_id, turn_seq);
 
+DROP TRIGGER IF EXISTS trg_chat_turns_updated_at ON chat_turns;
 CREATE TRIGGER trg_chat_turns_updated_at
   BEFORE UPDATE ON chat_turns
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
-CREATE TABLE conversation_leases (
+CREATE TABLE IF NOT EXISTS conversation_leases (
   session_id                CHAR(36)      NOT NULL PRIMARY KEY,
   top_organization_id       BIGINT        NOT NULL,
   organization_id           BIGINT        NOT NULL,
@@ -60,11 +61,12 @@ CREATE TABLE conversation_leases (
   )
 );
 
+DROP TRIGGER IF EXISTS trg_conversation_leases_updated_at ON conversation_leases;
 CREATE TRIGGER trg_conversation_leases_updated_at
   BEFORE UPDATE ON conversation_leases
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
-CREATE TABLE turn_actions (
+CREATE TABLE IF NOT EXISTS turn_actions (
   turn_id          CHAR(36)      NOT NULL,
   action_index     INT           NOT NULL,
   lease_epoch      BIGINT        NOT NULL,
@@ -89,19 +91,25 @@ CREATE TABLE turn_actions (
   )
 );
 
+DROP TRIGGER IF EXISTS trg_turn_actions_updated_at ON turn_actions;
 CREATE TRIGGER trg_turn_actions_updated_at
   BEFORE UPDATE ON turn_actions
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 ALTER TABLE messages
-  ADD COLUMN turn_id CHAR(36),
-  ADD COLUMN turn_role VARCHAR(16),
+  ADD COLUMN IF NOT EXISTS turn_id CHAR(36),
+  ADD COLUMN IF NOT EXISTS turn_role VARCHAR(16);
+
+ALTER TABLE messages
+  DROP CONSTRAINT IF EXISTS ck_message_turn_role;
+
+ALTER TABLE messages
   ADD CONSTRAINT ck_message_turn_role CHECK (
     (turn_id IS NULL AND turn_role IS NULL) OR
     (turn_id IS NOT NULL AND turn_role IN ('user', 'assistant'))
   );
 
-CREATE UNIQUE INDEX uq_messages_turn_role
+CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_turn_role
   ON messages (turn_id, turn_role)
   WHERE turn_id IS NOT NULL;
-CREATE INDEX idx_messages_turn_id ON messages (turn_id);
+CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages (turn_id);

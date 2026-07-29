@@ -5,7 +5,7 @@
 -- non-deterministic model must reproduce the old ordinal action sequence.
 
 ALTER TABLE turn_actions
-  DROP CONSTRAINT ck_turn_action_status;
+  DROP CONSTRAINT IF EXISTS ck_turn_action_status;
 
 ALTER TABLE turn_actions
   ADD CONSTRAINT ck_turn_action_status CHECK (status IN (

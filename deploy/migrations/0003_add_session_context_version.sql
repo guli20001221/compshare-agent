@@ -15,4 +15,4 @@
 -- has no equivalent and is unnecessary.)
 
 ALTER TABLE sessions
-  ADD COLUMN context_version INT NOT NULL DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS context_version INT NOT NULL DEFAULT 0;

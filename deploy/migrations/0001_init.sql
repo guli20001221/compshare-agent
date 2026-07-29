@@ -3,7 +3,7 @@
 -- Core chat persistence: sessions / messages / message_feedback.
 -- Backend migrated from MySQL/TiDB to PostgreSQL.
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
   id                   CHAR(36)     NOT NULL PRIMARY KEY,
   top_organization_id  BIGINT       NOT NULL,
   organization_id      BIGINT       NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE sessions (
   updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
   deleted_at           TIMESTAMPTZ
 );
-CREATE INDEX idx_owner_updated ON sessions (top_organization_id, organization_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_owner_updated ON sessions (top_organization_id, organization_id, updated_at);
 
 -- Emulates MySQL's `ON UPDATE CURRENT_TIMESTAMP(3)`: bump updated_at on every row
 -- UPDATE so ListByOwner recency stays correct even for UPDATEs that don't set it
@@ -28,11 +28,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_sessions_updated_at ON sessions;
 CREATE TRIGGER trg_sessions_updated_at
   BEFORE UPDATE ON sessions
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
-CREATE TABLE messages (
+CREATE TABLE IF NOT EXISTS messages (
   id            CHAR(36)     NOT NULL PRIMARY KEY,
   session_id    CHAR(36)     NOT NULL,
   request_uuid  VARCHAR(64),
@@ -48,14 +49,14 @@ CREATE TABLE messages (
   metadata      JSONB,
   created_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_session_created ON messages (session_id, created_at);
-CREATE INDEX idx_request_uuid ON messages (request_uuid);
+CREATE INDEX IF NOT EXISTS idx_session_created ON messages (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_request_uuid ON messages (request_uuid);
 
-CREATE TABLE message_feedback (
+CREATE TABLE IF NOT EXISTS message_feedback (
   id          CHAR(36)    NOT NULL PRIMARY KEY,
   message_id  CHAR(36)    NOT NULL,
   rating      VARCHAR(8)  NOT NULL,
   comment     TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_message ON message_feedback (message_id);
+CREATE INDEX IF NOT EXISTS idx_message ON message_feedback (message_id);
