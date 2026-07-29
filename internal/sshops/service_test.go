@@ -18,7 +18,7 @@ type fakeRunner struct {
 	onRun    func() // optional side effect invoked inside Run (e.g. cancel the request ctx)
 }
 
-func (f *fakeRunner) Run(_ context.Context, cred Credential, task string, onStep func(Step)) (Result, error) {
+func (f *fakeRunner) Run(_ context.Context, cred Credential, task string, onStep func(Step), _ ConfirmFunc) (Result, error) {
 	f.calls++
 	f.lastCred = cred
 	f.lastTask = task
@@ -60,7 +60,7 @@ func TestDiagnoseFailClosedOnAuditBegin(t *testing.T) {
 	runner := &fakeRunner{res: Result{Output: "should-not-run"}}
 	svc := NewService(runner, &MemAuditWriter{FailBegin: true})
 
-	_, err := svc.Diagnose(context.Background(), d, Owner{TopOrganizationID: 1, OrganizationID: 2}, "uhost-abc", "", nil)
+	_, err := svc.Diagnose(context.Background(), d, Owner{TopOrganizationID: 1, OrganizationID: 2}, "uhost-abc", "", nil, nil)
 	if err == nil {
 		t.Fatalf("expected fail-closed error when audit Begin fails")
 	}
@@ -89,7 +89,7 @@ func TestDiagnoseFailClosedOnNilAudit(t *testing.T) {
 	runner := &fakeRunner{res: Result{Output: "should-not-run"}}
 	svc := NewService(runner, nil)
 
-	_, err := svc.Diagnose(context.Background(), d, Owner{TopOrganizationID: 1, OrganizationID: 2}, "uhost-abc", "", nil)
+	_, err := svc.Diagnose(context.Background(), d, Owner{TopOrganizationID: 1, OrganizationID: 2}, "uhost-abc", "", nil, nil)
 	if err == nil {
 		t.Fatalf("expected fail-closed error when no audit writer is configured")
 	}
@@ -111,7 +111,7 @@ func TestDiagnoseRecordsAuditAndDefaultsTask(t *testing.T) {
 	var streamed []Step
 	res, err := svc.Diagnose(context.Background(), d,
 		Owner{TopOrganizationID: 7, OrganizationID: 8, RequestUUID: "req-1", TurnID: "turn-xyz"},
-		"uhost-abc", "", func(st Step) { streamed = append(streamed, st) })
+		"uhost-abc", "", func(st Step) { streamed = append(streamed, st) }, nil)
 	if err != nil {
 		t.Fatalf("diagnose: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestDiagnoseSurfacesRunErrorWithFinish(t *testing.T) {
 	audit := &MemAuditWriter{}
 	svc := NewService(runner, audit)
 
-	_, err := svc.Diagnose(context.Background(), d, Owner{TopOrganizationID: 1, OrganizationID: 1}, "uhost-abc", "custom task", nil)
+	_, err := svc.Diagnose(context.Background(), d, Owner{TopOrganizationID: 1, OrganizationID: 1}, "uhost-abc", "custom task", nil, nil)
 	if err == nil {
 		t.Fatalf("expected run error surfaced")
 	}
@@ -189,7 +189,7 @@ func TestDiagnoseFinishDetachedFromCancelledRequestCtx(t *testing.T) {
 	audit := &ctxCheckAudit{}
 	svc := NewService(runner, audit)
 
-	_, _ = svc.Diagnose(ctx, d, Owner{TopOrganizationID: 1, OrganizationID: 2}, "uhost-abc", "", nil)
+	_, _ = svc.Diagnose(ctx, d, Owner{TopOrganizationID: 1, OrganizationID: 2}, "uhost-abc", "", nil, nil)
 	if !audit.finishCalled {
 		t.Fatalf("Finish was not called after a cancelled-mid-run diagnosis")
 	}

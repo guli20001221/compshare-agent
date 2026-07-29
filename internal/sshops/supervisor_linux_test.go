@@ -38,7 +38,7 @@ func TestSupervisorKillsGrandchildProcessGroup(t *testing.T) {
 	}
 	c := cred("x", "h", "root", 22, "pw")
 
-	_, err := sup.Run(context.Background(), c, pidfile, nil) // task carries the pidfile path
+	_, err := sup.Run(context.Background(), c, pidfile, nil, nil) // task carries the pidfile path
 	if err == nil {
 		t.Fatalf("expected timeout error")
 	}

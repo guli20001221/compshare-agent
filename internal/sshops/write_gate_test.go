@@ -41,7 +41,7 @@ func TestSupervisorSendsWriteGateOnHandshake(t *testing.T) {
 				Timeout:     30 * time.Second,
 				AllowWrites: tc.allow,
 			}
-			res, err := sup.Run(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "t", nil)
+			res, err := sup.Run(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "t", nil, nil)
 			if err != nil {
 				t.Fatalf("run: %v (output=%q)", err, res.Output)
 			}
@@ -74,8 +74,14 @@ func TestAuditPhaseRecordsTheAuthorityTheBoxWasEnteredUnder(t *testing.T) {
 				return Result{Output: "done"}, nil
 			}), audit, WithWrites(tc.allow))
 
+			// A write lane must be handed a confirmer or Diagnose refuses outright, so supply one even
+			// though this test is about the audit phase: the refusal is the subject of its own test.
+			var confirm ConfirmFunc
+			if tc.allow {
+				confirm = func(ConfirmRequest) bool { return true }
+			}
 			if _, err := svc.Diagnose(context.Background(), stubDescriber{resp: describeResp("ssh root@1.2.3.4", base64.StdEncoding.EncodeToString([]byte("S3cr3tPw")))}, Owner{RequestUUID: "r", TurnID: "t"},
-				"uhost-abc", "task", nil); err != nil {
+				"uhost-abc", "task", nil, confirm); err != nil {
 				t.Fatalf("diagnose: %v", err)
 			}
 			if len(audit.Events) == 0 {
@@ -90,6 +96,6 @@ func TestAuditPhaseRecordsTheAuthorityTheBoxWasEnteredUnder(t *testing.T) {
 
 type runnerFunc func(context.Context, Credential, string, func(Step)) (Result, error)
 
-func (f runnerFunc) Run(ctx context.Context, c Credential, task string, onStep func(Step)) (Result, error) {
+func (f runnerFunc) Run(ctx context.Context, c Credential, task string, onStep func(Step), _ ConfirmFunc) (Result, error) {
 	return f(ctx, c, task, onStep)
 }

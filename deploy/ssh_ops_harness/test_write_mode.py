@@ -16,6 +16,7 @@ substitution outright is what keeps the destructive tier meaningful at all.
 """
 import sys
 
+import confirm_stub
 import guardrails
 import harness
 import ssh_transport
@@ -35,11 +36,18 @@ ssh_transport.run_ssh = lambda conn, cmd, secrets=None: {
 
 
 def dispatch(command, allow_writes):
-    """Run one command through the real classify-dispatch with the gate set as given."""
+    """Run one command through the real classify-dispatch with the gate set as given.
+
+    Writes now also need a per-command approval, so this stands in for the operator saying yes to
+    everything. That is the RIGHT default here: this file tests the config gate (may the mutating
+    tier execute at all), and test_confirm_loop.py tests the human gate. Keeping them separate is
+    what makes a failure point at one mechanism instead of two.
+    """
     harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
                       "allow_writes": allow_writes})
     del harness.AUDIT[:]
-    res = harness.run_command(command)
+    with confirm_stub.approving():
+        res = harness.run_command(command)
     return res, harness.AUDIT[-1]
 
 

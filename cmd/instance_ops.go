@@ -22,7 +22,7 @@ const instanceOpsAction = "DiagnoseInstanceInternals"
 // (not the concrete *sshops.Service) so the adapter's rate-limit gate can be unit-tested with a fake
 // that records whether the diagnosis was reached at all — proving a denial spawns nothing (P2 gate 5).
 type instanceOpsDiagnoser interface {
-	Diagnose(ctx context.Context, d sshops.Describer, owner sshops.Owner, instanceID, task string, onStep func(sshops.Step)) (sshops.Result, error)
+	Diagnose(ctx context.Context, d sshops.Describer, owner sshops.Owner, instanceID, task string, onStep func(sshops.Step), onConfirm sshops.ConfirmFunc) (sshops.Result, error)
 }
 
 // instanceOpsRunner adapts the sshops SSH-ops core to engine.InstanceOpsRunner: it derives the tenant
@@ -79,7 +79,15 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		})
 	}
 
-	res, err := r.diag.Diagnose(ctx, r.describer, owner, req.InstanceID, req.Task, onStep)
+	// Adapt the engine's command-level confirmer. Staying nil when the engine supplied none is the
+	// point: sshops refuses a write-enabled run without one instead of silently denying every write,
+	// which would look to the user like the model failing to fix anything.
+	var onConfirm sshops.ConfirmFunc
+	if req.ConfirmWrite != nil {
+		onConfirm = func(c sshops.ConfirmRequest) bool { return req.ConfirmWrite(c.Command) }
+	}
+
+	res, err := r.diag.Diagnose(ctx, r.describer, owner, req.InstanceID, req.Task, onStep, onConfirm)
 	if err != nil {
 		// Translate the no-SSH-target sentinel into the engine's transport-agnostic
 		// mirror so the engine gives an honest, non-retryable refusal (e.g. a Windows
@@ -184,7 +192,15 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 	}
 	limiter := governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits())
 	durable := getenv("COMPSHARE_DURABLE_TURNS") == "1"
-	log.Printf("ssh-ops enabled: consent-gated read-only in-instance diagnosis (per-tenant STS, fail-closed audit, durable=%t; on the non-durable transport a client disconnect ends a read-only diagnosis and the user retries)", durable)
+	// deploy/ssh_ops_harness/README.md tells the operator to confirm the lane is live by finding
+	// this line, so it has to name which of the two products booted. Saying "read-only" while
+	// allow_writes is on is the same defect as the consent card saying it: the one place someone
+	// checks would confirm the wrong thing.
+	mode := "read-only diagnosis"
+	if cfg.Agent.SSHOps.AllowWrites {
+		mode = "diagnosis WITH REPAIR (allow_writes=true; destructive commands still refused)"
+	}
+	log.Printf("ssh-ops enabled: consent-gated in-instance %s (per-tenant STS, fail-closed audit, durable=%t; on the non-durable transport a client disconnect ends the run and the user retries)", mode, durable)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }
 

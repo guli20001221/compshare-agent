@@ -37,7 +37,7 @@ const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-s
 // onStep fires once per command as it settles, so the caller can surface a LIVE activity stream
 // (command + disposition metadata only, never output — INV-6); it may be nil.
 type harnessRunner interface {
-	Run(ctx context.Context, cred Credential, task string, onStep func(Step)) (Result, error)
+	Run(ctx context.Context, cred Credential, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error)
 }
 
 type Service struct {
@@ -84,7 +84,7 @@ func phaseFor(allowWrites bool) string {
 // record cannot be written, the harness does not run. onStep streams each command's metadata as it
 // settles (nil to opt out). The returned Result.Output is the harness's already-scrubbed verdict;
 // the credential never appears in it.
-func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instanceID, task string, onStep func(Step)) (Result, error) {
+func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instanceID, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
 	// Fail closed: an in-instance access we could not durably record must never happen. Refuse BEFORE
 	// the credential is fetched — no audit sink means no credential pull and no harness spawn. Production
 	// always wires a fail-closed AuditWriter (store.SSHOpsAuditStore); a nil audit is a construction /
@@ -128,7 +128,13 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		return Result{}, fmt.Errorf("sshops: audit begin failed, refusing to run (fail-closed): %w", err)
 	}
 
-	res, runErr := s.sup.Run(ctx, cred, task, onStep)
+	// A write lane with no confirmer is a lane no human is watching. Refuse before the credential is
+	// used rather than running with every write auto-denied: the run would burn its budget proposing
+	// repairs that can never be approved, and the user would read that as the model failing.
+	if s.allowWrites && onConfirm == nil {
+		return Result{}, fmt.Errorf("sshops: writes are enabled but no per-command confirmer was wired, refusing to run (fail-closed)")
+	}
+	res, runErr := s.sup.Run(ctx, cred, task, onStep, onConfirm)
 
 	done := ev
 	done.ExitCode, done.TimedOut, done.OutputBytes = res.ExitCode, res.TimedOut, len(res.Output)

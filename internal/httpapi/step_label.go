@@ -105,6 +105,11 @@ var stepActionLabels = map[string]string{
 	// Third source (read_platform_capability.go). UpdateTaskState is the first
 	// tool the model reaches for on a multi-step turn, so an unlabelled entry
 	// here is maximally visible.
+	// The lane's own card says 实例内排查与修复 (it authorizes entering the box). This one authorizes
+	// ONE change and is shown with the literal command, so it must not reuse that label — a user who
+	// sees the same words twice cannot tell which question they just answered.
+	"InstanceOpsWriteCommand": "执行实例内修复命令",
+
 	"UpdateTaskState": "整理任务状态",
 	"ProposeAction":   "生成操作提案",
 }

@@ -34,6 +34,10 @@ AUDIT = []            # per-command: {command, tier, executed, exit_code, dispos
 # defaults False, and is set ONCE in main() before the agent loop starts. It never widens the
 # destructive tier and never relaxes the shape gate — see run_command.
 _ALLOW_WRITES = False
+# Monotonic id for confirm requests. The reply must carry the SAME id: a decision that arrived
+# for an earlier command must never approve the one currently pending, so the match is explicit
+# rather than "whatever line showed up next".
+_CONFIRM_SEQ = 0
 
 # INV-9: the harness must expose EXACTLY ssh_exec and strip every built-in/local-exec tool.
 ALLOWED_TOOLS = ["mcp__ssh_ops__ssh_exec"]
@@ -140,6 +144,7 @@ _DISPOSITION_MAP = {
     "refused_destructive": "refused",
     "refused_mutating_phase1": "refused",
     "refused_form": "refused",
+    "refused_not_approved": "refused",
     "no_connection": "failed",
 }
 
@@ -161,6 +166,34 @@ def _emit_step(entry: dict) -> None:
     }, ensure_ascii=False)
     sys.stdout.write("@@STEP " + line + "\n")
     sys.stdout.flush()
+
+
+def _request_confirm(command: str) -> bool:
+    """Ask the operator to approve ONE mutating command, blocking until the answer arrives.
+
+    The literal string sent out is the SAME one run_command is about to execute - the caller
+    passes it through rather than re-deriving it. If the two could differ, the approval would
+    describe a command that never ran while the one that ran was never approved.
+
+    Fail closed on every ambiguity: EOF (parent closed the pipe or died), malformed JSON, a
+    missing/false approved flag, or an id that does not match the outstanding request. The id
+    check matters most - without it a stale reply could authorize whatever happens to be
+    pending.
+    """
+    global _CONFIRM_SEQ
+    _CONFIRM_SEQ += 1
+    req_id = "c%d" % _CONFIRM_SEQ
+    payload = json.dumps({"id": req_id, "command": command[:400]}, ensure_ascii=False)
+    sys.stdout.write("@@CONFIRM " + payload + "\n")
+    sys.stdout.flush()
+    line = sys.stdin.readline()
+    if not line:
+        return False
+    try:
+        reply = json.loads(line)
+    except Exception:                              # noqa: BLE001 - any parse failure is a denial
+        return False
+    return reply.get("id") == req_id and reply.get("approved") is True
 
 
 def _emit_verdict(text: str) -> None:
@@ -208,7 +241,19 @@ def run_command(command: str) -> dict:
                 return {"text": ("⛔ NOT EXECUTED — this changes the box and Phase-1 SSH ops are "
                                  f"read-only. Report it as an OPTIONAL fix for the operator:\n  {command}"),
                         "is_error": True, "tier": tier, "executed": False}
-            # Authorized write: falls through to the same execution path as a read. The tier stays
+            # Authorized by config; now authorized by a human, per command. The lane-level card
+            # the user clicked to let us in never names what will change, so it cannot be the
+            # consent for a specific write. Measured cost: 1-3 of these per repair (the other
+            # 20-45 commands in a run are reads), so asking every time is affordable - and the
+            # thing the guardrail cannot judge is exactly what the human can: whether pid 6934
+            # is a squatter or a training job three days in.
+            if not _request_confirm(command):
+                entry["disposition"] = "refused_not_approved"
+                return {"text": ("\u26d4 NOT EXECUTED - the operator declined this command. Do not "
+                                 "retry it and do not look for another way to make the same change; "
+                                 "report it as a step for them to run:\n  " + command),
+                        "is_error": True, "tier": tier, "executed": False}
+            # Approved: falls through to the same execution path as a read. The tier stays
             # "mutating" on the wire so the audit row and the user's activity stream both show that
             # this command changed the box — a write that looks like a read in the record is worse
             # than no record.

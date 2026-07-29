@@ -17,6 +17,11 @@ import (
 // the cap, per-command events stop; the terminal summary still reports the totals.
 const maxInstanceOpsStepEvents = 50
 
+// instanceOpsWriteAction names the per-command approval on the wire. It is deliberately NOT
+// DiagnoseInstanceInternals: that card authorizes entering the box, this one authorizes one
+// specific change, and a user who sees the same label twice cannot tell which they answered.
+const instanceOpsWriteAction = "InstanceOpsWriteCommand"
+
 // executeInstanceOps handles a DiagnoseInstanceInternals tool call: the read-only
 // in-instance diagnosis lane. It is dispatched from executeToolOnce BEFORE the
 // diagnosis-chain and mutating-tool branches, so it never inherits the
@@ -107,10 +112,25 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
+	// Per-command approval for writes. Reads are not gated: 20-45 of the commands in a real run are
+	// reads, and a card for each would train the user to click through without reading — which is
+	// worse than no card. Only the 1-3 that change the box stop and ask, and the card shows the
+	// literal command, because "may I change something" is not a question anyone can answer.
+	var confirmWrite func(string) bool
+	if tools.InstanceOpsWritesEnabled() {
+		confirmWrite = func(command string) bool {
+			return e.confirmFn(instanceOpsWriteAction, map[string]any{
+				"UHostId": instanceID,
+				"Command": command,
+			})
+		}
+	}
+
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
-		TurnID:     e.currentTurnID,
-		InstanceID: instanceID,
-		Task:       task,
+		TurnID:       e.currentTurnID,
+		InstanceID:   instanceID,
+		Task:         task,
+		ConfirmWrite: confirmWrite,
 	}, onProgress)
 	if err != nil {
 		// No SSH entrypoint (empty SshLoginCommand — e.g. a Windows instance): the box
