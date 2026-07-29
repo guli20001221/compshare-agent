@@ -25,9 +25,6 @@ type ZoneInfo struct {
 	ZoneID   uint32 // numeric zone id, e.g. 5001
 	Describe string // 可用区显示名称, e.g. "华北一C"
 	IsPod    bool   // true when the zone creates CPod/container instances.
-	// DisableImageSync is live platform capability data for custom-image clone
-	// destinations. It is not inferred from a region or zone name.
-	DisableImageSync bool
 }
 
 // Executor is the subset of the CompShare API executor this package needs.
@@ -69,13 +66,12 @@ func ParseSupportZones(res map[string]any) []ZoneInfo {
 			continue
 		}
 		zi := ZoneInfo{
-			Zone:             str(m["Zone"]),
-			Region:           str(m["Region"]),
-			RegionID:         u32(m["RegionId"]),
-			Describe:         str(m["Describe"]),
-			ZoneID:           u32(m["ZoneId"]),
-			IsPod:            boolVal(m["IsPod"]),
-			DisableImageSync: boolVal(m["DisableImageSync"]),
+			Zone:     str(m["Zone"]),
+			Region:   str(m["Region"]),
+			RegionID: u32(m["RegionId"]),
+			Describe: str(m["Describe"]),
+			ZoneID:   u32(m["ZoneId"]),
+			IsPod:    boolVal(m["IsPod"]),
 		}
 		if zi.Zone == "" {
 			continue

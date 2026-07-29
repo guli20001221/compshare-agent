@@ -37,9 +37,8 @@ type ZoneCatalogSnapshot struct {
 // and DisplayName are ONE unit — a snapshot stores and replaces them together so
 // they cannot diverge.
 type ZoneCatalogEntry struct {
-	Placement        ZonePlacement
-	DisplayName      string
-	DisableImageSync bool
+	Placement   ZonePlacement
+	DisplayName string
 }
 
 // NewZoneCatalogSnapshot freezes the entries into a read-only catalog.

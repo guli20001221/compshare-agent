@@ -134,8 +134,7 @@ func runUpstreamContractWorkflow(t *testing.T, ctx context.Context, executor too
 					Zone: zone.Zone, Region: zone.Region, ZoneID: zone.ZoneID,
 					AzGroup: zone.RegionID, IsPod: zone.IsPod,
 				},
-				DisplayName:      zone.Describe,
-				DisableImageSync: zone.DisableImageSync,
+				DisplayName: zone.Describe,
 			})
 		}
 		options = append(options, workflow.WithReferenceData(workflow.ReferenceData{
