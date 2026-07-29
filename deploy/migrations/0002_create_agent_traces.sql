@@ -21,6 +21,6 @@ CREATE TABLE IF NOT EXISTS agent_traces (
     CONSTRAINT uk_request_uuid UNIQUE (request_uuid),
     CONSTRAINT chk_agent_traces_status CHECK (status IN ('success','blocked','error'))
 );
-CREATE INDEX idx_org_time ON agent_traces (top_organization_id, organization_id, created_at);
-CREATE INDEX idx_status_time ON agent_traces (status, created_at);
-CREATE INDEX idx_created ON agent_traces (created_at);
+CREATE INDEX IF NOT EXISTS idx_org_time ON agent_traces (top_organization_id, organization_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_status_time ON agent_traces (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_created ON agent_traces (created_at);

@@ -3,7 +3,7 @@
 -- Replayable semantic turn events and durable confirmation/selection
 -- interactions. These rows are shared by all replicas.
 
-CREATE TABLE chat_turn_events (
+CREATE TABLE IF NOT EXISTS chat_turn_events (
   turn_id      CHAR(36)      NOT NULL,
   seq          BIGINT        NOT NULL,
   lease_epoch  BIGINT        NOT NULL,
@@ -14,7 +14,7 @@ CREATE TABLE chat_turn_events (
   PRIMARY KEY (turn_id, seq)
 );
 
-CREATE TABLE turn_interactions (
+CREATE TABLE IF NOT EXISTS turn_interactions (
   id                CHAR(36)      NOT NULL PRIMARY KEY,
   turn_id           CHAR(36)      NOT NULL,
   interaction_key   VARCHAR(128)  NOT NULL,
@@ -34,4 +34,4 @@ CREATE TABLE turn_interactions (
     (status = 'resolved' AND resolution_hash IS NOT NULL AND response_payload IS NOT NULL AND resolved_at IS NOT NULL)
   )
 );
-CREATE INDEX idx_turn_interactions_turn ON turn_interactions (turn_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_turn_interactions_turn ON turn_interactions (turn_id, created_at);

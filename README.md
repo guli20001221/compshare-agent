@@ -31,10 +31,10 @@ make deploy
 
 ## 本地数据库
 
-后端存储使用 PostgreSQL。首次使用前按顺序执行迁移：
+后端存储使用 PostgreSQL。新库和升级都执行同一条命令，迁移可重复执行，已应用过的会跳过：
 
 ```bash
-for f in deploy/migrations/000*.sql; do
+for f in deploy/migrations/*.sql; do
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < "$f"
 done
 ```

@@ -8,6 +8,8 @@ param(
     [string]$GpuType = "",
     [string]$Zone = "",
     [string]$SpecKey = "",
+    [string]$ChargeType = "",
+    [switch]$ExpectChargeStepSkipped,
     [switch]$EditImageOnFinal,
     [switch]$ConfirmCreate,
     [switch]$IUnderstandThisCreatesInstance,
@@ -139,6 +141,7 @@ try {
     Write-Host "Sent request: $Message"
 
     $seenSteps = @{}
+    $seenChargeField = $false
     $finalCount = 0
     $editedFinalImage = $false
     $requestedFinalEdit = $false
@@ -156,12 +159,17 @@ try {
             }
             $idx = [int]$step.Index
             $seenSteps[[string]$idx] = $true
-            Write-Host ("Confirmation step {0}/{1}: {2}" -f $step.Index, $step.Total, $step.Title)
+            if ([int]$step.Total -gt 0) {
+                Write-Host ("Confirmation step {0}/{1}: {2}" -f $step.Index, $step.Total, $step.Title)
+            } else {
+                Write-Host ("Confirmation step {0}: {1}" -f $step.Index, $step.Title)
+            }
 
             if ($step.Description) {
                 Write-Host ("  guidance: {0}" -f $step.Description)
             }
             foreach ($f in $form.Fields) {
+                if ($f.Key -eq "ChargeType") { $seenChargeField = $true }
                 $optDump = (($f.Options | ForEach-Object { $_.Value }) -join ", ")
                 Write-Host ("  field {0} (default={1}) options=[{2}]" -f $f.Key, $f.Value, $optDump)
                 foreach ($o in $f.Options) {
@@ -212,6 +220,7 @@ try {
                     "GpuType"   { $preferred = $GpuType }
                     "Zone"      { $preferred = $Zone }
                     "CpuMemory" { $preferred = $SpecKey }
+                    "ChargeType" { $preferred = $ChargeType }
                 }
                 $value = Pick-OptionValue -Field $f -Preferred $preferred
                 if ($value -ne "" -and $value -ne [string]$f.Value) {
@@ -237,10 +246,19 @@ try {
         }
     }
 
-    foreach ($required in @("1", "2", "3", "4", "5")) {
-        if (-not $seenSteps.ContainsKey($required)) {
+    $lastExpectedStep = 7
+    if ($ExpectChargeStepSkipped) { $lastExpectedStep = 6 }
+    foreach ($required in 1..$lastExpectedStep) {
+        if (-not $seenSteps.ContainsKey([string]$required)) {
             throw "Guided step $required was not observed."
         }
+    }
+    if ($ExpectChargeStepSkipped) {
+        if ($seenChargeField) {
+            throw "The charge field was observed even though the user's charge type should be pinned."
+        }
+    } elseif (-not $seenChargeField) {
+        throw "The guided charge field was not observed."
     }
     if ($requestedFinalEdit -and $finalCount -lt 2) {
         throw "Final image edit did not produce a refreshed final confirmation."
@@ -248,7 +266,16 @@ try {
     Write-Host "Guided create WS smoke passed. SessionId=$SessionId"
 } finally {
     if ($socket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
-        $socket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "done", [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        try {
+            $socket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "done", [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        } catch [System.Management.Automation.MethodInvocationException] {
+            # A one-turn server may close immediately after the terminal frame.
+            # The exchange is already complete; a missing peer close handshake
+            # must not turn a passed smoke test into a process failure.
+            if ($_.Exception.InnerException -isnot [System.Net.WebSockets.WebSocketException]) {
+                throw
+            }
+        }
     }
     $socket.Dispose()
     $cts.Dispose()

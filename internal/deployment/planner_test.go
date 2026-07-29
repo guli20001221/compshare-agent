@@ -62,6 +62,64 @@ func TestNormalizeChargeTypeUsesExplicitPostpayDefault(t *testing.T) {
 	assert.Equal(t, ChargeTypeMonth, NormalizeChargeType("Month"))
 }
 
+func TestExplicitChargeTypeFromPhraseIsExactAndUnambiguous(t *testing.T) {
+	tests := []struct {
+		phrase string
+		want   string
+		ok     bool
+	}{
+		{"按量", ChargeTypePostpay, true},
+		{"按小时付费", ChargeTypePostpay, true},
+		{"按天", ChargeTypeDay, true},
+		{"包月", ChargeTypeMonth, true},
+		{"抢占式", ChargeTypeSpot, true},
+		{"竞价实例", ChargeTypeSpot, true},
+		{"帮我", "", false},
+		{"月", "", false},
+		{"跑一个月", "", false},
+		// A quote the Agent cut one verb too wide still names exactly one mode.
+		// Requiring the WHOLE quote to equal a vocabulary entry is what made the
+		// skip depend on the Agent's quote boundary: live over 6 runs 抢占式 was
+		// 2/6 (it quoted "抢占式创建") while 按量 was 6/6.
+		{"按量创建", ChargeTypePostpay, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.phrase, func(t *testing.T) {
+			got, ok := ExplicitChargeTypeFromPhrase(tt.phrase)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// The quote boundary is the Agent's choice, so the mapping must be stable
+// across the boundaries an Agent actually picks — and must still refuse a quote
+// that spans a comparison or a negation rather than a selection.
+func TestExplicitChargeTypeToleratesQuoteBoundaryButNotTwoModes(t *testing.T) {
+	for _, phrase := range []string{"抢占式创建", "用抢占式", "抢占式创建一台 4090", "抢占"} {
+		got, ok := ExplicitChargeTypeFromPhrase(phrase)
+		assert.True(t, ok, "%q names exactly one purchase mode", phrase)
+		assert.Equal(t, ChargeTypeSpot, got, "%q", phrase)
+	}
+	// Overlapping entries that resolve to the SAME value stay one choice:
+	// uniqueness is judged on the value, not on the phrase.
+	got, ok := ExplicitChargeTypeFromPhrase("按量付费")
+	assert.True(t, ok)
+	assert.Equal(t, ChargeTypePostpay, got)
+
+	// Two different modes in one quote is a comparison or a negation, not a
+	// selection. The card must be shown rather than one of them pinned.
+	for _, phrase := range []string{
+		"包月和按量哪个便宜",
+		"我不要包月，用按量创建一台 4090",
+		"按天还是按月",
+	} {
+		got, ok := ExplicitChargeTypeFromPhrase(phrase)
+		assert.False(t, ok, "%q spans two purchase modes and must not pin one", phrase)
+		assert.Equal(t, "", got, "%q", phrase)
+	}
+}
+
 func TestBuildCapacityArgsUsesCreatePreflightCoreArgs(t *testing.T) {
 	disks := []any{map[string]any{"IsBoot": true, "Type": "CLOUD_RSSD", "Size": 120}}
 	args := BuildCapacityArgs(DeploymentDraft{

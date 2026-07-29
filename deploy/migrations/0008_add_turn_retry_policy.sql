@@ -4,11 +4,12 @@
 -- second replica therefore cannot reset the attempt budget or bypass backoff.
 
 ALTER TABLE chat_turns
-  ADD COLUMN retry_count INT NOT NULL DEFAULT 0,
-  ADD COLUMN next_retry_at TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
 
 ALTER TABLE chat_turns
-  DROP CONSTRAINT ck_chat_turn_status;
+  DROP CONSTRAINT IF EXISTS ck_chat_turn_status,
+  DROP CONSTRAINT IF EXISTS ck_chat_turn_retry_count;
 
 ALTER TABLE chat_turns
   ADD CONSTRAINT ck_chat_turn_status CHECK (status IN (
@@ -25,13 +26,16 @@ SET retry_count = 1, next_retry_at = NOW()
 WHERE status = 'failed_retryable' AND next_retry_at IS NULL;
 
 ALTER TABLE chat_turns
+  DROP CONSTRAINT IF EXISTS ck_chat_turn_retry_schedule;
+
+ALTER TABLE chat_turns
   ADD CONSTRAINT ck_chat_turn_retry_schedule CHECK (
     (status = 'failed_retryable' AND next_retry_at IS NOT NULL)
     OR (status <> 'failed_retryable' AND next_retry_at IS NULL)
   );
 
-DROP INDEX idx_chat_turns_recovery;
-CREATE INDEX idx_chat_turns_recovery
+DROP INDEX IF EXISTS idx_chat_turns_recovery;
+CREATE INDEX IF NOT EXISTS idx_chat_turns_recovery
   ON chat_turns (status, next_retry_at, updated_at)
   WHERE status IN (
     'accepted', 'running', 'awaiting_confirmation', 'committing',
@@ -42,7 +46,7 @@ CREATE INDEX idx_chat_turns_recovery
 -- boundary too so a direct writer cannot smuggle objects into resource_ids and
 -- later have them projected into an agent prompt.
 ALTER TABLE turn_actions
-  DROP CONSTRAINT ck_turn_action_context_hint;
+  DROP CONSTRAINT IF EXISTS ck_turn_action_context_hint;
 
 ALTER TABLE turn_actions
   ADD CONSTRAINT ck_turn_action_context_hint CHECK (

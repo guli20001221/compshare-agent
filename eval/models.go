@@ -13,11 +13,11 @@ type ModelConfig struct {
 // Models returns the configured evaluation models with API keys resolved from env.
 func Models() []ModelConfig {
 	mvKey := os.Getenv("MODELVERSE_API_KEY")
-	// deepseek-v4-flash is the production central-Agent answer model (ModelVerse).
-	// Its key is LLM_API_KEY in production; fall back to MODELVERSE_API_KEY for eval.
-	dsKey := os.Getenv("LLM_API_KEY")
-	if dsKey == "" {
-		dsKey = mvKey
+	// The production central-Agent answer model uses LLM_API_KEY. Keep the
+	// ModelVerse key as an eval fallback for deployments that share one key.
+	productionKey := os.Getenv("LLM_API_KEY")
+	if productionKey == "" {
+		productionKey = mvKey
 	}
 	localKey := os.Getenv("LOCAL_PROXY_API_KEY")
 	if localKey == "" {
@@ -31,7 +31,9 @@ func Models() []ModelConfig {
 
 	return []ModelConfig{
 		// Production central-Agent answer model — the one the nightly real-model gate runs against.
-		{Name: "deepseek-v4-flash", ModelID: "deepseek-v4-flash", BaseURL: "https://api.modelverse.cn/v1", APIKey: dsKey},
+		{Name: "gpt-5.6-terra", ModelID: "gpt-5.6-terra", BaseURL: "https://api.modelverse.cn/v1", APIKey: productionKey},
+		// Retained for explicit rollback comparisons.
+		{Name: "deepseek-v4-flash", ModelID: "deepseek-v4-flash", BaseURL: "https://api.modelverse.cn/v1", APIKey: productionKey},
 		{Name: "Qwen3-Max", ModelID: "Qwen/Qwen3-Max", BaseURL: "https://api.modelverse.cn/v1", APIKey: mvKey},
 		{Name: "GLM-5", ModelID: "zai-org/glm-5", BaseURL: "https://api.modelverse.cn/v1", APIKey: mvKey},
 		{Name: "Kimi-K2", ModelID: "moonshotai/Kimi-K2-Instruct", BaseURL: "https://api.modelverse.cn/v1", APIKey: mvKey},

@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // ReadCapabilityObservation is the only result shape exposed by the read
@@ -42,7 +43,7 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		return marshalReadCapabilityError(fmt.Errorf("invalid capability request: %w", err))
 	}
-	if err := capability.ValidateCurrentTurnGrounding(request, e.lastUserMsg); err != nil {
+	if err := capability.ValidateCurrentTurnGrounding(request, e.lastUserMsg, e.recentPriorUserTexts(4)...); err != nil {
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		return marshalReadCapabilityError(fmt.Errorf("ungrounded capability request: %w", err))
 	}
@@ -61,6 +62,30 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		return marshalReadCapabilityError(fmt.Errorf("read capability %q has no typed vertical", action))
 	}
 	return e.executeTypedReadCapability(ctx, action, string(readIntent), reg, request, args, onStep)
+}
+
+func (e *Engine) recentPriorUserTexts(limit int) []string {
+	if e == nil || limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	skippedCurrent := false
+	current := strings.TrimSpace(e.lastUserMsg)
+	for index := len(e.messages) - 1; index >= 0 && len(out) < limit; index-- {
+		message := e.messages[index]
+		if message.Role != openai.ChatMessageRoleUser {
+			continue
+		}
+		text := userAuthoredText(message.Content)
+		if !skippedCurrent && current != "" && text == current {
+			skippedCurrent = true
+			continue
+		}
+		if text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 // executeTypedReadCapability dispatches a migrated read through its typed
@@ -158,7 +183,7 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 			Required:    result.RenderRequired,
 		})
 		observation.RenderRef = placeholder
-		observation.RenderContract = "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
+		observation.RenderContract = readRenderContract(result.RenderExclusive)
 	}
 	if result.Status != platform.ReadStatusHandled || result.NeedsClarification {
 		observation.Guidance = result.Reply
@@ -171,6 +196,14 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 	_ = json.Unmarshal(payload, &traceResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
+}
+
+func readRenderContract(exclusive bool) string {
+	contract := "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
+	if exclusive {
+		return "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。只输出 render_ref，不要在前后复述；只有用户还要求解释或建议时才补充。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
+	}
+	return contract
 }
 
 // applyReadEffects applies the typed context side-effects a read capability

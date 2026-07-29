@@ -457,6 +457,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// into another tenant's reply — the exact cross-user leak this test exists to
 		// prevent. Reset at turn entry, composed at the turn exit.
 		"verbatimBlocksThisTurn": true,
+		// Sentences for the mutating workflows that committed THIS turn, used by
+		// the error path to report a landed write without a model call. Turn-local
+		// and emphatically per-session: a shared slice would tell one tenant that
+		// another tenant's instance had just been created for them — a leak of an
+		// id plus a false claim about their own account, in one line.
+		"committedWriteRepliesThisTurn": true,
 	}
 
 	if want, got := 7, len(sharedFields); want != got {
@@ -482,12 +488,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// every delta — not any single side's number. Taking one side's figure is how
 	// this test goes green while silently dropping another side's field from the
 	// leak whitelist.
-	if want, got := 89, len(perSessionFields); want != got {
+	// 89 -> 90 / 96 -> 97: committedWriteRepliesThisTurn, the model-free record of
+	// writes that already landed, added so an LLM outage after a commit stops
+	// being reported to the user as "未创建成功".
+	if want, got := 90, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 96, typ.NumField(); want != got {
+	if want, got := 97, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

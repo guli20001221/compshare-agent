@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/compshare-agent/internal/deployment"
@@ -28,6 +29,11 @@ const (
 
 	noStockReply      = "未获取到机型库存数据。"
 	soldOutDisclaimer = "（CompShare 平台不公开精确剩余数量，仅 Normal/SoldOut 两态。）"
+
+	// Terra fills optional enum properties even when the user did not choose one.
+	// Represent the absent state explicitly so the first business value
+	// (Exclusive) cannot silently become a user selection.
+	stockInventoryPoolUnspecified = "Unspecified"
 )
 
 // StockAvailabilityRequest is the capability's own request contract.
@@ -61,8 +67,16 @@ type stockCapacityCheck struct {
 	Zone          string
 	CanonicalZone string
 	CheckedSpec   int
-	EnoughSpecs   []string
+	EnoughSpecs   []capacitySpec
 	Failed        bool
+}
+
+// capacitySpec is one precheck-passing configuration. GPUCount is kept apart
+// from the full label because the reply groups by card count: a zone that passes
+// eight CPU/memory variants of the same card counts is one line, not eight.
+type capacitySpec struct {
+	GPUCount string
+	Label    string
 }
 
 func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse] {
@@ -72,7 +86,7 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 		Params: objectParam(map[string]schemaNode{
 			"gpu_type":       stringParam(),
 			"zone_mentions":  arrayParam(stringParam()).described("用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。"),
-			"inventory_pool": enumParam(deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时省略。"),
+			"inventory_pool": enumParam(stockInventoryPoolUnspecified, deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时填 Unspecified。"),
 		}),
 		Handle:  stockHandle,
 		Render:  stockRender,
@@ -127,6 +141,11 @@ func stockRender(resp StockAvailabilityResponse) ReadResult {
 	r := ReadHandled(resp.Reply)
 	r.ToolAction = stockAction
 	r.Envelope = resp.Envelope
+	// Capacity and inventory wording is server-derived from several upstream
+	// sources. Require its verbatim block so the model cannot flatten the
+	// per-zone card-count table back into prose or omit a checked zone.
+	r.RenderRequired = true
+	r.RenderExclusive = true
 	return r
 }
 
@@ -358,7 +377,12 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 		eligibleChecks, poolReply := requestedInventoryPoolView(inventory, checks, pool)
 		return joinStockReply(renderStockCapacityReply(eligibleChecks), poolReply), true, ReadResult{}
 	}
-	return joinStockReply(renderStockCapacityReply(checks), inventoryReply), true, ReadResult{}
+	// A positive capacity precheck is already the user-facing answer. The raw
+	// inventory snapshot is a different, weaker signal and used to be appended
+	// underneath it, re-expanding the concise per-zone card-count table with
+	// approximate pool totals. Keep the snapshot for pool validation and degraded
+	// paths, but do not duplicate a successful capacity answer with it.
+	return renderStockCapacityReply(checks), true, ReadResult{}
 }
 
 func stockGPUInventorySnapshot(ctx context.Context, rt ReadRuntime, supportZones []zones.ZoneInfo) *deployment.GPUInventorySnapshot {
@@ -533,8 +557,11 @@ func requestedInventoryPoolView(snapshot *deployment.GPUInventorySnapshot, check
 	if len(rows) == 0 {
 		return eligible, ""
 	}
+	// One line per 可用区+机型, for the same reason the capacity block is grouped:
+	// joined with "；" this was a single unreadable sentence once more than a
+	// couple of zones came back.
 	sort.Strings(rows)
-	return eligible, strings.Join(rows, "；") + "。"
+	return eligible, "- " + strings.Join(rows, "\n- ")
 }
 
 func failedStockCapacityChecks(entriesByModel map[string][]stockInstanceTypeEntry, modelOrder []string) []stockCapacityCheck {
@@ -766,7 +793,9 @@ func summarizeStockCapacity(entry stockInstanceTypeEntry, raw map[string]any) st
 		check.CheckedSpec++
 		if resourceEnough(spec["ResourceEnough"]) {
 			if label := capacitySpecLabel(spec); label != "" {
-				check.EnoughSpecs = append(check.EnoughSpecs, label)
+				check.EnoughSpecs = append(check.EnoughSpecs, capacitySpec{
+					GPUCount: capacitySpecGPUCount(spec), Label: label,
+				})
 			}
 		}
 	}
@@ -782,6 +811,17 @@ func resourceEnough(value any) bool {
 	default:
 		return false
 	}
+}
+
+// capacitySpecGPUCount reads the card count off a precheck spec. Empty when the
+// upstream row carries none — an unlabelled count is grouped under "" rather
+// than invented.
+func capacitySpecGPUCount(spec map[string]any) string {
+	gpu := fmt.Sprint(spec["Gpu"])
+	if gpu == "" || gpu == "<nil>" {
+		return ""
+	}
+	return gpu
 }
 
 func capacitySpecLabel(spec map[string]any) string {
@@ -807,9 +847,16 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 	}
 	names := make([]string, 0, len(checks))
 	seenNames := map[string]struct{}{}
-	var enough []string
 	var failedZones []string
 	checkedSpecs := 0
+	// Group the passing configurations by 机型+可用区 and keep only the distinct card
+	// counts. Listing every configuration flattened three levels into one sentence:
+	// three zones x eight CPU/memory variants was 24 items joined by "、", and this
+	// block is inserted verbatim, so what the user reads is exactly what is built
+	// here. The dropped dimension is stated in the header rather than silently lost.
+	type capacityGroup struct{ name, zone string }
+	countsByGroup := map[capacityGroup][]string{}
+	groupOrder := make([]capacityGroup, 0, len(checks))
 	for _, check := range checks {
 		if _, ok := seenNames[check.Name]; !ok {
 			seenNames[check.Name] = struct{}{}
@@ -821,15 +868,32 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 		}
 		checkedSpecs += check.CheckedSpec
 		for _, spec := range check.EnoughSpecs {
-			enough = append(enough, fmt.Sprintf("%s/%s/%s", check.Name, check.Zone, spec))
+			group := capacityGroup{check.Name, check.Zone}
+			if _, seen := countsByGroup[group]; !seen {
+				groupOrder = append(groupOrder, group)
+			}
+			if !containsString(countsByGroup[group], spec.GPUCount) {
+				countsByGroup[group] = append(countsByGroup[group], spec.GPUCount)
+			}
 		}
 	}
 	sort.Strings(names)
 	models := strings.Join(names, "、")
-	if len(enough) > 0 {
-		sort.Strings(enough)
-		reply := fmt.Sprintf("%s 当前有可创建库存，可以新建实例。已通过预检：%s。", models, strings.Join(enough, "、"))
-		return appendCapacityFailureNote(reply, failedZones)
+	if len(groupOrder) > 0 {
+		sort.Slice(groupOrder, func(i, j int) bool {
+			if groupOrder[i].name != groupOrder[j].name {
+				return groupOrder[i].name < groupOrder[j].name
+			}
+			return groupOrder[i].zone < groupOrder[j].zone
+		})
+		lines := make([]string, 0, len(groupOrder)+1)
+		lines = append(lines, fmt.Sprintf("%s 当前有可创建库存，可以新建实例。已通过预检的卡数（每种卡数下还有多种 CPU/内存组合，创建时可选）：", models))
+		for _, group := range groupOrder {
+			counts := countsByGroup[group]
+			sort.Slice(counts, func(i, j int) bool { return gpuCountOrder(counts[i]) < gpuCountOrder(counts[j]) })
+			lines = append(lines, fmt.Sprintf("- %s / %s：%s 卡", group.name, group.zone, strings.Join(counts, "、")))
+		}
+		return appendCapacityFailureNote(strings.Join(lines, "\n"), failedZones)
 	}
 	if checkedSpecs == 0 {
 		// Every model reaching here came from matchedNormalStockEntries, so the
@@ -856,6 +920,26 @@ func stockZoneDisplay(entry stockInstanceTypeEntry, supportZones []zones.ZoneInf
 		return zones.Label(supportZones, entry.Zone)
 	}
 	return "未知可用区"
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// gpuCountOrder sorts card counts numerically, so 8 follows 4 instead of leading
+// with 1/2/4/8 read as text. A non-numeric count sorts last rather than crashing
+// the ordering.
+func gpuCountOrder(count string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(count))
+	if err != nil {
+		return 1 << 30
+	}
+	return n
 }
 
 func appendCapacityFailureNote(reply string, failedZones []string) string {

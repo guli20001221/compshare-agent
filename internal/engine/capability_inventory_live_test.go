@@ -26,7 +26,7 @@ func TestDumpCapabilityInventory(t *testing.T) {
 	}
 	collect := func(mutating bool) []toolRow {
 		var rows []toolRow
-		for _, tool := range centralAgentToolWindow(mutating) {
+		for _, tool := range centralAgentToolWindow(mutating, false) {
 			if tool.Function == nil {
 				continue
 			}

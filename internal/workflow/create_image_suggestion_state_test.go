@@ -122,25 +122,64 @@ func TestPickingOnTheCardLocksTheSuggestionIn(t *testing.T) {
 	assert.False(t, skip, "changing the source clears the pick, so the picker must run again")
 }
 
-// TestTheBrowseCardsShowForASuggestion pins that the fix reaches every image step, not
-// only the picker: an Agent suggestion the user has not settled leaves the source and
-// filter cards ON, so the user can actually navigate — the same subtraction the picker
-// makes. A user-pinned image skips them, unchanged.
-func TestTheBrowseCardsShowForASuggestion(t *testing.T) {
+// TestASuggestionSkipsTheAxesItAlreadyAnswersButNotThePicker splits what used to
+// be one flag into the two questions it was conflating.
+//
+// The cards ONCE all showed for a suggestion, on the reasoning that a suggestion
+// is not settlement. That is right about the image and wrong about the axes: after
+// 「推荐一个做数字人的镜像」→「用该镜像开一台」, the assistant's named community image
+// already answers 平台还是社区 and 想跑哪一类, and re-asking them (measured on the
+// real stack 2026-07-29, the flow re-opened at step 1) makes the user re-derive
+// facts the suggestion fixed. The picker is the one card that asks about the image
+// itself, so it stays — TestAnAgentSuggestedImageStillRunsThePicker is its gate,
+// and the original bug ("an Agent-pinned id seals unseen") remains closed.
+func TestASuggestionSkipsTheAxesItAlreadyAnswersButNotThePicker(t *testing.T) {
 	suggested := suggestedImageCtx(map[string]any{
-		"ImageSource":      "platform",
+		"ImageSource":      "community",
 		"CompShareImageId": "compshareImage-agentpick",
 	})
-	skipSource, err := shouldSkipGuidedImageSourceStep(suggested)
-	require.NoError(t, err)
-	assert.False(t, skipSource, "a suggestion is not settlement — the source card still shows")
 
+	for _, tc := range []struct {
+		name string
+		skip func(*Context) (bool, error)
+	}{
+		{"source", shouldSkipGuidedImageSourceStep},
+		{"facets", shouldSkipGuidedImageFacetsStep},
+		{"tag", shouldSkipGuidedImageTagStep},
+	} {
+		skip, err := tc.skip(suggested)
+		require.NoError(t, err)
+		assert.True(t, skip, "the %s card asks something the suggested image already answers", tc.name)
+	}
+
+	skipPicker, err := shouldSkipGuidedImageStep(suggested)
+	require.NoError(t, err)
+	assert.False(t, skipPicker, "the image itself is still the user's to confirm")
+}
+
+// The skip is gated on the proposal NAMING the source, not on the default. A
+// community image carried under a defaulted "platform" would send the picker to
+// the wrong catalog, where the suggested id does not exist — the user would face
+// a browse with nothing preselected and no way to see why.
+func TestASuggestionWithoutANamedSourceStillAsks(t *testing.T) {
+	suggested := suggestedImageCtx(map[string]any{
+		"CompShareImageId": "compshareImage-agentpick",
+	})
+
+	skip, err := shouldSkipGuidedImageSourceStep(suggested)
+	require.NoError(t, err)
+	assert.False(t, skip, "no source in the request means the source is a default, not an answer")
+}
+
+// A user-pinned image skips the browse cards, unchanged by any of the above.
+func TestAUserPinnedImageSkipsTheBrowseCards(t *testing.T) {
 	pinned := NewContext(map[string]any{
 		"ImageSource":      "platform",
 		"CompShareImageId": "compshareImage-agentpick",
 	})
 	pinned.referenceData.ImageSelection = ImageSelectionUserPinned
-	skipSource, err = shouldSkipGuidedImageSourceStep(pinned)
+
+	skipSource, err := shouldSkipGuidedImageSourceStep(pinned)
 	require.NoError(t, err)
 	assert.True(t, skipSource, "a user-pinned image needs no source browsing")
 }

@@ -3,6 +3,8 @@ package deployment
 import (
 	"sort"
 	"strings"
+
+	"github.com/compshare-agent/internal/platform"
 )
 
 const (
@@ -130,6 +132,81 @@ func NormalizeChargeType(chargeType string) string {
 	default:
 		return chargeType
 	}
+}
+
+var explicitChargeTypeVocabulary = []struct {
+	Phrase string
+	Value  string
+}{
+	{"按量付费", ChargeTypePostpay}, {"按小时付费", ChargeTypePostpay},
+	{"按量", ChargeTypePostpay}, {"按小时", ChargeTypePostpay}, {"后付费", ChargeTypePostpay},
+	{"包日", ChargeTypeDay}, {"按日", ChargeTypeDay}, {"按天", ChargeTypeDay},
+	{"包月", ChargeTypeMonth}, {"按月", ChargeTypeMonth},
+	// 抢占式 leads its group because it is the product's own label for the mode
+	// (it is what the purchase-mode card shows), and ExplicitChargeTypePhrase
+	// hands the first entry to user-facing copy. Order does not affect parsing:
+	// ExplicitChargeTypeFromPhrase scans every entry and decides on the resolved
+	// VALUE being unique, so this is presentation only.
+	{"抢占式", ChargeTypeSpot}, {"竞价实例", ChargeTypeSpot},
+	{"抢占", ChargeTypeSpot}, {"竞价", ChargeTypeSpot},
+}
+
+// ExplicitChargeTypePhrase returns the canonical phrase a user can type to ask
+// for this purchase mode: the first vocabulary entry that maps to it.
+//
+// It exists so that UI copy suggesting "say X to change the billing mode" draws
+// X from the same table the server parses. A hand-written suggestion can drift
+// out of the vocabulary, and the failure is silent — the user retypes the
+// request using the wording we printed, the phrase no longer resolves, and they
+// get the purchase-mode card they were told they could skip.
+func ExplicitChargeTypePhrase(value string) (string, bool) {
+	for _, item := range explicitChargeTypeVocabulary {
+		if item.Value == value {
+			return item.Phrase, true
+		}
+	}
+	return "", false
+}
+
+// ExplicitChargeTypeFromPhrase maps a bounded product vocabulary from a user
+// quote to the platform wire value. This is deliberately not a fuzzy
+// classifier: provenance may skip the purchase-mode card only when the quote
+// names exactly one purchase mode. No product term, or two different ones,
+// stays an Agent inference and the user gets the card.
+//
+// The vocabulary term must be a literal span of the quote rather than the whole
+// quote, because where the quote ends is the Agent's choice and requiring
+// equality made an explicit choice depend on that: live over 6 runs,
+// "抢占式创建一台 4090" skipped the card only 2 times — the Agent quoted
+// "抢占式创建" — against 6/6 for "按量". The failure was in the safe direction,
+// an extra card rather than a wrong mode, but it made the skip unreliable.
+//
+// Enumerating the vocabulary in the tool schema instead was measured and is
+// WORSE: the span check still requires the term the user actually typed, so an
+// Agent offered every synonym picks 包日 for a user who wrote 按天 and loses the
+// pin (live: day and month each missed once in 5 runs, against zero here).
+//
+// Uniqueness is judged on the resolved VALUE, not the phrase, so a quote
+// spanning two entries that mean the same thing ("按量付费" also contains "按量")
+// stays one unambiguous choice, while a quote spanning a comparison
+// ("包月和按量") resolves to two and refuses.
+func ExplicitChargeTypeFromPhrase(phrase string) (string, bool) {
+	value := ""
+	for _, item := range explicitChargeTypeVocabulary {
+		// platform.ContainsLiteralSpan is the repo's single reviewed primitive
+		// for "is this a literal span of that" (architectureguard/scanner.go
+		// exempts it by name). Using it here keeps this a provenance check
+		// rather than a new string-heuristic site, and it already applies the
+		// shared whitespace/case folding.
+		if !platform.ContainsLiteralSpan(phrase, item.Phrase) {
+			continue
+		}
+		if value != "" && value != item.Value {
+			return "", false
+		}
+		value = item.Value
+	}
+	return value, value != ""
 }
 
 func BuildCapacityArgs(draft DeploymentDraft) map[string]any {
