@@ -711,7 +711,18 @@ func TestCreateInstance_PlatformImage_DefaultQueryDoesNotForceSystem(t *testing.
 	assert.False(t, hasImageType, "should NOT force ImageType=System; must return all platform images")
 }
 
-func TestCreateInstance_PlatformImage_WithImageName_UsesNameFilter(t *testing.T) {
+// A named platform image must NOT narrow the upstream query, even though an id
+// does. Upstream matches Name case-sensitively — measured live: no Name = 75 rows,
+// "pytorch" = 7, "PyTorch" = 1, "Pytorch" = 0 — and a slot only earns
+// SourceUserExplicit by being a verbatim span of the user's message, so the Agent
+// can only ever send the user's own spelling. "用最新Pytorch镜像" therefore emptied
+// the catalog and the picker died with 未找到可选镜像.
+//
+// The full catalog is what the ranker was built for: nameSimilarity lowercases
+// both sides and rankRecommendations tiebreaks the same framework by version
+// descending, so the newest PyTorch leads the picker regardless of how the user
+// capitalised it.
+func TestCreateInstance_PlatformImage_NameDoesNotNarrowTheQuery(t *testing.T) {
 	executor := createMockExecutor()
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	onStep, _ := collectEvents()
@@ -732,7 +743,9 @@ func TestCreateInstance_PlatformImage_WithImageName_UsesNameFilter(t *testing.T)
 		}
 	}
 	assert.NotNil(t, imageArgs)
-	assert.Equal(t, "PyTorch", imageArgs["Name"], "should pass ImageName as Name filter")
+	_, hasName := imageArgs["Name"]
+	assert.False(t, hasName,
+		"a case-sensitive upstream filter must not be handed the user's own spelling; rank client-side instead")
 }
 
 func TestCreateInstance_PlatformImage_WithImageIDUsesExactFilter(t *testing.T) {

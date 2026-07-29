@@ -11,6 +11,8 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
+const proposalChargeTypeUserQuoteField = "charge_type_user_quote"
+
 // centralAgentToolWindow is the grouped P6 capability surface. It intentionally
 // does not expose the underlying API tools used by deterministic handlers. Each
 // high-level read is a distinct, catalog-generated tool, while every platform
@@ -98,16 +100,37 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 	}
 	properties, _ := root["properties"].(map[string]any)
 	hasSensitiveField := false
+	hasChargeTypePhraseField := false
 	for name, field := range spec.Fields {
 		if field.Codec == actionresolver.CodecSensitiveText {
 			delete(properties, name)
 			hasSensitiveField = true
 		}
+		if name == "ChargeType" && field.Codec == actionresolver.CodecEnum &&
+			spec.Operation == "CreateInstanceWorkflow" {
+			hasChargeTypePhraseField = true
+			property, ok := properties[name].(map[string]any)
+			if ok {
+				description, _ := property["description"].(string)
+				property["description"] = strings.TrimSpace(description +
+					" 若该标准值是根据用户原话做的语义归一化而非逐字复制，同时在 charge_type_user_quote 中填写用户原话片段；用户明确选择按量/Postpay 时也必须填写，不能因为它是默认值而省略。")
+			}
+		}
+	}
+	if hasChargeTypePhraseField {
+		properties[proposalChargeTypeUserQuoteField] = map[string]any{
+			"type":        "string",
+			"description": "计费方式原话证据。用户把该方式作为本次创建的明确肯定选择时，必须填写当前消息中的连续原文片段，包括按量/Postpay；否定、比较、询价、转述他人意见或仅提到某方式都不是选择，此时填写空字符串。",
+		}
 	}
 	// A proposal may be intentionally incomplete: Resolver returns the exact
 	// missing fields and the Agent then asks only for those. Requiring workflow
 	// fields in the model schema makes the model ask in prose before it can call.
-	root["required"] = []string{}
+	required := []string{}
+	if hasChargeTypePhraseField {
+		required = append(required, proposalChargeTypeUserQuoteField)
+	}
+	root["required"] = required
 	function.Name = proposalToolName(spec.Operation)
 	// The system prompt owns the action-first / partial-proposal / confirmation
 	// rules once. A tool description owns only this operation's semantic boundary;
@@ -125,14 +148,24 @@ func proposalArgsForOperation(operation string, direct map[string]any) map[strin
 	if slots, ok := direct["slots"]; ok {
 		return map[string]any{"operation": operation, "slots": slots}
 	}
+	chargeTypeQuote, _ := direct[proposalChargeTypeUserQuoteField].(string)
 	names := make([]string, 0, len(direct))
 	for name := range direct {
+		if name == proposalChargeTypeUserQuoteField {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	slots := make([]any, 0, len(names))
 	for _, name := range names {
-		slots = append(slots, map[string]any{"name": name, "value": direct[name]})
+		slot := map[string]any{"name": name, "value": direct[name]}
+		if name == "ChargeType" {
+			if quote := strings.TrimSpace(chargeTypeQuote); quote != "" {
+				slot["evidence"] = map[string]any{"quote": quote}
+			}
+		}
+		slots = append(slots, slot)
 	}
 	return map[string]any{"operation": operation, "slots": slots}
 }

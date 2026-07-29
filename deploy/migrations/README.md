@@ -43,7 +43,19 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0007_add_turn_recovery_conte
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0008_add_turn_retry_policy.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0009_add_interaction_supersession.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.sql
+
+# 0011 belongs to the OPTIONAL in-instance SSH-ops lane, not to the durable-turn
+# cutover above — it is listed here so a full apply does not miss it. Its audit
+# table is fail-closed: without it the lane disables itself silently (the server
+# still starts and logs the reason), so a missing 0011 looks like "the feature
+# does nothing" rather than like an error.
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0011_create_ssh_ops_audit.sql
 ```
+
+These files are NOT idempotent. Apart from `0002` and `0011` they are bare
+`CREATE TABLE` / `ADD COLUMN`, so re-running an already-applied file fails under
+`ON_ERROR_STOP=1`. On an upgrade, apply only the ones the target database is
+missing.
 
 For a throwaway local Docker PostgreSQL (no host `psql` needed), see README §3 —
 it pipes each file through `docker exec -i cs-pg psql ...`.

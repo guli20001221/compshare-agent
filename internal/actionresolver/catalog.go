@@ -30,7 +30,7 @@ func BuildCatalog() (*Catalog, error) {
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
-		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, fields)
+		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, definition.DiscardableOnRejectFields, fields)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
@@ -184,8 +184,20 @@ func operationValidator(operation string) func(map[string]any) error {
 // such a field is not form-correctable. Errors when a declared field is not a
 // real field of the operation (a typo would silently disable correction) or when
 // a guided workflow declares no fields.
-func intakeSpecForOperation(guidedIntake bool, collectable []string, fields map[string]FieldSpec) (IntakeSpec, error) {
+//
+// DiscardableOnRejectFields is the second, narrower declaration: fields the form
+// cannot collect but whose invalid value may be dropped so the form still opens.
+// Its guards are stricter than the collectable set's, because a discarded value
+// is one nobody ever re-supplies. A REQUIRED field may not be declared: the
+// resolver marks a rejected slot as adjudicated, so it never reaches Missing,
+// and discarding a required value would execute the operation without it. A
+// target may not be declared (it would silence a write's addressee) and neither
+// may a secret (it would silence a password the user typed).
+func intakeSpecForOperation(guidedIntake bool, collectable, discardable []string, fields map[string]FieldSpec) (IntakeSpec, error) {
 	if !guidedIntake {
+		if len(discardable) > 0 {
+			return IntakeSpec{}, fmt.Errorf("DiscardableOnRejectFields declared without GuidedIntake (nothing would re-collect)")
+		}
 		return IntakeSpec{}, nil
 	}
 	if len(collectable) == 0 {
@@ -200,9 +212,23 @@ func intakeSpecForOperation(guidedIntake bool, collectable []string, fields map[
 			return IntakeSpec{}, fmt.Errorf("GuidedIntakeFields names a non-collectable field %q (target or secret)", name)
 		}
 	}
+	for _, name := range discardable {
+		field, ok := fields[name]
+		if !ok {
+			return IntakeSpec{}, fmt.Errorf("DiscardableOnRejectFields names unknown field %q", name)
+		}
+		if field.Required {
+			return IntakeSpec{}, fmt.Errorf("DiscardableOnRejectFields names required field %q (discarding it would run the operation without it)", name)
+		}
+		if field.Target || field.Codec == CodecSensitiveText {
+			return IntakeSpec{}, fmt.Errorf("DiscardableOnRejectFields names a field %q that must never be silently dropped (target or secret)", name)
+		}
+	}
 	out := append([]string(nil), collectable...)
 	sort.Strings(out)
-	return IntakeSpec{Mode: IntakeGuided, CollectableFields: out}, nil
+	dropped := append([]string(nil), discardable...)
+	sort.Strings(dropped)
+	return IntakeSpec{Mode: IntakeGuided, CollectableFields: out, DiscardableOnRejectFields: dropped}, nil
 }
 
 func stringSet(value any) map[string]bool {

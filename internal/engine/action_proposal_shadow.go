@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/compshare-agent/internal/actionresolver"
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
@@ -154,10 +155,30 @@ func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolve
 		return false
 	}
 	value, ok := candidate.Value.(string)
-	if !ok || value != evidence.Quote {
+	if !ok {
 		return false
 	}
+	if value != evidence.Quote {
+		normalized, ok := deployment.ExplicitChargeTypeFromPhrase(evidence.Quote)
+		if candidate.Name != "ChargeType" || codec != actionresolver.CodecEnum ||
+			!ok || normalized != value {
+			return false
+		}
+		return chargeTypeQuoteSpan(question, evidence.Start, evidence.End)
+	}
 	return evidenceSpanForCodec(question, evidence.Start, evidence.End, codec)
+}
+
+func chargeTypeQuoteSpan(text []rune, start, end int) bool {
+	for _, r := range text[start:end] {
+		if r > unicode.MaxASCII {
+			// CJK selections normally sit directly inside a sentence ("按量创建").
+			// Exact-span uniqueness is the meaningful boundary; treating adjacent
+			// Chinese characters as one identifier would reject every such quote.
+			return true
+		}
+	}
+	return standaloneSpan(text, start, end)
 }
 
 func evidenceSpanForCodec(text []rune, start, end int, codec actionresolver.SlotCodecKind) bool {
@@ -198,7 +219,42 @@ func decodeActionProposal(args map[string]any) (actionresolver.ActionProposal, e
 	if strings.TrimSpace(proposal.Operation) == "" {
 		return actionresolver.ActionProposal{}, fmt.Errorf("operation is required")
 	}
+	proposal.Slots = pruneBlankSlots(proposal.Slots)
 	return proposal, nil
+}
+
+// pruneBlankSlots drops slots the Agent left blank. A null or empty value is not
+// a bad value the user supplied — it is the Agent saying nothing, which the
+// system prompt explicitly asks for ("带上此刻已明确的值、其余留空"). Carried into
+// Resolve, such a slot fails its codec and lands in Rejected, and a rejection
+// blocks the guided form outright: one blank optional Name was enough to kill a
+// whole create card while the model narrated that it had submitted a draft.
+//
+// This cannot let a new value reach a workflow. Every codec already refuses nil
+// and blank strings (normalizeValue), and no declared enum has an empty member,
+// so the only values pruned here are ones Resolve was certain to reject. What
+// changes is the CHANNEL: a value nobody supplied is reported as absent (or
+// Missing when the field is required), not as one the user got wrong.
+func pruneBlankSlots(slots []actionresolver.SlotCandidate) []actionresolver.SlotCandidate {
+	kept := slots[:0:0]
+	for _, candidate := range slots {
+		if blankProposalValue(candidate.Value) {
+			continue
+		}
+		kept = append(kept, candidate)
+	}
+	return kept
+}
+
+// blankProposalValue is deliberately narrow: only JSON null and a whitespace-only
+// string. Zero, false and empty collections are real values for their codecs and
+// must keep reaching adjudication.
+func blankProposalValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	text, isString := value.(string)
+	return isString && strings.TrimSpace(text) == ""
 }
 
 // resolvedProposal carries a resolved action together with the SAME zone catalog
@@ -263,7 +319,22 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
-	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{ZoneCatalog: zoneCatalog, ImageCatalog: imageCatalog, ImageSelection: deriveImageSelection(resolved.Provenance)}, targetEvidence: targetEvidence}, nil
+	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{
+		ZoneCatalog:          zoneCatalog,
+		ImageCatalog:         imageCatalog,
+		ImageSelection:       deriveImageSelection(resolved.Provenance),
+		ChargeTypeUserPinned: chargeTypeUserPinned(resolved.Provenance),
+	}, targetEvidence: targetEvidence}, nil
+}
+
+// chargeTypeUserPinned reports whether the purchase mode came from the user's own
+// words rather than the Agent's default. Only SourceUserExplicit counts. A
+// canonical wire value is literal current-turn text, or the server has
+// deterministically mapped an exact current-turn billing phrase to that value;
+// the Agent cannot promote an unrelated quote to the user's choice.
+func chargeTypeUserPinned(provenance map[string]actionresolver.ResolvedSlot) bool {
+	slot, ok := provenance["ChargeType"]
+	return ok && slot.Source == actionresolver.SourceUserExplicit
 }
 
 func proposalImageCatalogSource(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) string {
@@ -387,6 +458,10 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 	for index := range proposal.Slots {
 		candidate := &proposal.Slots[index]
 		present[candidate.Name] = struct{}{}
+		claimedQuote := ""
+		if candidate.Evidence != nil {
+			claimedQuote = strings.TrimSpace(candidate.Evidence.Quote)
+		}
 		candidate.Source = actionresolver.SourceAgentInference
 		candidate.Evidence = nil
 
@@ -414,6 +489,29 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 					Start:     start,
 					End:       end,
 					Quote:     value,
+				}
+				continue
+			}
+		}
+		// ChargeType is the one enum whose localized user phrase may differ from
+		// its wire value. The Agent points at a quote; the server independently
+		// maps the entire phrase and grants user-explicit provenance only when that
+		// deterministic mapping equals the proposed value. Every other enum keeps
+		// the ordinary value-equals-quote rule.
+		if candidate.Name == "ChargeType" && field.Codec == actionresolver.CodecEnum && claimedQuote != "" {
+			normalized, mapped := deployment.ExplicitChargeTypeFromPhrase(claimedQuote)
+			if !mapped || normalized != value {
+				continue
+			}
+			if start, end, ok := uniqueChargeTypeQuote(
+				[]rune(view.CurrentQuestion), []rune(claimedQuote),
+			); ok {
+				candidate.Source = actionresolver.SourceUserExplicit
+				candidate.Evidence = &actionresolver.SourceEvidence{
+					MessageID: view.TurnID,
+					Start:     start,
+					End:       end,
+					Quote:     claimedQuote,
 				}
 				continue
 			}
@@ -546,6 +644,28 @@ func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {
 	start := -1
 	for offset := 0; offset+len(quote) <= len(text); offset++ {
 		if string(text[offset:offset+len(quote)]) != string(quote) || !standaloneSpan(text, offset, offset+len(quote)) {
+			continue
+		}
+		if start >= 0 {
+			return 0, 0, false
+		}
+		start = offset
+	}
+	if start < 0 {
+		return 0, 0, false
+	}
+	return start, start + len(quote), true
+}
+
+func uniqueChargeTypeQuote(text, quote []rune) (int, int, bool) {
+	if len(quote) == 0 || len(quote) > len(text) {
+		return 0, 0, false
+	}
+	start := -1
+	for offset := 0; offset+len(quote) <= len(text); offset++ {
+		end := offset + len(quote)
+		if string(text[offset:end]) != string(quote) ||
+			!chargeTypeQuoteSpan(text, offset, end) {
 			continue
 		}
 		if start >= 0 {

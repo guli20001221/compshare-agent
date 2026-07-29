@@ -32,6 +32,18 @@ type ReferenceData struct {
 	// the picker instead of silently sealing it. Zero value (ImageSelectionUnset) on
 	// every non-create run and on a create that named no image.
 	ImageSelection ImageSelectionState
+	// ChargeTypeUserPinned records whether the USER named the purchase mode, as
+	// opposed to the Agent filling in a default. The guided charge-type card is
+	// skipped only for the former: asking someone to repeat themselves is rude,
+	// but silently answering for them is worse. Presence of ChargeType in Params
+	// cannot make this distinction — the create tool's own schema says "默认
+	// Postpay", so the Agent volunteers it on requests that never mentioned
+	// billing, and reading key-presence as consent suppressed the card for exactly
+	// the users it exists for. Same rail as ImageSelection and the same reason.
+	//
+	// Zero value false = not user-pinned = show the card, which is the safe
+	// default for any path that does not populate ReferenceData.
+	ChargeTypeUserPinned bool
 }
 
 // ImageSelectionState records who settled the create's image, so every image step
@@ -226,6 +238,21 @@ type Definition struct {
 	// is true. Every name must be a real field of this workflow (BuildCatalog
 	// enforces it).
 	GuidedIntakeFields []string
+	// DiscardableOnRejectFields answers a DIFFERENT question from
+	// GuidedIntakeFields, which is why it is a second list rather than a reuse of
+	// the first: not "can the form collect this?" but "if the Agent supplies an
+	// invalid value here, may the resolver drop it and open the form anyway?".
+	// Name answers no to the first and yes to the second — reading one list for
+	// both questions is what suppressed the create card outright.
+	//
+	// EXPLICIT, never derived. The obvious derivation (every optional non-target
+	// field) was measured against the registry and would newly silence a bad
+	// Password on reinstall and bad Cpu/Gpu/Memory on resize — a discarded value
+	// must be one no user can be harmed by losing. Only meaningful alongside
+	// GuidedIntake, since the form is what re-collects. BuildCatalog enforces that
+	// each name is a real field of this workflow and is optional, non-target and
+	// non-secret.
+	DiscardableOnRejectFields []string
 }
 
 // FailureReason classifies a failure for callers that must DO something different

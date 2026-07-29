@@ -64,6 +64,15 @@
     "forbid_actions": ["CreateCompShareInstance"]
   },
   {
+    "id": "community_image_recommendation_preserves_user_goal",
+    "question": "为我推荐一个做数字人的镜像",
+    "expect_intent": "image_list",
+    "expected_execution_path": "agent",
+    "boundary": "catalog recommendation keeps the user's purpose as the baseline and uses semantic technology terms only as additive expansion, never a guessed candidate-name narrow",
+    "allowed_actions": ["ReadCapability_image_list"],
+    "forbid_actions": ["CreateInstanceWorkflow", "CreateCompShareInstance"]
+  },
+  {
     "id": "create_disk_without_size_asks_size",
     "question": "给 uhost-abc123 加一块数据盘",
     "expect_intent": "operation_lifecycle",
