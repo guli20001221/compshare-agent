@@ -36,29 +36,39 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnv
 	// received so the user sees the operationally-relevant instances first.
 	lines := make([]string, 0, len(instances))
 	for _, inst := range instances {
-		gpuType := inst.GpuType
+		name := cleanResourceText(inst.Name)
+		if name == "" {
+			name = "未命名"
+		}
+		id := cleanResourceText(inst.UHostId)
+		title := name
+		if id != "" {
+			title += "（" + id + "）"
+		}
+		parts := []string{resourceStateLabel(inst.State)}
 		if inst.GPU == 0 {
-			gpuType = "无卡"
+			parts = append(parts, "无 GPU")
+		} else {
+			gpuType := cleanResourceText(inst.GpuType)
+			if gpuType == "" {
+				gpuType = "GPU"
+			}
+			parts = append(parts, fmt.Sprintf("%s × %d", gpuType, inst.GPU))
 		}
-		parts := []string{
-			resourceLabelInstanceID + "=" + safeValue(inst.UHostId),
-			resourceLabelName + "=" + safeValue(inst.Name),
-			resourceLabelState + "=" + safeValue(inst.State),
-			resourceLabelGPUType + "=" + safeValue(gpuType),
-			fmt.Sprintf("%s=%d", resourceLabelGPU, inst.GPU),
-			fmt.Sprintf("%s=%d", resourceLabelCPU, inst.CPU),
-			fmt.Sprintf("%s=%d", resourceLabelMemory, inst.Memory),
-		}
+		parts = append(parts, fmt.Sprintf("%d vCPU / %s", inst.CPU, resourceMemoryLabel(inst.Memory)))
 		if inst.ImageType != "" {
-			parts = append(parts, resourceLabelImageType+"="+safeValue(inst.ImageType))
+			parts = append(parts, "镜像 "+cleanResourceText(inst.ImageType))
+		}
+		if inst.ChargeType != "" {
+			parts = append(parts, resourceChargeTypeLabel(inst.ChargeType))
 		}
 		if inst.StartTime != 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", resourceLabelStartTime, inst.StartTime))
+			parts = append(parts, "启动于 "+resourceTimeLabel(inst.StartTime))
 		}
 		if inst.ExpireTime != 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", resourceLabelExpireTime, inst.ExpireTime))
+			parts = append(parts, "到期于 "+resourceTimeLabel(inst.ExpireTime))
 		}
-		lines = append(lines, strings.Join(parts, ", "))
+		lines = append(lines, "- "+title+"："+strings.Join(parts, "；"))
 	}
 	body := strings.Join(lines, "\n")
 	displayTotal := meta.TotalCount
@@ -69,6 +79,71 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnv
 		body += fmt.Sprintf("\n（已显示 %d/%d 台，完整列表请到控制台查看）", meta.Shown, displayTotal)
 	}
 	return body
+}
+
+func cleanResourceText(value string) string {
+	return strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(safeValue(value)))
+}
+
+func resourceMemoryLabel(memory int) string {
+	if memory <= 0 {
+		return "内存未知"
+	}
+	if memory < 1024 {
+		return fmt.Sprintf("%d GB", memory)
+	}
+	gb := float64(memory) / 1024
+	if float64(int(gb)) == gb {
+		return fmt.Sprintf("%d GB", int(gb))
+	}
+	return fmt.Sprintf("%.1f GB", gb)
+}
+
+func resourceTimeLabel(timestamp int64) string {
+	return time.Unix(timestamp, 0).In(monitorHistoryLoc).Format("2006-01-02 15:04")
+}
+
+func resourceStateLabel(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "running":
+		return "运行中"
+	case "stopped":
+		return "已关机"
+	case "initializing", "installing":
+		return "初始化中"
+	case "imagemaking":
+		return "镜像制作中"
+	case "starting":
+		return "启动中"
+	case "stopping":
+		return "关机中"
+	case "rebooting":
+		return "重启中"
+	case "failed":
+		return "异常"
+	default:
+		if label := cleanResourceText(state); label != "" {
+			return label
+		}
+		return "状态未知"
+	}
+}
+
+func resourceChargeTypeLabel(chargeType string) string {
+	switch strings.ToLower(strings.TrimSpace(chargeType)) {
+	case "postpay", "dynamic":
+		return "按量"
+	case "spot":
+		return "抢占式"
+	case "day":
+		return "按天"
+	case "month":
+		return "按月"
+	case "year":
+		return "按年"
+	default:
+		return cleanResourceText(chargeType)
+	}
 }
 
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {

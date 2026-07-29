@@ -233,8 +233,8 @@ func TestStockHandle_PositiveCapacityUsesGroupedCardCountsAndQueriesBothInventor
 	assert.NotContains(t, result.Reply, "约 12 张",
 		"successful capacity output stays a card-count table; raw pool totals are only validation evidence")
 	assert.NotContains(t, result.Reply, "约 7 张")
-	assert.True(t, result.RenderRequired, "the exact capacity table must survive model wording")
-	assert.True(t, result.RenderExclusive, "the complete stock table must not be duplicated by model prose")
+	assert.Equal(t, ReadPresentationRequired, result.Presentation,
+		"the exact capacity table must survive model wording")
 
 	var inventoryCalls []fakeReadExecCall
 	for _, call := range exec.calls {

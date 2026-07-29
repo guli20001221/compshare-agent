@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCentralAgentDecidesTheReplyAfterReadingAnObservation(t *testing.T) {
+func TestRequiredResourceFactsSurviveWhenAgentOmitsRenderRef(t *testing.T) {
 	model := &streamingSeqMockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("read", capability.ReadToolName(intent.IntentResourceInfo), `{}`)}},
 		{Content: "你有一台名为 train-a 的实例（uhost-1），当前正在运行。"},
@@ -29,7 +29,7 @@ func TestCentralAgentDecidesTheReplyAfterReadingAnObservation(t *testing.T) {
 		OnTextDelta: func(delta string) { deltas = append(deltas, delta) },
 	})
 	require.NoError(t, err)
-	require.Equal(t, "你有一台名为 train-a 的实例（uhost-1），当前正在运行。", reply)
+	require.Equal(t, "- train-a（uhost-1）：运行中；4090 × 1；8 vCPU / 64 GB\n\n你有一台名为 train-a 的实例（uhost-1），当前正在运行。", reply)
 	streamed := strings.Join(deltas, "")
 	require.Equal(t, reply, streamed)
 }

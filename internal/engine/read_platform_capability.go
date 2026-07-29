@@ -169,10 +169,12 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 		Envelope:         result.Envelope,
 		CanAssertAbsence: canAssertAbsence,
 	}
-	// A browse listing is a menu, not a measurement: it gets no render_ref, so the
-	// server never staples the raw catalog in front of the model's curated answer.
-	// The envelope below still carries every exact id/count the model needs.
-	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification && !result.ReplyIsBrowseListing &&
+	// A browse result is a menu, not a measurement: it gets no render_ref, so the
+	// server never staples a raw catalog in front of the Agent's curated answer.
+	// The envelope below still carries every exact id/count the Agent needs.
+	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification &&
+		(result.Presentation == capability.ReadPresentationExact ||
+			result.Presentation == capability.ReadPresentationRequired) &&
 		result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
 		placeholder := fmt.Sprintf("{{READ_OBSERVATION_%d}}", len(e.readResponseEvidenceThisTurn)+1)
 		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
@@ -180,10 +182,10 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 			Reply:       strings.TrimSpace(result.Reply),
 			Envelope:    *result.Envelope,
 			Placeholder: placeholder,
-			Required:    result.RenderRequired,
+			Required:    result.Presentation == capability.ReadPresentationRequired,
 		})
 		observation.RenderRef = placeholder
-		observation.RenderContract = readRenderContract(result.RenderExclusive)
+		observation.RenderContract = readRenderContract(result.Presentation)
 	}
 	if result.Status != platform.ReadStatusHandled || result.NeedsClarification {
 		observation.Guidance = result.Reply
@@ -198,12 +200,11 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 	return string(payload)
 }
 
-func readRenderContract(exclusive bool) string {
-	contract := "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
-	if exclusive {
-		return "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。只输出 render_ref，不要在前后复述；只有用户还要求解释或建议时才补充。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
+func readRenderContract(presentation capability.ReadPresentation) string {
+	if presentation == capability.ReadPresentationRequired {
+		return "最终回答必须原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料，并自然地补充总结、解释或建议，但不得复述、改写、否定或用推测替代这份事实。"
 	}
-	return contract
+	return "需要展示这次精确查询结果时，原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并自然地解释原因或处理方法，但不得改写、否定或用推测替代这份事实。"
 }
 
 // applyReadEffects applies the typed context side-effects a read capability

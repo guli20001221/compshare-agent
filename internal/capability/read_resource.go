@@ -41,12 +41,13 @@ type ResourceInfoResponse struct {
 
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
-		Label:       resourceCapabilityLabel,
-		Description: "查询当前账号已有实例的列表、状态和配置，也用于按 ID 或名称核实实例。只反映账号内资源，不用于查询平台 GPU 库存。",
-		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
-		Handle:      resourceHandle,
-		Render:      resourceRender,
-		Observe:     resourceObserve,
+		Label:        resourceCapabilityLabel,
+		Description:  "查询当前账号已有实例的列表、状态和配置，也用于按 ID 或名称核实实例。只反映账号内资源，不用于查询平台 GPU 库存。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
+		Handle:       resourceHandle,
+		Render:       resourceRender,
+		Observe:      resourceObserve,
 	}
 }
 

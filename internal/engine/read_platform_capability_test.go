@@ -108,9 +108,9 @@ func TestJupyterTokenReturnsOpaqueRequiredObservation(t *testing.T) {
 		"stock's no-duplication rule must not leak into opaque access observations")
 }
 
-func TestReadRenderContractScopesExclusiveOutputToOptedInCapabilities(t *testing.T) {
-	require.Contains(t, readRenderContract(true), "只输出 render_ref，不要在前后复述")
-	require.NotContains(t, readRenderContract(false), "只输出 render_ref，不要在前后复述")
+func TestReadRenderContractDistinguishesRequiredFromSelectableExact(t *testing.T) {
+	require.Contains(t, readRenderContract(capability.ReadPresentationRequired), "必须原样插入")
+	require.NotContains(t, readRenderContract(capability.ReadPresentationExact), "必须原样插入")
 }
 
 func TestRecentPriorUserTextsExcludesCurrentTurnAndAssistantText(t *testing.T) {

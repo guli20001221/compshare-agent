@@ -57,11 +57,12 @@ type RefundEstimateResponse struct {
 
 func refundReadSpec() ReadCapabilitySpec[RefundEstimateRequest, RefundEstimateResponse] {
 	return ReadCapabilitySpec[RefundEstimateRequest, RefundEstimateResponse]{
-		Label:       refundCapabilityLabel,
-		Description: "估算指定已有实例当前可退金额。只读，不释放实例；当前运行费用使用 DiagnoseBilling。",
-		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}, "targets"),
-		Handle:      refundHandle,
-		Render:      refundRender,
+		Label:        refundCapabilityLabel,
+		Description:  "估算指定已有实例当前可退金额。只读，不释放实例；当前运行费用使用 DiagnoseBilling。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"targets": targetRefsParam()}, "targets"),
+		Handle:       refundHandle,
+		Render:       refundRender,
 	}
 }
 

@@ -62,11 +62,12 @@ func (CFSListRequest) MissingFields() []platform.MissingField { return nil }
 
 func cfsListReadSpec() ReadCapabilitySpec[CFSListRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSListRequest, CFSResponse]{
-		Label:       readCFSList,
-		Description: "查询当前账号 CFS 列表或指定 CFS 的状态、容量和位置。价格、扩容价和退费估算使用对应 CFS 能力。",
-		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}),
-		Handle:      cfsListHandle,
-		Render:      cfsRender,
+		Label:        readCFSList,
+		Description:  "查询当前账号 CFS 列表或指定 CFS 的状态、容量和位置。价格、扩容价和退费估算使用对应 CFS 能力。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"cfs": cfsRefParam()}),
+		Handle:       cfsListHandle,
+		Render:       cfsRender,
 	}
 }
 
@@ -108,8 +109,9 @@ func (r CFSCreatePriceRequest) MissingFields() []platform.MissingField {
 
 func cfsCreatePriceReadSpec() ReadCapabilitySpec[CFSCreatePriceRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSCreatePriceRequest, CFSResponse]{
-		Label:       readCFSCreatePrice,
-		Description: "查询拟创建云存储 Pro（CFS 共享文件存储）在指定可用区和容量下的实时账号净报价。不用于普通实例数据盘；上游接口不返回免费额度字段。",
+		Label:        readCFSCreatePrice,
+		Description:  "查询拟创建云存储 Pro（CFS 共享文件存储）在指定可用区和容量下的实时账号净报价。不用于普通实例数据盘；上游接口不返回免费额度字段。",
+		Presentation: ReadPresentationRequired,
 		Params: objectParam(map[string]schemaNode{
 			"zone":           stringParam().described("精确可用区 ID。当前只有上游标记为 Pod 的区域支持该询价。"),
 			"target_size_gb": integerParam(1).described("目标容量 GB。"),
@@ -171,11 +173,12 @@ func (r CFSUpgradePriceRequest) MissingFields() []platform.MissingField {
 
 func cfsUpgradePriceReadSpec() ReadCapabilitySpec[CFSUpgradePriceRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSUpgradePriceRequest, CFSResponse]{
-		Label:       readCFSUpgradePrice,
-		Description: "估算指定已有 CFS 扩容到目标总容量的价格差额。只读，不执行扩容；新建 CFS 报价使用 CFS 创建报价能力。",
-		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam(), "target_size_gb": integerParam(1)}, "cfs", "target_size_gb"),
-		Handle:      cfsUpgradePriceHandle,
-		Render:      cfsRender,
+		Label:        readCFSUpgradePrice,
+		Description:  "估算指定已有 CFS 扩容到目标总容量的价格差额。只读，不执行扩容；新建 CFS 报价使用 CFS 创建报价能力。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"cfs": cfsRefParam(), "target_size_gb": integerParam(1)}, "cfs", "target_size_gb"),
+		Handle:       cfsUpgradePriceHandle,
+		Render:       cfsRender,
 	}
 }
 
@@ -218,11 +221,12 @@ func (r CFSRefundEstimateRequest) MissingFields() []platform.MissingField {
 
 func cfsRefundEstimateReadSpec() ReadCapabilitySpec[CFSRefundEstimateRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSRefundEstimateRequest, CFSResponse]{
-		Label:       readCFSRefundEstimate,
-		Description: "估算指定已有 CFS 当前可退金额。只读，不删除或释放 CFS。",
-		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}, "cfs"),
-		Handle:      cfsRefundEstimateHandle,
-		Render:      cfsRender,
+		Label:        readCFSRefundEstimate,
+		Description:  "估算指定已有 CFS 当前可退金额。只读，不删除或释放 CFS。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"cfs": cfsRefParam()}, "cfs"),
+		Handle:       cfsRefundEstimateHandle,
+		Render:       cfsRender,
 	}
 }
 

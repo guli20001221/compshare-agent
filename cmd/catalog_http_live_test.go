@@ -255,6 +255,107 @@ func TestCatalogAndChargeAcceptanceOverRealHTTP(t *testing.T) {
 	}
 }
 
+// TestResourceRenderingOverRealHTTP verifies the user-visible WebSocket reply,
+// including the real model, STS credentials and CompShare instance API. It is
+// read-only and deliberately asserts presentation rather than an internal
+// renderer return value.
+//
+// Run:
+//
+//	COMPSHARE_READ_RENDER_HTTP_LIVE=1 go test ./cmd -tags live \
+//	  -run TestResourceRenderingOverRealHTTP -count=1 -v -timeout 10m
+func TestResourceRenderingOverRealHTTP(t *testing.T) {
+	if os.Getenv("COMPSHARE_READ_RENDER_HTTP_LIVE") != "1" {
+		t.Skip("set COMPSHARE_READ_RENDER_HTTP_LIVE=1 to run real HTTP/model/resource acceptance")
+	}
+
+	root := behavioralRepoRoot(t)
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
+	t.Cleanup(func() { _ = os.Chdir(originalDir) })
+
+	cfg, err := config.Load(filepath.Join(root, "deploy", "conf", "config.yaml"))
+	require.NoError(t, err)
+	require.NotEmpty(t, cfg.Agent.LLM.APIKey)
+	if project := strings.TrimSpace(os.Getenv("COMPSHARE_LIVE_PROJECT_ID")); project != "" {
+		cfg.Agent.ProjectId = project
+	}
+	require.NotEmpty(t, cfg.Agent.ProjectId, "resource acceptance needs the tenant ProjectId")
+
+	messages := serverTestMessageStore{}
+	pool, err := buildHTTPServerPool(cfg, messages, cfg.RuntimeGetenv(os.Getenv), nil)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	sessions := newCatalogLiveSessions()
+	const sessionID = "read-render-http-live"
+	const topOrganizationID = 66391350
+	const organizationID = 64404856
+	sessions.add(sessionID, topOrganizationID, organizationID)
+	handlers := newServerHandlers(
+		cfg, sessions, messages, nil, pool, nil, cfg.RuntimeGetenv(os.Getenv),
+	)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/", handlers.HandleWS)
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	headers := http.Header{}
+	headers.Set("X-Company-Id", fmt.Sprint(topOrganizationID))
+	headers.Set("X-Organization-Id", fmt.Sprint(organizationID))
+	headers.Set("X-Account-Id", sessionID)
+	headers.Set("X-Request-Id", sessionID+"-request")
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") +
+		"/?Action=CreateCSAgentWS&ProjectId=" + cfg.Agent.ProjectId
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: headers})
+	require.NoError(t, err)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	frame, err := json.Marshal(map[string]any{
+		"Action":       "SendCSAgentChat",
+		"SessionId":    sessionID,
+		"Message":      "我有哪些实例",
+		"request_uuid": sessionID + "-turn",
+	})
+	require.NoError(t, err)
+	require.NoError(t, conn.Write(ctx, websocket.MessageText, frame))
+
+	var reply string
+	var actions []string
+	var stepDetails []string
+	for {
+		_, raw, readErr := conn.Read(ctx)
+		require.NoError(t, readErr)
+		var event map[string]any
+		require.NoError(t, json.Unmarshal(raw, &event))
+		switch event["event"] {
+		case "step":
+			if action, _ := event["Action"].(string); action != "" {
+				actions = append(actions, action)
+				stepDetails = append(stepDetails, action+" | "+stringField(event, "Type")+" | "+stringField(event, "Message"))
+			}
+		case "done":
+			reply, _ = event["Content"].(string)
+			goto complete
+		case "error":
+			t.Fatalf("real resource HTTP error frame: %s", string(raw))
+		}
+	}
+
+complete:
+	t.Logf("actions=%v steps=%v reply=%s", actions, stepDetails, reply)
+	require.Contains(t, actions, "DescribeCompShareInstance")
+	require.Contains(t, reply, "- ", "instances must render as a Markdown list")
+	require.Contains(t, reply, "GB", "memory must be converted to a readable unit")
+	require.NotContains(t, reply, "实例ID=")
+	require.NotContains(t, reply, "启动时间=")
+	require.NotContains(t, reply, "内存=65536")
+}
+
 type catalogChargeExecutor struct{}
 
 func (catalogChargeExecutor) Execute(_ context.Context, action string, _ map[string]any) (map[string]any, error) {

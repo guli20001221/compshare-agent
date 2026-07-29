@@ -38,11 +38,12 @@ type NetworkAcceleratorStatusResponse struct {
 
 func netAcceleratorReadSpec() ReadCapabilitySpec[NetworkAcceleratorStatusRequest, NetworkAcceleratorStatusResponse] {
 	return ReadCapabilitySpec[NetworkAcceleratorStatusRequest, NetworkAcceleratorStatusResponse]{
-		Label:       netAcceleratorCapabilityLabel,
-		Description: "查询当前账号各地域或可用区的网络加速状态。只读，不开启或关闭网络加速。",
-		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
-		Handle:      netAcceleratorHandle,
-		Render:      netAcceleratorRender,
+		Label:        netAcceleratorCapabilityLabel,
+		Description:  "查询当前账号各地域或可用区的网络加速状态。只读，不开启或关闭网络加速。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
+		Handle:       netAcceleratorHandle,
+		Render:       netAcceleratorRender,
 	}
 }
 

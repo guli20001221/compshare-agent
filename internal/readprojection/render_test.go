@@ -29,7 +29,7 @@ func TestRenderResourceSummaryByteExact(t *testing.T) {
 
 	got := RenderResourceSummary(instances, ResourceEnvelopeMeta{})
 
-	want := "实例ID=uhost-a, 名称=train-a, 状态=Running, GPU型号=4090, GPU数量=1, CPU=8, 内存=64, 镜像类型=Ubuntu, 启动时间=1000, 到期时间=2000"
+	want := "- train-a（uhost-a）：运行中；4090 × 1；8 vCPU / 64 GB；镜像 Ubuntu；启动于 1970-01-01 08:16；到期于 1970-01-01 08:33"
 	require.Equal(t, want, got)
 }
 
@@ -38,8 +38,8 @@ func TestRenderResourceSummary_NoGPUDoesNotAdvertiseTheStoredGPUModel(t *testing
 		UHostId: "uhost-a", State: "Running", GpuType: "4090", GPU: 0, CPU: 2, Memory: 4096,
 	}}, ResourceEnvelopeMeta{})
 
-	assert.Contains(t, got, "GPU型号=无卡")
-	assert.NotContains(t, got, "GPU型号=4090")
+	assert.Contains(t, got, "无 GPU")
+	assert.NotContains(t, got, "4090")
 }
 
 // TestRenderResourceSummaryTruncationNotice pins the deterministic truncation

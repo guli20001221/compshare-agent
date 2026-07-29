@@ -81,8 +81,9 @@ type capacitySpec struct {
 
 func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse] {
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
-		Label:       stockCapabilityLabel,
-		Description: "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。",
+		Label:        stockCapabilityLabel,
+		Description:  "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。",
+		Presentation: ReadPresentationRequired,
 		Params: objectParam(map[string]schemaNode{
 			"gpu_type":       stringParam(),
 			"zone_mentions":  arrayParam(stringParam()).described("用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。"),
@@ -141,11 +142,6 @@ func stockRender(resp StockAvailabilityResponse) ReadResult {
 	r := ReadHandled(resp.Reply)
 	r.ToolAction = stockAction
 	r.Envelope = resp.Envelope
-	// Capacity and inventory wording is server-derived from several upstream
-	// sources. Require its verbatim block so the model cannot flatten the
-	// per-zone card-count table back into prose or omit a checked zone.
-	r.RenderRequired = true
-	r.RenderExclusive = true
 	return r
 }
 

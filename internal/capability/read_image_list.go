@@ -70,8 +70,9 @@ type ImageListResponse struct {
 
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
-		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的当前目录及结构化属性。用于浏览、筛选、核实或推荐镜像；不用于模型仓库或镜像标签分类目录。具体查询与语义扩展规则以参数说明为准。",
+		Label:        imageListCapabilityLabel,
+		Description:  "查询平台、自制、社区或共享镜像的当前目录及结构化属性。用于浏览、筛选、核实或推荐镜像；不用于模型仓库或镜像标签分类目录。具体查询与语义扩展规则以参数说明为准。",
+		Presentation: ReadPresentationBrowse,
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
@@ -113,14 +114,12 @@ func imageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) 
 	return resp, ReadResult{}
 }
 
-// imageListRender projects the response. The reply is declared a browse listing:
-// every source here renders a catalog to choose from, and the guided create flow
-// owns the actual picking, so the rendered rows are never the answer to the turn.
+// imageListRender projects the response. Its spec declares browse presentation:
+// the Agent curates the catalog instead of pasting every row into the answer.
 func imageListRender(resp ImageListResponse) ReadResult {
 	r := ReadHandled(resp.Reply)
 	r.ToolAction = resp.Action
 	r.Envelope = resp.Envelope
-	r.ReplyIsBrowseListing = true
 	return r
 }
 
