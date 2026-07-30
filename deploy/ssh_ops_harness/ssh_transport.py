@@ -6,6 +6,7 @@ Each call dials a FRESH connection and closes it on return — no module-global 
 so the credential's lifetime is bounded to the call and nothing survives across tasks. Output is
 capped and secret-scrubbed (incl. the literal credential) before it can reach the model.
 """
+import shlex
 import warnings
 
 import guardrails
@@ -13,6 +14,43 @@ import guardrails
 _MAX_OUTPUT = 16000
 _DIAL_TIMEOUT = 15
 _EXEC_TIMEOUT = 30
+# The bound the REMOTE enforces on itself, deliberately shorter than the local one so the box kills
+# the process before we stop waiting for it. See _bounded for why this exists at all.
+_REMOTE_TIMEOUT = 25
+_REMOTE_KILL_GRACE = 5
+
+
+def _bounded(command: str) -> str:
+    """Wrap `command` so the BOX enforces a time bound on it, not just us.
+
+    _pump's timeout path calls chan.close() with the comment "stop the remote command from running
+    on". It does not stop it. Closing an SSH channel closes the channel; without a pty sshd does not
+    reliably signal the child, so the command keeps running with nowhere to write. Measured A/B on a
+    live box with `grep -rn <pat> / | head -20`: local-close-only left 2 processes alive (the grep
+    AND the head) still running 12s later, while the same command under `timeout` left 0.
+
+    That leak is not merely untidy. A `grep -rn` over /model abandoned at 30s was still scanning 1.5
+    HOURS later, and the next diagnosis of that same instance saw it, read it as concurrent
+    modification, and stopped to ask the operator instead of performing the repair. We also cannot
+    reclaim it: the channel it was born on is gone.
+
+    Shape notes:
+      * `bash`, not `sh`. Live runs use bash-isms (`${PIPESTATUS[0]}` appeared in a real run), and
+        dash would silently mis-execute them.
+      * GNU timeout puts the child in its own process group and signals the group, which is why the
+        grandchild (`head`) dies too — verified, not assumed.
+      * If `timeout` is absent the `if` does not exec and the ORIGINAL command runs verbatim after
+        it, so behaviour on such a box is byte-identical to before this wrapper existed.
+      * The wrapper is applied HERE, at the transport, and never to the string that was classified,
+        audited, or shown on the consent card — the operator approves the model's own text and that
+        exact text is what runs inside the wrapper.
+      * Exit 124 is the bound firing. That is strictly more informative than the local timeout it
+        replaces, which surfaced exit_code=None with no way to tell a hang from a crash.
+    """
+    quoted = shlex.quote(command)
+    return (f"if command -v timeout >/dev/null 2>&1; then "
+            f"exec timeout -k {_REMOTE_KILL_GRACE} {_REMOTE_TIMEOUT} bash -c {quoted}; fi; "
+            f"{command}")
 
 
 def _clip(text: str) -> str:
@@ -101,7 +139,7 @@ def run_ssh(conn: dict, command: str, secrets=()) -> dict:
             return {"error": "auth_failed"}              # stale credential — NEVER echo it
         except Exception as e:                            # noqa: BLE001 — class name only, no detail/cred
             return {"error": "connect_failed", "detail": type(e).__name__}
-        _, so, se = client.exec_command(command, timeout=_EXEC_TIMEOUT)
+        _, so, se = client.exec_command(_bounded(command), timeout=_EXEC_TIMEOUT)
         out_b, err_b, timed_out = _pump(so.channel)
         if timed_out:
             # The classifier refuses the KNOWN blockers (tail -f, top, watch...), but it cannot
@@ -115,8 +153,17 @@ def run_ssh(conn: dict, command: str, secrets=()) -> dict:
                     "partial": guardrails.scrub_output(_clip(_dec(out_b)), secrets)}
         out, err = _dec(out_b), _dec(err_b)
         truncated = len(out) > _MAX_OUTPUT or len(err) > _MAX_OUTPUT
+        exit_code = so.channel.recv_exit_status()
+        if exit_code == 124:
+            # 124 is what `timeout` returns when the bound fires. Say so: without this the model sees
+            # a bare non-zero exit on a command that printed partial output and reads it as the
+            # command having FAILED, then re-runs the same unbounded search. (A command can return
+            # 124 on its own, which is why this is worded as the likely cause rather than a fact.)
+            err = (err.rstrip() + "\n" if err.strip() else "") + (
+                f"[exit 124 —— 通常是远端 {_REMOTE_TIMEOUT}s 上限触发的超时，不是命令本身报错。"
+                f"上面的输出是超时前已产生的部分结果；请缩小范围（限定目录、加 -maxdepth）后重试]")
         return {
-            "exit_code": so.channel.recv_exit_status(),
+            "exit_code": exit_code,
             "stdout": guardrails.scrub_output(_clip(out), secrets),
             "stderr": guardrails.scrub_output(_clip(err), secrets),
             "truncated": truncated,

@@ -1174,6 +1174,30 @@ def _env_is_read(tokens) -> bool:
     return True
 
 
+# Shell reserved words can PRECEDE a command, so exactly like `sudo` and the wrapper binaries they
+# defeat a first-token lookup — and this set was still open after the wrapper fix. Chaining is
+# accepted and split on `;`, so an ordinary `if true; then rm -f /root/x; fi` produces the segment
+# `then rm -f /root/x`, whose token 0 is `then`; `rm` is never looked up and the delete AUTO-RUNS
+# with no consent card. Measured: `if true; then rm -f /root/marker; fi`, `for f in a b; do rm -f
+# /root/$f; done`, `time touch /root/marker` and `! touch /root/marker` all classified read_only.
+# The destructive scan caught the same shapes (`if ...; then chmod 777 /etc/passwd; fi` is refused)
+# because it is a regex over the whole string — the same asymmetry the wrapper fix was about.
+#
+# Unlike the wrapper binaries, these legitimately strip to NOTHING: `fi`, `done` and `esac` are real
+# segments that change nothing, so an empty remainder is a READ here, not a fail-closed refusal.
+_SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for",
+                   "case", "esac", "in", "select", "function", "coproc", "time", "!",
+                   "{", "}", "(", ")"}
+
+
+def _strip_shell_keywords(seg: str) -> str:
+    toks = seg.split()
+    i = 0
+    while i < len(toks) and toks[i] in _SHELL_KEYWORDS:
+        i += 1
+    return " ".join(toks[i:])
+
+
 def _strip_wrapper(binary: str, tokens) -> str:
     """Return the inner command of a wrapper invocation, or "" when there is none.
 
@@ -1203,7 +1227,12 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     """True if this ONE command changes the box, executes code, leaves the box, or
     blocks forever. Deny-by-effect — anything else is a read. `_depth` bounds the
     recursion when classifying a find -exec inner command against this same gate."""
-    seg = _strip_sudo(seg.strip())
+    # Strip everything that can merely PRECEDE the real command, to a fixed point: `then sudo rm ...`
+    # needs both strippers, and either one alone leaves the other's prefix in token 0.
+    seg, prev = seg.strip(), None
+    while prev != seg:
+        prev = seg
+        seg = _strip_sudo(_strip_shell_keywords(seg).strip())
     if not seg:
         return False
     if ">" in _SAFE_REDIR.sub(" ", seg):                  # real-file redirection writes

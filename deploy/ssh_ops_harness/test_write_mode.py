@@ -15,6 +15,7 @@ string, so `$(printf '\\x72\\x6d') -rf /` is destructive in effect and harmless 
 substitution outright is what keeps the destructive tier meaningful at all.
 """
 import os
+import shlex
 import shutil
 import sys
 
@@ -481,6 +482,75 @@ check("partial-note::read-only-run-still-says-read-only", "基于已执行只读
 check("partial-note::read-only-run-states-no-writes", "没有执行任何写操作" in _note)
 check("partial-note::read-only-run-claims-no-change", "已经被改动过" not in _note)
 del harness.AUDIT[:]
+
+# --- the box must enforce the time bound, not just us (2026-07-30) ------------------------------
+# _pump's timeout path calls chan.close() with the comment "stop the remote command from running
+# on". Measured A/B on a live box with `grep -rn <pat> / | head -20`: local-close-only left 2
+# processes alive (the grep AND the head) still running 12s after the close; the same command under
+# `timeout` left 0. The leak had a user-visible cost — an abandoned `grep -rn` over /model was still
+# scanning 1.5 HOURS later, and the next diagnosis of that instance read it as concurrent
+# modification and stopped to ask instead of repairing.
+_CMD = "grep -rn 'x' / | head -20"
+_W = ssh_transport._bounded(_CMD)
+check("remote-bound::asks-the-box-to-enforce-it", f"timeout -k 5 {ssh_transport._REMOTE_TIMEOUT}" in _W)
+check("remote-bound::bound-is-shorter-than-ours",
+      ssh_transport._REMOTE_TIMEOUT < ssh_transport._EXEC_TIMEOUT)
+# bash, not sh: real runs use bash-isms (${PIPESTATUS[0]} appeared in a live run) that dash would
+# silently mis-execute.
+check("remote-bound::runs-under-bash", "bash -c" in _W and "sh -c" not in _W.replace("bash -c", ""))
+# On a box without `timeout` the original must still run, byte-identical to pre-wrapper behaviour.
+check("remote-bound::degrades-to-the-original", _W.rstrip().endswith(_CMD))
+check("remote-bound::guards-on-timeout-existing", "command -v timeout" in _W)
+# The model's own text must survive quoting intact — it is what the operator approved on the card.
+_TRICKY = """awk '$4=="0A"' /proc/net/tcp | grep -c ':1FFC'"""
+check("remote-bound::preserves-quotes-in-the-payload",
+      shlex.split(ssh_transport._bounded(_TRICKY).split("bash -c ")[1].rsplit("; fi;", 1)[0])[0]
+      == _TRICKY)
+# The wrapper is a transport concern only. My first attempt asserted the wrapper would classify
+# DIFFERENTLY from the original, on the theory that its `exec`/`bash -c` would be caught and so a
+# reversed order would fail loudly. It does not: the wrapper classifies read_only too, because
+# `exec` is not token 0 of its segment. Asserting the real invariant instead — what the audit
+# records and what the consent card shows is the MODEL's string, never our wrapper. That is the
+# property that matters: the operator approves what they were shown, and that is what runs.
+_res, _entry = dispatch("echo x > /tmp/f", allow_writes=True)
+check("remote-bound::audit-records-the-models-text", _entry["command"] == "echo x > /tmp/f")
+check("remote-bound::audit-has-no-wrapper", "timeout -k" not in _entry["command"])
+with confirm_stub.approving() as _io:
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw", "allow_writes": True})
+    harness.run_command("echo x > /tmp/f")
+check("remote-bound::card-shows-the-models-text",
+      len(_io.requests) == 1 and _io.requests[0]["command"] == "echo x > /tmp/f")
+
+# --- shell keywords are wrappers too (2026-07-30) ------------------------------------------------
+# Same structural root as the binary-wrapper fix, found because the assertion above was wrong: the
+# mutating check reads token 0, and a shell reserved word can sit there. Chaining is accepted and
+# split on `;`, so `if true; then rm -f /root/x; fi` yields the segment `then rm -f /root/x` — token
+# 0 is `then`, `rm` is never looked up, and the delete AUTO-RAN with no consent card. All five of
+# these were measured read_only before the keyword strip.
+for _name, _cmd in [
+    ("if-then-delete", "if true; then rm -f /root/marker; fi"),
+    ("if-then-write-to-etc", "if true; then touch /etc/x; fi"),
+    ("for-do-delete", "for f in a b; do rm -f /root/$f; done"),
+    ("while-do-write", "while true; do touch /root/m; done"),
+    ("time-prefix", "time touch /root/marker"),
+    ("negation-prefix", "! touch /root/marker"),
+    ("bare-then", "then touch /root/marker"),
+    ("bare-do", "do touch /root/marker"),
+    ("bare-else", "else rm -f /root/marker"),
+    ("brace-group", "{ touch /root/marker; }"),
+    ("keyword-plus-sudo", "then sudo touch /root/marker"),
+]:
+    check(f"keyword-cannot-skip-the-card::{_name}", guardrails.classify(_cmd) == "mutating")
+
+# Keywords that end a construct change nothing, so they must stay reads rather than fail closed —
+# otherwise every `fi`/`done` segment in an accepted chain would demand an approval.
+for _name, _cmd in [("fi", "fi"), ("done", "done"), ("esac", "esac"), ("while-true", "while true")]:
+    check(f"bare-keyword-is-not-a-write::{_name}", guardrails.classify(_cmd) == "read_only")
+
+# And the destructive tier is unaffected — it was already catching these via whole-string regex.
+for _name, _cmd in [("if-then-chmod", "if [ -f /x ]; then chmod 777 /etc/passwd; fi"),
+                    ("for-do-rm-rf", "for d in /a /b; do rm -rf $d; done")]:
+    check(f"keyword-cannot-soften-destructive::{_name}", guardrails.classify(_cmd) == "destructive")
 
 ssh_transport.run_ssh = _REAL_RUN_SSH
 
