@@ -38,6 +38,10 @@ _ALLOW_WRITES = False
 # for an earlier command must never approve the one currently pending, so the match is explicit
 # rather than "whatever line showed up next".
 _CONFIRM_SEQ = 0
+# Longest command that may be put on an approval card. Deliberately generous — the point is not to
+# police length, it is that the card must show the WHOLE string, so anything that cannot fit is
+# refused instead of trimmed. Well clear of the supervisor's 256 KiB per-line ceiling.
+_MAX_CONFIRMABLE_COMMAND = 2000
 
 # INV-9: the harness must expose EXACTLY ssh_exec and strip every built-in/local-exec tool.
 ALLOWED_TOOLS = ["mcp__ssh_ops__ssh_exec"]
@@ -226,6 +230,7 @@ _DISPOSITION_MAP = {
     "refused_mutating_phase1": "refused",
     "refused_form": "refused",
     "refused_not_approved": "refused",
+    "refused_unconfirmable": "refused",
     "no_connection": "failed",
 }
 
@@ -264,7 +269,12 @@ def _request_confirm(command: str) -> bool:
     global _CONFIRM_SEQ
     _CONFIRM_SEQ += 1
     req_id = "c%d" % _CONFIRM_SEQ
-    payload = json.dumps({"id": req_id, "command": command[:400]}, ensure_ascii=False)
+    # NOT truncated. Until 2026-07-30 this sent command[:400], which broke the guarantee the
+    # docstring above states: past 400 chars the operator approved a PREFIX while the suffix — the
+    # end of a `sed -i` expression, the target of a redirect — executed unread. Consent to a
+    # prefix is not consent. Commands too long to put on a card are refused upstream in
+    # run_command rather than trimmed to fit, so this line can no longer disagree with what runs.
+    payload = json.dumps({"id": req_id, "command": command}, ensure_ascii=False)
     sys.stdout.write("@@CONFIRM " + payload + "\n")
     sys.stdout.flush()
     line = sys.stdin.readline()
@@ -328,6 +338,19 @@ def run_command(command: str) -> dict:
             # 20-45 commands in a run are reads), so asking every time is affordable - and the
             # thing the guardrail cannot judge is exactly what the human can: whether pid 6934
             # is a squatter or a training job three days in.
+            # A command the card cannot carry in full is refused, not trimmed to fit. The card is
+            # the only place a human sees what will change; shortening it to make it presentable
+            # would hand back an approval for a string that never ran. Nothing legitimate is near
+            # this bound (a real repair command is well under 300 chars), so hitting it means the
+            # model built something it should send as separate steps.
+            if len(command) > _MAX_CONFIRMABLE_COMMAND:
+                entry["disposition"] = "refused_unconfirmable"
+                return {"text": ("⛔ NOT EXECUTED — too long to put on an approval card "
+                                 f"({len(command)} chars, limit {_MAX_CONFIRMABLE_COMMAND}). This is "
+                                 "not a permissions problem: a human has to read the exact string "
+                                 "before it runs. Split it into separate, individually-readable "
+                                 "commands."),
+                        "is_error": True, "tier": tier, "executed": False}
             if not _request_confirm(command):
                 entry["disposition"] = "refused_not_approved"
                 return {"text": ("\u26d4 NOT EXECUTED - the operator declined this command. Do not "

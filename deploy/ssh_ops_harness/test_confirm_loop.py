@@ -54,6 +54,30 @@ check("approved-runs", res["executed"] is True and entry["disposition"] == "ran_
 check("request-carries-literal-command",
       len(io_obj.requests) == 1 and io_obj.requests[0]["command"] == WRITE)
 
+# The check above is 24 characters long, so it held while the payload was built from
+# `command[:400]` — the assertion was correct and simply could not fail. Until 2026-07-30 a longer
+# command was silently trimmed to fit the card: the operator approved a PREFIX while the suffix (the
+# end of a sed expression, the target of a redirect) executed unread. Consent to a prefix is not
+# consent, so the case that exercises it has to be longer than the old cap.
+LONG_WRITE = "sed -i 's/" + "a" * 450 + "/b/' /workspace/app.conf"
+check("long-command-is-classified-approvable", guardrails.classify(LONG_WRITE) == "mutating")
+res, entry, io_obj = dispatch(LONG_WRITE)
+check("request-is-not-truncated",
+      len(io_obj.requests) == 1 and io_obj.requests[0]["command"] == LONG_WRITE)
+check("approved-long-command-runs", res["executed"] is True)
+
+# Past the bound the command is REFUSED rather than trimmed to fit, and no card is offered — a card
+# the operator cannot fully read is not consent, and shortening it to look presentable is the bug.
+TOO_LONG = "sed -i 's/" + "a" * (harness._MAX_CONFIRMABLE_COMMAND + 100) + "/b/' /workspace/app.conf"
+res, entry, io_obj = dispatch(TOO_LONG)
+check("unconfirmable-does-not-run", res["executed"] is False)
+check("unconfirmable-never-asks", len(io_obj.requests) == 0)
+check("unconfirmable-disposition", entry["disposition"] == "refused_unconfirmable")
+check("unconfirmable-settles-as-refused-on-the-wire",
+      harness._wire_disposition(entry["disposition"]) == "refused")
+check("unconfirmable-says-it-is-not-a-permissions-problem", "not\na permissions problem"
+      in res["text"] or "not a permissions problem" in res["text"])
+
 # --- declined -> does NOT run, and settles as refused on the wire --------------------------------
 res, entry, _ = dispatch(WRITE, decide=lambda c: False)
 check("declined-does-not-run", res["executed"] is False)
