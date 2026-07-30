@@ -52,7 +52,13 @@ type AgentContext struct {
 type TurnContextView = AgentContext
 
 const (
-	maxAgentContextPairs             = 8
+	// maxAgentContextPairs must not be lower than agent.http.max_session_turns:
+	// this is the model's ENTIRE cross-turn memory (messagesFromAgentContext drops
+	// everything else), so a cap below the session length buys nothing except turns
+	// the user paid for and the model cannot see. At 20 pairs a full verbatim replay
+	// of the longest real sessions costs ~23k tokens against a 400k per-turn ceiling.
+	// TestAgentContextPairsCoverTheSessionTurnCap pins the two together.
+	maxAgentContextPairs             = 20
 	maxAgentContextObservations      = 8
 	maxAgentContextVerifiedKnowledge = 4
 )
@@ -149,12 +155,12 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 	for _, message := range e.messages {
 		switch message.Role {
 		case openai.ChatMessageRoleUser:
-			pendingUser = safeContextText(message.Content)
+			pendingUser = safeConversationText(message.Content)
 		case openai.ChatMessageRoleAssistant:
 			if pendingUser == "" || strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
 				continue
 			}
-			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: safeContextText(message.Content)})
+			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: safeConversationText(message.Content)})
 			pendingUser = ""
 		}
 	}

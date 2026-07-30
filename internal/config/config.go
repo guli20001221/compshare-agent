@@ -114,7 +114,13 @@ type HTTPConfig struct {
 // DefaultMaxSessionTurns is the compatibility-path fallback when
 // agent.http.max_session_turns is zero or unset. The durable turn coordinator
 // never consults it.
-const DefaultMaxSessionTurns = 10
+//
+// Raised 10 -> 20 alongside engine.maxAgentContextPairs, which must stay >= this
+// value: the model's whole cross-turn memory is the restored pair window, so a
+// session allowed to run longer than that window spends turns the model cannot
+// see. 20 verbatim turns of the longest sessions in the production export cost
+// ~23k tokens, well inside agent.rate_limit.max_tokens_per_turn.
+const DefaultMaxSessionTurns = 20
 
 // MySQLConfig holds connection settings for the MySQL backing store.
 // DSN accepts any ${ENV_VAR} placeholder; if the env var is unset the field is
