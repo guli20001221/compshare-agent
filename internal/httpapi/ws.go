@@ -15,17 +15,52 @@ import (
 )
 
 const (
-	// maxWSConnLifetime caps a single chat WebSocket connection. The gateway opens
-	// one connection per chat turn (see frame/src/Frame/AIAssistant/service.js: a
-	// new WebSocket per chatStream call, closed on done/error/abort), so this is a
-	// generous turn-level ceiling, not a session lifetime. It backstops a wedged
-	// connection that the gateway never closes.
-	maxWSConnLifetime = 10 * time.Minute
+	// minWSConnLifetime is the FLOOR for a single chat WebSocket. The gateway opens one connection
+	// per chat turn (see frame/src/Frame/AIAssistant/service.js: a new WebSocket per chatStream
+	// call, closed on done/error/abort), so this bounds a turn, not a session. It backstops a
+	// wedged connection that the gateway never closes.
+	//
+	// It was a flat ceiling named maxWSConnLifetime until 2026-07-30, chosen before the
+	// write-enabled SSH-ops lane existed. A live frontend run showed the contradiction that
+	// created: agent.ssh_ops.timeout was 12m, this was 10m, and an in-instance repair died at
+	// exactly 10:00.0 — the user got "[NetworkError] 连接已关闭" and nothing else, after the lane
+	// had already replaced an application directory on the box. Two independent numbers governing
+	// one turn will drift; see wsConnLifetime, which now derives the deadline from the lane budget
+	// so the socket always outlives the work it carries.
+	minWSConnLifetime = 10 * time.Minute
+
+	// wsLaneSlack is what the turn needs BEYOND the lane's own budget: agent.ssh_ops.timeout bounds
+	// only the harness subprocess, while the same turn also retrieves knowledge, waits on the
+	// operator's consent cards, and writes the verdict after the harness returns.
+	wsLaneSlack = 2 * time.Minute
 
 	// maxWSMessageBytes must fit screenshot uploads. OCR accepts up to 10 MiB raw
 	// image bytes; base64 plus JSON framing needs extra room on the WebSocket.
 	maxWSMessageBytes int64 = 20 * 1024 * 1024
 )
+
+// wsConnLifetime is the deadline for one chat socket: the wedged-connection floor, or the
+// configured in-instance lane budget plus slack when that is longer.
+//
+// Deriving it is the point. agent.ssh_ops.timeout is an operator's statement of how long a single
+// turn may legitimately spend inside an instance, so a transport deadline shorter than that does
+// not protect anything — it just kills the longest, most consequential turns, which under
+// allow_writes are the ones that have already changed the box. Deliberately NOT clamped to a
+// second ceiling: a cap that silently cut a longer configured lane short would be this same bug
+// with a bigger number.
+func (h *Handlers) wsConnLifetime() time.Duration {
+	if h == nil || h.cfg == nil {
+		return minWSConnLifetime
+	}
+	// Keyed off the configured budget rather than the enabled flag: the lane can also be switched
+	// on by env (COMPSHARE_SSH_OPS) with no YAML `enabled`, and an operator who wrote a timeout has
+	// declared the length of a turn either way. When the lane is off the field is unset, so this
+	// reads the floor.
+	if lane := h.cfg.Agent.SSHOps.Timeout; lane > 0 && lane+wsLaneSlack > minWSConnLifetime {
+		return lane + wsLaneSlack
+	}
+	return minWSConnLifetime
+}
 
 // HandleWS upgrades a gateway-initiated request to a WebSocket and serves the
 // streaming chat protocol. Identity comes from the upgrade request's HTTP
@@ -72,7 +107,7 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 	conn.SetReadLimit(maxWSMessageBytes)
 	defer conn.CloseNow()
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), maxWSConnLifetime)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.wsConnLifetime())
 	defer cancel()
 
 	writer := wsx.New(ctx, conn)
