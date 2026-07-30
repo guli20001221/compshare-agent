@@ -96,9 +96,11 @@ func TestLiveKeystone(t *testing.T) {
 			"先运行 nvidia-smi 看具体报错，再 cat /proc/driver/nvidia/version 与 cat /etc/os-release 核对，"+
 			"判断是宿主机驱动问题还是容器内用户态 NVIDIA 驱动/库缺失，给出根因和修复建议。")
 
+	// nil ConfirmFunc on purpose: this test drives the READ-ONLY lane, and a lane with no confirmer
+	// is a lane with no human on it, so every mutating command is refused rather than waved through.
 	res, err := liveSupervisor().Run(context.Background(), cred, task, func(st Step) {
 		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
-	})
+	}, nil)
 	t.Logf("\n========== HARNESS OUTPUT ==========\n%s\n====================================", res.Output)
 	if err != nil {
 		t.Fatalf("Supervisor.Run: %v (timedOut=%v)", err, res.TimedOut)
@@ -137,7 +139,7 @@ func TestLiveFullFlow(t *testing.T) {
 	owner := Owner{TopOrganizationID: 1, OrganizationID: 2, RequestUUID: "live-req-1", TurnID: "live-turn-1"}
 	res, err := svc.Diagnose(context.Background(), d, owner, instanceID, task, func(st Step) {
 		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
-	})
+	}, nil)
 	t.Logf("\n========== [beat 4] 进入实例排查 · 诊断结论 ==========\n%s\n====================================================", res.Output)
 	if err != nil {
 		t.Fatalf("Diagnose: %v (timedOut=%v)", err, res.TimedOut)

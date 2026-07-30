@@ -287,6 +287,30 @@ def _request_confirm(command: str) -> bool:
     return reply.get("id") == req_id and reply.get("approved") is True
 
 
+def _partial_note(sdk_error: str) -> str:
+    """The note appended when the run ended early, worded from what ACTUALLY ran.
+
+    This said "基于已执行只读命令" unconditionally until 2026-07-30. In write mode that is a false
+    statement with real consequences, and a live run proved it: the lane installed a package and
+    brought a crash-looping service back up, the gateway then returned 500, and the user was told
+    that only read-only commands had run. Someone reading that assumes the instance is untouched —
+    so they re-run the repair, or they debug a state that no longer exists.
+
+    A run that died AFTER changing the box has to say what it changed. The list comes from the audit
+    trail rather than from anything the model reports about itself, so it cannot overstate or
+    understate: `ran_mutating` is written by run_command only on the path where the write actually
+    executed. The whole verdict is scrubbed by _emit_verdict afterwards, so echoing the commands
+    here cannot leak the credential.
+    """
+    changed = [e["command"] for e in AUDIT if e.get("disposition") == "ran_mutating"]
+    if changed:
+        listed = "\n".join("  - " + c for c in changed)
+        return ("\n\n（注：诊断中途结束（%s）。**中断前这台实例已经被改动过**，"
+                "下列写操作已执行成功，请以此判断当前状态：\n%s）" % (sdk_error, listed))
+    return ("\n\n（注：诊断中途结束（%s），期间没有执行任何写操作，"
+            "以上为基于已执行只读命令的阶段性结论。）" % sdk_error)
+
+
 def _emit_verdict(text: str) -> None:
     """Emit the single terminal conclusion block. The body is scrubbed of the literal credential (V5)
     as defense-in-depth; the primary guarantee is that the credential never enters the model's view."""
@@ -628,7 +652,7 @@ async def main():
         body = "（诊断已结束，但未生成明确结论"
         body += f"：{sdk_error}）" if sdk_error else "）"
     elif sdk_error:
-        body += f"\n\n（注：诊断中途结束（{sdk_error}），以上为基于已执行只读命令的阶段性结论。）"
+        body += _partial_note(sdk_error)
     _emit_verdict(body)
 
 

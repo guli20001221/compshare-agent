@@ -445,6 +445,43 @@ for _name, _cmd, _want in [
 ]:
     check(f"ssh-channel-tiering::{_name}", guardrails.classify(_cmd) == _want)
 
+# --- a run that died AFTER changing the box must say so (2026-07-30) -----------------------------
+# Confirmed on a live run, not reasoned about: the lane installed python3-tomli and brought a
+# crash-looping systemd unit from `activating` back to `active`, the gateway then returned 500, and
+# the partial-result note told the user the conclusion was "基于已执行只读命令" — i.e. that nothing
+# had been changed. The box had been changed. A user who believes that note re-runs the repair or
+# debugs a state that no longer exists.
+del harness.AUDIT[:]
+harness.AUDIT.extend([
+    {"command": "systemctl status infersvc", "tier": "read_only", "disposition": "ran_read_only"},
+    {"command": "apt-get install -y python3-tomli", "tier": "mutating", "disposition": "ran_mutating"},
+    {"command": "systemctl restart infersvc", "tier": "mutating", "disposition": "ran_mutating"},
+    # Refused and not-approved writes changed nothing, so they must NOT be listed as changes.
+    {"command": "rm -rf /", "tier": "destructive", "disposition": "refused_destructive"},
+    {"command": "chmod 777 /etc", "tier": "mutating", "disposition": "refused_not_approved"},
+])
+_note = harness._partial_note("500 fetch failed")
+check("partial-note::says-the-box-was-changed", "已经被改动过" in _note)
+check("partial-note::does-not-claim-read-only", "基于已执行只读命令" not in _note)
+check("partial-note::lists-the-writes-that-ran",
+      "apt-get install -y python3-tomli" in _note and "systemctl restart infersvc" in _note)
+check("partial-note::omits-the-refused-ones",
+      "rm -rf /" not in _note and "chmod 777 /etc" not in _note)
+check("partial-note::keeps-the-error", "500 fetch failed" in _note)
+
+# With no write having executed, the old wording is the correct wording — and it now says so
+# positively ("没有执行任何写操作") instead of leaving the reader to infer it.
+del harness.AUDIT[:]
+harness.AUDIT.extend([
+    {"command": "systemctl status infersvc", "tier": "read_only", "disposition": "ran_read_only"},
+    {"command": "systemctl restart infersvc", "tier": "mutating", "disposition": "refused_mutating_phase1"},
+])
+_note = harness._partial_note("timed out")
+check("partial-note::read-only-run-still-says-read-only", "基于已执行只读命令" in _note)
+check("partial-note::read-only-run-states-no-writes", "没有执行任何写操作" in _note)
+check("partial-note::read-only-run-claims-no-change", "已经被改动过" not in _note)
+del harness.AUDIT[:]
+
 ssh_transport.run_ssh = _REAL_RUN_SSH
 
 print(f"\n{'FAILED: ' + ', '.join(FAILS) if FAILS else 'all write-mode checks passed'}")
