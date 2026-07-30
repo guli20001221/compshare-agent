@@ -57,8 +57,16 @@ STILL_REFUSED = [
     ("kill -9 1234", "mutating"),
     ("echo hi > /tmp/x", "mutating"),
     ("nvidia-smi | tee /tmp/out", "mutating"),
-    # in-place edit of /etc is caught by the (stricter) destructive tier, not merely mutating
-    ("sed -i s/a/b/ /etc/hosts", "destructive"),
+    # 2026-07-30: this expectation is REVERSED on purpose, and it is the only assertion in the
+    # harness suites that the blast-radius re-tiering reversed. It used to read "in-place edit of
+    # /etc is caught by the (stricter) destructive tier, not merely mutating" — a path-prefix rule.
+    # A live run showed what that costs: a service broken by its own config in /etc could be
+    # diagnosed exactly and never repaired, because every natural edit of /etc was hard-refused.
+    # The tier now keys on whether the write is RECOVERABLE, so the three cases below pin the new
+    # boundary rather than the old one. /etc/hosts is a config file - wrong, you put it back.
+    # /etc/fstab is not - wrong, the box does not boot, and nothing inside it can fix that.
+    ("sed -i s/a/b/ /etc/hosts", "mutating"),         # recoverable /etc config -> consent card
+    ("sed -i s/a/b/ /etc/fstab", "destructive"),      # unbootable -> hard refuse, no card offered
     ("sed -i s/a/b/ /workspace/app.conf", "mutating"),
     # 2026-07-26: `python -c` payloads are proven read-only structurally (AST) instead of
     # matched against a literal list, so an import with no call is a read. The dangerous

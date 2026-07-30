@@ -21,6 +21,7 @@ transport's hard per-command timeout backstops any streaming command that still 
 Read tier is deny-by-default: anything not positively matching the allowlist is >= mutating.
 """
 import ast
+import posixpath
 import re
 import shlex
 from typing import Iterable
@@ -30,14 +31,55 @@ from typing import Iterable
 # (shutdown/reboot/poweroff -h powers the box off), and _HELP runs before the destructive scan.
 _HELP = re.compile(r"^[\w./-]+\s+(--help|--version|help|version)\s*$")
 
+# Verbs that write EVERY path they are handed, so a lockout path anywhere in the argv is a write.
+# `mv` belongs here rather than below because its SOURCE disappears too: `mv /etc/fstab /tmp/bak`
+# leaves the box unbootable just as surely as overwriting it does.
+_WRITE_ANY_ARG = r"(?:tee|truncate|chmod|chown|chgrp|dd|rm|mv)"
+# Verbs that take a SOURCE first and write only their LAST argument. Reading a lockout path with
+# these — `cp /etc/fstab /tmp/fstab.bak`, i.e. backing it up before editing — is the careful thing
+# to do, and refusing it is the exact over-strictness this re-tiering exists to remove.
+_WRITE_LAST_ARG = r"(?:cp|install|ln)"
+# Paths where a write is unrecoverable from inside the box, or destroys the only channel we would
+# need in order to recover it. These are the deliberate CARVE-OUTS from the 2026-07-30 narrowing
+# further down: /etc as a whole moved to `mutating` because that is where a broken service's config
+# lives and refusing it refused the repair — but these specific paths are not service config. A bad
+# fstab line makes the box unbootable; passwd/shadow/group/sudoers/ssh each end the login path;
+# /var/lib holds live database and container state, so a write there is data loss, not a config fix.
+_LOCKOUT_BODY = (r"/(?:etc/(?:fstab|crypttab|passwd|shadow|gshadow|group|sudoers(?:\.d)?|ssh"
+                 r"|default/grub)|var/lib)")
+_LOCKOUT_PATHS = _LOCKOUT_BODY + r"(?:/|\s|$)"
+# The same paths, but only where they are the LAST argument — i.e. the destination.
+_LOCKOUT_PATHS_DEST = _LOCKOUT_BODY + r"(?:/\S*)?/?\s*$"
+# Broad system prefixes, used only where the RULE is about a path being system-owned at all.
+_SYSTEM_PATHS = r"/(?:etc|usr|lib(?:64)?|s?bin|var|boot|opt|root)(?:/|\s|$)"
+
 # ===========================================================================
 # Tier 1 (checked FIRST): destructive — always hard-refused, case-insensitive.
 # Deny-by-EFFECT, but anchored so flags/paths that merely SPELL a destructive verb
 # (e.g. `iostat -dd`) don't trip it.
+#
+# Every pattern here is matched against BOTH the raw command and a path-normalized copy of it
+# (see _normalize_paths / classify), so a path rule cannot be defeated by respelling the path.
 # ===========================================================================
 _DESTRUCTIVE_SRC = [
-    # filesystem / device / volume wipe
-    r"\brm\b", r"\brmdir\b", r"\bunlink\b", r"\bshred\b", r"\btruncate\b",
+    # ---- deletion -------------------------------------------------------------------------
+    # `rm` was UNCONDITIONALLY destructive until 2026-07-30. Measured cost of that on a live run:
+    # a purely READ-ONLY diagnostic probe (curl a port, print the body) was hard-refused because it
+    # tidied up its own `/tmp` scratch file at the end. The gate was punishing careful behaviour.
+    # Now: irreversible or wide-blast-radius deletes stay refused; a targeted delete of one
+    # non-system path falls through to `mutating`, i.e. it still needs the operator's consent card.
+    r"\brm\b[^\n]*\s-{1,2}[a-zA-Z-]*[rR]",                 # recursive: rm -r / -rf / --recursive
+    # Every shell expansion that makes ONE `rm` delete an unknown number of files. `*`/`?` were
+    # covered from the start; brace and bracket expansion were not, so `rm -f /etc/{a,b}` and
+    # `rm -f /etc/host[s1]` slipped past the system-path rule below — which claimed in its own
+    # comment that system-path deletes stay refused. A rule whose comment overstates it is worse
+    # than no rule, because the next reader trusts the comment.
+    r"\brm\b[^\n]*[*?]",
+    r"\brm\b[^\n]*\{[^}]*,[^}]*\}",                         # brace: /etc/{a,b}
+    r"\brm\b[^\n]*\[[^\]]+\]",                              # bracket: /etc/host[s1]
+    r"\brm\b[^\n]*\s/(etc|boot|s?bin|lib(64)?|usr|sys|proc|dev|var/lib)(/|\s|$)",
+    r"\brm\b[^\n]*\s/\s*$",                                 # rm /
+    r"\bunlink\b", r"\bshred\b", r"\btruncate\b",
     r"\bmkfs\w*\b", r"(?<![\w-])dd\b[^\n]*\s(if=|of=|bs=|count=|conv=)",
     # fdisk/parted stay destructive EXCEPT the pure LIST mode (-l/--list), which only prints the
     # partition table — that form is allowlisted read-only in _STRUCTURED_DIAG (F9). The interactive
@@ -55,11 +97,37 @@ _DESTRUCTIVE_SRC = [
     # passwd as a COMMAND (start / after sudo / after a separator), path-qualified or not — but NOT
     # the /etc/passwd data path (cat/stat/df /etc/passwd) nor `getent passwd`.
     r"(?:^|\bsudo\s+|[;&|]\s*)(?:/\S+/)?passwd\b",
-    # device / critical-path writes
+    # ---- device / critical-path writes ----------------------------------------------------
+    # Raw disks, the boot chain and the kernel interfaces stay HARD-REFUSED: a bad write there is
+    # either unrecoverable or unreasonable to reason about from a consent card.
     r">\s*/dev/[sn]d", r"\bof=/dev/",
-    r">\s*/(etc|boot|var/lib|usr|s?bin|lib(64)?|sys|proc)\b",
-    r"\b(cp|mv|tee|install)\b[^\n]*\s/(boot|etc|var/lib|usr|s?bin|lib(64)?)/",
-    r"\bsed\b[^\n]*-i\w*[^\n]*\s/(etc|boot|usr)/",
+    r">\s*/(boot|sys|proc)\b",
+    r"\b(cp|mv|tee|install)\b[^\n]*\s/boot/",
+    r"\bsed\b[^\n]*-i\w*[^\n]*\s/boot/",
+    # The lockout carve-outs described at _LOCKOUT_BODY. Every shape a write can take, with source
+    # and destination kept apart so that READING one of these paths stays allowed.
+    rf"\b{_WRITE_ANY_ARG}\b[^\n]*\s{_LOCKOUT_PATHS}",
+    rf"\b{_WRITE_LAST_ARG}\b[^\n]*\s{_LOCKOUT_PATHS_DEST}",
+    rf"\bsed\b[^\n]*-i\w*[^\n]*\s{_LOCKOUT_PATHS}",
+    rf">\s*{_LOCKOUT_PATHS}",
+    # Copying FROM /dev/null can only blank the destination — it is `truncate` wearing another
+    # name, and truncate is unconditionally destructive above. Scoped to system paths so that
+    # `cp /dev/null /tmp/marker` still only needs a consent card.
+    rf"\b(?:cp|install)\b[^\n]*\s/dev/null\s+{_SYSTEM_PATHS}",
+    # /etc, /usr, /lib, /bin, /sbin, /var/lib were in the three patterns above until 2026-07-30 and
+    # are deliberately NOT any more. They are where a broken service actually lives, so refusing
+    # them refused the repair itself. Measured on a live run: the fault was injected by renaming a
+    # file under /usr/lib, and the agent — having diagnosed it exactly right — could not rename it
+    # back, because `mv ... /usr/lib/...` was destructive. Every natural form (mv / cp / install /
+    # `cat X > Y`) was refused; only contortions (`ln -s`, `python3 shutil.move`) got through, which
+    # is not a fix path anyone should have to find. Writing a log next to the image's own
+    # /usr/local/jupyterlab.log was refused for the same reason.
+    # They now fall through to `mutating`: still gated, but by the operator reading the exact
+    # command on a consent card rather than by a blanket path ban. The exceptions are the
+    # _LOCKOUT_PATHS above (/etc/fstab, the account and ssh files, /var/lib): those are not service
+    # config, so nothing in the measured runs needed them and a bad write there is either
+    # unbootable or unrecoverable. The first cut of this narrowing dropped /var/lib along with the
+    # rest, which was loosening with no evidence behind it.
     # perms / immutability / lockout
     r"\bchmod\b.*\s-R\b", r"\bchown\b.*\s-R\b", r"\bchmod\b.*\b777\b",
     r"\bchattr\b[^\n]*\s\+[iae]\b",
@@ -710,6 +778,19 @@ def _strip_sudo(cmd: str) -> str:
 
 # Binaries whose invocation changes the box (or holds the session open forever).
 _MUTATING_BINARIES = {
+    # `rm`/`unlink` belong here as of 2026-07-30. They used to be unconditionally destructive, so
+    # this set never needed them; once the destructive patterns were narrowed to recursive/glob/
+    # system-path deletes, a targeted `rm -f /tmp/scratch` fell through to read_only — i.e. a delete
+    # that executes with NO consent card. Narrowing a refusal must never turn into an auto-run.
+    "rm", "unlink",
+    # These write a file on EVERY invocation — there is no read-only form of them to preserve, and
+    # all four classified read_only until 2026-07-30, i.e. they wrote with no consent card at all.
+    "split", "csplit", "mknod", "mkfifo",
+    # Wrappers that run another command but whose OWN argument grammar cannot be parsed reliably
+    # (taskset/numactl take either a positional mask or a flag; flock takes a path or an fd). We
+    # cannot tell where the wrapper ends and the inner command begins, so they fail closed here
+    # instead of being unwrapped. See _WRAPPER_BINARIES for the ones that CAN be unwrapped.
+    "taskset", "numactl", "flock", "chroot", "unshare", "nsenter", "script", "strace", "ltrace",
     "cp", "mv", "ln", "mkdir", "rmdir", "touch", "tee", "install", "patch", "rename",
     "chmod", "chown", "chgrp", "setfacl", "chattr", "mktemp",
     "mount", "umount", "swapon", "swapoff", "mkswap", "fallocate", "resize2fs",
@@ -722,6 +803,44 @@ _MUTATING_BINARIES = {
     "vi", "vim", "nano", "emacs", "ed", "less", "more", "man", "watch", "htop",
     "screen", "tmux", "at", "batch", "systemd-run",
 }
+# Wrapper prefixes: the command's EFFECT belongs to the inner command, not to the wrapper's name.
+# Until 2026-07-30 none of these appeared in any set, which left the gate structurally asymmetric:
+# the destructive scan is a regex over the WHOLE string, so `nice rm -rf /x` was caught, but the
+# mutating check reads only the FIRST token, so `nice touch /etc/x` read as read_only and auto-ran
+# with no consent card. Wrapping is the cheapest bypass there is, and it defeated exactly one half
+# of the gate — the half a human is standing in.
+#
+# The value is how many of the wrapper's OWN positionals precede the inner command once flags are
+# consumed (`timeout 5 cmd` has one: the duration). Failing to find an inner command at all fails
+# CLOSED, so `ionice -p 1234 -c 3` (which renices a running pid rather than running anything) lands
+# in mutating rather than being waved through as an empty read.
+_WRAPPER_BINARIES = {
+    "nice": 0, "ionice": 0, "nohup": 0, "setsid": 0, "stdbuf": 0, "eatmydata": 0,
+    "busybox": 0, "command": 0, "timeout": 1,
+}
+# Wrapper flags that consume a SEPARATE value token (`-n 5`, `-o L`, `-s KILL`, `-k 10`). Getting
+# this list wrong cannot fail open: a value token mistaken for the inner command is itself
+# classified, and a bare `5` or `L` is not a known binary, so it lands in mutating.
+_WRAPPER_VALUE_FLAGS = {"-n", "-c", "-o", "-e", "-i", "-s", "-k", "-p", "-N", "-m"}
+# `command -v/-V foo` only LOOKS UP foo (like `which`) rather than running it, and it is a common
+# environment probe. Every other `command` form executes.
+_COMMAND_LOOKUP = re.compile(r"(?:^|\s)-[vV](?:\s|$)")
+
+# Binaries that READ by default but take a destination path, so the write hides in a FLAG rather
+# than in the binary's name. All of these classified read_only on 2026-07-30 — they wrote a file
+# with no consent card. `base64 -d -o out` and `xxd -r in out` are the standard "write arbitrary
+# bytes to an arbitrary path" idioms, so this was not a corner case.
+# A blanket "-o means output" rule would be wrong: `ps -o pid,comm`, `lsblk -o NAME`, `findmnt -o`
+# and `df -o` all use -o for FORMAT and are core diagnostics. Hence per-binary scoping.
+_OUTPUT_FLAG_WRITERS = {
+    "openssl": re.compile(r"(?:^|\s)-(?:out|keyout)(?:[=\s]|$)"),
+    "sort": re.compile(r"(?:^|\s)(?:-o|--output)(?:[=\s]|$)"),
+    "base64": re.compile(r"(?:^|\s)(?:-o|--output)(?:[=\s]|$)"),
+    "gpg": re.compile(r"(?:^|\s)(?:-o|--output)(?:[=\s]|$)"),
+    # `xxd -r` exists to turn hex back into bytes; its whole purpose is producing binary output.
+    "xxd": re.compile(r"(?:^|\s)-(?:r|revert)(?:\s|$)"),
+}
+
 # Running arbitrary code is an unbounded write primitive, so these stay refused even
 # though they can look read-only.
 _EXEC_BINARIES = {
@@ -1029,6 +1148,31 @@ def _env_is_read(tokens) -> bool:
     return True
 
 
+def _strip_wrapper(binary: str, tokens) -> str:
+    """Return the inner command of a wrapper invocation, or "" when there is none.
+
+    Consumes the wrapper's own flags (skipping a separate value for the flags in
+    _WRAPPER_VALUE_FLAGS) and then the fixed number of its own positionals, leaving the rest.
+    """
+    i = 1
+    while i < len(tokens) and tokens[i].startswith("-"):
+        i += 2 if tokens[i] in _WRAPPER_VALUE_FLAGS else 1
+    i += _WRAPPER_BINARIES[binary]
+    return " ".join(tokens[i:]) if i < len(tokens) else ""
+
+
+def _wrapper_is_mutating(binary: str, tokens, depth: int) -> bool:
+    """Classify a wrapper invocation by its INNER command, run through this same gate."""
+    if depth > 3:
+        return True                                       # nested wrappers: fail closed
+    if binary == "command" and _COMMAND_LOOKUP.search(" ".join(tokens)):
+        return False                                      # `command -v foo` looks foo up, no exec
+    inner = _strip_wrapper(binary, tokens)
+    if not inner:
+        return True                                       # no inner command to judge: fail closed
+    return _is_mutating_segment(inner, depth + 1)
+
+
 def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     """True if this ONE command changes the box, executes code, leaves the box, or
     blocks forever. Deny-by-effect — anything else is a read. `_depth` bounds the
@@ -1052,7 +1196,12 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # running a file on the box: a script by name, or anything by relative path
     if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
         return True
+    if binary in _WRAPPER_BINARIES:                       # the effect is the INNER command's
+        return _wrapper_is_mutating(binary, tokens, _depth)
     if binary in _MUTATING_BINARIES or binary in _EXEC_BINARIES or binary in _NET_BINARIES:
+        return True
+    ofw = _OUTPUT_FLAG_WRITERS.get(binary)                # reader whose write hides in a flag
+    if ofw and ofw.search(seg):
         return True
     if binary in _INTERPRETERS:
         if len(tokens) == 1:
@@ -1132,6 +1281,33 @@ def is_form_violation(command: str) -> bool:
     return bool(_SUBSTITUTION.search(command or ""))
 
 
+_MULTI_SLASH = re.compile(r"/{2,}")
+
+
+def _normalize_paths(cmd: str) -> str:
+    """Rewrite every absolute-path-looking token to its canonical spelling.
+
+    The destructive tier contains PATH rules (`/boot`, `/etc/fstab`, `/var/lib`, the system-path
+    `rm`), and a regex over the raw string reads `//etc/fstab` and `/tmp/../etc/fstab` as different
+    paths from `/etc/fstab` while the kernel does not. Both spellings were accepted as `mutating` on
+    2026-07-30 — one consent card away from a write the tier is supposed to refuse outright.
+
+    This is only ever used to produce a SECOND string to scan, never to replace the first: classify
+    ORs the two scans, so normalizing can add matches and can never remove one. That is what makes
+    the crude tokenisation here safe — mangling a quoted path with spaces cannot let anything
+    through, because the raw string is still scanned as well.
+    """
+    out = []
+    for tok in cmd.split():
+        raw = _unquote(tok)
+        if raw.startswith("/") and len(raw) > 1:
+            norm = posixpath.normpath(_MULTI_SLASH.sub("/", raw))
+            out.append(norm)
+            continue
+        out.append(tok)
+    return " ".join(out)
+
+
 def classify(command: str) -> str:
     """Return 'destructive' | 'read_only' | 'mutating'. Reasoning-blind: command text only."""
     cmd = (command or "").strip()
@@ -1139,7 +1315,10 @@ def classify(command: str) -> str:
         return "mutating"
     if _HELP.fullmatch(cmd):                              # 0) help/version is always safe
         return "read_only"
+    normalized = _normalize_paths(cmd)
     if any(p.search(cmd) for p in _DESTRUCTIVE):          # 1) destructive precedes everything
+        return "destructive"
+    if normalized != cmd and any(p.search(normalized) for p in _DESTRUCTIVE):
         return "destructive"
     if "\n" in cmd:                                       # 2) never accept a multi-line script
         return "mutating"

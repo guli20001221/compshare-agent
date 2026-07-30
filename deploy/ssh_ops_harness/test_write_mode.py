@@ -231,6 +231,176 @@ try:
 finally:
     os.chdir(_cwd)
 
+# --- destructive tier: blast-radius narrowing (2026-07-30) ---------------------------------------
+# Motivation is a measurement, not taste. On four live faults the agent diagnosed 4/4 root causes
+# correctly and repaired 1/4; three of the failures were THIS gate refusing the correct fix. Each
+# case below is the actual command from that run.
+#
+# What matters is WHICH TIER, not merely "not refused": `destructive` is refused outright, while
+# `mutating` still makes the operator approve that exact string on a consent card. A command that
+# slipped to `read_only` would execute with NO approval — strictly worse than the over-refusal we
+# are fixing — so every case asserts its tier by name.
+_NVML = "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.570.153.02"
+for _name, _cmd in [
+    # The fault was injected by renaming this library aside. The agent found it, named it exactly,
+    # and then could not rename it back, because cp/mv/install into /usr was destructive.
+    ("restore-renamed-system-library", f"mv {_NVML}.disabled {_NVML}"),
+    ("restore-then-refresh-linker", f"mv {_NVML}.disabled {_NVML} && ldconfig && nvidia-smi"),
+    # A read-only probe (fetch a port, print the body) refused because it tidied its own scratch file.
+    ("probe-that-cleans-its-own-tmp-file",
+     "curl -sS http://127.0.0.1:8888/ -o /tmp/b; head -c 99 /tmp/b; rm -f /tmp/b"),
+    ("delete-one-named-non-system-file", "rm -f /tmp/jupyter-http-body.1234"),
+    # This image keeps its own service log at /usr/local/jupyterlab.log; writing beside it was refused.
+    ("write-a-log-under-usr-local", "echo starting >/usr/local/mylog.log"),
+    # Repairing a broken service means editing where the service's config lives.
+    ("edit-a-broken-service-config", "sed -i 's/^c.ServerApp.certfile/#&/' /etc/jupyter/config.py"),
+    ("back-up-a-system-file-before-editing", "cp /etc/hosts /etc/hosts.bak"),
+    ("remove-an-empty-directory", "rmdir /root/emptydir"),
+]:
+    check(f"approvable-tier::{_name}", guardrails.classify(_cmd) == "mutating")
+
+# The narrowing must not have widened. `/boot`, `/sys`, `/proc` and raw disks stay hard-refused
+# because a bad write there is unrecoverable or not reasonable to judge from a card, and deletion
+# stays refused whenever the blast radius is recursive, glob-shaped, or a system path.
+for _name, _cmd in [
+    ("recursive-delete-of-root", "rm -rf /"),
+    ("recursive-delete-of-a-data-dir", "rm -rf /root/models"),
+    ("glob-delete-radius-not-readable", "rm -f /tmp/*.log"),
+    ("delete-under-a-system-path", "rm /etc/hosts"),
+    ("long-form-recursive-flag", "rm --recursive /var/data"),
+    ("flag-order-does-not-matter", "rm -Rf /opt/app"),
+    ("boot-chain-copy", "cp /tmp/x /boot/vmlinuz"),
+    ("boot-chain-redirect", "echo x >/boot/grub/grub.cfg"),
+    ("boot-chain-inplace-edit", "sed -i 's/a/b/' /boot/cfg"),
+    ("kernel-interface-redirect", "echo 1 >/proc/sys/kernel/panic"),
+    ("raw-disk-write", "dd if=/dev/zero of=/dev/sda"),
+    ("filesystem-format", "mkfs.ext4 /dev/sdb1"),
+    ("power-off", "shutdown -h now"),
+    ("account-lockout", "usermod -L root"),
+    ("management-channel-lockout", "systemctl stop sshd"),
+    ("firewall-flush", "iptables -F"),
+]:
+    check(f"still-refused::{_name}", guardrails.classify(_cmd) == "destructive")
+
+# --- the consent gate must not be defeatable by wrapping (2026-07-30) ----------------------------
+# The gate was structurally asymmetric: the destructive scan is a regex over the WHOLE string, so
+# `nice rm -rf /x` was caught, but the mutating check read only the FIRST token, so `nice touch /x`
+# classified read_only and auto-ran with NO consent card. Wrapping is the cheapest bypass there is
+# and it beat precisely the half a human is standing in. Each of these was measured read_only.
+for _name, _cmd in [
+    ("nice", "nice touch /root/marker"),
+    ("nice-with-value-flag", "nice -n 5 touch /root/marker"),
+    ("nice-with-numeric-flag", "nice -5 rm -f /root/marker"),
+    ("nohup", "nohup touch /root/marker"),
+    ("setsid", "setsid touch /root/marker"),
+    ("stdbuf-attached-flag-value", "stdbuf -oL touch /root/marker"),
+    ("stdbuf-separate-flag-value", "stdbuf -o L touch /root/marker"),
+    ("timeout-eats-one-positional", "timeout 5 touch /root/marker"),
+    ("timeout-with-value-flags", "timeout -s KILL -k 10 5 rm -f /root/marker"),
+    ("busybox-applet", "busybox rm -f /root/marker"),
+    ("command-builtin", "command touch /root/marker"),
+    ("nested-wrappers", "nice nohup setsid touch /root/marker"),
+    # No inner command to judge => fail closed, rather than waved through as an empty read.
+    ("wrapper-with-no-inner-command", "ionice -c 3 -p 1234"),
+    # Wrappers we cannot parse (positional-or-flag argument grammar) fail closed by name.
+    ("unparseable-wrapper-taskset", "taskset 0x3 touch /root/marker"),
+    ("unparseable-wrapper-flock", "flock /tmp/l touch /root/marker"),
+]:
+    check(f"wrapper-cannot-skip-the-card::{_name}", guardrails.classify(_cmd) == "mutating")
+
+# Unwrapping must inherit the INNER tier in both directions — including read_only, or the fix would
+# pay for itself by refusing the reads. `timeout 5 curl …` is how the agent avoids hanging on a
+# dead port, so breaking it would cost real diagnostic ability.
+for _name, _cmd in [
+    ("timeout-guards-a-loopback-probe", "timeout 5 curl -sS -I http://127.0.0.1:8188"),
+    ("nice-on-a-plain-read", "nice cat /proc/meminfo"),
+    ("stdbuf-on-a-plain-read", "stdbuf -oL nvidia-smi -q"),
+    ("command-v-only-looks-up", "command -v python3"),
+]:
+    check(f"wrapper-keeps-reads-readable::{_name}", guardrails.classify(_cmd) == "read_only")
+
+for _name, _cmd in [
+    ("wrapped-recursive-delete", "nice rm -rf /root/models"),
+    ("wrapped-power-off", "nohup shutdown -h now"),
+]:
+    check(f"wrapper-cannot-soften-destructive::{_name}", guardrails.classify(_cmd) == "destructive")
+
+# --- writers whose write hides in a FLAG, not in the binary name ---------------------------------
+# All of these classified read_only, i.e. they wrote a file with no consent card. The last two are
+# the standard "put arbitrary bytes at an arbitrary path" idioms, so this was not a corner case.
+for _name, _cmd in [
+    ("openssl-out", "openssl rand -out /root/key.bin 4096"),
+    ("openssl-keyout", "openssl req -x509 -keyout /root/k.pem -out /root/c.pem"),
+    ("sort-output-flag", "sort -o /root/sorted /root/raw"),
+    ("split-always-writes", "split -b 1M /root/big /root/part"),
+    ("csplit-always-writes", "csplit /root/f 100"),
+    ("base64-decode-to-a-path", "base64 -d -o /root/out /tmp/in"),
+    ("xxd-revert-produces-bytes", "xxd -r /tmp/in /root/out"),
+    ("mknod-creates-a-device", "mknod /root/n c 1 3"),
+]:
+    check(f"hidden-write-needs-the-card::{_name}", guardrails.classify(_cmd) == "mutating")
+
+# A blanket "-o means output" rule would have been wrong: on these binaries -o selects the output
+# FORMAT and they are core diagnostics. This pins that the scoping stayed per-binary.
+for _name, _cmd in [
+    ("ps-o-is-a-format", "ps -o pid,comm,etime"),
+    ("lsblk-o-is-a-format", "lsblk -o NAME,SIZE,MOUNTPOINT"),
+    ("sort-without-output-flag", "sort /root/raw"),
+    ("base64-to-stdout", "base64 /root/f"),
+]:
+    check(f"format-flag-is-not-a-write::{_name}", guardrails.classify(_cmd) == "read_only")
+
+# --- a path rule must survive being respelled ----------------------------------------------------
+# The destructive tier contains PATH rules, and a regex over the raw string read `//etc/fstab` and
+# `/tmp/../etc/fstab` as different paths from `/etc/fstab` while the kernel does not. Both were
+# accepted as `mutating` — one consent card away from a write the tier refuses outright. Likewise
+# brace and bracket expansion made one `rm` delete an unknown number of files while the
+# system-path rule's own comment claimed such deletes stay refused.
+#
+# Every case here was chosen by checking that the OLD patterns miss the raw string — `/etc/./hosts`
+# and `/var/lib/../lib/...` look like respellings but the pre-existing system-path rule already
+# matched them verbatim, so asserting on those would have passed with this fix reverted.
+for _name, _cmd in [
+    ("double-slash", "rm -f //etc/hosts"),
+    ("parent-dir-traversal", "rm -f /tmp/../etc/hosts"),
+    ("dot-segment-hiding-the-prefix", "rm -f /var/./lib/mysql/ibdata1"),
+    ("respelled-inplace-edit-of-fstab", "sed -i s/a/b/ //etc/fstab"),
+    ("respelled-copy-onto-fstab", "cp /tmp/x //etc/fstab"),
+    ("respelled-write-to-var-lib", "echo x > /var/./lib/mysql/ibdata1"),
+    ("brace-expansion", "rm -f /tmp/{a,b}"),
+    ("bracket-expansion", "rm -f /root/log[12].txt"),
+]:
+    check(f"respelling-cannot-dodge-a-path-rule::{_name}", guardrails.classify(_cmd) == "destructive")
+
+# --- the carve-outs from the narrowing -----------------------------------------------------------
+# /etc moved to `mutating` because that is where a broken service's config lives. These paths are
+# not service config: a bad fstab means the box does not boot, the account and ssh files end the
+# only channel we would have to fix our own mistake, and /var/lib is live database/container state.
+for _name, _cmd in [
+    ("fstab-truncating-tee", "sudo tee /etc/fstab"),
+    ("fstab-inplace-edit", "sed -i s/a/b/ /etc/fstab"),
+    ("fstab-moved-away-is-also-fatal", "mv /etc/fstab /tmp/fstab.bak"),
+    ("shadow-overwrite", "cp /tmp/shadow /etc/shadow"),
+    ("sshd-config-overwrite", "echo x > /etc/ssh/sshd_config"),
+    ("sudoers-drop-in", "install -m 440 /tmp/x /etc/sudoers.d/90-x"),
+    ("live-database-state", "echo x > /var/lib/mysql/ibdata1"),
+    ("blank-a-system-file-via-dev-null", "install -m 000 /dev/null /etc/resolv.conf"),
+]:
+    check(f"lockout-path-stays-refused::{_name}", guardrails.classify(_cmd) == "destructive")
+
+# Reading a lockout path, and backing one up before editing, must stay allowed — refusing those is
+# the exact over-strictness this re-tiering exists to remove. cp/install/ln write only their LAST
+# argument, so the source position is not a write.
+for _name, _cmd, _want in [
+    ("read-fstab", "cat /etc/fstab", "read_only"),
+    ("list-a-state-dir", "ls -la /var/lib/docker", "read_only"),
+    ("size-a-state-dir", "du -sh /var/lib/docker", "read_only"),
+    ("back-up-fstab-before-editing", "cp /etc/fstab /tmp/fstab.bak", "mutating"),
+    ("copy-passwd-out-for-inspection", "cp /etc/passwd /tmp/p", "mutating"),
+    ("blank-a-tmp-file-via-dev-null", "cp /dev/null /tmp/marker", "mutating"),
+]:
+    check(f"lockout-path-stays-readable::{_name}", guardrails.classify(_cmd) == _want)
+
 ssh_transport.run_ssh = _REAL_RUN_SSH
 
 print(f"\n{'FAILED: ' + ', '.join(FAILS) if FAILS else 'all write-mode checks passed'}")
