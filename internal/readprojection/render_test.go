@@ -1,6 +1,7 @@
 package readprojection
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/entity"
@@ -15,13 +16,17 @@ import (
 // single implementation directly.
 func TestRenderResourceSummaryByteExact(t *testing.T) {
 	instances := []entity.InstanceSnapshot{{
-		UHostId:    "uhost-a",
-		Name:       "train-a",
-		State:      "Running",
-		GpuType:    "4090",
-		GPU:        1,
-		CPU:        8,
-		Memory:     64,
+		UHostId: "uhost-a",
+		Name:    "train-a",
+		State:   "Running",
+		GpuType: "4090",
+		GPU:     1,
+		CPU:     8,
+		// MB, as upstream reports it. The fixture used to say 64 and still expect
+		// "64 GB", which only passed because the converter treated small values as
+		// already-GB — a fixture that encoded the wrong unit and a converter that
+		// agreed with it.
+		Memory:     65536,
 		ImageType:  "Ubuntu",
 		StartTime:  1000,
 		ExpireTime: 2000,
@@ -29,7 +34,7 @@ func TestRenderResourceSummaryByteExact(t *testing.T) {
 
 	got := RenderResourceSummary(instances, ResourceEnvelopeMeta{})
 
-	want := "实例ID=uhost-a, 名称=train-a, 状态=Running, GPU型号=4090, GPU数量=1, CPU=8, 内存=64, 镜像类型=Ubuntu, 启动时间=1000, 到期时间=2000"
+	want := "- train-a（uhost-a）：运行中；4090 × 1；8 vCPU / 64 GB；镜像 Ubuntu；启动于 1970-01-01 08:16；到期于 1970-01-01 08:33"
 	require.Equal(t, want, got)
 }
 
@@ -38,8 +43,8 @@ func TestRenderResourceSummary_NoGPUDoesNotAdvertiseTheStoredGPUModel(t *testing
 		UHostId: "uhost-a", State: "Running", GpuType: "4090", GPU: 0, CPU: 2, Memory: 4096,
 	}}, ResourceEnvelopeMeta{})
 
-	assert.Contains(t, got, "GPU型号=无卡")
-	assert.NotContains(t, got, "GPU型号=4090")
+	assert.Contains(t, got, "无 GPU")
+	assert.NotContains(t, got, "4090")
 }
 
 // TestRenderResourceSummaryTruncationNotice pins the deterministic truncation
@@ -62,7 +67,23 @@ func TestRenderResourceSummaryEmptyIsNoInstances(t *testing.T) {
 func TestRenderMonitorSummarySemanticFacts(t *testing.T) {
 	got := RenderMonitorSummary([]Metric{MetricCPU, MetricGPU}, monitorAPIResult())
 
-	assert.Equal(t, "CPU 使用率=12.5%; GPU 使用率=87%", got)
+	assert.Equal(t, "- CPU 使用率：12.5%\n- GPU 使用率：87%", got)
+}
+
+// TestMonitorMetricsAreOnePerLine is why the join changed. A live instance
+// returns eight scalar metrics (CPU, memory, GPU, VRAM, system disk, one row per
+// data disk); as a single "; "-joined run they were a 90-character line the
+// reader had to parse by eye, while this block is force-inserted verbatim into
+// the answer (presentation=required) — what is built here is exactly what ships.
+func TestMonitorMetricsAreOnePerLine(t *testing.T) {
+	got := RenderMonitorSummary([]Metric{MetricCPU, MetricGPU}, monitorAPIResult())
+
+	lines := strings.Split(got, "\n")
+	assert.Len(t, lines, 2, "one metric per line")
+	for _, line := range lines {
+		assert.True(t, strings.HasPrefix(line, "- "), "every row is a Markdown list item: %q", line)
+	}
+	assert.NotContains(t, got, "; ", "the flat one-line join must not come back")
 }
 
 // TestRenderMonitorSummaryNotesMissingRequestedMetric pins the "未返回数据"
@@ -81,7 +102,7 @@ func TestRenderMonitorSummaryNotesMissingRequestedMetric(t *testing.T) {
 
 	got := RenderMonitorSummary([]Metric{MetricCPU, MetricVRAM}, payload)
 
-	assert.Contains(t, got, "CPU 使用率=8%")
+	assert.Contains(t, got, "- CPU 使用率：8%")
 	assert.Contains(t, got, "显存使用率未返回数据")
 }
 

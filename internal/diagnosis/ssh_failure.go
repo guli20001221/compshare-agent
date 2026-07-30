@@ -10,6 +10,17 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
+// sshPrecheckNoBlockerConclusion is the verdict when nothing cloud-side is wrong.
+//
+// It deliberately does NOT restate that the check was cloud-side only. The sole
+// consumer of this chain (capability.instanceAccessRender) appends that boundary
+// to every access reply unconditionally, so carrying it here too put two
+// near-identical sentences in one paragraph: "该预检未实际探测公网端口，也未进入实例检
+// 查 SSH 服务或认证日志" followed a few clauses later by "该结果没有实际连接公网端口，也
+// 没有进入实例检查服务进程、系统防火墙或认证日志". The renderer's wording is the wider of
+// the two, so it is the one kept — one caveat, one producer.
+const sshPrecheckNoBlockerConclusion = "云侧预检未发现明确阻断：实例运行中，SSH 登录入口完整，CPU/内存监控未见高压。"
+
 // SSHFailureChain performs a cloud-side SSH precheck. It verifies the exact
 // instance, its lifecycle state, the structured login endpoint and monitor
 // signals. It does not probe the public TCP path or enter the guest OS.
@@ -22,7 +33,7 @@ func SSHFailureChain() *Chain {
 		},
 		Fallback: Verdict{
 			Action:         Conclude,
-			Conclusion:     "云侧预检未发现明确阻断：实例运行中，SSH 登录入口完整，CPU/内存监控未见高压。该预检未实际探测公网端口，也未进入实例检查 SSH 服务或认证日志。",
+			Conclusion:     sshPrecheckNoBlockerConclusion,
 			Suggestion:     sshFailureSuggestion(sshFailureUnknown),
 			PrecheckStatus: PrecheckConfigured,
 		},
@@ -181,8 +192,11 @@ func stepCheckResourceUsage() Step {
 				}
 			}
 			return Verdict{
-				Action:         Conclude,
-				Conclusion:     "云侧预检未发现明确阻断：实例运行中，SSH 登录入口完整，CPU/内存监控未见高压。该预检未实际探测公网端口，也未进入实例检查 SSH 服务或认证日志。",
+				Action: Conclude,
+				// Same conclusion, and the same reason it stops where it does: see the
+				// chain's Fallback verdict for why the cloud-side-only boundary is the
+				// renderer's sentence, not this one's.
+				Conclusion:     sshPrecheckNoBlockerConclusion,
 				Suggestion:     sshFailureSuggestion(kind),
 				PrecheckStatus: PrecheckConfigured,
 			}

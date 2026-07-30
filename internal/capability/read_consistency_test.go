@@ -100,6 +100,35 @@ func TestReadCatalogSchemaMatchesRequestStruct(t *testing.T) {
 	}
 }
 
+func TestEveryReadCapabilityHasAnExplicitPresentationContract(t *testing.T) {
+	want := map[string]ReadPresentation{
+		"resource_info":              ReadPresentationExact,
+		"monitor_query":              ReadPresentationRequired,
+		"monitor_history":            ReadPresentationRequired,
+		"gpu_specs_query":            ReadPresentationBrowse,
+		"stock_availability":         ReadPresentationRequired,
+		"image_list":                 ReadPresentationBrowse,
+		"image_tag_catalog":          ReadPresentationBrowse,
+		"zone_catalog":               ReadPresentationBrowse,
+		"model_repository_browse":    ReadPresentationBrowse,
+		"network_accelerator_status": ReadPresentationRequired,
+		"instance_access":            ReadPresentationExact,
+		"pricing_query":              ReadPresentationRequired,
+		"refund_estimate":            ReadPresentationRequired,
+		"cfs_list":                   ReadPresentationRequired,
+		"cfs_create_price":           ReadPresentationRequired,
+		"cfs_upgrade_price":          ReadPresentationRequired,
+		"cfs_refund_estimate":        ReadPresentationRequired,
+		"account_finance_status":     ReadPresentationGuidance,
+	}
+	definitions := ReadDefinitions()
+	require.Len(t, definitions, len(want), "new read capabilities must be classified here")
+	for _, def := range definitions {
+		require.Equal(t, want[def.Name], def.Presentation, "presentation contract for %s", def.Name)
+		require.True(t, def.Presentation.Valid(), "presentation contract for %s must be valid", def.Name)
+	}
+}
+
 // enumValuesForType is the single binding from a Go enum type to its allowed
 // wire values. It is the ONLY place the recursive consistency test re-associates
 // a type with a value set, and every entry defers to the platform value

@@ -18,7 +18,7 @@ func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *test
 			GpuType:    "4090",
 			GPU:        1,
 			CPU:        8,
-			Memory:     64,
+			Memory:     65536,
 			ImageType:  "Ubuntu",
 			StartTime:  2000,
 			ExpireTime: 3000,
@@ -30,7 +30,7 @@ func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *test
 			GpuType:   "A100",
 			GPU:       2,
 			CPU:       16,
-			Memory:    128,
+			Memory:    131072,
 			ImageType: "CentOS",
 			StartTime: 1000,
 		},
@@ -43,10 +43,10 @@ func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *test
 	require.Equal(t, first, second)
 	assert.Less(t, strings.Index(first, "uhost-a"), strings.Index(first, "uhost-b"), "Running uhost-a should rank above Stopped uhost-b in display order")
 	assert.Contains(t, first, "train-a")
-	assert.Contains(t, first, "Running")
+	assert.Contains(t, first, "运行中")
 	assert.Contains(t, first, "A100")
-	assert.Contains(t, first, ResourceLabelInstanceID)
-	assert.Contains(t, first, ResourceLabelName)
+	assert.Contains(t, first, "uhost-a")
+	assert.Contains(t, first, "vCPU")
 	assert.NotContains(t, first, "Name=")
 	assert.NotContains(t, first, "State=")
 	assert.NotContains(t, first, strings.Repeat("b", 25))

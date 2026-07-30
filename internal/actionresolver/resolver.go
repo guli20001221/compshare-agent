@@ -193,7 +193,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		len(result.DependencyFailures) == 0 &&
 		(len(result.Missing)+len(result.Rejected)+len(result.Conflicts)) > 0 &&
 		everyMissingCollectable(result.Missing, spec.Intake.CollectableFields) &&
-		everyRejectionFormCorrectable(result.RejectedProblems, spec.Intake.CollectableFields) &&
+		everyRejectionFormCorrectable(result.RejectedProblems, spec.Intake.CollectableFields, spec.Intake.DiscardableOnRejectFields) &&
 		everyConflictCollectable(result.Conflicts, spec.Intake.CollectableFields)
 	if result.ReadyForConfirmation {
 		arguments := make(map[string]any, len(result.Arguments))
@@ -231,17 +231,25 @@ func everyMissingCollectable(missing, collectable []string) bool {
 }
 
 // everyRejectionFormCorrectable reports whether every rejection is a
-// RejectInvalidValue on a declared collectable field — the only rejection the
-// form can fix (the bad value is already dropped from Arguments; the form
-// re-collects). Any other Kind, or a field outside the collectable set, is not
-// correctable. Vacuously true when there are no rejections.
-func everyRejectionFormCorrectable(problems []RejectedProblem, collectable []string) bool {
-	set := collectableSet(collectable)
+// RejectInvalidValue the form can move past — the only Kind it can, since the
+// bad value is already dropped from Arguments. Two declarations qualify a field,
+// and they answer different questions: a COLLECTABLE field is one the form
+// re-collects, and a DISCARDABLE one is a field the form has no input for but
+// whose value is safe to lose (workflow.Definition documents both). Reading the
+// collectable list alone for both questions is what made an optional Name the
+// resolver could not re-collect suppress the whole create card. Any other Kind,
+// or a field in neither list, is not correctable. Vacuously true when there are
+// no rejections.
+func everyRejectionFormCorrectable(problems []RejectedProblem, collectable, discardable []string) bool {
+	collectables, discardables := collectableSet(collectable), collectableSet(discardable)
 	for _, p := range problems {
 		if p.Kind != RejectInvalidValue {
 			return false
 		}
-		if _, ok := set[p.Slot]; !ok {
+		if _, ok := collectables[p.Slot]; ok {
+			continue
+		}
+		if _, ok := discardables[p.Slot]; !ok {
 			return false
 		}
 	}

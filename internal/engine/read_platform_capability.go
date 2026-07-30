@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // ReadCapabilityObservation is the only result shape exposed by the read
@@ -42,7 +43,7 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		return marshalReadCapabilityError(fmt.Errorf("invalid capability request: %w", err))
 	}
-	if err := capability.ValidateCurrentTurnGrounding(request, e.lastUserMsg); err != nil {
+	if err := capability.ValidateCurrentTurnGrounding(request, e.lastUserMsg, e.recentPriorUserTexts(4)...); err != nil {
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		return marshalReadCapabilityError(fmt.Errorf("ungrounded capability request: %w", err))
 	}
@@ -63,6 +64,30 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 	return e.executeTypedReadCapability(ctx, action, string(readIntent), reg, request, args, onStep)
 }
 
+func (e *Engine) recentPriorUserTexts(limit int) []string {
+	if e == nil || limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	skippedCurrent := false
+	current := strings.TrimSpace(e.lastUserMsg)
+	for index := len(e.messages) - 1; index >= 0 && len(out) < limit; index-- {
+		message := e.messages[index]
+		if message.Role != openai.ChatMessageRoleUser {
+			continue
+		}
+		text := userAuthoredText(message.Content)
+		if !skippedCurrent && current != "" && text == current {
+			skippedCurrent = true
+			continue
+		}
+		if text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
 // executeTypedReadCapability dispatches a migrated read through its typed
 // vertical. The capability produces a capability.ReadResult directly, without
 // the legacy route-dispatch machinery — which no longer exists to bridge to.
@@ -76,6 +101,7 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		Resolver:         snapshot,
 		Now:              now,
 		FallbackGPUModel: e.fallbackStockGpuModel(now),
+		SyncRegistry:     e.syncRegistryFromDescribe,
 	}
 	if capabilityLabel == string(intent.IntentZoneCatalog) {
 		rt.ZoneCatalog = e.zoneCatalogSnapshot(ctx)
@@ -144,10 +170,12 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 		Envelope:         result.Envelope,
 		CanAssertAbsence: canAssertAbsence,
 	}
-	// A browse listing is a menu, not a measurement: it gets no render_ref, so the
-	// server never staples the raw catalog in front of the model's curated answer.
-	// The envelope below still carries every exact id/count the model needs.
-	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification && !result.ReplyIsBrowseListing &&
+	// A browse result is a menu, not a measurement: it gets no render_ref, so the
+	// server never staples a raw catalog in front of the Agent's curated answer.
+	// The envelope below still carries every exact id/count the Agent needs.
+	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification &&
+		(result.Presentation == capability.ReadPresentationExact ||
+			result.Presentation == capability.ReadPresentationRequired) &&
 		result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
 		placeholder := fmt.Sprintf("{{READ_OBSERVATION_%d}}", len(e.readResponseEvidenceThisTurn)+1)
 		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
@@ -155,10 +183,10 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 			Reply:       strings.TrimSpace(result.Reply),
 			Envelope:    *result.Envelope,
 			Placeholder: placeholder,
-			Required:    result.RenderRequired,
+			Required:    result.Presentation == capability.ReadPresentationRequired,
 		})
 		observation.RenderRef = placeholder
-		observation.RenderContract = "在最终回答中原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并解释原因或处理方法，但不得改写、否定或用推测替代这份观察中的事实。"
+		observation.RenderContract = readRenderContract(result.Presentation)
 	}
 	if result.Status != platform.ReadStatusHandled || result.NeedsClarification {
 		observation.Guidance = result.Reply
@@ -171,6 +199,13 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 	_ = json.Unmarshal(payload, &traceResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
+}
+
+func readRenderContract(presentation capability.ReadPresentation) string {
+	if presentation == capability.ReadPresentationRequired {
+		return "最终回答必须原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料，并自然地补充总结、解释或建议，但不得复述、改写、否定或用推测替代这份事实。"
+	}
+	return "需要展示这次精确查询结果时，原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并自然地解释原因或处理方法，但不得改写、否定或用推测替代这份事实。"
 }
 
 // applyReadEffects applies the typed context side-effects a read capability

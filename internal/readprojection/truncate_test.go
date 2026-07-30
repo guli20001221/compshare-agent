@@ -1,6 +1,7 @@
 package readprojection
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/compshare-agent/internal/entity"
@@ -18,9 +19,12 @@ func TestTruncateInstancesForDisplay_NoTruncationBelowLimit(t *testing.T) {
 	assert.Len(t, out, 2)
 }
 
-func TestTruncateInstancesForDisplay_TruncatesAbove10(t *testing.T) {
-	in := make([]entity.InstanceSnapshot, 0, 47)
-	for i := 0; i < 47; i++ {
+// Sized off the cap rather than a literal: a test that stops truncating when the
+// cap is raised stops testing truncation, silently.
+func TestTruncateInstancesForDisplay_TruncatesAboveTheCap(t *testing.T) {
+	total := DefaultMaxInstancesPerDisplay + 7
+	in := make([]entity.InstanceSnapshot, 0, total)
+	for i := 0; i < total; i++ {
 		in = append(in, entity.InstanceSnapshot{
 			UHostId:   "uhost-" + string(rune('a'+i%26)) + string(rune('a'+i/26)),
 			State:     "Running",
@@ -57,23 +61,22 @@ func TestSortInstancesForDisplay_ZeroStartTimeSortsLastWithinState(t *testing.T)
 }
 
 func TestTruncateInstancesForDisplay_KeepsTopPriorityInstances(t *testing.T) {
-	// 11 instances, only 2 Running — truncate should keep both Running ones.
-	in := []entity.InstanceSnapshot{
-		{UHostId: "stopped-1", State: "Stopped"},
-		{UHostId: "stopped-2", State: "Stopped"},
-		{UHostId: "stopped-3", State: "Stopped"},
-		{UHostId: "stopped-4", State: "Stopped"},
-		{UHostId: "stopped-5", State: "Stopped"},
-		{UHostId: "stopped-6", State: "Stopped"},
-		{UHostId: "stopped-7", State: "Stopped"},
-		{UHostId: "stopped-8", State: "Stopped"},
-		{UHostId: "stopped-9", State: "Stopped"},
-		{UHostId: "running-a", State: "Running", StartTime: 1},
-		{UHostId: "running-b", State: "Running", StartTime: 2},
+	// One more than the cap, only 2 of them Running — truncation must keep both
+	// Running ones. Sized off the cap so raising it cannot turn this into a
+	// no-truncation case that passes without testing anything.
+	in := make([]entity.InstanceSnapshot, 0, DefaultMaxInstancesPerDisplay+1)
+	for i := 0; i < DefaultMaxInstancesPerDisplay-1; i++ {
+		in = append(in, entity.InstanceSnapshot{
+			UHostId: fmt.Sprintf("stopped-%02d", i), State: "Stopped",
+		})
 	}
+	in = append(in,
+		entity.InstanceSnapshot{UHostId: "running-a", State: "Running", StartTime: 1},
+		entity.InstanceSnapshot{UHostId: "running-b", State: "Running", StartTime: 2},
+	)
 	out, shown, truncated := TruncateInstancesForDisplay(in, 0)
 	assert.True(t, truncated)
-	assert.Equal(t, 10, shown)
+	assert.Equal(t, DefaultMaxInstancesPerDisplay, shown)
 	assert.Equal(t, "running-b", out[0].UHostId, "newest Running first")
 	assert.Equal(t, "running-a", out[1].UHostId, "older Running second")
 	// Both Running instances must survive truncation

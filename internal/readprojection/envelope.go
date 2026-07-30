@@ -64,13 +64,13 @@ func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta Res
 			addStringFact(addInstanceFact, "gpu_type", resourceLabelGPUType, inst.GpuType)
 		}
 		addStringFact(addInstanceFact, "image_type", resourceLabelImageType, inst.ImageType)
-		addPositiveInt64Fact(addInstanceFact, "start_time", resourceLabelStartTime, inst.StartTime)
+		addPositiveTimeFact(addInstanceFact, "start_time", resourceLabelStartTime, inst.StartTime)
 		addPositiveIntFact(addInstanceFact, "cpu", resourceLabelCPU, inst.CPU)
 		addPositiveIntFact(addInstanceFact, "memory", resourceLabelMemory, inst.Memory)
 		addStringFact(addInstanceFact, "zone", "Zone", inst.Zone)
 		addStringFact(addInstanceFact, "region", "Region", inst.Region)
 		addStringFact(addInstanceFact, "charge_type", "ChargeType", inst.ChargeType)
-		addPositiveInt64Fact(addInstanceFact, "expire_time", resourceLabelExpireTime, inst.ExpireTime)
+		addPositiveTimeFact(addInstanceFact, "expire_time", resourceLabelExpireTime, inst.ExpireTime)
 		addStringFact(addInstanceFact, "auto_renew", "AutoRenew", inst.AutoRenew)
 	}
 	addComputedResourceMeta(&env, meta)
@@ -555,8 +555,17 @@ func addPositiveIntFact(add func(string, string, any), key, label string, value 
 	}
 }
 
-func addPositiveInt64Fact(add func(string, string, any), key, label string, value int64) {
+// addPositiveTimeFact emits an epoch as the SAME calendar text the rendered
+// block prints, because the Agent answers from these facts and a raw epoch
+// forces it to convert by hand. Measured on a live multi-turn probe: asked when
+// an instance started, 6 of 10 replies quoted 「Unix 时间戳 1784432142」 and one
+// converted it to 2026-07-20 while the rendered line in the very same reply said
+// 2026-07-19 — a whole day wrong, self-contradictory, from one upstream number.
+// Emitting the epoch alongside the text would not fix it: as long as the number
+// is reachable the model can still quote and re-derive it, so the epoch does not
+// survive into the envelope at all. resourceTimeLabel is the one producer.
+func addPositiveTimeFact(add func(string, string, any), key, label string, value int64) {
 	if value > 0 {
-		add(key, label, value)
+		add(key, label, resourceTimeLabel(value))
 	}
 }

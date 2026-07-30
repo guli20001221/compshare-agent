@@ -19,6 +19,7 @@ func CreateCFSDef() *Definition {
 	return &Definition{
 		Name: "CreateCFSWorkflow",
 		Steps: []Step{
+			stepQueryExistingCFSForCreate(),
 			stepQueryCreateCFSPrice(),
 			stepConfirmCreateCFS(),
 			stepCreateCFS(),
@@ -55,6 +56,42 @@ func ResizeCFSDef() *Definition {
 				"current_size_gb": wfCtx.Params["CurrentCFSSize"],
 				"target_size_gb":  wfCtx.Params["Size"],
 			}
+		},
+	}
+}
+
+func stepQueryExistingCFSForCreate() Step {
+	return Step{
+		Name: "检查同区 CFS",
+		Type: StepToolCall,
+		Tool: "DescribeCFS",
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			if err := normalizeCreateCFSParams(wfCtx); err != nil {
+				return nil, err
+			}
+			args := map[string]any{
+				"Zone":     wfCtx.Params["Zone"],
+				"Region":   wfCtx.Params["Region"],
+				"zone_id":  wfCtx.Params["CFSZoneId"],
+				"az_group": wfCtx.Params["CFSAzGroup"],
+			}
+			addWorkflowIdentityArgs(args, wfCtx.Runtime)
+			return args, nil
+		},
+		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
+			if existing, ok := firstCFS(result); ok {
+				name := cfsString(existing, "Name")
+				id := cfsString(existing, "CfsId", "CFSId")
+				switch {
+				case name != "" && id != "":
+					return CheckFailed(fmt.Sprintf("该可用区已经有 CFS「%s」（%s）。平台每个账号在同一可用区只允许一个 CFS，请使用或扩容现有 CFS。", name, id))
+				case id != "":
+					return CheckFailed(fmt.Sprintf("该可用区已经有 CFS（%s）。平台每个账号在同一可用区只允许一个 CFS，请使用或扩容现有 CFS。", id))
+				default:
+					return CheckFailed("该可用区已经有 CFS。平台每个账号在同一可用区只允许一个 CFS，请使用或扩容现有 CFS。")
+				}
+			}
+			return CheckPassed()
 		},
 	}
 }

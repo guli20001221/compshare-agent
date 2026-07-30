@@ -97,10 +97,21 @@ func TestRecoveryCandidatesRankThroughResolver(t *testing.T) {
 
 // recoveryMockExecutor is arg-sensitive (unlike the action-keyed mockExecutor):
 // CheckCompShareResourceCapacity 230s for the zone-absent image but succeeds for
-// the recovered one, and DescribeCompShareImages returns the lone unavailable
-// image for the narrow Name="PyTorch" query but the available alternatives for
-// the recovery's broad (no-Name) query. This is exactly the real upstream shape
-// the live probe revealed.
+// the recovered one.
+//
+// DescribeCompShareImages returns ONE catalog for every query. It used to return
+// the unavailable image only for a narrow Name="PyTorch" query and a disjoint set
+// for a broad one, which made "broad" and "narrow" name different worlds — a
+// relationship upstream does not have. The query is zone-blind and the broad
+// result is a SUPERSET of the narrow one (measured live: no Name = 75 rows,
+// Name="PyTorch" = 1 row, and that row is among the 75). The create flow stopped
+// narrowing by name, so the artifact surfaced: the flow read the broad list, never
+// saw the image the user actually named, picked a substring match instead and the
+// 230 recovery it is supposed to exercise never fired.
+//
+// With one faithful catalog the test means what it says again: the literally-named
+// PyTorch image ranks first (nameSimilarity 200 for a contains-match vs 100 for
+// cuda…torch…), 230s in the zone, and recovery swaps it for the available one.
 type recoveryMockExecutor struct {
 	calls []string
 }
@@ -111,14 +122,10 @@ func (m *recoveryMockExecutor) Execute(_ context.Context, action string, args ma
 	case "DescribeCompShareInstance":
 		return map[string]any{"TotalCount": float64(0), "UHostSet": []any{}}, nil
 	case "DescribeCompShareImages":
-		if name, _ := args["Name"].(string); name == "PyTorch" {
-			// Narrow name match → the single image that is absent from the zone.
-			return map[string]any{"ImageSet": []any{
-				map[string]any{"CompShareImageId": "img-bad", "Name": "PyTorch:24.04-py3", "ImageType": "App"},
-			}}, nil
-		}
-		// Broad recovery query (and the re-run's exact-name query) → alternatives.
+		// One zone-blind catalog for every query: the named-but-zone-absent image
+		// plus the alternatives recovery can swap to.
 		return map[string]any{"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-bad", "Name": "PyTorch:24.04-py3", "ImageType": "App"},
 			map[string]any{"CompShareImageId": "img-good", "Name": "cuda128_torch291_py312", "ImageType": "App"},
 			map[string]any{"CompShareImageId": "img-win", "Name": "Windows-nvidia 2022", "ImageType": "System"},
 		}}, nil

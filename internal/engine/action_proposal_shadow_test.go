@@ -772,6 +772,173 @@ func TestSealedPasswordIsInjectedWithoutEnteringModelArguments(t *testing.T) {
 // path (confirmation / intake_form) wins; a server outage (dependency_failure) is
 // reported before a user-facing rejection; only field names + typed kinds appear
 // (never slot VALUES), so it is safe to persist in the trace.
+// A write TARGET the Agent left blank must not get easier to authorize by being
+// pruned. Pruning moves it from Rejected to Missing — a different channel, the
+// same refusal: no confirmation card, and no guided form either (stop declares
+// none). This is the gate that keeps the blank-slot prune from widening write
+// authority; it must stay red if pruning ever starts letting a target through.
+func TestBlankWriteTargetStillBlocksTheCard(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.lastUserMsg = "帮我关机"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-blank-target", time.Now())
+	eng.turnContextViewReady = true
+
+	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
+		`{"turn_id":"turn-blank-target","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"","source":"user_explicit"}]}`), noopStep)
+
+	var resolved actionresolver.ResolvedAction
+	require.NoError(t, json.Unmarshal([]byte(out), &resolved))
+	require.False(t, resolved.ReadyForConfirmation, "a blank target must never reach the confirmation card")
+	require.False(t, resolved.ReadyForIntake, "stop declares no guided form; a blank target must not open one")
+	require.Equal(t, []string{"UHostId"}, resolved.Missing, "unsaid, not invalid — but still refused")
+	require.NotContains(t, resolved.Arguments, "UHostId")
+}
+
+// The create regression this prune fixes. The system prompt tells the Agent to
+// submit as soon as the operation is clear and leave the rest blank, so terra
+// emitted an empty Name; a blank optional field was adjudicated as an invalid
+// VALUE, and any rejection blocks the guided form outright — so one empty Name
+// suppressed the entire create card (0/20 on a live four-arm WS run) while the
+// model narrated that a draft had been submitted.
+func TestBlankOptionalSlotDoesNotSuppressTheCreateCard(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "创建一台 4090"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-blank-name", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-blank-name", "operation": "CreateInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "GpuType", "value": "4090", "source": "user_explicit",
+				"evidence": map[string]any{"quote": "4090"}},
+			map[string]any{"name": "Name", "value": "", "source": "agent_inference"},
+			map[string]any{"name": "CompShareImageId", "value": nil, "source": "agent_inference"},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Empty(t, resolved.action.Rejected,
+		"a blank slot is the Agent saying nothing, not a value the user got wrong")
+	require.True(t, resolved.action.ReadyForConfirmation, "the create must still reach a card")
+	require.NotContains(t, resolved.action.Arguments, "Name", "a blank name is dropped, never invented")
+	require.NotContains(t, resolved.action.Arguments, "CompShareImageId")
+}
+
+// The prune is deliberately narrow: only JSON null and whitespace-only strings.
+// Zero, false and empty collections are real values for their codecs and must
+// keep reaching adjudication — silently dropping a 0 would turn "no GPUs" into
+// "unspecified" and let a default fill it in.
+func TestPruneBlankSlotsKeepsMeaningfulZeroValues(t *testing.T) {
+	kept := pruneBlankSlots([]actionresolver.SlotCandidate{
+		{Name: "Null", Value: nil},
+		{Name: "Empty", Value: ""},
+		{Name: "Whitespace", Value: "  \t "},
+		{Name: "Zero", Value: float64(0)},
+		{Name: "False", Value: false},
+		{Name: "EmptyList", Value: []any{}},
+		{Name: "Text", Value: "x"},
+	})
+	names := make([]string, 0, len(kept))
+	for _, candidate := range kept {
+		names = append(names, candidate.Name)
+	}
+	require.Equal(t, []string{"Zero", "False", "EmptyList", "Text"}, names)
+}
+
+func TestNormalizedEnumQuotePinsTheUsersChargeType(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "帮我按量创建一台 4090 实例"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-normalized-charge", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
+		"GpuType":                        "4090",
+		"ChargeType":                     "Postpay",
+		proposalChargeTypeUserQuoteField: "按量",
+	})
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), args)
+
+	require.NoError(t, err)
+	require.True(t, resolved.referenceData.ChargeTypeUserPinned)
+	slot := resolved.action.Provenance["ChargeType"]
+	require.Equal(t, actionresolver.SourceUserExplicit, slot.Source)
+	require.Equal(t, "Postpay", slot.Value)
+}
+
+func TestNormalizedEnumQuoteMustExistInTheCurrentQuestion(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "帮我创建一台 4090 实例"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-false-charge-quote", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
+		"GpuType":                        "4090",
+		"ChargeType":                     "Month",
+		proposalChargeTypeUserQuoteField: "包月",
+	})
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), args)
+
+	require.NoError(t, err)
+	require.False(t, resolved.referenceData.ChargeTypeUserPinned)
+	require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ChargeType"].Source)
+}
+
+func TestChargeTypeQuoteCannotPromoteAMismatchedOrMeaninglessValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		question string
+		value    string
+		quote    string
+	}{
+		{name: "wrong mapping", question: "帮我按量创建一台 4090 实例", value: "Month", quote: "按量"},
+		{name: "unrelated span", question: "帮我创建一台 4090 实例", value: "Month", quote: "帮我"},
+		{name: "ambiguous character", question: "帮我跑一个月", value: "Month", quote: "月"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &mockExecutor{results: map[string]map[string]any{
+				"DescribeAvailableCompShareInstanceTypes": {
+					"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
+				},
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			eng.lastUserMsg = tt.question
+			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+				eng, eng.lastUserMsg, "turn-rejected-charge-quote", time.Now(),
+			)
+			eng.turnContextViewReady = true
+
+			args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
+				"GpuType":                        "4090",
+				"ChargeType":                     tt.value,
+				proposalChargeTypeUserQuoteField: tt.quote,
+			})
+			resolved, err := eng.resolveActionProposalShadow(context.Background(), args)
+
+			require.NoError(t, err)
+			require.False(t, resolved.referenceData.ChargeTypeUserPinned)
+			require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ChargeType"].Source)
+		})
+	}
+}
+
 func TestResolvedProposalDisposition(t *testing.T) {
 	cases := []struct {
 		name   string

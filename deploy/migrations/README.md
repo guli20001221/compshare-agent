@@ -43,7 +43,21 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0007_add_turn_recovery_conte
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0008_add_turn_retry_policy.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0009_add_interaction_supersession.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.sql
+
+# 0011 belongs to the OPTIONAL SSH-ops lane, not to the cutover above. Its audit
+# table is fail-closed, so a missing 0011 disables the lane silently — the server
+# starts and logs the reason; it does not error.
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0011_create_ssh_ops_audit.sql
 ```
+
+Every file is idempotent, so the whole list can be applied to any database
+regardless of how far it already is — a new one, or a deployment still on 0004.
+`TestMigrationsApplyTwiceCleanly` (internal/store, needs
+`COMPSHARE_TEST_MYSQL_DSN`) applies them all twice and compares the resulting
+schema, so a new migration that drops an `IF NOT EXISTS` fails the build rather
+than the next upgrade. Keep it that way: `CREATE TRIGGER` has no `IF NOT EXISTS`
+before PG 14, so precede one with `DROP TRIGGER IF EXISTS`, and precede every
+`ADD CONSTRAINT` with `DROP CONSTRAINT IF EXISTS`.
 
 For a throwaway local Docker PostgreSQL (no host `psql` needed), see README §3 —
 it pipes each file through `docker exec -i cs-pg psql ...`.

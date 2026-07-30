@@ -33,5 +33,5 @@ CREATE TABLE IF NOT EXISTS ssh_ops_audit (
     CONSTRAINT uq_ssh_ops_turn_task UNIQUE (turn_id, task_hash),
     CONSTRAINT ck_ssh_ops_disposition CHECK (disposition IN ('started', 'ok', 'error'))
 );
-CREATE INDEX idx_ssh_ops_org_time ON ssh_ops_audit (top_organization_id, organization_id, started_at);
-CREATE INDEX idx_ssh_ops_instance ON ssh_ops_audit (instance_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_ssh_ops_org_time ON ssh_ops_audit (top_organization_id, organization_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_ssh_ops_instance ON ssh_ops_audit (instance_id, started_at);

@@ -41,11 +41,31 @@ func TestStockRender_FilterDedupeAndStatus(t *testing.T) {
 		map[string]any{"Name": "4090", "Status": "Normal"}, // duplicate across zones
 		map[string]any{"Name": "A100", "Status": "SoldOut"},
 	}}
-	reply := renderStockReply(raw, "4090 有货吗")
+	reply := renderStockReply(raw, "4090 有货吗", nil, nil)
 	assert.NotContains(t, reply, "A100", "filter excludes unmatched model")
-	assert.Equal(t, 1, strings.Count(reply, "机型=4090"), "duplicates deduped")
-	assert.Contains(t, reply, "不代表当前具体配置一定可创建", "Normal caveat present")
-	assert.Contains(t, reply, soldOutDisclaimer)
+	assert.Equal(t, 1, strings.Count(reply, "- 4090："), "duplicates deduped")
+	assert.Contains(t, reply, soldOutDisclaimer, "the caveat still reaches the user")
+}
+
+// TestStockListingStatesItsCaveatOncePerListNotOncePerMachineType is the reason
+// the caveat moved out of the per-row text. Against the live catalog (12 models
+// on sale, 2026-07-29) the old renderer emitted the same 30-character
+// parenthetical on all 12 lines, so the answer to "有什么卡" was 12 copies of a
+// disclaimer with the model names threaded between them. The caveat applies to
+// the list as a whole, so it is stated once, under it.
+func TestStockListingStatesItsCaveatOncePerListNotOncePerMachineType(t *testing.T) {
+	types := make([]any, 0, 12)
+	for _, name := range []string{"5090", "4090", "4090_48G", "3080Ti", "2080Ti", "3090", "2080", "A800", "H20", "P40", "V100S", "A100"} {
+		types = append(types, map[string]any{"Name": name, "Status": "Normal"})
+	}
+	reply := renderStockReply(map[string]any{"AvailableInstanceTypes": types}, "", nil, nil)
+
+	assert.Equal(t, 1, strings.Count(reply, soldOutDisclaimer), "one list, one caveat")
+	assert.Equal(t, 1, strings.Count(reply, "容量预检"), "the 开售≠可创建 half must not return per row either")
+	assert.Equal(t, 12, strings.Count(reply, "：开售"), "every model still reports its sale state")
+	// The upstream enum is a wire value, not a label: no other user-facing render
+	// in this package prints its enum through.
+	assert.NotContains(t, reply, "Normal（", "the English enum is not the user's word")
 }
 
 // TestStockHandle_EmptyCatalog: no machine-type stock data is a structured Empty
@@ -61,8 +81,8 @@ func TestStockHandle_EmptyCatalog(t *testing.T) {
 
 func TestStockRender_NoMatchAndEmpty(t *testing.T) {
 	raw := map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090", "Status": "Normal"}}}
-	assert.Contains(t, renderStockReply(raw, "H100"), "未在当前可售机型里找到您提到的型号")
-	assert.Equal(t, noStockReply, renderStockReply(map[string]any{}, ""))
+	assert.Contains(t, renderStockReply(raw, "H100", nil, nil), "未在当前可售机型里找到您提到的型号")
+	assert.Equal(t, noStockReply, renderStockReply(map[string]any{}, "", nil, nil))
 }
 
 func TestStockEnvelope_SubjectsAndDisclaimer(t *testing.T) {
@@ -105,13 +125,20 @@ func TestStockHandle_PlainListingAttachesEnvelope(t *testing.T) {
 	}}}
 
 	// Empty query → no matched Normal entry → the capacity precheck falls through
-	// to the plain catalog listing (single upstream call), with an envelope.
+	// to the plain catalog listing, with an envelope.
 	result := runStock(t, exec, "", StockAvailabilityRequest{})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", result.ToolAction)
-	require.Len(t, exec.calls, 1, "plain listing makes exactly one upstream call")
-	assert.Contains(t, result.Reply, "机型=4090")
+	// This used to assert exactly one upstream call. The listing now also reads the
+	// zone catalog and the GPU inventory, because a stock answer that says only
+	// 开售 does not answer "有多少" — the card counts live in a third API. The extra
+	// reads are the deliberate price of that, so the profile is asserted rather
+	// than left to drift.
+	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", exec.calls[0].action,
+		"the catalog is still read first and is still the answer's source action")
+	assert.Contains(t, result.Reply, "- 4090：开售")
+	assert.Contains(t, result.Reply, "- A100：售罄")
 	require.NotNil(t, result.Envelope)
 	assert.Equal(t, envelope.KindStockAvailability, result.Envelope.Kind)
 }
@@ -191,7 +218,7 @@ func (e *stockDualInventoryExec) ExecuteInternal(ctx context.Context, action str
 	return e.official, nil
 }
 
-func TestStockHandle_HuabeiCZonesUsePodInventoryInsteadOfOfficialZeros(t *testing.T) {
+func TestStockHandle_PositiveCapacityUsesGroupedCardCountsAndQueriesBothInventoryBackends(t *testing.T) {
 	base := &mapReadExec{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
 			map[string]any{"Name": "4090", "Zone": "cn-bj2-03", "Status": "Normal"},
@@ -228,10 +255,23 @@ func TestStockHandle_HuabeiCZonesUsePodInventoryInsteadOfOfficialZeros(t *testin
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	assert.Contains(t, result.Reply, "华北一C (cn-bj2-03) / 4090：独占约 12 张")
-	assert.Contains(t, result.Reply, "华北二C (cn-wlcb-03) / 4090：抢占约 7 张")
-	assert.NotContains(t, result.Reply, "华北一C (cn-bj2-03) / 4090：原始快照为 0")
-	assert.NotContains(t, result.Reply, "华北二C (cn-wlcb-03) / 4090：原始快照为 0")
+	assert.Contains(t, result.Reply, "- 4090 / 华北一C (cn-bj2-03)：1 卡")
+	assert.Contains(t, result.Reply, "- 4090 / 华北二C (cn-wlcb-03)：1 卡")
+	// REVERSED, deliberately. 7c7b742b suppressed the pool totals on the success
+	// path on the grounds that a card-count table is the answer and the raw
+	// snapshot is a weaker second block. That was right about the BLOCK and wrong
+	// about the NUMBER: it left "有多少张卡" answered with sale state only, which is
+	// the complaint that brought this back. The number now rides on the zone line
+	// it belongs to, so the reply is still one table — the objection that
+	// motivated the removal (a second block underneath) still holds and is
+	// asserted separately below.
+	assert.Contains(t, result.Reply, "- 4090 / 华北一C (cn-bj2-03)：1 卡；独占约 12 张",
+		"a stock answer must say how many cards, on the line for that zone")
+	assert.Contains(t, result.Reply, "- 4090 / 华北二C (cn-wlcb-03)：1 卡；抢占约 7 张")
+	assert.NotContains(t, result.Reply, "原始 GPU 库存",
+		"still no separate pool-total block underneath the table")
+	assert.Equal(t, ReadPresentationRequired, result.Presentation,
+		"the exact capacity table must survive model wording")
 
 	var inventoryCalls []fakeReadExecCall
 	for _, call := range exec.calls {
@@ -302,6 +342,11 @@ func TestStockHandle_PrechecksEverySaleZone(t *testing.T) {
 				map[string]any{"CompShareImageId": "img-system", "Name": "Base System", "Status": "Available", "ImageType": "System"},
 			},
 		},
+		"DescribeCompShareGpuInventory": {
+			"GpuInventory": map[string]any{
+				"Exclusive": map[string]any{"2": map[string]any{"4090": float64(30)}},
+			},
+		},
 		"CheckCompShareResourceCapacity": {
 			"Specs": []any{
 				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
@@ -321,7 +366,11 @@ func TestStockHandle_PrechecksEverySaleZone(t *testing.T) {
 	assert.Equal(t, 2, capacityCalls, "each advertised zone must be checked; a first-zone success cannot stop the scan")
 	assert.Contains(t, result.Reply, "华北二A")
 	assert.Contains(t, result.Reply, "上海二B")
-	assert.NotContains(t, result.Reply, "原始 GPU 库存")
+	assert.NotContains(t, result.Reply, "原始 GPU 库存",
+		"a successful per-zone card-count table must not be followed by a second pool-total block")
+	// The count itself belongs on the zone line — see the reversal note in
+	// TestStockHandle_PositiveCapacityUsesGroupedCardCountsAndQueriesBothInventoryBackends.
+	assert.Contains(t, result.Reply, "上海二B (cn-sh2-02)：1 卡；独占约 30 张")
 }
 
 func TestStockHandle_MultipleNamedZonesAreExactAndNeverCrossZone(t *testing.T) {
@@ -476,10 +525,59 @@ func TestStockInventoryExplicitZeroAndNoPositivePrecheckRemainsUncertain(t *test
 	assert.NotContains(t, reply, "当前暂无可用库存")
 }
 
+// The capacity block is inserted into the answer VERBATIM (render_ref), so its
+// shape is what the user reads. A real 4090 turn passes three zones x eight
+// CPU/memory variants: flattened, that was 24 items joined by "、" inside one
+// sentence. Group by 可用区 and keep the card counts — and say in the header that
+// the CPU/memory dimension was collapsed, because dropping detail silently from
+// a verbatim factual block is how a summary becomes a claim.
+func TestRenderStockCapacity_GroupsByZoneAndCollapsesCPUMemoryVariants(t *testing.T) {
+	specs := func(counts ...string) []capacitySpec {
+		out := make([]capacitySpec, 0, len(counts)*2)
+		for _, c := range counts {
+			out = append(out,
+				capacitySpec{GPUCount: c, Label: c + "卡/16C/64G"},
+				capacitySpec{GPUCount: c, Label: c + "卡/16C/94G"})
+		}
+		return out
+	}
+	checks := []stockCapacityCheck{
+		{Name: "4090", Zone: "上海二B (cn-sh2-02)", CanonicalZone: "cn-sh2-02", CheckedSpec: 8, EnoughSpecs: specs("1", "2", "4", "8")},
+		{Name: "4090", Zone: "华北一C (cn-bj2-03)", CanonicalZone: "cn-bj2-03", CheckedSpec: 8, EnoughSpecs: specs("1", "2", "4", "8")},
+		{Name: "4090", Zone: "华北二A (cn-wlcb-01)", CanonicalZone: "cn-wlcb-01", CheckedSpec: 8, EnoughSpecs: specs("1", "2", "4", "8")},
+	}
+
+	reply := renderStockCapacityReply(checks)
+
+	lines := strings.Split(reply, "\n")
+	require.Len(t, lines, 4, "one header plus one line per zone, not 24 items in one sentence")
+	assert.Contains(t, lines[0], "可以新建实例")
+	assert.Contains(t, lines[0], "CPU/内存", "the collapsed dimension must be named, not silently dropped")
+	assert.Equal(t, "- 4090 / 上海二B (cn-sh2-02)：1、2、4、8 卡", lines[1])
+	assert.Equal(t, "- 4090 / 华北一C (cn-bj2-03)：1、2、4、8 卡", lines[2])
+	assert.Equal(t, "- 4090 / 华北二A (cn-wlcb-01)：1、2、4、8 卡", lines[3])
+	assert.NotContains(t, reply, "16C", "per-configuration CPU/memory rows belong to the create flow, not this summary")
+}
+
+// Card counts sort numerically: text order would print 1、2、4、8 correctly by
+// luck and 1、16、2、4 wrongly as soon as a 16-card spec exists.
+func TestRenderStockCapacity_CardCountsSortNumerically(t *testing.T) {
+	checks := []stockCapacityCheck{{
+		Name: "H20", Zone: "华北二A (cn-wlcb-01)", CanonicalZone: "cn-wlcb-01", CheckedSpec: 3,
+		EnoughSpecs: []capacitySpec{
+			{GPUCount: "16", Label: "16卡/128C/1024G"},
+			{GPUCount: "2", Label: "2卡/32C/128G"},
+			{GPUCount: "1", Label: "1卡/16C/64G"},
+		},
+	}}
+
+	assert.Contains(t, renderStockCapacityReply(checks), "：1、2、16 卡")
+}
+
 func TestStockInventoryZeroDoesNotOverridePositiveCapacity(t *testing.T) {
 	checks := []stockCapacityCheck{{
 		Name: "4090", Zone: "上海二B (cn-sh2-02)", CanonicalZone: "cn-sh2-02",
-		CheckedSpec: 1, EnoughSpecs: []string{"1卡/16C/64G"},
+		CheckedSpec: 1, EnoughSpecs: []capacitySpec{{GPUCount: "1", Label: "1卡/16C/64G"}},
 	}}
 
 	assert.Contains(t, renderStockCapacityReply(checks), "可以新建实例")
@@ -515,7 +613,7 @@ func TestRequestedInventoryPoolNeverConfusesSpotAndExclusive(t *testing.T) {
 	t.Run("spot-only zone rejects exclusive claim", func(t *testing.T) {
 		checks := []stockCapacityCheck{{
 			Name: "4090", Zone: "华北二C (cn-wlcb-03)", CanonicalZone: "cn-wlcb-03",
-			CheckedSpec: 1, EnoughSpecs: []string{"1卡/14C/64G"},
+			CheckedSpec: 1, EnoughSpecs: []capacitySpec{{GPUCount: "1", Label: "1卡/14C/64G"}},
 		}}
 		eligible, reply := requestedInventoryPoolView(snapshot, checks, deployment.GPUInventoryPoolExclusive)
 		assert.Empty(t, eligible, "capacity preview must not approve an unsupported purchase mode")
@@ -532,6 +630,19 @@ func TestRequestedInventoryPoolNeverConfusesSpotAndExclusive(t *testing.T) {
 		assert.Empty(t, eligible)
 		assert.Contains(t, reply, "当前不支持抢占式购买方式")
 	})
+}
+
+func TestUnspecifiedInventoryPoolDoesNotBecomeExclusive(t *testing.T) {
+	assert.Equal(t, "", normalizeInventoryPool(stockInventoryPoolUnspecified))
+
+	spec := NewReadCapability(stockReadSpec())
+	props := spec.Schema()["properties"].(map[string]any)
+	pool := props["inventory_pool"].(map[string]any)
+	require.Equal(t, []string{
+		stockInventoryPoolUnspecified,
+		deployment.GPUInventoryPoolExclusive,
+		deployment.GPUInventoryPoolSpot,
+	}, pool["enum"])
 }
 
 func TestRequestedInventoryPoolZeroIsSnapshotNotGlobalDenial(t *testing.T) {

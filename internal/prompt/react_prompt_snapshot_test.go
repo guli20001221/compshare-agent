@@ -59,16 +59,56 @@ const (
 	// arm, and per-case retrieval flips are noisy at this scale (fresh-001 flipped
 	// between two runs with NO rule change). What the measurement establishes is the
 	// absence of any benefit signal plus a mechanism for harm — not a proven delta.
-	mutatingReActPromptSHA256 = "abf2e9a696d1b13450ad8ef8ceea2eac38d586d94b198ad7c1692b0ee6ac74ac"
-	readOnlyReActPromptSHA256 = "f3335cfd3943a1bce29a37e2c9315c4b24602478a803aa1ab5617941b43c8102"
+	// 2026-07-28: current-data source selection is stated once in the knowledge
+	// policy for every live platform fact (catalog, availability, state, price,
+	// stock and popularity). The behavior segment keeps only the catalog decision
+	// rule: model guesses cannot replace user criteria and supported expansions
+	// may only add candidates. A failed live read cannot be replaced by a
+	// knowledge-base candidate. Capability-specific parameter names stay in
+	// tool schemas rather than the shared prompt.
+	// 2026-07-30 (ATTEMPTED AND REVERTED, kept as the fourth and fifth warning):
+	// two edits were made and backed out. (a) 机型规格（显存、最大卡数、可选 CPU/内存
+	// 组合）added to the source-selection noun list, with its head noun changed
+	// 实时事实 → 平台事实; (b) the scope segment made to NAME the platform's own paid
+	// products (Coding Plan, 模型 API 套餐包). Neither changed behaviour, and the
+	// reason they could not is worth more than the edits were:
+	//
+	// The trigger was 「4090 的显存和最大卡数是多少」 answering 「最多 10 张卡」 5/5 while
+	// the live API returns 8 in all four zones (MachineSizes.Gpu=[1 2 4 8]). It was
+	// diagnosed as a source-selection failure — the model never called
+	// gpu_specs_query, which carries max_gpu_count=8 — hence a prompt rule naming
+	// specs. It was not a source-selection failure. stage2b_w0 chunk
+	// v2-resource_purchase-830490002fe09809 (source_origin official, confidence high)
+	// carries a GPU table whose 4090 row says 10, and the model read it correctly:
+	// it also got 4090_48G=8 right, which that same table says. The corpus is not
+	// stale either — compshare-docs HEAD
+	// (pages/gpus/instance/createcompshareinstance.md) still prints 10 today. The
+	// conflict is between the docs and the API, upstream of anything in this repo.
+	//
+	// So the prompt was being asked to arbitrate a fact conflict it cannot see. With
+	// the forced first hop ON the corpus answer always arrives before the model picks
+	// a tool, and whichever source arrives first wins — measured: hop ON, 0/10 turns
+	// called gpu_specs_query; hop OFF, 10/10 did and answered 8.
+	//
+	// Edit (b) failed its own test too: 「优云智算的 Coding Plan 套餐好贵」 searched 1/5
+	// with the names in place, against a 0/5 baseline and a ±10pp A/A floor. An
+	// earlier 3/3 on a different phrasing was noise, believed too early.
+	//
+	// Rule this leaves behind: before editing this prompt to make the model prefer a
+	// source, check whether the two sources actually disagree. If they do, no wording
+	// fixes it — the disagreement does.
+	mutatingReActPromptSHA256 = "e1c4caa53a07d07cde3d54f9c26a5b6733a11a693069fcabe09ff028adf2e7b2"
+	readOnlyReActPromptSHA256 = "87be136d91ad5002418ec45c283ae7e62d205be93afc6ae104a78fa90ad65bb0"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
 	// That leaves the rollout shape unpinned: deploy/conf/config.yaml already sets
 	// mutating_tools: true, so enabling ssh_ops there produces a fourth combination no snapshot
 	// covered — and that is how it went unnoticed that no section named the lane in it at all (the
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
-	// third SHA pins that combination.
-	mutatingWithRepairLaneReActPromptSHA256 = "5e5be32469c763e3857d15ad89fe0ac78f5b7453dc4a5dbc4331313200c4f0b7"
+	// third SHA pins that combination. Recomputed on this merge: it is the only one of the three
+	// that had to move, because the two above already cover main's segment text unchanged while
+	// this shape is main's text PLUS the new section.
+	mutatingWithRepairLaneReActPromptSHA256 = "23b7fdc064bab18b32191c061a8a29108d654332bc247095d34ec81d21439a11"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

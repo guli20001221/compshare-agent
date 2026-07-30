@@ -50,9 +50,10 @@ var imageDisplaySkipFields = map[string]struct{}{
 
 // ImageListRequest is the capability's own request contract.
 type ImageListRequest struct {
-	Source platform.ImageSource `json:"source,omitempty"`
-	Query  string               `json:"query,omitempty"`
-	Mode   platform.ListMode    `json:"mode,omitempty"`
+	Source          platform.ImageSource `json:"source,omitempty"`
+	Query           string               `json:"query,omitempty"`
+	SemanticQueries []string             `json:"semantic_queries,omitempty"`
+	Mode            platform.ListMode    `json:"mode,omitempty"`
 }
 
 // MissingFields: none — an unfiltered platform listing is valid.
@@ -69,11 +70,21 @@ type ImageListResponse struct {
 
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
-		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的真实目录及结构化属性。用于浏览、筛选或核实镜像，不用于模型仓库或镜像标签分类目录。",
-		Params:      objectParam(map[string]schemaNode{"source": enumParam(platform.ImageSourceValues()...), "query": stringParam(), "mode": enumParam(platform.ListModeValues()...)}),
-		Handle:      imageListHandle,
-		Render:      imageListRender,
+		Label:        imageListCapabilityLabel,
+		Description:  "查询平台、自制、社区或共享镜像的当前目录及结构化属性。用于浏览、筛选、核实或推荐镜像；不用于模型仓库或镜像标签分类目录。具体查询与语义扩展规则以参数说明为准。",
+		Presentation: ReadPresentationBrowse,
+		Params: objectParam(map[string]schemaNode{
+			"source": enumParam(platform.ImageSourceValues()...),
+			"query": stringParam().described(
+				"用户原话中的目录查询词；复制最短且有意义的用途、约束或用户明确点名的镜像，可取用户表达中的子串，不要先猜候选镜像名。无查询条件时留空。",
+			),
+			"semantic_queries": arrayParam(stringParam()).described(
+				"社区或平台镜像可用，最多 3 个。Agent 根据用户用途提炼的技术或类别查询词，例如用途的常见项目类别或运行时名称；不得替代 query，结果会与 query 的结果合并。原话查询无结果或候选不合适时，可保留同一个 query 后重试并补充这里。推荐类问题应同时查平台与社区两个来源后再作答，平台镜像按运行时命名，只有配合语义扩展才能被用途词命中。",
+			),
+			"mode": enumParam(platform.ListModeValues()...),
+		}),
+		Handle: imageListHandle,
+		Render: imageListRender,
 	}
 }
 
@@ -103,14 +114,12 @@ func imageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) 
 	return resp, ReadResult{}
 }
 
-// imageListRender projects the response. The reply is declared a browse listing:
-// every source here renders a catalog to choose from, and the guided create flow
-// owns the actual picking, so the rendered rows are never the answer to the turn.
+// imageListRender projects the response. Its spec declares browse presentation:
+// the Agent curates the catalog instead of pasting every row into the answer.
 func imageListRender(resp ImageListResponse) ReadResult {
 	r := ReadHandled(resp.Reply)
 	r.ToolAction = resp.Action
 	r.Envelope = resp.Envelope
-	r.ReplyIsBrowseListing = true
 	return r
 }
 
@@ -120,12 +129,74 @@ func platformImageListHandle(ctx context.Context, req ImageListRequest, rt ReadR
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(platformImageAction, imageListCapabilityLabel, err)
 	}
-	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Query, req.Mode, platformImageAction, "platform")
+	query, mode := req.Query, req.Mode
+	// Semantic expansion on the platform catalog costs NOTHING extra: unlike the
+	// community path (one upstream FuzzySearch per query), the platform listing is
+	// fetched whole and filtered here, so the expansion is just a wider client-side
+	// match over rows already in hand.
+	//
+	// Why it is needed at all: the platform's inference images are named after the
+	// runtime — vLLM v0.25.1, SGLang v0.5.15, Ollama v0.32.1 — so a user asking for
+	// 大模型推理 matches ZERO of them by name, while the same intent on the community
+	// side expands and matches. The Agent could only answer from the side that had
+	// matches, which is why platform-maintained images never appeared in a
+	// recommendation even though they exist.
+	if queries := imageSearchQueries(req); len(queries) > 1 {
+		raw = filterImageSetByAnyQuery(raw, "ImageSet", queries, imageQueryMatchFields(fieldOrder))
+		// The union IS the filter; re-applying the primary query below would
+		// narrow back to it and erase every expansion (the same self-narrowing
+		// bug the community path documents).
+		query, mode = "", platform.ListModeAll
+	}
+	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, query, mode, platformImageAction, "platform")
 	return ImageListResponse{
-		Reply:    renderImageListReply(raw, "ImageSet", fieldOrder, req.Query, req.Mode),
+		Reply:    renderImageListReply(raw, "ImageSet", fieldOrder, query, mode),
 		Action:   platformImageAction,
 		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
+}
+
+// imageQueryMatchFields picks the fields a catalog query matches against, from
+// the same fieldOrder buildImageListEnvelope uses — so a pre-filter and the
+// envelope's own filter can never disagree about what "matches" means.
+func imageQueryMatchFields(fieldOrder []string) []string {
+	out := make([]string, 0, len(fieldOrder))
+	for _, f := range fieldOrder {
+		switch f {
+		case "Name", "ImageName", "CompShareImageName", "Author":
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// filterImageSetByAnyQuery keeps every row matching AT LEAST ONE query. Union,
+// never intersection: an expansion may only add candidates, so a bad expansion
+// term costs nothing and cannot hide the images the user's own words found.
+func filterImageSetByAnyQuery(raw map[string]any, listKey string, queries []string, fields []string) map[string]any {
+	if len(queries) == 0 || len(fields) == 0 {
+		return raw
+	}
+	items := mapSliceAt(raw, listKey)
+	kept := make([]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, query := range queries {
+			if strings.TrimSpace(query) == "" || entryMatchesSlotQuery(entry, query, fields) {
+				kept = append(kept, item)
+				break
+			}
+		}
+	}
+	out := make(map[string]any, len(raw))
+	for k, v := range raw {
+		out[k] = v
+	}
+	out[listKey] = kept
+	return out
 }
 
 func customImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
@@ -143,20 +214,147 @@ func customImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRun
 }
 
 func communityImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
-	args := map[string]any{}
-	if query := strings.TrimSpace(req.Query); query != "" {
-		args["FuzzySearch"] = query
+	queries := imageSearchQueries(req)
+	results := make([]map[string]any, 0, len(queries))
+	for _, query := range queries {
+		// ExcludeReadme: the Readme rich text is never parsed into a catalog entry
+		// — Description is a separate upstream field and is what the model reads —
+		// and it is most of the payload: measured live, the full 835-family catalog
+		// is 5.9MB with Readme and 2.1MB without. We were fetching it and throwing
+		// it away, once per query.
+		args := map[string]any{"ExcludeReadme": true}
+		if query != "" {
+			args["FuzzySearch"] = query
+		}
+		raw, err := imageExecuteAll(ctx, rt, communityImageAction, "CompshareImageGroup", args)
+		if err != nil {
+			return ImageListResponse{}, ReadFailureAfterTool(communityImageAction, imageListCapabilityLabel, err)
+		}
+		results = append(results, filterFlatCommunityImageResult(raw, query))
 	}
-	raw, err := imageExecuteAll(ctx, rt, communityImageAction, "CompshareImageGroup", args)
-	if err != nil {
-		return ImageListResponse{}, ReadFailureAfterTool(communityImageAction, imageListCapabilityLabel, err)
-	}
-	env := buildCommunityImageEnvelope(raw, req.Query, req.Mode)
+	raw := mergeCommunityImageResults(results)
+	// Upstream already applied every individual query. The merged catalog is the
+	// union; applying the primary query again here would erase the semantic
+	// expansions and restore the self-narrowing bug.
+	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
 	return ImageListResponse{
-		Reply:    renderCommunityImageReply(raw, req.Query, req.Mode),
+		Reply:    renderCommunityImageReply(raw, "", platform.ListModeAll),
 		Action:   communityImageAction,
 		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
+}
+
+func imageSearchQueries(req ImageListRequest) []string {
+	if req.Mode == platform.ListModeAll {
+		return []string{""}
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, 1+len(req.SemanticQueries))
+	for _, query := range append([]string{req.Query}, req.SemanticQueries...) {
+		query = strings.TrimSpace(query)
+		key := strings.ToLower(query)
+		if query == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, query)
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
+}
+
+func mergeCommunityImageResults(results []map[string]any) map[string]any {
+	if len(results) == 0 {
+		return map[string]any{}
+	}
+	groups := make([]map[string]any, 0)
+	flat := make([]any, 0)
+	for _, raw := range results {
+		for _, item := range mapSliceAt(raw, "CompshareImageGroup") {
+			if group, ok := item.(map[string]any); ok {
+				groups = append(groups, group)
+			}
+		}
+		flat = append(flat, mapSliceAt(raw, "ImageSet")...)
+	}
+	merged := map[string]any{}
+	if len(groups) > 0 {
+		deduped := dedupeCommunityImageGroups(groups)
+		items := make([]any, 0, len(deduped))
+		for _, group := range deduped {
+			items = append(items, group)
+		}
+		merged["CompshareImageGroup"] = items
+		merged["TotalCount"] = len(items)
+	}
+	if len(flat) > 0 {
+		deduped := dedupeFlatImageRows(flat)
+		merged["ImageSet"] = deduped
+		if len(groups) == 0 {
+			merged["TotalCount"] = len(deduped)
+		}
+	}
+	return merged
+}
+
+// filterFlatCommunityImageResult preserves the compatibility path for community
+// APIs that return ImageSet instead of CompshareImageGroup. Group responses are
+// already filtered upstream; a flat response is filtered again locally so an
+// upstream implementation that ignores FuzzySearch cannot turn one semantic
+// expansion into an unfiltered catalog.
+func filterFlatCommunityImageResult(raw map[string]any, query string) map[string]any {
+	if strings.TrimSpace(query) == "" || len(mapSliceAt(raw, "CompshareImageGroup")) > 0 {
+		return raw
+	}
+	items := mapSliceAt(raw, "ImageSet")
+	if len(items) == 0 {
+		return raw
+	}
+	filtered := make([]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok || !entryMatchesSlotQuery(entry, query,
+			[]string{"Name", "ImageName", "CompShareImageName", "Author"}) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	out := make(map[string]any, len(raw))
+	for key, value := range raw {
+		out[key] = value
+	}
+	out["ImageSet"] = filtered
+	out["TotalCount"] = len(filtered)
+	return out
+}
+
+func dedupeFlatImageRows(items []any) []any {
+	seen := map[string]bool{}
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(safeString(entry, "CompShareImageId")))
+		if key == "" {
+			name := strings.ToLower(strings.TrimSpace(bestImageName(entry)))
+			author := strings.ToLower(strings.TrimSpace(safeString(entry, "Author")))
+			if name != "" || author != "" {
+				key = name + "\x00" + author
+			}
+		}
+		if key != "" && seen[key] {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
@@ -549,78 +747,139 @@ func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode pl
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(byID), Source: envelope.FactSourceComputed},
 	)
 
-	seen := map[string]bool{}
+	// Breadth before depth. Every version of a family carries the SAME name, so
+	// filling the cap family-by-family spends it on rows the Agent cannot tell
+	// apart: measured live 2026-07-28, 数字人 matches 62 families / 98 images, and
+	// depth-first handed the Agent 7 InfiniteTalk versions + 3 LTX versions — a
+	// two-family menu, with HeyGem and every other digital-human family invisible.
+	// Round-robin instead: one version per family in popularity order, then a
+	// second each, and so on. A broad search now shows the field; a narrow one
+	// (few families) still spends the remaining cap on that family's versions.
+	families := groupCommunityVersionRows(filtered, byID)
 	shown := 0
-	for _, group := range filtered {
-		if shown >= imageListDisplayCap {
-			break
-		}
-		groupName := communityGroupName(group)
-		groupAuthor := safeString(group, "Author")
-		deployCount := communityDeployCount(group)
-		for _, v := range mapSliceAt(group, "Data") {
+	for depth := 0; shown < imageListDisplayCap; depth++ {
+		advanced := false
+		for _, rows := range families {
+			if depth >= len(rows) {
+				continue
+			}
+			advanced = true
+			appendCommunityImageSubject(&env, rows[depth])
+			shown++
 			if shown >= imageListDisplayCap {
 				break
 			}
+		}
+		if !advanced {
+			break
+		}
+	}
+	if len(byID) > shown {
+		// Name the family coverage too: "10 of 98 images" reads like a deep slice
+		// of a shallow catalog, when what the Agent needs to know before it
+		// recommends one is how much of the FIELD it was shown.
+		env.Computed = append(env.Computed, envelope.Fact{
+			Key: "display_truncated", Label: "Display truncated",
+			Value: fmt.Sprintf("showing %d of %d community images across %d of %d image families; ask with a keyword to narrow",
+				shown, len(byID), countCommunityFamiliesShown(families, shown), len(families)),
+			Source: envelope.FactSourceComputed,
+		})
+	}
+	return env
+}
+
+// communityVersionRow is one community image version paired with the family row
+// it came from, so the round-robin pass can emit group provenance (author,
+// 部署次数) without re-walking the groups.
+type communityVersionRow struct {
+	id      string
+	version map[string]any
+	entry   deployment.ImageCatalogEntry
+	group   map[string]any
+}
+
+// groupCommunityVersionRows flattens each family's version rows in catalog order,
+// keeping only versions that carry an id AND parsed into a typed catalog entry
+// (an id-less or unparsed row is an honest drop, never a synthetic subject).
+// Families keep their incoming popularity order; families that contribute no
+// usable version are omitted entirely rather than left as empty slots.
+func groupCommunityVersionRows(groups []map[string]any, byID map[string]deployment.ImageCatalogEntry) [][]communityVersionRow {
+	seen := map[string]bool{}
+	families := make([][]communityVersionRow, 0, len(groups))
+	for _, group := range groups {
+		rows := make([]communityVersionRow, 0, 4)
+		for _, v := range mapSliceAt(group, "Data") {
 			ver, ok := v.(map[string]any)
 			if !ok {
 				continue
 			}
 			id := safeString(ver, "CompShareImageId")
 			if id == "" {
-				continue // honest drop — no synthetic id for an id-less version row
+				continue
 			}
 			key := strings.ToLower(id)
 			if seen[key] {
 				continue
 			}
-			catalogEntry, ok := byID[key]
+			entry, ok := byID[key]
 			if !ok {
 				continue
 			}
 			seen[key] = true
-			subjectID := "image:" + id
-			name := catalogEntry.Name
-			if name == "" {
-				name = groupName
-			}
-			env.Subjects = append(env.Subjects, envelope.Subject{
-				ID: subjectID, Name: name, Type: envelope.SubjectImage,
-			})
-			appendStructuredImageFacts(&env, subjectID, catalogEntry)
-			// Group provenance, attached per subject (never a filter): author, the
-			// family's 部署次数 popularity, and the version's own label (distinct from
-			// the family name that became the subject name).
-			if author := safeString(ver, "Author"); author != "" {
-				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: subjectID, Key: "author", Label: "作者", Value: author, Source: envelope.FactSourceAPI,
-				})
-			} else if groupAuthor != "" {
-				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: subjectID, Key: "author", Label: "作者", Value: groupAuthor, Source: envelope.FactSourceAPI,
-				})
-			}
-			if label := communityVersionLabel(ver); label != "" {
-				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: subjectID, Key: "version", Label: "版本", Value: label, Source: envelope.FactSourceAPI,
-				})
-			}
-			if deployCount > 0 {
-				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: subjectID, Key: "deploy_count", Label: "部署次数", Value: int(deployCount), Source: envelope.FactSourceAPI,
-				})
-			}
-			shown++
+			rows = append(rows, communityVersionRow{id: id, version: ver, entry: entry, group: group})
+		}
+		if len(rows) > 0 {
+			families = append(families, rows)
 		}
 	}
-	if len(byID) > shown {
-		env.Computed = append(env.Computed, envelope.Fact{
-			Key: "display_truncated", Label: "Display truncated",
-			Value:  fmt.Sprintf("showing %d of %d community images; ask with a keyword to narrow", shown, len(byID)),
-			Source: envelope.FactSourceComputed,
+	return families
+}
+
+// countCommunityFamiliesShown reports how many families the first `shown`
+// round-robin emissions covered — the breadth figure the truncation note quotes.
+// Depth 0 visits every family exactly once (a family with no usable version was
+// dropped when the rows were grouped), so the count is simply whichever ran out
+// first: the cap or the field.
+func countCommunityFamiliesShown(families [][]communityVersionRow, shown int) int {
+	if shown < len(families) {
+		return shown
+	}
+	return len(families)
+}
+
+// appendCommunityImageSubject emits one community version as an image subject
+// with the same structured per-candidate facts the platform path emits, plus the
+// group provenance attached per subject (never a filter): author, the family's
+// 部署次数 popularity, and the version's own label.
+func appendCommunityImageSubject(env *envelope.Envelope, row communityVersionRow) {
+	subjectID := "image:" + row.id
+	name := row.entry.Name
+	if name == "" {
+		name = communityGroupName(row.group)
+	}
+	env.Subjects = append(env.Subjects, envelope.Subject{
+		ID: subjectID, Name: name, Type: envelope.SubjectImage,
+	})
+	appendStructuredImageFacts(env, subjectID, row.entry)
+	author := safeString(row.version, "Author")
+	if author == "" {
+		author = safeString(row.group, "Author")
+	}
+	if author != "" {
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: "author", Label: "作者", Value: author, Source: envelope.FactSourceAPI,
 		})
 	}
-	return env
+	if label := communityVersionLabel(row.version); label != "" {
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: "version", Label: "版本", Value: label, Source: envelope.FactSourceAPI,
+		})
+	}
+	if deployCount := communityDeployCount(row.group); deployCount > 0 {
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID: subjectID, Key: "deploy_count", Label: "部署次数", Value: int(deployCount), Source: envelope.FactSourceAPI,
+		})
+	}
 }
 
 // communityVersionLabel returns the version-specific label (e.g. "v26.0529",

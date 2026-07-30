@@ -1,6 +1,7 @@
 package actionresolver
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -126,35 +127,136 @@ func TestCreateAcceptsExplicitOptionalName(t *testing.T) {
 func TestIntakeSpecForOperationValidatesDeclaration(t *testing.T) {
 	fields := map[string]FieldSpec{
 		"Zone":     {Name: "Zone", Codec: CodecZone},
+		"Name":     {Name: "Name", Codec: CodecConstrainedText},
+		"GpuType":  {Name: "GpuType", Codec: CodecMachineType, Required: true},
 		"UHostId":  {Name: "UHostId", Codec: CodecResourceRef, Target: true},
 		"Password": {Name: "Password", Codec: CodecSensitiveText},
 	}
 	t.Run("valid", func(t *testing.T) {
-		spec, err := intakeSpecForOperation(true, []string{"Zone"}, fields)
+		spec, err := intakeSpecForOperation(true, []string{"Zone"}, nil, fields)
 		require.NoError(t, err)
 		require.Equal(t, IntakeGuided, spec.Mode)
 	})
 	t.Run("unknown field errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, []string{"Nope"}, fields)
+		_, err := intakeSpecForOperation(true, []string{"Nope"}, nil, fields)
 		require.Error(t, err)
 	})
 	t.Run("target field errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, []string{"UHostId"}, fields)
+		_, err := intakeSpecForOperation(true, []string{"UHostId"}, nil, fields)
 		require.Error(t, err)
 	})
 	t.Run("secret field errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, []string{"Password"}, fields)
+		_, err := intakeSpecForOperation(true, []string{"Password"}, nil, fields)
 		require.Error(t, err)
 	})
 	t.Run("guided with no fields errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, nil, fields)
+		_, err := intakeSpecForOperation(true, nil, nil, fields)
 		require.Error(t, err)
 	})
 	t.Run("non-guided is inert", func(t *testing.T) {
-		spec, err := intakeSpecForOperation(false, nil, fields)
+		spec, err := intakeSpecForOperation(false, nil, nil, fields)
 		require.NoError(t, err)
 		require.Equal(t, IntakeNone, spec.Mode)
 	})
+}
+
+// The discardable declaration is guarded harder than the collectable one,
+// because nothing ever re-collects a discarded value. Each subtest below is a
+// field class that measurably WOULD have become silently droppable under the
+// derived rule ("every optional non-target field") this list replaced.
+func TestIntakeSpecRejectsUnsafeDiscardableDeclarations(t *testing.T) {
+	fields := map[string]FieldSpec{
+		"Zone":     {Name: "Zone", Codec: CodecZone},
+		"Name":     {Name: "Name", Codec: CodecConstrainedText},
+		"GpuType":  {Name: "GpuType", Codec: CodecMachineType, Required: true},
+		"UHostId":  {Name: "UHostId", Codec: CodecResourceRef, Target: true},
+		"Password": {Name: "Password", Codec: CodecSensitiveText},
+	}
+	t.Run("valid optional field", func(t *testing.T) {
+		spec, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"Name"}, fields)
+		require.NoError(t, err)
+		require.Equal(t, []string{"Name"}, spec.DiscardableOnRejectFields)
+	})
+	t.Run("unknown field errors", func(t *testing.T) {
+		_, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"Nope"}, fields)
+		require.Error(t, err)
+	})
+	t.Run("required field errors", func(t *testing.T) {
+		// A rejected slot is adjudicated, so it never lands in Missing — discarding
+		// a required value would run the operation without it.
+		_, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"GpuType"}, fields)
+		require.Error(t, err)
+	})
+	t.Run("target field errors", func(t *testing.T) {
+		_, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"UHostId"}, fields)
+		require.Error(t, err)
+	})
+	t.Run("secret field errors", func(t *testing.T) {
+		// The reinstall password is the field the derived rule would have silenced.
+		_, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"Password"}, fields)
+		require.Error(t, err)
+	})
+	t.Run("discardable without guided intake errors", func(t *testing.T) {
+		_, err := intakeSpecForOperation(false, nil, []string{"Name"}, fields)
+		require.Error(t, err, "no form means nothing re-collects; the value would just vanish")
+	})
+}
+
+// Every OTHER workflow must stay untouched by this change: only create declares
+// a discardable set, so a bad value anywhere else still blocks as it did before.
+// This is the blast-radius gate — the derived rule it replaced would have made 16
+// fields across 8 operations newly droppable.
+func TestOnlyCreateDeclaresDiscardableFields(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	for _, operation := range catalog.Operations() {
+		spec, ok := catalog.Lookup(operation)
+		require.True(t, ok)
+		if operation == "CreateInstanceWorkflow" {
+			require.Equal(t, []string{"CompShareImageId", "Name"}, spec.Intake.DiscardableOnRejectFields)
+			continue
+		}
+		require.Empty(t, spec.Intake.DiscardableOnRejectFields,
+			"%s must not silently drop any rejected value", operation)
+	}
+}
+
+// The regression in one assertion: an invalid value on a field the form cannot
+// collect but CAN discard opens the form instead of killing the card. Pairs with
+// TestResolveNonCorrectableRejectionBlocksIntake, which keeps every other
+// rejection Kind blocking.
+func TestDiscardableInvalidValueOpensIntakeInsteadOfBlocking(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
+
+	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "GpuType", Value: "4090", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "4090"}},
+		// A name that is a real value and still fails its codec — the non-blank
+		// half of the bug, which the blank-slot prune does not cover.
+		{Name: "Name", Value: strings.Repeat("x", 513), Source: SourceAgentInference},
+	}})
+
+	require.Equal(t, []RejectedProblem{{Slot: "Name", Kind: RejectInvalidValue}}, resolved.RejectedProblems)
+	require.False(t, resolved.ReadyForConfirmation, "a rejected value never confirms straight through")
+	require.True(t, resolved.ReadyForIntake, "a discardable rejection opens the form")
+	require.NotContains(t, resolved.Arguments, "Name", "the bad value is dropped, never carried into the create")
+}
+
+// The same shape on a field in NEITHER list still blocks — the discardable list
+// widens exactly what it names and nothing else.
+func TestNonDiscardableInvalidValueStillBlocksIntake(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
+
+	resolved := resolver.Resolve(ActionProposal{Operation: "ResetPasswordWorkflow", Slots: []SlotCandidate{
+		{Name: "UHostId", Value: "uhost-1", Source: SourceUserConfirmation},
+		{Name: "Password", Value: 12345, Source: SourceAgentInference},
+	}})
+
+	require.False(t, resolved.ReadyForConfirmation)
+	require.False(t, resolved.ReadyForIntake, "reset-password declares no guided form and no discardable field")
 }
 
 // Guided intake is a per-operation declaration. An operation that does not

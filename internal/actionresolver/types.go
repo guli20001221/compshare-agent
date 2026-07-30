@@ -97,6 +97,11 @@ const (
 type IntakeSpec struct {
 	Mode              IntakeMode
 	CollectableFields []string
+	// DiscardableOnRejectFields are fields the form does NOT collect but whose
+	// invalid value may be dropped so the form still opens. See
+	// workflow.Definition.DiscardableOnRejectFields for why this is a separate
+	// list from CollectableFields and never derived from the schema.
+	DiscardableOnRejectFields []string
 }
 
 type OperationSpec struct {

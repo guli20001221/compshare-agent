@@ -117,6 +117,12 @@
     "reply_contains": ["哪", "实例"]
   },
   {
+    "id": "golden_22_recommend_current_catalog_image",
+    "input": "为我推荐一个做数字人的镜像",
+    "expect_tool_calls": ["ReadCapability_image_list", "DescribeCommunityImages"],
+    "reply_contains": ["InfiniteTalk"]
+  },
+  {
     "id": "multi_01_disambiguate_stop",
     "steps": [
       {
