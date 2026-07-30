@@ -79,7 +79,15 @@ _DESTRUCTIVE_SRC = [
     r"\brm\b[^\n]*\[[^\]]+\]",                              # bracket: /etc/host[s1]
     r"\brm\b[^\n]*\s/(etc|boot|s?bin|lib(64)?|usr|sys|proc|dev|var/lib)(/|\s|$)",
     r"\brm\b[^\n]*\s/\s*$",                                 # rm /
-    r"\bunlink\b", r"\bshred\b", r"\btruncate\b",
+    r"\bunlink\b", r"\bshred\b",
+    # `truncate` was UNCONDITIONALLY destructive until 2026-07-30. Measured on a live box: a 2 GB
+    # log held open by a running process, `rm` of it reclaimed ZERO bytes (df avail unchanged at
+    # 75062 MB, the open fd still pinning the inode) while `truncate -s 0` reclaimed all 2 GB
+    # (75062 -> 77110 MB). The gate was therefore allowing the move that does NOT work and refusing
+    # the one that does, on 系统盘写满 — the most classic ops failure there is. Only the ZERO-size
+    # form is exempted; `truncate -s 10G` still allocates and still refuses. The lockout and
+    # kernel-path rules below apply to both forms regardless.
+    r"\btruncate\b(?![^\n]*(?:-s\s*0|--size[=\s]*0)(?:\s|$))",
     r"\bmkfs\w*\b", r"(?<![\w-])dd\b[^\n]*\s(if=|of=|bs=|count=|conv=)",
     # fdisk/parted stay destructive EXCEPT the pure LIST mode (-l/--list), which only prints the
     # partition table — that form is allowlisted read-only in _STRUCTURED_DIAG (F9). The interactive
@@ -114,6 +122,15 @@ _DESTRUCTIVE_SRC = [
     # name, and truncate is unconditionally destructive above. Scoped to system paths so that
     # `cp /dev/null /tmp/marker` still only needs a consent card.
     rf"\b(?:cp|install)\b[^\n]*\s/dev/null\s+{_SYSTEM_PATHS}",
+    # Kernel/boot/device interfaces stay refused for every write verb, not only for `>`. The one
+    # exception is a per-process fd path: /proc/<pid>/fd/<n> is a handle on a REGULAR file, and
+    # truncating it through that handle is exactly the space-reclaim repair measured above — the
+    # only way to free a log whose inode an open process is still pinning.
+    rf"\b{_WRITE_ANY_ARG}\b[^\n]*\s/(?:boot|sys|dev)/",
+    rf"\b{_WRITE_ANY_ARG}\b[^\n]*\s/proc/(?!\d+/fd/)",
+    # cp/install/ln write only their LAST argument, so the destination form is separate — otherwise
+    # `cp /proc/net/tcp /tmp/out` and `cp /dev/null /tmp/marker`, both legitimate, would be refused.
+    rf"\b{_WRITE_LAST_ARG}\b[^\n]*\s/(?:boot|sys|dev|proc)/\S*\s*$",
     # /etc, /usr, /lib, /bin, /sbin, /var/lib were in the three patterns above until 2026-07-30 and
     # are deliberately NOT any more. They are where a broken service actually lives, so refusing
     # them refused the repair itself. Measured on a live run: the fault was injected by renaming a
@@ -134,7 +151,16 @@ _DESTRUCTIVE_SRC = [
     # firewall / services / management-channel lockout
     r"\biptables\b\s+-F", r"\bufw\b\s+disable",
     r"\bsystemctl\b\s+(disable|mask)\b",
-    r"\bsystemctl\b\s+(stop|kill)\s+\S*(ssh|network)",
+    # `restart`/`reload` on ssh join stop/kill as of 2026-07-30, and the reason is a measurement:
+    # on a live box, SIGHUP to sshd with ONE bad directive in its config did not fail safe the way
+    # nginx does — OpenSSH re-execs itself on HUP, the re-exec failed, and the daemon DIED (port
+    # stopped listening, connection refused). A plain restart with the same config also refused to
+    # start. In this category the user's config is ALREADY broken, which is precisely when a
+    # reload is fatal, so it must not be one consent-card click away.
+    # `start` is deliberately NOT here: it is the recovery direction, it cannot lose a daemon that
+    # is already down, and it stays approvable.
+    r"\bsystemctl\b\s+(stop|kill|restart|reload|try-restart|force-reload)\s+\S*(ssh|network)",
+    r"\bservice\b\s+\S*(ssh|network)\S*\s+(stop|restart|reload|force-reload)\b",
     # process kill of init / critical daemons
     r"\bkill\b\s+(-\w+\s+)*-?1(\s|$)",
     r"\b(pkill|killall)\b[^\n]*\b(sshd|systemd|init|dockerd|containerd)\b",

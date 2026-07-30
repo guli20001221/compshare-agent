@@ -401,6 +401,50 @@ for _name, _cmd, _want in [
 ]:
     check(f"lockout-path-stays-readable::{_name}", guardrails.classify(_cmd) == _want)
 
+# --- two re-tierings driven by measurement, not by taste (2026-07-30) ----------------------------
+# Both were found by checking the gate against the ACTUAL repair for each high-frequency real-user
+# category (production export 2026-07-07..24, 115 retained sessions), before spending a live run.
+#
+# 系统盘写满 (file_storage_transfer, 7 sessions). Measured on a live box: a 2 GB log held open by a
+# running process. `rm` of it reclaimed ZERO bytes — df avail stayed at 75062 MB, because the open
+# fd still pinned the inode. `truncate -s 0` through /proc/<pid>/fd reclaimed all 2 GB (75062 ->
+# 77110 MB). The gate allowed the move that does not work and refused the one that does.
+for _name, _cmd, _want in [
+    ("zero-a-log-is-the-repair", "truncate -s 0 /var/log/bigblob.bin", "mutating"),
+    ("zero-via-a-held-open-fd", "truncate -s 0 /proc/633/fd/3", "mutating"),
+    ("long-form-zero", "truncate --size=0 /root/big.log", "mutating"),
+    # Growing a file is not reclaiming space; it is allocating it. Still refused.
+    ("grow-a-file-still-refused", "truncate -s 10G /root/big.log", "destructive"),
+    # The exemption is the ZERO form only — it does not reach past the lockout/kernel rules.
+    ("zero-a-lockout-path", "truncate -s 0 /etc/fstab", "destructive"),
+    ("zero-a-kernel-interface", "truncate -s 0 /proc/sys/kernel/panic", "destructive"),
+    ("write-verb-into-sysfs", "tee /proc/sys/vm/drop_caches", "destructive"),
+    ("write-verb-into-dev", "cp /tmp/x /dev/watchdog", "destructive"),
+]:
+    check(f"space-reclaim-tiering::{_name}", guardrails.classify(_cmd) == _want)
+
+# SSH/RDP connectivity (23 sessions, the 3rd most common real problem). The /etc/ssh carve-out was
+# checked against a live box rather than assumed: with ONE bad directive in its config, SIGHUP to
+# sshd did NOT fail safe the way nginx does — OpenSSH re-execs on HUP, the re-exec failed, and the
+# daemon DIED (port stopped listening, connection refused). A restart with the same config also
+# refused to start. So editing sshd_config stays hard-refused, AND the reload/restart that makes a
+# bad config fatal must not be one consent-card click away either. In this category the user's
+# config is already broken, which is exactly when a reload loses the box.
+for _name, _cmd, _want in [
+    ("restart-with-an-already-bad-config", "systemctl restart sshd", "destructive"),
+    ("reload-re-execs-and-can-die", "systemctl reload ssh", "destructive"),
+    ("sysvinit-form", "service ssh restart", "destructive"),
+    ("networking-too", "systemctl restart networking", "destructive"),
+    # `start` is the RECOVERY direction: it cannot lose a daemon that is already down.
+    ("start-is-recovery-not-lockout", "systemctl start sshd", "mutating"),
+    # Nothing here may spill onto ordinary services.
+    ("ordinary-service-restart-unaffected", "systemctl restart jupyterlab", "mutating"),
+    # Diagnosis of this category stays fully available — that IS the product here.
+    ("read-the-config", "cat /etc/ssh/sshd_config", "read_only"),
+    ("validate-without-applying", "/usr/sbin/sshd -t", "read_only"),
+]:
+    check(f"ssh-channel-tiering::{_name}", guardrails.classify(_cmd) == _want)
+
 ssh_transport.run_ssh = _REAL_RUN_SSH
 
 print(f"\n{'FAILED: ' + ', '.join(FAILS) if FAILS else 'all write-mode checks passed'}")
