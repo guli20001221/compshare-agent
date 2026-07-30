@@ -102,7 +102,7 @@ func TestReadCatalogSchemaMatchesRequestStruct(t *testing.T) {
 
 func TestEveryReadCapabilityHasAnExplicitPresentationContract(t *testing.T) {
 	want := map[string]ReadPresentation{
-		"resource_info":              ReadPresentationRequired,
+		"resource_info":              ReadPresentationExact,
 		"monitor_query":              ReadPresentationRequired,
 		"monitor_history":            ReadPresentationRequired,
 		"gpu_specs_query":            ReadPresentationBrowse,

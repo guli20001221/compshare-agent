@@ -67,9 +67,13 @@ func refundReadSpec() ReadCapabilitySpec[RefundEstimateRequest, RefundEstimateRe
 }
 
 func refundHandle(ctx context.Context, req RefundEstimateRequest, rt ReadRuntime) (RefundEstimateResponse, ReadResult) {
-	// allowColdExactID=false: refund labels its reply from these pre-query
-	// snapshots, so a cold id must not pass through here.
-	instances, ids, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver, false, rt.Now)
+	// The rendered rows come from RefundPriceSet, not from these snapshots —
+	// renderRefundEstimateReply iterates the RESPONSE and uses `instances` only to
+	// upgrade a row's label from bare id to 「名称（id）」. So an id the registry has
+	// not seen degrades to an id-labelled row, never to a fabricated subject, and
+	// refund keeps the same absence invariant as the other reads instead of being
+	// the one capability that refuses what upstream would have priced.
+	instances, ids, reason := resolveReadTargetSnapshots(ctx, req.Targets, rt)
 	if reason != nil {
 		// A single prior-turn reference that no longer resolves is a stale
 		// selection: answer (handled) instead of a bare fallback, matching the

@@ -93,7 +93,7 @@ func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, Instance
 }
 
 func instanceAccessHandle(ctx context.Context, req InstanceAccessRequest, rt ReadRuntime) (InstanceAccessResponse, ReadResult) {
-	_, ids, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver, true, rt.Now)
+	_, ids, reason := resolveReadTargetSnapshots(ctx, req.Targets, rt)
 	if reason != nil {
 		return InstanceAccessResponse{}, readTargetFallbackResult(*reason)
 	}

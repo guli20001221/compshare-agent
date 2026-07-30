@@ -41,9 +41,18 @@ type ResourceInfoResponse struct {
 
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
-		Label:        resourceCapabilityLabel,
-		Description:  "查询当前账号已有实例的列表、状态和配置，也用于按 ID 或名称核实实例。只反映账号内资源，不用于查询平台 GPU 库存。",
-		Presentation: ReadPresentationRequired,
+		Label:       resourceCapabilityLabel,
+		Description: "查询当前账号已有实例的列表、状态和配置，也用于按 ID 或名称核实实例。只反映账号内资源，不用于查询平台 GPU 库存。",
+		// exact, NOT required. The wanted change here was the RENDERING — the list
+		// used to read 内存=98304, 启动时间=1785315139 and was hard to scan; it now
+		// reads 96 GB / 启动于 2026-07-29 16:52. Forcing the block in as well made a
+		// targeted question worse, not better: measured live 2026-07-29,
+		// 「我那台 4090 的内存是多少」 got all 10 instances (three of them 5090s)
+		// stapled above the answer, 2/2 — because the block is the whole list
+		// whenever the Agent queried without targets. exact keeps the readable
+		// render and leaves the block optional, so a one-instance question stays a
+		// one-instance answer.
+		Presentation: ReadPresentationExact,
 		Params:       objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
 		Handle:       resourceHandle,
 		Render:       resourceRender,
@@ -62,10 +71,10 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 		}
 		filters = parsed
 	} else {
-		// allowColdExactID=true: resource_info establishes existence from the
-		// DescribeCompShareInstance response (re-parsed below), so a user-typed exact
-		// id may point-query a cold registry rather than be refused before the call.
-		_, resolvedIDs, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver, true, rt.Now)
+		// Existence is established from the DescribeCompShareInstance response
+		// (re-parsed below), never from the registry snapshot, so an id the local
+		// registry has not seen is point-queried rather than refused before the call.
+		_, resolvedIDs, reason := resolveReadTargetSnapshots(ctx, req.Targets, rt)
 		if reason != nil {
 			return ResourceInfoResponse{}, readTargetFallbackResult(*reason)
 		}

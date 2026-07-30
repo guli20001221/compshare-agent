@@ -12,14 +12,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRequiredResourceFactsSurviveWhenAgentOmitsRenderRef(t *testing.T) {
+// TestRequiredEvidenceIsPrependedWhenTheAgentOmitsItsPlaceholder covers the
+// force-insert mechanism itself, at the gateway, rather than through whichever
+// capability happens to be classified `required` this week. resource_info was
+// that capability and no longer is (a targeted question does not want the whole
+// instance list stapled on), so without this the guarantee would have lost its
+// only test when the classification changed.
+func TestRequiredEvidenceIsPrependedWhenTheAgentOmitsItsPlaceholder(t *testing.T) {
+	evidence := []readResponseEvidence{
+		{Capability: "stock_availability", Reply: "4090 华北二A 余量 3", Placeholder: "{{READ_OBSERVATION_1}}", Required: true},
+		{Capability: "image_list", Reply: "目录若干", Placeholder: "{{READ_OBSERVATION_2}}"},
+	}
+	got := substituteReadObservationBlocks("库存我看过了。", evidence)
+	require.Equal(t, "4090 华北二A 余量 3\n\n库存我看过了。", got,
+		"a required block the Agent left out must still reach the user")
+
+	// The optional one is not prepended — only substituted where it was asked for.
+	require.Equal(t, "见 目录若干 。",
+		substituteReadObservationBlocks("见 {{READ_OBSERVATION_2}} 。", evidence[1:]))
+}
+
+// TestResourceInfoDoesNotStapleTheWholeListOntoATargetedAnswer is the measured
+// regression: with resource_info forced, 「我那台 4090 的内存是多少」 got all ten
+// instances (three of them 5090s) above the answer, because the rendered block
+// is the whole list whenever the Agent queried without targets.
+func TestResourceInfoDoesNotStapleTheWholeListOntoATargetedAnswer(t *testing.T) {
 	model := &streamingSeqMockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("read", capability.ReadToolName(intent.IntentResourceInfo), `{}`)}},
 		{Content: "你有一台名为 train-a 的实例（uhost-1），当前正在运行。"},
 	}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"TotalCount": float64(1), "UHostSet": []any{map[string]any{
-			"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(8), "Memory": float64(64),
+			// Memory is MB upstream: 65536 MB is the 64 GB this fixture means.
+			"UHostId": "uhost-1", "Name": "train-a", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(8), "Memory": float64(65536),
 		}}},
 	}}
 	eng := NewWithDeps(model, executor, nil)
@@ -29,7 +54,8 @@ func TestRequiredResourceFactsSurviveWhenAgentOmitsRenderRef(t *testing.T) {
 		OnTextDelta: func(delta string) { deltas = append(deltas, delta) },
 	})
 	require.NoError(t, err)
-	require.Equal(t, "- train-a（uhost-1）：运行中；4090 × 1；8 vCPU / 64 GB\n\n你有一台名为 train-a 的实例（uhost-1），当前正在运行。", reply)
+	require.Equal(t, "你有一台名为 train-a 的实例（uhost-1），当前正在运行。", reply,
+		"the Agent did not ask for the block; a targeted answer must not grow the list")
 	streamed := strings.Join(deltas, "")
 	require.Equal(t, reply, streamed)
 }

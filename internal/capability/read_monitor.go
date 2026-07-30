@@ -145,7 +145,7 @@ func resolveMonitorTargets(ctx context.Context, targets []platform.TargetRef, rt
 	// A cold exact ID is locally unknown, not absent. Carry it to a point Describe,
 	// then build the monitor subject only from that upstream response. This keeps
 	// the envelope grounded while avoiding a model-driven ResourceInfo detour.
-	instances, ids, reason := resolveReadTargetSnapshots(targets, rt.Resolver, true, rt.Now)
+	instances, ids, reason := resolveReadTargetSnapshots(ctx, targets, rt)
 	if reason != nil {
 		return nil, nil, readTargetFallbackResult(*reason)
 	}

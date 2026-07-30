@@ -101,6 +101,7 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		Resolver:         snapshot,
 		Now:              now,
 		FallbackGPUModel: e.fallbackStockGpuModel(now),
+		SyncRegistry:     e.syncRegistryFromDescribe,
 	}
 	if capabilityLabel == string(intent.IntentZoneCatalog) {
 		rt.ZoneCatalog = e.zoneCatalogSnapshot(ctx)

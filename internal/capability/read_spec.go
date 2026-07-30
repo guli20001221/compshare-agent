@@ -65,6 +65,13 @@ type ReadRuntime struct {
 	Now                time.Time
 	FallbackInstanceID string
 	FallbackGPUModel   string
+	// SyncRegistry hands a full DescribeCompShareInstance listing back to the
+	// session's live registry. Only the target-resolution warm-up uses it, and
+	// only after that listing already had to be fetched: without it the cold
+	// production registry (the HTTP path never calls engine.Init()) would be
+	// re-listed on every name-addressed turn of the session instead of once.
+	// Optional — a nil value costs correctness nothing, only the repeat call.
+	SyncRegistry func(raw map[string]any)
 }
 
 // ReadResult is the neutral outcome a typed read capability produces. It carries
