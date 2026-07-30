@@ -123,10 +123,21 @@ agent:
                                        # system python3 has no claude_agent_sdk — so empty is broken, not defaulted.
     # "provider,model" two-part form only. ccr's routing table has no entry for a bare model name, so a
     # bare name — and an empty value, which falls back to agent.llm.model, itself bare — is served as
-    # deepseek-v4-flash with no error and no warning: the only symptom is worse diagnosis. pro is the
-    # measured arm (paired N=3 on one real fault: root cause 3/3 and an honest 无法确认 3/3, vs terra 2/3
-    # and 0/3). This field is ours to set, not the deployer's; the values below are inert until enabled.
-    model: "modelverse,deepseek-v4-pro"
+    # deepseek-v4-flash with no error and no warning: the only symptom is worse diagnosis.
+    # ⚠️ The provider here is `modelverse-terra`, NOT `modelverse`. They are two entries in ccr's
+    # routing table with different keys; naming the wrong one is served as flash with no error.
+    #
+    # Was deepseek-v4-pro until 2026-07-31, on a paired N=3 where terra went 2/5 on repair. That
+    # table was contaminated by the GUARDRAILS, not by the model: two of terra's three failures were
+    # the gate refusing the CORRECT repair, and that gate was re-tiered the same day. The one cell
+    # that independently condemned terra — diagnosing a bad import past a stale success log — was
+    # rebuilt on a live box and does NOT reproduce: terra 3/3 = pro 3/3 on root cause, ~40% faster
+    # (57s vs 100s), and terra alone noticed the fixture's app directory had been replaced, which is
+    # a harder observation than the one being graded.
+    # What the evidence supports is "no measured quality difference on the cells tested"; the reason
+    # to move is latency, not superiority, and the tested cells are a handful of fault shapes on two
+    # boxes, not the whole space. This field is ours to set, not the deployer's; inert until enabled.
+    model: "modelverse-terra,gpt-5.6-terra"
     timeout: "12m"                     # 5m truncates a heavy diagnosis mid-run, and the symptom reads as model failure
     # Let the agent REPAIR the box, not just describe the repair. Off = it reports fixes as optional
     # steps; on = it runs them and verifies. Destructive commands (delete, wipe, reboot, password /
