@@ -547,7 +547,8 @@ for _name, _cmd in [
 for _name, _cmd in [("fi", "fi"), ("done", "done"), ("esac", "esac"), ("while-true", "while true")]:
     check(f"bare-keyword-is-not-a-write::{_name}", guardrails.classify(_cmd) == "read_only")
 
-# And the destructive tier is unaffected — it was already catching these via whole-string regex.
+# And the destructive tier is unaffected — the construct's own segment carries the dangerous verb,
+# so per-command scanning (see _scan_destructive) still catches both of these.
 for _name, _cmd in [("if-then-chmod", "if [ -f /x ]; then chmod 777 /etc/passwd; fi"),
                     ("for-do-rm-rf", "for d in /a /b; do rm -rf $d; done")]:
     check(f"keyword-cannot-soften-destructive::{_name}", guardrails.classify(_cmd) == "destructive")
@@ -588,6 +589,42 @@ for _name, _cmd in [
 for _name, _cmd in [("systemctl-restart-sshd-abs", "/usr/bin/systemctl restart sshd"),
                     ("rm-rf-etc-ssh-abs", "/bin/rm -rf /etc/ssh")]:
     check(f"abs-path-cannot-soften-destructive::{_name}", guardrails.classify(_cmd) == "destructive")
+
+# --- the OVER-refusing half of the same asymmetry (2026-07-30) ------------------------------------
+# Every fix above closed a way to skip the consent card. This one closes the opposite: two commands
+# that were each fine got hard-refused TOGETHER, because a destructive rule of the shape
+# "write-verb ... sensitive-path" matched a verb in one command against a path in another. Measured
+# on a live repair run: `chmod u+rx /root/models && ...` was refused, and the model then reached the
+# same end state with `install -d -m 755 /root/models`, which passed. That is the worst outcome for
+# a consent gate — the refusal taught it to respell instead of to stop and ask, so the operator
+# never saw a card for either form. Asserted end-to-end and not only as a tier, because the point of
+# the fix is which GATE the operator meets.
+for _name, _cmd in [
+    ("perms-then-read-proc", "chmod u+rx /root/models; awk '{print}' /proc/17146/status"),
+    ("kill-squatter-then-check-ssh", "pkill -f squatter.py; systemctl status sshd"),
+    ("perms-then-recursive-listing", "chmod 755 /workspace/app; ls -R /workspace"),
+    ("tidy-then-look-at-etc", "rm /tmp/probe.txt; ls /etc"),
+    ("back-up-then-read-proc", "cp /etc/nginx/nginx.conf /tmp/bak; cat /proc/cpuinfo"),
+]:
+    _res, _entry = dispatch(_cmd, allow_writes=True)
+    check(f"chain-reaches-the-card::{_name}",
+          _res["executed"] is True and _entry["disposition"] == "ran_mutating")
+    # Refused with writes OFF, and refused as MUTATING — the fix must not have made a chain
+    # containing a write auto-run, which would be the same bug pointing the other way.
+    _res, _entry = dispatch(_cmd, allow_writes=False)
+    check(f"chain-still-needs-the-gate::{_name}",
+          _res["executed"] is False and _entry["disposition"] == "refused_mutating_phase1")
+
+# Per-command scanning re-anchors `^` and `$` to the command, which CLOSES two card-buying bypasses
+# a whole-string scan had: both of these were `mutating` before, i.e. one approval away from a write
+# the tier refuses outright.
+for _name, _cmd in [
+    ("borrowed-the-zero-size-exemption", "truncate -s 10G /workspace/big; echo -s 0"),
+    ("evaded-the-destination-anchor", "cp /tmp/x /var/lib/mysql/ibdata1; ls /tmp"),
+]:
+    _res, _entry = dispatch(_cmd, allow_writes=True)
+    check(f"chain-cannot-buy-a-card::{_name}",
+          _res["executed"] is False and _entry["disposition"] == "refused_destructive")
 
 ssh_transport.run_ssh = _REAL_RUN_SSH
 

@@ -411,6 +411,43 @@ CLASSIFY_CASES = [
     ("chattr +i /var/lib/docker", "destructive"),
     ("systemctl stop ssh", "destructive"),
     ("swapoff -a", "destructive"),
+
+    # === 2026-07-30: the destructive tier is scanned PER COMMAND, not over the whole string ===
+    # Most destructive rules have the shape "write-verb ... sensitive-path". Scanned over the
+    # whole string they PAIRED ACROSS a `;`, so two commands that are each harmless were refused
+    # together. Measured on a live repair run: `chmod u+rx /root/models && ...` was hard-refused,
+    # and the model then reached the same end state with `install -d -m 755 /root/models`, which
+    # passed. For a CONSENT gate that is worse than not refusing at all — it teaches the model to
+    # respell rather than to stop and ask.
+    #
+    # (a) FIRST the pins — written before the change, and each destructive both before and after.
+    #     Only the first TWO are load-bearing, and it is worth being exact about which: quote
+    #     masking in _split_chain is what keeps them one segment, and removing it (mutation-checked)
+    #     drops both to `mutating` — i.e. a quoted `arg; path` would become the way to buy a consent
+    #     card for a write the tier refuses outright. The four after them are caught by rules that
+    #     never needed the pairing (recursive `rm`, `-exec rm`), so no mutation of THIS change can
+    #     move them; they are cheap guards on "a chained/piped destructive is still destructive",
+    #     not evidence for anything.
+    ('chmod 000 "a; /etc/ssh/sshd_config"', "destructive"),   # quoted `;` is DATA -> one segment
+    ("chmod 000 'a; /etc/ssh/sshd_config'", "destructive"),   # same, single quotes
+    ('rm -rf "/etc; /var"', "destructive"),
+    ("echo rm -rf / | sh", "destructive"),                    # a destructive segment before a pipe
+    ("ls /a; rm -rf /b", "destructive"),                      # ...and after a chain separator
+    (r"find . -name '*.log' -exec rm {} \;", "destructive"),  # escaped `;` is find's terminator
+    # (b) the false positives this change removes. Every one is two commands that are individually
+    #     fine; each was `destructive` before, and each is a shape a repair actually writes.
+    ("chmod u+rx /root/models; awk '{print}' /proc/17146/status", "mutating"),
+    ("pkill -f squatter.py; systemctl status sshd", "mutating"),      # kill a squatter, then check ssh
+    ("chmod 755 /workspace/app; ls -R /workspace", "mutating"),       # the -R belonged to `ls`
+    ("rm /tmp/probe.txt; ls /etc", "mutating"),                       # tidy up, then look at /etc
+    ("cp /etc/nginx/nginx.conf /tmp/bak; cat /proc/cpuinfo", "mutating"),   # back up, then read /proc
+    ("mv /tmp/a /tmp/b; ls /var/lib", "mutating"),
+    ("install -d -m 755 /root/models; du -sh /var/lib", "mutating"),
+    # (c) and the two BYPASSES it closes, which is why per-command is the tighter reading and not
+    #     a relaxation. Both were `mutating` — one consent card away — because a rule's anchor was
+    #     satisfied by a DIFFERENT command in the same string.
+    ("truncate -s 10G /workspace/big; echo -s 0", "destructive"),     # `-s 0` exemption borrowed
+    ("cp /tmp/x /var/lib/mysql/ibdata1; ls /tmp", "destructive"),      # `$` destination anchor evaded
 ]
 
 
