@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/platform"
 	openai "github.com/sashabaranov/go-openai"
@@ -52,16 +53,34 @@ type AgentContext struct {
 type TurnContextView = AgentContext
 
 const (
-	// maxAgentContextPairs must not be lower than agent.http.max_session_turns:
-	// this is the model's ENTIRE cross-turn memory (messagesFromAgentContext drops
-	// everything else), so a cap below the session length buys nothing except turns
-	// the user paid for and the model cannot see. At 20 pairs a full verbatim replay
-	// of the longest real sessions costs ~23k tokens against a 400k per-turn ceiling.
-	// TestAgentContextPairsCoverTheSessionTurnCap pins the two together.
-	maxAgentContextPairs             = 20
+	// maxAgentContextPairs is the count ceiling on replayed exchanges. It is not a
+	// second number: config owns it, because validateHTTPConfig has to reject a
+	// max_session_turns larger than it (a session outliving the window forgets its
+	// own opening with no error). The real bound on size is maxReplayedHistoryRunes
+	// below; this only caps how far back we look.
+	maxAgentContextPairs             = config.MaxReplayedExchanges
 	maxAgentContextObservations      = 8
 	maxAgentContextVerifiedKnowledge = 4
 )
+
+// maxReplayedHistoryRunes budgets the restored exchanges by SIZE, which the pair
+// count alone does not. Replaying exchanges verbatim (the fix for the 320-rune
+// truncation) removed the only size bound they had: 8 pairs x 2 sides x 320 runes
+// was a hard 5,120-rune ceiling no matter what the user pasted, and 20 unbounded
+// pairs of the largest messages in the production export would be ~155,000 runes.
+//
+// Derivation, from the constraint that actually binds. agent.rate_limit
+// .max_tokens_per_turn = 400000 is prompt+completion summed across the WHOLE
+// turn, and history is re-sent on every one of up to maxReActRounds = 16 model
+// calls, so history's real cost is 16x its per-request size — comparing a single
+// request against 400000 is the wrong comparison. Holding history to at most half
+// the turn budget gives 200000/16 = 12500 tokens per request; at a deliberately
+// conservative 1 rune = 1 token for CJK that is ~12000 runes.
+//
+// Cross-check against production: the largest full-history replay in the three
+// 2026-07 exports is 11,271 runes (p90 1,801; p99 5,764), so every session
+// observed to date still replays complete. The budget bites only past that.
+const maxReplayedHistoryRunes = 12000
 
 // ContextCompiler owns all conversion from persisted/in-memory state to the
 // model-visible semantic view. It is intentionally stateless; BuildAt is
@@ -167,7 +186,34 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 	if limit > 0 && len(pairs) > limit {
 		pairs = pairs[len(pairs)-limit:]
 	}
-	return pairs
+	return budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
+}
+
+// budgetReplayedPairs keeps the newest exchanges that fit in budget and drops
+// whole older ones. It never truncates a message: a half-exchange is the defect
+// this whole change removed, and a reply cut mid-table is worse than an absent
+// one because the model cannot tell it is reading a fragment.
+//
+// The newest exchange is always kept, even alone over budget. It is the turn the
+// user is most likely referring to ("它"/"第一台"/"刚才那个"), so dropping it to
+// respect a budget would reintroduce the amnesia at the one place it hurts most.
+// That single exchange is itself bounded: agent.http.max_input_length caps the
+// user side at 4000 runes.
+func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []ConversationPair {
+	if budgetRunes <= 0 || len(pairs) == 0 {
+		return pairs
+	}
+	spent := 0
+	keepFrom := len(pairs)
+	for i := len(pairs) - 1; i >= 0; i-- {
+		cost := len([]rune(pairs[i].User)) + len([]rune(pairs[i].Assistant))
+		if i < len(pairs)-1 && spent+cost > budgetRunes {
+			break
+		}
+		spent += cost
+		keepFrom = i
+	}
+	return pairs[keepFrom:]
 }
 
 // contextEnvelopeForPlainDirectReply gives every deterministic handled reply an

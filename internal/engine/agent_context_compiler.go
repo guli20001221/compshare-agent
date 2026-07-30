@@ -179,9 +179,14 @@ func safeContextText(value string) string {
 // maxSemanticRunes truncates the reply the model is being asked to remember.
 // Measured on the 2026-07 production exports (3867 completed exchanges): 41.8% of
 // assistant replies exceed 320 runes (median 255, p90 782), so 43% of exchanges
-// lost content on the way into the next turn. It bought nothing — replaying a real
-// session's whole history verbatim is 33 runes at the median and 5,764 at p99,
-// against agent.rate_limit.max_tokens_per_turn = 400000.
+// lost content on the way into the next turn. It bought little — replaying a real
+// session's whole history is 33 runes at the median and 5,764 at p99.
+//
+// Size is bounded instead by maxReplayedHistoryRunes, which drops whole older
+// exchanges. That budget, not this function, is what keeps history affordable:
+// per-request size alone cannot be compared against max_tokens_per_turn, because
+// that ceiling is cumulative over every model call in the turn and history is
+// re-sent on each one.
 //
 // Redaction is NOT part of that trade and stays: the hot engine holds the raw text
 // (only the persisted copy is redacted at write time), so this call is the sole

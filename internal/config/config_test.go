@@ -962,3 +962,38 @@ func TestRuntimeGetenv_SeparateRetrievalKey(t *testing.T) {
 	assert.Equal(t, "", single("MODELVERSE_API_KEY"), "no MODELVERSE_API_KEY override when retrieval key omitted")
 	assert.Equal(t, "one-key", single("LLM_API_KEY"), "retrieval inherits the LLM key via modelverseAPIKeyFromEnv fallback")
 }
+
+// A session that outlives the model's replay window forgets its own opening with
+// no error and no log line, which reads as a model defect rather than a config
+// one. The repo's own YAML being correct does not protect a deployment's, so the
+// loader has to refuse the combination.
+func TestLoadRejectsSessionTurnCapAboveTheReplayWindow(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  http:
+    max_session_turns: 21
+`))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.http.max_session_turns=21")
+	assert.Contains(t, err.Error(), "replayed-history window")
+}
+
+func TestLoadAcceptsSessionTurnCapAtTheReplayWindow(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
+  http:
+    max_session_turns: 20
+`))
+
+	cfg, err := Load(path)
+	require.NoError(t, err, "the boundary value itself must remain loadable")
+	assert.Equal(t, MaxReplayedExchanges, cfg.Agent.HTTP.MaxSessionTurns)
+}
+
+// The fallback used when max_session_turns is omitted is subject to the same
+// invariant, but never passes through validateHTTPConfig.
+func TestDefaultTurnCapFitsReplayWindow(t *testing.T) {
+	assert.LessOrEqual(t, DefaultMaxSessionTurns, MaxReplayedExchanges)
+}

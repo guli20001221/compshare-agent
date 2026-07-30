@@ -2,13 +2,10 @@ package engine
 
 import (
 	"context"
-	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/security"
 	openai "github.com/sashabaranov/go-openai"
@@ -26,6 +23,36 @@ import (
 // completed exchanges): 41.8% of assistant replies exceeded 320 runes, so 43% of
 // exchanges reached the next turn incomplete.
 
+// restoredHistory returns only what the assembler replayed from PRIOR turns:
+// everything after the leading system/card block, up to the current user message.
+//
+// Assertions target these messages rather than a rendered concatenation of the
+// whole request. A whole-request match is satisfiable by unrelated prompt text
+// and breakable by it too — an earlier draft asserted the request contained no
+// "…" anywhere, which the system prompt could start failing for reasons that have
+// nothing to do with history.
+func restoredHistory(msgs []openai.ChatCompletionMessage) []string {
+	start := 0
+	for start < len(msgs) && msgs[start].Role == openai.ChatMessageRoleSystem {
+		start++
+	}
+	end := start
+	for i := len(msgs) - 1; i >= start; i-- {
+		if msgs[i].Role == openai.ChatMessageRoleUser {
+			end = i
+			break
+		}
+	}
+	if end < start {
+		end = start
+	}
+	out := make([]string, 0, end-start)
+	for _, m := range msgs[start:end] {
+		out = append(out, m.Content)
+	}
+	return out
+}
+
 // longAssistantReply builds a reply whose distinctive tail sits past rune 320 and
 // which carries real newlines, i.e. the shape safeContextText destroyed twice over.
 // The prefix is a plausible instance table rather than filler so the length is
@@ -40,6 +67,34 @@ func longAssistantReply() string {
 	return b.String()
 }
 
+// longUserMessage is the other side of the same defect. Production's second
+// largest message class is a whole terminal log pasted with no question, which
+// the whitespace collapse alone destroys even below the rune cut.
+func longUserMessage() string {
+	var b strings.Builder
+	b.WriteString("报错日志如下，帮我看下：\n")
+	for i := 0; i < 14; i++ {
+		b.WriteString("  File \"/root/app/mod_" + strconv.Itoa(i) + ".py\", line " + strconv.Itoa(40+i) + ", in forward\n")
+	}
+	b.WriteString("RuntimeError: CUDA out of memory. Tried to allocate 20.00 MiB\n")
+	return b.String()
+}
+
+func runOneTurnWithHistory(t *testing.T, prior []openai.ChatCompletionMessage, question string) []string {
+	t.Helper()
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "好的"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.messages = append([]openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system"},
+	}, prior...)
+
+	_, err := eng.Chat(context.Background(), question, noopStep)
+	require.NoError(t, err)
+	require.Len(t, mock.calls, 1)
+	return restoredHistory(mock.calls[0].Messages)
+}
+
 func TestReplayedExchangeKeepsALongAssistantReplyIntact(t *testing.T) {
 	reply := longAssistantReply()
 	// Guard against a vacuous test: if the fixture ever shrinks below the old cut
@@ -47,30 +102,30 @@ func TestReplayedExchangeKeepsALongAssistantReplyIntact(t *testing.T) {
 	require.Greater(t, len([]rune(reply)), maxSemanticRunes,
 		"fixture must exceed the old 320-rune cut or this test cannot fail")
 
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "好的"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "system"},
+	history := runOneTurnWithHistory(t, []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "我有哪些实例"},
 		{Role: openai.ChatMessageRoleAssistant, Content: reply},
-	}
+	}, "第一台是什么时候启动的")
 
-	_, err := eng.Chat(context.Background(), "第一台是什么时候启动的", noopStep)
-	require.NoError(t, err)
-	require.Len(t, mock.calls, 1)
-	modelInput := renderTestMessages(mock.calls[0].Messages)
+	// Byte-exact, not "contains": this fails on truncation AND on whitespace
+	// collapse, and cannot be satisfied by prompt text that merely mentions the
+	// same words.
+	require.Contains(t, history, reply,
+		"a long prior reply must be replayed exactly, tail and line structure included")
+}
 
-	// The tail is what the follow-up question is about, and it is the part the
-	// 320-rune cut removed — which is how a reply that DID state the start time
-	// became "平台没有记录" on the next turn.
-	require.Contains(t, modelInput, "启动时间：2026-07-19 11:35",
-		"the end of a long prior reply must survive into the next turn")
-	require.NotContains(t, modelInput, "…",
-		"no ellipsis: the restored exchange must not be a truncated projection")
-	// Line structure carries the table; collapsing it to one line is the other
-	// half of the damage and is not covered by the length assertion above.
-	require.Contains(t, modelInput, "| host-demo-11 | uhost-demo11 | Running | 4090 |")
+func TestReplayedExchangeKeepsALongUserMessageIntact(t *testing.T) {
+	pasted := longUserMessage()
+	require.Greater(t, len([]rune(pasted)), maxSemanticRunes,
+		"fixture must exceed the old 320-rune cut or this test cannot fail")
+
+	history := runOneTurnWithHistory(t, []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: pasted},
+		{Role: openai.ChatMessageRoleAssistant, Content: "显存不足，建议减小 batch size。"},
+	}, "那要调到多少")
+
+	require.Contains(t, history, pasted,
+		"the user side is squashed by the same call and needs its own gate")
 }
 
 func TestReplayedExchangeStillRedactsCredentials(t *testing.T) {
@@ -83,53 +138,74 @@ func TestReplayedExchangeStillRedactsCredentials(t *testing.T) {
 	// This guard calls the SECURITY primitive, deliberately not the engine wrapper
 	// under test: pointing it at safeConversationText would make the guard and the
 	// subject the same code, so removing the redaction would trip the guard instead
-	// of the assertion it is supposed to protect, and the real assertion would never
-	// be shown to fire.
+	// of the assertion it is supposed to protect.
 	require.NotContains(t, security.RedactOperationalTokensInText(secret), secret,
 		"fixture must actually trigger redaction or this test proves nothing")
 
-	// Pad past the old cut point so a truncating implementation could not be what
-	// removes the secret: here the secret sits in the first 320 runes and the
-	// padding tail sits beyond it.
 	reply := "已为你签发访问令牌：Authorization: Bearer " + secret + "\n" + longAssistantReply()
-
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "好的"}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "system"},
+	history := runOneTurnWithHistory(t, []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "给我一个令牌"},
 		{Role: openai.ChatMessageRoleAssistant, Content: reply},
-	}
+	}, "刚才那台怎么启动")
 
-	_, err := eng.Chat(context.Background(), "刚才那台怎么启动", noopStep)
-	require.NoError(t, err)
-	require.Len(t, mock.calls, 1)
-	modelInput := renderTestMessages(mock.calls[0].Messages)
-
-	require.NotContains(t, modelInput, secret,
+	joined := strings.Join(history, "\n")
+	require.NotContains(t, joined, secret,
 		"dropping the compaction must not drop the redaction with it")
 	// Proves we are on the verbatim path, so the assertion above is not passing
 	// merely because the whole reply was cut at 320 runes.
-	require.Contains(t, modelInput, "启动时间：2026-07-19 11:35")
+	require.Contains(t, joined, "启动时间：2026-07-19 11:35")
 }
 
-// TestAgentContextPairsCoverTheSessionTurnCap pins the two constants that must
-// move together. The restored pair window is the model's whole cross-turn memory,
-// so a session permitted to run longer than the window spends turns the model
-// cannot see — silently, with no error and no log line.
-func TestAgentContextPairsCoverTheSessionTurnCap(t *testing.T) {
-	require.GreaterOrEqual(t, maxAgentContextPairs, config.DefaultMaxSessionTurns,
-		"raising the turn cap without raising the pair window buys invisible turns")
+// --- size budget -----------------------------------------------------------
+//
+// Replaying verbatim removed the only bound the restored exchanges had: 8 pairs
+// x 2 sides x 320 runes was a hard 5,120-rune ceiling regardless of what the user
+// pasted. maxReplayedHistoryRunes is the replacement, and it must shed WHOLE
+// exchanges — a reply cut mid-table is worse than an absent one, because the
+// model cannot tell it is reading a fragment.
 
-	// The Go default is only the fallback; production sets the value explicitly,
-	// so the shipped file is what actually has to hold.
-	raw, err := os.ReadFile("../../deploy/conf/config.yaml")
-	require.NoError(t, err)
-	match := regexp.MustCompile(`(?m)^\s*max_session_turns:\s*(\d+)`).FindSubmatch(raw)
-	require.NotNil(t, match, "max_session_turns not found in the shipped config")
-	shipped, err := strconv.Atoi(string(match[1]))
-	require.NoError(t, err)
-	require.LessOrEqual(t, shipped, maxAgentContextPairs,
-		"deploy/conf/config.yaml lets a session run past the model's memory window")
+func pair(user, assistant string) ConversationPair {
+	return ConversationPair{User: user, Assistant: assistant}
+}
+
+func TestBudgetDropsWholeOldestExchangesAndNeverTruncates(t *testing.T) {
+	pairs := []ConversationPair{
+		pair(strings.Repeat("旧", 100), strings.Repeat("旧", 100)),
+		pair(strings.Repeat("中", 100), strings.Repeat("中", 100)),
+		pair(strings.Repeat("新", 100), strings.Repeat("新", 100)),
+	}
+	// Room for two exchanges (400 runes) but not three (600).
+	kept := budgetReplayedPairs(pairs, 450)
+
+	require.Len(t, kept, 2, "the oldest exchange must be dropped whole")
+	require.Equal(t, pairs[1], kept[0])
+	require.Equal(t, pairs[2], kept[1])
+	for _, k := range kept {
+		require.Equal(t, 100, len([]rune(k.User)), "a surviving message must not be shortened")
+		require.Equal(t, 100, len([]rune(k.Assistant)), "a surviving message must not be shortened")
+	}
+}
+
+func TestBudgetKeepsTheNewestExchangeEvenWhenItAloneExceeds(t *testing.T) {
+	huge := pair(strings.Repeat("问", 5000), strings.Repeat("答", 5000))
+	kept := budgetReplayedPairs([]ConversationPair{
+		pair("旧问", "旧答"),
+		huge,
+	}, 1000)
+
+	require.Equal(t, []ConversationPair{huge}, kept,
+		"the immediately preceding exchange is what follow-ups refer to; "+
+			"dropping it to respect a budget reintroduces the amnesia being fixed")
+}
+
+func TestBudgetLeavesOrdinaryHistoryUntouched(t *testing.T) {
+	// p99 of a full-history replay in the production exports is 5,764 runes, so a
+	// realistic session must be entirely under budget or the fix is undone for
+	// everyone by its own guard.
+	pairs := make([]ConversationPair, 0, 20)
+	for i := 0; i < 20; i++ {
+		pairs = append(pairs, pair("问题"+strconv.Itoa(i), strings.Repeat("答", 255)))
+	}
+	require.Equal(t, pairs, budgetReplayedPairs(pairs, maxReplayedHistoryRunes),
+		"20 median-sized exchanges must still replay complete")
 }

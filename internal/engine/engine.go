@@ -4703,11 +4703,15 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 }
 
 // maxAssembledRequestMessages is a conservative hard ceiling on the number of
-// messages in a single assembled LLM request. The legitimate maximum is ~69
-// (2 system/card + 16 restored recent pairs + a ≤51-message in-turn tool
-// transcript bounded by maxReadExpensiveCallsPerTurn / maxReActRounds), so this
-// only sheds a pathological within-turn runaway and never truncates a valid
-// turn. Cross-turn history is already bounded separately by maxHistoryMessages.
+// messages in a single assembled LLM request. The legitimate maximum is now ~93
+// (2 system/card + 40 messages for 20 restored exchanges + a ≤51-message in-turn
+// tool transcript bounded by maxReadExpensiveCallsPerTurn / maxReActRounds).
+// That margin is thin: raising maxAgentContextPairs past ~23 would make this cap
+// shed restored exchanges on ordinary heavy turns rather than only pathological
+// ones. Shedding is graceful (oldest exchanges first, see below) but silent, so
+// treat this constant as coupled to the replay window, not independent of it.
+// Cross-turn history is bounded separately by maxHistoryMessages, and by size
+// via maxReplayedHistoryRunes.
 const maxAssembledRequestMessages = 100
 
 // capAssembledRequestMessages bounds an already-assembled request to at most
