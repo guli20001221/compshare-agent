@@ -115,11 +115,19 @@ for allow in (False, True):
 # --- the two system prompts are distinct and each states its own contract ------------------------
 check("readonly-prompt-says-readonly", "Stay read-only" in harness.system_prompt(False))
 check("write-prompt-authorizes-repair", "authorized repair" in harness.system_prompt(True))
-# The skill is shared byte-identically between modes and tells the agent it is read-only. If the
-# write prompt does not name that contradiction, the agent has to guess which instruction wins —
-# and a correct diagnosis followed by a refusal to act looks like a model limitation, not a bug.
-check("write-prompt-overrides-the-skill", "OVERRIDE" in harness.system_prompt(True))
 check("write-prompt-names-hard-limits", "hard-refused" in harness.system_prompt(True))
+# 2026-07-31: the write prompt used to spend 458 of its 1852 characters arbitrating between the two
+# skills — which one describes itself as read-only, which one replaces the other's section 4, which
+# one wins. A tool-call census killed that text: 11 instrumented runs across BOTH modes logged 89
+# tool calls, 100% `ssh_exec`, `Skill` ZERO times, and the staging was verified working (both
+# SKILL.md files land under <root>/.claude/skills, setting_sources=["project"], cwd is that root).
+# So the model never opens either document and the arbitration resolved a conflict it never saw.
+#
+# The one sentence inside that block which meant something on its own — that repair is authorized —
+# is kept and asserted above. These two are the REVERSE assertions that stop the rest creeping back:
+# re-adding it is a claim about model behaviour, and it needs a census, not a paragraph.
+check("write-prompt-does-not-arbitrate-skills", "OVERRIDE" not in harness.system_prompt(True))
+check("write-prompt-names-no-skill", "skill" not in harness.system_prompt(True).lower())
 
 # --- and so does the TOOL DESCRIPTION, which is the one the model actually believes --------------
 # A live write-enabled run diagnosed the box correctly, produced the right fix command, and then
@@ -172,9 +180,31 @@ check("write-tool-desc-says-nohup-insufficient", "`nohup` alone does not" in har
 # was 「请授权我执行安全修复」, i.e. that template executed faithfully AFTER repair was authorized.
 check("readonly-skills-unchanged", harness.skills_for(False) == ["instance-triage"])
 check("write-skills-add-repair", harness.skills_for(True) == ["instance-triage", "instance-repair"])
-check("write-prompt-names-repair-skill", "`instance-repair`" in harness.system_prompt(True))
-check("write-prompt-says-which-skill-wins", "instance-repair` wins" in harness.system_prompt(True))
 check("readonly-prompt-has-no-repair-skill", "instance-repair" not in harness.system_prompt(False))
+# The skills are still STAGED for both modes (asserted just above) even though the prompts no longer
+# mention the repair one. That is deliberate: the census proves the model does not load them, but the
+# two A/Bs that removed the files ALSO removed the read-only prompt's one-line mention, so which of
+# the two caused the measured regression is unresolved. Keeping the files costs nothing and changes
+# no observed behaviour; deleting them would be a second variable moved on no evidence.
+
+# --- the lane repairs what it was asked about, and recommends the rest (2026-07-31) --------------
+# Two live frontend runs went past the request. On one the lane moved /workspace/ComfyUI aside and
+# downloaded upstream master over it; on the other it judged the user's own service unsafe and took
+# it down. Both were defensible reasoning and both were reported honestly — and both are bigger than
+# what the user asked. Per-command consent cannot catch this: every individual command was ordinary,
+# and the card shows a command, not a decision. So the boundary goes in the TOOL DESCRIPTION, which
+# is the channel with evidence of landing (a detach protocol added there was adopted verbatim 2/2,
+# while system-prompt rules went 0/3).
+for _name, _needle in [
+    ("states the scope", "Repair the fault you diagnosed and nothing else"),
+    ("names redeploying an app", "re-downloading an application"),
+    ("names taking a service down", "taking down a service the user did not ask about"),
+    ("routes it to the operator rather than forbidding it", "let the operator decide"),
+]:
+    check(f"write-tool-desc-bounds-scope::{_name}", _needle in harness.tool_description(True))
+# Read-only mode cannot overreach — it executes nothing — so its description stays unchanged.
+check("readonly-tool-desc-unchanged-by-scope-rule",
+      "Repair the fault" not in harness.tool_description(False))
 
 # --- the three load-bearing rules live in the SYSTEM PROMPT, not in a skill ----------------------
 # Measured 2026-07-29: an instrumented live run logged 21 tool_use blocks — 21 ssh_exec, 0 Skill.

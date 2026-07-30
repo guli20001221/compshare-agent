@@ -72,6 +72,11 @@ func liveSupervisor() Supervisor {
 		GatewayURL:  envOr("SSHH_GATEWAY", "http://127.0.0.1:3456"),
 		Model:       envOr("SSHH_MODEL", "deepseek-v4-flash"),
 		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
+		// The write path had no live coverage: every live run selected the read-only prompt because
+		// nothing could turn AllowWrites on. Selects the WRITE prompt + write tool
+		// description. The ConfirmFunc stays nil, so the mutating tier is still
+		// refused: this changes which TEXT the model gets, not what may execute.
+		AllowWrites: os.Getenv("SSHH_ALLOW_WRITES") == "1",
 	}
 }
 
@@ -128,7 +133,13 @@ func TestLiveFullFlow(t *testing.T) {
 
 	d := liveDescriber(host, port, user, pass, instanceID)
 	audit := &MemAuditWriter{}
-	svc := NewService(liveSupervisor(), audit)
+	sup := liveSupervisor()
+	// Log the arm. Which system prompt and tool description the harness selects is decided here, and
+	// a run whose arm is invisible cannot be compared with another: an A/B was already spent
+	// measuring two arms that turned out to be the same one, because SSHH_ALLOW_WRITES was silently
+	// not wired at the time and nothing in the output said so.
+	t.Logf("[arm] allow_writes=%v model=%s", sup.AllowWrites, sup.Model)
+	svc := NewService(sup, audit)
 
 	// The model already selected DiagnoseInstanceInternals{UHostId, Task} and the user authorized it
 	// on the engine's card. Enter the instance and diagnose (real harness, real SSH, default 掉卡 probe).
