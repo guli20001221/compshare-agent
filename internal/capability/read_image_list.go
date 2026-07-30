@@ -218,7 +218,12 @@ func communityImageListHandle(ctx context.Context, req ImageListRequest, rt Read
 	queries := imageSearchQueries(req)
 	results := make([]map[string]any, 0, len(queries))
 	for _, query := range queries {
-		args := map[string]any{}
+		// ExcludeReadme: the Readme rich text is never parsed into a catalog entry
+		// — Description is a separate upstream field and is what the model reads —
+		// and it is most of the payload: measured live, the full 835-family catalog
+		// is 5.9MB with Readme and 2.1MB without. We were fetching it and throwing
+		// it away, once per query.
+		args := map[string]any{"ExcludeReadme": true}
 		if query != "" {
 			args["FuzzySearch"] = query
 		}
