@@ -41,11 +41,31 @@ func TestStockRender_FilterDedupeAndStatus(t *testing.T) {
 		map[string]any{"Name": "4090", "Status": "Normal"}, // duplicate across zones
 		map[string]any{"Name": "A100", "Status": "SoldOut"},
 	}}
-	reply := renderStockReply(raw, "4090 有货吗")
+	reply := renderStockReply(raw, "4090 有货吗", nil, nil)
 	assert.NotContains(t, reply, "A100", "filter excludes unmatched model")
-	assert.Equal(t, 1, strings.Count(reply, "机型=4090"), "duplicates deduped")
-	assert.Contains(t, reply, "不代表当前具体配置一定可创建", "Normal caveat present")
-	assert.Contains(t, reply, soldOutDisclaimer)
+	assert.Equal(t, 1, strings.Count(reply, "- 4090："), "duplicates deduped")
+	assert.Contains(t, reply, soldOutDisclaimer, "the caveat still reaches the user")
+}
+
+// TestStockListingStatesItsCaveatOncePerListNotOncePerMachineType is the reason
+// the caveat moved out of the per-row text. Against the live catalog (12 models
+// on sale, 2026-07-29) the old renderer emitted the same 30-character
+// parenthetical on all 12 lines, so the answer to "有什么卡" was 12 copies of a
+// disclaimer with the model names threaded between them. The caveat applies to
+// the list as a whole, so it is stated once, under it.
+func TestStockListingStatesItsCaveatOncePerListNotOncePerMachineType(t *testing.T) {
+	types := make([]any, 0, 12)
+	for _, name := range []string{"5090", "4090", "4090_48G", "3080Ti", "2080Ti", "3090", "2080", "A800", "H20", "P40", "V100S", "A100"} {
+		types = append(types, map[string]any{"Name": name, "Status": "Normal"})
+	}
+	reply := renderStockReply(map[string]any{"AvailableInstanceTypes": types}, "", nil, nil)
+
+	assert.Equal(t, 1, strings.Count(reply, soldOutDisclaimer), "one list, one caveat")
+	assert.Equal(t, 1, strings.Count(reply, "容量预检"), "the 开售≠可创建 half must not return per row either")
+	assert.Equal(t, 12, strings.Count(reply, "：开售"), "every model still reports its sale state")
+	// The upstream enum is a wire value, not a label: no other user-facing render
+	// in this package prints its enum through.
+	assert.NotContains(t, reply, "Normal（", "the English enum is not the user's word")
 }
 
 // TestStockHandle_EmptyCatalog: no machine-type stock data is a structured Empty
@@ -61,8 +81,8 @@ func TestStockHandle_EmptyCatalog(t *testing.T) {
 
 func TestStockRender_NoMatchAndEmpty(t *testing.T) {
 	raw := map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090", "Status": "Normal"}}}
-	assert.Contains(t, renderStockReply(raw, "H100"), "未在当前可售机型里找到您提到的型号")
-	assert.Equal(t, noStockReply, renderStockReply(map[string]any{}, ""))
+	assert.Contains(t, renderStockReply(raw, "H100", nil, nil), "未在当前可售机型里找到您提到的型号")
+	assert.Equal(t, noStockReply, renderStockReply(map[string]any{}, "", nil, nil))
 }
 
 func TestStockEnvelope_SubjectsAndDisclaimer(t *testing.T) {
@@ -105,13 +125,20 @@ func TestStockHandle_PlainListingAttachesEnvelope(t *testing.T) {
 	}}}
 
 	// Empty query → no matched Normal entry → the capacity precheck falls through
-	// to the plain catalog listing (single upstream call), with an envelope.
+	// to the plain catalog listing, with an envelope.
 	result := runStock(t, exec, "", StockAvailabilityRequest{})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", result.ToolAction)
-	require.Len(t, exec.calls, 1, "plain listing makes exactly one upstream call")
-	assert.Contains(t, result.Reply, "机型=4090")
+	// This used to assert exactly one upstream call. The listing now also reads the
+	// zone catalog and the GPU inventory, because a stock answer that says only
+	// 开售 does not answer "有多少" — the card counts live in a third API. The extra
+	// reads are the deliberate price of that, so the profile is asserted rather
+	// than left to drift.
+	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", exec.calls[0].action,
+		"the catalog is still read first and is still the answer's source action")
+	assert.Contains(t, result.Reply, "- 4090：开售")
+	assert.Contains(t, result.Reply, "- A100：售罄")
 	require.NotNil(t, result.Envelope)
 	assert.Equal(t, envelope.KindStockAvailability, result.Envelope.Kind)
 }
@@ -230,11 +257,21 @@ func TestStockHandle_PositiveCapacityUsesGroupedCardCountsAndQueriesBothInventor
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Contains(t, result.Reply, "- 4090 / 华北一C (cn-bj2-03)：1 卡")
 	assert.Contains(t, result.Reply, "- 4090 / 华北二C (cn-wlcb-03)：1 卡")
-	assert.NotContains(t, result.Reply, "约 12 张",
-		"successful capacity output stays a card-count table; raw pool totals are only validation evidence")
-	assert.NotContains(t, result.Reply, "约 7 张")
-	assert.True(t, result.RenderRequired, "the exact capacity table must survive model wording")
-	assert.True(t, result.RenderExclusive, "the complete stock table must not be duplicated by model prose")
+	// REVERSED, deliberately. 7c7b742b suppressed the pool totals on the success
+	// path on the grounds that a card-count table is the answer and the raw
+	// snapshot is a weaker second block. That was right about the BLOCK and wrong
+	// about the NUMBER: it left "有多少张卡" answered with sale state only, which is
+	// the complaint that brought this back. The number now rides on the zone line
+	// it belongs to, so the reply is still one table — the objection that
+	// motivated the removal (a second block underneath) still holds and is
+	// asserted separately below.
+	assert.Contains(t, result.Reply, "- 4090 / 华北一C (cn-bj2-03)：1 卡；独占约 12 张",
+		"a stock answer must say how many cards, on the line for that zone")
+	assert.Contains(t, result.Reply, "- 4090 / 华北二C (cn-wlcb-03)：1 卡；抢占约 7 张")
+	assert.NotContains(t, result.Reply, "原始 GPU 库存",
+		"still no separate pool-total block underneath the table")
+	assert.Equal(t, ReadPresentationRequired, result.Presentation,
+		"the exact capacity table must survive model wording")
 
 	var inventoryCalls []fakeReadExecCall
 	for _, call := range exec.calls {
@@ -330,8 +367,10 @@ func TestStockHandle_PrechecksEverySaleZone(t *testing.T) {
 	assert.Contains(t, result.Reply, "华北二A")
 	assert.Contains(t, result.Reply, "上海二B")
 	assert.NotContains(t, result.Reply, "原始 GPU 库存",
-		"a successful per-zone card-count table must not be followed by approximate pool totals")
-	assert.NotContains(t, result.Reply, "约 30 张")
+		"a successful per-zone card-count table must not be followed by a second pool-total block")
+	// The count itself belongs on the zone line — see the reversal note in
+	// TestStockHandle_PositiveCapacityUsesGroupedCardCountsAndQueriesBothInventoryBackends.
+	assert.Contains(t, result.Reply, "上海二B (cn-sh2-02)：1 卡；独占约 30 张")
 }
 
 func TestStockHandle_MultipleNamedZonesAreExactAndNeverCrossZone(t *testing.T) {

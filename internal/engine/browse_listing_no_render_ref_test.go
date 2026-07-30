@@ -22,6 +22,7 @@ func readObservationOf(t *testing.T, e *Engine, result capability.ReadResult) Re
 
 func handledRead(reply string) capability.ReadResult {
 	r := capability.ReadHandled(reply)
+	r.Presentation = capability.ReadPresentationExact
 	r.Envelope = &envelope.Envelope{Kind: envelope.KindImageList}
 	return r
 }
@@ -44,7 +45,7 @@ func TestABrowseListingGetsNoRenderRef(t *testing.T) {
 	require.Len(t, e.readResponseEvidenceThisTurn, 1)
 
 	listing := handledRead("社区镜像：\n名称=最强AI数字人InfiniteTalk, 部署次数=16969")
-	listing.ReplyIsBrowseListing = true
+	listing.Presentation = capability.ReadPresentationBrowse
 	obs := readObservationOf(t, e, listing)
 
 	assert.Empty(t, obs.RenderRef, "a menu must not be stapled in front of the curated answer")
@@ -62,7 +63,7 @@ func TestABrowseListingGetsNoRenderRef(t *testing.T) {
 func TestSubstitutionCannotReviveASuppressedListing(t *testing.T) {
 	e := &Engine{}
 	listing := handledRead("社区镜像：\n名称=最强AI数字人InfiniteTalk, 部署次数=16969")
-	listing.ReplyIsBrowseListing = true
+	listing.Presentation = capability.ReadPresentationBrowse
 	readObservationOf(t, e, listing)
 
 	final := substituteReadObservationBlocks("推荐 InfiniteTalk {{READ_OBSERVATION_1}}", e.readResponseEvidenceThisTurn)

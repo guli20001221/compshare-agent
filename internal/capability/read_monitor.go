@@ -51,11 +51,12 @@ type MonitorResponse struct {
 
 func monitorCurrentReadSpec() ReadCapabilitySpec[MonitorCurrentRequest, MonitorResponse] {
 	return ReadCapabilitySpec[MonitorCurrentRequest, MonitorResponse]{
-		Label:       monitorCurrentCapabilityLabel,
-		Description: "查询已有实例当前 CPU、内存、GPU 或显存监控数据。用于实时状态；指定历史时间范围时使用历史监控能力。",
-		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam(), "metrics": metricsParam()}),
-		Handle:      monitorCurrentHandle,
-		Render:      monitorRender,
+		Label:        monitorCurrentCapabilityLabel,
+		Description:  "查询已有实例当前 CPU、内存、GPU 或显存监控数据。用于实时状态；指定历史时间范围时使用历史监控能力。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"targets": targetRefsParam(), "metrics": metricsParam()}),
+		Handle:       monitorCurrentHandle,
+		Render:       monitorRender,
 	}
 }
 
@@ -89,8 +90,9 @@ func (r MonitorHistoryRequest) MissingFields() []platform.MissingField {
 
 func monitorHistoryReadSpec() ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse] {
 	return ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse]{
-		Label:       monitorHistoryCapabilityLabel,
-		Description: "查询单个已有实例在明确起止时间内的 CPU、内存、GPU 或显存历史监控。时间范围最多 24 小时；当前值查询使用实时监控能力。",
+		Label:        monitorHistoryCapabilityLabel,
+		Description:  "查询单个已有实例在明确起止时间内的 CPU、内存、GPU 或显存历史监控。时间范围最多 24 小时；当前值查询使用实时监控能力。",
+		Presentation: ReadPresentationRequired,
 		Params: objectParam(map[string]schemaNode{
 			"targets":     targetRefsParam(),
 			"metrics":     metricsParam(),
@@ -143,7 +145,7 @@ func resolveMonitorTargets(ctx context.Context, targets []platform.TargetRef, rt
 	// A cold exact ID is locally unknown, not absent. Carry it to a point Describe,
 	// then build the monitor subject only from that upstream response. This keeps
 	// the envelope grounded while avoiding a model-driven ResourceInfo detour.
-	instances, ids, reason := resolveReadTargetSnapshots(targets, rt.Resolver, true, rt.Now)
+	instances, ids, reason := resolveReadTargetSnapshots(ctx, targets, rt)
 	if reason != nil {
 		return nil, nil, readTargetFallbackResult(*reason)
 	}

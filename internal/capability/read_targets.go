@@ -1,52 +1,124 @@
 package capability
 
 import (
+	"context"
 	"sort"
 	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/platform"
+	"github.com/compshare-agent/internal/readprojection"
 )
 
 // resolveReadTargetSnapshots resolves structured TargetRefs to registry
-// snapshots. It is the typed-capability twin of the legacy intent
-// resolveResourceTargetSnapshots: byte-for-byte the same resolution semantics
-// (ID / name resolve, ambiguity + miss handling, dedupe + stable UHostId sort),
-// but it returns a structured *platform.ReadFallbackReason instead of the
-// legacy route-dispatch result carrier, so a read capability never depends on
-// the intent router's result type.
+// snapshots. It began as the typed-capability twin of the legacy intent
+// resolveResourceTargetSnapshots and keeps its shape (ID / name resolve,
+// ambiguity handling, dedupe + stable UHostId sort) and its structured
+// *platform.ReadFallbackReason return, so a read capability never depends on the
+// intent router's result type. MISS handling deliberately no longer matches the
+// legacy behaviour — that parity is what the invariant below had to break.
 //
 // An empty ref list returns (nil, nil, nil): whether that is a fallback is
 // request-specific (monitor needs a target; resource_info lists everything), so
 // the decision is left to the caller.
 //
-// allowColdExactID lets a user-typed exact id survive a cold-registry miss: when
-// the registry cannot assert absence (never-synced / cold / truncated), the id is
-// unverifiable LOCALLY, not absent, so it is passed through as a query id for the
-// caller's upstream point-query to confirm or deny. Only callers that establish
-// existence from the upstream RESPONSE (resource_info re-parses DescribeCompShare
-// Instance) may set this true; a caller whose subjects come from the pre-query
-// registry snapshot (monitor, refund) must keep it false, or a cold id would be
-// rendered as a confirmed subject it never verified. A registry WITH standing to
-// assert absence stays authoritative — a real miss is a real "not in your
-// account", no upstream call.
+// THE INVARIANT, stated once: a registry WITHOUT standing to assert absence
+// (never-synced / stale / truncated — see entity.CanAssertAbsence) must never
+// turn a lookup into a refusal. "I have not seen it" is not "it does not exist",
+// and refusing on it produces the worst failure this system has: the user names
+// an instance they are looking at and is told it cannot be found.
 //
-// `now` is the freshness reference clock: absence is asserted only against a
-// registry still fresh as of `now`, so a stale-but-complete snapshot no longer
-// refuses a just-created id before the upstream call.
-func resolveReadTargetSnapshots(refs []platform.TargetRef, resolver EntityResolver, allowColdExactID bool, now time.Time) ([]entity.InstanceSnapshot, []string, *platform.ReadFallbackReason) {
+// It is enforced here in two shapes, because the two ref kinds can be rescued
+// differently:
+//
+//   - an exact ID passes THROUGH: the caller's DescribeCompShareInstance point-
+//     query confirms or denies it. The synthesized snapshot carries only the id;
+//     callers derive the real instance from the response (monitor re-Describes
+//     via monitorTargetsNeedVerification, resource_info re-parses, refund renders
+//     RefundPriceSet rows and only decorates labels with names it has).
+//   - a NAME cannot pass through — DescribeCompShareInstance takes ids, so there
+//     is nothing to hand upstream. Instead we sync one full listing and re-resolve
+//     against it. Whatever the warm registry then says is a fact about the
+//     account rather than an artefact of an empty cache.
+//
+// The production HTTP/WS path never calls engine.Init(), so its registry is cold
+// for the whole session unless something warms it: the name branch's warm-up is
+// the ordinary path there, not an edge case. Measured 2026-07-29: 「host-不要删除
+// 验证七天回收 这台实例现在是什么状态」 answered 「暂时无法按这个名称定位到实例」 5/5
+// with ZERO upstream calls, while the same instance by id answered normally and
+// the same name against a warm registry resolved exactly. The matcher was never
+// the problem.
+//
+// A registry WITH standing stays authoritative — a real miss is a real "not in
+// your account", and no upstream call is made to second-guess it.
+//
+// rt.Now is the freshness reference clock: absence is asserted only against a
+// registry still fresh as of that instant, so a stale-but-complete snapshot no
+// longer refuses a just-created id before the upstream call.
+func resolveReadTargetSnapshots(ctx context.Context, refs []platform.TargetRef, rt ReadRuntime) ([]entity.InstanceSnapshot, []string, *platform.ReadFallbackReason) {
 	if len(refs) == 0 {
 		return nil, nil, nil
 	}
-	if resolver == nil {
+	if rt.Resolver == nil {
 		return nil, nil, fallbackReason(platform.ReadFallbackUnresolvedTarget)
 	}
+	now := rt.Now
 	if now.IsZero() {
 		// A caller that forgot to wire the clock must not silently re-open the
 		// stale-trust hole: default to real time so absence stays freshness-gated.
 		now = time.Now()
 	}
 
+	instances, ids, reason := resolveTargetsAgainst(refs, rt.Resolver, now)
+	if reason == nil || !warmupCanChangeAnswer(*reason) || rt.Resolver.CanAssertAbsenceAt(now) {
+		return instances, ids, reason
+	}
+	warm, ok := warmedResolver(ctx, rt)
+	if !ok {
+		// Best effort: an upstream that will not list is no reason to answer
+		// worse than before, so the original outcome stands.
+		return nil, nil, reason
+	}
+	// Re-resolve everything, not just the ref that missed: the warm snapshot is
+	// strictly better evidence for every ref in the request.
+	return resolveTargetsAgainst(refs, warm, now)
+}
+
+// warmupCanChangeAnswer reports whether re-resolving against a complete listing
+// could produce a different outcome. A miss can become a hit; an ambiguity read
+// off a truncated registry can collapse to one exact-name match. A malformed ref
+// type is a client error that no amount of upstream data fixes.
+func warmupCanChangeAnswer(reason platform.ReadFallbackReason) bool {
+	return reason == platform.ReadFallbackUnresolvedTarget || reason == platform.ReadFallbackAmbiguousTarget
+}
+
+// warmedResolver lists the account once and returns a resolver built from that
+// response. It reports false — never an error — on anything that goes wrong: the
+// warm-up is an attempt to answer better, so its failure must leave the caller
+// exactly where it was rather than convert a resolution miss into a read failure.
+func warmedResolver(ctx context.Context, rt ReadRuntime) (EntityResolver, bool) {
+	if rt.Executor == nil {
+		return nil, false
+	}
+	raw, err := rt.Executor.Execute(ctx, resourceInfoAction, readprojection.DescribeResourceArgs(nil))
+	if err != nil {
+		return nil, false
+	}
+	registry := entity.NewRegistry()
+	if err := registry.SyncFromDescribe(raw, string(entity.SyncEventSyncRefresh)); err != nil {
+		return nil, false
+	}
+	if rt.SyncRegistry != nil {
+		// Hand the same listing to the session's own registry so the next turn
+		// resolves names without repeating this call.
+		rt.SyncRegistry(raw)
+	}
+	return registry.Snapshot(), true
+}
+
+// resolveTargetsAgainst is the pure matching pass: one specific resolver, no
+// upstream calls, no retry.
+func resolveTargetsAgainst(refs []platform.TargetRef, resolver EntityResolver, now time.Time) ([]entity.InstanceSnapshot, []string, *platform.ReadFallbackReason) {
 	ids := make([]string, 0, len(refs))
 	instances := make([]entity.InstanceSnapshot, 0, len(refs))
 	for _, ref := range refs {
@@ -54,11 +126,9 @@ func resolveReadTargetSnapshots(refs []platform.TargetRef, resolver EntityResolv
 		case platform.TargetRefUHostIDUserInput:
 			inst, res := resolver.ResolveByID(ref.Value)
 			if res.Status != entity.ResolveHit || inst == nil {
-				if allowColdExactID && !resolver.CanAssertAbsenceAt(now) {
+				if !resolver.CanAssertAbsenceAt(now) {
 					// Unverifiable locally, not absent: pass the exact id through so
-					// the caller's DescribeCompShareInstance point-query decides. The
-					// synthesized snapshot carries only the id; the caller derives the
-					// real instance (and any existence claim) from the response.
+					// the caller's DescribeCompShareInstance point-query decides.
 					ids = append(ids, ref.Value)
 					instances = append(instances, entity.InstanceSnapshot{UHostId: ref.Value})
 					continue

@@ -74,7 +74,8 @@ type InstanceAccessResponse struct {
 
 func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse] {
 	return ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse]{
-		Label: instanceAccessCapabilityLabel,
+		Label:        instanceAccessCapabilityLabel,
+		Presentation: ReadPresentationExact,
 		Description: "检查已有实例的 SSH、Jupyter 或自定义端口的云侧配置，也可在用户明确要求时获取该实例的 Jupyter Token。" +
 			"它不会连接公网端口、不会进入实例，也不会修改防火墙或端口。需要明确一个实例；自定义端口还要给出协议和端口号。" +
 			"只有用户明确索要 Token 时才使用 jupyter_token；普通 Jupyter 故障检查使用 jupyter。",
@@ -92,7 +93,7 @@ func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, Instance
 }
 
 func instanceAccessHandle(ctx context.Context, req InstanceAccessRequest, rt ReadRuntime) (InstanceAccessResponse, ReadResult) {
-	_, ids, reason := resolveReadTargetSnapshots(req.Targets, rt.Resolver, true, rt.Now)
+	_, ids, reason := resolveReadTargetSnapshots(ctx, req.Targets, rt)
 	if reason != nil {
 		return InstanceAccessResponse{}, readTargetFallbackResult(*reason)
 	}
@@ -248,7 +249,7 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	result := ReadHandled(strings.TrimSpace(reply))
 	result.ToolAction = instanceAccessDescribeAction
 	if resp.AccessType == accessTypeJupyterToken {
-		result.RenderRequired = true
+		result.Presentation = ReadPresentationRequired
 		result.ToolAction = instanceAccessTokenAction
 	}
 	result.Envelope = &envelope.Envelope{
