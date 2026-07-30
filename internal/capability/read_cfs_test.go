@@ -39,7 +39,14 @@ func TestExtractCFSID(t *testing.T) {
 
 // --- CFS list -------------------------------------------------------------------
 
-func TestCFSListHandle_ListsReadOnly(t *testing.T) {
+// A CFS listing answers the question and stops. It used to append 「（只读查询）」 to
+// the header AND 「创建或扩容 CFS 需要走确认流程；删除/解绑能力不由 agent 暴露。」 below the
+// rows, so one line of data arrived wrapped in two lines of standing policy that
+// did not depend on anything the user asked. The read-only guarantee is enforced
+// by the executor, not by saying so — and no other listing in this package says
+// so. Where the disclaimer is load-bearing (a PRICE query a user might mistake
+// for an order) it survives; TestCFSCreatePriceHandle_PodZone pins that.
+func TestCFSListHandle_AnswersWithoutPolicyBoilerplate(t *testing.T) {
 	exec := &mapReadExec{results: map[string]map[string]any{
 		"DescribeCFS": {"CFSSet": []any{
 			map[string]any{"CfsId": "cfs-test", "Name": "shared-train", "Size": float64(100), "ChargeType": "Month", "MountStatus": "Mounted"},
@@ -54,7 +61,9 @@ func TestCFSListHandle_ListsReadOnly(t *testing.T) {
 	assert.Equal(t, "DescribeCFS", exec.calls[0].action)
 	assert.Contains(t, result.Reply, "shared-train")
 	assert.Contains(t, result.Reply, "100GB")
-	assert.Contains(t, result.Reply, "只读")
+	assert.NotContains(t, result.Reply, "只读", "a listing does not announce its own read-only-ness")
+	assert.NotContains(t, result.Reply, "确认流程", "nor restate mutation policy nobody asked about")
+	assert.NotContains(t, result.Reply, "不由 agent 暴露")
 }
 
 func TestCFSListHandle_UpstreamError(t *testing.T) {

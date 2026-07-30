@@ -134,8 +134,13 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 				continue
 			}
 			priced = append(priced, gpuPriceRow{
-				Name:        name,
-				Zone:        spec.Zone,
+				Name: name,
+				// The zone's display label, not the bare id. supportZones is already
+				// fetched above for placement args, and the stock capability renders the
+				// same zone as 华北一C (cn-bj2-03) — a price quote that says only
+				// cn-bj2-03 makes the user match two names for one place by hand.
+				// zones.Label falls back to the id when the catalog fetch failed.
+				Zone:        zones.Label(supportZones, spec.Zone),
 				GPU:         spec.GPU,
 				Cpu:         spec.Cpu,
 				Memory:      spec.Memory,
@@ -479,50 +484,101 @@ func pricingClarifyReply(items []any, prefix string) string {
 }
 
 // renderPricingReply formats the per-GPU price rows.
+// renderPricingReply renders one section per DISTINCT quote, not one per zone.
+//
+// pricingSpecs deliberately fans a zone-less request out over every zone that
+// offers the GPU, because a zone can differ in price or in which charge types it
+// exposes. What it does not do is check whether they actually differ — so 「4090
+// 多少钱」 printed the same four price lines under five near-identical headers,
+// and the reader had to diff five blocks by eye to discover they were the same
+// quote. Zones whose spec and price table are identical are merged into one
+// header; a zone that genuinely differs still gets its own section, so nothing
+// is hidden — only the repetition is.
 func renderPricingReply(rows []gpuPriceRow) string {
 	lines := []string{}
-	for _, row := range rows {
+	for _, group := range groupPricingRowsByQuote(rows) {
 		// row.Memory is GB (sourced from Describe Collection[].Memory[]).
-		kind := row.Kind
-		if kind == "" {
-			kind = "标准价/目录价"
-		}
+		row := group.row
 		gpuCount := row.GPU
 		if gpuCount <= 0 {
 			gpuCount = 1
 		}
-		header := fmt.Sprintf("### %s · %s · %d卡 / %dvCPU / %dGB · %s",
-			row.Name, row.Zone, gpuCount, row.Cpu, row.Memory, kind)
-		lines = append(lines, header)
-
-		bill := pricingBillingTableForKind(row.RawData, kind)
-		if len(bill) == 0 {
-			lines = append(lines, "  价格数据缺失")
-			continue
-		}
-		for _, key := range []string{"Postpay", "Spot", "Day", "Month"} {
-			if len(row.ChargeTypes) > 0 && !containsExact(row.ChargeTypes, key) {
-				continue
-			}
-			label := pricingLabel(key)
-			val, ok := bill[key]
-			if !ok {
-				continue
-			}
-			if len(row.Disks) == 0 {
-				lines = append(lines, fmt.Sprintf("- **%s**: %s", label, val))
-				continue
-			}
-			lines = append(lines, fmt.Sprintf("- **%s**: %s", label, pricingDetailedPrice(row.RawData, kind, key, val, row.Disks)))
-		}
-		if len(row.Disks) > 0 {
-			lines = append(lines, "  磁盘金额是上游返回的当前账号净报价；系统盘免费额度如适用已在上游扣除，但接口不返回额度数值，不能从 ¥0 反推免费额度。")
-		}
+		lines = append(lines, fmt.Sprintf("### %s · %s · %d卡 / %dvCPU / %dGB · %s",
+			row.Name, strings.Join(group.zones, " / "), gpuCount, row.Cpu, row.Memory, pricingKindLabel(row)))
+		lines = append(lines, group.body...)
 	}
 	if len(lines) == 0 {
 		return noPricingReply
 	}
 	return strings.Join(lines, "\n")
+}
+
+func pricingKindLabel(row gpuPriceRow) string {
+	if row.Kind == "" {
+		return "标准价/目录价"
+	}
+	return row.Kind
+}
+
+// pricingQuoteGroup is one rendered quote plus every zone that quoted it.
+type pricingQuoteGroup struct {
+	row   gpuPriceRow
+	zones []string
+	body  []string
+}
+
+// groupPricingRowsByQuote merges rows that describe the same offering at the
+// same price, keyed on the SPEC plus the rendered body — the body is the thing
+// the user compares, so two zones are "the same quote" exactly when it matches.
+// First-seen order is preserved so the output stays deterministic.
+func groupPricingRowsByQuote(rows []gpuPriceRow) []pricingQuoteGroup {
+	groups := make([]pricingQuoteGroup, 0, len(rows))
+	index := map[string]int{}
+	for _, row := range rows {
+		body := pricingRowBodyLines(row)
+		key := fmt.Sprintf("%s|%d|%d|%d|%s|%s",
+			row.Name, row.GPU, row.Cpu, row.Memory, pricingKindLabel(row), strings.Join(body, "\n"))
+		if at, ok := index[key]; ok {
+			if !containsExact(groups[at].zones, row.Zone) {
+				groups[at].zones = append(groups[at].zones, row.Zone)
+			}
+			continue
+		}
+		index[key] = len(groups)
+		groups = append(groups, pricingQuoteGroup{row: row, zones: []string{row.Zone}, body: body})
+	}
+	return groups
+}
+
+// pricingRowBodyLines renders one row's price lines — everything under its
+// header. Extracted so the grouping above can compare bodies before deciding how
+// many headers to print.
+func pricingRowBodyLines(row gpuPriceRow) []string {
+	kind := pricingKindLabel(row)
+	bill := pricingBillingTableForKind(row.RawData, kind)
+	if len(bill) == 0 {
+		return []string{"  价格数据缺失"}
+	}
+	lines := []string{}
+	for _, key := range []string{"Postpay", "Spot", "Day", "Month"} {
+		if len(row.ChargeTypes) > 0 && !containsExact(row.ChargeTypes, key) {
+			continue
+		}
+		label := pricingLabel(key)
+		val, ok := bill[key]
+		if !ok {
+			continue
+		}
+		if len(row.Disks) == 0 {
+			lines = append(lines, fmt.Sprintf("- **%s**: %s", label, val))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- **%s**: %s", label, pricingDetailedPrice(row.RawData, kind, key, val, row.Disks)))
+	}
+	if len(row.Disks) > 0 {
+		lines = append(lines, "  磁盘金额是上游返回的当前账号净报价；系统盘免费额度如适用已在上游扣除，但接口不返回额度数值，不能从 ¥0 反推免费额度。")
+	}
+	return lines
 }
 
 func pricingDetailedPrice(raw map[string]any, kind, chargeType, instanceText string, requested []PricingDisk) string {

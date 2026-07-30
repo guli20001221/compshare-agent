@@ -2,11 +2,13 @@ package readprojection
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 )
 
@@ -85,14 +87,17 @@ func cleanResourceText(value string) string {
 	return strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(safeValue(value)))
 }
 
-func resourceMemoryLabel(memory int) string {
-	if memory <= 0 {
+// resourceMemoryLabel converts InstanceSnapshot.Memory, which is MB, to GB.
+// The parameter is named for its unit because the conversion previously carried
+// a `memory < 1024 → print as GB` shortcut, which made the function
+// non-monotonic: 1023 rendered as "1023 GB" and 1024 as "1 GB". A sub-GB
+// instance may not exist today, but a size that reads 1000× too large is not a
+// failure mode to leave standing on the argument that its input is impossible.
+func resourceMemoryLabel(memoryMB int) string {
+	if memoryMB <= 0 {
 		return "内存未知"
 	}
-	if memory < 1024 {
-		return fmt.Sprintf("%d GB", memory)
-	}
-	gb := float64(memory) / 1024
+	gb := float64(memoryMB) / 1024
 	if float64(int(gb)) == gb {
 		return fmt.Sprintf("%d GB", int(gb))
 	}
@@ -109,7 +114,10 @@ func resourceStateLabel(state string) string {
 		return "运行中"
 	case "stopped":
 		return "已关机"
-	case "initializing", "installing":
+	// `Install` is the LEGACY upstream spelling still accepted for response
+	// compatibility (see the diagnosis notes in CLAUDE.md); without it a legacy
+	// row falls through and shows the user the raw English word.
+	case "initializing", "installing", "install":
 		return "初始化中"
 	case "imagemaking":
 		return "镜像制作中"
@@ -129,21 +137,45 @@ func resourceStateLabel(state string) string {
 	}
 }
 
+// ChargeTypeLabel names a billing mode with the same word the purchase flow
+// uses, by drawing it from the vocabulary the server already PARSES
+// (deployment.ExplicitChargeTypePhrase) rather than from a second hand-written
+// table here.
+//
+// A second table drifts, and it had: the create card says 包月 / 包日 while this
+// list said 按月 / 按天. One concept under two names, with nothing in the product
+// telling the user they are the same thing. It is exported because the instance
+// list is not the only user-facing render of a ChargeType — the CFS list shows
+// one too, and was printing the raw wire enum ("计费 Month"). Two renders of one
+// concept is exactly the drift this function exists to end, so they share it.
+//
+// `Year` is deliberately absent — there is no ChargeTypeYear in the vocabulary
+// the server parses, so a Year row shows itself rather than being given a label
+// no other part of the product uses.
+func ChargeTypeLabel(chargeType string) string { return resourceChargeTypeLabel(chargeType) }
+
 func resourceChargeTypeLabel(chargeType string) string {
+	if phrase, ok := deployment.ExplicitChargeTypePhrase(canonicalChargeType(chargeType)); ok {
+		return phrase
+	}
+	return cleanResourceText(chargeType)
+}
+
+// canonicalChargeType maps the wire spellings onto the deployment constants.
+// `Dynamic` is the deprecated spelling of Postpay that createChargeType already
+// normalises away, so the list must not surface it as a distinct mode.
+func canonicalChargeType(chargeType string) string {
 	switch strings.ToLower(strings.TrimSpace(chargeType)) {
 	case "postpay", "dynamic":
-		return "按量"
+		return deployment.ChargeTypePostpay
 	case "spot":
-		return "抢占式"
+		return deployment.ChargeTypeSpot
 	case "day":
-		return "按天"
+		return deployment.ChargeTypeDay
 	case "month":
-		return "按月"
-	case "year":
-		return "按年"
-	default:
-		return cleanResourceText(chargeType)
+		return deployment.ChargeTypeMonth
 	}
+	return ""
 }
 
 func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
@@ -160,6 +192,10 @@ func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 		return noRequestedMonitorValuesReply
 	}
 
+	// One metric per line. A live instance returns eight of these (CPU, memory,
+	// GPU, VRAM, system disk and one row per data disk); joined with "; " they were
+	// a single 90-character run of key=value that the reader had to parse by eye,
+	// while every other user-facing render in the product is a Markdown list.
 	parts := make([]string, 0, len(facts))
 	for _, fact := range facts {
 		value := fact.Value
@@ -170,17 +206,20 @@ func RenderMonitorSummary(metrics []Metric, payload map[string]any) string {
 		if label == "" {
 			label = fact.Key
 		}
-		parts = append(parts, label+"="+value)
+		parts = append(parts, "- "+label+"："+value)
 	}
 	if len(metrics) > 0 {
 		present := presentMonitorMetrics(facts)
 		for _, metric := range uniqueMonitorMetrics(metrics) {
 			if !present[metric] {
-				parts = append(parts, monitorMetricReplyLabel(metric)+"未返回数据")
+				// Kept as a full sentence, not a label:value row — "未返回数据" is the
+				// absence of a measurement, and formatting it like the others invites
+				// reading it as one.
+				parts = append(parts, "- "+monitorMetricReplyLabel(metric)+"未返回数据")
 			}
 		}
 	}
-	return strings.Join(parts, "; ")
+	return strings.Join(parts, "\n")
 }
 
 type monitorHistoricalPoint struct {
@@ -225,7 +264,7 @@ func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, wi
 			label = item.Key
 		}
 		peakAt := time.Unix(peak.Timestamp, 0).In(monitorHistoryLoc).Format("2006-01-02 15:04")
-		parts = append(parts, fmt.Sprintf("%s最新=%s%s, 平均=%s%s, 峰值=%s%s（%s）",
+		parts = append(parts, fmt.Sprintf("- %s：最新 %s%s，平均 %s%s，峰值 %s%s（%s）",
 			label,
 			formatMonitorFloat(latest.Value), item.Unit,
 			formatMonitorFloat(avg), item.Unit,
@@ -236,7 +275,9 @@ func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, wi
 	if len(parts) == 0 {
 		return prefix + noMonitorValuesReply
 	}
-	return prefix + strings.Join(parts, "; ")
+	// The window prefix stays its own line: it qualifies every row under it, and
+	// run together with the first metric it read as part of that metric.
+	return prefix + "\n" + strings.Join(parts, "\n")
 }
 
 // historicalMonitorWindowPrefix renders the queried Beijing window as a
@@ -401,8 +442,28 @@ func monitorTimestamp(value any) (int64, bool) {
 	}
 }
 
+// formatMonitorFloat renders one monitoring number for a person to read.
+//
+// It was FormatFloat(v, 'f', -1, 64) — the shortest form that round-trips, which
+// is the right choice for a wire value and the wrong one for a sentence. 平均 is
+// computed right here as sum/len, so an ordinary CPU series printed
+// 「平均 0.0743801652892562%」: seventeen digits claiming a precision the
+// monitoring API never had, inside a line meant to be skimmed.
+//
+// Two decimals is the resolution these metrics are worth reading at. The single
+// case that must NOT be rounded away is a small non-zero value — 「0.00%」 reads
+// as an idle machine, and this package's standing rule is that a number we
+// cannot prove is zero is never displayed as zero (genuinely absent data already
+// surfaces as 无法确认, not as 0%). Those print as <0.01 instead.
 func formatMonitorFloat(value float64) string {
-	return strconv.FormatFloat(value, 'f', -1, 64)
+	rounded := math.Round(value*100) / 100
+	if rounded == 0 && value != 0 {
+		if value > 0 {
+			return "<0.01"
+		}
+		return ">-0.01"
+	}
+	return strconv.FormatFloat(rounded, 'f', -1, 64)
 }
 
 func uniqueMonitorMetrics(metrics []Metric) []Metric {
