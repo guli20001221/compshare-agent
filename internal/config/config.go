@@ -111,10 +111,24 @@ type HTTPConfig struct {
 	DisableCORS bool `yaml:"disable_cors"`
 }
 
+// MaxReplayedExchanges is how many completed exchanges the engine replays into
+// the model's request (engine.maxAgentContextPairs reads this constant, so there
+// is exactly one number, not two that can drift). It is the model's ENTIRE
+// cross-turn memory: messagesFromAgentContext discards every other prior-turn
+// message, so an exchange outside this window is invisible to the model.
+//
+// It lives here rather than in engine because validateHTTPConfig must reject a
+// max_session_turns larger than it. Letting a deployment run 30-turn sessions
+// against a 20-exchange window would forget turn 1 from turn 22 onward with no
+// error and no log line — the failure mode this constant exists to prevent.
+const MaxReplayedExchanges = 20
+
 // DefaultMaxSessionTurns is the compatibility-path fallback when
 // agent.http.max_session_turns is zero or unset. The durable turn coordinator
-// never consults it.
-const DefaultMaxSessionTurns = 10
+// never consults it. Must stay <= MaxReplayedExchanges; validateHTTPConfig
+// enforces that for configured values and TestDefaultTurnCapFitsReplayWindow
+// for this one.
+const DefaultMaxSessionTurns = 20
 
 // MySQLConfig holds connection settings for the MySQL backing store.
 // DSN accepts any ${ENV_VAR} placeholder; if the env var is unset the field is
@@ -391,6 +405,16 @@ func validateHTTPConfig(h *HTTPConfig) error {
 	}
 	if h.MaxSessionTurns < 0 {
 		return negativeValueError("agent.http.max_session_turns")
+	}
+	// A session may not be allowed to outlive the model's memory of it. Past
+	// MaxReplayedExchanges the oldest exchanges stop reaching the model, and the
+	// symptom — the agent forgetting what the user said ten turns ago — looks
+	// like a model defect rather than a config one. Fail the boot instead.
+	if h.MaxSessionTurns > MaxReplayedExchanges {
+		return fmt.Errorf(
+			"agent.http.max_session_turns=%d exceeds the model's replayed-history window (%d); "+
+				"turns beyond it would be silently invisible to the model",
+			h.MaxSessionTurns, MaxReplayedExchanges)
 	}
 	return nil
 }

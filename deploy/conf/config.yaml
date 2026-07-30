@@ -186,8 +186,10 @@ agent:
     pool_idle_ttl: "30m"
     # Compatibility-path setting only. After the coordinated durable cutover,
     # conversations continue from committed history and do not roll to an empty
-    # session after 10 turns. Until then, the legacy path still uses this cap.
-    max_session_turns: 10
+    # session at all. Until then, the legacy path still uses this cap.
+    # Keep <= engine.maxAgentContextPairs (20): the restored pair window is the
+    # model's entire cross-turn memory, so turns past it are invisible to it.
+    max_session_turns: 20
     # Skip the built-in CORS middleware. Default false = agent emits
     # Access-Control-Allow-* headers itself (needed when the front-end dev
     # server on localhost:3000 fetches 127.0.0.1:<port> directly per the

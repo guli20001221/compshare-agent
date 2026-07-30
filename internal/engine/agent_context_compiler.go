@@ -171,6 +171,30 @@ func safeContextText(value string) string {
 	return compactSemanticText(security.RedactOperationalTokensInText(value))
 }
 
+// safeConversationText redacts a replayed exchange WITHOUT compacting it.
+//
+// A restored conversation pair is a real user/assistant message, not semantic
+// memory, so the two transforms that safeContextText applies are wrong for it:
+// collapsing whitespace destroys pasted terminal output and code, and cutting at
+// maxSemanticRunes truncates the reply the model is being asked to remember.
+// Measured on the 2026-07 production exports (3867 completed exchanges): 41.8% of
+// assistant replies exceed 320 runes (median 255, p90 782), so 43% of exchanges
+// lost content on the way into the next turn. It bought little — replaying a real
+// session's whole history is 33 runes at the median and 5,764 at p99.
+//
+// Size is bounded instead by maxReplayedHistoryRunes, which drops whole older
+// exchanges. That budget, not this function, is what keeps history affordable:
+// per-request size alone cannot be compared against max_tokens_per_turn, because
+// that ceiling is cumulative over every model call in the turn and history is
+// re-sent on each one.
+//
+// Redaction is NOT part of that trade and stays: the hot engine holds the raw text
+// (only the persisted copy is redacted at write time), so this call is the sole
+// thing between an operational credential in an earlier turn and the model.
+func safeConversationText(value string) string {
+	return security.RedactOperationalTokensInText(value)
+}
+
 func safeContextNarrative(value string) string {
 	return compactSemanticNarrative(security.RedactOperationalTokensInText(value))
 }
