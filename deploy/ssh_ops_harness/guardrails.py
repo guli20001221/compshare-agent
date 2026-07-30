@@ -1291,7 +1291,19 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
         return True
     if binary == "find":
         return _find_is_mutating(seg, _depth)
-    return any(p.search(seg) for p in _MUTATING_FORMS)
+    # _MUTATING_FORMS is ^-anchored so a PATH that merely contains the verb (`cat
+    # /opt/pip-install.log`) cannot trip it. That anchor is worth keeping, but it also made every
+    # one of those rules depend on HOW the binary was spelled: `/usr/bin/pip3 install X` and
+    # `/usr/bin/systemctl restart X` missed the anchor and fell through to read_only — no consent
+    # card — while the table-driven writers were unaffected, because those are looked up by
+    # basename (`/bin/rm`, `/usr/bin/chmod`, `/usr/bin/tee` all classify correctly). The
+    # destructive tier was never exposed either: it matches on \b, so `/usr/bin/systemctl restart
+    # sshd` is still refused. Same asymmetry as the wrapper-binary and shell-keyword holes, in a
+    # fifth spelling — two matching mechanisms in one file, and only the position-dependent one is
+    # fragile. Re-spelling token 0 as its basename keeps the anchor's protection and drops its
+    # dependence on the invocation. ORed, never substituted, so this can only ADD matches.
+    respelled = " ".join([binary] + tokens[1:]) if binary != raw0 else seg
+    return any(p.search(seg) or p.search(respelled) for p in _MUTATING_FORMS)
 
 
 # Chaining is ACCEPTED now: each segment is classified independently and every one of

@@ -552,6 +552,43 @@ for _name, _cmd in [("if-then-chmod", "if [ -f /x ]; then chmod 777 /etc/passwd;
                     ("for-do-rm-rf", "for d in /a /b; do rm -rf $d; done")]:
     check(f"keyword-cannot-soften-destructive::{_name}", guardrails.classify(_cmd) == "destructive")
 
+# Fifth spelling of the same asymmetry: the subcommand-sensitive rules (_MUTATING_FORMS) are
+# ^-anchored, so an ABSOLUTE PATH to the binary missed the anchor and the write fell through to
+# read_only with no card. The table-driven writers were never exposed, because those are looked up
+# by basename — which is what made this one survive four earlier passes over the same defect.
+# Found by classifying the repair commands for a live fixture BEFORE running it: f1's fix is
+# `pip install tomli`, and the model writes it as `/usr/bin/pip3 install tomli` about as often.
+for _name, _cmd in [
+    ("pip3-abs", "/usr/bin/pip3 install tomli"),
+    ("pip-usr-local", "/usr/local/bin/pip install tomli"),
+    ("systemctl-abs", "/usr/bin/systemctl restart infersvc"),
+    ("supervisorctl-abs", "/usr/bin/supervisorctl restart ollama"),
+    ("apt-get-abs", "/usr/bin/apt-get install -y tomli"),
+    ("docker-abs", "/usr/bin/docker run -d img"),
+    ("git-abs", "/usr/bin/git clone https://example/x"),
+    ("sudo-plus-abs", "sudo /usr/bin/pip3 install tomli"),
+]:
+    check(f"abs-path-cannot-skip-the-card::{_name}", guardrails.classify(_cmd) == "mutating")
+
+# The ^ anchor exists so a PATH containing the verb cannot trip these rules. Re-spelling token 0
+# must not cost that: these are reads and have to stay reads, or core diagnostics start carding.
+for _name, _cmd in [
+    ("cat-installer-log", "cat /var/log/cuda-installer.log"),
+    ("cat-pip-install-log", "cat /opt/pip-install.log"),
+    ("grep-install-in-log", "grep -n install /opt/pip-install.log"),
+    ("ls-the-binary", "ls -l /usr/bin/pip3"),
+    ("systemctl-status-abs", "/usr/bin/systemctl status ollama"),
+    ("pip-list-abs", "/usr/bin/pip3 list"),
+    ("pip-version-abs", "/usr/bin/pip3 --version"),
+]:
+    check(f"abs-path-keeps-reads-readable::{_name}", guardrails.classify(_cmd) == "read_only")
+
+# The destructive tier matches on \b, not ^, so it was never path-fragile. Pin that, so a future
+# refactor of the respelling cannot quietly move these down a tier.
+for _name, _cmd in [("systemctl-restart-sshd-abs", "/usr/bin/systemctl restart sshd"),
+                    ("rm-rf-etc-ssh-abs", "/bin/rm -rf /etc/ssh")]:
+    check(f"abs-path-cannot-soften-destructive::{_name}", guardrails.classify(_cmd) == "destructive")
+
 ssh_transport.run_ssh = _REAL_RUN_SSH
 
 print(f"\n{'FAILED: ' + ', '.join(FAILS) if FAILS else 'all write-mode checks passed'}")
