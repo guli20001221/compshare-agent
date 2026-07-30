@@ -27,8 +27,24 @@ const (
 	stockCapabilityLabel = string(intent.IntentStockAvailability)
 	stockAction          = "DescribeAvailableCompShareInstanceTypes"
 
-	noStockReply      = "未获取到机型库存数据。"
-	soldOutDisclaimer = "（CompShare 平台不公开精确剩余数量，仅 Normal/SoldOut 两态。）"
+	noStockReply = "未获取到机型库存数据。"
+	// soldOutDisclaimer is the ONE caveat line under a plain listing. Two earlier
+	// versions of it were wrong in opposite directions:
+	//
+	//   1. The "开售 ≠ 可创建" half was appended to EVERY machine-type row, so a live
+	//      catalog of 12 models printed the same 30-character parenthetical 12
+	//      times and buried the answer.
+	//   2. It then still claimed 平台不公开精确剩余数量，仅 Normal/SoldOut 两态 —
+	//      which stopped being true the moment the listing started printing
+	//      「独占约 271 张」 directly above it. A caveat that contradicts the data it
+	//      sits under is worse than no caveat: it tells the user one of the two is
+	//      a lie without saying which.
+	//
+	// What remains is the one thing the numbers genuinely do not say: they are a
+	// point-in-time snapshot of cards, not a guarantee that a particular
+	// CPU/memory/disk combination can be created.
+	soldOutDisclaimer  = "数量为本轮实时快照，仅供参考；某个具体配置能否创建仍需容量预检。"
+	stockListingHeader = "当前可售机型："
 
 	// Terra fills optional enum properties even when the user did not choose one.
 	// Represent the absent state explicitly so the first business value
@@ -131,8 +147,18 @@ func stockHandle(ctx context.Context, req StockAvailabilityRequest, rt ReadRunti
 	} else if ok {
 		return StockAvailabilityResponse{Reply: reply, ResolvedGPUModel: resolved}, ReadResult{}
 	}
+	// A catalog listing that only says 开售 does not answer "有多少". The card
+	// counts live in a different API (DescribeCompShareGpuInventory), which the
+	// capacity path already reads but this path did not, so a plain listing was
+	// Normal/SoldOut and nothing else. Both extra reads are tolerant: a failure
+	// here degrades to the sale-state-only listing rather than failing the turn.
+	var inventory *deployment.GPUInventorySnapshot
+	listingZones, zoneErr := stockSupportZones(ctx, rt)
+	if zoneErr == nil {
+		inventory = stockGPUInventorySnapshot(ctx, rt, listingZones)
+	}
 	return StockAvailabilityResponse{
-		Reply:            renderStockReply(raw, referent),
+		Reply:            renderStockReply(raw, referent, inventory, listingZones),
 		Envelope:         populatedEnvelope(buildStockEnvelope(raw, referent)),
 		ResolvedGPUModel: resolved,
 	}, ReadResult{}
@@ -175,7 +201,49 @@ func singleStockModel(userText string, items []any) string {
 	return ""
 }
 
-func renderStockReply(raw map[string]any, userText string) string {
+// stockModelCardTotals sums a model's card counts across every zone the catalog
+// knows. The per-zone breakdown belongs to a zone-specific question; a "有什么卡"
+// listing wants one number per model. Returns ok=false when the inventory source
+// did not answer for this model at all — the caller then says nothing about
+// quantity rather than printing a zero it cannot stand behind.
+func stockModelCardTotals(snapshot *deployment.GPUInventorySnapshot, supportZones []zones.ZoneInfo, model string) (exclusive, spot uint32, ok bool) {
+	if snapshot == nil {
+		return 0, 0, false
+	}
+	for _, zone := range supportZones {
+		zoneExclusive, zoneSpot, present, available := snapshot.Counts(zone.Zone, model)
+		if !present || !available {
+			continue
+		}
+		exclusive += zoneExclusive
+		spot += zoneSpot
+		ok = true
+	}
+	return exclusive, spot, ok
+}
+
+// stockCardCountSuffix renders the quantity clause for one machine-type line.
+// 约 is not hedging for its own sake: the snapshot has an UpdateTime and is not
+// transactional, so an exact-sounding number would overstate what we know.
+func stockCardCountSuffix(snapshot *deployment.GPUInventorySnapshot, supportZones []zones.ZoneInfo, model string) string {
+	exclusive, spot, ok := stockModelCardTotals(snapshot, supportZones, model)
+	if !ok {
+		return ""
+	}
+	var pools []string
+	if exclusive > 0 {
+		pools = append(pools, fmt.Sprintf("独占约 %d 张", exclusive))
+	}
+	if spot > 0 {
+		pools = append(pools, fmt.Sprintf("抢占约 %d 张", spot))
+	}
+	if len(pools) == 0 {
+		return "，当前库存快照为 0"
+	}
+	return "，" + strings.Join(pools, " / ")
+}
+
+func renderStockReply(raw map[string]any, userText string, inventory *deployment.GPUInventorySnapshot, supportZones []zones.ZoneInfo) string {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
 	if len(items) == 0 {
 		return noStockReply
@@ -217,7 +285,7 @@ func renderStockReply(raw map[string]any, userText string) string {
 			// Some prod responses omit Status; "appears in available list" ≈ available.
 			status = "Normal"
 		}
-		lines = append(lines, renderStockStatusLine(name, status))
+		lines = append(lines, renderStockStatusLine(name, status)+stockCardCountSuffix(inventory, supportZones, name))
 	}
 	if len(lines) == 0 {
 		if prefix != "" {
@@ -225,17 +293,26 @@ func renderStockReply(raw map[string]any, userText string) string {
 		}
 		return noStockReply
 	}
+	// The header is only useful when nothing above it already said what the list
+	// is; the no-match prefix does.
+	if prefix == "" {
+		prefix = stockListingHeader + "\n"
+	}
 	return prefix + strings.Join(lines, "\n") + "\n" + soldOutDisclaimer
 }
 
+// renderStockStatusLine names one machine type and its sale state in the
+// product's own words. The upstream enum (Normal/SoldOut) is the wire value, not
+// a label to show the user — every other user-facing render in this package
+// translates its enum, and this one used to print the English through.
 func renderStockStatusLine(name, status string) string {
 	switch {
 	case strings.EqualFold(status, "Normal"):
-		return fmt.Sprintf("机型=%s, 状态=Normal（机型开售；不代表当前具体配置一定可创建，精确可创建性需做容量预检）", name)
+		return fmt.Sprintf("- %s：开售", name)
 	case strings.EqualFold(status, "SoldOut"):
-		return fmt.Sprintf("机型=%s, 状态=SoldOut（售罄）", name)
+		return fmt.Sprintf("- %s：售罄", name)
 	default:
-		return fmt.Sprintf("机型=%s, 状态=%s", name, status)
+		return fmt.Sprintf("- %s：%s", name, status)
 	}
 }
 
@@ -373,12 +450,12 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 		eligibleChecks, poolReply := requestedInventoryPoolView(inventory, checks, pool)
 		return joinStockReply(renderStockCapacityReply(eligibleChecks), poolReply), true, ReadResult{}
 	}
-	// A positive capacity precheck is already the user-facing answer. The raw
-	// inventory snapshot is a different, weaker signal and used to be appended
-	// underneath it, re-expanding the concise per-zone card-count table with
-	// approximate pool totals. Keep the snapshot for pool validation and degraded
-	// paths, but do not duplicate a successful capacity answer with it.
-	return renderStockCapacityReply(checks), true, ReadResult{}
+	// The raw snapshot is NOT appended as a second block underneath the capacity
+	// answer — that is what made this reply long enough to be deleted wholesale in
+	// 7c7b742b, and deleting it took the card counts with it, leaving a stock
+	// question answered without a quantity. It goes inline on the zone line it
+	// belongs to instead, so the answer stays one table and still says how many.
+	return renderStockCapacityReplyWithCounts(checks, inventory), true, ReadResult{}
 }
 
 func stockGPUInventorySnapshot(ctx context.Context, rt ReadRuntime, supportZones []zones.ZoneInfo) *deployment.GPUInventorySnapshot {
@@ -837,7 +914,43 @@ func capacitySpecLabel(spec map[string]any) string {
 	return strings.Join(parts, "/")
 }
 
+// renderStockCapacityReplyWithCounts is renderStockCapacityReply plus the card
+// count on each 机型/可用区 line. Split rather than merged so the many callers
+// that have no inventory snapshot (degraded paths, failure notes) keep the
+// count-free rendering without threading a nil through each one.
+func renderStockCapacityReplyWithCounts(checks []stockCapacityCheck, inventory *deployment.GPUInventorySnapshot) string {
+	return renderStockCapacityReplyLines(checks, inventory)
+}
+
 func renderStockCapacityReply(checks []stockCapacityCheck) string {
+	return renderStockCapacityReplyLines(checks, nil)
+}
+
+// zoneCardCountSuffix renders the pool counts for one exact (model, zone) pair.
+// CanonicalZone is the id the inventory snapshot is keyed by; Zone is the
+// display label, which would not resolve.
+func zoneCardCountSuffix(inventory *deployment.GPUInventorySnapshot, model, canonicalZone string) string {
+	if inventory == nil || canonicalZone == "" {
+		return ""
+	}
+	exclusive, spot, present, available := inventory.Counts(canonicalZone, model)
+	if !present || !available {
+		return ""
+	}
+	var pools []string
+	if exclusive > 0 {
+		pools = append(pools, fmt.Sprintf("独占约 %d 张", exclusive))
+	}
+	if spot > 0 {
+		pools = append(pools, fmt.Sprintf("抢占约 %d 张", spot))
+	}
+	if len(pools) == 0 {
+		return "；库存快照为 0"
+	}
+	return "；" + strings.Join(pools, " / ")
+}
+
+func renderStockCapacityReplyLines(checks []stockCapacityCheck, inventory *deployment.GPUInventorySnapshot) string {
 	if len(checks) == 0 {
 		return ""
 	}
@@ -852,6 +965,7 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 	// here. The dropped dimension is stated in the header rather than silently lost.
 	type capacityGroup struct{ name, zone string }
 	countsByGroup := map[capacityGroup][]string{}
+	canonicalByGroup := map[capacityGroup]string{}
 	groupOrder := make([]capacityGroup, 0, len(checks))
 	for _, check := range checks {
 		if _, ok := seenNames[check.Name]; !ok {
@@ -865,6 +979,10 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 		checkedSpecs += check.CheckedSpec
 		for _, spec := range check.EnoughSpecs {
 			group := capacityGroup{check.Name, check.Zone}
+			// The group is keyed by the DISPLAY zone label; the inventory snapshot is
+			// keyed by the zone id. Keep the id alongside so the card count can be
+			// looked up — 华北二A (cn-wlcb-01) would not resolve.
+			canonicalByGroup[group] = check.CanonicalZone
 			if _, seen := countsByGroup[group]; !seen {
 				groupOrder = append(groupOrder, group)
 			}
@@ -887,7 +1005,8 @@ func renderStockCapacityReply(checks []stockCapacityCheck) string {
 		for _, group := range groupOrder {
 			counts := countsByGroup[group]
 			sort.Slice(counts, func(i, j int) bool { return gpuCountOrder(counts[i]) < gpuCountOrder(counts[j]) })
-			lines = append(lines, fmt.Sprintf("- %s / %s：%s 卡", group.name, group.zone, strings.Join(counts, "、")))
+			lines = append(lines, fmt.Sprintf("- %s / %s：%s 卡%s", group.name, group.zone,
+				strings.Join(counts, "、"), zoneCardCountSuffix(inventory, group.name, canonicalByGroup[group])))
 		}
 		return appendCapacityFailureNote(strings.Join(lines, "\n"), failedZones)
 	}
