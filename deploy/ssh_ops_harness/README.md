@@ -136,6 +136,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < deploy/migrations/0011_create_ssh_ops_
    ```
 
    正常一行是 `phase=read_only`、`disposition=ok`、`output_bytes` 非空。
+   开了 `allow_writes` 之后 `phase` 应该是 `read_write` —— 如果还是 `read_only`，说明开关没生效（改完要重启）。
 
 ## 关掉
 
