@@ -74,6 +74,12 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 			boundary = segmentReadOnlyBoundaryWithInstanceRepair
 		}
 		sections = append(sections, PromptSection{ID: "readonly_boundary", Text: boundary})
+	} else if opts.InstanceOpsWritesEnabled {
+		// No read-only boundary exists in this mode, so the lane needs a section of its own or
+		// nothing in the prompt names it at all. The deployed config already sets
+		// mutating_tools: true, so that is the shape the lane's own rollout produces. Kept as an
+		// else-branch so read-only mode renders byte-identically.
+		sections = append(sections, PromptSection{ID: "instance_repair_lane", Text: segmentInstanceRepairLane})
 	}
 	sections = append(sections, PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
 		PromptSection{ID: "behavior", Text: segmentCentralAgentBehavior},

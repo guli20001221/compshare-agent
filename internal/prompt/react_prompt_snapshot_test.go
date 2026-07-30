@@ -61,6 +61,14 @@ const (
 	// absence of any benefit signal plus a mechanism for harm — not a proven delta.
 	mutatingReActPromptSHA256 = "abf2e9a696d1b13450ad8ef8ceea2eac38d586d94b198ad7c1692b0ee6ac74ac"
 	readOnlyReActPromptSHA256 = "f3335cfd3943a1bce29a37e2c9315c4b24602478a803aa1ab5617941b43c8102"
+
+	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
+	// That leaves the rollout shape unpinned: deploy/conf/config.yaml already sets
+	// mutating_tools: true, so enabling ssh_ops there produces a fourth combination no snapshot
+	// covered — and that is how it went unnoticed that no section named the lane in it at all (the
+	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
+	// third SHA pins that combination.
+	mutatingWithRepairLaneReActPromptSHA256 = "5e5be32469c763e3857d15ad89fe0ac78f5b7453dc4a5dbc4331313200c4f0b7"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {
@@ -71,6 +79,12 @@ func TestReActPromptSnapshot_Mutating(t *testing.T) {
 func TestReActPromptSnapshot_ReadOnly(t *testing.T) {
 	p := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false})
 	assertPromptSHA256(t, "read_only", p, readOnlyReActPromptSHA256)
+}
+
+// The shape production renders: platform writes on AND the in-instance repair lane authorized.
+func TestReActPromptSnapshot_MutatingWithRepairLane(t *testing.T) {
+	p := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true, InstanceOpsWritesEnabled: true})
+	assertPromptSHA256(t, "mutating_with_repair_lane", p, mutatingWithRepairLaneReActPromptSHA256)
 }
 
 // TestReActPromptStaticPrefixStable is the KV-cache prefix-stability guard

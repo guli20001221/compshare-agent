@@ -41,3 +41,42 @@ func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
 		t.Fatal("mutating tools enabled but a read-only boundary was still injected")
 	}
 }
+
+// The assertion above is one-sided: it checks that no read-only boundary LEAKS into mutating mode,
+// and never checks that the lane is still described there. It isn't. The sentence naming the lane
+// lives inside the read-only boundary, and that whole section is skipped when mutating tools are on.
+// deploy/conf/config.yaml ships mutating_tools: true with ssh_ops.enabled: false, so this is latent
+// rather than live — and it fires on the first deployment that enables the lane, i.e. on rollout. The
+// fix for the measured "我目前没有…权限，无法替你进实例修复" refusal was wired into read-only mode only.
+//
+// Measured cost on the enabled-lane shape (mutating_tools: true + allow_writes: true, terra, N=15/arm
+// through the real WS path, question = VS Code forwarding fails / plain ssh works / no instance named):
+// asked which instance 0/15, offered to go in 0/15. A turn that never asks which instance can never
+// enter the lane at all, because UHostId is a required parameter of the tool.
+//
+// This asserts the lane is named in BOTH modes, and that the mutating-mode copy does not smuggle in
+// the read-only claim — in that mode platform writes really are available, so "平台侧操作当前不可
+// 执行" would be a false sentence the agent has been measured to act on.
+func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
+	both := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true, InstanceOpsWritesEnabled: true})
+
+	if !strings.Contains(both, "DiagnoseInstanceInternals") {
+		t.Fatal("lane authorized with mutating tools on, but no prompt section names it")
+	}
+	if !strings.Contains(both, "不要回答自己没有权限") {
+		t.Fatal("the mutating-mode copy must answer the observed refusal directly, like the read-only one")
+	}
+	if !strings.Contains(both, "高危操作") {
+		t.Fatal("the destructive refusals must stay named, or the agent plans around commands the harness rejects")
+	}
+	if strings.Contains(both, "平台侧操作") {
+		t.Fatal("mutating tools are ON; claiming platform writes are unavailable is the same class of false sentence")
+	}
+
+	// The lane flag is what gates it. With writes off, the tool description alone describes the lane
+	// and the prompt must not promise repair the harness will refuse.
+	noLane := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true})
+	if strings.Contains(noLane, "DiagnoseInstanceInternals") {
+		t.Fatal("lane not authorized but the prompt still promises in-instance repair")
+	}
+}
