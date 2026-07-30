@@ -47,10 +47,14 @@ const (
 	// maxHistoryMessages is the maximum number of non-system messages to keep.
 	//
 	// This was 40, sized for "a 32K context window" — a model we no longer run.
-	// ds-v4-flash's window is not remotely the binding constraint; the real ceiling
-	// is agent.rate_limit.max_tokens_per_turn (200K, prompt+completion summed), and
-	// 40 messages ≈ 27K tokens sat at 13% of it. We were amputating context to
+	// The model's window is not remotely the binding constraint; the real ceiling
+	// is agent.rate_limit.max_tokens_per_turn, shipped at 400000 (prompt+completion
+	// summed across the whole turn, not per request). We were amputating context to
 	// respect a limit that no longer exists.
+	//
+	// Measured on the 2026-07 production export for scale: a single request peaks at
+	// 29,768 prompt tokens (median 14,517) and a whole turn at 249,410 total (median
+	// 39,944), with 0 of 2807 turns reaching the ceiling.
 	//
 	// The unit is also wrong in a way that bites hardest exactly where we are
 	// headed: this counts MESSAGES, and e.messages holds every tool response, so an
@@ -4703,11 +4707,15 @@ func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
 }
 
 // maxAssembledRequestMessages is a conservative hard ceiling on the number of
-// messages in a single assembled LLM request. The legitimate maximum is ~69
-// (2 system/card + 16 restored recent pairs + a ≤51-message in-turn tool
-// transcript bounded by maxReadExpensiveCallsPerTurn / maxReActRounds), so this
-// only sheds a pathological within-turn runaway and never truncates a valid
-// turn. Cross-turn history is already bounded separately by maxHistoryMessages.
+// messages in a single assembled LLM request. The legitimate maximum is now ~93
+// (2 system/card + 40 messages for 20 restored exchanges + a ≤51-message in-turn
+// tool transcript bounded by maxReadExpensiveCallsPerTurn / maxReActRounds).
+// That margin is thin: raising maxAgentContextPairs past ~23 would make this cap
+// shed restored exchanges on ordinary heavy turns rather than only pathological
+// ones. Shedding is graceful (oldest exchanges first, see below) but silent, so
+// treat this constant as coupled to the replay window, not independent of it.
+// Cross-turn history is bounded separately by maxHistoryMessages, and by size
+// via maxReplayedHistoryRunes.
 const maxAssembledRequestMessages = 100
 
 // capAssembledRequestMessages bounds an already-assembled request to at most

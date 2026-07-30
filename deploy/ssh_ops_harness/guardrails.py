@@ -60,6 +60,10 @@ _SYSTEM_PATHS = r"/(?:etc|usr|lib(?:64)?|s?bin|var|boot|opt|root)(?:/|\s|$)"
 #
 # Every pattern here is matched against BOTH the raw command and a path-normalized copy of it
 # (see _normalize_paths / classify), so a path rule cannot be defeated by respelling the path.
+# Matching is PER COMMAND, not over the whole string: nearly every rule below pairs a write verb
+# with a path, and over a whole chain those two halves came from DIFFERENT commands. See
+# _scan_destructive for the measurement — and note that anything you add here is therefore
+# evaluated against one segment, so a rule must not expect to see the rest of the chain.
 # ===========================================================================
 _DESTRUCTIVE_SRC = [
     # ---- deletion -------------------------------------------------------------------------
@@ -1375,6 +1379,46 @@ def _normalize_paths(cmd: str) -> str:
     return " ".join(out)
 
 
+def _scan_destructive(cmd: str) -> bool:
+    """Match the destructive tier PER COMMAND — never across a `;` / `|` / newline boundary.
+
+    Most rules in the tier have the shape "write-verb ... sensitive-path", and both halves were
+    matched over the WHOLE string. So two commands that are each harmless were refused together:
+    `chmod u+rx /root/models; awk '{print}' /proc/17146/status` paired the first segment's `chmod`
+    with the third segment's `/proc/...` and came back destructive. Measured cost on a live repair
+    run: exactly that `chmod` was hard-refused, and the model then reached the same end state with
+    `install -d -m 755 /root/models`, which passed. For a CONSENT gate an easily-respelled refusal
+    is worse than no refusal — it teaches the model to route around the gate instead of stopping.
+
+    Per-command is the TIGHTER reading, not a relaxation, and in both directions:
+      - a destructive effect is always produced by one command, so nothing real is lost;
+      - `^` and `$` now anchor to the command instead of the string, which CLOSES two bypasses a
+        whole-string scan had (`truncate -s 10G /big; echo -s 0` borrowed the `-s 0` exemption from
+        a different command; `cp /tmp/x /var/lib/mysql/ibdata1; ls /tmp` evaded the destination
+        anchor by appending a second command). Both were `mutating` — one consent card away.
+
+    Boundaries come from _split_chain, so a separator inside quoted DATA is not a boundary and
+    `chmod 000 "a; /etc/ssh/sshd_config"` stays one command (pinned in test_guardrails). Newlines
+    are split too: the rules themselves are `[^\n]`-bounded, but _normalize_paths joins on spaces,
+    which collapsed a two-line command into one line and let the normalized copy pair across it.
+
+    KNOWN RESIDUAL, named rather than silently left: a bare `&` is not in _CHAIN_SPLIT, so
+    `chmod 755 /workspace/app & ls -R /workspace` is still one segment and still pairs. Adding `&`
+    to the splitter would cut `2>&1` / `&>` in half and break the read tier (`nvidia-smi 2>&1 |
+    grep x` is a pinned read_only), which is a real regression traded for a shape models do not
+    write — they use `&` to detach a single command (`nohup ... &`), and a TRAILING `&` pairs
+    nothing. `;`, `|`, `&&` and `||` — every form seen live — are covered.
+    """
+    for line in cmd.split("\n"):
+        for seg in _split_chain(line):
+            if any(p.search(seg) for p in _DESTRUCTIVE):
+                return True
+            norm = _normalize_paths(seg)
+            if norm != seg and any(p.search(norm) for p in _DESTRUCTIVE):
+                return True
+    return False
+
+
 def classify(command: str) -> str:
     """Return 'destructive' | 'read_only' | 'mutating'. Reasoning-blind: command text only."""
     cmd = (command or "").strip()
@@ -1382,10 +1426,7 @@ def classify(command: str) -> str:
         return "mutating"
     if _HELP.fullmatch(cmd):                              # 0) help/version is always safe
         return "read_only"
-    normalized = _normalize_paths(cmd)
-    if any(p.search(cmd) for p in _DESTRUCTIVE):          # 1) destructive precedes everything
-        return "destructive"
-    if normalized != cmd and any(p.search(normalized) for p in _DESTRUCTIVE):
+    if _scan_destructive(cmd):                            # 1) destructive precedes everything
         return "destructive"
     if "\n" in cmd:                                       # 2) never accept a multi-line script
         return "mutating"

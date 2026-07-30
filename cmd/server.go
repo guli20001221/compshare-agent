@@ -139,7 +139,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// WriteTimeout stays 0 (the config default already enforces this): a
 	// non-zero server-level write deadline would abort a long-lived streaming
 	// connection mid-turn — true for both the former SSE path and the WS path.
-	// The per-connection context deadline (maxWSConnLifetime) bounds WS
+	// The per-connection context deadline (Handlers.wsConnLifetime) bounds WS
 	// connections. ReadTimeout governs only the pre-upgrade request read; after
 	// websocket.Accept hijacks the conn it no longer applies to the read loop,
 	// so the configured value is safe to keep.
