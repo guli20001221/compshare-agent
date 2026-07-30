@@ -93,3 +93,54 @@ func TestFormatMonitorFloatNeverRoundsANonZeroDownToZero(t *testing.T) {
 	assert.Equal(t, "<0.01", formatMonitorFloat(0.0000001))
 	assert.Equal(t, ">-0.01", formatMonitorFloat(-0.004), "a negative sliver keeps its sign")
 }
+
+// TestInstanceTimesAgreeAcrossBothProducers is the cross-producer invariant, not
+// a formatting preference.
+//
+// One upstream number, two consumers: the rendered block printed
+// 「启动于 2026-07-19 11:35」 while the envelope fact carried the bare epoch
+// 1784432142. The Agent answers from the facts, so a live multi-turn probe asked
+// 「它是什么时候启动的」 and got 6/10 replies quoting the raw timestamp — one of
+// them converting it to 2026-07-20 while the rendered line in the SAME reply said
+// 2026-07-19. The user cannot adjudicate that; a whole day was wrong.
+//
+// The test asserts the invariant both ways: the fact must be the calendar text,
+// AND the epoch must not appear in any fact value. Asserting only the first would
+// still pass if someone re-added the epoch under a second key.
+func TestInstanceTimesAgreeAcrossBothProducers(t *testing.T) {
+	// The exact instance and epochs from the probe run.
+	const (
+		started    = int64(1784432142) // 2026-07-19 11:35:42 +08:00
+		expires    = int64(1787024142)
+		startedTxt = "2026-07-19 11:35"
+	)
+	instances := []entity.InstanceSnapshot{{
+		UHostId: "uhost-1t09vtnm0qyj", Name: "probe", State: "Initializing",
+		CPU: 2, Memory: 4096, StartTime: started, ExpireTime: expires,
+		Zone: "cn-sh2-02", ChargeType: "Postpay",
+	}}
+
+	env := BuildResourceEnvelope(instances)
+	rendered := RenderResourceSummary(instances, ResourceEnvelopeMeta{TotalCount: 1, Shown: 1})
+
+	// 1. The fact is the same text the block prints.
+	assertEnvelopeFact(t, env, "uhost-1t09vtnm0qyj", "start_time", startedTxt)
+	assertEnvelopeFact(t, env, "uhost-1t09vtnm0qyj", "expire_time", resourceTimeLabel(expires))
+	require.Contains(t, rendered, startedTxt, "the rendered block is the other producer")
+
+	// 2. The epoch is not reachable from the envelope at all — under any key.
+	for _, fact := range env.Facts {
+		assert.NotEqual(t, started, fact.Value, "fact %q still carries the raw epoch", fact.Key)
+		assert.NotEqual(t, expires, fact.Value, "fact %q still carries the raw epoch", fact.Key)
+		if s, ok := fact.Value.(string); ok {
+			assert.NotContains(t, s, "1784432142", "fact %q embeds the raw epoch", fact.Key)
+		}
+	}
+
+	// 3. The zero guard survives: an instance with no expiry emits no fact rather
+	//    than 1970.
+	noExpiry := BuildResourceEnvelope([]entity.InstanceSnapshot{{
+		UHostId: "uhost-x", Name: "n", State: "Running", CPU: 1, Memory: 1024, StartTime: started,
+	}})
+	assertNoEnvelopeFact(t, noExpiry, "uhost-x", "expire_time")
+}
