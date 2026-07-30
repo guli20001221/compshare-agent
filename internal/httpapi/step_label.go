@@ -1,6 +1,10 @@
 package httpapi
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/compshare-agent/internal/tools"
+)
 
 // stepActionLabels maps a step frame's Action — an internal tool name — to the
 // Chinese label the console shows in its activity stream.
@@ -101,6 +105,11 @@ var stepActionLabels = map[string]string{
 	// Third source (read_platform_capability.go). UpdateTaskState is the first
 	// tool the model reaches for on a multi-step turn, so an unlabelled entry
 	// here is maximally visible.
+	// The lane's own card says 实例内排查与修复 (it authorizes entering the box). This one authorizes
+	// ONE change and is shown with the literal command, so it must not reuse that label — a user who
+	// sees the same words twice cannot tell which question they just answered.
+	"InstanceOpsWriteCommand": "执行实例内修复命令",
+
 	"UpdateTaskState": "整理任务状态",
 	"ProposeAction":   "生成操作提案",
 }
@@ -108,6 +117,13 @@ var stepActionLabels = map[string]string{
 // stepActionLabel returns the console label for a step Action, or "" when the
 // action has none (unknown/ad-hoc actions, which the console renders raw).
 func stepActionLabel(action string) string {
+	// This is the RUNNING-ACTIVITY line, not the authorization card — an earlier
+	// version of this comment claimed it was the card, and that mistake is why the
+	// card kept saying 只读 in write mode for a while: fixing this one read as
+	// having fixed both. The card is serverOwnedConfirmLabel below.
+	if action == "DiagnoseInstanceInternals" && tools.InstanceOpsWritesEnabled() {
+		return "实例内排查与修复"
+	}
 	if label, ok := stepActionLabels[action]; ok {
 		return label
 	}
@@ -120,6 +136,41 @@ func stepActionLabel(action string) string {
 		if label, ok := stepActionLabels[operation+"Workflow"]; ok {
 			return "发起" + label + "请求"
 		}
+	}
+	return ""
+}
+
+// serverOwnedConfirmLabel returns the title for an authorization card when the
+// SERVER is the only party that can know it, and "" when the console's own map is
+// authoritative (every workflow: its wording is fixed and already correct there).
+//
+// The console keeps a CONFIRM_LABELS map keyed on the action name alone. That is
+// fine for a workflow, whose card always says the same thing, and wrong for both
+// of the in-instance lane's cards — which is how BOTH shipped mislabelled:
+//
+//   - DiagnoseInstanceInternals: the card said 进入实例只读排查 while
+//     agent.ssh_ops.allow_writes was on. The wording depends on boot state the
+//     browser cannot see, so no client-side map can ever get it right. Consent
+//     that under-describes what it authorizes is the one defect here that cannot
+//     be repaired after the fact.
+//   - InstanceOpsWriteCommand: the console had no entry at all, so the per-write
+//     card rendered the raw English action name. A card nobody can read is not a
+//     gate; observed live on a real repair run.
+//
+// Deliberately NOT "send a label for every confirmation": that would add a key to
+// frames legacy clients receive, which TestConfirmationEvent_LegacyWireShapeUnchanged
+// pins on purpose. "" keeps those frames byte-identical via omitempty.
+func serverOwnedConfirmLabel(action string) string {
+	switch action {
+	case "DiagnoseInstanceInternals":
+		if tools.InstanceOpsWritesEnabled() {
+			return "进入实例排查与修复"
+		}
+		return "进入实例只读排查"
+	case "InstanceOpsWriteCommand":
+		// Same string the step stream uses, from the same map, so the card the user
+		// approves and the line they then watch scroll cannot drift apart.
+		return stepActionLabels["InstanceOpsWriteCommand"]
 	}
 	return ""
 }

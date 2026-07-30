@@ -99,6 +99,16 @@ const (
 	// fixes it — the disagreement does.
 	mutatingReActPromptSHA256 = "e1c4caa53a07d07cde3d54f9c26a5b6733a11a693069fcabe09ff028adf2e7b2"
 	readOnlyReActPromptSHA256 = "87be136d91ad5002418ec45c283ae7e62d205be93afc6ae104a78fa90ad65bb0"
+
+	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
+	// That leaves the rollout shape unpinned: deploy/conf/config.yaml already sets
+	// mutating_tools: true, so enabling ssh_ops there produces a fourth combination no snapshot
+	// covered — and that is how it went unnoticed that no section named the lane in it at all (the
+	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
+	// third SHA pins that combination. Recomputed on this merge: it is the only one of the three
+	// that had to move, because the two above already cover main's segment text unchanged while
+	// this shape is main's text PLUS the new section.
+	mutatingWithRepairLaneReActPromptSHA256 = "23b7fdc064bab18b32191c061a8a29108d654332bc247095d34ec81d21439a11"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {
@@ -109,6 +119,12 @@ func TestReActPromptSnapshot_Mutating(t *testing.T) {
 func TestReActPromptSnapshot_ReadOnly(t *testing.T) {
 	p := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: false})
 	assertPromptSHA256(t, "read_only", p, readOnlyReActPromptSHA256)
+}
+
+// The shape production renders: platform writes on AND the in-instance repair lane authorized.
+func TestReActPromptSnapshot_MutatingWithRepairLane(t *testing.T) {
+	p := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true, InstanceOpsWritesEnabled: true})
+	assertPromptSHA256(t, "mutating_with_repair_lane", p, mutatingWithRepairLaneReActPromptSHA256)
 }
 
 // TestReActPromptStaticPrefixStable is the KV-cache prefix-stability guard

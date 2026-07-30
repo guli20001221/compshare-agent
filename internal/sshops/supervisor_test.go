@@ -59,7 +59,7 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	}
 	c := cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw")
 
-	res, err := sup.Run(context.Background(), c, "health check", nil)
+	res, err := sup.Run(context.Background(), c, "health check", nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v (output=%q)", err, res.Output)
 	}
@@ -102,7 +102,7 @@ func TestSupervisorCredentialAndTaskNotInArgv(t *testing.T) {
 		Timeout:     30 * time.Second,
 	}
 	c := cred("uhost-abc", "h", "root", 22, "ArgvMustNotHaveThis")
-	res, err := sup.Run(context.Background(), c, "diagnose gpu memory", nil)
+	res, err := sup.Run(context.Background(), c, "diagnose gpu memory", nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestSupervisorAbortKillsProcess(t *testing.T) {
 	c := cred("x", "h", "root", 22, "pw")
 
 	start := time.Now()
-	res, err := sup.Run(context.Background(), c, "task", nil)
+	res, err := sup.Run(context.Background(), c, "task", nil, nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -146,11 +146,11 @@ func TestSupervisorAbortKillsProcess(t *testing.T) {
 
 func TestSupervisorRequiresSecretAndPath(t *testing.T) {
 	if _, err := (Supervisor{HarnessPath: "x"}).Run(context.Background(),
-		Credential{Host: "h", User: "u", Port: 22}, "t", nil); err == nil {
+		Credential{Host: "h", User: "u", Port: 22}, "t", nil, nil); err == nil {
 		t.Fatalf("expected error for credential without secret")
 	}
 	if _, err := (Supervisor{}).Run(context.Background(),
-		Credential{Host: "h", User: "u", Port: 22, password: "p"}, "t", nil); err == nil {
+		Credential{Host: "h", User: "u", Port: 22, password: "p"}, "t", nil, nil); err == nil {
 		t.Fatalf("expected error for missing harness path")
 	}
 }
@@ -168,7 +168,7 @@ func TestParseHarnessStream(t *testing.T) {
 	}, "\n") + "\n"
 
 	var streamed []Step
-	verdict, steps, err := parseHarnessStream(strings.NewReader(in), func(st Step) { streamed = append(streamed, st) })
+	verdict, steps, err := parseHarnessStream(strings.NewReader(in), func(st Step) { streamed = append(streamed, st) }, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestParseHarnessStream(t *testing.T) {
 	}
 
 	// no verdict markers -> empty Output, chatter ignored, no steps
-	v2, s2, err := parseHarnessStream(strings.NewReader("just chatter\nno protocol here\n"), nil)
+	v2, s2, err := parseHarnessStream(strings.NewReader("just chatter\nno protocol here\n"), nil, nil)
 	if err != nil {
 		t.Fatalf("parse2: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestParseHarnessStreamCaps(t *testing.T) {
 		b.WriteString(`@@STEP {"command":"x","tier":"read_only","disposition":"ran","exit":0,"bytes":1}` + "\n")
 	}
 	var streamedCap int
-	_, steps, err := parseHarnessStream(strings.NewReader(b.String()), func(Step) { streamedCap++ })
+	_, steps, err := parseHarnessStream(strings.NewReader(b.String()), func(Step) { streamedCap++ }, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestParseHarnessStreamCaps(t *testing.T) {
 		big.WriteString(filler)
 	}
 	big.WriteString("<<<END>>>\n")
-	if _, _, err := parseHarnessStream(strings.NewReader(big.String()), nil); err == nil {
+	if _, _, err := parseHarnessStream(strings.NewReader(big.String()), nil, nil); err == nil {
 		t.Fatalf("expected error when stdout exceeds %d bytes", maxHarnessStdoutBytes)
 	}
 }

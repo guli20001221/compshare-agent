@@ -186,6 +186,12 @@ func runClient(o clientOpts) {
 			// TimeoutSeconds is how long they have — both were invisible here.
 			fmt.Printf("● confirmation Action=%v ConfirmationId=%v TimeoutSeconds=%v\n",
 				f["Action"], f["ConfirmationId"], f["TimeoutSeconds"])
+			// Label is the card TITLE — the sentence the user actually reads before
+			// authorizing. It was not printed here, which is part of why a card that
+			// said 只读排查 while writes were on survived several probe runs.
+			if label, _ := f["Label"].(string); label != "" {
+				fmt.Printf("               Label=%q\n", label)
+			}
 			if summary, _ := json.Marshal(f["Summary"]); len(summary) > 0 && string(summary) != "null" {
 				fmt.Printf("               Summary=%s\n", summary)
 			}

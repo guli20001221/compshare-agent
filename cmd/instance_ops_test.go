@@ -25,6 +25,7 @@ func (noopDescriber) Execute(context.Context, string, map[string]any) (map[strin
 // fakeDiagnoser records whether/how Diagnose was reached and streams its configured steps, mirroring
 // the real Service (streamed steps == returned Steps).
 type fakeDiagnoser struct {
+	lastConfirm sshops.ConfirmFunc
 	calls          int
 	output         string
 	steps          []sshops.Step
@@ -34,7 +35,9 @@ type fakeDiagnoser struct {
 	lastTask       string
 }
 
-func (f *fakeDiagnoser) Diagnose(_ context.Context, _ sshops.Describer, owner sshops.Owner, instanceID, task string, onStep func(sshops.Step)) (sshops.Result, error) {
+func (f *fakeDiagnoser) Diagnose(_ context.Context, _ sshops.Describer, owner sshops.Owner, instanceID, task string,
+	onStep func(sshops.Step), onConfirm sshops.ConfirmFunc) (sshops.Result, error) {
+	f.lastConfirm = onConfirm
 	f.calls++
 	f.lastOwner, f.lastInstanceID, f.lastTask = owner, instanceID, task
 	for _, st := range f.steps {

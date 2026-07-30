@@ -41,6 +41,11 @@ type InstanceOpsRequest struct {
 	TurnID     string
 	InstanceID string
 	Task       string
+	// ConfirmWrite asks the user about ONE command that will change the box, and blocks until they
+	// answer. It is separate from the lane-level card: that one authorizes entering the instance and
+	// never names what will change, so it cannot stand as consent for `kill 6934`. nil means no human
+	// is reachable, and the runner must then refuse rather than proceed — see sshops.Service.
+	ConfirmWrite func(command string) bool
 }
 
 // Progress kinds emitted by a runner. The engine translates each into exactly
