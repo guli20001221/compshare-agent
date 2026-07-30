@@ -65,6 +65,13 @@ type ReadRuntime struct {
 	Now                time.Time
 	FallbackInstanceID string
 	FallbackGPUModel   string
+	// SyncRegistry hands a full DescribeCompShareInstance listing back to the
+	// session's live registry. Only the target-resolution warm-up uses it, and
+	// only after that listing already had to be fetched: without it the cold
+	// production registry (the HTTP path never calls engine.Init()) would be
+	// re-listed on every name-addressed turn of the session instead of once.
+	// Optional — a nil value costs correctness nothing, only the repeat call.
+	SyncRegistry func(raw map[string]any)
 }
 
 // ReadResult is the neutral outcome a typed read capability produces. It carries
@@ -75,37 +82,15 @@ type ReadRuntime struct {
 type ReadResult struct {
 	Status platform.ReadStatus
 	Reply  string
-	// RenderRequired keeps an opaque value out of model-authored prose and makes
-	// the response gateway insert Reply after output redaction. It does not end
-	// the Agent loop.
-	RenderRequired bool
-	// RenderExclusive is narrower: the verbatim block already fully answers the
-	// question, so surrounding model prose would only duplicate it. A capability
-	// must opt in explicitly; opaque credentials and access diagnostics still
-	// need the Agent to explain or continue reasoning around their render_ref.
-	RenderExclusive    bool
+	// Presentation declares how the engine carries this server-rendered result
+	// into the final answer. It is a capability contract, not a model hint.
+	Presentation       ReadPresentation
 	NeedsClarification bool
 	FailureClass       platform.ReadFailureClass
 	FallbackReason     platform.ReadFallbackReason
 	ToolAction         string
 	Envelope           *envelope.Envelope
 	MissingFields      []platform.MissingField
-	// ReplyIsBrowseListing marks a rendered Reply that is a MENU rather than an
-	// answer: a catalog the user picks from, not a measurement to quote. It changes
-	// how the engine treats the reply, exactly like NeedsClarification does — it is
-	// not capability-specific data, so it belongs here rather than as a ReadEffect.
-	//
-	// The engine hands quotable replies to the model as a render_ref it pastes into
-	// its answer verbatim, so precise ids/prices/stock are never paraphrased. That
-	// contract is wrong for a browse listing: the whole point of "推荐一个做数字人的
-	// 镜像" is that the model reads the catalog and curates it. Pasting the raw
-	// listing on top of the curated answer produced both — a 1.4k-char dump of every
-	// row followed by the model restating the same numbers.
-	//
-	// The envelope still reaches the model either way, so it keeps the exact ids and
-	// deploy counts; it just writes them into its own answer instead of the server
-	// stapling a second copy in front.
-	ReplyIsBrowseListing bool
 	// Alternatives is the payload of the unavailable status only: the supported
 	// capabilities the model should redirect the user to. Read solely by the
 	// engine's Unavailable observation branch, never by the general read path.
@@ -115,6 +100,28 @@ type ReadResult struct {
 	// reaches the engine as a declared typed effect, never as an untyped field
 	// bag growing on this result.
 	Effects []ReadEffect
+}
+
+// ReadPresentation is the explicit output contract for every read capability.
+// Exact results use a server-rendered block so ids, prices, stock and timestamps
+// are not rewritten by the model. Browse results expose structured evidence only
+// so the Agent can curate a natural recommendation instead of dumping a catalog.
+type ReadPresentation string
+
+const (
+	ReadPresentationExact    ReadPresentation = "exact"
+	ReadPresentationRequired ReadPresentation = "required"
+	ReadPresentationBrowse   ReadPresentation = "browse"
+	ReadPresentationGuidance ReadPresentation = "guidance"
+)
+
+func (p ReadPresentation) Valid() bool {
+	switch p {
+	case ReadPresentationExact, ReadPresentationRequired, ReadPresentationBrowse, ReadPresentationGuidance:
+		return true
+	default:
+		return false
+	}
 }
 
 // ReadEffect is a typed context side-effect a read capability declares in its
@@ -226,6 +233,9 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 	Label string
 	// Description is the model-facing tool description.
 	Description string
+	// Presentation is mandatory. It prevents new reads from silently falling
+	// back to model-authored or accidentally duplicated output.
+	Presentation ReadPresentation
 	// Params is the capability's parameter field contract — the single source
 	// for the model-facing JSON schema (Params.jsonSchema()), the runtime
 	// argument validator (Params.validate, which enforces enum and numeric bounds the
@@ -251,14 +261,15 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 // once, here at the registry edge; past decodeInto the flow stays fully typed
 // and never falls back to map[string]any or intent.Slots.
 type RegisteredRead struct {
-	Label       string
-	Description string
-	Tool        openai.Tool
-	schema      map[string]any
-	params      schemaNode
-	requestType reflect.Type
-	decode      func(map[string]any) (platform.ReadRequest, error)
-	run         func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult
+	Label        string
+	Description  string
+	Presentation ReadPresentation
+	Tool         openai.Tool
+	schema       map[string]any
+	params       schemaNode
+	requestType  reflect.Type
+	decode       func(map[string]any) (platform.ReadRequest, error)
+	run          func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult
 }
 
 // Decode parses tool arguments into this capability's concrete request type.
@@ -286,11 +297,15 @@ func (r RegisteredRead) RequestType() reflect.Type { return r.requestType }
 // ties the decoder, the MissingFields validator, the handler and the renderer
 // together: a mismatch is a compile error, not a runtime surprise.
 func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapabilitySpec[Request, Response]) RegisteredRead {
+	if !spec.Presentation.Valid() {
+		panic(fmt.Sprintf("read capability %q has no valid presentation contract", spec.Label))
+	}
 	toolName := ReadToolPrefix + spec.Label
 	schema := spec.Params.jsonSchema()
 	return RegisteredRead{
-		Label:       spec.Label,
-		Description: spec.Description,
+		Label:        spec.Label,
+		Description:  spec.Description,
+		Presentation: spec.Presentation,
 		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
 			Name: toolName, Description: strings.TrimSpace(spec.Description), Parameters: schema,
 		}},
@@ -314,9 +329,15 @@ func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapa
 			}
 			resp, terminal := spec.Handle(ctx, typed, rt)
 			if terminal.Status != "" {
+				if terminal.Status == platform.ReadStatusHandled && !terminal.Presentation.Valid() {
+					terminal.Presentation = spec.Presentation
+				}
 				return terminal
 			}
 			result := spec.Render(resp)
+			if !result.Presentation.Valid() {
+				result.Presentation = spec.Presentation
+			}
 			if spec.Observe != nil {
 				result.Effects = spec.Observe(resp)
 			}

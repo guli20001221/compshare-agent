@@ -49,10 +49,11 @@ func gpuSpecsReadSpec() ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse] {
 		// hand-maintained gpuSpecs table was deleted this is the ONLY source of GPU
 		// facts, and calling it static invited the agent to trust it less and answer
 		// from its own weights instead.
-		Description: "查询平台 GPU 机型的结构化规格，包括显存、算力、最大卡数和可选 CPU/内存组合。用于规格比较，不代表当前实时库存。",
-		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "detail_level": enumParam(platform.DetailLevelValues()...)}),
-		Handle:      gpuSpecsHandle,
-		Render:      gpuSpecsRender,
+		Description:  "查询平台 GPU 机型的结构化规格，包括显存、算力、最大卡数和可选 CPU/内存组合。用于规格比较，不代表当前实时库存。",
+		Presentation: ReadPresentationBrowse,
+		Params:       objectParam(map[string]schemaNode{"gpu_type": stringParam(), "detail_level": enumParam(platform.DetailLevelValues()...)}),
+		Handle:       gpuSpecsHandle,
+		Render:       gpuSpecsRender,
 	}
 }
 

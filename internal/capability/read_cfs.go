@@ -7,6 +7,7 @@ import (
 
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
+	"github.com/compshare-agent/internal/readprojection"
 	"github.com/compshare-agent/internal/zones"
 )
 
@@ -62,11 +63,12 @@ func (CFSListRequest) MissingFields() []platform.MissingField { return nil }
 
 func cfsListReadSpec() ReadCapabilitySpec[CFSListRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSListRequest, CFSResponse]{
-		Label:       readCFSList,
-		Description: "查询当前账号 CFS 列表或指定 CFS 的状态、容量和位置。价格、扩容价和退费估算使用对应 CFS 能力。",
-		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}),
-		Handle:      cfsListHandle,
-		Render:      cfsRender,
+		Label:        readCFSList,
+		Description:  "查询当前账号 CFS 列表或指定 CFS 的状态、容量和位置。价格、扩容价和退费估算使用对应 CFS 能力。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"cfs": cfsRefParam()}),
+		Handle:       cfsListHandle,
+		Render:       cfsRender,
 	}
 }
 
@@ -108,8 +110,9 @@ func (r CFSCreatePriceRequest) MissingFields() []platform.MissingField {
 
 func cfsCreatePriceReadSpec() ReadCapabilitySpec[CFSCreatePriceRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSCreatePriceRequest, CFSResponse]{
-		Label:       readCFSCreatePrice,
-		Description: "查询拟创建云存储 Pro（CFS 共享文件存储）在指定可用区和容量下的实时账号净报价。不用于普通实例数据盘；上游接口不返回免费额度字段。",
+		Label:        readCFSCreatePrice,
+		Description:  "查询拟创建云存储 Pro（CFS 共享文件存储）在指定可用区和容量下的实时账号净报价。不用于普通实例数据盘；上游接口不返回免费额度字段。",
+		Presentation: ReadPresentationRequired,
 		Params: objectParam(map[string]schemaNode{
 			"zone":           stringParam().described("精确可用区 ID。当前只有上游标记为 Pod 的区域支持该询价。"),
 			"target_size_gb": integerParam(1).described("目标容量 GB。"),
@@ -171,11 +174,12 @@ func (r CFSUpgradePriceRequest) MissingFields() []platform.MissingField {
 
 func cfsUpgradePriceReadSpec() ReadCapabilitySpec[CFSUpgradePriceRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSUpgradePriceRequest, CFSResponse]{
-		Label:       readCFSUpgradePrice,
-		Description: "估算指定已有 CFS 扩容到目标总容量的价格差额。只读，不执行扩容；新建 CFS 报价使用 CFS 创建报价能力。",
-		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam(), "target_size_gb": integerParam(1)}, "cfs", "target_size_gb"),
-		Handle:      cfsUpgradePriceHandle,
-		Render:      cfsRender,
+		Label:        readCFSUpgradePrice,
+		Description:  "估算指定已有 CFS 扩容到目标总容量的价格差额。只读，不执行扩容；新建 CFS 报价使用 CFS 创建报价能力。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"cfs": cfsRefParam(), "target_size_gb": integerParam(1)}, "cfs", "target_size_gb"),
+		Handle:       cfsUpgradePriceHandle,
+		Render:       cfsRender,
 	}
 }
 
@@ -218,11 +222,12 @@ func (r CFSRefundEstimateRequest) MissingFields() []platform.MissingField {
 
 func cfsRefundEstimateReadSpec() ReadCapabilitySpec[CFSRefundEstimateRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSRefundEstimateRequest, CFSResponse]{
-		Label:       readCFSRefundEstimate,
-		Description: "估算指定已有 CFS 当前可退金额。只读，不删除或释放 CFS。",
-		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}, "cfs"),
-		Handle:      cfsRefundEstimateHandle,
-		Render:      cfsRender,
+		Label:        readCFSRefundEstimate,
+		Description:  "估算指定已有 CFS 当前可退金额。只读，不删除或释放 CFS。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"cfs": cfsRefParam()}, "cfs"),
+		Handle:       cfsRefundEstimateHandle,
+		Render:       cfsRender,
 	}
 }
 
@@ -327,6 +332,25 @@ func cfsChargeTypeFromSlot(value string) string {
 	return value
 }
 
+// cfsMountStatusLabel translates the upstream mount-state enum. It used to print
+// through as 「挂载状态 Unmounted」 — the same class of leak as the raw ChargeType
+// next to it: an English wire value handed to the user in an otherwise Chinese
+// line. An unrecognised state still shows itself rather than being guessed at.
+func cfsMountStatusLabel(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "mounted":
+		return "已挂载"
+	case "unmounted":
+		return "未挂载"
+	case "mounting":
+		return "挂载中"
+	case "unmounting":
+		return "卸载中"
+	default:
+		return "挂载状态 " + status
+	}
+}
+
 func renderCFSInfoReply(raw map[string]any) string {
 	rows := mapSliceAt(raw, "CFSSet")
 	if len(rows) == 0 {
@@ -337,7 +361,15 @@ func renderCFSInfoReply(raw map[string]any) string {
 	if len(rows) == 0 {
 		return "未查询到 CFS 共享文件存储。这个查询是只读操作，不会创建、扩容或删除 CFS。"
 	}
-	lines := []string{"CFS 共享文件存储（只读查询）："}
+	// No 「（只读查询）」 in the header and no mutation-policy trailer below. A CFS
+	// listing carried both on EVERY answer, so 「我有哪些 CFS」 returned two lines of
+	// standing policy around one line of data. No other listing in this package
+	// announces its own read-only-ness — the instance list, stock, images and zones
+	// all just answer — and the policy is not conditional on anything the user
+	// asked, so repeating it per turn trains the reader to skip the last line.
+	// Where it IS load-bearing (a price query that might be mistaken for an order)
+	// it stays, once, in that reply.
+	lines := []string{"CFS 共享文件存储："}
 	shown := 0
 	for _, rowAny := range rows {
 		if shown >= 10 {
@@ -358,11 +390,14 @@ func renderCFSInfoReply(raw map[string]any) string {
 		}
 		charge := stringField(row, "ChargeType")
 		if charge != "" {
-			charge = "，计费 " + charge
+			// Same vocabulary as the instance list: this used to print the raw wire
+			// enum, so one account's storage read "计费 Month" while its instances read
+			// 包月.
+			charge = "，计费 " + readprojection.ChargeTypeLabel(charge)
 		}
 		mountStatus := stringField(row, "MountStatus")
 		if mountStatus != "" {
-			mountStatus = "，挂载状态 " + mountStatus
+			mountStatus = "，" + cfsMountStatusLabel(mountStatus)
 		}
 		lines = append(lines, fmt.Sprintf("- %s（%s）%s%s%s", name, id, sizeText, charge, mountStatus))
 		shown++
@@ -370,7 +405,6 @@ func renderCFSInfoReply(raw map[string]any) string {
 	if len(rows) > shown {
 		lines = append(lines, fmt.Sprintf("仅展示前 %d 个；如需精确查询请提供 CFS ID。", shown))
 	}
-	lines = append(lines, "创建或扩容 CFS 需要走确认流程；删除/解绑能力不由 agent 暴露。")
 	return strings.Join(lines, "\n")
 }
 
@@ -383,7 +417,10 @@ func renderCFSCreatePriceReply(raw map[string]any, size int, zone string) string
 	if period == "" {
 		period = chargeType
 	}
-	return fmt.Sprintf("%s 创建 %dGB 云存储 Pro（CFS）的当前账号预估净报价：%s %s。上游接口不返回免费额度字段，不能从价格反推额度；询价不会创建资源，真正创建需要走确认流程。", zone, size, period, price)
+	// 「询价不会创建资源」 earns its place here — this is the one CFS reply a user
+	// could mistake for having placed an order. The 「真正创建需要走确认流程」 that
+	// followed it said the same thing a second time and is gone.
+	return fmt.Sprintf("%s 创建 %dGB 云存储 Pro（CFS）的当前账号预估净报价：%s %s。上游接口不返回免费额度字段，不能从价格反推额度；询价不会创建资源。", zone, size, period, price)
 }
 
 func renderCFSUpgradePriceReply(raw map[string]any, cfsID string, size int) string {

@@ -1013,6 +1013,20 @@ func (e *Engine) refreshRegistry(ctx context.Context, reason entity.RefreshReaso
 	return result, err
 }
 
+// syncRegistryFromDescribe adopts a full DescribeCompShareInstance listing that
+// a read capability already had to fetch. It exists because the HTTP/WS path
+// skips Init() — its registry is cold for the whole session, so the target
+// resolver's name warm-up would otherwise re-list on every name-addressed turn.
+// Best effort by design: a malformed payload leaves the previous snapshot alone
+// rather than recording a failed sync, since nothing here was a sync attempt the
+// session asked for.
+func (e *Engine) syncRegistryFromDescribe(raw map[string]any) {
+	if e == nil || e.registry == nil || raw == nil {
+		return
+	}
+	_ = e.registry.SyncFromDescribe(raw, string(entity.SyncEventSyncRefresh))
+}
+
 func (e *Engine) singleRegistryInstance() (id, name string) {
 	if e.registry == nil {
 		return "", ""

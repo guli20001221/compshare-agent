@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
@@ -25,11 +26,14 @@ func TestTruncateDescribeResultForReAct_NoTruncationUnderLimit(t *testing.T) {
 	assert.False(t, hasFlag, "Truncated flag should not be added when no truncation happens")
 }
 
-func TestTruncateDescribeResultForReAct_TruncatesAbove10AndKeepsRunning(t *testing.T) {
-	rows := make([]any, 0, 15)
-	for i := 0; i < 13; i++ {
+// Sized off the cap, not a literal: raising the cap must not silently turn this
+// into a no-truncation case that passes without exercising the priority rule.
+func TestTruncateDescribeResultForReAct_TruncatesAboveTheCapAndKeepsRunning(t *testing.T) {
+	total := readprojection.DefaultMaxInstancesPerDisplay + 5
+	rows := make([]any, 0, total)
+	for i := 0; i < total-2; i++ {
 		rows = append(rows, map[string]any{
-			"UHostId": "uhost-stopped-" + string(rune('a'+i)),
+			"UHostId": fmt.Sprintf("uhost-stopped-%02d", i),
 			"State":   "Stopped",
 		})
 	}
@@ -37,12 +41,12 @@ func TestTruncateDescribeResultForReAct_TruncatesAbove10AndKeepsRunning(t *testi
 		map[string]any{"UHostId": "uhost-running-1", "State": "Running", "StartTime": float64(100)},
 		map[string]any{"UHostId": "uhost-running-2", "State": "Running", "StartTime": float64(200)},
 	)
-	result := map[string]any{"UHostSet": rows, "TotalCount": float64(15)}
+	result := map[string]any{"UHostSet": rows, "TotalCount": float64(total)}
 
-	shown, total, truncated := truncateDescribeResultForReAct(nil, result)
+	shown, gotTotal, truncated := truncateDescribeResultForReAct(nil, result)
 	assert.True(t, truncated)
 	assert.Equal(t, readprojection.DefaultMaxInstancesPerDisplay, shown)
-	assert.Equal(t, 15, total)
+	assert.Equal(t, total, gotTotal)
 	assert.Equal(t, true, result["Truncated"])
 	assert.Equal(t, readprojection.DefaultMaxInstancesPerDisplay, result["Shown"])
 

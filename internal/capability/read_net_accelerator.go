@@ -38,11 +38,12 @@ type NetworkAcceleratorStatusResponse struct {
 
 func netAcceleratorReadSpec() ReadCapabilitySpec[NetworkAcceleratorStatusRequest, NetworkAcceleratorStatusResponse] {
 	return ReadCapabilitySpec[NetworkAcceleratorStatusRequest, NetworkAcceleratorStatusResponse]{
-		Label:       netAcceleratorCapabilityLabel,
-		Description: "查询当前账号各地域或可用区的网络加速状态。只读，不开启或关闭网络加速。",
-		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
-		Handle:      netAcceleratorHandle,
-		Render:      netAcceleratorRender,
+		Label:        netAcceleratorCapabilityLabel,
+		Description:  "查询当前账号各地域或可用区的网络加速状态。只读，不开启或关闭网络加速。",
+		Presentation: ReadPresentationRequired,
+		Params:       objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
+		Handle:       netAcceleratorHandle,
+		Render:       netAcceleratorRender,
 	}
 }
 
@@ -87,16 +88,38 @@ func renderNetAcceleratorStatusReply(raw map[string]any) (string, bool) {
 				parts = append(parts, fmt.Sprintf("%s %s", row.region, status))
 			}
 		}
-		return "网络加速状态：" + strings.Join(parts, "；") + "。这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。", false
+		anyDisabled := false
+		for _, row := range rows {
+			if !row.optimized {
+				anyDisabled = true
+			}
+		}
+		return "网络加速状态：" + strings.Join(parts, "；") + "。" + netAcceleratorBoundaryNote(anyDisabled), false
 	}
 	if optimized, ok := boolField(raw, "Optimized"); ok {
 		status := "未开通"
 		if optimized {
 			status = "已开通"
 		}
-		return "网络加速" + status + "。这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。", false
+		return "网络加速" + status + "。" + netAcceleratorBoundaryNote(!optimized), false
 	}
 	return "未获取到网络加速状态。这是只读状态查询，不会直接修改配置。", true
+}
+
+// netAcceleratorBoundaryNote states the read-only boundary, and offers the
+// 开通 path only when something is actually off.
+//
+// It used to be one fixed string, so a reply read 「网络加速已开通。……如需开通，我会走
+// 确认流程。」 — offering to turn on what the same sentence had just reported as on.
+// The user cannot tell whether the status or the offer is the mistake, so the
+// whole answer becomes untrustworthy. With several regions the offer is still
+// correct as long as ONE of them is off, which is why this takes a flag rather
+// than being deleted.
+func netAcceleratorBoundaryNote(anyDisabled bool) string {
+	if anyDisabled {
+		return "这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。"
+	}
+	return "这是只读状态查询，不会直接修改配置。"
 }
 
 type netAcceleratorRow struct {
