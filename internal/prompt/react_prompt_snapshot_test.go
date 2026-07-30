@@ -66,6 +66,37 @@ const (
 	// may only add candidates. A failed live read cannot be replaced by a
 	// knowledge-base candidate. Capability-specific parameter names stay in
 	// tool schemas rather than the shared prompt.
+	// 2026-07-30 (ATTEMPTED AND REVERTED, kept as the fourth and fifth warning):
+	// two edits were made and backed out. (a) 机型规格（显存、最大卡数、可选 CPU/内存
+	// 组合）added to the source-selection noun list, with its head noun changed
+	// 实时事实 → 平台事实; (b) the scope segment made to NAME the platform's own paid
+	// products (Coding Plan, 模型 API 套餐包). Neither changed behaviour, and the
+	// reason they could not is worth more than the edits were:
+	//
+	// The trigger was 「4090 的显存和最大卡数是多少」 answering 「最多 10 张卡」 5/5 while
+	// the live API returns 8 in all four zones (MachineSizes.Gpu=[1 2 4 8]). It was
+	// diagnosed as a source-selection failure — the model never called
+	// gpu_specs_query, which carries max_gpu_count=8 — hence a prompt rule naming
+	// specs. It was not a source-selection failure. stage2b_w0 chunk
+	// v2-resource_purchase-830490002fe09809 (source_origin official, confidence high)
+	// carries a GPU table whose 4090 row says 10, and the model read it correctly:
+	// it also got 4090_48G=8 right, which that same table says. The corpus is not
+	// stale either — compshare-docs HEAD
+	// (pages/gpus/instance/createcompshareinstance.md) still prints 10 today. The
+	// conflict is between the docs and the API, upstream of anything in this repo.
+	//
+	// So the prompt was being asked to arbitrate a fact conflict it cannot see. With
+	// the forced first hop ON the corpus answer always arrives before the model picks
+	// a tool, and whichever source arrives first wins — measured: hop ON, 0/10 turns
+	// called gpu_specs_query; hop OFF, 10/10 did and answered 8.
+	//
+	// Edit (b) failed its own test too: 「优云智算的 Coding Plan 套餐好贵」 searched 1/5
+	// with the names in place, against a 0/5 baseline and a ±10pp A/A floor. An
+	// earlier 3/3 on a different phrasing was noise, believed too early.
+	//
+	// Rule this leaves behind: before editing this prompt to make the model prefer a
+	// source, check whether the two sources actually disagree. If they do, no wording
+	// fixes it — the disagreement does.
 	mutatingReActPromptSHA256 = "e1c4caa53a07d07cde3d54f9c26a5b6733a11a693069fcabe09ff028adf2e7b2"
 	readOnlyReActPromptSHA256 = "87be136d91ad5002418ec45c283ae7e62d205be93afc6ae104a78fa90ad65bb0"
 )
