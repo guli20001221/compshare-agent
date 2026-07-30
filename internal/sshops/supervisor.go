@@ -27,6 +27,28 @@ type Supervisor struct {
 	GatewayURL  string        // ANTHROPIC_BASE_URL of the local claude-code-router gateway
 	Model       string        // third-party model id (e.g. deepseek-v4-flash)
 	Timeout     time.Duration // hard wall-clock per task; default 5m
+	// AllowWrites rides the same one-shot handshake as the credential, for the same reason: it is
+	// per-task state the harness must not be able to acquire any other way (no env var, no argv, no
+	// later message). The harness latches it together with the connection, so a command can never be
+	// classified under one gate and executed under another. Default false = the read-only lane.
+	AllowWrites bool
+}
+
+// ConfirmRequest is one pending write the harness will not run until a human answers. Command is
+// the LITERAL string it is about to execute — the card must show exactly what runs, or the approval
+// describes something else.
+type ConfirmRequest struct {
+	ID      string `json:"id"`
+	Command string `json:"command"`
+}
+
+// ConfirmFunc asks the operator about one write. It must block until answered, and must return
+// false for anything that is not an explicit yes (timeout, disconnect, decline).
+type ConfirmFunc func(ConfirmRequest) bool
+
+type confirmReply struct {
+	ID       string `json:"id"`
+	Approved bool   `json:"approved"`
 }
 
 // Result is what the supervisor returns to the engine. Output is the harness's scrubbed VERDICT body
@@ -81,7 +103,7 @@ func (s Supervisor) childEnv() []string {
 // consumed through the bounded line protocol; only the VERDICT body becomes Output. onStep, if
 // non-nil, fires once per command as its @@STEP line is parsed — the LIVE activity stream, metadata
 // only (INV-6). The same Steps are also returned in Result.Steps for the caller's tally/audit.
-func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onStep func(Step)) (Result, error) {
+func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
 	if s.HarnessPath == "" {
 		return Result{}, fmt.Errorf("sshops: no harness path configured")
 	}
@@ -114,18 +136,26 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onSte
 	cmd.WaitDelay = 5 * time.Second                         // bound the post-kill wait if a pipe lingers
 
 	handshake, err := json.Marshal(map[string]any{
-		"host":        cred.Host,
-		"user":        cred.User,
-		"port":        cred.Port,
-		"password":    cred.password, // plaintext -> stdin only, never logged/returned
-		"instance_id": cred.InstanceID,
-		"model":       s.Model,
-		"task":        task, // NL request -> stdin, off the host process table
+		"host":         cred.Host,
+		"user":         cred.User,
+		"port":         cred.Port,
+		"password":     cred.password, // plaintext -> stdin only, never logged/returned
+		"instance_id":  cred.InstanceID,
+		"model":        s.Model,
+		"task":         task, // NL request -> stdin, off the host process table
+		"allow_writes": s.AllowWrites,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: marshal handshake: %w", err)
 	}
-	cmd.Stdin = bytes.NewReader(append(handshake, '\n'))
+	// stdin stays OPEN for the whole run. It carried only the handshake before; now it is also the
+	// return path for per-command approvals, so it cannot be a one-shot reader. The credential is
+	// still the first and only secret on it, and nothing is ever read back from this direction — the
+	// harness talks on stdout, we answer on stdin, and the two never swap roles.
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return Result{}, fmt.Errorf("sshops: stdin pipe: %w", err)
+	}
 
 	// stdout carries the line protocol (@@STEP metadata + one VERDICT block); stderr carries the CLI's
 	// own chatter / a Python traceback, surfaced only on failure. Neither can carry the credential — it
@@ -141,11 +171,32 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onSte
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("sshops: start harness: %w", err)
 	}
+	if _, err := stdin.Write(append(handshake, '\n')); err != nil {
+		_ = killProcGroup(cmd)
+		return Result{}, fmt.Errorf("sshops: write handshake: %w", err)
+	}
+	// Closing stdin is what tells a harness blocked on an approval that no answer is coming; its
+	// readline returns EOF and it denies. So the close must happen on EVERY exit path from the
+	// stream loop, not only the happy one.
+	defer func() { _ = stdin.Close() }()
 
 	// Read stdout to EOF BEFORE Wait (Wait closes the pipe). On timeout/cancel the group is killed, the
 	// pipe reaches EOF, and this returns. onStep fires live as each @@STEP line arrives (the harness
 	// flushes per command), so the caller sees the activity stream during the run, not after it.
-	verdict, steps, parseErr := parseHarnessStream(stdout, onStep)
+	// answer serialises one approval round-trip: the parser is single-threaded, so a request is
+	// always fully answered before the next line is read.
+	answer := func(req ConfirmRequest) {
+		approved := false
+		if onConfirm != nil { // no confirmer wired is not "allow" — it is a lane with no human on it
+			approved = onConfirm(req)
+		}
+		reply, mErr := json.Marshal(confirmReply{ID: req.ID, Approved: approved})
+		if mErr != nil {
+			return // the harness blocks, then EOFs on the deferred close and denies
+		}
+		_, _ = stdin.Write(append(reply, '\n'))
+	}
+	verdict, steps, parseErr := parseHarnessStream(stdout, onStep, answer)
 	runErr := cmd.Wait()
 	_ = killProcGroup(cmd) // best-effort reap of any strays the SDK left in the group
 
@@ -186,7 +237,7 @@ const (
 //
 // onStep, if non-nil, is invoked once per parsed @@STEP as it is read (bounded by the same step cap),
 // so a caller can surface a live activity stream instead of waiting for the whole run to finish.
-func parseHarnessStream(r io.Reader, onStep func(Step)) (verdict string, steps []Step, err error) {
+func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRequest)) (verdict string, steps []Step, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxHarnessStepLine)
 	var total int
@@ -209,6 +260,17 @@ func parseHarnessStream(r io.Reader, onStep func(Step)) (verdict string, steps [
 				vb.WriteByte('\n')
 			}
 			vb.WriteString(line)
+		case strings.HasPrefix(line, "@@CONFIRM "):
+			// The harness is blocked until this is answered, so an unparseable request must still
+			// produce a reply — with an empty id, which the harness rejects and reads as a denial.
+			// Dropping it instead would hang the run until the wall-clock timeout.
+			var req ConfirmRequest
+			if json.Unmarshal([]byte(line[len("@@CONFIRM "):]), &req) != nil {
+				req = ConfirmRequest{}
+			}
+			if onConfirm != nil {
+				onConfirm(req)
+			}
 		case strings.HasPrefix(line, "@@STEP "):
 			if len(steps) >= maxHarnessSteps {
 				continue // cap the activity stream; the engine caps too (defense in depth)

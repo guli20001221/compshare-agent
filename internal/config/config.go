@@ -77,6 +77,13 @@ type SSHOpsConfig struct {
 	Python      string        `yaml:"python"`       // interpreter; empty = "python3"
 	Model       string        `yaml:"model"`        // third-party model id; empty = agent.llm.model
 	Timeout     time.Duration `yaml:"timeout"`      // hard per-task wall clock; empty = 5m
+	// AllowWrites lets the harness EXECUTE the mutating tier instead of refusing it, so the agent
+	// can repair the box rather than only describe the repair. Destructive commands (delete, wipe,
+	// reboot, account/ssh lockout) stay refused in both modes, as does command substitution — that
+	// shape gate is the injection firewall, not part of the read-only policy. Default off, and off
+	// is a different PRODUCT: the consent card, the tool description and the audit phase all change
+	// with it, because a write executed under a card that said "只读排查" is consent we did not get.
+	AllowWrites bool `yaml:"allow_writes"`
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).

@@ -37,19 +37,46 @@ const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-s
 // onStep fires once per command as it settles, so the caller can surface a LIVE activity stream
 // (command + disposition metadata only, never output — INV-6); it may be nil.
 type harnessRunner interface {
-	Run(ctx context.Context, cred Credential, task string, onStep func(Step)) (Result, error)
+	Run(ctx context.Context, cred Credential, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error)
 }
 
 type Service struct {
-	sup   harnessRunner
-	audit AuditWriter
+	sup         harnessRunner
+	audit       AuditWriter
+	allowWrites bool
+}
+
+// ServiceOption configures a Service at construction. Options exist so the write gate cannot be
+// flipped after the fact: nothing on Service mutates it, so every task a given Service runs is
+// recorded under the same phase it actually ran in.
+type ServiceOption func(*Service)
+
+// WithWrites records that this lane's harness may execute the mutating tier. It does NOT itself
+// authorize anything — Supervisor.AllowWrites is what the harness reads — but the two are set from
+// the same config field, and this one makes the audit row say which product ran.
+func WithWrites(allow bool) ServiceOption {
+	return func(s *Service) { s.allowWrites = allow }
 }
 
 // NewService wires a Service. sup is normally a sshops.Supervisor value. audit is REQUIRED: Diagnose
 // refuses to run (fail-closed) when it is nil, so an in-instance access can never happen unlogged.
 // Production passes store.SSHOpsAuditStore; tests pass MemAuditWriter.
-func NewService(sup harnessRunner, audit AuditWriter) *Service {
-	return &Service{sup: sup, audit: audit}
+func NewService(sup harnessRunner, audit AuditWriter, opts ...ServiceOption) *Service {
+	s := &Service{sup: sup, audit: audit}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// phaseFor names the authority the box was entered under. These two strings are the audit's only
+// vocabulary for it, and the read_write row is the record that a human consented to a repair — so
+// the mapping lives in one place rather than being spelled at the call site.
+func phaseFor(allowWrites bool) string {
+	if allowWrites {
+		return "read_write"
+	}
+	return "read_only"
 }
 
 // Diagnose runs ONE consented, read-only in-instance diagnosis. Consent MUST already be verified
@@ -57,7 +84,7 @@ func NewService(sup harnessRunner, audit AuditWriter) *Service {
 // record cannot be written, the harness does not run. onStep streams each command's metadata as it
 // settles (nil to opt out). The returned Result.Output is the harness's already-scrubbed verdict;
 // the credential never appears in it.
-func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instanceID, task string, onStep func(Step)) (Result, error) {
+func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instanceID, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
 	// Fail closed: an in-instance access we could not durably record must never happen. Refuse BEFORE
 	// the credential is fetched — no audit sink means no credential pull and no harness spawn. Production
 	// always wires a fail-closed AuditWriter (store.SSHOpsAuditStore); a nil audit is a construction /
@@ -89,7 +116,10 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		OrganizationID:    owner.OrganizationID,
 		InstanceID:        cred.InstanceID,
 		Task:              task,
-		Phase:             "read_only",
+		// The phase is what the box was ENTERED under, so it is taken from the lane's gate rather
+		// than from what the harness happened to run: a write-authorized session that ended up
+		// issuing only reads still entered under write authority, and the audit has to say so.
+		Phase: phaseFor(s.allowWrites),
 	}
 	auditID, err := s.audit.Begin(ctx, ev)
 	if err != nil {
@@ -98,7 +128,13 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		return Result{}, fmt.Errorf("sshops: audit begin failed, refusing to run (fail-closed): %w", err)
 	}
 
-	res, runErr := s.sup.Run(ctx, cred, task, onStep)
+	// A write lane with no confirmer is a lane no human is watching. Refuse before the credential is
+	// used rather than running with every write auto-denied: the run would burn its budget proposing
+	// repairs that can never be approved, and the user would read that as the model failing.
+	if s.allowWrites && onConfirm == nil {
+		return Result{}, fmt.Errorf("sshops: writes are enabled but no per-command confirmer was wired, refusing to run (fail-closed)")
+	}
+	res, runErr := s.sup.Run(ctx, cred, task, onStep, onConfirm)
 
 	done := ev
 	done.ExitCode, done.TimedOut, done.OutputBytes = res.ExitCode, res.TimedOut, len(res.Output)

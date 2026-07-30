@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/tools"
 )
 
 // maxInstanceOpsStepEvents caps the per-command activity events the engine emits
@@ -15,6 +16,11 @@ import (
 // runaway harness cannot flood the activity stream or the turn's DB writes. Beyond
 // the cap, per-command events stop; the terminal summary still reports the totals.
 const maxInstanceOpsStepEvents = 50
+
+// instanceOpsWriteAction names the per-command approval on the wire. It is deliberately NOT
+// DiagnoseInstanceInternals: that card authorizes entering the box, this one authorizes one
+// specific change, and a user who sees the same label twice cannot tell which they answered.
+const instanceOpsWriteAction = "InstanceOpsWriteCommand"
 
 // executeInstanceOps handles a DiagnoseInstanceInternals tool call: the read-only
 // in-instance diagnosis lane. It is dispatched from executeToolOnce BEFORE the
@@ -95,7 +101,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 				Type:    StepToolCall,
 				Action:  action,
 				Source:  observability.ToolSourceDiagnosisInternal,
-				Message: fmt.Sprintf("已连接到实例 %s，开始只读排查", instanceID),
+				Message: fmt.Sprintf("已连接到实例 %s，开始%s", instanceID, instanceOpsPhaseNoun()),
 			})
 		case InstanceOpsProgressCommand:
 			if commandsEmitted >= maxInstanceOpsStepEvents {
@@ -106,10 +112,25 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
+	// Per-command approval for writes. Reads are not gated: 20-45 of the commands in a real run are
+	// reads, and a card for each would train the user to click through without reading — which is
+	// worse than no card. Only the 1-3 that change the box stop and ask, and the card shows the
+	// literal command, because "may I change something" is not a question anyone can answer.
+	var confirmWrite func(string) bool
+	if tools.InstanceOpsWritesEnabled() {
+		confirmWrite = func(command string) bool {
+			return e.confirmFn(instanceOpsWriteAction, map[string]any{
+				"UHostId": instanceID,
+				"Command": command,
+			})
+		}
+	}
+
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
-		TurnID:     e.currentTurnID,
-		InstanceID: instanceID,
-		Task:       task,
+		TurnID:       e.currentTurnID,
+		InstanceID:   instanceID,
+		Task:         task,
+		ConfirmWrite: confirmWrite,
 	}, onProgress)
 	if err != nil {
 		// No SSH entrypoint (empty SshLoginCommand — e.g. a Windows instance): the box
@@ -171,7 +192,7 @@ func instanceOpsCommandStep(action string, p InstanceOpsProgress) StepEvent {
 		}
 	case "refused":
 		stepType = StepBlocked
-		msg = fmt.Sprintf("`%s` → 已拒绝：会修改实例环境（只读模式）", cmd)
+		msg = fmt.Sprintf("`%s` → 已拒绝：%s", cmd, instanceOpsRefusalReason())
 	default: // "failed" and any unexpected value → honest failure on the constant sink
 		stepType = StepBlocked
 		msg = fmt.Sprintf("`%s` → 执行失败", cmd)
@@ -205,4 +226,24 @@ func instanceOpsStateFromError(err error) string {
 		}
 	}
 	return "未知"
+}
+
+// instanceOpsPhaseNoun and instanceOpsRefusalReason keep the live activity stream truthful about
+// which product is running. Both read the same boot flag the tool description does, so the card the
+// user approved, the tool the model was offered, and the line it watches scroll all say one thing.
+func instanceOpsPhaseNoun() string {
+	if tools.InstanceOpsWritesEnabled() {
+		return "排查"
+	}
+	return "只读排查"
+}
+
+// A refusal in write mode is NOT "只读模式" — that wording sent the operator looking for a switch
+// that was already on. In write mode the only refusals left are the destructive tier and the shape
+// gate, so the reason has to name those instead.
+func instanceOpsRefusalReason() string {
+	if tools.InstanceOpsWritesEnabled() {
+		return "属于高危操作或命令形式不被接受"
+	}
+	return "会修改实例环境（只读模式）"
 }
