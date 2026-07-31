@@ -1,13 +1,19 @@
 # SSH-ops harness runtime dependencies — pin here so the prod pod reproduces a validated stack in an
-# isolated venv (NOT the system/anaconda Python). The lane's boot preflight (P2) refuses to construct
-# the Service unless these import cleanly, so a drifted/missing dep fails closed (tool never enters the
-# model window) rather than crashing mid-diagnosis.
+# isolated venv (NOT the system/anaconda Python).
 #
-# ⚠️ Any version change here MUST re-run, on the target host, BOTH:
-#     - the harness protocol smoke (real ccr -> Agent SDK -> model loop): smoke_harness_protocol.py
-#     - the reasoning-blind guardrails suite:                              python test_guardrails.py
-#   before the lane is enabled. The credential-bearing SSH transport rides paramiko, so its version is
-#   a security surface, not a convenience.
+# ⚠️ NOTHING here is checked at boot. This file used to claim a "boot preflight (P2)" that refuses to
+# construct the Service unless these import cleanly; there is no such preflight. buildSSHOpsService
+# validates exactly two fields — agent.ssh_ops.harness_path and gateway_url — and passes `python`
+# through unvalidated (empty falls back to the system python3, which has no claude_agent_sdk). A
+# missing or drifted dep therefore first appears as a FAILED USER-FACING DIAGNOSIS, after the user
+# has already approved the authorization card. Verify the venv on the target host by hand.
+#
+# ⚠️ Any version change here MUST re-run `python test_guardrails.py` on the target host before the
+# lane is enabled — the credential-bearing SSH transport rides paramiko, so its version is a security
+# surface, not a convenience. (This file also used to name a `smoke_harness_protocol.py`; no such
+# script exists. The six test_*.py suites here are OFFLINE — they never touch ccr, the Agent SDK or
+# SSH — so passing them says the guardrails are intact, NOT that the chain works. The only check that
+# covers the chain is a real run against a real box.)
 
 # The Claude Agent SDK that drives the agentic loop (built-in tools disabled via tools=[]; INV-9).
 # Exact-pinned: this is the version validated on 2026-07-23 (harness smoke + 265/265 guardrails).
