@@ -65,6 +65,37 @@ WHERE s.id = m.session_id
 	return nil
 }
 
+// UpdateAssistantMetadata sets messages.metadata on an assistant row, and only
+// that column.
+//
+// It is a separate statement from UpdateAssistant on purpose — see
+// AssistantMetadataStore. The reply and its ok status must already be durable
+// before this runs, so that a JSONB or serialization fault here can lose the
+// shadow transcript without ever endangering the conversation itself.
+//
+// Owner scoping mirrors UpdateAssistant; sql.ErrNoRows means nothing matched.
+func (s *MySQLMessageStore) UpdateAssistantMetadata(ctx context.Context, owner Owner, msgID string, metadata json.RawMessage) error {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE messages m
+SET metadata = $1
+FROM sessions s
+WHERE s.id = m.session_id
+  AND m.id = $2 AND m.role = 'assistant'
+  AND s.top_organization_id = $3 AND s.organization_id = $4 AND s.deleted_at IS NULL
+`, nullableJSON(metadata), msgID, owner.TopOrganizationID, owner.OrganizationID)
+	if err != nil {
+		return fmt.Errorf("update assistant metadata: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update assistant metadata rows affected: %w", err)
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // ListBySession returns messages for a session with cursor-based pagination.
 // Limit defaults to 50. Returns (messages, nextCursor, error).
 func (s *MySQLMessageStore) ListBySession(ctx context.Context, sessionID string, limit int, cursor string) ([]Message, string, error) {

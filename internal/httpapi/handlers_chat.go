@@ -548,7 +548,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens
-	_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
+	replyPersistErr := h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
 		store.AssistantPatch{
 			Content:      guardrails.RedactOutputLeak(reply),
 			Status:       "ok",
@@ -557,6 +557,12 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			TTFTMs:       &ttftMs,
 			LatencyMs:    &latencyMs,
 		})
+	// Shadow-persist the canonical tool transcript. Strictly after the reply is
+	// durable and strictly best-effort: this is a migration probe, and a turn
+	// must never be worse off for it. replyPersistErr keeps its historical
+	// ignored-error semantics on the main path; it is consulted only to avoid
+	// stamping metadata onto a row whose reply never landed.
+	h.shadowPersistTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
 	_ = sw.WriteEvent("done", doneEvent{
 		Content:   reply,
 		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},

@@ -1,0 +1,310 @@
+package engine
+
+import (
+	"encoding/json"
+
+	openai "github.com/sashabaranov/go-openai"
+)
+
+// Canonical turn transcript (schema agent_transcript_v1).
+//
+// This is the migration carrier for the shift away from "strip the tool
+// transcript, then rebuild the lost semantics from parallel state structures".
+// It records what the model ACTUALLY SAW for one user turn, in order, including
+// every assistant tool_call and its matching tool result — not a summary of the
+// results, and not the raw upstream API payload.
+//
+// Ordering and pairing are part of the contract: a stored transcript must be
+// replayable as well-formed chat messages, so an assistant message carrying
+// tool_calls is never separated from the tool messages that answer it. The
+// bounding pass below therefore sheds whole rounds, never half of one.
+//
+// This type is deliberately NOT the in-memory representation. It exists to
+// cross a persistence boundary, so it is versioned and additive-only: readers
+// must ignore unknown fields and refuse unknown major versions.
+const transcriptSchemaVersion = 1
+
+// Bounding limits. These are persistence limits, not prompt limits — the
+// projector that later feeds this back to the model applies its own budget.
+// They exist so one pathological turn cannot write an unbounded row.
+const (
+	// maxTranscriptMessageRunes caps a single message's content. Exceeding it
+	// truncates that message and sets Truncated + OrigRunes, so a reader can
+	// always tell a short result from a shortened one.
+	maxTranscriptMessageRunes = 6000
+	// maxTranscriptTotalRunes caps the sum across kept messages. Exceeding it
+	// drops whole oldest rounds and sets DroppedRounds.
+	maxTranscriptTotalRunes = 40000
+	// maxTranscriptBytes is the final guard on the serialized envelope, applied
+	// after the rune budgets. A transcript that cannot fit is not persisted at
+	// all rather than persisted corrupt.
+	maxTranscriptBytes = 262144
+)
+
+// TranscriptToolCall is one tool invocation requested by the model.
+type TranscriptToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// TranscriptMessage is one canonical chat message from a turn.
+type TranscriptMessage struct {
+	Role      string               `json:"role"`
+	Content   string               `json:"content,omitempty"`
+	ToolCalls []TranscriptToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID pairs a tool result back to its assistant tool_call.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	// Name is the tool name, correlated from the assistant tool_call. The wire
+	// format of a tool message does not carry it, but a reader needs it to
+	// project or inspect the transcript without re-walking the pairing.
+	Name string `json:"name,omitempty"`
+	// Truncated marks Content as shortened; OrigRunes is the pre-truncation
+	// length. Both absent means the content is verbatim.
+	Truncated bool `json:"truncated,omitempty"`
+	OrigRunes int  `json:"orig_runes,omitempty"`
+}
+
+// TranscriptV1 is the persisted envelope stored under
+// messages.metadata -> agent_transcript_v1 on the assistant row of a turn.
+type TranscriptV1 struct {
+	V        int                 `json:"v"`
+	Messages []TranscriptMessage `json:"messages"`
+	// DroppedRounds counts whole tool rounds shed to fit the budget. Non-zero
+	// means this transcript is incomplete at the FRONT (oldest rounds go first).
+	DroppedRounds int `json:"dropped_rounds,omitempty"`
+}
+
+// transcriptEnvelope is the metadata document written to messages.metadata.
+// It is a wrapper object rather than a bare transcript so other consumers can
+// later add sibling keys without a schema migration.
+type transcriptEnvelope struct {
+	Transcript *TranscriptV1 `json:"agent_transcript_v1,omitempty"`
+}
+
+// currentTurnStart returns the index of the message that begins the current
+// user turn, or -1 if there is none.
+//
+// This is the single definition of "where does this turn start". Both the model
+// history assembler and the persisted transcript call it, so the two can never
+// disagree about which messages belong to the turn — a drift that would make the
+// persisted transcript silently unlike what the model saw.
+func currentTurnStart(messages []openai.ChatCompletionMessage) int {
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role == openai.ChatMessageRoleUser {
+			return index
+		}
+	}
+	return -1
+}
+
+// buildTranscriptV1 converts the live turn slice into the persisted form.
+// It returns nil when the turn holds no tool round-trips: a plain
+// question/answer turn is already fully represented by the user and assistant
+// rows, so storing it again would be pure duplication.
+func buildTranscriptV1(messages []openai.ChatCompletionMessage) *TranscriptV1 {
+	start := currentTurnStart(messages)
+	if start < 0 {
+		return nil
+	}
+	turn := messages[start:]
+
+	hasToolTraffic := false
+	for _, msg := range turn {
+		if msg.Role == openai.ChatMessageRoleTool || len(msg.ToolCalls) > 0 {
+			hasToolTraffic = true
+			break
+		}
+	}
+	if !hasToolTraffic {
+		return nil
+	}
+
+	// Tool messages carry only a ToolCallID on the wire. Correlate the tool name
+	// from the assistant message that requested it so the stored result is
+	// self-describing.
+	nameByCallID := make(map[string]string, 4)
+	for _, msg := range turn {
+		for _, call := range msg.ToolCalls {
+			if call.ID != "" && call.Function.Name != "" {
+				nameByCallID[call.ID] = call.Function.Name
+			}
+		}
+	}
+
+	out := make([]TranscriptMessage, 0, len(turn))
+	for _, msg := range turn {
+		converted := TranscriptMessage{
+			Role:       string(msg.Role),
+			ToolCallID: msg.ToolCallID,
+		}
+		converted.Content, converted.Truncated, converted.OrigRunes = boundContent(msg.Content)
+		if msg.Role == openai.ChatMessageRoleTool {
+			converted.Name = nameByCallID[msg.ToolCallID]
+		}
+		for _, call := range msg.ToolCalls {
+			args, _, _ := boundContent(call.Function.Arguments)
+			converted.ToolCalls = append(converted.ToolCalls, TranscriptToolCall{
+				ID:        call.ID,
+				Name:      call.Function.Name,
+				Arguments: args,
+			})
+		}
+		out = append(out, converted)
+	}
+
+	transcript := &TranscriptV1{V: transcriptSchemaVersion, Messages: out}
+	shedRoundsToBudget(transcript)
+	return transcript
+}
+
+// boundContent truncates one message body, reporting whether it did and what
+// the original length was.
+func boundContent(content string) (string, bool, int) {
+	runes := []rune(content)
+	if len(runes) <= maxTranscriptMessageRunes {
+		return content, false, 0
+	}
+	return string(runes[:maxTranscriptMessageRunes]), true, len(runes)
+}
+
+// shedRoundsToBudget drops whole oldest tool rounds until the transcript fits
+// maxTranscriptTotalRunes.
+//
+// A "round" is one assistant message bearing tool_calls plus every tool message
+// answering it. Rounds are the shedding unit because a stored transcript must
+// stay replayable: an assistant tool_call without its tool result — or a tool
+// result whose call is gone — is not a well-formed message list. The leading
+// user message and the trailing final assistant message are never shed; they are
+// the turn's question and answer, and they are also what the messages table
+// already holds, so dropping them would make the transcript disagree with its
+// own row.
+func shedRoundsToBudget(transcript *TranscriptV1) {
+	if transcript == nil {
+		return
+	}
+	for transcriptRunes(transcript.Messages) > maxTranscriptTotalRunes {
+		roundStart, roundEnd := firstToolRound(transcript.Messages)
+		if roundStart < 0 {
+			return
+		}
+		transcript.Messages = append(
+			append([]TranscriptMessage{}, transcript.Messages[:roundStart]...),
+			transcript.Messages[roundEnd:]...,
+		)
+		transcript.DroppedRounds++
+	}
+}
+
+// firstToolRound returns the [start, end) span of the earliest assistant
+// tool_call message and the tool results that answer it, or (-1, -1) when the
+// transcript holds no complete round left to shed.
+func firstToolRound(messages []TranscriptMessage) (int, int) {
+	for i, msg := range messages {
+		if len(msg.ToolCalls) == 0 {
+			continue
+		}
+		end := i + 1
+		for end < len(messages) && messages[end].Role == openai.ChatMessageRoleTool {
+			end++
+		}
+		return i, end
+	}
+	return -1, -1
+}
+
+func transcriptRunes(messages []TranscriptMessage) int {
+	total := 0
+	for _, msg := range messages {
+		total += len([]rune(msg.Content))
+		for _, call := range msg.ToolCalls {
+			total += len([]rune(call.Arguments)) + len([]rune(call.Name))
+		}
+	}
+	return total
+}
+
+// marshalTranscriptMetadata serializes the envelope for the metadata column.
+// It returns nil (not an error) when there is nothing worth storing, and an
+// error only when the result would exceed maxTranscriptBytes even after rune
+// budgeting — persisting a truncated JSON document is never acceptable, so the
+// caller drops the write and records it instead.
+func marshalTranscriptMetadata(transcript *TranscriptV1) (json.RawMessage, error) {
+	if transcript == nil || len(transcript.Messages) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(transcriptEnvelope{Transcript: transcript})
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxTranscriptBytes {
+		return nil, errTranscriptOversized
+	}
+	return raw, nil
+}
+
+type transcriptError string
+
+func (e transcriptError) Error() string { return string(e) }
+
+// errTranscriptOversized reports a transcript that could not be bounded to the
+// byte guard. It is a metric, not a turn failure.
+const errTranscriptOversized = transcriptError("canonical transcript exceeds byte budget")
+
+// TranscriptStats is the per-turn shadow-write outcome, surfaced so a rollout
+// can tell "nothing to store" apart from "tried and failed".
+type TranscriptStats struct {
+	Attempted bool
+	Bytes     int
+	Messages  int
+	Dropped   int
+	Oversized bool
+	Invalid   bool
+}
+
+// LastTurnTranscript returns the canonical transcript captured at the end of the
+// most recent turn, along with its stats. A nil payload means the turn had no
+// tool traffic worth persisting, or that bounding rejected it — Stats says which.
+//
+// The engine only PRODUCES this. It is not read back into model context: while
+// the projector is unbuilt, the transcript is a shadow record whose only job is
+// to prove hot and cold rebuilds agree. Wiring it into the prompt is a separate,
+// explicitly gated change.
+// The nil receiver is answered rather than panicking: callers reach this
+// through an interface, where a nil *Engine is not a nil interface.
+func (e *Engine) LastTurnTranscript() (json.RawMessage, TranscriptStats) {
+	if e == nil {
+		return nil, TranscriptStats{}
+	}
+	return e.lastTurnTranscript, e.lastTurnTranscriptStats
+}
+
+// captureTurnTranscript records the just-finished turn's canonical transcript.
+// It runs on every exit path from a turn, including errors, because a turn that
+// failed after three tool calls is exactly the turn whose transcript is worth
+// keeping.
+func (e *Engine) captureTurnTranscript() {
+	e.lastTurnTranscript = nil
+	e.lastTurnTranscriptStats = TranscriptStats{}
+
+	transcript := buildTranscriptV1(e.messages)
+	if transcript == nil {
+		return
+	}
+	stats := TranscriptStats{
+		Attempted: true,
+		Messages:  len(transcript.Messages),
+		Dropped:   transcript.DroppedRounds,
+	}
+	raw, err := marshalTranscriptMetadata(transcript)
+	switch {
+	case err == errTranscriptOversized:
+		stats.Oversized = true
+	case err != nil:
+		stats.Invalid = true
+	default:
+		stats.Bytes = len(raw)
+		e.lastTurnTranscript = raw
+	}
+	e.lastTurnTranscriptStats = stats
+}

@@ -391,6 +391,12 @@ type Engine struct {
 	currentMonitorWindow               bool                           // true when currentMonitorStart/End are known
 	pendingResourceSelection           *pendingResourceSelection
 	displayedResourceSelectionThisTurn *pendingResourceSelection
+	// lastTurnTranscript holds the canonical agent_transcript_v1 document for
+	// the turn that just finished, for shadow persistence only. It is produced
+	// on every turn and read back into model context by nothing — see
+	// canonical_transcript.go for why that separation is deliberate.
+	lastTurnTranscript      json.RawMessage
+	lastTurnTranscriptStats TranscriptStats
 	// supportsObjectToolChoice gates force-tool guards
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -1273,6 +1279,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// text) and cleared on return so it never bleeds into the next turn.
 	e.currentTurnID = turnID
 	defer func() { e.currentTurnID = "" }()
+	// Capture the canonical transcript on EVERY exit path, errors included: a
+	// turn that died after three tool calls is precisely the one whose
+	// transcript is worth keeping. Runs before trimHistoryWithContext strips the
+	// tool messages at the start of the next turn.
+	defer e.captureTurnTranscript()
 	e.resetTurnCompletion()
 	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
 		e.turnModelCallsThisTurn++
@@ -4867,14 +4878,9 @@ func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view Agen
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: pair.Assistant},
 		)
 	}
-	currentStart := -1
-	for index := len(messages) - 1; index >= 0; index-- {
-		if messages[index].Role == openai.ChatMessageRoleUser {
-			currentStart = index
-			break
-		}
-	}
-	if currentStart >= 0 {
+	// Shared with the persisted canonical transcript so the stored record and
+	// the model's view can never disagree about the turn boundary.
+	if currentStart := currentTurnStart(messages); currentStart >= 0 {
 		out = append(out, messages[currentStart:]...)
 	}
 	return out

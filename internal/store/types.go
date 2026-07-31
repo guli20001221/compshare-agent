@@ -110,6 +110,28 @@ type MessageStore interface {
 	GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error)
 }
 
+// AssistantMetadataStore is the shadow-write contract for the canonical agent
+// transcript (messages.metadata -> agent_transcript_v1).
+//
+// It is deliberately a SEPARATE optional interface rather than a method on
+// MessageStore, for the same reason CommittedTailMessageStore is: a store that
+// does not implement it must degrade to writing nothing, not fail to compile
+// and not fail a turn. Callers type-assert and skip when absent.
+//
+// The separation is also the safety property. The assistant reply is persisted
+// by UpdateAssistant, whose error the chat path deliberately ignores; folding
+// metadata into that same statement would let a serialization or JSONB fault
+// take the reply and its ok status down with it, silently. This write is
+// therefore its own statement, issued only after the reply is already durable,
+// and its failure is a metric rather than a turn outcome.
+type AssistantMetadataStore interface {
+	// UpdateAssistantMetadata sets messages.metadata on an assistant row.
+	// Owner-scoped. Returns sql.ErrNoRows when no row matched so a caller can
+	// count "wrote nothing" separately from "wrote successfully"; that is a
+	// metric, never a turn failure.
+	UpdateAssistantMetadata(ctx context.Context, owner Owner, msgID string, metadata json.RawMessage) error
+}
+
 // CommittedTailMessageStore is the history contract used by the durable turn
 // protocol. It is intentionally separate from MessageStore so legacy/test
 // stores do not silently inherit unsafe head-page semantics. Implementations

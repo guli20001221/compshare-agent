@@ -466,6 +466,14 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// another tenant's instance had just been created for them — a leak of an
 		// id plus a false claim about their own account, in one line.
 		"committedWriteRepliesThisTurn": true,
+		// The canonical transcript of the turn that just finished, held for the
+		// shadow write. It carries one tenant's tool arguments and tool results
+		// verbatim, so a shared field would persist tenant A's instance ids and
+		// diagnosis output onto tenant B's assistant row — precisely the leak
+		// this test exists to prevent. Its stats sibling is classified with it so
+		// the two cannot drift apart. Both are rewritten at every turn exit.
+		"lastTurnTranscript":      true,
+		"lastTurnTranscriptStats": true,
 	}
 
 	if want, got := 7, len(sharedFields); want != got {
@@ -496,12 +504,17 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// being reported to the user as "未创建成功".
 	// 90 -> 91 / 97 -> 98: knowledgeOnlyThisTurn is the execution-time
 	// authorization reduction for public chat adapters.
-	if want, got := 91, len(perSessionFields); want != got {
+	// 91 -> 93 / 98 -> 100: lastTurnTranscript + lastTurnTranscriptStats, the
+	// canonical agent_transcript_v1 record produced at every turn exit for the
+	// shadow write. Two fields, one lane — the payload and the outcome that says
+	// whether it was written, kept together so a rollout cannot read one without
+	// the other.
+	if want, got := 93, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 98, typ.NumField(); want != got {
+	if want, got := 100, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
