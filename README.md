@@ -47,21 +47,14 @@ postgresql://user:pass@host:5432/compshare_agent?sslmode=disable
 
 ## 实例内排查（SSH-ops）
 
-可选功能，**默认关闭**：用户在授权卡上同意后，助手 SSH 进他自己的实例执行只读命令定位问题。
-再单独打开 `allow_writes`（也默认关）它才会动手修复并验证；删除数据、格式化、重启关机、改账号密码、
-关 SSH/网络这类高危操作两种模式都拒绝。
+用户在授权卡上同意后，助手 SSH 进他自己的实例执行命令定位问题，再动手修复并验证，每条改动命令
+单独弹一次授权卡；删除数据、格式化、重启关机、改账号密码、关 SSH/网络这类高危操作一律拒绝。
 
-**比其他功能多一套部署工作**，因为诊断循环是跑在 Claude Agent SDK 里的独立子进程，不在本二进制内：
+**比其他功能多一套部署工作**：诊断循环跑在 Claude Agent SDK 的独立子进程里，不在本二进制内，
+所以机器上还要有一个装了 `deploy/ssh_ops_harness/requirements.txt` 的 Python venv、`claude` CLI、
+常驻的 claude-code-router，以及一条数据库迁移。`agent.ssh_ops` 下有三个字段要按机器填。
 
-- 一个装好 `deploy/ssh_ops_harness/requirements.txt` 的 **Python venv**（系统 `python3` 没有 `claude_agent_sdk`）
-- **`claude` CLI**（Agent SDK 驱动它跑循环）
-- **claude-code-router 常驻进程**：harness 说 Anthropic 协议、模型服务说 OpenAI 协议，靠它翻译。
-  它的 provider 与密钥在 `~/.claude-code-router/config.json`，是 `config.yaml` **之外**的部署件
-- 一条数据库迁移（审计 fail-closed：写不进审计就不进用户机器）
-
-⚠️ 这些依赖**缺了不会在启动时报错**，要到第一次真实诊断才暴露。上线后手动跑一次确认。
-
-部署步骤、字段填写分工和排错见 [`deploy/ssh_ops_harness/README.md`](deploy/ssh_ops_harness/README.md)。
+部署步骤与排错见 [`deploy/ssh_ops_harness/README.md`](deploy/ssh_ops_harness/README.md)。
 
 ## 测试
 
