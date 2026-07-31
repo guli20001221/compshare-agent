@@ -404,6 +404,11 @@ type Engine struct {
 	// canonical_transcript.go for why that separation is deliberate.
 	lastTurnTranscript      json.RawMessage
 	lastTurnTranscriptStats TranscriptStats
+	// recentTurns is the cross-turn memory the canonical transcript replaces the
+	// stripped history with: one record per completed exchange, appended by the
+	// hot engine at turn exit and by a cold rebuild from the persisted rows, so
+	// the two agree by construction. Bounded to maxAgentContextPairs.
+	recentTurns []recordedTurn
 	// supportsObjectToolChoice gates force-tool guards
 	// from sending object tool_choice on models that don't support it (notably
 	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
@@ -1117,13 +1122,27 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	e.baseUserContext = ""
 	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
+	e.recentTurns = nil
+	pendingUser := ""
 	for _, msg := range msgs {
 		if msg.Content == "" {
 			continue
 		}
 		switch msg.Role {
-		case openai.ChatMessageRoleUser, openai.ChatMessageRoleAssistant:
+		case openai.ChatMessageRoleUser:
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
+			pendingUser = msg.Content
+		case openai.ChatMessageRoleAssistant:
+			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
+			// Rebuild the same recordedTurn the hot engine appended when this
+			// row was written. A row with no stored transcript yields a record
+			// with a nil one, which is exactly what a tool-free turn produced.
+			e.recordTurn(recordedTurn{
+				User:       pendingUser,
+				Assistant:  msg.Content,
+				Transcript: ParseTranscriptMetadata(msg.Transcript),
+			})
+			pendingUser = ""
 		}
 	}
 }
@@ -4878,6 +4897,13 @@ func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view Agen
 	}
 	for _, pair := range view.RecentConversation {
 		if pair.User == "" || pair.Assistant == "" {
+			continue
+		}
+		// The transcript, when present, already opens with the user question and
+		// closes with the final answer — it IS the exchange, recorded verbatim.
+		// Emitting the plain pair as well would send the question twice.
+		if len(pair.Transcript) > 0 {
+			out = append(out, pair.Transcript...)
 			continue
 		}
 		out = append(out,

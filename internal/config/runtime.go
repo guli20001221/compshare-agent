@@ -33,6 +33,7 @@ type FeaturesConfig struct {
 	ExternalKnowledge      *bool `yaml:"external_knowledge"`       // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
 	DomainMatchGuard       *bool `yaml:"domain_match_guard"`       // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
 	ForcedKnowledgeHop     *bool `yaml:"forced_knowledge_hop"`     // COMPSHARE_FORCED_KNOWLEDGE_HOP (Go default off; deploy on)
+	CanonicalTranscript    *bool `yaml:"canonical_transcript"`     // COMPSHARE_CANONICAL_TRANSCRIPT (default off everywhere)
 	SessionFactContext     *bool `yaml:"session_fact_context"`     // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
 	ReactResultProjection  *bool `yaml:"react_result_projection"`  // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
 	ReactHistoryCompaction *bool `yaml:"react_history_compaction"` // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
@@ -62,9 +63,9 @@ type RetrievalConfig struct {
 	// stack can be authorized under different ModelVerse keys (e.g. a gpt-5.6-terra
 	// answer key is NOT authorized for qwen3-embedding-8b / qwen3-reranker-8b).
 	// Empty = inherit agent.llm.api_key (single-key mode).
-	APIKey                 string `yaml:"api_key"`                  // MODELVERSE_API_KEY (embed/rerank; empty = inherit agent.llm.api_key)
-	HybridTimeoutMS        int    `yaml:"hybrid_timeout_ms"`        // RAG_HYBRID_TIMEOUT_MS
-	RerankerTimeoutMS      int    `yaml:"reranker_timeout_ms"`      // RAG_RERANKER_TIMEOUT_MS
+	APIKey            string `yaml:"api_key"`             // MODELVERSE_API_KEY (embed/rerank; empty = inherit agent.llm.api_key)
+	HybridTimeoutMS   int    `yaml:"hybrid_timeout_ms"`   // RAG_HYBRID_TIMEOUT_MS
+	RerankerTimeoutMS int    `yaml:"reranker_timeout_ms"` // RAG_RERANKER_TIMEOUT_MS
 }
 
 // TraceConfig holds the per-turn JSONL/DB trace sink settings.
@@ -108,6 +109,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "USE_REACT_HISTORY_COMPACTION", f.ReactHistoryCompaction, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_FORCED_KNOWLEDGE_HOP", f.ForcedKnowledgeHop, "1", "0")
+	putBoolEnv(overrides, "COMPSHARE_CANONICAL_TRANSCRIPT", f.CanonicalTranscript, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE", f.ExternalKnowledge, "1", "0")
 	if len(f.SkillExecutorDiagnosisPilots) > 0 {
 		overrides["USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"] = strings.Join(f.SkillExecutorDiagnosisPilots, ",")

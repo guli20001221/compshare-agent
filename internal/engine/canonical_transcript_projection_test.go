@@ -1,0 +1,182 @@
+package engine
+
+import (
+	"reflect"
+	"testing"
+
+	openai "github.com/sashabaranov/go-openai"
+)
+
+func withCanonicalTranscript(t *testing.T, enabled bool) {
+	t.Helper()
+	prev := canonicalTranscriptEnabled
+	canonicalTranscriptEnabled = enabled
+	t.Cleanup(func() { canonicalTranscriptEnabled = prev })
+}
+
+// finishTurn runs a completed turn through the engine's capture path, the same
+// way ChatWithOptions' deferred hook does.
+func finishTurn(e *Engine, turn []openai.ChatCompletionMessage) {
+	e.messages = append(e.messages, turn...)
+	e.captureTurnTranscript()
+	e.messages = stripHistoricalToolTranscript(e.messages)
+}
+
+// The flag is the whole safety story for this change. With it off, nothing the
+// model reads may differ by a single byte.
+func TestFlagOffLeavesModelHistoryByteIdentical(t *testing.T) {
+	build := func(enabled bool) []openai.ChatCompletionMessage {
+		withCanonicalTranscript(t, enabled)
+		e := &Engine{messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "sys"}}}
+		finishTurn(e, hotTurn())
+		e.messages = append(e.messages, userMsg("下一轮"))
+		pairs := e.recentCompleteConversationPairs(maxAgentContextPairs)
+		return messagesFromAgentContext(e.messages, AgentContext{RecentConversation: pairs}, true)
+	}
+
+	off := build(false)
+	for _, msg := range off {
+		if msg.Role == openai.ChatMessageRoleTool || len(msg.ToolCalls) > 0 {
+			t.Fatalf("flag off must not replay tool traffic: %#v", msg)
+		}
+	}
+
+	if on := build(true); reflect.DeepEqual(on, off) {
+		t.Fatal("flag on produced identical history — the projection is not wired")
+	}
+}
+
+// The payoff: with the flag on, the next turn sees what the previous turn
+// actually did, not a prose summary of it.
+func TestPriorTurnToolTrafficReachesTheModel(t *testing.T) {
+	withCanonicalTranscript(t, true)
+	e := &Engine{messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "sys"}}}
+	finishTurn(e, hotTurn())
+	// Turn two begins. This is the whole question: does the next turn see what
+	// the previous one actually did?
+	e.messages = append(e.messages, userMsg("那再帮我看看磁盘"))
+
+	pairs := e.recentCompleteConversationPairs(maxAgentContextPairs)
+	assembled := messagesFromAgentContext(e.messages, AgentContext{RecentConversation: pairs}, true)
+
+	var sawCall, sawResult bool
+	for _, msg := range assembled {
+		for _, one := range msg.ToolCalls {
+			if one.Function.Name == "DiagnoseInstanceInternals" {
+				sawCall = true
+			}
+		}
+		if msg.Role == openai.ChatMessageRoleTool && msg.Content == "nvidia-smi 正常，驱动 570.169" {
+			sawResult = true
+		}
+	}
+	if !sawCall || !sawResult {
+		t.Fatalf("prior turn's tool call/result missing (call=%v result=%v)", sawCall, sawResult)
+	}
+
+	// The question must appear exactly once. The transcript already opens with
+	// it, so also emitting the plain pair would send it twice — and a model
+	// reading the same question twice has been told it was asked twice.
+	question := hotTurn()[0].Content
+	count := 0
+	for _, msg := range assembled {
+		if msg.Role == openai.ChatMessageRoleUser && msg.Content == question {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("question replayed %d times, want exactly 1", count)
+	}
+}
+
+// A hot engine and a cold rebuild of the same session must give the model the
+// same history. This is the claim the whole migration rests on, asserted across
+// a turn boundary rather than within one turn.
+func TestHotAndColdAgreeOnReplayedHistory(t *testing.T) {
+	withCanonicalTranscript(t, true)
+
+	hot := &Engine{messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "sys"}}}
+	finishTurn(hot, hotTurn())
+	persisted, _ := hot.LastTurnTranscript()
+	if persisted == nil {
+		t.Fatal("turn produced nothing to persist")
+	}
+
+	cold := &Engine{}
+	cold.RehydrateHistory([]HistoryMessage{
+		{Role: openai.ChatMessageRoleUser, Content: hotTurn()[0].Content},
+		{Role: openai.ChatMessageRoleAssistant, Content: "没有掉卡。", Transcript: persisted},
+	})
+
+	hotPairs := hot.recentCompleteConversationPairs(maxAgentContextPairs)
+	coldPairs := cold.recentCompleteConversationPairs(maxAgentContextPairs)
+	if !reflect.DeepEqual(hotPairs, coldPairs) {
+		t.Fatalf("hot/cold replayed history diverged\n hot: %#v\ncold: %#v", hotPairs, coldPairs)
+	}
+	if len(hotPairs) != 1 || len(hotPairs[0].Transcript) == 0 {
+		t.Fatalf("expected one exchange carrying a transcript, got %#v", hotPairs)
+	}
+}
+
+// Attaching one turn's tool results to a different turn's answer would be
+// invisible and would tell the model a diagnosis belonged to an instance it was
+// never run against. Matching is by content for exactly that reason.
+func TestTranscriptsAreNotAttachedToTheWrongExchange(t *testing.T) {
+	withCanonicalTranscript(t, true)
+	turnA := &TranscriptV1{V: 1, Messages: []TranscriptMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "问题 A"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []TranscriptToolCall{{ID: "c1", Name: "T"}}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: "A 的证据"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "答案 A"},
+	}}
+	e := &Engine{recentTurns: []recordedTurn{
+		{User: "问题 A", Assistant: "答案 A", Transcript: turnA},
+	}}
+
+	attached := e.attachRecordedTranscripts([]ConversationPair{
+		{User: "问题 B", Assistant: "答案 B"},
+	})
+	if len(attached[0].Transcript) != 0 {
+		t.Fatalf("attached turn A's evidence to turn B: %#v", attached[0].Transcript)
+	}
+
+	// The matching exchange still gets its own.
+	attached = e.attachRecordedTranscripts([]ConversationPair{{User: "问题 A", Assistant: "答案 A"}})
+	if len(attached[0].Transcript) == 0 {
+		t.Fatal("matching exchange lost its transcript")
+	}
+}
+
+// The replay budget exists to bound history. Once tool traffic is part of
+// history, a budget that ignores it bounds only the part that did not grow.
+func TestReplayBudgetChargesForToolTraffic(t *testing.T) {
+	big := make([]rune, maxReplayedHistoryRunes)
+	for i := range big {
+		big[i] = '据'
+	}
+	heavy := ConversationPair{
+		User:      "q",
+		Assistant: "a",
+		Transcript: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleTool, Content: string(big), ToolCallID: "c1"},
+		},
+	}
+	if got := conversationTranscriptRunes(heavy); got != maxReplayedHistoryRunes {
+		t.Fatalf("transcript cost = %d, want %d", got, maxReplayedHistoryRunes)
+	}
+
+	kept := budgetReplayedPairs([]ConversationPair{
+		{User: "old q", Assistant: "old a"},
+		heavy,
+		{User: "new q", Assistant: "new a"},
+	}, maxReplayedHistoryRunes)
+
+	// The heavy exchange alone exhausts the budget, so the older one must be
+	// shed. If the transcript were uncharged, all three would survive.
+	if len(kept) == 3 {
+		t.Fatal("tool traffic escaped the replay budget")
+	}
+	if kept[len(kept)-1].User != "new q" {
+		t.Fatalf("newest exchange was shed: %#v", kept)
+	}
+}

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -337,6 +338,61 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 	return out
 }
 
+// canonicalTranscriptEnabled gates whether the recorded transcript reaches the
+// model. Boot-frozen like every other behavior flag here; the Go-package default
+// is off so the whole existing test suite keeps exercising the current path.
+//
+// Producing and persisting the transcript is NOT gated — that is a shadow write
+// with no model-visible effect, and gating it would mean the flag-on rollout
+// starts with no history to project.
+var canonicalTranscriptEnabled bool
+
+// SetCanonicalTranscriptEnabled freezes the projection setting at boot.
+func SetCanonicalTranscriptEnabled(enabled bool) { canonicalTranscriptEnabled = enabled }
+
+// CanonicalTranscriptEnabled reports the frozen setting.
+func CanonicalTranscriptEnabled() bool { return canonicalTranscriptEnabled }
+
+// recordedTurn is one completed exchange plus the tool work that produced it.
+//
+// This is the single place a turn's cross-turn memory lives, and it exists
+// because the two rebuild paths must agree by construction rather than by
+// coincidence: the hot engine appends one at every turn exit, a cold rebuild
+// appends one per persisted row, and both feed the same projector. Deriving the
+// hot side from e.messages instead would have meant reading a list the strip
+// pass has already emptied, and aligning it to the cold side positionally.
+type recordedTurn struct {
+	User       string
+	Assistant  string
+	Transcript *TranscriptV1
+}
+
+// recordTurn appends a completed exchange, keeping only the newest
+// maxAgentContextPairs — the same window the replayed conversation uses, so the
+// transcript can never outlive the exchange it belongs to.
+func (e *Engine) recordTurn(turn recordedTurn) {
+	if strings.TrimSpace(turn.User) == "" || strings.TrimSpace(turn.Assistant) == "" {
+		return
+	}
+	e.recentTurns = append(e.recentTurns, turn)
+	if len(e.recentTurns) > maxAgentContextPairs {
+		e.recentTurns = e.recentTurns[len(e.recentTurns)-maxAgentContextPairs:]
+	}
+}
+
+// turnEndpoints returns the user question and final assistant answer of a turn
+// slice, or empty strings when it is not a complete exchange.
+func turnEndpoints(turn []openai.ChatCompletionMessage) (string, string) {
+	if len(turn) == 0 || turn[0].Role != openai.ChatMessageRoleUser {
+		return "", ""
+	}
+	last := turn[len(turn)-1]
+	if last.Role != openai.ChatMessageRoleAssistant || len(last.ToolCalls) > 0 {
+		return "", ""
+	}
+	return turn[0].Content, last.Content
+}
+
 // TranscriptStats is the per-turn shadow-write outcome, surfaced so a rollout
 // can tell "nothing to store" apart from "tried and failed".
 type TranscriptStats struct {
@@ -374,6 +430,17 @@ func (e *Engine) captureTurnTranscript() {
 	e.lastTurnTranscriptStats = TranscriptStats{}
 
 	transcript := buildTranscriptV1(e.messages)
+
+	// Record the exchange whether or not it had tool traffic. A turn that only
+	// answered a question is still a turn the next one may refer to, and the
+	// recorded window has to hold the same exchanges the replayed conversation
+	// does or the two would disagree about what "the last five turns" means.
+	if start := currentTurnStart(e.messages); start >= 0 {
+		if user, assistant := turnEndpoints(e.messages[start:]); user != "" {
+			e.recordTurn(recordedTurn{User: user, Assistant: assistant, Transcript: transcript})
+		}
+	}
+
 	if transcript == nil {
 		return
 	}

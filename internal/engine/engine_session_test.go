@@ -474,6 +474,13 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the two cannot drift apart. Both are rewritten at every turn exit.
 		"lastTurnTranscript":      true,
 		"lastTurnTranscriptStats": true,
+		// The cross-turn memory the canonical transcript replaces stripped
+		// history with. It holds prior turns' tool arguments and results
+		// verbatim and is replayed into the prompt, so a shared field would put
+		// one tenant's instance ids and diagnosis output into another tenant's
+		// context window — the same leak as its two siblings above, but on the
+		// path the model actually reads.
+		"recentTurns": true,
 	}
 
 	if want, got := 7, len(sharedFields); want != got {
@@ -509,12 +516,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// shadow write. Two fields, one lane — the payload and the outcome that says
 	// whether it was written, kept together so a rollout cannot read one without
 	// the other.
-	if want, got := 93, len(perSessionFields); want != got {
+	// 93 -> 94 / 100 -> 101: recentTurns, the recorded exchanges the canonical
+	// transcript is replayed from. Appended by the hot engine at turn exit and by
+	// a cold rebuild from the persisted rows, so both agree by construction.
+	if want, got := 94, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 100, typ.NumField(); want != got {
+	if want, got := 101, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

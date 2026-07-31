@@ -16,6 +16,10 @@ import (
 type ConversationPair struct {
 	User      string
 	Assistant string
+	// Transcript is the tool work that produced Assistant, projected back to
+	// well-formed chat messages. Populated only when the canonical transcript is
+	// enabled; nil for tool-free turns and for rows written before it existed.
+	Transcript []openai.ChatCompletionMessage
 }
 
 // ToolObservationView is the bounded semantic projection of a prior tool
@@ -186,7 +190,37 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 	if limit > 0 && len(pairs) > limit {
 		pairs = pairs[len(pairs)-limit:]
 	}
+	pairs = e.attachRecordedTranscripts(pairs)
 	return budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
+}
+
+// attachRecordedTranscripts pairs each replayed exchange with the tool work
+// that produced it.
+//
+// Matching is by content, not by position: the pair list is derived from
+// e.messages and the record list from turn exits, and while they normally track
+// each other, a mismatch must degrade to "no transcript" rather than to
+// attaching one turn's tool results to a different turn's answer. That failure
+// would be invisible and would tell the model a diagnosis belonged to an
+// instance it was never run against.
+func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []ConversationPair {
+	if !canonicalTranscriptEnabled || e == nil || len(e.recentTurns) == 0 {
+		return pairs
+	}
+	for i := range pairs {
+		for _, record := range e.recentTurns {
+			if record.Transcript == nil {
+				continue
+			}
+			if safeConversationText(record.User) != pairs[i].User ||
+				safeConversationText(record.Assistant) != pairs[i].Assistant {
+				continue
+			}
+			pairs[i].Transcript = ProjectTranscript(record.Transcript)
+			break
+		}
+	}
+	return pairs
 }
 
 // budgetReplayedPairs keeps the newest exchanges that fit in budget and drops
@@ -206,7 +240,10 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 	spent := 0
 	keepFrom := len(pairs)
 	for i := len(pairs) - 1; i >= 0; i-- {
-		cost := len([]rune(pairs[i].User)) + len([]rune(pairs[i].Assistant))
+		// The transcript is costed with the exchange it belongs to. Leaving it
+		// out would let the one part of history that actually grew escape the
+		// budget meant to bound history.
+		cost := len([]rune(pairs[i].User)) + len([]rune(pairs[i].Assistant)) + conversationTranscriptRunes(pairs[i])
 		if i < len(pairs)-1 && spent+cost > budgetRunes {
 			break
 		}
@@ -214,6 +251,18 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 		keepFrom = i
 	}
 	return pairs[keepFrom:]
+}
+
+// conversationTranscriptRunes is the replay cost of a pair's tool work.
+func conversationTranscriptRunes(pair ConversationPair) int {
+	total := 0
+	for _, msg := range pair.Transcript {
+		total += len([]rune(msg.Content))
+		for _, call := range msg.ToolCalls {
+			total += len([]rune(call.Function.Arguments)) + len([]rune(call.Function.Name))
+		}
+	}
+	return total
 }
 
 // contextEnvelopeForPlainDirectReply gives every deterministic handled reply an
