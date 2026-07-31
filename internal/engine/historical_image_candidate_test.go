@@ -2,10 +2,13 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/compshare-agent/internal/actionresolver"
+	"github.com/compshare-agent/internal/envelope"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
@@ -105,6 +108,10 @@ func TestStaleHistoricalImageIDIsRejectedWithoutClaimingCatalogOutage(t *testing
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
 		eng, eng.lastUserMsg, "turn-stale-image", time.Now(),
 	)
+	eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{
+		User:      "推荐一个镜像",
+		Assistant: "此前推荐的镜像 ID：" + imageID,
+	}}
 	eng.turnContextViewReady = true
 
 	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
@@ -153,6 +160,10 @@ func TestLocalizedUserImageSourceIsAConstraint(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
 		eng, eng.lastUserMsg, "turn-explicit-image-source", time.Now(),
 	)
+	eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{
+		User:      "此前推荐过什么镜像",
+		Assistant: "社区候选的镜像 ID：" + imageID,
+	}}
 	eng.turnContextViewReady = true
 
 	resolved, err := eng.resolveActionProposalShadow(context.Background(),
@@ -172,4 +183,268 @@ func TestLocalizedUserImageSourceIsAConstraint(t *testing.T) {
 	require.Contains(t, resolved.action.RejectedProblems,
 		actionresolver.RejectedProblem{Slot: "CompShareImageId", Kind: actionresolver.RejectInvalidValue})
 	require.False(t, resolved.action.ReadyForConfirmation)
+}
+
+func TestCurrentImageNameKeepsRelatedHistoricalIDAsSuggested(t *testing.T) {
+	const (
+		imageID   = "compshareImage-facefusion-361"
+		otherID   = "compshareImage-comfyui-51"
+		imageName = "FaceFusion 3.5.1 / 3.6.1 全模型离线版"
+	)
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"},
+			}}, nil
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{
+				map[string]any{"ImageName": imageName, "Data": []any{
+					map[string]any{
+						"CompShareImageId": imageID,
+						"Name":             "v3.6.1",
+						"Status":           "Available",
+					},
+				}},
+			}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "用 FaceFusion 为我开一台 4090"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-related-history-image", time.Now(),
+	)
+	eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{
+		User: "推荐两个视频镜像",
+		Assistant: "1. FaceFusion，镜像 ID：" + imageID +
+			"；2. ComfyUI，镜像 ID：" + otherID,
+	}}
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-related-history-image", "operation": "CreateInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "GpuType", "value": "4090"},
+			map[string]any{"name": "ImageSource", "value": "community"},
+			map[string]any{"name": "ImageName", "value": "FaceFusion"},
+			map[string]any{"name": "CompShareImageId", "value": imageID},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, imageID, resolved.action.Arguments["CompShareImageId"])
+	require.Equal(t, "FaceFusion", resolved.action.Arguments["ImageName"])
+	require.Equal(t, actionresolver.SourceUserExplicit,
+		resolved.action.Provenance["ImageName"].Source)
+	require.Equal(t, actionresolver.SourceAgentInference,
+		resolved.action.Provenance["CompShareImageId"].Source)
+	require.Equal(t, workflow.ImageSelectionSuggested, resolved.referenceData.ImageSelection,
+		"用户只复制名称时，Agent 选择的具体版本仍必须在镜像卡片中确认")
+}
+
+func TestCurrentImageNameDropsUnrelatedHistoricalID(t *testing.T) {
+	const (
+		faceFusionID = "compshareImage-facefusion-361"
+		svcFusionID  = "compshareImage-svc-fusion-16"
+	)
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"},
+			}}, nil
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{
+				map[string]any{"ImageName": "SVC-Fusion_api_rvc", "Data": []any{
+					map[string]any{
+						"CompShareImageId": svcFusionID,
+						"Name":             "v1.6",
+						"Status":           "Available",
+					},
+				}},
+			}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "用 FaceFusion 为我开一台 4090"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-unrelated-history-image", time.Now(),
+	)
+	eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{
+		User: "推荐两个视频镜像",
+		Assistant: "1. FaceFusion，镜像 ID：" + faceFusionID +
+			"；2. SVC-Fusion，镜像 ID：" + svcFusionID,
+	}}
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-unrelated-history-image", "operation": "CreateInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "GpuType", "value": "4090"},
+			map[string]any{"name": "ImageSource", "value": "community"},
+			map[string]any{"name": "ImageName", "value": "FaceFusion"},
+			map[string]any{"name": "CompShareImageId", "value": svcFusionID},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "FaceFusion", resolved.action.Arguments["ImageName"])
+	assert.NotContains(t, resolved.action.Arguments, "CompShareImageId",
+		"本轮名称必须覆盖无关的历史具体版本")
+	assert.Equal(t, "community", resolved.action.Arguments["ImageSource"],
+		"丢弃错误 ID 不应把已知社区来源静默改回默认平台来源")
+	assert.Empty(t, resolved.action.RejectedProblems)
+	assert.Empty(t, resolved.action.DependencyFailures)
+	assert.Nil(t, resolved.referenceData.ImageCatalog)
+	assert.Equal(t, workflow.ImageSelectionUserPinned, resolved.referenceData.ImageSelection,
+		"丢弃错误 ID 后应回到用户名称驱动的普通镜像选择")
+}
+
+func TestUngroundedButValidImageIDIsDiscardedBeforeCatalogLookup(t *testing.T) {
+	const imageID = "compshareImage-valid-but-invented"
+	imageQueries := 0
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"},
+			}}, nil
+		case "DescribeCompShareImages", "DescribeCommunityImages":
+			imageQueries++
+			return map[string]any{"ImageSet": []any{
+				map[string]any{
+					"CompShareImageId": imageID,
+					"Name":             "A real upstream image",
+					"Status":           "Available",
+				},
+			}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "为我开一台 4090"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-ungrounded-image", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-ungrounded-image", "operation": "CreateInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "GpuType", "value": "4090"},
+			map[string]any{"name": "ImageSource", "value": "platform"},
+			map[string]any{"name": "CompShareImageId", "value": imageID},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Zero(t, imageQueries,
+		"仅仅在上游真实存在，不能反过来给 Agent 编出的 ID 补证据")
+	assert.NotContains(t, resolved.action.Arguments, "CompShareImageId")
+	assert.Equal(t, "platform", resolved.action.Arguments["ImageSource"])
+	assert.Equal(t, workflow.ImageSelectionUnset, resolved.referenceData.ImageSelection)
+}
+
+func TestCurrentImageReadEvidenceMayGroundExactID(t *testing.T) {
+	const imageID = "compshareImage-current-read"
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"},
+			}}, nil
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{
+				map[string]any{"ImageName": "FaceFusion", "Data": []any{
+					map[string]any{
+						"CompShareImageId": imageID,
+						"Status":           "Available",
+					},
+				}},
+			}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "用刚查询到的镜像为我开一台 4090"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-read-grounded-image", time.Now(),
+	)
+	eng.turnContextViewReady = true
+	payload, err := json.Marshal(ReadCapabilityObservation{
+		Status: platform.ReadStatusHandled,
+		Envelope: &envelope.Envelope{
+			Kind: envelope.KindImageList,
+			Subjects: []envelope.Subject{{
+				ID: imageSubjectIDPrefix + imageID, Type: envelope.SubjectImage,
+			}},
+		},
+	})
+	require.NoError(t, err)
+	eng.toolResultsByCallThisTurn = map[string]string{"read-image": string(payload)}
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-read-grounded-image", "operation": "CreateInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "GpuType", "value": "4090"},
+			map[string]any{"name": "ImageSource", "value": "community"},
+			map[string]any{"name": "CompShareImageId", "value": imageID},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, imageID, resolved.action.Arguments["CompShareImageId"])
+	require.Equal(t, workflow.ImageSelectionSuggested, resolved.referenceData.ImageSelection)
+}
+
+func TestFailedOrNonImageReadEvidenceCannotGroundExactID(t *testing.T) {
+	const imageID = "compshareImage-not-proven"
+	encode := func(observation ReadCapabilityObservation) string {
+		payload, err := json.Marshal(observation)
+		require.NoError(t, err)
+		return string(payload)
+	}
+	eng := &Engine{toolResultsByCallThisTurn: map[string]string{
+		"failed-image": encode(ReadCapabilityObservation{
+			Status: platform.ReadStatusFailureAfterTool,
+			Envelope: &envelope.Envelope{
+				Kind: envelope.KindImageList,
+				Subjects: []envelope.Subject{{
+					ID: imageSubjectIDPrefix + imageID, Type: envelope.SubjectImage,
+				}},
+			},
+		}),
+		"other-read": encode(ReadCapabilityObservation{
+			Status: platform.ReadStatusHandled,
+			Envelope: &envelope.Envelope{
+				Kind: envelope.KindZoneCatalog,
+				Subjects: []envelope.Subject{{
+					ID: imageSubjectIDPrefix + imageID, Type: envelope.SubjectImage,
+				}},
+			},
+		}),
+	}}
+
+	assert.False(t, eng.imageIDAppearsInCurrentReadEvidence(imageID),
+		"只有成功的镜像目录证据能支持精确 ID，错误回显和其他能力结果都不能")
+}
+
+func TestHistoricalImageIDEvidenceRequiresTokenBoundary(t *testing.T) {
+	assert.True(t, containsStandaloneValue("镜像 ID：img-1。", "img-1"))
+	assert.False(t, containsStandaloneValue("镜像 ID：img-10。", "img-1"),
+		"短 ID 不能借更长 ID 的子串获得历史证据")
 }

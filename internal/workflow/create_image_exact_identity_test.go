@@ -202,3 +202,68 @@ func TestGuidedCreatePreselectsAndCreatesTheExactRecommendedImageOutsideBrowsePa
 	require.True(t, ok)
 	assert.Equal(t, exactRecommendedImageID, createCall.args["CompShareImageId"])
 }
+
+func TestGuidedCreateShowsAllMatchingVersionsWhenUserCopiesOnlyTheName(t *testing.T) {
+	const olderID = "compshareImage-facefusion-351"
+	executor := formMockExecutor()
+	executor.results["DescribeCommunityImages"] = map[string]any{
+		"CompshareImageGroup": []any{map[string]any{
+			"ImageName": "FaceFusion",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId":  exactRecommendedImageID,
+					"Name":              "v3.6.1",
+					"Status":            "Available",
+					"Container":         "True",
+					"SupportedGpuTypes": []any{"4090"},
+					"Size":              float64(102400),
+				},
+				map[string]any{
+					"CompShareImageId":  olderID,
+					"Name":              "v3.5.1",
+					"Status":            "Available",
+					"Container":         "True",
+					"SupportedGpuTypes": []any{"4090"},
+					"Size":              float64(102400),
+				},
+			},
+		}},
+	}
+	var imageOptions []ConfirmFormOption
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		if field := form.Field("ImageId"); field != nil && field.Editable {
+			imageOptions = append([]ConfirmFormOption(nil), field.Options...)
+			return ConfirmResolution{Confirmed: false}
+		}
+		return ConfirmResolution{Confirmed: true}
+	})
+	ref := exactRecommendedReference(ImageSelectionSuggested)
+	ref.ChargeTypeUserPinned = true
+
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
+		"GpuType":           "4090",
+		"GuidedGpuLocked":   true,
+		"Zone":              "cn-wlcb-01",
+		"GuidedZoneLocked":  true,
+		"Gpu":               float64(1),
+		"Cpu":               float64(16),
+		"Memory":            float64(65536),
+		"GuidedRecommended": true,
+		"ImageSource":       "community",
+		"ImageName":         "FaceFusion",
+		"CompShareImageId":  exactRecommendedImageID,
+		"ChargeType":        "Postpay",
+	}, WithReferenceData(ref))
+
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Len(t, imageOptions, 2,
+		"只复制镜像名称时，卡片应展示所有匹配版本，而不是让 Agent 暗选一个版本")
+	assert.Equal(t, exactRecommendedImageID, imageOptions[0].Value,
+		"经核验的历史推荐可以作为默认项，但仍需用户确认")
+	assert.Equal(t, olderID, imageOptions[1].Value)
+	_, created := findExecutorCall(executor.calls, "CreateCompShareInstance")
+	assert.False(t, created, "测试在镜像卡片取消，不能创建或计费")
+}

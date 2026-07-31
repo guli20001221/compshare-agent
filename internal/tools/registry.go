@@ -552,13 +552,13 @@ var Registry = []openai.Tool{
 					},
 					"ImageName": map[string]any{
 						"type":        "string",
-						"description": "镜像名称关键词，仅在没有精确 CompShareImageId 时填写。平台镜像按 Name 精确/模糊匹配；社区镜像用于 FuzzySearch。如 PyTorch / Ubuntu / ComfyUI。",
+						"description": "镜像名称或关键词。用户本轮说出名称、简称或版本时必须原样填写；即使近期对话中已有精确 CompShareImageId，也要同时保留本轮名称，供服务端核对。没有精确 ID 时用于目录搜索。",
 					},
-					// Preferred over ImageName whenever an id is known, because
-					// ImageName is passed upstream as FuzzySearch: a wording the
-					// platform does not match narrows the catalog to zero rows and
-					// the flow has no image left to offer. An id names one row and
-					// cannot miss.
+					// Carry an exact id when one is known because it names one
+					// version without depending on fuzzy-search wording. Keep a
+					// name the user supplied this turn alongside it: the server
+					// checks that the carried version still matches the newer
+					// instruction before offering it as the picker default.
 					//
 					// The value may come from a listing seen this turn OR an exact id
 					// printed in the recent complete conversation. It is only a
@@ -567,7 +567,7 @@ var Registry = []openai.Tool{
 					// rejected, never replaced by a name-matched image.
 					"CompShareImageId": map[string]any{
 						"type":        "string",
-						"description": "镜像 ID，如 compshareImage-xxxx。已经通过本轮镜像查询或近期完整对话看到精确 ID 时，原样填写并同时填写 ImageSource；优先填这个而不是 ImageName——名称走模糊搜索，措辞不对会一个都搜不到，ID 才精确指向一个版本。历史 ID 只是待实时核验和待用户确认的候选，不代表当前可用；不要填写对话中从未逐字出现的 ID，也不要凭知识库或推测编造。",
+						"description": "镜像 ID，如 compshareImage-xxxx。本轮镜像查询或近期完整对话看到精确 ID 时，原样填写并同时填写 ImageSource。历史 ID 只作待实时核验和用户确认的候选；不得填写对话中从未逐字出现的 ID 或凭空编造。若用户本轮另说名称、简称或版本，必须同时填写 ImageName，不得用与本轮名称无关的历史 ID。",
 					},
 				},
 				"required": []string{"GpuType"},

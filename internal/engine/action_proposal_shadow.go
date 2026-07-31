@@ -333,6 +333,7 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	binding := e.bindInstanceTarget(view)
 	proposal = e.deriveProposalProvenance(proposal, view, spec, binding)
 	proposal = completeCurrentTurnEvidence(proposal, view, spec)
+	proposal = e.constrainCarriedImageCandidate(proposal, view)
 	proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
 	targetEvidence := e.targetEvidenceForProposal(ctx, proposal, spec)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
@@ -349,6 +350,14 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	imageCatalog, detectedImageSource := e.resolveImageCatalogSnapshotForSpec(
 		ctx, spec, imageSource, proposalSlotString(proposal, "CompShareImageId"), strictImageSource,
 	)
+	if hasExplicitName, matches := carriedImageMatchesExplicitName(proposal, imageCatalog); hasExplicitName && !matches {
+		// The user named an image this turn, so a stale, unavailable, or unrelated
+		// historical id cannot override that newer instruction. Fall back to the
+		// ordinary name-guided picker instead of rejecting the whole create.
+		proposal = discardCarriedImageCandidate(proposal)
+		imageCatalog = nil
+		detectedImageSource = ""
+	}
 	if detectedImageSource != "" && strings.TrimSpace(spec.ImageCatalogSource) == "" &&
 		(!imageSourcePresent || imageSourceSlot.Source != actionresolver.SourceUserExplicit) {
 		proposal = upsertVerifiedImageSource(proposal, detectedImageSource)
@@ -404,10 +413,11 @@ func upsertVerifiedImageSource(proposal actionresolver.ActionProposal, source st
 
 // deriveImageSelection classifies who settled the create's image from the resolved
 // provenance, so the guided image flow offers an Agent suggestion on the picker
-// instead of sealing it silently. A user-explicit id OR name is the user naming the
-// image (UserPinned) — keyed on both because a bare user NAME, whose id the Agent
-// then resolved against the catalog, is still the user's own choice. Any non-empty
-// image candidate that the user did not name is an Agent suggestion. Nothing is
+// instead of sealing it silently. A concrete id takes precedence over a name: when
+// the id is not user-explicit, it remains Suggested even if the user supplied a
+// related bare name, because the Agent still chose the exact version. Without an
+// id, a user-explicit name is UserPinned but still opens the picker to resolve a
+// concrete version. Any other non-empty image candidate is Suggested. Nothing is
 // Unset.
 //
 // Only the guided create flow reads this; for reinstall/clone (which carry a
@@ -415,14 +425,16 @@ func upsertVerifiedImageSource(proposal actionresolver.ActionProposal, source st
 func deriveImageSelection(provenance map[string]actionresolver.ResolvedSlot) workflow.ImageSelectionState {
 	idSlot, hasID := provenance["CompShareImageId"]
 	nameSlot, hasName := provenance["ImageName"]
-	if (hasID && idSlot.Source == actionresolver.SourceUserExplicit) ||
-		(hasName && nameSlot.Source == actionresolver.SourceUserExplicit) {
-		return workflow.ImageSelectionUserPinned
-	}
 	if hasID && strings.TrimSpace(fmt.Sprint(idSlot.Value)) != "" {
+		if idSlot.Source == actionresolver.SourceUserExplicit {
+			return workflow.ImageSelectionUserPinned
+		}
 		return workflow.ImageSelectionSuggested
 	}
 	if hasName && strings.TrimSpace(fmt.Sprint(nameSlot.Value)) != "" {
+		if nameSlot.Source == actionresolver.SourceUserExplicit {
+			return workflow.ImageSelectionUserPinned
+		}
 		return workflow.ImageSelectionSuggested
 	}
 	return workflow.ImageSelectionUnset
