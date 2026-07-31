@@ -338,12 +338,11 @@ func CreateInstanceDef() *Definition {
 		// an explicit user proposal and sealed below, but remains optional rather
 		// than turning the guided flow into an extra question for most users.
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
-		// Neither field is a form input, but a bad value in either is safe to drop
-		// and let the guided form proceed: Name is cosmetic and the platform
-		// generates one, and an image id the live catalog does not contain (an
-		// invented or remembered one) is exactly what the form's whitelist picker
-		// exists to replace. Without this, either one killed the card entirely.
-		DiscardableOnRejectFields: []string{"Name", "CompShareImageId"},
+		// Name is cosmetic and the platform can generate one, so an invalid value
+		// may be dropped. CompShareImageId is intentionally NOT discardable: once a
+		// request names an exact image, silently replacing a stale/wrong-source id
+		// with an unrelated browse result changes the requested object.
+		DiscardableOnRejectFields: []string{"Name"},
 	}
 }
 
@@ -437,12 +436,29 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
+				if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
+					// A user/context-pinned id and every plain-flow id need one exact
+					// row, not a name search. A guided Agent suggestion still browses
+					// alternatives; the resolver-verified row is merged back into that
+					// browse result by createImageResult.
+					if imageUserSettled(wfCtx) || !allowCommunityBrowse {
+						return map[string]any{
+							"CompShareImageId": id,
+							"Limit":            maxGuidedCommunityImageQueryLimit,
+							"ExcludeReadme":    true,
+						}, nil
+					}
+					return communityImageBrowseArgs(""), nil
+				}
 				name := paramStr(wfCtx.Params, "ImageName", "")
 				if name == "" {
 					if allowCommunityBrowse {
 						return communityImageBrowseArgs(""), nil
 					}
 					return nil, fmt.Errorf("使用社区镜像创建实例时必须指定镜像名称（ImageName），请告诉我您想使用哪个社区镜像")
+				}
+				if allowCommunityBrowse && wfCtx.ImageSelection() == ImageSelectionSuggested {
+					return communityImageBrowseArgs(""), nil
 				}
 				return map[string]any{"FuzzySearch": name}, nil
 			}
@@ -456,7 +472,7 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 			// runs and needs the whole catalog to offer alternatives, with the
 			// suggested id preselected from within it (a one-row "choice" card,
 			// narrowed by the Agent's own id, was the bug).
-			if imageUserSettled(wfCtx) {
+			if imageUserSettled(wfCtx) || !allowCommunityBrowse {
 				if id := paramStr(wfCtx.Params, "CompShareImageId", ""); id != "" {
 					args["CompShareImageId"] = id
 					return args, nil
@@ -784,7 +800,7 @@ func guidedCapacityArgsFor(wfCtx *Context, gpuType, zone string) (map[string]any
 	if gpuType == "" || zone == "" {
 		return nil, false
 	}
-	imageID := pickImageId(wfCtx.Params, wfCtx.Result("查询镜像"))
+	imageID := pickImageId(wfCtx.Params, createImageResult(wfCtx))
 	if imageID == "" {
 		return nil, false
 	}
@@ -876,7 +892,7 @@ func zoneCapacityProbeCalls(wfCtx *Context) []BatchCall {
 	// rest on the image alone, so asking upstream about them buys nothing.
 	models := filterModelsByImageSupport(
 		guidedCandidateGPUModels(catalog),
-		currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像")))
+		currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx)))
 	if pinned := paramStr(wfCtx.Params, "GpuType", ""); pinned != "" {
 		if skip, err := shouldSkipGuidedGPUStep(wfCtx); err == nil && skip {
 			models = []string{pinned}
@@ -1295,7 +1311,7 @@ func filterSelections(in []deployment.ImageSelection, keep func(deployment.Image
 // same authoritative pod flag, resolved from the zone catalog rather than the
 // ZoneIsPod cache the picker used to read before it was warm.
 func createImageCandidates(wfCtx *Context) imageCandidateSet {
-	return buildImageCandidateSet(wfCtx.Params, wfCtx.Result("查询镜像"),
+	return buildImageCandidateSet(wfCtx.Params, createImageResult(wfCtx),
 		paramStr(wfCtx.Params, "GpuType", ""), createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
 }
 
@@ -1363,7 +1379,7 @@ func stepGuidedChooseImage() Step {
 		ConfirmSubmitMode: ConfirmSubmitContinue,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			gpuType := paramStr(wfCtx.Params, "GpuType", "")
-			current, opts, _ := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
+			current, opts, _ := guidedImageFormOptions(wfCtx.Params, createImageResult(wfCtx), gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
 			if len(opts) == 0 {
 				return nil, fmt.Errorf("未找到可选镜像，请换一个镜像来源或稍后再试")
 			}
@@ -1510,8 +1526,9 @@ func createInventoryPoolSupportFor(wfCtx *Context, placement deployment.ZonePlac
 }
 
 func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placement deployment.ZonePlacement) error {
-	image := imageMapByID(wfCtx.Result("查询镜像"), imageID)
-	name := imageNameByID(wfCtx.Result("查询镜像"), imageID)
+	images := createImageResult(wfCtx)
+	image := imageMapByID(images, imageID)
+	name := imageNameByID(images, imageID)
 	if name == "" {
 		name = "所选镜像"
 	}
@@ -1519,7 +1536,7 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 	// the zone card makes — so the two cannot drift into different rules. This gate
 	// is stricter by design on one verdict only: Unverifiable refuses here and does
 	// not disable there, because refusing on missing evidence is the gate's job.
-	switch imageContainerFitForZone(wfCtx.Result("查询镜像"), imageID, placement) {
+	switch imageContainerFitForZone(images, imageID, placement) {
 	case imageContainerFitUnverifiable:
 		return fmt.Errorf("未能确认 %s 是可用于 %s 的容器镜像，请刷新后重新选择", name, zoneDisplayLabel(wfCtx, placement.Zone))
 	case imageContainerFitNeedsContainerImage:
@@ -1535,7 +1552,7 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 		return fmt.Errorf("%s 当前不可用，请更换镜像", name)
 	}
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
-	supported := imageSupportedByID(wfCtx.Result("查询镜像"), imageID)
+	supported := imageSupportedByID(images, imageID)
 	if gpuType == "" || len(supported) == 0 || containsFold(supported, gpuType) {
 		return nil
 	}
@@ -1543,7 +1560,7 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 }
 
 func workflowSystemDisks(wfCtx *Context, imageID, zone, gpuType string) []any {
-	return deployment.ResolveBootDisk(wfCtx.Result("查询镜像"), wfCtx.Result("查询可用配比"), imageID, gpuType, zone)
+	return deployment.ResolveBootDisk(createImageResult(wfCtx), wfCtx.Result("查询可用配比"), imageID, gpuType, zone)
 }
 
 func workflowMinimalCPUPlatform(wfCtx *Context, gpuType, zone string) string {
@@ -2280,8 +2297,7 @@ type SelectedImage struct {
 //   - An explicitly threaded CompShareImageId (a 230-recovery re-run or a form
 //     override) is VERIFIED against the catalog; only a verified id is sealed, with
 //     its catalog name. An unverified id is NOT sealed under the caller's ImageName
-//     (the deleted catalogImageName fail-soft) — it falls through to name resolution,
-//     which may recommend a real image instead.
+//     and is never replaced by a name-ranked image.
 //   - A named request with no exact catalog match is not silently swapped: the
 //     resolver returns a ranked candidate whose REAL catalog name the confirm card
 //     shows, and the user confirms it (the acceptance gate). Community no longer
@@ -2291,16 +2307,17 @@ func selectCreateImage(wfCtx *Context) SelectedImage {
 }
 
 // resolveSelectedImage is the shared image decision used by both the create seal
-// (selectCreateImage) and the guided/confirm image forms (pickImageId/pickImageName)
-// — one interpreter, one snapshot, so the id a form offers as "current" is resolved
-// the same way the create seals it.
+// (selectCreateImage) and the guided/confirm image forms — one interpreter, one
+// snapshot, so the id a form offers as "current" is resolved the same way the
+// create seals it.
 //
 // An explicitly threaded CompShareImageId is VERIFIED against the catalog; only a
-// verified id wins with its catalog name. An unverified id falls through to
-// name-based resolution rather than being sealed under the caller's ImageName
-// (invariant 1). A named request with no exact match returns the best ranked
-// recommendation (real catalog name), which rides the confirm gate — never a silent
-// swap. Prefiltered says whether the QUERY already applied the name, so a
+// verified id wins with its catalog name. An unverified id fails closed and never
+// falls through to name-based resolution: once the request names an exact object,
+// substituting a ranked name match would make the card and create act on different
+// images. A name-only request with no exact match may still return the best ranked
+// recommendation (real catalog name), which rides the confirm gate. Prefiltered
+// says whether the QUERY already applied the name, so a
 // non-exact request recommends the best returned row rather than re-rejecting the
 // API's own hits. Only the community query does that now (FuzzySearch=); the
 // platform query stopped narrowing by name because upstream matches it
@@ -2312,6 +2329,7 @@ func resolveSelectedImage(params map[string]any, snap *deployment.ImageCatalogSn
 		if res := deployment.ResolveImage(snap, deployment.ImageRequest{ID: id}); res.Status == deployment.ResolutionResolved {
 			return selectedImageFrom(res.Selection, source)
 		}
+		return SelectedImage{Source: source}
 	}
 	res := deployment.ResolveImage(snap, deployment.ImageRequest{
 		Name:         paramStr(params, "ImageName", ""),
@@ -2351,8 +2369,9 @@ func formImageCatalog(images map[string]any, source string) *deployment.ImageCat
 }
 
 // createImageCatalog is the workflow's single view of the image catalog for
-// selection. THIS RUN's 查询镜像 wins over any engine-threaded snapshot, and the
-// order is the point rather than a preference.
+// selection. THIS RUN's 查询镜像 remains authoritative for browsing, while an
+// exact, resolver-verified threaded id is merged into it when the browse page did
+// not contain that row.
 //
 // The engine's snapshot is taken at PROPOSAL time, against the source the
 // proposal declared. The guided flow then lets the user change that source
@@ -2362,16 +2381,16 @@ func formImageCatalog(images map[string]any, source string) *deployment.ImageCat
 // proposal-time snapshot that outranked them would silently show the user the
 // images of a source they just switched away from.
 //
-// The engine snapshot therefore serves as a fallback for a run that has not
-// queried yet, and its real job is elsewhere: it is what the RESOLVER verifies an
-// explicit CompShareImageId against, before the workflow starts. Verify at the
-// boundary, re-query inside — the two need different catalogs and this is where
-// they stop competing.
+// The merge is deliberately one-row and source-checked. It cannot reintroduce a
+// catalog from a source the user switched away from; it only preserves identity
+// for the exact id already verified this turn. Without it, a community suggestion
+// outside the arbitrary 100-row browse page appeared on the picker but
+// materializeCreateDraft later discarded it and selected another image by name.
 //
 // Either way there is one source per run, so the selection reads the SAME images
 // the compatibility / boot-disk checks read, never a second catalog.
 func createImageCatalog(wfCtx *Context) *deployment.ImageCatalogSnapshot {
-	if result := wfCtx.Result("查询镜像"); result != nil {
+	if result := createImageResult(wfCtx); result != nil {
 		if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
 			return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(result))
 		}
@@ -2381,6 +2400,79 @@ func createImageCatalog(wfCtx *Context) *deployment.ImageCatalogSnapshot {
 		return snap
 	}
 	return deployment.NewImageCatalogSnapshot(false, nil)
+}
+
+// createImageResult returns this run's raw image result, augmented with the one
+// resolver-verified threaded image when the browse page omitted it. The original
+// StepResult is never mutated; callers that need names, compatibility, GPU hints
+// or disk size all read the same augmented view.
+func createImageResult(wfCtx *Context) map[string]any {
+	if wfCtx == nil {
+		return nil
+	}
+	result := wfCtx.Result("查询镜像")
+	id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", ""))
+	if id == "" || imageMapByID(result, id) != nil {
+		return result
+	}
+	entry, ok := wfCtx.ImageCatalog().ByID(id)
+	if !ok || normalizedImageSource(entry.Source) !=
+		normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) {
+		return result
+	}
+	out := deepCopyParams(result)
+	if out == nil {
+		out = map[string]any{}
+	}
+	row := imageCatalogEntryAsResultRow(entry)
+	if groups, grouped := out["CompshareImageGroup"].([]any); grouped ||
+		(normalizedImageSource(entry.Source) == "community" && out["ImageSet"] == nil) {
+		group := map[string]any{
+			"ImageName": entry.Name,
+			"Data":      []any{row},
+		}
+		out["CompshareImageGroup"] = append([]any{group}, groups...)
+		return out
+	}
+	imageSet, _ := out["ImageSet"].([]any)
+	out["ImageSet"] = append([]any{row}, imageSet...)
+	return out
+}
+
+func imageCatalogEntryAsResultRow(entry deployment.ImageCatalogEntry) map[string]any {
+	name := entry.Name
+	if entry.VersionName != "" {
+		name = entry.VersionName
+	}
+	row := map[string]any{
+		"CompShareImageId": entry.ID,
+		"Name":             name,
+		"ImageType":        entry.ImageType,
+		"Status":           entry.Status,
+		"Container":        strconv.FormatBool(entry.Container),
+		"Size":             entry.SizeMB,
+	}
+	if entry.VersionName != "" {
+		row["VersionName"] = entry.VersionName
+	}
+	if entry.Description != "" {
+		row["Description"] = entry.Description
+	}
+	if len(entry.SupportedGPUTypes) > 0 {
+		row["SupportedGpuTypes"] = stringsAsAny(entry.SupportedGPUTypes)
+	}
+	if len(entry.Tags) > 0 {
+		row["Tags"] = stringsAsAny(entry.Tags)
+	}
+	return row
+}
+
+func stringsAsAny(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
 }
 
 // selectedImageFrom projects a resolver ImageSelection onto the create flow's
@@ -2399,22 +2491,6 @@ func pickImageId(params map[string]any, result map[string]any) string {
 		return id
 	}
 	return resolveSelectedImage(params, formImageCatalog(result, paramStr(params, "ImageSource", "platform"))).ID
-}
-
-// pickImageName resolves the display name through the same interpreter as the id.
-// When an image id was threaded, the threaded ImageName is the display name of that
-// exact image — use it so the confirm shows what actually gets built.
-func pickImageName(params map[string]any, result map[string]any) string {
-	if paramStr(params, "CompShareImageId", "") != "" {
-		if name := paramStr(params, "ImageName", ""); name != "" {
-			return name
-		}
-	}
-	sel := resolveSelectedImage(params, formImageCatalog(result, paramStr(params, "ImageSource", "platform")))
-	if sel.Name == "" {
-		return "未知"
-	}
-	return sel.Name
 }
 
 func createImageUnavailableError(params map[string]any) error {
@@ -2612,7 +2688,7 @@ func zoneRejectsSelectedImage(wfCtx *Context, zone string) (bool, string) {
 		return false, ""
 	}
 	imageID := paramStr(wfCtx.Params, "CompShareImageId", "")
-	if imageContainerFitForZone(wfCtx.Result("查询镜像"), imageID, placement) != imageContainerFitNeedsContainerImage {
+	if imageContainerFitForZone(createImageResult(wfCtx), imageID, placement) != imageContainerFitNeedsContainerImage {
 		return false, ""
 	}
 	return true, "所选镜像不是容器镜像，该可用区用不了"
@@ -2712,7 +2788,7 @@ func buildCreateConfirmForm(wfCtx *Context) (*ConfirmForm, error) {
 	}
 	gpuType, _ := wfCtx.Params["GpuType"].(string)
 	catalog := wfCtx.Result("查询可用配比")
-	images := wfCtx.Result("查询镜像")
+	images := createImageResult(wfCtx)
 
 	supported := currentImageSupportedGPUs(wfCtx.Params, images)
 
@@ -2861,7 +2937,7 @@ func shouldSkipGuidedGPUStep(wfCtx *Context) (bool, error) {
 	if current == "" || !paramBool(wfCtx.Params, "GuidedGpuLocked", false) {
 		return false, nil
 	}
-	supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像"))
+	supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx))
 	if len(supported) > 0 && containsFold(supported, current) && hasExplicitImageIntent(wfCtx.Params) &&
 		initialParamSet(wfCtx, "Zone") && initialParamSet(wfCtx, "Gpu") &&
 		initialParamSet(wfCtx, "Cpu") && initialParamSet(wfCtx, "Memory") {
@@ -3000,21 +3076,17 @@ func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
 	return strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "", nil
 }
 
-// imageUserSettled reports the create's image is settled by the USER, not left as
-// the Agent's raw suggestion. It keeps the old "a concrete id or name is a selection"
-// rule (hasExplicitImageSelection) but subtracts the one case that let the Agent's
-// own pick skip every image card: an Agent-suggested id (ImageSelectionSuggested)
-// the user has not yet locked in on the picker. A user-pinned image (their text
-// named it) and a card pick (GuidedImageLocked, set when the user submits the picker
-// and cleared whenever an earlier edit invalidates the image) both count as settled.
+// imageUserSettled reports positive user authorization instead of inferring it
+// from a non-empty id/name. Only engine-verified user provenance or an explicit
+// picker submission settles the image; Agent-supplied values remain suggestions.
 func imageUserSettled(wfCtx *Context) bool {
 	if wfCtx == nil || !hasExplicitImageSelection(wfCtx.Params) {
 		return false
 	}
-	if wfCtx.ImageSelection() == ImageSelectionSuggested && !paramBool(wfCtx.Params, "GuidedImageLocked", false) {
-		return false
+	if paramBool(wfCtx.Params, "GuidedImageLocked", false) {
+		return true
 	}
-	return true
+	return wfCtx.ImageSelection() == ImageSelectionUserPinned
 }
 
 // shouldSkipSourceReQuery skips the post-source re-query when an explicit image is
@@ -3235,7 +3307,7 @@ func buildGuidedGPUForm(wfCtx *Context) (*ConfirmForm, error) {
 		}
 		gpuType = selected
 	}
-	supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像"))
+	supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx))
 	locked := paramBool(wfCtx.Params, "GuidedGpuLocked", false) && gpuType != ""
 	recommended := paramBool(wfCtx.Params, "GuidedRecommended", false) && gpuType != ""
 	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported, gpuType, locked, wfCtx.Params, wfCtx.Result("查询GPU库存"))
@@ -3800,7 +3872,7 @@ func guidedImagePageDescription(shown, candidates int) string {
 
 func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
-	current, opts, candidates := guidedImageFormOptions(wfCtx.Params, wfCtx.Result("查询镜像"), gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
+	current, opts, candidates := guidedImageFormOptions(wfCtx.Params, createImageResult(wfCtx), gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("未找到可选镜像，请换一个镜像来源或稍后再试")
 	}
@@ -3831,7 +3903,7 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 		return nil, err
 	}
 	gpuType, _ := wfCtx.Params["GpuType"].(string)
-	images := wfCtx.Result("查询镜像")
+	images := createImageResult(wfCtx)
 
 	var fields []ConfirmFormField
 	// The concrete image was settled before any capacity card. The final card only
@@ -3902,7 +3974,7 @@ func applyCreateOverrides(wfCtx *Context, overrides map[string]string) error {
 			// (capacity / price / create), so the validated image is the one
 			// that gets built.
 			wfCtx.Params["CompShareImageId"] = v
-			if name := imageNameByID(wfCtx.Result("查询镜像"), v); name != "" {
+			if name := imageNameByID(createImageResult(wfCtx), v); name != "" {
 				wfCtx.Params["ImageName"] = name
 			}
 		default:
@@ -3923,7 +3995,7 @@ func applyGuidedGPUOverrides(wfCtx *Context, overrides map[string]string) error 
 				delete(wfCtx.Params, "Cpu")
 				delete(wfCtx.Params, "Memory")
 				delete(wfCtx.Params, "Zone")
-				if supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像")); len(supported) > 0 && !containsFold(supported, v) {
+				if supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx)); len(supported) > 0 && !containsFold(supported, v) {
 					delete(wfCtx.Params, "CompShareImageId")
 					delete(wfCtx.Params, "ImageName")
 					delete(wfCtx.Params, "GuidedImageLocked")
@@ -4116,7 +4188,7 @@ func applyGuidedImageOverrides(wfCtx *Context, overrides map[string]string) erro
 
 func ensureGuidedGPUType(wfCtx *Context) (string, error) {
 	current, _ := wfCtx.Params["GpuType"].(string)
-	supported := currentImageSupportedGPUs(wfCtx.Params, wfCtx.Result("查询镜像"))
+	supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx))
 	locked := paramBool(wfCtx.Params, "GuidedGpuLocked", false) && current != ""
 	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported, current, locked, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	if selected == "" {
@@ -5190,14 +5262,10 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 				current = ""
 			}
 		} else {
-			// A threaded id absent from this result: still offer it as current; its
-			// GPU/container state is unknown here, so the create gate (which has the
-			// authority to refuse on missing evidence) is the backstop.
-			label := imageNameByID(images, current)
-			if label == "" {
-				label = pickImageName(params, images)
-			}
-			appendOpt(current, label, nil)
+			// An exact id reaches this picker only through the live catalog. The
+			// workflow merges a resolver-verified page-out row before this function;
+			// absence here therefore means it is not safe to offer.
+			current = ""
 		}
 	} else {
 		current = ""
@@ -5359,11 +5427,7 @@ func imageFormOptions(params map[string]any, images map[string]any, gpuType stri
 	} else if entry, ok := snap.ByID(current); ok {
 		appendOpt(entry.ID, entry.Name, entry.SupportedGPUTypes, entry.Container)
 	} else {
-		label := imageNameByID(images, current)
-		if label == "" {
-			label = pickImageName(params, images)
-		}
-		appendOpt(current, label, imageSupportedByID(images, current), imageContainerByID(images, current))
+		current = ""
 	}
 	if current != "" && !seen[current] {
 		current = ""

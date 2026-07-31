@@ -159,17 +159,45 @@ func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolve
 		return false
 	}
 	if value != evidence.Quote {
-		normalized, ok := deployment.ExplicitChargeTypeFromPhrase(evidence.Quote)
-		if candidate.Name != "ChargeType" || codec != actionresolver.CodecEnum ||
-			!ok || normalized != value {
+		normalized, ok := normalizedEnumValueFromPhrase(candidate.Name, evidence.Quote)
+		if codec != actionresolver.CodecEnum || !ok ||
+			!normalizedEnumValuesEqual(candidate.Name, normalized, value) {
 			return false
 		}
-		return chargeTypeQuoteSpan(question, evidence.Start, evidence.End)
+		return normalizedEnumQuoteSpan(question, evidence.Start, evidence.End)
 	}
 	return evidenceSpanForCodec(question, evidence.Start, evidence.End, codec)
 }
 
-func chargeTypeQuoteSpan(text []rune, start, end int) bool {
+func normalizedEnumValueFromPhrase(name, phrase string) (string, bool) {
+	switch name {
+	case "ChargeType":
+		return deployment.ExplicitChargeTypeFromPhrase(phrase)
+	case "ImageSource":
+		switch strings.ToLower(strings.TrimSpace(phrase)) {
+		case "platform", "平台", "平台镜像":
+			return "platform", true
+		case "community", "社区", "社区镜像":
+			return "community", true
+		case "custom", "自制", "自制镜像", "自定义镜像":
+			return "custom", true
+		case "sharing", "shared", "共享", "共享镜像":
+			return "sharing", true
+		}
+	}
+	return "", false
+}
+
+func normalizedEnumValuesEqual(name, left, right string) bool {
+	if name == "ImageSource" {
+		leftCanonical, leftOK := normalizedEnumValueFromPhrase(name, left)
+		rightCanonical, rightOK := normalizedEnumValueFromPhrase(name, right)
+		return leftOK && rightOK && leftCanonical == rightCanonical
+	}
+	return left == right
+}
+
+func normalizedEnumQuoteSpan(text []rune, start, end int) bool {
 	for _, r := range text[start:end] {
 		if r > unicode.MaxASCII {
 			// CJK selections normally sit directly inside a sentence ("按量创建").
@@ -309,12 +337,22 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	targetEvidence := e.targetEvidenceForProposal(ctx, proposal, spec)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
 	zoneCatalog := e.zoneCatalogSnapshotForSpec(ctx, spec)
-	// Source resolution from cede00d4 (falls back to the spec's own default when the
-	// proposal names none); the id argument is the fetch gate — a create that names
-	// no image has nothing to verify, so the full paginated catalog is not fetched.
+	// An exact image id is verified with a point query before Resolve. A
+	// user-explicit source is a constraint; an omitted or Agent-inferred source is
+	// only a hint, so an exact match may canonicalize it to the source that actually
+	// owns the id. This prevents a community id from falling through the historical
+	// empty-source => platform default.
 	imageSource := proposalImageCatalogSource(proposal, spec)
-	imageCatalog := e.imageCatalogSnapshotForSpec(ctx, spec, imageSource,
-		proposalSlotString(proposal, "CompShareImageId"))
+	imageSourceSlot, imageSourcePresent := proposalSlotCandidate(proposal, "ImageSource")
+	strictImageSource := strings.TrimSpace(spec.ImageCatalogSource) != "" ||
+		(imageSourcePresent && imageSourceSlot.Source == actionresolver.SourceUserExplicit)
+	imageCatalog, detectedImageSource := e.resolveImageCatalogSnapshotForSpec(
+		ctx, spec, imageSource, proposalSlotString(proposal, "CompShareImageId"), strictImageSource,
+	)
+	if detectedImageSource != "" && strings.TrimSpace(spec.ImageCatalogSource) == "" &&
+		(!imageSourcePresent || imageSourceSlot.Source != actionresolver.SourceUserExplicit) {
+		proposal = upsertVerifiedImageSource(proposal, detectedImageSource)
+	}
 	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec, binding: binding, targetEvidence: targetEvidence}, machineTypes).
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
@@ -344,12 +382,33 @@ func proposalImageCatalogSource(proposal actionresolver.ActionProposal, spec act
 	return spec.ImageCatalogSource
 }
 
+// upsertVerifiedImageSource records source as catalog-derived metadata. It does
+// not promote the image to a user choice: deriveImageSelection still classifies a
+// non-user id as Suggested, and the confirmation path remains mandatory.
+func upsertVerifiedImageSource(proposal actionresolver.ActionProposal, source string) actionresolver.ActionProposal {
+	for index := range proposal.Slots {
+		if proposal.Slots[index].Name != "ImageSource" {
+			continue
+		}
+		proposal.Slots[index].Value = source
+		proposal.Slots[index].Source = actionresolver.SourceVerifiedContext
+		proposal.Slots[index].Evidence = &actionresolver.SourceEvidence{ContextField: "image_catalog_exact_match"}
+		return proposal
+	}
+	proposal.Slots = append(proposal.Slots, actionresolver.SlotCandidate{
+		Name: "ImageSource", Value: source, Source: actionresolver.SourceVerifiedContext,
+		Evidence: &actionresolver.SourceEvidence{ContextField: "image_catalog_exact_match"},
+	})
+	return proposal
+}
+
 // deriveImageSelection classifies who settled the create's image from the resolved
 // provenance, so the guided image flow offers an Agent suggestion on the picker
 // instead of sealing it silently. A user-explicit id OR name is the user naming the
 // image (UserPinned) — keyed on both because a bare user NAME, whose id the Agent
-// then resolved against the catalog, is still the user's own choice. A concrete id
-// the user did not name is the Agent's suggestion (Suggested). Nothing is Unset.
+// then resolved against the catalog, is still the user's own choice. Any non-empty
+// image candidate that the user did not name is an Agent suggestion. Nothing is
+// Unset.
 //
 // Only the guided create flow reads this; for reinstall/clone (which carry a
 // CompShareImageId but never open the picker) it is computed and harmlessly unread.
@@ -361,6 +420,9 @@ func deriveImageSelection(provenance map[string]actionresolver.ResolvedSlot) wor
 		return workflow.ImageSelectionUserPinned
 	}
 	if hasID && strings.TrimSpace(fmt.Sprint(idSlot.Value)) != "" {
+		return workflow.ImageSelectionSuggested
+	}
+	if hasName && strings.TrimSpace(fmt.Sprint(nameSlot.Value)) != "" {
 		return workflow.ImageSelectionSuggested
 	}
 	return workflow.ImageSelectionUnset
@@ -481,7 +543,11 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 			candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "selection_binding"}
 			continue
 		}
-		if isString && strings.TrimSpace(value) != "" {
+		// ImageSource always uses the explicit quote protocol below, even when the
+		// canonical wire value itself appears in the sentence. Otherwise a negated
+		// or comparative mention such as "不要 community" would bypass the model's
+		// required positive-selection quote and be promoted automatically.
+		if candidate.Name != "ImageSource" && isString && strings.TrimSpace(value) != "" {
 			if start, end, ok := uniqueQuoteForCodec([]rune(view.CurrentQuestion), []rune(value), field.Codec); ok {
 				candidate.Source = actionresolver.SourceUserExplicit
 				candidate.Evidence = &actionresolver.SourceEvidence{
@@ -493,17 +559,16 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 				continue
 			}
 		}
-		// ChargeType is the one enum whose localized user phrase may differ from
-		// its wire value. The Agent points at a quote; the server independently
-		// maps the entire phrase and grants user-explicit provenance only when that
-		// deterministic mapping equals the proposed value. Every other enum keeps
-		// the ordinary value-equals-quote rule.
-		if candidate.Name == "ChargeType" && field.Codec == actionresolver.CodecEnum && claimedQuote != "" {
-			normalized, mapped := deployment.ExplicitChargeTypeFromPhrase(claimedQuote)
-			if !mapped || normalized != value {
+		// Some enum fields accept localized user phrases that differ from their
+		// canonical wire values. The Agent points at a current-message quote; the
+		// server independently maps it and grants user-explicit provenance only
+		// when the deterministic mapping equals the proposed value.
+		if field.Codec == actionresolver.CodecEnum && claimedQuote != "" {
+			normalized, mapped := normalizedEnumValueFromPhrase(candidate.Name, claimedQuote)
+			if !mapped || !normalizedEnumValuesEqual(candidate.Name, normalized, value) {
 				continue
 			}
-			if start, end, ok := uniqueChargeTypeQuote(
+			if start, end, ok := uniqueNormalizedEnumQuote(
 				[]rune(view.CurrentQuestion), []rune(claimedQuote),
 			); ok {
 				candidate.Source = actionresolver.SourceUserExplicit
@@ -657,7 +722,7 @@ func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {
 	return start, start + len(quote), true
 }
 
-func uniqueChargeTypeQuote(text, quote []rune) (int, int, bool) {
+func uniqueNormalizedEnumQuote(text, quote []rune) (int, int, bool) {
 	if len(quote) == 0 || len(quote) > len(text) {
 		return 0, 0, false
 	}
@@ -665,7 +730,7 @@ func uniqueChargeTypeQuote(text, quote []rune) (int, int, bool) {
 	for offset := 0; offset+len(quote) <= len(text); offset++ {
 		end := offset + len(quote)
 		if string(text[offset:end]) != string(quote) ||
-			!chargeTypeQuoteSpan(text, offset, end) {
+			!normalizedEnumQuoteSpan(text, offset, end) {
 			continue
 		}
 		if start >= 0 {

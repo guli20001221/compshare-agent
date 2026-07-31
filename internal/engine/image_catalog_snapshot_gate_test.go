@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/compshare-agent/internal/actionresolver"
+	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,4 +52,225 @@ func TestImageCatalogFetchedOnlyWhenAProposalNamesAnId(t *testing.T) {
 	require.True(t, ok)
 	assert.Nil(t, eng.imageCatalogSnapshotForSpec(context.Background(), stop, "", "compshareImage-abc"),
 		"an operation with no image field never needs the catalog, whatever it was handed")
+}
+
+func TestCommunityImagePointQueryParsesLiveGroupedResponse(t *testing.T) {
+	const imageID = "compshareImage-1pl06yxr5lvm"
+	var gotArgs map[string]any
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		require.Equal(t, "DescribeCommunityImages", action)
+		gotArgs = args
+		return map[string]any{"CompshareImageGroup": []any{
+			map[string]any{
+				"GroupId":   "qYl0zvqlo03V",
+				"ImageName": "FaceFusion",
+				"Status":    "Available",
+				"Data": []any{map[string]any{
+					"CompShareImageId": imageID,
+					"Name":             "FaceFusion",
+					"VersionName":      "v3.6",
+					"ImageType":        "Community",
+					"Status":           "Available",
+					"Container":        "True",
+				}},
+			},
+		}}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	catalog, err := actionresolver.BuildCatalog()
+	require.NoError(t, err)
+	create, ok := catalog.Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+
+	snap, source := eng.resolveImageCatalogSnapshotForSpec(
+		context.Background(), create, "community", imageID, true,
+	)
+
+	require.True(t, snap.Available())
+	entry, ok := snap.ByID(imageID)
+	require.True(t, ok)
+	assert.Equal(t, "FaceFusion", entry.Name)
+	assert.Equal(t, "community", source)
+	assert.Equal(t, imageID, gotArgs["CompShareImageId"])
+	assert.NotContains(t, gotArgs, "Offset")
+	assert.Equal(t, []string{"DescribeCommunityImages"}, executor.calls,
+		"精确社区 ID 只需一次点查，不能分页拉全目录")
+}
+
+func TestPlatformImagePointQueryUsesImageSetWhenTotalCountIsZero(t *testing.T) {
+	const imageID = "compshareImage-1e3udifakfm9"
+	var gotArgs map[string]any
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		require.Equal(t, "DescribeCompShareImages", action)
+		gotArgs = args
+		return map[string]any{
+			"TotalCount": float64(0),
+			"ImageSet": []any{map[string]any{
+				"CompShareImageId": imageID,
+				"Name":             "Windows-nvidia 2022 64位",
+				"ImageType":        "System",
+				"Status":           "Available",
+				"Container":        "False",
+			}},
+		}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	catalog, err := actionresolver.BuildCatalog()
+	require.NoError(t, err)
+	create, ok := catalog.Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+
+	snap, source := eng.resolveImageCatalogSnapshotForSpec(
+		context.Background(), create, "platform", imageID, true,
+	)
+
+	require.True(t, snap.Available())
+	entry, ok := snap.ByID(imageID)
+	require.True(t, ok, "平台点查的命中依据是 ImageSet，不是错误的 TotalCount")
+	assert.Equal(t, "Windows-nvidia 2022 64位", entry.Name)
+	assert.Equal(t, "platform", source)
+	assert.Equal(t, imageID, gotArgs["CompShareImageId"])
+	assert.Equal(t, []string{"DescribeCompShareImages"}, executor.calls)
+}
+
+func TestCustomAndSharingVerificationStayInsideTenantScopedLists(t *testing.T) {
+	tests := []struct {
+		source string
+		action string
+	}{
+		{source: "custom", action: "DescribeCompShareCustomImages"},
+		{source: "sharing", action: "DescribeCompShareSharingImages"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
+			const imageID = "compshareImage-visible-to-this-tenant"
+			var gotArgs map[string]any
+			executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+				require.Equal(t, tt.action, action)
+				gotArgs = args
+				return map[string]any{
+					"TotalCount": float64(1),
+					"ImageSet": []any{map[string]any{
+						"CompShareImageId": imageID,
+						"Name":             "租户可见镜像",
+						"Status":           "Available",
+					}},
+				}, nil
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+
+			snap := eng.imageCatalogSnapshotByID(context.Background(), tt.source, imageID)
+
+			require.True(t, snap.Available())
+			entry, ok := snap.ByID(imageID)
+			require.True(t, ok)
+			assert.Equal(t, tt.source, entry.Source)
+			assert.NotContains(t, gotArgs, "CompShareImageId",
+				"自制/共享点查会绕过租户可见范围，必须使用租户列表后本地匹配")
+			assert.Equal(t, 100, gotArgs["Limit"])
+			assert.Equal(t, 0, gotArgs["Offset"])
+			assert.Equal(t, []string{tt.action}, executor.calls)
+		})
+	}
+}
+
+func TestUserExplicitImageSourceIsAConstraint(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		require.Equal(t, "DescribeCompShareImages", action,
+			"用户明确选择 platform 时不能转去其他来源找同名 ID")
+		return nil, tools.NewUpstreamAPIError(230, "Params [CompShareImageId] not available")
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	catalog, err := actionresolver.BuildCatalog()
+	require.NoError(t, err)
+	create, ok := catalog.Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+
+	snap, source := eng.resolveImageCatalogSnapshotForSpec(
+		context.Background(), create, "platform", "compshareImage-community", true,
+	)
+
+	require.True(t, snap.Available())
+	assert.Zero(t, snap.Len())
+	assert.Empty(t, source)
+	assert.Equal(t, []string{"DescribeCompShareImages"}, executor.calls)
+}
+
+func TestMissingImageIsInvalidValueRatherThanCatalogOutage(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		require.Equal(t, "DescribeCommunityImages", action)
+		return nil, fmt.Errorf("point query: %w",
+			tools.NewUpstreamAPIError(8039, "Resource not exist [compshareImage-stale]"))
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	catalog, err := actionresolver.BuildCatalog()
+	require.NoError(t, err)
+	create, ok := catalog.Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+
+	snap, source := eng.resolveImageCatalogSnapshotForSpec(
+		context.Background(), create, "community", "compshareImage-stale", true,
+	)
+
+	require.True(t, snap.Available(), "资源不存在是用户值无效，不是镜像目录故障")
+	assert.Zero(t, snap.Len())
+	assert.Empty(t, source)
+}
+
+func TestMissingImageAcrossAllCandidateSourcesIsNotAnOutage(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareImages":
+			return map[string]any{"TotalCount": float64(0), "ImageSet": []any{}}, nil
+		case "DescribeCommunityImages":
+			return nil, tools.NewUpstreamAPIError(8039, "Resource not exist [compshareImage-stale]")
+		default:
+			t.Fatalf("unexpected action %s", action)
+			return nil, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	catalog, err := actionresolver.BuildCatalog()
+	require.NoError(t, err)
+	create, ok := catalog.Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+
+	snap, source := eng.resolveImageCatalogSnapshotForSpec(
+		context.Background(), create, "", "compshareImage-stale", false,
+	)
+
+	require.True(t, snap.Available(),
+		"所有候选来源都明确回答无此 ID 时，应当拒绝 ID，而不是谎称目录不可用")
+	assert.Zero(t, snap.Len())
+	assert.Empty(t, source)
+	assert.Equal(t, []string{"DescribeCompShareImages", "DescribeCommunityImages"}, executor.calls)
+}
+
+func TestImageCatalogDependencyFailureStaysUnavailable(t *testing.T) {
+	tests := map[string]error{
+		"transport":      errors.New("connection reset"),
+		"service":        tools.NewUpstreamAPIError(8433, "service unavailable"),
+		"other 230":      tools.NewUpstreamAPIError(230, "Params [organization_id] not available"),
+		"disk not found": tools.NewUpstreamAPIError(8351, "can not find disk [disk-1] from uhost[uhost-1]"),
+	}
+	for name, upstreamErr := range tests {
+		t.Run(name, func(t *testing.T) {
+			executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+				require.Equal(t, "DescribeCommunityImages", action)
+				return nil, upstreamErr
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			catalog, err := actionresolver.BuildCatalog()
+			require.NoError(t, err)
+			create, ok := catalog.Lookup("CreateInstanceWorkflow")
+			require.True(t, ok)
+
+			snap, source := eng.resolveImageCatalogSnapshotForSpec(
+				context.Background(), create, "community", "compshareImage-any", true,
+			)
+
+			require.False(t, snap.Available(), "真实依赖故障不能伪装成用户镜像 ID 无效")
+			assert.Empty(t, source)
+		})
+	}
 }

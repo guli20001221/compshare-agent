@@ -55,10 +55,9 @@ type ImageSelectionState int
 const (
 	// ImageSelectionUnset: the proposal named no image — browse from scratch.
 	ImageSelectionUnset ImageSelectionState = iota
-	// ImageSelectionSuggested: the Agent proposed a concrete image id the user did
-	// not name (no explicit id and no explicit name in their text). It is a default
-	// to preselect on the picker, NOT a decision — the picker still shows the whole
-	// catalog so the user can choose another.
+	// ImageSelectionSuggested: the Agent proposed an image id or name the user did
+	// not name. It is a default to preselect on the picker, NOT a decision — the
+	// picker still shows the whole catalog so the user can choose another.
 	ImageSelectionSuggested
 	// ImageSelectionUserPinned: the user's own text named the image (explicit id or
 	// explicit name). Browsing is skipped; a concrete pinned id skips the picker too

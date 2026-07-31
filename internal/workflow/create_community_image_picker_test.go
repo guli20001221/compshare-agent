@@ -222,6 +222,9 @@ func TestShouldSkipGuidedImageStep_CommunityNamedRunsPicker(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			wfCtx := NewContext(tc.params)
+			if hasExplicitImageSelection(tc.params) {
+				wfCtx.referenceData.ImageSelection = ImageSelectionUserPinned
+			}
 			skip, err := shouldSkipGuidedImageStep(wfCtx)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantSkip, skip)

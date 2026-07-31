@@ -409,6 +409,10 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "模糊搜索关键词（支持镜像名和作者昵称）",
 					},
+					"CompShareImageId": map[string]any{
+						"type":        "string",
+						"description": "按社区镜像 ID 精确查询",
+					},
 					"Tag": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -543,12 +547,12 @@ var Registry = []openai.Tool{
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",
-						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）",
+						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）。填写 CompShareImageId 时同时填写该 ID 实际所属的来源；若 ID 来自近期完整对话中的镜像推荐，原样沿用当时展示的来源。",
 						"enum":        []string{"platform", "community"},
 					},
 					"ImageName": map[string]any{
 						"type":        "string",
-						"description": "镜像名称关键词。平台镜像按 Name 精确/模糊匹配；社区镜像用于 FuzzySearch。如 PyTorch / Ubuntu / ComfyUI。",
+						"description": "镜像名称关键词，仅在没有精确 CompShareImageId 时填写。平台镜像按 Name 精确/模糊匹配；社区镜像用于 FuzzySearch。如 PyTorch / Ubuntu / ComfyUI。",
 					},
 					// Preferred over ImageName whenever an id is known, because
 					// ImageName is passed upstream as FuzzySearch: a wording the
@@ -556,14 +560,14 @@ var Registry = []openai.Tool{
 					// the flow has no image left to offer. An id names one row and
 					// cannot miss.
 					//
-					// The value must come from a listing seen THIS turn (a read
-					// observation's evidence.subjects[].id, minus the "image:"
-					// prefix). CodecImage verifies it against the live catalog and
-					// REFUSES an id the catalog does not contain, so a remembered or
-					// invented id is rejected rather than created.
+					// The value may come from a listing seen this turn OR an exact id
+					// printed in the recent complete conversation. It is only a
+					// candidate: CodecImage re-verifies it against the live catalog
+					// before any card or workflow can use it. An invented/stale id is
+					// rejected, never replaced by a name-matched image.
 					"CompShareImageId": map[string]any{
 						"type":        "string",
-						"description": "镜像 ID，如 compshareImage-xxxx。已经通过镜像查询看到具体镜像时，优先填这个而不是 ImageName——名称走模糊搜索，措辞不对会一个都搜不到；ID 精确指向一个版本。只能填本轮查询结果里真实出现过的 ID，不要凭记忆或推测填写。",
+						"description": "镜像 ID，如 compshareImage-xxxx。已经通过本轮镜像查询或近期完整对话看到精确 ID 时，原样填写并同时填写 ImageSource；优先填这个而不是 ImageName——名称走模糊搜索，措辞不对会一个都搜不到，ID 才精确指向一个版本。历史 ID 只是待实时核验和待用户确认的候选，不代表当前可用；不要填写对话中从未逐字出现的 ID，也不要凭知识库或推测编造。",
 					},
 				},
 				"required": []string{"GpuType"},
@@ -946,7 +950,8 @@ var Registry = []openai.Tool{
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",
-						"description": "镜像来源：platform/community/custom/shared；不确定时可不传",
+						"description": "镜像来源：platform/community/custom/sharing（兼容 shared）；不确定时可不传，服务端会用精确镜像 ID 实时判定来源",
+						"enum":        []string{"platform", "community", "custom", "sharing", "shared"},
 					},
 					"Password": map[string]any{
 						"type":        "string",

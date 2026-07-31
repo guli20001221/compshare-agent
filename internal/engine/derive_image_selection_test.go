@@ -34,6 +34,12 @@ func TestDeriveImageSelectionClassifiesProvenance(t *testing.T) {
 		}),
 		"an id the Agent proposed, with the user naming nothing, is a suggestion — the bug's shape")
 
+	assert.Equal(t, workflow.ImageSelectionSuggested,
+		deriveImageSelection(map[string]actionresolver.ResolvedSlot{
+			"ImageName": {Value: "FaceFusion", Source: actionresolver.SourceAgentInference},
+		}),
+		"an Agent-inferred name is also only a suggestion, never user settlement")
+
 	assert.Equal(t, workflow.ImageSelectionUnset,
 		deriveImageSelection(map[string]actionresolver.ResolvedSlot{}),
 		"no image id or name is Unset")
