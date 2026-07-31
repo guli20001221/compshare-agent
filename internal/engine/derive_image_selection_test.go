@@ -23,16 +23,28 @@ func TestDeriveImageSelectionClassifiesProvenance(t *testing.T) {
 
 	assert.Equal(t, workflow.ImageSelectionUserPinned,
 		deriveImageSelection(map[string]actionresolver.ResolvedSlot{
+			"ImageName": {Value: "PyTorch", Source: actionresolver.SourceUserExplicit},
+		}),
+		"a bare name copied by the user is user-pinned but still needs the picker to resolve a version")
+
+	assert.Equal(t, workflow.ImageSelectionSuggested,
+		deriveImageSelection(map[string]actionresolver.ResolvedSlot{
 			"CompShareImageId": {Value: "img-1", Source: actionresolver.SourceAgentInference},
 			"ImageName":        {Value: "PyTorch", Source: actionresolver.SourceUserExplicit},
 		}),
-		"a user-named image stays user-pinned even when the Agent resolved its concrete id")
+		"an Agent-chosen concrete version stays suggested even when it is related to a user name")
 
 	assert.Equal(t, workflow.ImageSelectionSuggested,
 		deriveImageSelection(map[string]actionresolver.ResolvedSlot{
 			"CompShareImageId": {Value: "img-1", Source: actionresolver.SourceAgentInference},
 		}),
 		"an id the Agent proposed, with the user naming nothing, is a suggestion — the bug's shape")
+
+	assert.Equal(t, workflow.ImageSelectionSuggested,
+		deriveImageSelection(map[string]actionresolver.ResolvedSlot{
+			"ImageName": {Value: "FaceFusion", Source: actionresolver.SourceAgentInference},
+		}),
+		"an Agent-inferred name is also only a suggestion, never user settlement")
 
 	assert.Equal(t, workflow.ImageSelectionUnset,
 		deriveImageSelection(map[string]actionresolver.ResolvedSlot{}),

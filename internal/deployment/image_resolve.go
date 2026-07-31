@@ -360,6 +360,18 @@ func nameSimilarity(want, name string) int {
 	}
 }
 
+// DirectImageNameMatch answers the stricter identity question used when a
+// historical exact id is carried alongside a name the user supplied now. The
+// ordinary ranker deliberately admits shared-token and shared-substring near
+// matches so a picker can offer useful alternatives (for example, FaceFusion may
+// show SVC-Fusion). A near match is not strong enough to let that historical id
+// become the default for the user's newer name, so only exact/contains relations
+// qualify here. DisplayLabel includes a community version, allowing a copied
+// version such as "v3.6" to identify its row without an image-specific alias.
+func DirectImageNameMatch(entry ImageCatalogEntry, name string) bool {
+	return nameSimilarity(strings.ToLower(strings.TrimSpace(name)), entry.DisplayLabel()) >= 150
+}
+
 // structuredScore rewards catalog rows whose real SoftwareFacts match the agent's
 // structured preferences. Absent software metadata (Present==false) scores zero —
 // honest absence, never a fabricated match.

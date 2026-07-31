@@ -72,6 +72,35 @@ func TestTheQueryFetchesTheWholeCatalogForASuggestion(t *testing.T) {
 		"a user-settled id is queried directly; the picker it feeds is skipped")
 }
 
+func TestAgentInferredCommunityNameDoesNotBecomeAUserChoice(t *testing.T) {
+	step := stepQueryImages(true)
+	suggested := suggestedImageCtx(map[string]any{
+		"ImageSource": "community",
+		"ImageName":   "FaceFusion",
+	})
+
+	assert.False(t, imageUserSettled(suggested),
+		"a non-empty Agent-authored name is not evidence that the user chose it")
+	args, err := step.BuildArgs(suggested)
+	require.NoError(t, err)
+	assert.NotContains(t, args, "FuzzySearch",
+		"an Agent-authored name must not narrow the alternatives shown to the user")
+	assert.Equal(t, maxGuidedCommunityImageQueryLimit, args["Limit"])
+}
+
+func TestPlainCommunityCreateQueriesAThreadedIDExactly(t *testing.T) {
+	step := stepQueryImages(false)
+	wfCtx := suggestedImageCtx(map[string]any{
+		"ImageSource":      "community",
+		"CompShareImageId": "compshareImage-exact",
+	})
+
+	args, err := step.BuildArgs(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "compshareImage-exact", args["CompShareImageId"])
+	assert.NotContains(t, args, "FuzzySearch")
+}
+
 // TestABareNameSuggestionIsBrowsedNotDeadEnded guards the pure bug shape end to end at
 // the query: the Agent suggested only an id (no ImageName), so the query must fall all
 // the way through to the whole platform catalog — no id filter AND no name filter.

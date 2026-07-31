@@ -46,6 +46,7 @@ func TestChargeTypeCardIsNotAskedWhenThereIsNothingToAsk(t *testing.T) {
 		"Gpu": float64(1), "Cpu": float64(32), "Memory": float64(131072),
 		"GuidedRecommended": true, "CompShareImageId": "img-002", "ImageName": "PyTorch 2.4",
 	})
+	fullySpecified.referenceData.ImageSelection = ImageSelectionUserPinned
 	skip, err = shouldSkipGuidedChargeTypeStep(fullySpecified)
 	require.NoError(t, err)
 	assert.True(t, skip, "every other card is skipped; do not turn a card-free flow into a one-card flow")

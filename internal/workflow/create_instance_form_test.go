@@ -578,7 +578,10 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 		"GuidedRecommended": true,
 		"CompShareImageId":  "img-002",
 		"ImageName":         "PyTorch",
-	})
+	}, WithReferenceData(ReferenceData{
+		ZoneCatalog:    createZoneCatalog(),
+		ImageSelection: ImageSelectionUserPinned,
+	}))
 
 	require.NoError(t, err)
 	require.True(t, result.Success)
@@ -645,7 +648,10 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 		"Cpu":               float64(16),
 		"Memory":            float64(65536),
 		"GuidedRecommended": true,
-	})
+	}, WithReferenceData(ReferenceData{
+		ZoneCatalog:    createZoneCatalog(),
+		ImageSelection: ImageSelectionUserPinned,
+	}))
 
 	require.NoError(t, err)
 	require.NotNil(t, gpuForm, "incompatible image/GPU selection must show the GPU card before capacity or price checks")

@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/require"
 )
 
@@ -937,6 +938,109 @@ func TestChargeTypeQuoteCannotPromoteAMismatchedOrMeaninglessValue(t *testing.T)
 			require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ChargeType"].Source)
 		})
 	}
+}
+
+func TestImageSourceQuoteNeedsUniqueCurrentMatchingEvidence(t *testing.T) {
+	catalog, err := defaultActionCatalog()
+	require.NoError(t, err)
+	spec, ok := catalog.Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+
+	tests := []struct {
+		name     string
+		question string
+		value    string
+		quote    string
+	}{
+		{name: "missing quote", question: "请用社区镜像创建", value: "community"},
+		{name: "canonical negated without quote", question: "不要 community，用刚才那个", value: "community"},
+		{name: "not in current question", question: "请用该镜像创建", value: "community", quote: "社区镜像"},
+		{name: "duplicate quote", question: "社区镜像和社区镜像都可以", value: "community", quote: "社区镜像"},
+		{name: "mapping mismatch", question: "请用社区镜像创建", value: "platform", quote: "社区镜像"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var evidence *actionresolver.SourceEvidence
+			if tt.quote != "" {
+				evidence = &actionresolver.SourceEvidence{Quote: tt.quote}
+			}
+			proposal := actionresolver.ActionProposal{
+				Operation: "CreateInstanceWorkflow",
+				Slots: []actionresolver.SlotCandidate{{
+					Name: "ImageSource", Value: tt.value,
+					Source: actionresolver.SourceAgentInference, Evidence: evidence,
+				}},
+			}
+			view := AgentContext{TurnID: "turn-image-source-quote", CurrentQuestion: tt.question}
+
+			got := (&Engine{}).deriveProposalProvenance(proposal, view, spec, selectionBinding{})
+
+			require.Len(t, got.Slots, 1)
+			require.Equal(t, actionresolver.SourceAgentInference, got.Slots[0].Source)
+			require.Nil(t, got.Slots[0].Evidence)
+		})
+	}
+}
+
+func TestCanonicalImageSourceNeedsAffirmativeQuote(t *testing.T) {
+	catalog, err := defaultActionCatalog()
+	require.NoError(t, err)
+	spec, ok := catalog.Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+	proposal := actionresolver.ActionProposal{
+		Operation: "CreateInstanceWorkflow",
+		Slots: []actionresolver.SlotCandidate{{
+			Name: "ImageSource", Value: "community", Source: actionresolver.SourceAgentInference,
+			Evidence: &actionresolver.SourceEvidence{Quote: "community"},
+		}},
+	}
+	view := AgentContext{
+		TurnID:          "turn-canonical-image-source",
+		CurrentQuestion: "请使用 community 镜像创建",
+	}
+
+	got := (&Engine{}).deriveProposalProvenance(proposal, view, spec, selectionBinding{})
+
+	require.Len(t, got.Slots, 1)
+	require.Equal(t, actionresolver.SourceUserExplicit, got.Slots[0].Source)
+	require.Equal(t, "community", got.Slots[0].Evidence.Quote)
+}
+
+func TestLegacySharedImageSourceQuoteMatchesCanonicalSharing(t *testing.T) {
+	catalog, err := defaultActionCatalog()
+	require.NoError(t, err)
+	spec, ok := catalog.Lookup("ReinstallInstanceWorkflow")
+	require.True(t, ok)
+	proposal := actionresolver.ActionProposal{
+		Operation: "ReinstallInstanceWorkflow",
+		Slots: []actionresolver.SlotCandidate{{
+			Name: "ImageSource", Value: "shared", Source: actionresolver.SourceAgentInference,
+			Evidence: &actionresolver.SourceEvidence{Quote: "shared"},
+		}},
+	}
+	view := AgentContext{
+		TurnID:          "turn-shared-image-source",
+		CurrentQuestion: "请使用 shared 镜像重装",
+	}
+
+	got := (&Engine{}).deriveProposalProvenance(proposal, view, spec, selectionBinding{})
+
+	require.Len(t, got.Slots, 1)
+	require.Equal(t, actionresolver.SourceUserExplicit, got.Slots[0].Source)
+}
+
+func TestImageSourceQuoteNeverSettlesAnAgentSuggestedImage(t *testing.T) {
+	state := deriveImageSelection(map[string]actionresolver.ResolvedSlot{
+		"ImageSource": {
+			Value: "community", Source: actionresolver.SourceUserExplicit,
+		},
+		"CompShareImageId": {
+			Value: "compshareImage-suggested", Source: actionresolver.SourceAgentInference,
+		},
+	})
+
+	require.Equal(t, workflow.ImageSelectionSuggested, state,
+		"即使来源原话被误判为肯定选择，历史镜像 ID 仍必须经过可编辑确认卡")
 }
 
 func TestResolvedProposalDisposition(t *testing.T) {
