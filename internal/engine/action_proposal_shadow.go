@@ -366,12 +366,27 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
+	imageIntentText := ""
+	if _, carriesImageName := spec.Fields["ImageName"]; carriesImageName {
+		imageIntentText = view.CurrentQuestion
+	}
 	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{
-		ZoneCatalog:          zoneCatalog,
-		ImageCatalog:         imageCatalog,
-		ImageSelection:       deriveImageSelection(resolved.Provenance),
-		ChargeTypeUserPinned: chargeTypeUserPinned(resolved.Provenance),
+		ZoneCatalog:           zoneCatalog,
+		ImageCatalog:          imageCatalog,
+		ImageSelection:        deriveImageSelection(resolved.Provenance),
+		ImageSourceUserPinned: imageSourceUserPinned(resolved.Provenance),
+		ChargeTypeUserPinned:  chargeTypeUserPinned(resolved.Provenance),
+		ImageIntentText:       imageIntentText,
 	}, targetEvidence: targetEvidence}, nil
+}
+
+// imageSourceUserPinned reports whether platform/community came from the user's
+// own words. A model/default source is only a search starting point: a named image
+// can exist in both live catalogs and must not become source consent by key
+// presence alone.
+func imageSourceUserPinned(provenance map[string]actionresolver.ResolvedSlot) bool {
+	slot, ok := provenance["ImageSource"]
+	return ok && slot.Source == actionresolver.SourceUserExplicit
 }
 
 // chargeTypeUserPinned reports whether the purchase mode came from the user's own

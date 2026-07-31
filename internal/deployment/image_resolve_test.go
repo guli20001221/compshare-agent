@@ -92,6 +92,30 @@ func TestResolveImage_VersionLadderIgnoresLaterTimeAcrossVersions(t *testing.T) 
 	}
 }
 
+func TestResolveImage_VersionLadderUsesStructuredVersionWhenLiveIndexIsZero(t *testing.T) {
+	// Measured live: FrameworkVersion is populated while FrameworkVersionIndex is
+	// zero on every platform row. The structured dotted version is therefore the
+	// only honest "newest" signal; image-name parsing remains forbidden.
+	snap := NewImageCatalogSnapshot(true, []ImageCatalogEntry{
+		{ID: "v-old", Name: "runtime-old", Source: "platform", Status: "Available", Container: true, Software: sw("PyTorch", "2.9.1", "13.0", "u22", 0)},
+		{ID: "v-new", Name: "runtime-new", Source: "platform", Status: "Available", Container: true, Software: sw("PyTorch", "2.13.0", "13.2", "u22", 0)},
+	})
+
+	ranked := RankImages(snap, ImageRequest{Framework: "PyTorch", Source: "platform"})
+	if len(ranked) != 2 || ranked[0].ID != "v-new" {
+		t.Fatalf("structured 2.13.0 must outrank 2.9.1 when both live indexes are zero, got %+v", ranked)
+	}
+}
+
+func TestCompareDottedVersionRefusesNonNumericCatalogValues(t *testing.T) {
+	if compared, ok := compareDottedVersion("nightly", "2.9.1"); ok || compared != 0 {
+		t.Fatalf("non-numeric catalog versions must preserve catalog order, got compared=%d ok=%t", compared, ok)
+	}
+	if compared, ok := compareDottedVersion("v2.9.1+cu130", "2.9"); !ok || compared <= 0 {
+		t.Fatalf("plain dotted cores with prefixes/suffixes should compare, got compared=%d ok=%t", compared, ok)
+	}
+}
+
 func TestResolveImage_CrossFrameworkExactNameIsAmbiguous(t *testing.T) {
 	// Same exact name, two different frameworks — a framework-scoped version index
 	// cannot order them, so the resolver refuses to guess.
@@ -145,6 +169,18 @@ func TestResolveImage_NoPreferenceResolvesToDefault(t *testing.T) {
 	}
 	if res.Selection.Provenance != ProvenanceStructuredRecommendation {
 		t.Errorf("a resolver-chosen default is a recommendation, got %s", res.Selection.Provenance)
+	}
+}
+
+func TestRankImages_NoImagePreferencePreservesCatalogOrder(t *testing.T) {
+	snap := NewImageCatalogSnapshot(true, []ImageCatalogEntry{
+		{ID: "older-first", Name: "Older", Source: "platform", Status: "Available", Software: sw("PyTorch", "2.7.1", "", "", 0)},
+		{ID: "newer-second", Name: "Newer", Source: "platform", Status: "Available", Software: sw("PyTorch", "2.13.0", "", "", 0)},
+	})
+
+	ranked := RankImages(snap, ImageRequest{RequestedGPU: "4090"})
+	if len(ranked) != 2 || ranked[0].ID != "older-first" || ranked[1].ID != "newer-second" {
+		t.Fatalf("hardware alone is not an image preference; preserve upstream order, got %+v", ranked)
 	}
 }
 
