@@ -44,6 +44,28 @@ type ReferenceData struct {
 	// Zero value false = not user-pinned = show the card, which is the safe
 	// default for any path that does not populate ReferenceData.
 	ChargeTypeUserPinned bool
+	// ImageSourceUserPinned records whether the USER explicitly chose platform
+	// or community. A catalog term such as ComfyUI can legitimately exist in both
+	// sources, so the mere presence (or default value) of ImageSource in Params
+	// cannot settle this axis. The guided flow uses this bit to distinguish an
+	// actual source choice from an Agent/default hint before deciding whether it
+	// may skip the source card.
+	//
+	// Zero value false is intentionally conservative: when provenance is absent,
+	// the workflow verifies the alternate live catalog or asks the user.
+	ImageSourceUserPinned bool
+	// ImageIntentText is the exact current user turn, carried only as a
+	// non-business hint for the image picker. It closes one narrow gap: when the
+	// Agent omits ImageName or supplies only a free-text suggestion in an otherwise
+	// valid create proposal, the workflow may recover a catalog preference only
+	// when it is literally present both here and in the live image catalog's
+	// structured SoftwareFacts or Tags.
+	//
+	// It never selects or seals an image. A recovered framework only narrows and
+	// orders the real catalog; the concrete CompShareImageId still comes from the
+	// user's picker submission. Keeping the text in ReferenceData means it cannot
+	// leak into Params or the sealed create contract.
+	ImageIntentText string
 }
 
 // ImageSelectionState records who settled the create's image, so every image step
@@ -440,6 +462,14 @@ func (c *Context) ImageCatalog() *deployment.ImageCatalogSnapshot {
 // read instead of each inferring intent from CompShareImageId != "". Zero value on
 // a run that carries no image selection state.
 func (c *Context) ImageSelection() ImageSelectionState { return c.referenceData.ImageSelection }
+
+// ImageSourceUserPinned reports whether the current user turn explicitly selected
+// the platform/community source rather than receiving an Agent/default value.
+func (c *Context) ImageSourceUserPinned() bool { return c.referenceData.ImageSourceUserPinned }
+
+// ImageIntentText returns the exact current-turn text used only for catalog-backed
+// image-intent recovery. It is never part of Params or a sealed contract.
+func (c *Context) ImageIntentText() string { return c.referenceData.ImageIntentText }
 
 // Result returns the API result from a previous step, or nil.
 func (c *Context) Result(stepName string) map[string]any {

@@ -2,6 +2,7 @@ package deployment
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -71,6 +72,11 @@ type ImageRequest struct {
 	CUDAVersion   string
 	OsVersion     string
 	PythonVersion string
+	// Tag is one exact upstream image tag. It is catalog data, not a semantic
+	// alias: callers may use it to rank runtime-named rows such as
+	// cuda128_torch291_py312 when the row itself carries the literal "pytorch"
+	// tag the user wrote.
+	Tag string
 
 	RequestedGPU string
 	Zone         ZoneConstraint
@@ -104,8 +110,9 @@ type ImageResolution struct {
 //	① explicit CompShareImageId, verified against the catalog
 //	② exact image name (case-insensitive)
 //	③ structured-field match (Framework / CUDA / OS / Python) + general name similarity
-//	within a tier: same-framework FrameworkVersionIndex, then same-series PubTime,
-//	then raw catalog order (invariant 2 — never cross-framework, never time-as-newest)
+//	within a tier: same-framework version index (or structured dotted version when
+//	the live index is zero), then same-series PubTime, then raw catalog order
+//	(invariant 2 — never cross-framework, never time-as-newest)
 //
 // Only ① and ② produce ResolutionResolved. A named/described request with no exact
 // hit is ResolutionNotFound plus ranked Candidates — the resolver never silently
@@ -184,7 +191,8 @@ func hasSpecificRequest(req ImageRequest) bool {
 		strings.TrimSpace(req.Framework) != "" ||
 		strings.TrimSpace(req.CUDAVersion) != "" ||
 		strings.TrimSpace(req.OsVersion) != "" ||
-		strings.TrimSpace(req.PythonVersion) != ""
+		strings.TrimSpace(req.PythonVersion) != "" ||
+		strings.TrimSpace(req.Tag) != ""
 }
 
 func scopeBySource(entries []ImageCatalogEntry, source string) []ImageCatalogEntry {
@@ -235,14 +243,20 @@ func exactNameMatches(entries []ImageCatalogEntry, name string) []ImageCatalogEn
 }
 
 // sortByVersionLadder orders a group assumed to be versions of one image: newest
-// framework version first (FrameworkVersionIndex, comparable only within the same
-// framework), then newest publish time, then catalog order (stable). Time is only
-// the tie-break — never a stand-in for "newest software" across images.
+// framework version first (the upstream index when populated, otherwise its
+// structured dotted version), then newest publish time, then catalog order
+// (stable). Time is only the tie-break — never a stand-in for "newest software"
+// across images.
 func sortByVersionLadder(entries []ImageCatalogEntry) {
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
-		if sameFramework(a, b) && a.Software.FrameworkVersionIndex != b.Software.FrameworkVersionIndex {
-			return a.Software.FrameworkVersionIndex > b.Software.FrameworkVersionIndex
+		if sameFramework(a, b) {
+			if a.Software.FrameworkVersionIndex != b.Software.FrameworkVersionIndex {
+				return a.Software.FrameworkVersionIndex > b.Software.FrameworkVersionIndex
+			}
+			if compared, ok := compareDottedVersion(a.Software.FrameworkVersion, b.Software.FrameworkVersion); ok && compared != 0 {
+				return compared > 0
+			}
 		}
 		if a.PubTime != b.PubTime {
 			return a.PubTime > b.PubTime
@@ -293,7 +307,7 @@ func rankRecommendations(entries []ImageCatalogEntry, req ImageRequest, keepAll 
 	// a 3-deploy image published later.
 	scoredByRequest := false
 	for i, e := range entries {
-		preference := nameSimilarity(want, e.Name) + structuredScore(req, e.Software)
+		preference := nameSimilarity(want, e.Name) + structuredScore(req, e)
 		s := preference + gpuBump(req.RequestedGPU, e.SupportedGPUTypes)
 		if s <= 0 && !keepAll {
 			continue
@@ -308,8 +322,13 @@ func rankRecommendations(entries []ImageCatalogEntry, req ImageRequest, keepAll 
 			return out[i].score > out[j].score
 		}
 		a, b := out[i].e, out[j].e
-		if sameFramework(a, b) && a.Software.FrameworkVersionIndex != b.Software.FrameworkVersionIndex {
-			return a.Software.FrameworkVersionIndex > b.Software.FrameworkVersionIndex
+		if scoredByRequest && sameFramework(a, b) {
+			if a.Software.FrameworkVersionIndex != b.Software.FrameworkVersionIndex {
+				return a.Software.FrameworkVersionIndex > b.Software.FrameworkVersionIndex
+			}
+			if compared, ok := compareDottedVersion(a.Software.FrameworkVersion, b.Software.FrameworkVersion); ok && compared != 0 {
+				return compared > 0
+			}
 		}
 		// Two entries the REQUEST could not tell apart are ordered by the catalog,
 		// not by publication date. Recency is our own opinion, and it overrode the
@@ -332,6 +351,65 @@ func rankRecommendations(entries []ImageCatalogEntry, req ImageRequest, keepAll 
 		res[i] = out[i].e
 	}
 	return res
+}
+
+// compareDottedVersion compares catalog-provided framework versions such as
+// "2.13.0" and "2.9.1". It deliberately accepts only a plain dotted numeric core
+// (with optional v prefix and build/prerelease suffix). Anything else returns
+// ok=false and preserves the upstream catalog order rather than guessing from an
+// image name.
+func compareDottedVersion(a, b string) (compared int, ok bool) {
+	parse := func(raw string) ([]uint64, bool) {
+		raw = strings.TrimSpace(raw)
+		raw = strings.TrimPrefix(strings.TrimPrefix(raw, "v"), "V")
+		for offset, r := range raw {
+			if r == '+' || r == '-' {
+				raw = raw[:offset]
+				break
+			}
+		}
+		if raw == "" {
+			return nil, false
+		}
+		parts := strings.Split(raw, ".")
+		out := make([]uint64, len(parts))
+		for i, part := range parts {
+			if part == "" {
+				return nil, false
+			}
+			value, err := strconv.ParseUint(part, 10, 64)
+			if err != nil {
+				return nil, false
+			}
+			out[i] = value
+		}
+		return out, true
+	}
+	left, leftOK := parse(a)
+	right, rightOK := parse(b)
+	if !leftOK || !rightOK {
+		return 0, false
+	}
+	size := len(left)
+	if len(right) > size {
+		size = len(right)
+	}
+	for i := 0; i < size; i++ {
+		var lv, rv uint64
+		if i < len(left) {
+			lv = left[i]
+		}
+		if i < len(right) {
+			rv = right[i]
+		}
+		if lv < rv {
+			return -1, true
+		}
+		if lv > rv {
+			return 1, true
+		}
+	}
+	return 0, true
 }
 
 // nameSimilarity scores how related two names are, generically (no keyword table):
@@ -372,25 +450,33 @@ func DirectImageNameMatch(entry ImageCatalogEntry, name string) bool {
 	return nameSimilarity(strings.ToLower(strings.TrimSpace(name)), entry.DisplayLabel()) >= 150
 }
 
-// structuredScore rewards catalog rows whose real SoftwareFacts match the agent's
-// structured preferences. Absent software metadata (Present==false) scores zero —
-// honest absence, never a fabricated match.
-func structuredScore(req ImageRequest, sw SoftwareFacts) int {
-	if !sw.Present {
-		return 0
-	}
+// structuredScore rewards catalog rows whose real SoftwareFacts or exact upstream
+// Tags match the request's structured preferences. Absent software metadata
+// (Present==false) contributes no software score — honest absence, never a
+// fabricated match — while tags remain independently usable catalog evidence.
+func structuredScore(req ImageRequest, entry ImageCatalogEntry) int {
 	score := 0
-	if req.Framework != "" && strings.EqualFold(strings.TrimSpace(sw.Framework), strings.TrimSpace(req.Framework)) {
-		score += 80
+	if entry.Software.Present {
+		if req.Framework != "" && strings.EqualFold(strings.TrimSpace(entry.Software.Framework), strings.TrimSpace(req.Framework)) {
+			score += 80
+		}
+		if req.CUDAVersion != "" && versionRelated(entry.Software.CUDAVersion, req.CUDAVersion) {
+			score += 40
+		}
+		if req.OsVersion != "" && substringFold(entry.Software.OsVersion, req.OsVersion) {
+			score += 40
+		}
+		if req.PythonVersion != "" && versionRelated(entry.Software.PythonVersion, req.PythonVersion) {
+			score += 20
+		}
 	}
-	if req.CUDAVersion != "" && versionRelated(sw.CUDAVersion, req.CUDAVersion) {
-		score += 40
-	}
-	if req.OsVersion != "" && substringFold(sw.OsVersion, req.OsVersion) {
-		score += 40
-	}
-	if req.PythonVersion != "" && versionRelated(sw.PythonVersion, req.PythonVersion) {
-		score += 20
+	if req.Tag != "" {
+		for _, tag := range entry.Tags {
+			if strings.EqualFold(strings.TrimSpace(tag), strings.TrimSpace(req.Tag)) {
+				score += 60
+				break
+			}
+		}
 	}
 	return score
 }
