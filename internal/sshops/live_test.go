@@ -1,7 +1,7 @@
 //go:build live
 
 // Live integration test — NOT compiled in CI (needs the `live` build tag, a reachable
-// instance, a running ccr gateway, and the Python harness deps). Run manually:
+// instance, a ModelVerse key, and the Python harness deps). Run manually:
 //
 //	go test -tags live -run TestLive -v -timeout 360s ./internal/sshops
 //
@@ -9,7 +9,8 @@
 //
 //	SSHH_HOST SSHH_PORT SSHH_USER SSHH_PASS   — the box
 //	SSHH_HARNESS                              — abs path to deploy/ssh_ops_harness/harness.py
-//	SSHH_GATEWAY (default http://127.0.0.1:3456)  SSHH_MODEL (default deepseek-v4-flash)
+//	SSHH_API_KEY                              — ModelVerse API key
+//	SSHH_BASE_URL (default https://api.modelverse.cn)  SSHH_MODEL (default gpt-5.6-terra)
 //	SSHH_PYTHON  (default "python")           — interpreter with claude_agent_sdk + paramiko
 //	SSHH_INSTANCE (default "uhost-livetest")  SSHH_TASK (default: 掉卡 root-cause probe)
 package sshops
@@ -69,8 +70,9 @@ func liveSupervisor() Supervisor {
 	return Supervisor{
 		Python:      envOr("SSHH_PYTHON", "python"),
 		HarnessPath: os.Getenv("SSHH_HARNESS"),
-		GatewayURL:  envOr("SSHH_GATEWAY", "http://127.0.0.1:3456"),
-		Model:       envOr("SSHH_MODEL", "deepseek-v4-flash"),
+		BaseURL:     envOr("SSHH_BASE_URL", "https://api.modelverse.cn"),
+		APIKey:      os.Getenv("SSHH_API_KEY"),
+		Model:       envOr("SSHH_MODEL", "gpt-5.6-terra"),
 		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
 		// The write path had no live coverage: every live run selected the read-only prompt because
 		// nothing could turn AllowWrites on. Selects the WRITE prompt + write tool
@@ -80,12 +82,15 @@ func liveSupervisor() Supervisor {
 	}
 }
 
-// TestLiveKeystone proves the full Go->harness->SDK->gateway->flash->SSH chain end to end:
-// fetch the credential out-of-band, spawn the real harness, and have flash SSH into the box.
+// TestLiveKeystone proves the full Go->harness->SDK->ModelVerse->SSH chain end to end:
+// fetch the credential out-of-band, spawn the real harness, and have the model SSH into the box.
 func TestLiveKeystone(t *testing.T) {
 	host, port, user, pass := liveEnv(t)
 	if os.Getenv("SSHH_HARNESS") == "" {
 		t.Skip("need SSHH_HARNESS (abs path to harness.py)")
+	}
+	if os.Getenv("SSHH_API_KEY") == "" {
+		t.Skip("need SSHH_API_KEY (ModelVerse API key)")
 	}
 	instanceID := envOr("SSHH_INSTANCE", "uhost-livetest")
 	d := liveDescriber(host, port, user, pass, instanceID)

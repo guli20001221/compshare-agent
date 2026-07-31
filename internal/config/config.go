@@ -93,7 +93,8 @@ type FeishuConfig struct {
 type SSHOpsConfig struct {
 	Enabled     *bool         `yaml:"enabled"`      // COMPSHARE_SSH_OPS (default off)
 	HarnessPath string        `yaml:"harness_path"` // absolute path to deploy/ssh_ops_harness/harness.py
-	GatewayURL  string        `yaml:"gateway_url"`  // ANTHROPIC_BASE_URL of the local claude-code-router gateway
+	BaseURL     string        `yaml:"base_url"`     // ANTHROPIC_BASE_URL of the ModelVerse Anthropic endpoint
+	APIKey      string        `yaml:"api_key"`      // empty = agent.llm.api_key
 	Python      string        `yaml:"python"`       // interpreter; empty = "python3"
 	Model       string        `yaml:"model"`        // third-party model id; empty = agent.llm.model
 	Timeout     time.Duration `yaml:"timeout"`      // hard per-task wall clock; empty = 5m
@@ -261,6 +262,11 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := resolveRequiredSecret(&cfg.Agent.LLM.APIKey, "agent.llm.api_key", "LLM_API_KEY"); err != nil {
+		return nil, err
+	}
+	// SSH-ops may use a dedicated ModelVerse Anthropic key. Empty inherits the
+	// answer-model key in cmd/instance_ops.go, which is the production Terra setup.
+	if err := resolveOptionalCredential(&cfg.Agent.SSHOps.APIKey, "agent.ssh_ops.api_key"); err != nil {
 		return nil, err
 	}
 	// Optional separate key for the qwen3 embed/rerank stack. Empty = inherit

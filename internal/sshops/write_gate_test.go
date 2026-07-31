@@ -36,8 +36,9 @@ func TestSupervisorSendsWriteGateOnHandshake(t *testing.T) {
 			sup := Supervisor{
 				Python:      pythonBin(),
 				HarnessPath: writeFakeHarness(t, fakeEchoWrites),
-				GatewayURL:  "http://127.0.0.1:3456",
-				Model:       "deepseek-v4-flash",
+				BaseURL:     testAnthropicBaseURL,
+				APIKey:      testAnthropicAPIKey,
+				Model:       "gpt-5.6-terra",
 				Timeout:     30 * time.Second,
 				AllowWrites: tc.allow,
 			}
