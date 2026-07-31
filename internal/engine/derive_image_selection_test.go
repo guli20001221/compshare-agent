@@ -56,3 +56,13 @@ func TestDeriveImageSelectionClassifiesProvenance(t *testing.T) {
 		}),
 		"an empty id is not a suggestion")
 }
+
+func TestImageSourceUserPinnedRequiresUserProvenance(t *testing.T) {
+	assert.True(t, imageSourceUserPinned(map[string]actionresolver.ResolvedSlot{
+		"ImageSource": {Value: "community", Source: actionresolver.SourceUserExplicit},
+	}))
+	assert.False(t, imageSourceUserPinned(map[string]actionresolver.ResolvedSlot{
+		"ImageSource": {Value: "platform", Source: actionresolver.SourceAgentInference},
+	}), "an Agent/default source is a search starting point, not a user choice")
+	assert.False(t, imageSourceUserPinned(map[string]actionresolver.ResolvedSlot{}))
+}

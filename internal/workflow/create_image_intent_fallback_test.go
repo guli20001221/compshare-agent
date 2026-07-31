@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,8 +60,66 @@ func frameworkFallbackContext(question string) *Context {
 	return wfCtx
 }
 
+func emptyCommunityImageCatalog() map[string]any {
+	return map[string]any{"CompshareImageGroup": []any{}}
+}
+
+func communityComfyCatalog() map[string]any {
+	return map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"ImageName": "ComfyUI 全模型整合包",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId": "community-comfy-new",
+					"Name":             "v2.0",
+					"Status":           "Available",
+					"Container":        "True",
+				},
+				map[string]any{
+					"CompShareImageId": "community-comfy-old",
+					"Name":             "v1.0",
+					"Status":           "Available",
+					"Container":        "True",
+				},
+			},
+		},
+		map[string]any{
+			"ImageName": "Stable Diffusion WebUI",
+			"Data": []any{
+				map[string]any{
+					"CompShareImageId": "community-sd-webui",
+					"Name":             "v1.9",
+					"Status":           "Available",
+					"Container":        "True",
+				},
+			},
+		},
+	}}
+}
+
+func addPlatformComfyImage(wfCtx *Context) {
+	set := wfCtx.StepResults["查询镜像"]["ImageSet"].([]any)
+	wfCtx.StepResults["查询镜像"]["ImageSet"] = append(set, map[string]any{
+		"CompShareImageId": "platform-comfy",
+		"Name":             "ComfyUI 基础镜像",
+		"ImageType":        "App",
+		"Status":           "Available",
+		"Container":        "True",
+		"Tags":             []any{"comfyUI，ComfyUI"},
+	})
+}
+
+func freezeImageCatalogIntent(t *testing.T, wfCtx *Context) imageCatalogIntentSeed {
+	t.Helper()
+	seed, ok := deriveImageCatalogIntentSeed(wfCtx)
+	require.True(t, ok)
+	wfCtx.StepResults[imageCatalogIntentStepName] = encodeImageCatalogIntentSeed(seed)
+	return seed
+}
+
 func TestMissingProposalImageNameUsesLiteralLiveFrameworkInPicker(t *testing.T) {
 	wfCtx := frameworkFallbackContext("在华北一C用最新pytorch为我创建一台4090")
+	wfCtx.StepResults[alternateImageCatalogStepName] = emptyCommunityImageCatalog()
 
 	skipSource, err := shouldSkipGuidedImageSourceStep(wfCtx)
 	require.NoError(t, err)
@@ -97,6 +156,7 @@ func TestMissingProposalImageNameUsesLiteralLiveFrameworkInPicker(t *testing.T) 
 
 func TestAgentSuggestedFreeTextImageNameStillUsesLiteralCatalogFact(t *testing.T) {
 	wfCtx := frameworkFallbackContext("在华北一C用最新pytorch为我创建一台4090")
+	wfCtx.StepResults[alternateImageCatalogStepName] = emptyCommunityImageCatalog()
 	imageSet := wfCtx.StepResults["查询镜像"]["ImageSet"].([]any)
 	wfCtx.StepResults["查询镜像"]["ImageSet"] = append(imageSet, map[string]any{
 		"CompShareImageId": "torch-name-old",
@@ -204,4 +264,117 @@ func TestFrameworkFallbackNeverOverridesCommunityBrowse(t *testing.T) {
 	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
 	require.NoError(t, err)
 	assert.False(t, skip, "community browsing remains explicit and is not replaced by a platform-framework fallback")
+}
+
+func TestComfyUIInBothCatalogsKeepsSourceChoiceVisible(t *testing.T) {
+	wfCtx := frameworkFallbackContext("用 ComfyUI 为我创建一台4090")
+	addPlatformComfyImage(wfCtx)
+	seed := freezeImageCatalogIntent(t, wfCtx)
+	require.Equal(t, "platform", seed.InitialSource)
+	require.Greater(t, seed.InitialMatches, 0)
+	wfCtx.StepResults[alternateImageCatalogStepName] = communityComfyCatalog()
+
+	alternateMatches, checked := alternateImageCatalogMatchCount(wfCtx, seed)
+	require.True(t, checked)
+	require.Greater(t, alternateMatches, 0)
+
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.False(t, skip, "a name present in both live catalogs must not silently inherit the platform default")
+
+	form, err := buildGuidedImageSourceForm(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "platform", fieldByKey(t, form, "ImageSource").Value,
+		"the current Agent/default source may remain the recommendation, but the other live source stays visible")
+}
+
+func TestComfyUISourceChoiceCarriesIntentIntoCommunityPicker(t *testing.T) {
+	wfCtx := frameworkFallbackContext("用 ComfyUI 为我创建一台4090")
+	addPlatformComfyImage(wfCtx)
+	freezeImageCatalogIntent(t, wfCtx)
+	wfCtx.StepResults[alternateImageCatalogStepName] = communityComfyCatalog()
+
+	require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
+	// Simulate stepReQuerySelectedSourceImages replacing the authoritative catalog.
+	wfCtx.StepResults["查询镜像"] = communityComfyCatalog()
+
+	request, ok := currentTurnImageCatalogRequest(wfCtx)
+	require.True(t, ok)
+	assert.Equal(t, "community", request.Source)
+	assert.True(t, strings.EqualFold("comfyui", request.Name))
+
+	form, err := buildGuidedImageForm(wfCtx)
+	require.NoError(t, err)
+	imageField := fieldByKey(t, form, "ImageId")
+	assert.Equal(t, []string{"community-comfy-new", "community-comfy-old"}, optionValues(imageField))
+	assert.NotContains(t, wfCtx.Params, "ImageName",
+		"carrying the intent across sources must not fabricate a selected image name")
+	assert.NotContains(t, wfCtx.Params, "CompShareImageId",
+		"the concrete community image still belongs to the user's picker submission")
+}
+
+func TestUserPinnedBareComfyUINameDoesNotSettleSourceWhenBothCatalogsMatch(t *testing.T) {
+	wfCtx := frameworkFallbackContext("用 ComfyUI 为我创建一台4090")
+	addPlatformComfyImage(wfCtx)
+	wfCtx.Params["ImageName"] = "ComfyUI"
+	wfCtx.InitialParams["ImageName"] = "ComfyUI"
+	wfCtx.referenceData.ImageSelection = ImageSelectionUserPinned
+	freezeImageCatalogIntent(t, wfCtx)
+	wfCtx.StepResults[alternateImageCatalogStepName] = communityComfyCatalog()
+
+	require.True(t, imageUserSettled(wfCtx), "the user did settle the image phrase")
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.False(t, skip, "settling a cross-catalog name is not the same as settling its source")
+}
+
+func TestExplicitImageSourceNeedsNoAlternateCatalogProbe(t *testing.T) {
+	wfCtx := frameworkFallbackContext("用平台镜像 ComfyUI 为我创建一台4090")
+	addPlatformComfyImage(wfCtx)
+	wfCtx.referenceData.ImageSourceUserPinned = true
+	freezeImageCatalogIntent(t, wfCtx)
+
+	probe := stepQueryAlternateImageCatalog()
+	skipProbe, err := probe.SkipIf(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skipProbe)
+
+	skipSource, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skipSource, "an explicit source remains authoritative")
+}
+
+func TestAlternateCatalogFailureDoesNotProvePlatformUnique(t *testing.T) {
+	wfCtx := frameworkFallbackContext("用最新 PyTorch 为我创建一台4090")
+	freezeImageCatalogIntent(t, wfCtx)
+	// No alternate StepResult represents an optional probe failure/unavailability.
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.False(t, skip, "unknown alternate state must keep the source choice visible")
+}
+
+func TestSDWebUINameCollisionIsDetectedWithoutAliasTable(t *testing.T) {
+	wfCtx := frameworkFallbackContext("用 SD-webUI 为我创建一台4090")
+	set := wfCtx.StepResults["查询镜像"]["ImageSet"].([]any)
+	wfCtx.StepResults["查询镜像"]["ImageSet"] = append(set, map[string]any{
+		"CompShareImageId": "platform-sd-webui",
+		"Name":             "SD-WebUI 基础镜像",
+		"ImageType":        "App",
+		"Status":           "Available",
+		"Container":        "True",
+	})
+	wfCtx.Params["ImageName"] = "SD-webUI"
+	wfCtx.InitialParams["ImageName"] = "SD-webUI"
+	wfCtx.referenceData.ImageSelection = ImageSelectionUserPinned
+	seed := freezeImageCatalogIntent(t, wfCtx)
+	wfCtx.StepResults[alternateImageCatalogStepName] = communityComfyCatalog()
+
+	matches, checked := alternateImageCatalogMatchCount(wfCtx, seed)
+	require.True(t, checked)
+	require.Greater(t, matches, 0,
+		"generic name overlap should relate SD-webUI to the live family Stable Diffusion WebUI")
+
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.False(t, skip)
 }
