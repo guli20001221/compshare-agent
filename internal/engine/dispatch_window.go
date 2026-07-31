@@ -67,6 +67,27 @@ func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.T
 	return out
 }
 
+// centralAgentKnowledgeToolWindow is the fail-closed public-Q&A surface used by
+// untrusted chat channels such as Feishu groups. It exposes only the internal
+// task-state reducer plus knowledge retrieval/read capabilities. Platform
+// reads, diagnoses and every action proposal are deliberately absent.
+func centralAgentKnowledgeToolWindow() []openai.Tool {
+	registry := tools.DefaultCapabilityRegistry()
+	var out []openai.Tool
+	if capability, ok := registry.Lookup(tools.UpdateTaskStateName); ok {
+		out = append(out, capability.Tool)
+	}
+	for _, capability := range registry.All() {
+		if !capability.ExposedToAgent || capability.Tool.Function == nil {
+			continue
+		}
+		if capability.Policy.Route == tools.ActionRouteKnowledge {
+			out = append(out, capability.Tool)
+		}
+	}
+	return out
+}
+
 func proposalToolName(operation string) string {
 	return "Request" + strings.TrimSuffix(operation, "Workflow")
 }

@@ -15,6 +15,25 @@ agent:
   # 本文件是完整部署配置；不再需要环境变量占位。
   project_id: ""
 
+  # 飞书话题群知识问答入口。由 `compshare-agent feishu` 单独启动；
+  # Agent 的回答能力仍来自本服务，飞书应用只负责收发群消息。
+  feishu:
+    app_id: "cli_aae1adb5ff385bb4"     # 飞书自建应用 App ID
+    app_secret: "EX4MKvnGW10qqFlNjcrHShXPXlf5IujV" # 飞书自建应用 App Secret
+    agent_ws_url: "ws://127.0.0.1:7429/?Action=CreateCSAgentWS"
+    company_id: 66391350               # 当前项目的固定测试账号身份
+    organization_id: 64404856
+    project_id: ""
+    user_email: "feishu-bot@compshare.local"
+    # 必填白名单。首次联调可临时写 ["*"]，从日志取得 chat_id 后立即收紧。
+    allowed_chat_ids: ["oc_2b31629a0c15e04e41fc53e74c270084"]
+    # 当前目标是外部群。飞书只会推送 @机器人 的外部群消息，
+    # 因此关闭内部话题群的“新话题免 @ 自动回答”能力。
+    auto_reply_new_topics: false
+    max_concurrent: 4
+    max_reply_runes: 3500
+    max_image_bytes: 5242880
+
   llm:
     base_url: "https://api.modelverse.cn/v1"
     # Answer model key (gpt-5.6-terra). Authorized ONLY for terra — NOT for qwen3
@@ -116,7 +135,12 @@ agent:
   # claude CLI, and a resident ccr gateway — are NOT checked at boot: a missing one first shows up as a
   # failed user-facing diagnosis. Fill/verify against deploy/ssh_ops_harness/README.md.
   ssh_ops:
-    enabled: false
+    # 🔴 enabled: true REQUIRES harness_path + gateway_url to be filled in the SAME change —
+    # buildSSHOpsService returns an error for either one empty, and the server does not start.
+    # `python` is NOT validated: empty falls back to the system python3, which has no
+    # claude_agent_sdk, and the only symptom is a diagnosis that fails after the user already
+    # approved the card. Fill all three, or set enabled back to false.
+    enabled: true
     harness_path: ""                   # absolute path to deploy/ssh_ops_harness/harness.py (required when enabled)
     gateway_url: ""                    # ANTHROPIC_BASE_URL of the local claude-code-router gateway (required when enabled)
     python: ""                         # venv interpreter, ABSOLUTE path. Empty falls back to "python3", and the
@@ -144,7 +168,17 @@ agent:
     # account changes, ssh/network lockout) are refused either way, as is command substitution.
     # Turning this on changes what the user is asked to authorize: the consent card, the tool
     # description and the audit phase all switch with it, so it is one field, not a set.
-    allow_writes: false
+    #
+    # On since 2026-07-31 — a product decision, taken with these two facts on the record rather than
+    # against them. (1) "No rm" is not accurate: the 2026-07-30 re-tiering deliberately moved a
+    # TARGETED delete of one non-system path from destructive down to mutating, so `rm /tmp/x` is one
+    # approval away by design; `truncate -s 0` on a log likewise. Only recursive/glob/system-path
+    # deletes stay hard-refused. (2) The changes seen in practice are not all cheap to undo: two live
+    # runs moved an application directory aside and replaced it with an upstream checkout, and stopped
+    # a service the user had not asked about. Every command was carded — the card shows a command, not
+    # a decision, which is the gap. A scope boundary was added to the tool description on 2026-07-31
+    # and is NOT yet validated (0/5 vs 0/5: the behaviour did not occur in either arm).
+    allow_writes: true
 
   # 0 or omitted uses the built-in defaults for llm / mutating /
   # read_expensive. The user_turn_* and max_tokens_per_turn fields are

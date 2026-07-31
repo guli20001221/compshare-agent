@@ -147,10 +147,11 @@ type SubmitInput struct {
 	ImageContext   string
 	// ImageDigest is SHA-256 of the uploaded image bytes. OCR text is excluded
 	// from request identity because another OCR pass may produce different text.
-	ImageDigest  string
-	UserContext  tools.UserContext
-	ConfirmForm  bool
-	GuidedCreate bool
+	ImageDigest   string
+	UserContext   tools.UserContext
+	ConfirmForm   bool
+	GuidedCreate  bool
+	KnowledgeOnly bool
 	// SecretInputs exist only after a sealed envelope is opened. Callers must
 	// never populate this field directly.
 	SecretInputs map[string]string
@@ -189,8 +190,9 @@ type stableExecutionContext struct {
 }
 
 type executionFeatures struct {
-	ConfirmForm  bool `json:"confirm_form"`
-	GuidedCreate bool `json:"guided_create"`
+	ConfirmForm   bool `json:"confirm_form"`
+	GuidedCreate  bool `json:"guided_create"`
+	KnowledgeOnly bool `json:"knowledge_only,omitempty"`
 }
 
 type Disposition string
@@ -693,6 +695,7 @@ func (c *Coordinator) run(turn store.Turn) {
 		ConfirmFunc:      confirm,
 		ConfirmEditsFunc: confirmEdits,
 		GuidedCreate:     in.GuidedCreate,
+		KnowledgeOnly:    in.KnowledgeOnly,
 		SecretInputs:     in.SecretInputs,
 		OnUsage:          func(value llm.TokenUsage) { usage = value },
 	})
@@ -1054,7 +1057,10 @@ func freezeSubmitInputWithSecretKey(in SubmitInput, secretKey []byte) (execution
 			RoleUrn: role, ProjectID: strings.TrimSpace(user.ProjectId), Region: strings.TrimSpace(user.Region),
 			UserEmail: strings.TrimSpace(user.UserEmail), ClientIP: strings.TrimSpace(user.ClientIP),
 		},
-		Features: executionFeatures{ConfirmForm: in.ConfirmForm, GuidedCreate: in.GuidedCreate},
+		Features: executionFeatures{
+			ConfirmForm: in.ConfirmForm, GuidedCreate: in.GuidedCreate,
+			KnowledgeOnly: in.KnowledgeOnly,
+		},
 	}
 	if len(secretInputs) != 0 {
 		sealed, keyID, digest, sealErr := sealTurnSecrets(secretKey, secretInputs, executionEnvelopeAAD(in.Owner, in.SessionID, in.ClientTurnID))
@@ -1125,7 +1131,8 @@ func thawSubmitInputWithSecretKey(turn store.Turn, secretKey []byte) (SubmitInpu
 			UserEmail: envelope.UserContext.UserEmail, ClientIP: envelope.UserContext.ClientIP,
 		},
 		ConfirmForm: envelope.Features.ConfirmForm, GuidedCreate: envelope.Features.GuidedCreate,
-		SecretInputs: secretInputs,
+		KnowledgeOnly: envelope.Features.KnowledgeOnly,
+		SecretInputs:  secretInputs,
 	}, nil
 }
 

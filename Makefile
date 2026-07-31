@@ -1,6 +1,6 @@
 ADDR ?= 0.0.0.0:7429
 
-.PHONY: run build linux deploy test stop
+.PHONY: run build linux deploy deploy-feishu deploy-all test stop
 
 # Build + run the HTTP server.
 # Usage: make run ADDR=:7777
@@ -18,6 +18,15 @@ linux:
 # Register the prebuilt root binary with ally.
 deploy:
 	./deploy/scripts/deploy.sh
+
+# Register the Feishu long-connection adapter as a second ally service.
+deploy-feishu:
+	./deploy/scripts/deploy-feishu.sh
+
+# Register the main Agent and Feishu adapter on the same host.
+deploy-all:
+	./deploy/scripts/deploy.sh
+	./deploy/scripts/deploy-feishu.sh
 
 # Run all Go tests.
 test:
