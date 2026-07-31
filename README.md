@@ -1,6 +1,6 @@
 # compshare-agent
 
-优云算力共享 AI 助手（CompShare GPU 平台）。Go 1.22 单二进制，`server` 子命令提供 HTTP/WS 服务。
+优云算力共享 AI 助手（CompShare GPU 平台）。Go 1.25 单二进制，`server` 子命令提供 HTTP/WS 服务。
 
 ## 配置
 
@@ -21,7 +21,19 @@ go build -o compshare-agent ./cmd
 
 ## 部署
 
-部署入口简化为：
+生产交付物是一个自包含 Docker 镜像，内含 Go 服务、生产配置、Python 3.13、Claude Agent SDK、
+Claude CLI、知识库和 SSH-ops harness。生产节点是 Docker 1.12.6，必须用专用发布命令生成
+`linux/amd64` Docker schema-v2/gzip 镜像：
+
+```bash
+make docker-push-legacy IMAGE=registry.example.com/compshare/compshare-agent:<不可变版本>
+```
+
+构建、目标机兼容性检查、主服务/飞书启动方式见
+[`deploy/docker/README.md`](deploy/docker/README.md)。生产配置会进入镜像层，私有仓库的 pull 权限
+按生产凭据权限管理。
+
+旧的宿主机/ally 部署入口仍保留：
 
 ```bash
 make deploy

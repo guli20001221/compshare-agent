@@ -29,6 +29,18 @@ func TestDeployConfigStagesDurableExecutionOffForSafeClusterCutover(t *testing.T
 		"the tracked deploy config must not activate durable execution during a rolling binary deploy")
 }
 
+func TestDeployConfigPinsContainerSSHOpsRuntime(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "conf", "config.yaml"))
+	require.NoError(t, err)
+	var cfg Config
+	require.NoError(t, yaml.Unmarshal(raw, &cfg))
+	assert.Equal(t,
+		"/opt/compshare-agent/deploy/ssh_ops_harness/harness.py",
+		cfg.Agent.SSHOps.HarnessPath,
+	)
+	assert.Equal(t, "/opt/miniforge3/envs/py313/bin/python", cfg.Agent.SSHOps.Python)
+}
+
 func setRequiredSecretEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("COMPSHARE_PUBLIC_KEY", "public-from-env")

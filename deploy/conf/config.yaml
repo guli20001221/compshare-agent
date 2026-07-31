@@ -165,7 +165,7 @@ agent:
     # claude_agent_sdk, and the only symptom is a diagnosis that fails after the user already
     # approved the card.
     enabled: true
-    harness_path: ""                   # absolute path to deploy/ssh_ops_harness/harness.py (required when enabled)
+    harness_path: "/opt/compshare-agent/deploy/ssh_ops_harness/harness.py" # baked into the production image
     base_url: "https://api.modelverse.cn" # direct Anthropic-compatible /v1/messages endpoint
     api_key: ""                        # empty = inherit agent.llm.api_key (the production Terra key)
     python: "/opt/miniforge3/envs/py313/bin/python" # production Python 3.13 env with requirements.txt installed

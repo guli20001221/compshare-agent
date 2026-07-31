@@ -15,8 +15,11 @@
 # SDK or SSH — so passing them says the guardrails are intact, NOT that the chain works. The only
 # check that covers the chain is a real run against a real box.)
 
-# The Claude Agent SDK that drives the agentic loop (built-in tools disabled via tools=[]; INV-9).
+# The Claude Agent SDK that drives the agentic loop (built-ins restricted to text-only Skill; INV-9).
 # Exact-pinned: this is the version validated on 2026-07-23 (harness smoke + 265/265 guardrails).
+# Its wheel bundles Claude Code 2.1.185 and prefers that binary by default. harness.py explicitly sets
+# cli_path to the operator/image-installed Claude Code 2.1.218, which is the direct-ModelVerse-tested
+# runtime; do not remove that override merely because importing this package succeeds.
 claude-agent-sdk==0.2.106
 
 # SSH transport. The harness touches only the stable SSHClient / connect / exec_command / host-key-policy

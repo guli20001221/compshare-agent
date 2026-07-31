@@ -44,6 +44,20 @@ check("cred-not-in-environ", "Pl4inPwd77x" not in "".join(os.environ.values()))
 check("secrets-has-pw-and-b64", harness._secrets()[0] == "Pl4inPwd77x" and len(harness._secrets()) == 2)
 
 
+# --- CLI selection: the SDK bundles an older CLI and prefers it unless cli_path is explicit. ---
+_real_which = harness.shutil.which
+harness.shutil.which = lambda name: "/usr/local/bin/claude" if name == "claude" else None
+check("cli-selects-operator-pinned-binary", harness.resolve_claude_cli() == "/usr/local/bin/claude")
+harness.shutil.which = lambda _name: None
+try:
+    harness.resolve_claude_cli()
+    check("cli-missing-fails-closed", False)
+except SystemExit:
+    check("cli-missing-fails-closed", True)
+finally:
+    harness.shutil.which = _real_which
+
+
 # --- Phase-1 dispatch: read_only runs, mutating/destructive are refused WITHOUT touching SSH ---
 calls = []
 
