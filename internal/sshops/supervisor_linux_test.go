@@ -33,7 +33,8 @@ func TestSupervisorKillsGrandchildProcessGroup(t *testing.T) {
 	sup := Supervisor{
 		Python:      pythonBin(),
 		HarnessPath: writeFakeHarness(t, body),
-		GatewayURL:  "http://127.0.0.1:3456",
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
 		Timeout:     1 * time.Second, // fire the group-kill fast
 	}
 	c := cred("x", "h", "root", 22, "pw")

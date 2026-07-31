@@ -51,8 +51,8 @@ postgresql://user:pass@host:5432/compshare_agent?sslmode=disable
 单独弹一次授权卡；删除数据、格式化、重启关机、改账号密码、关 SSH/网络这类高危操作一律拒绝。
 
 **比其他功能多一套部署工作**：诊断循环跑在 Claude Agent SDK 的独立子进程里，不在本二进制内，
-所以机器上还要有一个装了 `deploy/ssh_ops_harness/requirements.txt` 的 Python venv、`claude` CLI、
-常驻的 claude-code-router，以及一条数据库迁移。`agent.ssh_ops` 下有三个字段要按机器填。
+所以机器上还要有一个装了 `deploy/ssh_ops_harness/requirements.txt` 的 Python 环境、`claude` CLI，
+以及一条数据库迁移。Claude CLI 通过 Anthropic 协议直连 ModelVerse，不需要额外路由器。
 
 部署步骤与排错见 [`deploy/ssh_ops_harness/README.md`](deploy/ssh_ops_harness/README.md)。
 

@@ -126,16 +126,23 @@ func tallySteps(steps []sshops.Step) (ran, refused int) {
 
 // buildSSHOpsService constructs the sshops.Service (Supervisor + audit) from config. It validates the
 // harness settings so a misconfigured lane fails at boot rather than at first use.
-func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback string, audit sshops.AuditWriter) (*sshops.Service, error) {
+func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback string, audit sshops.AuditWriter) (*sshops.Service, error) {
 	if sc.HarnessPath == "" {
 		return nil, fmt.Errorf("agent.ssh_ops.harness_path is required")
 	}
-	if sc.GatewayURL == "" {
-		return nil, fmt.Errorf("agent.ssh_ops.gateway_url is required")
+	if sc.BaseURL == "" {
+		return nil, fmt.Errorf("agent.ssh_ops.base_url is required")
 	}
 	model := sc.Model
 	if model == "" {
 		model = modelFallback
+	}
+	apiKey := sc.APIKey
+	if apiKey == "" {
+		apiKey = apiKeyFallback
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("agent.ssh_ops.api_key is required when agent.llm.api_key is empty")
 	}
 	// Freeze the wording gate here rather than at each call site: this function is the one place
 	// that has both the config and the knowledge that the lane is actually being built, and it runs
@@ -146,7 +153,8 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback string, audit ssho
 	sup := sshops.Supervisor{
 		Python:      sc.Python,
 		HarnessPath: sc.HarnessPath,
-		GatewayURL:  sc.GatewayURL,
+		BaseURL:     sc.BaseURL,
+		APIKey:      apiKey,
 		Model:       model,
 		Timeout:     sc.Timeout,
 		AllowWrites: sc.AllowWrites,
@@ -186,7 +194,12 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 		log.Printf("ssh-ops disabled: no database for the fail-closed audit store")
 		return nil, nil
 	}
-	svc, err := buildSSHOpsService(cfg.Agent.SSHOps, cfg.Agent.LLM.Model, store.NewSSHOpsAuditStore(db))
+	svc, err := buildSSHOpsService(
+		cfg.Agent.SSHOps,
+		cfg.Agent.LLM.Model,
+		cfg.Agent.LLM.APIKey,
+		store.NewSSHOpsAuditStore(db),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("ssh-ops: %w", err)
 	}
@@ -219,7 +232,12 @@ func cliInstanceOpsRunner(cfg *config.Config, getenv func(string) string) engine
 		log.Printf("warning: ignoring unknown COMPSHARE_SSH_OPS value %q", value)
 		return nil
 	}
-	svc, err := buildSSHOpsService(cfg.Agent.SSHOps, cfg.Agent.LLM.Model, &sshops.MemAuditWriter{})
+	svc, err := buildSSHOpsService(
+		cfg.Agent.SSHOps,
+		cfg.Agent.LLM.Model,
+		cfg.Agent.LLM.APIKey,
+		&sshops.MemAuditWriter{},
+	)
 	if err != nil {
 		log.Printf("warning: ssh-ops disabled: %v", err)
 		return nil

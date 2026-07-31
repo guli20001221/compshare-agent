@@ -34,8 +34,9 @@ func newConfirmSup(t *testing.T) Supervisor {
 	return Supervisor{
 		Python:      pythonBin(),
 		HarnessPath: writeFakeHarness(t, fakeConfirmHarness),
-		GatewayURL:  "http://127.0.0.1:3456",
-		Model:       "deepseek-v4-flash",
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
+		Model:       "gpt-5.6-terra",
 		Timeout:     60 * time.Second,
 		AllowWrites: true,
 	}

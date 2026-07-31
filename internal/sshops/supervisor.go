@@ -16,16 +16,19 @@ import (
 // Supervisor spawns the Python Agent-SDK harness once per consented ops-task and feeds it the SSH
 // credential over a one-shot stdin handshake. Security properties:
 //   - the credential crosses ONLY via stdin (a JSON line) — never argv, never an env var. The SDK
-//     passes the wrapper's whole environment into the `claude` CLI it spawns, so the child runs
-//     with a MINIMAL allowlisted env (no server AK/SK/MYSQL_DSN/LLM key, no credential).
+//     passes the wrapper's whole environment into the `claude` CLI it spawns, so the child gets an
+//     explicitly constructed minimal environment rather than inheriting the server's environment.
+//   - one resolved ModelVerse token (dedicated, or the configured answer-key fallback) is passed as
+//     ANTHROPIC_AUTH_TOKEN; every unrelated server secret and the SSH credential are excluded.
 //   - the process lifetime is the task: ctx cancellation / timeout kills it (CommandContext), so
 //     the heap-resident credential dies with it. No reuse, no caching.
 //   - only the harness's already-scrubbed stdout is returned; the credential is never in it.
 type Supervisor struct {
 	Python      string        // interpreter; default "python3"
 	HarnessPath string        // absolute path to harness.py
-	GatewayURL  string        // ANTHROPIC_BASE_URL of the local claude-code-router gateway
-	Model       string        // third-party model id (e.g. deepseek-v4-flash)
+	BaseURL     string        // ANTHROPIC_BASE_URL (for production: https://api.modelverse.cn)
+	APIKey      string        // ModelVerse token passed only to the Claude CLI child
+	Model       string        // ModelVerse model id (e.g. gpt-5.6-terra)
 	Timeout     time.Duration // hard wall-clock per task; default 5m
 	// AllowWrites rides the same one-shot handshake as the credential, for the same reason: it is
 	// per-task state the harness must not be able to acquire any other way (no env var, no argv, no
@@ -71,8 +74,8 @@ type Step struct {
 }
 
 // envAllowlist: non-secret system vars the interpreter / claude CLI need to function. Deliberately
-// excludes everything secret-bearing (AK/SK, MYSQL_DSN, LLM_API_KEY, COMPSHARE_*). The credential
-// is NOT here — it goes via stdin only.
+// excludes server secrets (AK/SK, MYSQL_DSN, LLM_API_KEY, COMPSHARE_*). The one ModelVerse token the
+// CLI needs is inserted explicitly by childEnv; the SSH credential is NOT here and goes via stdin.
 var envAllowlist = []string{
 	"PATH", "Path", "HOME", "USERPROFILE", "SYSTEMROOT", "SystemRoot",
 	"TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH", "PYTHONHOME",
@@ -81,8 +84,10 @@ var envAllowlist = []string{
 
 func (s Supervisor) childEnv() []string {
 	env := []string{
-		"ANTHROPIC_BASE_URL=" + s.GatewayURL,
-		"ANTHROPIC_API_KEY=dummy-unused",
+		"ANTHROPIC_BASE_URL=" + s.BaseURL,
+		"ANTHROPIC_AUTH_TOKEN=" + s.APIKey,
+		// ModelVerse recommends disabling experimental Claude Code beta headers for compatibility.
+		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1",
 		"NO_PROXY=127.0.0.1,localhost",
 		"no_proxy=127.0.0.1,localhost",
 		// Force UTF-8 on the harness's stdio so its Chinese verdict (and any emoji) survive a
@@ -106,6 +111,12 @@ func (s Supervisor) childEnv() []string {
 func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
 	if s.HarnessPath == "" {
 		return Result{}, fmt.Errorf("sshops: no harness path configured")
+	}
+	if s.BaseURL == "" {
+		return Result{}, fmt.Errorf("sshops: no Anthropic base URL configured")
+	}
+	if s.APIKey == "" {
+		return Result{}, fmt.Errorf("sshops: no Anthropic API key configured")
 	}
 	if !cred.HasSecret() {
 		return Result{}, fmt.Errorf("sshops: credential has no secret")
