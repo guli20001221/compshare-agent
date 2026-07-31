@@ -29,6 +29,32 @@ func createProposalArgs(turnID, gpuType string) map[string]any {
 	}
 }
 
+func TestProposeActionEmitsTraceableArgsBeforeResolution(t *testing.T) {
+	eng := &Engine{safeExecutor: tools.NewSafeToolExecutor(&mockExecutor{})}
+	var events []StepEvent
+
+	_ = eng.executeTool(context.Background(), toolCall(
+		"proposal-trace",
+		tools.ProposeActionName,
+		`{"operation":"UnknownWorkflow","slots":[]}`,
+	), func(ev StepEvent) {
+		events = append(events, ev)
+	})
+
+	var call *StepEvent
+	for i := range events {
+		if events[i].Type == StepToolCall && events[i].Action == tools.ProposeActionName {
+			call = &events[i]
+			break
+		}
+	}
+	require.NotNil(t, call, "ProposeAction must emit the call event trace recorders hash")
+	require.Equal(t, "UnknownWorkflow", call.Args["operation"])
+	hash, err := observability.HashTracePayload(call.Args)
+	require.NoError(t, err)
+	require.NotEmpty(t, hash, "a parsed proposal must never persist an empty args_hash")
+}
+
 func TestProposalImageCatalogSourceUsesCapabilityDefaultWithoutModelConstant(t *testing.T) {
 	spec := actionresolver.OperationSpec{ImageCatalogSource: "custom"}
 	require.Equal(t, "custom", proposalImageCatalogSource(actionresolver.ActionProposal{}, spec))

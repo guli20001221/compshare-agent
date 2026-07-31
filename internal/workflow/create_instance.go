@@ -535,6 +535,11 @@ type imageCatalogIntentSeed struct {
 	InitialSource  string
 	Request        deployment.ImageRequest
 	InitialMatches int
+	// Structured is true only when Query came from a framework/tag literally
+	// present in both the user's text and the live initial catalog. False means
+	// Query is free-form ImageName text proposed by the model or copied by the
+	// user; a community FuzzySearch miss for that wording is never absence proof.
+	Structured bool
 }
 
 // stepResolveImageCatalogIntent freezes the current turn's image phrase as a
@@ -643,6 +648,7 @@ func deriveImageCatalogIntentSeed(wfCtx *Context) (imageCatalogIntentSeed, bool)
 		InitialSource:  source,
 		Request:        request,
 		InitialMatches: len(deployment.RankImages(snap, request)),
+		Structured:     inferred,
 	}, true
 }
 
@@ -654,6 +660,7 @@ func encodeImageCatalogIntentSeed(seed imageCatalogIntentSeed) map[string]any {
 		"Framework":      seed.Request.Framework,
 		"Tag":            seed.Request.Tag,
 		"InitialMatches": seed.InitialMatches,
+		"Structured":     seed.Structured,
 	}
 }
 
@@ -677,6 +684,7 @@ func storedImageCatalogIntentSeed(wfCtx *Context) (imageCatalogIntentSeed, bool)
 			Source:    source,
 		},
 		InitialMatches: int(paramNum(result, "InitialMatches", 0)),
+		Structured:     paramBool(result, "Structured", false),
 	}, true
 }
 
@@ -697,9 +705,10 @@ func oppositeImageSource(source string) string {
 }
 
 // alternateImageCatalogMatchCount returns checked=false when the optional probe
-// did not produce a result. That state is deliberately distinct from a successful
-// zero-row response: unknown keeps the source choice visible; zero can prove that
-// the initial source is unique for this turn.
+// did not produce a result, or when a free-form phrase produced a community
+// FuzzySearch zero. Both states are unknown and keep the source choice visible.
+// A literal framework/tag recovered from the live initial catalog is structured
+// source evidence and may remain settled after its opposite literal probe misses.
 func alternateImageCatalogMatchCount(wfCtx *Context, seed imageCatalogIntentSeed) (count int, checked bool) {
 	if wfCtx == nil {
 		return 0, false
@@ -711,13 +720,34 @@ func alternateImageCatalogMatchCount(wfCtx *Context, seed imageCatalogIntentSeed
 	source := oppositeImageSource(seed.InitialSource)
 	snap := formImageCatalog(result, source)
 	request := deployment.ImageRequest{Name: seed.Query, Source: source}
-	return len(deployment.RankImages(snap, request)), true
+	if matches := len(deployment.RankImages(snap, request)); matches > 0 {
+		// A positive FuzzySearch result is enough to keep the source choice visible.
+		return matches, true
+	}
+	if source != "community" {
+		// Platform alternate checks fetch the whole (currently sub-100 row)
+		// catalog, so a successful zero is a real local-ranking zero.
+		return 0, true
+	}
+
+	if !seed.Structured {
+		// The upstream community "fuzzy" filter is whole-phrase containment.
+		// A verbose free-form name can miss a related family solely because of
+		// wording, so its zero is unknown and must keep the source choice visible.
+		return 0, false
+	}
+	// A structured query is a literal framework/tag recovered from the user's
+	// words and the live initial catalog, not model-authored prose. A successful
+	// opposite-source probe with no same literal name leaves that typed catalog
+	// intent on its initial source without scanning the entire community catalog.
+	return 0, true
 }
 
-// catalogIntentUniquelySettlesCurrentSource is true only after BOTH relevant
-// facts are known: the initial source has a matching live row and the successfully
-// queried opposite source has none. A match in both catalogs is a source choice,
-// not permission to keep whichever default the Agent happened to emit.
+// catalogIntentUniquelySettlesCurrentSource is true only after the initial source
+// has matching live evidence and the opposite-source check found no conflict it
+// can support. A match in both catalogs is a source choice, not permission to keep
+// whichever default the Agent happened to emit; a free-form community miss stays
+// unknown rather than being promoted to a directory-level absence claim.
 func catalogIntentUniquelySettlesCurrentSource(wfCtx *Context) bool {
 	seed, ok := currentImageCatalogIntentSeed(wfCtx)
 	if !ok || seed.InitialMatches == 0 ||

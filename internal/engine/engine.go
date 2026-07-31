@@ -2836,10 +2836,26 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	if operation, ok := proposalOperationForTool(action); ok {
 		args = proposalArgsForOperation(operation, args)
 		args = e.safeExecutor.FilterArgs(tools.ProposeActionName, args)
+		onStep(StepEvent{
+			Type:   StepToolCall,
+			Action: tools.ProposeActionName,
+			Source: observability.ToolSourceMainReAct,
+			Args:   e.safeExecutor.RedactArgs(tools.ProposeActionName, args),
+		})
 		return e.executeActionProposal(ctx, args, onStep)
 	}
 	if action == tools.ProposeActionName {
 		args = e.safeExecutor.FilterArgs(action, args)
+		// ProposeAction used to emit only a result/error event. Trace recorders then
+		// had to synthesize a call with no Args, leaving args_hash empty on every
+		// successful write proposal. Emit the same redacted call event every other
+		// model-invoked tool emits before resolution starts.
+		onStep(StepEvent{
+			Type:   StepToolCall,
+			Action: tools.ProposeActionName,
+			Source: observability.ToolSourceMainReAct,
+			Args:   e.safeExecutor.RedactArgs(action, args),
+		})
 		return e.executeActionProposal(ctx, args, onStep)
 	}
 	if action == tools.UpdateTaskStateName {

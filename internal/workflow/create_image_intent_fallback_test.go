@@ -213,6 +213,7 @@ func TestUserPinnedSpecificNameIsNotBroadenedByIncidentalFrameworkWord(t *testin
 func TestGuidedRunShowsFrameworkPickerAsFirstCardWhenProposalOmittedImageName(t *testing.T) {
 	executor := formMockExecutor()
 	executor.results["DescribeCompShareImages"] = frameworkFallbackImages()
+	executor.results["DescribeCommunityImages"] = emptyCommunityImageCatalog()
 
 	var firstForm *ConfirmForm
 	eng := NewEngine(executor, nil, nil)
@@ -351,6 +352,46 @@ func TestAlternateCatalogFailureDoesNotProvePlatformUnique(t *testing.T) {
 	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
 	require.NoError(t, err)
 	assert.False(t, skip, "unknown alternate state must keep the source choice visible")
+}
+
+func TestCommunityFuzzyZeroForFreeTextKeepsSourceChoiceVisible(t *testing.T) {
+	wfCtx := frameworkFallbackContext("用最强 ComfyUI 工作流整合包为我创建一台4090")
+	addPlatformComfyImage(wfCtx)
+	wfCtx.Params["ImageName"] = "最强 ComfyUI 工作流整合包"
+	wfCtx.InitialParams["ImageName"] = "最强 ComfyUI 工作流整合包"
+	wfCtx.referenceData.ImageSelection = ImageSelectionUserPinned
+	seed := freezeImageCatalogIntent(t, wfCtx)
+	require.Equal(t, "最强 ComfyUI 工作流整合包", seed.Query,
+		"a specific user/Agent phrase must not be broadened into a framework")
+	require.False(t, seed.Structured)
+	require.Greater(t, seed.InitialMatches, 0,
+		"the platform catalog relates the phrase through the shared ComfyUI token")
+
+	// This is the real upstream failure mode: whole-string FuzzySearch returned
+	// zero even though a differently-worded ComfyUI family exists.
+	wfCtx.StepResults[alternateImageCatalogStepName] = emptyCommunityImageCatalog()
+	matches, checked := alternateImageCatalogMatchCount(wfCtx, seed)
+	assert.Zero(t, matches)
+	assert.False(t, checked, "one wording miss is unknown, never a directory-level zero")
+
+	skipSource, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.False(t, skipSource)
+}
+
+func TestStructuredCatalogFactCanSettlePlatformSourceAfterLiteralCommunityMiss(t *testing.T) {
+	wfCtx := frameworkFallbackContext("在华北一C用最新pytorch为我创建一台4090")
+	seed := freezeImageCatalogIntent(t, wfCtx)
+	require.True(t, seed.Structured)
+	require.Greater(t, seed.InitialMatches, 0)
+	wfCtx.StepResults[alternateImageCatalogStepName] = emptyCommunityImageCatalog()
+
+	matches, checked := alternateImageCatalogMatchCount(wfCtx, seed)
+	require.True(t, checked)
+	assert.Zero(t, matches)
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skip, "a literal live framework fact keeps the direct platform flow")
 }
 
 func TestSDWebUINameCollisionIsDetectedWithoutAliasTable(t *testing.T) {
