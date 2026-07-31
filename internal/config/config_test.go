@@ -180,9 +180,10 @@ func TestLoad_SSHOpsConfigParses(t *testing.T) {
   ssh_ops:
     enabled: true
     harness_path: /opt/harness.py
-    gateway_url: http://127.0.0.1:3456
+    base_url: https://api.modelverse.cn
+    api_key: ssh-ops-test-key
     python: python3
-    model: ""
+    model: gpt-5.6-terra
     timeout: "5m"
 `))
 
@@ -192,7 +193,9 @@ func TestLoad_SSHOpsConfigParses(t *testing.T) {
 	require.NotNil(t, cfg.Agent.SSHOps.Enabled)
 	assert.True(t, *cfg.Agent.SSHOps.Enabled)
 	assert.Equal(t, "/opt/harness.py", cfg.Agent.SSHOps.HarnessPath)
-	assert.Equal(t, "http://127.0.0.1:3456", cfg.Agent.SSHOps.GatewayURL)
+	assert.Equal(t, "https://api.modelverse.cn", cfg.Agent.SSHOps.BaseURL)
+	assert.Equal(t, "ssh-ops-test-key", cfg.Agent.SSHOps.APIKey)
+	assert.Equal(t, "gpt-5.6-terra", cfg.Agent.SSHOps.Model)
 	assert.Equal(t, 5*time.Minute, cfg.Agent.SSHOps.Timeout)
 	// enabled: true must win over the env fallback (COMPSHARE_SSH_OPS unset here).
 	assert.Equal(t, "1", cfg.RuntimeGetenv(func(string) string { return "" })("COMPSHARE_SSH_OPS"))

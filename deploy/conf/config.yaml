@@ -130,26 +130,24 @@ agent:
   # Default OFF. When enabled: false the tool is absent from the model's window and nothing changes.
   # Server path requires a non-static STS provider (INV-12); it runs on the current non-durable WS/SSE
   # transport (no durable_turns dependency — the lane is read-only, so a disconnect just ends the probe
-  # and the user retries). CLI path needs only enabled: true. harness_path/gateway_url are required when
-  # enabled (boot fails loudly if enabled but unset). Host deps — a venv holding claude_agent_sdk, the
-  # claude CLI, and a resident ccr gateway — are NOT checked at boot: a missing one first shows up as a
+  # and the user retries). CLI path needs only enabled: true. harness_path/base_url and a resolved API
+  # key are required when enabled (boot fails loudly if missing). Host deps — a Python env holding
+  # claude_agent_sdk and the claude CLI — are NOT checked at boot: a missing one first shows up as a
   # failed user-facing diagnosis. Fill/verify against deploy/ssh_ops_harness/README.md.
   ssh_ops:
-    # 🔴 enabled: true REQUIRES harness_path + gateway_url to be filled in the SAME change —
-    # buildSSHOpsService returns an error for either one empty, and the server does not start.
+    # 🔴 enabled: true REQUIRES harness_path + base_url + an API key —
+    # buildSSHOpsService returns an error when any required value is unresolved, and the server does not start.
     # `python` is NOT validated: empty falls back to the system python3, which has no
     # claude_agent_sdk, and the only symptom is a diagnosis that fails after the user already
-    # approved the card. Fill all three, or set enabled back to false.
+    # approved the card.
     enabled: true
     harness_path: ""                   # absolute path to deploy/ssh_ops_harness/harness.py (required when enabled)
-    gateway_url: ""                    # ANTHROPIC_BASE_URL of the local claude-code-router gateway (required when enabled)
-    python: ""                         # venv interpreter, ABSOLUTE path. Empty falls back to "python3", and the
-                                       # system python3 has no claude_agent_sdk — so empty is broken, not defaulted.
-    # "provider,model" two-part form only. ccr's routing table has no entry for a bare model name, so a
-    # bare name — and an empty value, which falls back to agent.llm.model, itself bare — is served as
-    # deepseek-v4-flash with no error and no warning: the only symptom is worse diagnosis.
-    # ⚠️ The provider here is `modelverse-terra`, NOT `modelverse`. They are two entries in ccr's
-    # routing table with different keys; naming the wrong one is served as flash with no error.
+    base_url: "https://api.modelverse.cn" # direct Anthropic-compatible /v1/messages endpoint
+    api_key: ""                        # empty = inherit agent.llm.api_key (the production Terra key)
+    python: "/opt/miniforge3/envs/py313/bin/python" # production Python 3.13 env with requirements.txt installed
+    # Direct ModelVerse Anthropic smoke, 2026-07-31: gpt-5.6-terra returned HTTP 200 with the expected
+    # streaming message events and a forced tool_use; Claude CLI 2.1.218 also completed a print-mode
+    # request using ANTHROPIC_AUTH_TOKEN. This is a plain ModelVerse model id, not a router tuple.
     #
     # Was deepseek-v4-pro until 2026-07-31, on a paired N=3 where terra went 2/5 on repair. That
     # table was contaminated by the GUARDRAILS, not by the model: two of terra's three failures were
@@ -161,7 +159,7 @@ agent:
     # What the evidence supports is "no measured quality difference on the cells tested"; the reason
     # to move is latency, not superiority, and the tested cells are a handful of fault shapes on two
     # boxes, not the whole space. This field is ours to set, not the deployer's; inert until enabled.
-    model: "modelverse-terra,gpt-5.6-terra"
+    model: "gpt-5.6-terra"
     timeout: "12m"                     # 5m truncates a heavy diagnosis mid-run, and the symptom reads as model failure
     # Let the agent REPAIR the box, not just describe the repair. Off = it reports fixes as optional
     # steps; on = it runs them and verifies. Destructive commands (delete, wipe, reboot, password /

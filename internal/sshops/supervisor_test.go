@@ -3,10 +3,16 @@ package sshops
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+)
+
+const (
+	testAnthropicBaseURL = "https://api.modelverse.cn"
+	testAnthropicAPIKey  = "modelverse-test-token"
 )
 
 // writeFakeHarness writes a tiny python stand-in for harness.py: it reads the stdin handshake,
@@ -24,8 +30,8 @@ func writeFakeHarness(t *testing.T, body string) string {
 
 func pythonBin() string {
 	for _, c := range []string{"python3", "python"} {
-		if _, err := os.Stat(c); err == nil {
-			return c
+		if path, err := exec.LookPath(c); err == nil {
+			return path
 		}
 	}
 	return "python" // resolved via PATH by exec
@@ -39,6 +45,7 @@ print("<<<VERDICT>>>")
 print("HANDSHAKE_OK host=%s user=%s port=%s instance=%s task=%s" % (
     conn.get("host"), conn.get("user"), conn.get("port"), conn.get("instance_id"), conn.get("task")))
 print("HAS_PASSWORD=%s" % bool(conn.get("password")))
+print("AUTH_TOKEN_OK=%s" % (os.environ.get("ANTHROPIC_AUTH_TOKEN") == "modelverse-test-token"))
 print("ENVKEYS=" + ",".join(sorted(os.environ.keys())))
 print("<<<END>>>")
 `
@@ -53,8 +60,9 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	sup := Supervisor{
 		Python:      pythonBin(),
 		HarnessPath: writeFakeHarness(t, fakeEcho),
-		GatewayURL:  "http://127.0.0.1:3456",
-		Model:       "deepseek-v4-flash",
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
+		Model:       "gpt-5.6-terra",
 		Timeout:     30 * time.Second,
 	}
 	c := cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw")
@@ -83,9 +91,12 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	if strings.Contains(out, "LLM_API_KEY") || strings.Contains(out, "MYSQL_DSN") {
 		t.Fatalf("parent secret env leaked into child: %q", out)
 	}
-	// the child got the gateway config it needs
-	if !strings.Contains(out, "ANTHROPIC_BASE_URL") {
-		t.Fatalf("gateway env not passed: %q", out)
+	// The child gets only the dedicated Anthropic endpoint/token it needs, not the parent key names.
+	if !strings.Contains(out, "ANTHROPIC_BASE_URL") || !strings.Contains(out, "AUTH_TOKEN_OK=True") {
+		t.Fatalf("ModelVerse Anthropic config not passed: %q", out)
+	}
+	if strings.Contains(out, "ANTHROPIC_API_KEY") {
+		t.Fatalf("legacy/dummy Anthropic API key should not be present: %q", out)
 	}
 }
 
@@ -98,7 +109,8 @@ func TestSupervisorCredentialAndTaskNotInArgv(t *testing.T) {
 	sup := Supervisor{
 		Python:      pythonBin(),
 		HarnessPath: writeFakeHarness(t, fake),
-		GatewayURL:  "http://127.0.0.1:3456",
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
 		Timeout:     30 * time.Second,
 	}
 	c := cred("uhost-abc", "h", "root", 22, "ArgvMustNotHaveThis")
@@ -121,7 +133,8 @@ func TestSupervisorAbortKillsProcess(t *testing.T) {
 	sup := Supervisor{
 		Python:      pythonBin(),
 		HarnessPath: writeFakeHarness(t, "import sys,time; sys.stdin.readline(); time.sleep(60); print('SHOULD_NOT_PRINT')"),
-		GatewayURL:  "http://127.0.0.1:3456",
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
 		Timeout:     1 * time.Second, // hard timeout kills the sleeping child
 	}
 	c := cred("x", "h", "root", 22, "pw")
@@ -145,13 +158,21 @@ func TestSupervisorAbortKillsProcess(t *testing.T) {
 }
 
 func TestSupervisorRequiresSecretAndPath(t *testing.T) {
-	if _, err := (Supervisor{HarnessPath: "x"}).Run(context.Background(),
+	if _, err := (Supervisor{HarnessPath: "x", BaseURL: testAnthropicBaseURL, APIKey: testAnthropicAPIKey}).Run(context.Background(),
 		Credential{Host: "h", User: "u", Port: 22}, "t", nil, nil); err == nil {
 		t.Fatalf("expected error for credential without secret")
 	}
 	if _, err := (Supervisor{}).Run(context.Background(),
 		Credential{Host: "h", User: "u", Port: 22, password: "p"}, "t", nil, nil); err == nil {
 		t.Fatalf("expected error for missing harness path")
+	}
+	if _, err := (Supervisor{HarnessPath: "x", APIKey: testAnthropicAPIKey}).Run(context.Background(),
+		Credential{Host: "h", User: "u", Port: 22, password: "p"}, "t", nil, nil); err == nil {
+		t.Fatalf("expected error for missing Anthropic base URL")
+	}
+	if _, err := (Supervisor{HarnessPath: "x", BaseURL: testAnthropicBaseURL}).Run(context.Background(),
+		Credential{Host: "h", User: "u", Port: 22, password: "p"}, "t", nil, nil); err == nil {
+		t.Fatalf("expected error for missing Anthropic API key")
 	}
 }
 

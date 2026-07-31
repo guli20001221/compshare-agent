@@ -25,7 +25,7 @@ func (noopDescriber) Execute(context.Context, string, map[string]any) (map[strin
 // fakeDiagnoser records whether/how Diagnose was reached and streams its configured steps, mirroring
 // the real Service (streamed steps == returned Steps).
 type fakeDiagnoser struct {
-	lastConfirm sshops.ConfirmFunc
+	lastConfirm    sshops.ConfirmFunc
 	calls          int
 	output         string
 	steps          []sshops.Step
@@ -182,11 +182,11 @@ func TestInstanceOpsRunner_TranslatesNoSSHTargetSentinel(t *testing.T) {
 // baseGateCfg is a cfg where the ONLY thing preventing a wired lane is the flag under test.
 func gateCfg() *config.Config {
 	return &config.Config{Agent: config.AgentConfig{
-		LLM: config.LLMConfig{Model: "deepseek-v4-flash"},
+		LLM: config.LLMConfig{Model: "gpt-5.6-terra", APIKey: "modelverse-test-key"},
 		STS: config.STSConfig{ServiceAK: "ak", ServiceSK: "sk"},
 		SSHOps: config.SSHOpsConfig{
 			HarnessPath: "/opt/harness.py",
-			GatewayURL:  "http://127.0.0.1:3456",
+			BaseURL:     "https://api.modelverse.cn",
 		},
 	}}
 }
@@ -256,11 +256,23 @@ func TestServerInstanceOpsRunner_MisconfigIsBootError(t *testing.T) {
 }
 
 func TestBuildSSHOpsService_ValidatesAndDefaults(t *testing.T) {
-	_, err := buildSSHOpsService(config.SSHOpsConfig{GatewayURL: "http://x"}, "m", &sshops.MemAuditWriter{})
+	_, err := buildSSHOpsService(config.SSHOpsConfig{BaseURL: "https://api.example"}, "m", "key", &sshops.MemAuditWriter{})
 	require.Error(t, err, "harness_path is required")
-	_, err = buildSSHOpsService(config.SSHOpsConfig{HarnessPath: "/h.py"}, "m", &sshops.MemAuditWriter{})
-	require.Error(t, err, "gateway_url is required")
-	svc, err := buildSSHOpsService(config.SSHOpsConfig{HarnessPath: "/h.py", GatewayURL: "http://x"}, "m", &sshops.MemAuditWriter{})
+	_, err = buildSSHOpsService(config.SSHOpsConfig{HarnessPath: "/h.py"}, "m", "key", &sshops.MemAuditWriter{})
+	require.Error(t, err, "base_url is required")
+	_, err = buildSSHOpsService(
+		config.SSHOpsConfig{HarnessPath: "/h.py", BaseURL: "https://api.example"},
+		"m",
+		"",
+		&sshops.MemAuditWriter{},
+	)
+	require.Error(t, err, "api_key or the agent.llm.api_key fallback is required")
+	svc, err := buildSSHOpsService(
+		config.SSHOpsConfig{HarnessPath: "/h.py", BaseURL: "https://api.example"},
+		"m",
+		"fallback-key",
+		&sshops.MemAuditWriter{},
+	)
 	require.NoError(t, err)
 	require.NotNil(t, svc)
 }
