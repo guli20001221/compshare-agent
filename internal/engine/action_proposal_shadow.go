@@ -366,11 +366,16 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
+	imageIntentText := ""
+	if _, carriesImageName := spec.Fields["ImageName"]; carriesImageName {
+		imageIntentText = view.CurrentQuestion
+	}
 	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{
 		ZoneCatalog:          zoneCatalog,
 		ImageCatalog:         imageCatalog,
 		ImageSelection:       deriveImageSelection(resolved.Provenance),
 		ChargeTypeUserPinned: chargeTypeUserPinned(resolved.Provenance),
+		ImageIntentText:      imageIntentText,
 	}, targetEvidence: targetEvidence}, nil
 }
 

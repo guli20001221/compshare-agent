@@ -490,8 +490,9 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 			//
 			// The whole catalog costs one larger response and is what the ranker was
 			// written for: nameSimilarity lowercases both sides, and rankRecommendations
-			// tiebreaks the same framework by FrameworkVersionIndex descending, so
-			// "最新pytorch" lands the newest PyTorch at the top of the picker.
+			// tiebreaks the same framework by its structured version (using the
+			// upstream index when populated), so "最新pytorch" lands the newest
+			// PyTorch at the top of the picker.
 			return args, nil
 		},
 	}
@@ -1270,12 +1271,20 @@ type imageCandidateSet struct {
 // resolves the flag from the zone catalog (createZoneIsPod), the same authority the
 // create gate uses, so it cannot be stale or unset.
 func buildImageCandidateSet(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy, zoneIsPod bool) imageCandidateSet {
-	snap := formImageCatalog(images, paramStr(params, "ImageSource", "platform"))
-	base := deployment.RankImages(snap, deployment.ImageRequest{
+	return buildImageCandidateSetForRequest(params, images, taxonomy, deployment.ImageRequest{
 		Name:         paramStr(params, "ImageName", ""),
 		RequestedGPU: gpuType,
 		Zone:         deployment.ZoneConstraint{Zone: paramStr(params, "Zone", ""), IsPod: zoneIsPod},
 	})
+}
+
+// buildImageCandidateSetForRequest is the shared implementation for the ordinary
+// proposal path and the current-turn catalog fallback. The latter supplies a
+// structured Framework/Tag read from the live catalog instead of fabricating an
+// ImageName; both paths still rank through deployment.RankImages.
+func buildImageCandidateSetForRequest(params map[string]any, images map[string]any, taxonomy *deployment.ImageTaxonomy, request deployment.ImageRequest) imageCandidateSet {
+	snap := formImageCatalog(images, paramStr(params, "ImageSource", "platform"))
+	base := deployment.RankImages(snap, request)
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
 	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
 	wantCategory := strings.TrimSpace(paramStr(params, "ImageCategory", ""))
@@ -1311,8 +1320,28 @@ func filterSelections(in []deployment.ImageSelection, keep func(deployment.Image
 // same authoritative pod flag, resolved from the zone catalog rather than the
 // ZoneIsPod cache the picker used to read before it was warm.
 func createImageCandidates(wfCtx *Context) imageCandidateSet {
-	return buildImageCandidateSet(wfCtx.Params, createImageResult(wfCtx),
-		paramStr(wfCtx.Params, "GpuType", ""), createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
+	images := createImageResult(wfCtx)
+	request := deployment.ImageRequest{
+		Name:         paramStr(wfCtx.Params, "ImageName", ""),
+		RequestedGPU: paramStr(wfCtx.Params, "GpuType", ""),
+		Zone: deployment.ZoneConstraint{
+			Zone:  paramStr(wfCtx.Params, "Zone", ""),
+			IsPod: createZoneIsPod(wfCtx),
+		},
+	}
+	if inferred, ok := currentTurnImageCatalogRequest(wfCtx); ok {
+		// The catalog fact is the grounded interpretation of this turn. Do not also
+		// score the Agent's free-text ImageName (for example "最新pytorch"): a row
+		// whose display name happens to contain "pytorch" would receive an extra
+		// vote and could outrank a newer runtime-named row from the same framework.
+		request.Name = ""
+		request.Framework = inferred.Framework
+		request.Tag = inferred.Tag
+		request.Source = inferred.Source
+	}
+	return buildImageCandidateSetForRequest(
+		wfCtx.Params, images, createImageTaxonomy(wfCtx), request,
+	)
 }
 
 // createZoneIsPod resolves the pinned zone's pod flag from the zone catalog — the
@@ -1379,7 +1408,7 @@ func stepGuidedChooseImage() Step {
 		ConfirmSubmitMode: ConfirmSubmitContinue,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			gpuType := paramStr(wfCtx.Params, "GpuType", "")
-			current, opts, _ := guidedImageFormOptions(wfCtx.Params, createImageResult(wfCtx), gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
+			current, opts, _ := guidedImageFormOptionsForContext(wfCtx, gpuType)
 			if len(opts) == 0 {
 				return nil, fmt.Errorf("未找到可选镜像，请换一个镜像来源或稍后再试")
 			}
@@ -2996,8 +3025,60 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 // hasExplicitImageIntent — so BOTH steps show for community BROWSING (source chosen, no
 // concrete image yet), which is exactly the case the two-stage flow serves. An Agent
 // SUGGESTION is not settlement, so these steps show for it too — the user still chooses.
+//
+// The one additional skip is a catalog-grounded framework/tag explicitly present
+// in the current user turn. It repairs a missing ImageName in the Agent proposal,
+// but settles only the source/filter AXES: the concrete image picker still runs.
 func shouldSkipGuidedImageSourceStep(wfCtx *Context) (bool, error) {
-	return imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx), nil
+	_, catalogIntent := currentTurnImageCatalogRequest(wfCtx)
+	return imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx) || catalogIntent, nil
+}
+
+// currentTurnImageCatalogRequest is the deterministic fallback for an Agent
+// proposal that omitted ImageName or supplied only a free-text suggestion even
+// though the current user turn literally named a framework or tag carried by the
+// live platform catalog.
+//
+// It is intentionally narrow:
+//   - a concrete id and a user-pinned specific name keep their ordinary path;
+//     only an omitted or Agent-suggested free-text name can be recovered;
+//   - only the default platform catalog participates (community browsing remains a
+//     user choice);
+//   - deployment.InferImageCatalogRequest accepts only a literal value from this
+//     run's live catalog and refuses multiple unrelated terms.
+//
+// The returned request only ranks the picker. It never writes Params, never marks
+// the image user-settled, and never skips the concrete-image confirmation.
+func currentTurnImageCatalogRequest(wfCtx *Context) (deployment.ImageRequest, bool) {
+	if wfCtx == nil ||
+		strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" ||
+		normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) != "platform" {
+		return deployment.ImageRequest{}, false
+	}
+	request, ok := deployment.InferImageCatalogRequest(
+		createImageCatalog(wfCtx),
+		wfCtx.ImageIntentText(),
+		"platform",
+	)
+	if !ok {
+		return deployment.ImageRequest{}, false
+	}
+	// An Agent-supplied free-text name is not a selection. Prefer the current
+	// user's literal live-catalog fact when ranking it; this covers proposals such
+	// as ImageName="最新pytorch" as well as proposals that omitted ImageName.
+	//
+	// A user-pinned specific name is different: do not let one incidental framework
+	// word broaden it to every image with that tag. Only augment a user-pinned name
+	// when the name itself is exactly the matched catalog fact.
+	if wfCtx.ImageSelection() == ImageSelectionUserPinned {
+		name := strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", ""))
+		exactCatalogFact := (request.Framework != "" && strings.EqualFold(name, strings.TrimSpace(request.Framework))) ||
+			(request.Tag != "" && strings.EqualFold(name, strings.TrimSpace(request.Tag)))
+		if !exactCatalogFact {
+			return deployment.ImageRequest{}, false
+		}
+	}
+	return request, true
 }
 
 // imageSuggestionSettlesAxis reports that the Agent's suggestion has already
@@ -3029,7 +3110,8 @@ func imageSuggestionSettlesAxis(wfCtx *Context) bool {
 }
 
 func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
-	if imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx) {
+	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
+		imageSuggestionSettlesAxis(wfCtx) || catalogIntent {
 		return true, nil
 	}
 	// No empty card: the facets step earns its place only when the chosen source's
@@ -3051,7 +3133,8 @@ func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
 // means exactly "no tag would have led anywhere". A one-option card (only 不限标签)
 // is not a choice, so it is skipped too.
 func shouldSkipGuidedImageTagStep(wfCtx *Context) (bool, error) {
-	if imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx) {
+	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
+		imageSuggestionSettlesAxis(wfCtx) || catalogIntent {
 		return true, nil
 	}
 	set := createImageCandidates(wfCtx)
@@ -3872,7 +3955,7 @@ func guidedImagePageDescription(shown, candidates int) string {
 
 func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
-	current, opts, candidates := guidedImageFormOptions(wfCtx.Params, createImageResult(wfCtx), gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx))
+	current, opts, candidates := guidedImageFormOptionsForContext(wfCtx, gpuType)
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("未找到可选镜像，请换一个镜像来源或稍后再试")
 	}
@@ -3903,14 +3986,13 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 		return nil, err
 	}
 	gpuType, _ := wfCtx.Params["GpuType"].(string)
-	images := createImageResult(wfCtx)
 
 	var fields []ConfirmFormField
 	// The concrete image was settled before any capacity card. The final card only
 	// states that decision: changing it here would invalidate GPU/zone/spec choices
 	// that were computed for a different image. A future "修改镜像" affordance must
 	// return to the image step and re-run the dependency chain, not edit in place.
-	if cur, opts, _ := guidedImageFormOptions(wfCtx.Params, images, gpuType, createImageTaxonomy(wfCtx), createZoneIsPod(wfCtx)); cur != "" && len(opts) > 0 {
+	if cur, opts, _ := guidedImageFormOptionsForContext(wfCtx, gpuType); cur != "" && len(opts) > 0 {
 		fields = append(fields, ConfirmFormField{
 			Key: "ImageId", Label: "镜像", Type: "select", Value: cur, Editable: false,
 		})
@@ -5193,6 +5275,34 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 		return "", nil, 0
 	}
 	set := buildImageCandidateSet(params, images, gpuType, taxonomy, zoneIsPod)
+	return guidedImageFormOptionsFromSet(params, images, gpuType, set, false)
+}
+
+// guidedImageFormOptionsForContext is the context-aware picker path. When the
+// Agent omitted ImageName (or supplied only a free-text suggestion) but the current
+// turn literally matches one framework or tag in the live catalog,
+// createImageCandidates supplies that structured request and the generic catalog
+// default is suppressed. The ranked catalog candidates therefore lead; no concrete
+// id is treated as current until the user submits this picker.
+func guidedImageFormOptionsForContext(wfCtx *Context, gpuType string) (string, []ConfirmFormOption, int) {
+	if wfCtx == nil {
+		return "", nil, 0
+	}
+	images := createImageResult(wfCtx)
+	if images == nil {
+		return "", nil, 0
+	}
+	_, catalogFallback := currentTurnImageCatalogRequest(wfCtx)
+	return guidedImageFormOptionsFromSet(
+		wfCtx.Params,
+		images,
+		gpuType,
+		createImageCandidates(wfCtx),
+		catalogFallback,
+	)
+}
+
+func guidedImageFormOptionsFromSet(params map[string]any, images map[string]any, gpuType string, set imageCandidateSet, suppressCatalogDefault bool) (string, []ConfirmFormOption, int) {
 	snap := set.snap
 	ranked := set.final
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
@@ -5251,7 +5361,10 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 	// facets AND the hard filters. A selection dropped by a facet is re-picked from
 	// the facet-scoped candidates below; a selection dropped by the pod/status gate
 	// is not a valid candidate at all and must not lead (or appear).
-	current := pickImageId(params, images)
+	current := ""
+	if !suppressCatalogDefault {
+		current = pickImageId(params, images)
+	}
 	if current != "" && imageSelectionMatchesFacets(snap, current, wantType, wantTag) {
 		if entry, ok := snap.ByID(current); ok {
 			if inCandidates[current] {

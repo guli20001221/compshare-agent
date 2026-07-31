@@ -85,6 +85,8 @@ func TestProposeActionResolvesGpuTypeAgainstLiveCatalog(t *testing.T) {
 	require.NotNil(t, resolved.action.Confirmation)
 	require.Equal(t, "4090_48G", resolved.action.Confirmation.Arguments["GpuType"],
 		"confirm card and executed args must be the same string")
+	require.Equal(t, eng.lastUserMsg, resolved.referenceData.ImageIntentText,
+		"the exact current turn reaches the image workflow as non-sealed fallback context")
 }
 
 func TestProposeActionShadowRejectsSubstringTarget(t *testing.T) {
