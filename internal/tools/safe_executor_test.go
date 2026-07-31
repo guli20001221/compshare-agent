@@ -150,6 +150,20 @@ func TestDescribeCompShareImagesAllowsImageIDFilter(t *testing.T) {
 	assert.NotContains(t, filtered, "Unexpected")
 }
 
+func TestDescribeCommunityImagesAllowsImageIDFilter(t *testing.T) {
+	safe := NewSafeToolExecutor(&spyExecutor{})
+
+	filtered := safe.FilterArgs("DescribeCommunityImages", map[string]any{
+		"CompShareImageId": "compshareImage-1pl06yxr5lvm",
+		"FuzzySearch":      "FaceFusion",
+		"Unexpected":       "drop-me",
+	})
+
+	assert.Equal(t, "compshareImage-1pl06yxr5lvm", filtered["CompShareImageId"])
+	assert.Equal(t, "FaceFusion", filtered["FuzzySearch"])
+	assert.NotContains(t, filtered, "Unexpected")
+}
+
 func TestDescribeCompShareImagesAllowsOffsetForPagination(t *testing.T) {
 	safe := NewSafeToolExecutor(&spyExecutor{})
 

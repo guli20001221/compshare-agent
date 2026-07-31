@@ -117,6 +117,7 @@ func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {
 	require.NotContains(t, properties, "Password")
 	require.NotContains(t, properties, proposalChargeTypeUserQuoteField,
 		"a request with no normalized enum fields must not gain an irrelevant quote object")
+	require.NotContains(t, properties, proposalImageSourceUserQuoteField)
 }
 
 func TestRequestToolCarriesNormalizedEnumUserQuotes(t *testing.T) {
@@ -137,18 +138,32 @@ func TestRequestToolCarriesNormalizedEnumUserQuotes(t *testing.T) {
 	require.Contains(t, parameters["required"], proposalChargeTypeUserQuoteField)
 	charge := properties["ChargeType"].(map[string]any)
 	require.Contains(t, charge["description"], proposalChargeTypeUserQuoteField)
+	require.Contains(t, properties, proposalImageSourceUserQuoteField)
+	sourceQuoteField := properties[proposalImageSourceUserQuoteField].(map[string]any)
+	require.Equal(t, "string", sourceQuoteField["type"])
+	require.Contains(t, sourceQuoteField["description"], "当前消息")
+	require.Contains(t, sourceQuoteField["description"], "历史推荐")
+	require.Contains(t, parameters["required"], proposalImageSourceUserQuoteField)
+	source := properties["ImageSource"].(map[string]any)
+	require.Contains(t, source["description"], proposalImageSourceUserQuoteField)
 
 	got := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
-		"GpuType":                        "4090",
-		"ChargeType":                     "Postpay",
-		proposalChargeTypeUserQuoteField: "按量",
+		"GpuType":                         "4090",
+		"ChargeType":                      "Postpay",
+		"ImageSource":                     "community",
+		proposalChargeTypeUserQuoteField:  "按量",
+		proposalImageSourceUserQuoteField: "社区镜像",
 	})
 	slots := got["slots"].([]any)
-	require.Len(t, slots, 2)
+	require.Len(t, slots, 3)
 	require.NotContains(t, slots, proposalChargeTypeUserQuoteField)
+	require.NotContains(t, slots, proposalImageSourceUserQuoteField)
 	chargeSlot := slots[0].(map[string]any)
 	require.Equal(t, "ChargeType", chargeSlot["name"])
 	require.Equal(t, map[string]any{"quote": "按量"}, chargeSlot["evidence"])
+	sourceSlot := slots[2].(map[string]any)
+	require.Equal(t, "ImageSource", sourceSlot["name"])
+	require.Equal(t, map[string]any{"quote": "社区镜像"}, sourceSlot["evidence"])
 }
 
 func TestOnlyCreateChargeTypeAdvertisesNormalizedUserQuotes(t *testing.T) {
@@ -161,6 +176,20 @@ func TestOnlyCreateChargeTypeAdvertisesNormalizedUserQuotes(t *testing.T) {
 	}
 }
 
+func TestOnlyImageSourceOperationsAdvertiseSourceUserQuotes(t *testing.T) {
+	for _, tool := range centralAgentToolWindow(true, false) {
+		if tool.Function == nil {
+			continue
+		}
+		properties, _ := tool.Function.Parameters.(map[string]any)["properties"].(map[string]any)
+		_, hasImageSource := properties["ImageSource"]
+		if hasImageSource {
+			require.Contains(t, properties, proposalImageSourceUserQuoteField, tool.Function.Name)
+			continue
+		}
+		require.NotContains(t, properties, proposalImageSourceUserQuoteField, tool.Function.Name)
+	}
+}
 func TestKnowledgeOnlyWindowExcludesPlatformAndActionCapabilities(t *testing.T) {
 	names := toolNameSet(centralAgentKnowledgeToolWindow())
 	require.Contains(t, names, "SearchKnowledge")

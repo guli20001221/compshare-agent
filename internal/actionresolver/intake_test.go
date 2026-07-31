@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/stretchr/testify/require"
 )
 
@@ -213,7 +214,7 @@ func TestOnlyCreateDeclaresDiscardableFields(t *testing.T) {
 		spec, ok := catalog.Lookup(operation)
 		require.True(t, ok)
 		if operation == "CreateInstanceWorkflow" {
-			require.Equal(t, []string{"CompShareImageId", "Name"}, spec.Intake.DiscardableOnRejectFields)
+			require.Equal(t, []string{"Name"}, spec.Intake.DiscardableOnRejectFields)
 			continue
 		}
 		require.Empty(t, spec.Intake.DiscardableOnRejectFields,
@@ -241,6 +242,28 @@ func TestDiscardableInvalidValueOpensIntakeInsteadOfBlocking(t *testing.T) {
 	require.False(t, resolved.ReadyForConfirmation, "a rejected value never confirms straight through")
 	require.True(t, resolved.ReadyForIntake, "a discardable rejection opens the form")
 	require.NotContains(t, resolved.Arguments, "Name", "the bad value is dropped, never carried into the create")
+}
+
+func TestInvalidExactImageIDCannotBeDiscardedIntoAnUnrelatedPicker(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	resolver := New(
+		catalog,
+		EvidenceVerifierFunc(func(SlotCandidate) bool { return true }),
+		MachineTypeCatalog{Names: []string{"4090"}, Available: true},
+	).WithImageCatalog(deployment.NewImageCatalogSnapshot(true, nil))
+
+	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "GpuType", Value: "4090", Source: SourceAgentInference},
+		{Name: "CompShareImageId", Value: "img-stale", Source: SourceAgentInference},
+	}})
+
+	require.Contains(t, resolved.RejectedProblems,
+		RejectedProblem{Slot: "CompShareImageId", Kind: RejectInvalidValue})
+	require.False(t, resolved.ReadyForConfirmation)
+	require.False(t, resolved.ReadyForIntake,
+		"精确 ID 无效时必须阻断，不能静默丢掉后让卡片换成另一个镜像")
+	require.NotContains(t, resolved.Arguments, "CompShareImageId")
 }
 
 // The same shape on a field in NEITHER list still blocks — the discardable list

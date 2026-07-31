@@ -69,3 +69,22 @@ func TestRecencyStillBreaksTiesAmongRealMatches(t *testing.T) {
 	assert.Equal(t, "img-new", ranked[0].ID,
 		"among equally-good matches for a name the user gave, the newest still leads")
 }
+
+func TestDirectImageNameMatchDoesNotPromotePickerNearMatchesToIdentity(t *testing.T) {
+	faceFusion := ImageCatalogEntry{
+		Name:        "FaceFusion 3.5.1 / 3.6.1 全模型离线版",
+		VersionName: "v3.6",
+	}
+
+	assert.True(t, DirectImageNameMatch(faceFusion, "FaceFusion"))
+	assert.True(t, DirectImageNameMatch(faceFusion, "v3.6"),
+		"用户复制卡片上的具体版本也应直接匹配")
+	assert.False(t, DirectImageNameMatch(
+		ImageCatalogEntry{Name: "SVC-Fusion_api_rvc", VersionName: "v1.6"},
+		"FaceFusion",
+	), "共享 Fusion 片段只够进入候选列表，不能证明是同一个镜像")
+	assert.False(t, DirectImageNameMatch(
+		ImageCatalogEntry{Name: "ComfyUI 5.1"},
+		"FaceFusion",
+	))
+}

@@ -35,6 +35,8 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 	require.Contains(t, text, "缺失与冲突由返回结果指出")
 
 	require.Contains(t, text, "动作建议不会直接执行")
+	require.Contains(t, text, "只有 Request* 调用成功，才能声称已发起操作或打开确认卡")
+	require.Contains(t, text, "不得用普通文字模拟确认卡")
 	require.Equal(t, 1, strings.Count(text, "动作建议不会直接执行"), "shared write behavior must have one prompt source")
 	require.Equal(t, 1, strings.Count(text, "只能并列列为待核查项"), "uncertain observations must have one shared rule")
 	require.Equal(t, 1, strings.Count(text, "扩展只能增加候选"),
@@ -49,6 +51,10 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 		"equally suitable catalog candidates need one evidence-based tie breaker")
 	require.Equal(t, 1, strings.Count(text, "可选筛选条件只填写用户已经明确表达的条件"),
 		"optional facets must not silently become user choices")
+	require.Equal(t, 1, strings.Count(text, "非写目标的目录对象例外"),
+		"historical catalog ids may be carried only through the narrow non-target exception")
+	require.Contains(t, text, "仍须实时核验和确认",
+		"carrying a historical catalog id must never imply availability or user approval")
 	require.NotContains(t, text, "InfiniteTalk")
 	require.NotContains(t, text, "LiveTalking")
 }

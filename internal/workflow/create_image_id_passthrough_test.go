@@ -63,6 +63,7 @@ func TestGuidedCreateAcceptsAConcreteImageIdAndSkipsThePicker(t *testing.T) {
 		"CompShareImageId": "compshareImage-1mefk6bv35xn",
 	}
 	wfCtx := NewContext(params)
+	wfCtx.referenceData.ImageSelection = ImageSelectionUserPinned
 
 	skip, err := shouldSkipGuidedImageStep(wfCtx)
 	require.NoError(t, err)
