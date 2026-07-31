@@ -408,6 +408,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"agentRuntimeEventsThisTurn": true,
 		"agentRuntimeObserver":       true,
 		"currentCtx":                 true,
+		// Public-channel authorization is turn-local and must never remain enabled
+		// or disabled because of another session's prior request.
+		"knowledgeOnlyThisTurn": true,
 		// One immutable support-zone view per active turn. Sharing it across
 		// sessions would expose one tenant/turn's catalog availability to another.
 		"zoneCatalogThisTurn": true,
@@ -491,12 +494,14 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// 89 -> 90 / 96 -> 97: committedWriteRepliesThisTurn, the model-free record of
 	// writes that already landed, added so an LLM outage after a commit stops
 	// being reported to the user as "未创建成功".
-	if want, got := 90, len(perSessionFields); want != got {
+	// 90 -> 91 / 97 -> 98: knowledgeOnlyThisTurn is the execution-time
+	// authorization reduction for public chat adapters.
+	if want, got := 91, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 97, typ.NumField(); want != got {
+	if want, got := 98, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

@@ -230,6 +230,11 @@ type ChatOptions struct {
 	// channel. They are consumed only by deterministic workflows, never added to
 	// model messages, session state, traces, or assistant output.
 	SecretInputs map[string]string
+	// KnowledgeOnly restricts this turn to the knowledge-base capabilities used
+	// by public chat integrations. It is an authorization reduction: platform
+	// reads, diagnoses and all mutating proposals are removed from the model's
+	// tool window regardless of the process-wide feature flags.
+	KnowledgeOnly bool
 }
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
@@ -448,6 +453,10 @@ type Engine struct {
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
 	currentCtx context.Context
+	// knowledgeOnlyThisTurn is an execution-time authorization boundary for
+	// public Q&A transports. The advertised tool window is not trusted as the
+	// only guard because a model can emit an unadvertised tool name.
+	knowledgeOnlyThisTurn bool
 	// sessionState is the JSON-serializable per-session state injected by
 	// SetSessionState before each Chat turn and read back via
 	// SessionStateSnapshot after the turn. See session_state.go.
@@ -1270,6 +1279,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	})
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
+	e.knowledgeOnlyThisTurn = opts.KnowledgeOnly
+	defer func() { e.knowledgeOnlyThisTurn = false }()
 	e.secretInputsThisTurn = opts.SecretInputs
 	defer func() { e.secretInputsThisTurn = nil }()
 	defer e.emitTurnCompletion()
@@ -1502,6 +1513,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		messages := e.buildMessagesForLLM()
 		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
+		if opts.KnowledgeOnly {
+			toolWindow = centralAgentKnowledgeToolWindow()
+		}
 		req := llm.ChatRequest{
 			Messages: messages,
 			Tools:    toolWindow,
@@ -2546,10 +2560,10 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	empty := len(combined.Items) == 0
 	affordance := e.followUpAffordance(len(combined.Items))
 	onStep(StepEvent{
-		Type:        StepToolResult,
-		Action:      "SearchKnowledge",
-		Source:      observability.ToolSourceKnowledgeLocal,
-		Message:     "搜索完成",
+		Type:    StepToolResult,
+		Action:  "SearchKnowledge",
+		Source:  observability.ToolSourceKnowledgeLocal,
+		Message: "搜索完成",
 		TraceResult: map[string]any{
 			"items":           len(combined.Items),
 			"queries":         executedQueries,
@@ -2726,6 +2740,14 @@ func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool, foll
 
 func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
 	action := tc.Function.Name
+	if e.knowledgeOnlyThisTurn && !knowledgeOnlyToolAllowed(action) {
+		const message = "当前公共问答入口仅允许查询知识库，不能查询账号资源、执行诊断或发起操作"
+		onStep(StepEvent{
+			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
+			Message: message,
+		})
+		return message
+	}
 	if repeatableAgentTool(action) {
 		if e.toolResultsByCallThisTurn == nil {
 			e.toolResultsByCallThisTurn = map[string]string{}
@@ -2751,6 +2773,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		}
 	}
 	return e.executeToolOnce(ctx, tc, onStep)
+}
+
+func knowledgeOnlyToolAllowed(action string) bool {
+	if action == tools.UpdateTaskStateName {
+		return true
+	}
+	capability, ok := tools.DefaultCapabilityRegistry().Lookup(action)
+	return ok && capability.Policy.Route == tools.ActionRouteKnowledge
 }
 
 func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {

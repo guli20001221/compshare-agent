@@ -201,6 +201,9 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 					if f == featureGuidedCreate {
 						prep.guidedCreateOptIn = true
 					}
+					if f == featureKnowledgeOnly {
+						prep.knowledgeOnlyOptIn = true
+					}
 				}
 			}
 
