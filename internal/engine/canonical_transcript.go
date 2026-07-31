@@ -251,6 +251,92 @@ func (e transcriptError) Error() string { return string(e) }
 // byte guard. It is a metric, not a turn failure.
 const errTranscriptOversized = transcriptError("canonical transcript exceeds byte budget")
 
+// ParseTranscriptMetadata reads a persisted messages.metadata document back
+// into a transcript. It returns nil for absent, malformed, or unknown-version
+// documents rather than an error: this is a migration carrier, and a row whose
+// metadata cannot be understood must degrade to "no transcript", never to a
+// failed rebuild.
+func ParseTranscriptMetadata(raw json.RawMessage) *TranscriptV1 {
+	if len(raw) == 0 {
+		return nil
+	}
+	var envelope transcriptEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil
+	}
+	transcript := envelope.Transcript
+	if transcript == nil || transcript.V != transcriptSchemaVersion || len(transcript.Messages) == 0 {
+		return nil
+	}
+	return transcript
+}
+
+// ProjectTranscript rebuilds chat messages from a persisted transcript.
+//
+// This is the read side of the migration carrier and the reason the stored form
+// keeps ordering and tool_call pairing: the output must be a well-formed message
+// list, indistinguishable from what the hot engine held for that turn.
+//
+// It deliberately drops any tool_call whose result did not survive, and any tool
+// result whose call did not. Bounding sheds whole rounds so this should never
+// fire, but a half round reaching a provider is a 400 on the whole request —
+// this is the last line, not the first.
+func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage {
+	if transcript == nil {
+		return nil
+	}
+	answered := make(map[string]bool, 4)
+	for _, msg := range transcript.Messages {
+		if msg.Role == openai.ChatMessageRoleTool && msg.ToolCallID != "" {
+			answered[msg.ToolCallID] = true
+		}
+	}
+
+	out := make([]openai.ChatCompletionMessage, 0, len(transcript.Messages))
+	declared := make(map[string]bool, 4)
+	for _, msg := range transcript.Messages {
+		if msg.Role == openai.ChatMessageRoleTool {
+			if msg.ToolCallID == "" || !declared[msg.ToolCallID] {
+				continue
+			}
+			out = append(out, openai.ChatCompletionMessage{
+				Role:       openai.ChatMessageRoleTool,
+				Content:    msg.Content,
+				ToolCallID: msg.ToolCallID,
+			})
+			continue
+		}
+
+		converted := openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content}
+		for _, one := range msg.ToolCalls {
+			if !answered[one.ID] {
+				continue
+			}
+			declared[one.ID] = true
+			// Type is restored rather than stored: every tool this agent exposes
+			// is a function tool (VisibleRegistry builds nothing else), so the
+			// field is a constant on the wire and storing it would only create a
+			// way for the record to disagree with the registry. If a non-function
+			// tool type is ever added, this becomes lossy and the schema must
+			// carry it — the parity test is what will say so.
+			converted.ToolCalls = append(converted.ToolCalls, openai.ToolCall{
+				ID:       one.ID,
+				Type:     openai.ToolTypeFunction,
+				Function: openai.FunctionCall{Name: one.Name, Arguments: one.Arguments},
+			})
+		}
+		// An assistant turn that was nothing but unanswered tool_calls carries no
+		// information once they are dropped, and an empty assistant message is
+		// not valid input.
+		if converted.Role == openai.ChatMessageRoleAssistant &&
+			converted.Content == "" && len(converted.ToolCalls) == 0 {
+			continue
+		}
+		out = append(out, converted)
+	}
+	return out
+}
+
 // TranscriptStats is the per-turn shadow-write outcome, surfaced so a rollout
 // can tell "nothing to store" apart from "tried and failed".
 type TranscriptStats struct {

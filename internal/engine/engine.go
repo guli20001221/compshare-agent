@@ -187,6 +187,13 @@ type KnowledgeRetriever interface {
 type HistoryMessage struct {
 	Role    string
 	Content string
+	// Transcript is the raw messages.metadata document for an assistant row,
+	// carrying the turn's canonical agent_transcript_v1 when one was persisted.
+	// It is plumbed through so a cold rebuild can reconstruct the same turn the
+	// hot engine held; it is NOT yet projected into model context. Empty for
+	// user rows, for turns with no tool traffic, and for every row written
+	// before the shadow write existed.
+	Transcript json.RawMessage
 }
 
 // ChatOptions configure optional callbacks for ChatWithOptions. Callbacks are

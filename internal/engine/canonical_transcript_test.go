@@ -16,8 +16,15 @@ func assistantCalls(calls ...openai.ToolCall) openai.ChatCompletionMessage {
 	return openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, ToolCalls: calls}
 }
 
+// call mirrors what a provider actually returns, Type included. Leaving Type
+// empty made the parity fixture unlike a real turn and hid a round-trip
+// difference behind a fixture bug.
 func call(id, name, args string) openai.ToolCall {
-	return openai.ToolCall{ID: id, Function: openai.FunctionCall{Name: name, Arguments: args}}
+	return openai.ToolCall{
+		ID:       id,
+		Type:     openai.ToolTypeFunction,
+		Function: openai.FunctionCall{Name: name, Arguments: args},
+	}
 }
 
 func toolMsg(callID, content string) openai.ChatCompletionMessage {
