@@ -67,9 +67,6 @@ func (e *Engine) clearCreateFamilyCarry() {
 		return
 	}
 	e.clearContextFrame()
-	e.sessionState.PendingDeployModel = ""
-	e.sessionState.LastDeployWorkload = ""
-	e.sessionState.LastDeployZone = ""
 }
 
 func (e *Engine) setContextFrame(frame ContextFrame) {

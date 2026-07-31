@@ -100,8 +100,6 @@ func TestTraceRecordFreshnessMonitorRecallMarshal(t *testing.T) {
 			MonitorRecallForced:         true,
 			MonitorRecallMode:           "required_tool_choice",
 			MonitorRecallFallbackReason: "object_tool_choice_unsupported",
-			SupportsObjectToolChoice:    boolPtr(false),
-			SupportsRequiredToolChoice:  boolPtr(true),
 		},
 	})
 	if err != nil {
@@ -114,8 +112,6 @@ func TestTraceRecordFreshnessMonitorRecallMarshal(t *testing.T) {
 		`"monitor_recall_forced":true`,
 		`"monitor_recall_mode":"required_tool_choice"`,
 		`"monitor_recall_fallback_reason":"object_tool_choice_unsupported"`,
-		`"supports_object_tool_choice":false`,
-		`"supports_required_tool_choice":true`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("freshness trace JSON missing %s: %s", want, text)

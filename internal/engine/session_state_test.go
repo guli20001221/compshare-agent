@@ -20,10 +20,9 @@ import (
 func newEngineForSessionStateTest(t *testing.T) *Engine {
 	t.Helper()
 	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}},
 	}
 	return NewSession(deps, SessionOptions{Subject: "test-subject"})
 }
@@ -54,9 +53,6 @@ func TestPersistedContext_RoundTripBytes(t *testing.T) {
 			SelectedInstanceID:     "uhost-abc123",
 			SelectedInstanceName:   "gpu-prod-01",
 			SelectedInstanceSource: "user",
-			LastDeployWorkload:     "Qwen2.5-32B",
-			LastDeployZone:         "cn-wlcb-01",
-			PendingDeployModel:     "DeepSeek R1",
 		},
 		ClientContext: json.RawMessage(`{"source":"console","page":"/instance/list"}`),
 	}
@@ -443,7 +439,6 @@ func TestSetSessionState_HigherVersionOverwrites(t *testing.T) {
 		"higher version must fully overwrite — the in-memory state was stale")
 	assert.Equal(t, 4, ver)
 }
-
 
 // TestSetSessionState_NotHydratedAlwaysFullOverwrite covers the
 // single-replica path: ClearSessionState sets hydrated=false, so a

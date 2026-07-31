@@ -139,7 +139,6 @@ func TestSharedDeps_NoMutatingSetterLeakage(t *testing.T) {
 // grows — a new mutable type could slip in unaudited.
 var nonAuditableFields = map[string]string{
 	"IntentRouteIntents":            "map[intent.Intent]struct{} — set-shaped data, no methods of concern",
-	"SupportsObjectToolChoice":      "bool — no methods",
 	"MaxTokensPerTurn":              "int — no methods",
 	"SessionFactContextEnabled":     "bool — no methods",
 	"ReactResultProjectionEnabled":  "bool — no methods",

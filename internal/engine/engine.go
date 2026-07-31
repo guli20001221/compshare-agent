@@ -151,10 +151,12 @@ const (
 // 智能/人工费"等误触发。规则注册在 internal/engine/preblock.go 的
 // enginePreBlock 链末尾。)
 //
-// Model feature gating: force-tool paths that emit object tool_choice MUST
-// short-circuit when supportsObjectToolChoice=false. ds v4 flash in thinking
-// mode 400s on object tool_choice; emitting it would break the request entirely
-// rather than degrade to soft routing.
+// Model feature gating: a force-tool path that emits object tool_choice is
+// guarded at RUNTIME, not by a static per-model table. llm.Client retries once
+// with auto when the provider rejects forced tool_choice in thinking mode, and
+// reports it via ChatResponse.ForcedToolChoiceDegraded. A new force path should
+// read that flag rather than pre-checking a capability: the retry cannot go
+// stale on a model nobody re-probed, and the table it replaced had none.
 //
 // shouldForceBillingDiagnosis was removed 2026-05-08: ds v4 flash returns 400
 // on object tool_choice in thinking mode, and auto-routing achieves the same
@@ -409,11 +411,6 @@ type Engine struct {
 	// hot engine at turn exit and by a cold rebuild from the persisted rows, so
 	// the two agree by construction. Bounded to maxAgentContextPairs.
 	recentTurns []recordedTurn
-	// supportsObjectToolChoice gates force-tool guards
-	// from sending object tool_choice on models that don't support it (notably
-	// deepseek-v4-flash in thinking mode, which 400s). When false, guards still
-	// run their detection logic but fall through to LLM auto routing.
-	supportsObjectToolChoice bool
 	// mutatingToolsEnabled controls whether instance-changing workflows and
 	// L1 mutating API actions are exposed and executable. Production defaults
 	// to read-only until these operations are product-ready.
@@ -557,10 +554,9 @@ type Engine struct {
 // KnowledgeRetriever is exported so server bootstrap
 // can assign it on immutable process-wide dependencies before sessions start.
 type SharedDeps struct {
-	LLMClient                LLMClient
-	KnowledgeRetriever       KnowledgeRetriever
-	RateLimiter              governance.RateLimiter
-	SupportsObjectToolChoice bool
+	LLMClient          LLMClient
+	KnowledgeRetriever KnowledgeRetriever
+	RateLimiter        governance.RateLimiter
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
@@ -616,16 +612,14 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	if strings.TrimSpace(cfg.Agent.LLM.Model) == "" {
 		return nil, errors.New("engine.NewSharedDeps: agent.llm.model is required")
 	}
-	cap := llm.LookupCapability(cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Model)
 	return &SharedDeps{
 		LLMClient: llm.NewClient(cfg.Agent.LLM),
 		// InMemoryRateLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
-		RateLimiter:              governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits()),
-		SupportsObjectToolChoice: cap.SupportsObjectToolChoice,
-		MaxTokensPerTurn:         cfg.Agent.RateLimit.MaxTokensPerTurn,
-		ExternalExecutor:         tools.NewExternalExecutor(cfg.Agent),
+		RateLimiter:      governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits()),
+		MaxTokensPerTurn: cfg.Agent.RateLimit.MaxTokensPerTurn,
+		ExternalExecutor: tools.NewExternalExecutor(cfg.Agent),
 	}, nil
 }
 
@@ -644,11 +638,10 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	}
 	eng := &Engine{
 		// ── shared (pointer-equal across sessions) ──
-		llmClient:                deps.LLMClient,
-		knowledgeRetriever:       deps.KnowledgeRetriever,
-		rateLimiter:              deps.RateLimiter,
-		supportsObjectToolChoice: deps.SupportsObjectToolChoice,
-		maxTokensPerTurn:         deps.MaxTokensPerTurn,
+		llmClient:          deps.LLMClient,
+		knowledgeRetriever: deps.KnowledgeRetriever,
+		rateLimiter:        deps.RateLimiter,
+		maxTokensPerTurn:   deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
 		confirmFn:                     opts.ConfirmFn,
@@ -695,30 +688,19 @@ func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
 }
 
 // NewWithDeps creates an Engine with injected dependencies (for testing).
-// Defaults supportsObjectToolChoice to true so existing tests that exercise
-// force-tool guards continue to assert the forced ToolChoice. Tests that
-// need the model-feature-gated path can flip the field via setter.
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
-		llmClient:                client,
-		confirmFn:                confirmFn,
-		registry:                 entity.NewRegistry(),
-		rateLimitSubject:         governance.AnonymousSubjectKey,
-		lastInstanceQueryTurn:    -1,
-		lastMonitorTurn:          -1,
-		supportsObjectToolChoice: true,
-		mutatingToolsEnabled:     true,
+		llmClient:             client,
+		confirmFn:             confirmFn,
+		registry:              entity.NewRegistry(),
+		rateLimitSubject:      governance.AnonymousSubjectKey,
+		lastInstanceQueryTurn: -1,
+		lastMonitorTurn:       -1,
+		mutatingToolsEnabled:  true,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn, nil, false)
 	eng.externalExecutor = executor
 	return eng
-}
-
-// setSupportsObjectToolChoice is an internal helper for tests that need to
-// exercise model-feature-gated force-tool behavior. Production code sets this
-// via LookupCapability in New().
-func (e *Engine) setSupportsObjectToolChoice(v bool) {
-	e.supportsObjectToolChoice = v
 }
 
 // SetMutatingToolsEnabled explicitly enables or disables instance-changing
