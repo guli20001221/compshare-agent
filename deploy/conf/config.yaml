@@ -15,6 +15,25 @@ agent:
   # 本文件是完整部署配置；不再需要环境变量占位。
   project_id: ""
 
+  # 飞书话题群知识问答入口。由 `compshare-agent feishu` 单独启动；
+  # Agent 的回答能力仍来自本服务，飞书应用只负责收发群消息。
+  feishu:
+    app_id: "cli_aae1adb5ff385bb4"     # 飞书自建应用 App ID
+    app_secret: "EX4MKvnGW10qqFlNjcrHShXPXlf5IujV" # 飞书自建应用 App Secret
+    agent_ws_url: "ws://127.0.0.1:7429/?Action=CreateCSAgentWS"
+    company_id: 66391350               # 当前项目的固定测试账号身份
+    organization_id: 64404856
+    project_id: ""
+    user_email: "feishu-bot@compshare.local"
+    # 必填白名单。首次联调可临时写 ["*"]，从日志取得 chat_id 后立即收紧。
+    allowed_chat_ids: ["oc_2b31629a0c15e04e41fc53e74c270084"]
+    # 当前目标是外部群。飞书只会推送 @机器人 的外部群消息，
+    # 因此关闭内部话题群的“新话题免 @ 自动回答”能力。
+    auto_reply_new_topics: false
+    max_concurrent: 4
+    max_reply_runes: 3500
+    max_image_bytes: 5242880
+
   llm:
     base_url: "https://api.modelverse.cn/v1"
     # Answer model key (gpt-5.6-terra). Authorized ONLY for terra — NOT for qwen3

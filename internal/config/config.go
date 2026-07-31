@@ -49,11 +49,12 @@ type AgentConfig struct {
 	// engine will attempt to discover it via GetProjectList at Init.
 	ProjectId string `yaml:"project_id"`
 
-	HTTP  HTTPConfig  `yaml:"http"`
-	MySQL MySQLConfig `yaml:"mysql"`
-	Meta  MetaConfig  `yaml:"meta"`
-	STS   STSConfig   `yaml:"sts"`
-	OCR   OCRConfig   `yaml:"ocr"`
+	HTTP   HTTPConfig   `yaml:"http"`
+	MySQL  MySQLConfig  `yaml:"mysql"`
+	Meta   MetaConfig   `yaml:"meta"`
+	STS    STSConfig    `yaml:"sts"`
+	OCR    OCRConfig    `yaml:"ocr"`
+	Feishu FeishuConfig `yaml:"feishu"`
 
 	// Runtime feature flags, previously env-only (read in cmd/). These are
 	// overlaid on os.Getenv via RuntimeGetenv with "YAML wins, env fallback"
@@ -63,6 +64,25 @@ type AgentConfig struct {
 	Retrieval RetrievalConfig `yaml:"retrieval"`
 	Trace     TraceConfig     `yaml:"trace"`
 	SSHOps    SSHOpsConfig    `yaml:"ssh_ops"`
+}
+
+// FeishuConfig connects a Feishu application bot to the Agent's WebSocket
+// endpoint. The adapter is started explicitly with `compshare-agent feishu`.
+type FeishuConfig struct {
+	AppID          string   `yaml:"app_id"`
+	AppSecret      string   `yaml:"app_secret"`
+	AgentWSURL     string   `yaml:"agent_ws_url"`
+	CompanyID      uint32   `yaml:"company_id"`
+	OrganizationID uint32   `yaml:"organization_id"`
+	ProjectID      string   `yaml:"project_id"`
+	UserEmail      string   `yaml:"user_email"`
+	AllowedChatIDs []string `yaml:"allowed_chat_ids"`
+	// AutoReplyNewTopics answers a topic_group root message without requiring
+	// an @ mention. Replies inside the topic still require an @ mention.
+	AutoReplyNewTopics bool `yaml:"auto_reply_new_topics"`
+	MaxConcurrent      int  `yaml:"max_concurrent"`
+	MaxReplyRunes      int  `yaml:"max_reply_runes"`
+	MaxImageBytes      int  `yaml:"max_image_bytes"`
 }
 
 // SSHOpsConfig configures the consent-gated, read-only in-instance SSH-ops lane

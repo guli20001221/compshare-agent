@@ -1,12 +1,14 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/tools"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
 
@@ -157,4 +159,42 @@ func TestOnlyCreateChargeTypeAdvertisesNormalizedUserQuotes(t *testing.T) {
 		properties, _ := tool.Function.Parameters.(map[string]any)["properties"].(map[string]any)
 		require.NotContains(t, properties, proposalChargeTypeUserQuoteField, tool.Function.Name)
 	}
+}
+
+func TestKnowledgeOnlyWindowExcludesPlatformAndActionCapabilities(t *testing.T) {
+	names := toolNameSet(centralAgentKnowledgeToolWindow())
+	require.Contains(t, names, "SearchKnowledge")
+	require.Contains(t, names, "ReadChunk")
+	require.Contains(t, names, tools.UpdateTaskStateName)
+
+	for name := range names {
+		require.NotContains(t, name, "Request", "public Q&A must not expose action proposals")
+		require.NotContains(t, name, "DescribeCompShare", "public Q&A must not expose tenant resources")
+		require.NotContains(t, name, "Diagnose", "public Q&A must not expose diagnoses")
+	}
+}
+
+func TestKnowledgeOnlyExecutionAllowlistIsFailClosed(t *testing.T) {
+	require.True(t, knowledgeOnlyToolAllowed("SearchKnowledge"))
+	require.True(t, knowledgeOnlyToolAllowed("ReadChunk"))
+	require.True(t, knowledgeOnlyToolAllowed(tools.UpdateTaskStateName))
+	require.False(t, knowledgeOnlyToolAllowed("DescribeCompShareInstance"))
+	require.False(t, knowledgeOnlyToolAllowed("DiagnoseInstanceInternals"))
+	require.False(t, knowledgeOnlyToolAllowed("RequestStopInstance"))
+	require.False(t, knowledgeOnlyToolAllowed("invented_tool"))
+}
+
+func TestKnowledgeOnlyExecutionBlocksUnadvertisedToolCall(t *testing.T) {
+	eng := &Engine{knowledgeOnlyThisTurn: true}
+	var step StepEvent
+	result := eng.executeTool(context.Background(), openai.ToolCall{
+		Function: openai.FunctionCall{
+			Name:      "DescribeCompShareInstance",
+			Arguments: `{}`,
+		},
+	}, func(event StepEvent) {
+		step = event
+	})
+	require.Equal(t, StepBlocked, step.Type)
+	require.Contains(t, result, "仅允许查询知识库")
 }

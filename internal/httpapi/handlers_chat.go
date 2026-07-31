@@ -110,6 +110,10 @@ const featureConfirmForm = "confirm_form_v1"
 // COMPSHARE_GUIDED_CREATE are both on.
 const featureGuidedCreate = "guided_create_v1"
 
+// featureKnowledgeOnly is an authorization-reducing client feature for
+// untrusted public chat adapters. It can only remove capabilities.
+const featureKnowledgeOnly = "knowledge_only_v1"
+
 // streamWriter is the transport-agnostic sink for Chat streaming frames. The
 // production ws.Writer satisfies it, as does the test recordingSink, so the
 // streaming core in chatStream is written once and is independent of transport.
@@ -162,6 +166,8 @@ type chatPrep struct {
 	// guidedCreateOptIn is set by the WS read loop when the client supports the
 	// guided GPU-create cards.
 	guidedCreateOptIn bool
+	// knowledgeOnlyOptIn removes every non-knowledge capability for this turn.
+	knowledgeOnlyOptIn bool
 }
 
 // prepareChat performs all pre-stream work shared by the SSE and WS paths:
@@ -491,6 +497,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			return WaitForConfirmation(streamCtx, ch, time.Duration(confirmTimeoutSeconds)*time.Second).Confirmed
 		},
 		ConfirmEditsFunc: h.confirmEditsFuncFor(streamCtx, sw, sessionID, base.Owner, prep),
+		KnowledgeOnly:    prep.knowledgeOnlyOptIn,
 	})
 
 	// Signal keepalive goroutine to exit.
