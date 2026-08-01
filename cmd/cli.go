@@ -169,6 +169,11 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_FORCED_KNOWLEDGE_HOP value %q\n", unknownForcedKnowledgeHop)
 	}
 	engine.SetForcedKnowledgeHopEnabled(forcedKnowledgeHop)
+	canonicalTranscript, unknownCanonicalTranscript := canonicalTranscriptEnabledFromEnv(getenv)
+	if unknownCanonicalTranscript != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_CANONICAL_TRANSCRIPT value %q\n", unknownCanonicalTranscript)
+	}
+	engine.SetCanonicalTranscriptEnabled(canonicalTranscript)
 	knowledgeRetrievalRequested, unknownKnowledgeRetrieval := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledgeRetrieval != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q\n", unknownKnowledgeRetrieval)

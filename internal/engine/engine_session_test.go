@@ -30,10 +30,9 @@ func (j *sessionActionJournal) Err() error { return j.err }
 func newTwoSessions(t *testing.T) (engA, engB *Engine, deps *SharedDeps) {
 	t.Helper()
 	deps = &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}},
 	}
 	engA = NewSession(deps, SessionOptions{Subject: "subj-A"})
 	engB = NewSession(deps, SessionOptions{Subject: "subj-B"})
@@ -284,11 +283,10 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
-		"llmClient":                true,
-		"knowledgeRetriever":       true,
-		"rateLimiter":              true,
-		"supportsObjectToolChoice": true,
-		"maxTokensPerTurn":         true,
+		"llmClient":          true,
+		"knowledgeRetriever": true,
+		"rateLimiter":        true,
+		"maxTokensPerTurn":   true,
 		// externalExecutor is the RAW shared tool executor (same instance as the
 		// one safeExecutor wraps) — pointer-equal across sessions, used only for
 		// read-only L0 catalog calls. Shared like llmClient.
@@ -466,9 +464,26 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// another tenant's instance had just been created for them — a leak of an
 		// id plus a false claim about their own account, in one line.
 		"committedWriteRepliesThisTurn": true,
+		// The canonical transcript of the turn that just finished, held for the
+		// shadow write. It carries one tenant's tool arguments and tool results
+		// verbatim, so a shared field would persist tenant A's instance ids and
+		// diagnosis output onto tenant B's assistant row — precisely the leak
+		// this test exists to prevent. Its stats sibling is classified with it so
+		// the two cannot drift apart. Both are rewritten at every turn exit.
+		"lastTurnTranscript":      true,
+		"lastTurnTranscriptStats": true,
+		// The cross-turn memory the canonical transcript replaces stripped
+		// history with. It holds prior turns' tool arguments and results
+		// verbatim and is replayed into the prompt, so a shared field would put
+		// one tenant's instance ids and diagnosis output into another tenant's
+		// context window — the same leak as its two siblings above, but on the
+		// path the model actually reads.
+		"recentTurns": true,
 	}
 
-	if want, got := 7, len(sharedFields); want != got {
+	// 7 -> 6: supportsObjectToolChoice, deleted with the static llm.Capability
+	// table. It was shared because it described the MODEL, not the session.
+	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
 	// 80 -> 81 / 87 -> 88: searchKnowledgeQueriesThisTurn was added when the
@@ -496,12 +511,20 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// being reported to the user as "未创建成功".
 	// 90 -> 91 / 97 -> 98: knowledgeOnlyThisTurn is the execution-time
 	// authorization reduction for public chat adapters.
-	if want, got := 91, len(perSessionFields); want != got {
+	// 91 -> 93 / 98 -> 100: lastTurnTranscript + lastTurnTranscriptStats, the
+	// canonical agent_transcript_v1 record produced at every turn exit for the
+	// shadow write. Two fields, one lane — the payload and the outcome that says
+	// whether it was written, kept together so a rollout cannot read one without
+	// the other.
+	// 93 -> 94 / 100 -> 101: recentTurns, the recorded exchanges the canonical
+	// transcript is replayed from. Appended by the hot engine at turn exit and by
+	// a cold rebuild from the persisted rows, so both agree by construction.
+	if want, got := 94, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 98, typ.NumField(); want != got {
+	if want, got := 100, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
@@ -519,8 +542,8 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 // NewWithDeps keeps its existing signature (used by ~1500 lines of tests) and
 // constructs an Engine directly rather than going through NewSession. This
 // test asserts NewWithDeps produces a field set equivalent to
-// NewSession(deps, SessionOptions{MutatingToolsEnabled: true,
-// SupportsObjectToolChoice: true}) so the two construction paths cannot
+// NewSession(deps, SessionOptions{MutatingToolsEnabled: true}) so the two
+// construction paths cannot
 // silently drift. Encodes WHY: future field additions must land in both
 // constructors or this test fails — preventing the cross-session leak that
 // motivated §3's classification work.
@@ -532,9 +555,8 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 	withDeps := NewWithDeps(llm, exec, confirm)
 
 	session := NewSession(&SharedDeps{
-		LLMClient:                llm,
-		ExternalExecutor:         exec,
-		SupportsObjectToolChoice: true,
+		LLMClient:        llm,
+		ExternalExecutor: exec,
 	}, SessionOptions{
 		ConfirmFn:            confirm,
 		MutatingToolsEnabled: true,
@@ -542,10 +564,6 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 
 	if withDeps.llmClient != session.llmClient {
 		t.Errorf("llmClient pointer differs: NewWithDeps=%p NewSession=%p", withDeps.llmClient, session.llmClient)
-	}
-	if withDeps.supportsObjectToolChoice != session.supportsObjectToolChoice {
-		t.Errorf("supportsObjectToolChoice differs: NewWithDeps=%v NewSession=%v",
-			withDeps.supportsObjectToolChoice, session.supportsObjectToolChoice)
 	}
 	if withDeps.mutatingToolsEnabled != session.mutatingToolsEnabled {
 		t.Errorf("mutatingToolsEnabled differs: NewWithDeps=%v NewSession=%v",

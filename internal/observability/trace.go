@@ -636,8 +636,6 @@ type FreshnessTrace struct {
 	MonitorRecallForced         bool   `json:"monitor_recall_forced,omitempty"`
 	MonitorRecallMode           string `json:"monitor_recall_mode,omitempty"`
 	MonitorRecallFallbackReason string `json:"monitor_recall_fallback_reason,omitempty"`
-	SupportsObjectToolChoice    *bool  `json:"supports_object_tool_choice,omitempty"`
-	SupportsRequiredToolChoice  *bool  `json:"supports_required_tool_choice,omitempty"`
 }
 
 func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
@@ -652,14 +650,6 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 	}
 	if next.MonitorRecallFallbackReason != "" {
 		current.MonitorRecallFallbackReason = next.MonitorRecallFallbackReason
-	}
-	if next.SupportsObjectToolChoice != nil {
-		v := *next.SupportsObjectToolChoice
-		current.SupportsObjectToolChoice = &v
-	}
-	if next.SupportsRequiredToolChoice != nil {
-		v := *next.SupportsRequiredToolChoice
-		current.SupportsRequiredToolChoice = &v
 	}
 	return current
 }
@@ -1217,9 +1207,7 @@ func traceFreshnessObserved(trace FreshnessTrace) bool {
 	return trace.MonitorCallInCurrentTurn ||
 		trace.MonitorRecallForced ||
 		trace.MonitorRecallMode != "" ||
-		trace.MonitorRecallFallbackReason != "" ||
-		trace.SupportsObjectToolChoice != nil ||
-		trace.SupportsRequiredToolChoice != nil
+		trace.MonitorRecallFallbackReason != ""
 }
 
 func traceRetrievalObserved(trace RetrievalTrace) bool {
