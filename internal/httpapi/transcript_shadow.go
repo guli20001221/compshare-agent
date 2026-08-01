@@ -124,4 +124,21 @@ func (h *Handlers) shadowPersistTranscript(
 		transcriptShadowCounters.WriteError.Add(1)
 		log.Printf("transcript shadow write failed (turn unaffected): %v", err)
 	}
+	reportShadowProgress()
+}
+
+// shadowReportEvery is how often the aggregate is emitted. The counters exist to
+// answer "is the grey rollout actually writing?", which they cannot do if the
+// only reader is a test — the alternative is querying the database by hand, and
+// a rollout nobody can read is a rollout nobody checks.
+const shadowReportEvery = 100
+
+func reportShadowProgress() {
+	if transcriptShadowCounters.Attempted.Load()%shadowReportEvery != 0 {
+		return
+	}
+	s := TranscriptShadowSnapshot()
+	log.Printf(
+		"transcript shadow: attempted=%d succeeded=%d no_store=%d no_row=%d oversized=%d invalid=%d write_error=%d",
+		s.Attempted, s.Succeeded, s.NoStore, s.NoRowMatch, s.Oversized, s.Invalid, s.WriteError)
 }
