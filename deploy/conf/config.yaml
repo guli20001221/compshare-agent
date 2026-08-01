@@ -86,7 +86,18 @@ agent:
     # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
     # guards only when their flag-on path is the validated production path.
     domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
-    forced_knowledge_hop: true          # retrieve once on the user's words before the Agent's first call (eval-gated on: complaint/statement retrieval 4→14, no fab, control net-zero)
+    # OFF since 2026-08-01. It fired on 100% of turns to serve a narrow slice:
+    # in 4348 real questions, statement-form-needing-knowledge — the shape it was
+    # built for — is 3.4% of traffic, while 43.7% are questions that retrieve on
+    # their own anyway. Measured cost is unconditional: a 6-shape x N=5 live A/B
+    # (terra) ran 4.7x the SearchKnowledge calls and +39.6% wall clock for the
+    # same work. The benefit is real but small and the instrument is not
+    # targetable — there is no pre-model classifier to narrow it to that 3.4%
+    # (P6 removed the intent router), and adding one would rebuild the semantic
+    # pre-decision layer this program is dismantling. The model calls
+    # SearchKnowledge itself; let it. Set COMPSHARE_FORCED_KNOWLEDGE_HOP=1 to roll
+    # back without a deploy.
+    forced_knowledge_hop: false
     # INERT — parsed and forwarded, but nothing reads the overrides they emit;
     # the body-driven skill executor these gated no longer exists. Kept so an
     # older config file still loads. Setting either changes no behavior.
