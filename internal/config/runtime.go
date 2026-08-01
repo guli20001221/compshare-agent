@@ -32,7 +32,7 @@ type FeaturesConfig struct {
 	GuidedCreate           *bool `yaml:"guided_create"`            // COMPSHARE_GUIDED_CREATE (server-only, default off)
 	ExternalKnowledge      *bool `yaml:"external_knowledge"`       // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
 	DomainMatchGuard       *bool `yaml:"domain_match_guard"`       // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
-	ForcedKnowledgeHop     *bool `yaml:"forced_knowledge_hop"`     // COMPSHARE_FORCED_KNOWLEDGE_HOP (Go default off; deploy on)
+	ForcedKnowledgeHop     *bool `yaml:"forced_knowledge_hop"`     // COMPSHARE_FORCED_KNOWLEDGE_HOP (off everywhere since 2026-08-01; key omitted from the deploy config so the env var can still enable it)
 	CanonicalTranscript    *bool `yaml:"canonical_transcript"`     // COMPSHARE_CANONICAL_TRANSCRIPT (default off everywhere)
 	SessionFactContext     *bool `yaml:"session_fact_context"`     // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
 	ReactResultProjection  *bool `yaml:"react_result_projection"`  // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)

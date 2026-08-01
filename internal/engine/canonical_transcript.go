@@ -12,9 +12,17 @@ import (
 //
 // This is the migration carrier for the shift away from "strip the tool
 // transcript, then rebuild the lost semantics from parallel state structures".
-// It records what the model ACTUALLY SAW for one user turn, in order, including
-// every assistant tool_call and its matching tool result — not a summary of the
-// results, and not the raw upstream API payload.
+// It records one user turn's tool traffic in order — each assistant tool_call
+// with the tool result that answered it — instead of a prose summary of what the
+// tools found, and instead of the raw upstream API payload.
+//
+// It is deliberately NOT verbatim, and must not be "fixed" to become so. Content
+// clears the same redaction boundary as replayed history, an over-long body is
+// truncated behind a marker, and whole rounds are shed to fit the budget. What
+// crosses a persistence boundary and is later fed back to a model is a
+// sanitized, bounded replay by design: restoring byte-parity with the live turn
+// would put a credential the assistant line already dropped back into a stored
+// row.
 //
 // Ordering and pairing are part of the contract: a stored transcript must be
 // replayable as well-formed chat messages, so an assistant message carrying
@@ -62,7 +70,8 @@ type TranscriptMessage struct {
 	// project or inspect the transcript without re-walking the pairing.
 	Name string `json:"name,omitempty"`
 	// Truncated marks Content as shortened; OrigRunes is the pre-truncation
-	// length. Both absent means the content is verbatim.
+	// length. Both absent means the content was not shortened — it may still
+	// differ from the live message, which is redacted on the way in.
 	Truncated bool `json:"truncated,omitempty"`
 	OrigRunes int  `json:"orig_runes,omitempty"`
 }

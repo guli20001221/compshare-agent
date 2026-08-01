@@ -23,10 +23,18 @@ func hotTurn() []openai.ChatCompletionMessage {
 	}
 }
 
-// The whole point of persisting the transcript is that a cold rebuild can
-// reconstruct the same turn the hot engine held. If this ever diverges, the
-// stored record is not a record of what the model saw and every conclusion
-// drawn from it is unsound.
+// The whole point of persisting the transcript is that a cold rebuild produces
+// the same messages the hot engine would have replayed. If the two diverge, a
+// session behaves differently after a restart than before it, which is the
+// amnesia this work exists to remove.
+//
+// Note what this does NOT claim: that either side equals the live turn
+// byte-for-byte. Both sides are redacted, both are truncated at the same
+// bounds, and both shed the same rounds — parity is between hot replay and cold
+// replay, not between replay and the original. The fixture below is deliberately
+// secret-free and under every budget so those transforms are no-ops here and the
+// test isolates the rebuild. Adding a credential or an over-long body to it
+// would not be a stronger test; it would assert a property the design rejects.
 func TestHotAndColdProduceIdenticalTurnMessages(t *testing.T) {
 	hot := hotTurn()
 

@@ -92,21 +92,30 @@ func (h *Handlers) shadowPersistTranscript(
 		return
 	}
 	payload, stats := agent.LastTurnTranscript()
-	switch {
-	case stats.Oversized:
-		transcriptShadowCounters.Attempted.Add(1)
-		transcriptShadowCounters.Oversized.Add(1)
-		return
-	case stats.Invalid:
-		transcriptShadowCounters.Attempted.Add(1)
-		transcriptShadowCounters.Invalid.Add(1)
-		return
-	case len(payload) == 0:
+	if !stats.Oversized && !stats.Invalid && len(payload) == 0 {
 		// Not an attempt: a turn with no tool traffic has nothing to record.
 		return
 	}
 
-	transcriptShadowCounters.Attempted.Add(1)
+	// One increment, its own return value kept, and the report deferred. The
+	// ticket is what makes the milestone exact: re-Loading the global after the
+	// write would let a slow attempt and a fast one both observe the same total
+	// (logging twice) or skip past a multiple entirely (never logging). The
+	// defer is what makes it total — every early return below is a counted
+	// outcome, and three of them used to bypass reporting, so a store that
+	// failed a hundred times running said nothing at all.
+	ticket := transcriptShadowCounters.Attempted.Add(1)
+	defer func() { reportShadowProgress(ticket) }()
+
+	switch {
+	case stats.Oversized:
+		transcriptShadowCounters.Oversized.Add(1)
+		return
+	case stats.Invalid:
+		transcriptShadowCounters.Invalid.Add(1)
+		return
+	}
+
 	metaStore, ok := h.messages.(store.AssistantMetadataStore)
 	if !ok {
 		transcriptShadowCounters.NoStore.Add(1)
@@ -124,7 +133,6 @@ func (h *Handlers) shadowPersistTranscript(
 		transcriptShadowCounters.WriteError.Add(1)
 		log.Printf("transcript shadow write failed (turn unaffected): %v", err)
 	}
-	reportShadowProgress()
 }
 
 // shadowReportEvery is how often the aggregate is emitted. The counters exist to
@@ -133,8 +141,12 @@ func (h *Handlers) shadowPersistTranscript(
 // a rollout nobody can read is a rollout nobody checks.
 const shadowReportEvery = 100
 
-func reportShadowProgress() {
-	if transcriptShadowCounters.Attempted.Load()%shadowReportEvery != 0 {
+// reportShadowProgress emits the aggregate on the attempt that owns the
+// milestone. It takes the ticket rather than re-reading the counter because the
+// counter moves while the write is in flight — the increment and the completion
+// are separated by a database round trip.
+func reportShadowProgress(ticket int64) {
+	if ticket%shadowReportEvery != 0 {
 		return
 	}
 	s := TranscriptShadowSnapshot()

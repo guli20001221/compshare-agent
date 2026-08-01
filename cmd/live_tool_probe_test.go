@@ -62,13 +62,14 @@ var (
 	// runs — an earlier A/B did the latter and a mid-run quota kill left the two
 	// arms unequally sampled with no record of which build produced which file.
 	// Encode the arm in -live-tool-out; nothing in the record does.
-	// Tri-state on purpose. This was a bool defaulting false, from when the Go
-	// default was off AND the config did not ship it on. deploy/conf/config.yaml
-	// now sets forced_knowledge_hop: true, and configureSharedDepsFromEnv applies
-	// that before this flag is read — so the bool could only ever set ON, and an
-	// A/B run through this probe produced two identical arms that read as a null
-	// effect. "" keeps the config's value; "on"/"off" override it, which is what
-	// an arm actually needs.
+	// Tri-state on purpose. This was a bool defaulting false, which could only
+	// ever set the flag ON: deploy/conf/config.yaml shipped
+	// forced_knowledge_hop: true and configureSharedDepsFromEnv applied that
+	// before this flag was read, so an A/B run through this probe produced two
+	// identical arms that read as a null effect. The config no longer sets the
+	// key (the hop is off everywhere since 2026-08-01), but the tri-state stays:
+	// an arm must be able to name its value rather than inherit whatever the
+	// config happens to say. "" keeps the config's value; "on"/"off" override it.
 	liveToolForcedHop = flag.String("live-tool-forced-hop", "", `forced first-hop retrieval arm: "on" | "off" | "" (use the config value)`)
 	// DescribeCompShareInstance is region-scoped (external.go stamps the request
 	// Region from the user context), so a fixed config region only ever lists that

@@ -211,6 +211,13 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 // what stops the second occurrence from silently inheriting the first one's tool
 // evidence. Hot/cold parity cannot catch this on its own — both sides would make
 // the identical substitution and agree.
+// A tool-free turn is recorded too, with a nil Transcript — captureTurnTranscript
+// records every exchange so the recorded window and the replayed conversation
+// agree about what "the last five turns" means. Such a record must therefore
+// still CONSUME its slot: skipping it before the text comparison would let a
+// later same-text record slide forward into its place, which is the same
+// misattribution by another route. Match on text, then attach only if there is
+// anything to attach.
 func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []ConversationPair {
 	if !canonicalTranscriptEnabled || e == nil || len(e.recentTurns) == 0 {
 		return pairs
@@ -218,7 +225,7 @@ func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []Conversat
 	consumed := make([]bool, len(e.recentTurns))
 	for i := range pairs {
 		for j, record := range e.recentTurns {
-			if consumed[j] || record.Transcript == nil {
+			if consumed[j] {
 				continue
 			}
 			if safeConversationText(record.User) != pairs[i].User ||
@@ -226,7 +233,9 @@ func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []Conversat
 				continue
 			}
 			consumed[j] = true
-			pairs[i].Transcript = ProjectTranscript(record.Transcript)
+			if record.Transcript != nil {
+				pairs[i].Transcript = ProjectTranscript(record.Transcript)
+			}
 			break
 		}
 	}

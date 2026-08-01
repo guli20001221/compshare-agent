@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/store"
@@ -216,5 +219,78 @@ func TestShadowCounters_SurviveConcurrentTurns(t *testing.T) {
 	want := int64(goroutines * perGoroutine)
 	if got.Attempted != want || got.Succeeded != want {
 		t.Fatalf("stats = %+v, want Attempted=Succeeded=%d; a lost increment here is a misreported rollout number", got, want)
+	}
+}
+
+// blockingMetaStore records the context it was handed and blocks until released,
+// so a test can observe the deadline the caller imposed.
+type blockingMetaStore struct {
+	noopMessageStore
+	entered  chan struct{}
+	release  chan struct{}
+	deadline time.Time
+	hadLimit bool
+}
+
+func (s *blockingMetaStore) UpdateAssistantMetadata(ctx context.Context, _ store.Owner, _ string, _ json.RawMessage) error {
+	s.deadline, s.hadLimit = ctx.Deadline()
+	close(s.entered)
+	<-s.release
+	return ctx.Err()
+}
+
+// TestShadowPersist_BoundsTheWriteWithADeadline pins the half of the isolation
+// fix that "the error is swallowed" never provided. Swallowing covers failure;
+// it does nothing about a store that simply does not return. Without a deadline
+// the turn holds its session's engine lease for as long as the database stalls.
+func TestShadowPersist_BoundsTheWriteWithADeadline(t *testing.T) {
+	resetShadowStats()
+	st := &blockingMetaStore{entered: make(chan struct{}), release: make(chan struct{})}
+	h := &Handlers{messages: st}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.shadowPersistTranscript(store.Owner{TopOrganizationID: 1, OrganizationID: 2}, "msg-1", engineWithToolTurn(t), nil)
+	}()
+
+	select {
+	case <-st.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shadow write never reached the store")
+	}
+	close(st.release)
+	<-done
+
+	if !st.hadLimit {
+		t.Fatal("the shadow write was handed a context with no deadline; a stalled store would hold the turn open indefinitely")
+	}
+	if remaining := time.Until(st.deadline); remaining <= 0 || remaining > shadowPersistTimeout {
+		t.Fatalf("deadline %v out of range, want (0, %v]", remaining, shadowPersistTimeout)
+	}
+}
+
+// TestShadowPersist_RunsAfterDoneAndAfterSessionState pins the ORDER, which is
+// the property that actually protects the client. It reads the source rather
+// than the runtime because the alternative — driving chatStream with a blocking
+// store — would deadlock on the very ordering it is trying to assert.
+func TestShadowPersist_RunsAfterDoneAndAfterSessionState(t *testing.T) {
+	src, err := os.ReadFile("handlers_chat.go")
+	if err != nil {
+		t.Fatalf("read handlers_chat.go: %v", err)
+	}
+	body := string(src)
+
+	doneAt := strings.Index(body, `sw.WriteEvent("done"`)
+	stateAt := strings.Index(body, "if prep.sessionStatePersistable {")
+	shadowAt := strings.Index(body, "h.shadowPersistTranscript(")
+	if doneAt < 0 || stateAt < 0 || shadowAt < 0 {
+		t.Fatalf("anchors moved: done=%d state=%d shadow=%d", doneAt, stateAt, shadowAt)
+	}
+	if shadowAt < doneAt {
+		t.Fatal("shadow write precedes the done frame: a blocked database withholds the client's reply")
+	}
+	if shadowAt < stateAt {
+		t.Fatal("shadow write precedes SessionState persistence: an optional migration probe must not delay the write the next turn depends on")
 	}
 }

@@ -564,15 +564,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		TtftMs:    ttftMs,
 	})
 
-	// Shadow-persist the canonical tool transcript. AFTER the done frame, for the
-	// same reason SessionState is below: the client must not wait on a write it
-	// gains nothing from. Swallowing the error was never enough on its own — an
-	// unbounded statement against a blocked database withheld `done` for as long
-	// as the database took, which is a user-visible hang, not a silent failure.
-	// replyPersistErr keeps its historical ignored-error semantics on the main
-	// path; it is consulted only to avoid stamping metadata onto a row whose
-	// reply never landed.
-	h.shadowPersistTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
 
 	// Persist SessionState envelope AFTER the done frame so the client is
 	// not blocked on a DB write. Guarded by sessionStatePersistable, which
@@ -606,6 +597,24 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			}
 		}
 	}
+
+	// Shadow-persist the canonical tool transcript. LAST: after the done frame so
+	// the client never waits on it, and after SessionState so an optional
+	// migration probe can never delay a write the next turn actually depends on.
+	// Swallowing the error was never enough on its own — an unbounded statement
+	// against a blocked database withheld `done` for as long as the database
+	// took, which is a user-visible hang rather than a silent failure.
+	//
+	// Note this still runs while the per-session engine lease is held (released
+	// by `defer prep.release()` in the WS turn goroutine), so a blocked database
+	// can still delay THIS session's next turn by up to shadowPersistTimeout.
+	// Bounding it caps that at 3s; taking it fully off the lease means
+	// snapshotting the payload and writing after release, which is a larger
+	// change to the turn's shape and deliberately not folded in here.
+	// replyPersistErr keeps its historical ignored-error semantics on the main
+	// path; it is consulted only to avoid stamping metadata onto a row whose
+	// reply never landed.
+	h.shadowPersistTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
 }
 
 func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) {

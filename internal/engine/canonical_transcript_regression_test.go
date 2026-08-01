@@ -202,3 +202,35 @@ func TestBuildTranscriptV1_DoesNotSilentlyTruncateToolArguments(t *testing.T) {
 		}
 	}
 }
+
+// TestAttachRecordedTranscripts_ToolFreeRecordStillConsumesItsSlot is the same
+// misattribution as above by a second route. captureTurnTranscript records every
+// exchange, including one that called no tools, as a record with a nil
+// Transcript. Skipping those before comparing text let a later same-text record
+// slide forward into the earlier turn's slot — so turn 1's answer was shown
+// turn 2's tool evidence, and turn 2 was shown none. The sibling test cannot
+// catch this: both of its records carry a transcript.
+func TestAttachRecordedTranscripts_ToolFreeRecordStillConsumesItsSlot(t *testing.T) {
+	prev := canonicalTranscriptEnabled
+	SetCanonicalTranscriptEnabled(true)
+	defer SetCanonicalTranscriptEnabled(prev)
+
+	eng := &Engine{recentTurns: []recordedTurn{
+		{User: "再试一次", Assistant: "已确认。", Transcript: nil}, // a turn that called no tools
+		{User: "再试一次", Assistant: "已确认。", Transcript: &TranscriptV1{V: transcriptSchemaVersion, Messages: []TranscriptMessage{
+			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []TranscriptToolCall{{ID: "c1", Name: "DescribeCompShareInstance", Arguments: `{"UHostId":"uhost-bbb"}`}}},
+			{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Name: "DescribeCompShareInstance", Content: `{"RetCode":0,"UHostId":"uhost-bbb"}`},
+		}}},
+	}}
+
+	pairs := eng.attachRecordedTranscripts([]ConversationPair{
+		{User: "再试一次", Assistant: "已确认。"},
+		{User: "再试一次", Assistant: "已确认。"},
+	})
+
+	require.Len(t, pairs, 2)
+	assert.Empty(t, pairs[0].Transcript,
+		"the first exchange called no tools; showing it the second turn's evidence attributes a lookup to the wrong turn")
+	assert.Contains(t, renderTestMessages(pairs[1].Transcript), "uhost-bbb",
+		"and the turn that did call the tool must keep its own evidence")
+}

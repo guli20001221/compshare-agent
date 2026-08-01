@@ -97,7 +97,16 @@ agent:
     # pre-decision layer this program is dismantling. The model calls
     # SearchKnowledge itself; let it. Set COMPSHARE_FORCED_KNOWLEDGE_HOP=1 to roll
     # back without a deploy.
-    forced_knowledge_hop: false
+    #
+    # Deliberately COMMENTED OUT rather than set to false. putBoolEnv records a
+    # non-nil *bool unconditionally, and RuntimeGetenv consults that overlay
+    # BEFORE os.Getenv (internal/config/runtime.go:155,167) — so an explicit
+    # `false` here out-ranks the environment and COMPSHARE_FORCED_KNOWLEDGE_HOP=1
+    # would silently do nothing, which is what cmd/runtime_overlay_test.go:54
+    # pins. Omitting the key leaves the pointer nil, no override is written, and
+    # the env var decides. Unset still parses to off, so shipped behaviour is
+    # identical; the only difference is that the documented rollback works.
+    # forced_knowledge_hop: false
     # INERT — parsed and forwarded, but nothing reads the overrides they emit;
     # the body-driven skill executor these gated no longer exists. Kept so an
     # older config file still loads. Setting either changes no behavior.
