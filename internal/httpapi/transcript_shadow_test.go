@@ -62,6 +62,15 @@ func resetShadowStats() {
 	transcriptShadowCounters.WriteError.Store(0)
 }
 
+// statelessMetaStore accepts every write and remembers nothing, so it is safe
+// to share across goroutines. Used by the concurrency test, which asserts on
+// the log and the counters rather than on what was written.
+type statelessMetaStore struct{ noopMessageStore }
+
+func (statelessMetaStore) UpdateAssistantMetadata(context.Context, store.Owner, string, json.RawMessage) error {
+	return nil
+}
+
 // fakeTranscriptSource stands in for *engine.Engine's producer side.
 type fakeTranscriptSource struct {
 	payload json.RawMessage
@@ -312,9 +321,17 @@ func TestShadowMilestone_LogsExactlyOncePerHundred(t *testing.T) {
 	log.SetFlags(0)
 	defer func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
 
-	st := &recordingMetaStore{}
-	h := &Handlers{messages: st}
+	// A STATELESS store on purpose. recordingMetaStore keeps the last payload,
+	// id and owner for the sequential tests; sharing it across 250 goroutines
+	// would be a race in the test double itself — and one that says nothing
+	// about the code under test, since this test reads only the log and the
+	// atomic counters. Locking the recorder would hide that mismatch rather
+	// than remove it.
+	h := &Handlers{messages: statelessMetaStore{}}
 	owner := store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+	// Built once, outside the goroutines: the source is read-only per call, and
+	// constructing it 250 times would only add allocation to the measurement.
+	source := engineWithToolTurn(t)
 
 	// Drive 250 attempts concurrently: milestones fall at 100 and 200.
 	const attempts = 250
@@ -323,7 +340,7 @@ func TestShadowMilestone_LogsExactlyOncePerHundred(t *testing.T) {
 	for i := 0; i < attempts; i++ {
 		go func() {
 			defer wg.Done()
-			h.shadowPersistTranscript(owner, "msg", engineWithToolTurn(t), nil)
+			h.shadowPersistTranscript(owner, "msg", source, nil)
 		}()
 	}
 	wg.Wait()
