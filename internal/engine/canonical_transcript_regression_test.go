@@ -234,3 +234,110 @@ func TestAttachRecordedTranscripts_ToolFreeRecordStillConsumesItsSlot(t *testing
 	assert.Contains(t, renderTestMessages(pairs[1].Transcript), "uhost-bbb",
 		"and the turn that did call the tool must keep its own evidence")
 }
+
+// TestProjectTranscript_DropsRoundsWithUnparseableArguments is a provider-validity
+// guard for the commonest malformed call, not a hypothetical one. executeToolOnce
+// records that roughly 4% of SearchKnowledge calls arrive with a leaked tag or a
+// bare query string where a JSON object belongs. Those rounds sit in e.messages
+// like any other and, replayed verbatim, hand the model back a call it could not
+// have meant — and tell it the malformed form was accepted.
+func TestProjectTranscript_DropsRoundsWithUnparseableArguments(t *testing.T) {
+	transcript := &TranscriptV1{V: transcriptSchemaVersion, Messages: []TranscriptMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "查一下"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []TranscriptToolCall{
+			{ID: "bad", Name: "SearchKnowledge", Arguments: `<search>显存不够</search>`},
+		}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "bad", Name: "SearchKnowledge",
+			Content: "parameter parse error: invalid character '<'"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []TranscriptToolCall{
+			{ID: "good", Name: "DescribeCompShareInstance", Arguments: `{"UHostId":"uhost-ok"}`},
+		}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "good", Name: "DescribeCompShareInstance",
+			Content: `{"RetCode":0}`},
+		{Role: openai.ChatMessageRoleAssistant, Content: "已确认。"},
+	}}
+
+	projected := ProjectTranscript(transcript)
+	rendered := renderTestMessages(projected)
+
+	assert.NotContains(t, rendered, "显存不够",
+		"a tool_call whose arguments do not parse must not be replayed")
+	assert.NotContains(t, rendered, "parameter parse error",
+		"and its tool result must leave with it, or the result is orphaned")
+	var survivingIDs []string
+	for _, msg := range projected {
+		for _, call := range msg.ToolCalls {
+			survivingIDs = append(survivingIDs, call.ID)
+			assert.True(t, json.Valid([]byte(call.Function.Arguments)),
+				"every projected tool_call must carry parseable arguments, got %q", call.Function.Arguments)
+		}
+	}
+	assert.Equal(t, []string{"good"}, survivingIDs,
+		"the well-formed round in the same turn survives; only the malformed one leaves")
+	assertProjectedPairsValid(t, projected)
+}
+
+// assertProjectedPairsValid restates the pairing invariant on projector output:
+// every tool result answers a declared call, and every declared call is answered.
+func assertProjectedPairsValid(t *testing.T, msgs []openai.ChatCompletionMessage) {
+	t.Helper()
+	declared := map[string]bool{}
+	for _, m := range msgs {
+		for _, c := range m.ToolCalls {
+			declared[c.ID] = true
+		}
+	}
+	answered := map[string]bool{}
+	for _, m := range msgs {
+		if m.Role == openai.ChatMessageRoleTool {
+			require.True(t, declared[m.ToolCallID], "orphaned tool result %q", m.ToolCallID)
+			answered[m.ToolCallID] = true
+		}
+	}
+	for id := range declared {
+		require.True(t, answered[id], "tool_call %q was declared but never answered", id)
+	}
+}
+
+// TestCaptureTurnTranscript_RejectsOversizedRawTurnWithoutScanningIt pins the
+// latency guard. The storage limits bound the OUTPUT; without this the input is
+// unbounded, and redaction plus []rune conversion run over the whole body before
+// a single character is discarded — on the path the user is waiting on.
+func TestCaptureTurnTranscript_RejectsOversizedRawTurnWithoutScanningIt(t *testing.T) {
+	huge := strings.Repeat("x", maxRawTurnBytes+1)
+	e := &Engine{messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "列一下"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall("c1", "DescribeCompShareInstance", `{}`)}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: huge},
+		{Role: openai.ChatMessageRoleAssistant, Content: "结果太大，已省略。"},
+	}}
+
+	e.captureTurnTranscript()
+	payload, stats := e.LastTurnTranscript()
+
+	assert.Nil(t, payload, "an oversized turn must not be persisted")
+	assert.True(t, stats.Attempted, "it is still an attempt — a rollout must see it")
+	assert.True(t, stats.Oversized, "and it must be attributable to size, not to a generic failure")
+
+	require.Len(t, e.recentTurns, 1, "the exchange itself is still recorded")
+	assert.Nil(t, e.recentTurns[0].Transcript, "but with no transcript attached")
+}
+
+// A turn just under the raw limit is unaffected — the guard must not be a
+// tightening of the ordinary path.
+func TestCaptureTurnTranscript_KeepsTurnsUnderTheRawLimit(t *testing.T) {
+	body := strings.Repeat("y", 4096)
+	e := &Engine{messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "列一下"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall("c1", "DescribeCompShareInstance", `{}`)}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: body},
+		{Role: openai.ChatMessageRoleAssistant, Content: "已列出。"},
+	}}
+
+	e.captureTurnTranscript()
+	payload, stats := e.LastTurnTranscript()
+
+	require.NotNil(t, payload, "an ordinary turn must still be persisted")
+	assert.False(t, stats.Oversized)
+	assert.True(t, stats.Attempted)
+}

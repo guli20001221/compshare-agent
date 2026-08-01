@@ -176,6 +176,33 @@ func buildTranscriptV1(messages []openai.ChatCompletionMessage) *TranscriptV1 {
 	return transcript
 }
 
+// maxRawTurnBytes caps the UNPROCESSED size of a turn the transcript will look
+// at. It is a CPU/latency guard, not a storage one — maxTranscriptBytes bounds
+// what is written, this bounds what is read. Generous next to the 40000-rune
+// storage budget so only a genuinely pathological turn trips it.
+const maxRawTurnBytes = 1 << 20 // 1 MiB
+
+// oversizedRawTurn reports whether this turn's raw bytes exceed what is worth
+// scanning. It measures len() only: no redaction, no rune conversion, no
+// allocation — the whole point is to decide before paying for any of those.
+func oversizedRawTurn(messages []openai.ChatCompletionMessage) bool {
+	start := currentTurnStart(messages)
+	if start < 0 {
+		return false
+	}
+	total := 0
+	for _, msg := range messages[start:] {
+		total += len(msg.Content)
+		for _, call := range msg.ToolCalls {
+			total += len(call.Function.Arguments) + len(call.Function.Name)
+		}
+		if total > maxRawTurnBytes {
+			return true
+		}
+	}
+	return false
+}
+
 // boundContent truncates one message body, reporting whether it did and what
 // the original length was.
 func boundContent(content string) (string, bool, int) {
@@ -336,6 +363,17 @@ func ParseTranscriptMetadata(raw json.RawMessage) *TranscriptV1 {
 // result whose call did not. Bounding sheds whole rounds so this should never
 // fire, but a half round reaching a provider is a 400 on the whole request —
 // this is the last line, not the first.
+// validToolArguments reports whether an argument string may be replayed to a
+// provider. Empty is allowed — a no-argument call legitimately carries "" — but
+// anything else must parse, because `arguments` is consumed as JSON and a
+// malformed value is not a shortened call, it is a call the model could not have
+// meant. Replaying one also teaches the model that the malformed form was
+// accepted.
+func validToolArguments(arguments string) bool {
+	trimmed := strings.TrimSpace(arguments)
+	return trimmed == "" || json.Valid([]byte(trimmed))
+}
+
 // projectedContent restores one stored body, re-attaching the fact that it was
 // shortened. Storing Truncated and then replaying only Content would leave the
 // model unable to tell a prefix from a complete result.
@@ -354,6 +392,27 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 	for _, msg := range transcript.Messages {
 		if msg.Role == openai.ChatMessageRoleTool && msg.ToolCallID != "" {
 			answered[msg.ToolCallID] = true
+		}
+	}
+
+	// Drop rounds whose arguments are not parseable JSON.
+	//
+	// boundToolArguments guarantees this only for arguments IT shortened. The
+	// commoner case is arguments that were never valid: executeToolOnce records
+	// that roughly 4% of SearchKnowledge calls arrive with a leaked tag or a bare
+	// query string instead of a JSON object (engine.go, "parameter parse error").
+	// Those assistant messages, and the error string that answered them, are in
+	// e.messages like any other and would be replayed verbatim.
+	//
+	// Clearing the ID from `answered` is all that is needed: the loop below drops
+	// a tool_call that nothing answers, and the tool result is then dropped in
+	// turn because its call was never declared. So the whole round leaves
+	// together, which is the invariant the rest of this file is built on.
+	for _, msg := range transcript.Messages {
+		for _, call := range msg.ToolCalls {
+			if !validToolArguments(call.Arguments) {
+				delete(answered, call.ID)
+			}
 		}
 	}
 
@@ -472,10 +531,12 @@ type TranscriptStats struct {
 // most recent turn, along with its stats. A nil payload means the turn had no
 // tool traffic worth persisting, or that bounding rejected it — Stats says which.
 //
-// The engine only PRODUCES this. It is not read back into model context: while
-// the projector is unbuilt, the transcript is a shadow record whose only job is
-// to prove hot and cold rebuilds agree. Wiring it into the prompt is a separate,
-// explicitly gated change.
+// This accessor is the SHADOW-WRITE side only: it hands the serialized document
+// to the persistence path and nothing else. It is not how the transcript reaches
+// the model — that runs through recentTurns and attachRecordedTranscripts, gated
+// by COMPSHARE_CANONICAL_TRANSCRIPT (default off). The two are deliberately
+// separate: the shadow write can be enabled on its own to produce real rows to
+// validate the projection against, without changing what any model sees.
 // The nil receiver is answered rather than panicking: callers reach this
 // through an interface, where a nil *Engine is not a nil interface.
 func (e *Engine) LastTurnTranscript() (json.RawMessage, TranscriptStats) {
@@ -492,6 +553,29 @@ func (e *Engine) LastTurnTranscript() (json.RawMessage, TranscriptStats) {
 func (e *Engine) captureTurnTranscript() {
 	e.lastTurnTranscript = nil
 	e.lastTurnTranscriptStats = TranscriptStats{}
+
+	// Cheap raw-size guard BEFORE any transcript work.
+	//
+	// This runs on the response path — the deferred call returns before the HTTP
+	// layer writes `done` — and the storage limits below do not bound it. They
+	// bound the OUTPUT: content is redacted (regexes over the whole string) and
+	// converted to []rune (a full copy) and only then truncated to 6000. A single
+	// pathological tool result therefore costs its full size in scan and copy no
+	// matter how little of it is kept, and the user waits for that.
+	//
+	// Over the limit the turn is recorded as Oversized and nothing is persisted.
+	// Deliberately not "truncate the raw text instead": cutting a body at a byte
+	// offset before redaction can slice a credential in half and store the
+	// halves, which is the one outcome worse than storing nothing.
+	if oversizedRawTurn(e.messages) {
+		if start := currentTurnStart(e.messages); start >= 0 {
+			if user, assistant := turnEndpoints(e.messages[start:]); user != "" {
+				e.recordTurn(recordedTurn{User: user, Assistant: assistant})
+			}
+		}
+		e.lastTurnTranscriptStats = TranscriptStats{Attempted: true, Oversized: true}
+		return
+	}
 
 	transcript := buildTranscriptV1(e.messages)
 
