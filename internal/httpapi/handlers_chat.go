@@ -523,7 +523,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// Client disconnected.
 	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
 		finishTrace(chatErr)
-		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
+		_ = h.persistAssistant(base.Owner, assistantMsgID,
 			store.AssistantPatch{Status: "aborted"})
 		return
 	}
@@ -533,7 +533,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		finishTrace(chatErr)
 		apiErr := classifyChatError(chatErr)
 		code := apiErr.Code
-		_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
+		_ = h.persistAssistant(base.Owner, assistantMsgID,
 			store.AssistantPatch{
 				Status:    "error",
 				ErrorCode: &code,
@@ -548,7 +548,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens
-	_ = h.messages.UpdateAssistant(context.Background(), base.Owner, assistantMsgID,
+	replyPersistErr := h.persistAssistant(base.Owner, assistantMsgID,
 		store.AssistantPatch{
 			Content:      guardrails.RedactOutputLeak(reply),
 			Status:       "ok",
@@ -563,6 +563,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		LatencyMs: latencyMs,
 		TtftMs:    ttftMs,
 	})
+
 
 	// Persist SessionState envelope AFTER the done frame so the client is
 	// not blocked on a DB write. Guarded by sessionStatePersistable, which
@@ -596,6 +597,54 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			}
 		}
 	}
+
+	// Shadow-persist the canonical tool transcript. LAST: after the done frame so
+	// the client never waits on it, and after SessionState so an optional
+	// migration probe can never delay a write the next turn actually depends on.
+	// Swallowing the error was never enough on its own — an unbounded statement
+	// against a blocked database withheld `done` for as long as the database
+	// took, which is a user-visible hang rather than a silent failure.
+	//
+	// Note this still runs while the per-session engine lease is held (released
+	// by `defer prep.release()` in the WS turn goroutine), so a blocked database
+	// can still delay THIS session's next turn by up to shadowPersistTimeout.
+	// Bounding it caps that at 3s; taking it fully off the lease means
+	// snapshotting the payload and writing after release, which is a larger
+	// change to the turn's shape and deliberately not folded in here.
+	// replyPersistErr keeps its historical ignored-error semantics on the main
+	// path; it is consulted only to avoid stamping metadata onto a row whose
+	// reply never landed.
+	h.shadowPersistTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
+}
+
+// assistantPersistTimeout bounds every assistant-row write on the turn path.
+//
+// These three writes used to run on context.Background() with no deadline. That
+// is not a slow path, it is an unbounded one: a stalled database holds the
+// SUCCESS write open before the `done` frame and the ERROR write open before the
+// error frame, so the client is told nothing at all for as long as the database
+// takes — and the per-session engine lease is held throughout, so the user's
+// next turn queues behind it too. Every turn does one of these writes, so the
+// blast radius is the whole service rather than one optional probe.
+//
+// Five seconds is chosen to be longer than any healthy write and short enough
+// that a user gets an answer. Losing the row is the lesser failure: the reply
+// itself is already computed and is delivered from memory, so a timeout costs
+// history, not the response.
+const assistantPersistTimeout = 5 * time.Second
+
+// persistAssistant applies one bounded assistant-row patch. It returns the
+// store error unchanged so callers keep their existing semantics — the two that
+// discarded it still discard it, and the success path still reports it to the
+// shadow write.
+func (h *Handlers) persistAssistant(owner store.Owner, msgID string, patch store.AssistantPatch) error {
+	ctx, cancel := context.WithTimeout(context.Background(), assistantPersistTimeout)
+	defer cancel()
+	err := h.messages.UpdateAssistant(ctx, owner, msgID, patch)
+	if err != nil {
+		log.Printf("warning: assistant row %s persist failed (reply still delivered): %v", msgID, err)
+	}
+	return err
 }
 
 func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) {

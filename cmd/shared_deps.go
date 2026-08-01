@@ -68,6 +68,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.D
 	if forcedKnowledgeHop {
 		log.Printf("runtime: HTTP forced first-hop retrieval enabled (COMPSHARE_FORCED_KNOWLEDGE_HOP=1)")
 	}
+	canonicalTranscript, unknownCanonicalTranscript := canonicalTranscriptEnabledFromEnv(getenv)
+	if unknownCanonicalTranscript != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_CANONICAL_TRANSCRIPT value %q", unknownCanonicalTranscript)
+	}
+	engine.SetCanonicalTranscriptEnabled(canonicalTranscript)
+	if canonicalTranscript {
+		log.Printf("runtime: canonical tool transcript replayed to the model (COMPSHARE_CANONICAL_TRANSCRIPT=1)")
+	}
 	return deps, mutating, nil
 }
 

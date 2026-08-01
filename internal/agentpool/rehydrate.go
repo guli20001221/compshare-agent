@@ -36,7 +36,11 @@ func filterHistory(messages []store.Message) []engine.HistoryMessage {
 		if msg.Role != "user" && msg.Role != "assistant" {
 			continue
 		}
-		history = append(history, engine.HistoryMessage{Role: msg.Role, Content: msg.Content})
+		history = append(history, engine.HistoryMessage{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			Transcript: msg.Metadata,
+		})
 	}
 	return history
 }
@@ -122,7 +126,11 @@ func validateCommittedTail(messages []store.Message) ([]engine.HistoryMessage, e
 		}
 		history = append(history,
 			engine.HistoryMessage{Role: userMsg.Role, Content: userMsg.Content},
-			engine.HistoryMessage{Role: assistantMsg.Role, Content: assistantMsg.Content},
+			engine.HistoryMessage{
+				Role:       assistantMsg.Role,
+				Content:    assistantMsg.Content,
+				Transcript: assistantMsg.Metadata,
+			},
 		)
 	}
 	return history, nil

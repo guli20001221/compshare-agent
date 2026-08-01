@@ -17,10 +17,9 @@ import (
 func newEngineForToolFactTest(t *testing.T) *Engine {
 	t.Helper()
 	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}},
 	}
 	e := NewSession(deps, SessionOptions{Subject: "test-subject"})
 	// Hydrate so the writer is allowed to touch sessionState.
@@ -288,10 +287,9 @@ func TestRecordMonitorSampleFacts_MultiSubjectKeepsSelectedInstanceUnset(t *test
 // from producing a non-empty RecentFacts slice that nothing consumes.
 func TestRecordToolFacts_NotHydratedSkipsWrite(t *testing.T) {
 	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}},
 	}
 	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
 	// NOT hydrated.
@@ -390,10 +388,9 @@ func TestExecuteSafeTool_OriginDirectLLM_RecordsFacts(t *testing.T) {
 		},
 	}
 	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         exec,
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: exec,
 	}
 	e := NewSession(deps, SessionOptions{Subject: "test-subject"})
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 0)
@@ -434,10 +431,9 @@ func TestExecuteSafeTool_OriginWorkflowInternal_DoesNotRecordFacts(t *testing.T)
 		},
 	}
 	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         exec,
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: exec,
 	}
 	e := NewSession(deps, SessionOptions{Subject: "test-subject"})
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 0)
@@ -466,10 +462,9 @@ func TestExecuteSafeTool_OriginDiagnosisInternal_DoesNotRecordFacts(t *testing.T
 		},
 	}
 	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         exec,
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: exec,
 	}
 	e := NewSession(deps, SessionOptions{Subject: "test-subject"})
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 0)
@@ -504,10 +499,9 @@ func TestExecuteSafeTool_PayloadRoundTripStable(t *testing.T) {
 		},
 	}
 	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         exec,
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: exec,
 	}
 	e := NewSession(deps, SessionOptions{Subject: "test-subject"})
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 0)
@@ -566,10 +560,9 @@ func TestRecordSelectedInstanceSourceUpgradesSchemaVersion(t *testing.T) {
 // the fact writer, no mutation without explicit SetSessionState.
 func TestRecordSelectedInstance_NotHydratedSkips(t *testing.T) {
 	deps := &SharedDeps{
-		LLMClient:                &mockLLM{},
-		RateLimiter:              governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		SupportsObjectToolChoice: true,
-		ExternalExecutor:         &mockExecutor{results: map[string]map[string]any{}},
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}},
 	}
 	e := NewSession(deps, SessionOptions{Subject: "cli-subject"})
 	require.False(t, e.sessionStateHydrated)

@@ -116,8 +116,8 @@ func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
 }
 
 func TestForcedKnowledgeHopEnabledFromEnv(t *testing.T) {
-	// COMPSHARE_FORCED_KNOWLEDGE_HOP is Go-default OFF (the deploy config turns it
-	// on). unset/empty/explicit-negative => off; affirmative => on; unknown => off +
+	// COMPSHARE_FORCED_KNOWLEDGE_HOP is OFF everywhere since 2026-08-01: Go-default
+	// off, and the deploy config omits the key so this env var is what decides. unset/empty/explicit-negative => off; affirmative => on; unknown => off +
 	// non-empty warn string per CLAUDE.md (never silently coerce).
 	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
 	for _, v := range off {

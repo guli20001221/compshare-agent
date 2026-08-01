@@ -16,6 +16,10 @@ import (
 type ConversationPair struct {
 	User      string
 	Assistant string
+	// Transcript is the tool work that produced Assistant, projected back to
+	// well-formed chat messages. Populated only when the canonical transcript is
+	// enabled; nil for tool-free turns and for rows written before it existed.
+	Transcript []openai.ChatCompletionMessage
 }
 
 // ToolObservationView is the bounded semantic projection of a prior tool
@@ -186,7 +190,56 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 	if limit > 0 && len(pairs) > limit {
 		pairs = pairs[len(pairs)-limit:]
 	}
+	pairs = e.attachRecordedTranscripts(pairs)
 	return budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
+}
+
+// attachRecordedTranscripts pairs each replayed exchange with the tool work
+// that produced it.
+//
+// Matching is by content, not by position: the pair list is derived from
+// e.messages and the record list from turn exits, and while they normally track
+// each other, a mismatch must degrade to "no transcript" rather than to
+// attaching one turn's tool results to a different turn's answer. That failure
+// would be invisible and would tell the model a diagnosis belonged to an
+// instance it was never run against.
+//
+// Content equality alone is not enough to identify a turn, because turns repeat:
+// "再试一次" answered by "已确认。" is an ordinary thing to say twice about two
+// different instances. So a record is consumed once and never reused. Both lists
+// are chronological, so first-unused is also the right one; the used[] guard is
+// what stops the second occurrence from silently inheriting the first one's tool
+// evidence. Hot/cold parity cannot catch this on its own — both sides would make
+// the identical substitution and agree.
+// A tool-free turn is recorded too, with a nil Transcript — captureTurnTranscript
+// records every exchange so the recorded window and the replayed conversation
+// agree about what "the last five turns" means. Such a record must therefore
+// still CONSUME its slot: skipping it before the text comparison would let a
+// later same-text record slide forward into its place, which is the same
+// misattribution by another route. Match on text, then attach only if there is
+// anything to attach.
+func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []ConversationPair {
+	if !canonicalTranscriptEnabled || e == nil || len(e.recentTurns) == 0 {
+		return pairs
+	}
+	consumed := make([]bool, len(e.recentTurns))
+	for i := range pairs {
+		for j, record := range e.recentTurns {
+			if consumed[j] {
+				continue
+			}
+			if safeConversationText(record.User) != pairs[i].User ||
+				safeConversationText(record.Assistant) != pairs[i].Assistant {
+				continue
+			}
+			consumed[j] = true
+			if record.Transcript != nil {
+				pairs[i].Transcript = ProjectTranscript(record.Transcript)
+			}
+			break
+		}
+	}
+	return pairs
 }
 
 // budgetReplayedPairs keeps the newest exchanges that fit in budget and drops
@@ -206,7 +259,10 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 	spent := 0
 	keepFrom := len(pairs)
 	for i := len(pairs) - 1; i >= 0; i-- {
-		cost := len([]rune(pairs[i].User)) + len([]rune(pairs[i].Assistant))
+		// The transcript is costed with the exchange it belongs to. Leaving it
+		// out would let the one part of history that actually grew escape the
+		// budget meant to bound history.
+		cost := len([]rune(pairs[i].User)) + len([]rune(pairs[i].Assistant)) + conversationTranscriptRunes(pairs[i])
 		if i < len(pairs)-1 && spent+cost > budgetRunes {
 			break
 		}
@@ -214,6 +270,18 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 		keepFrom = i
 	}
 	return pairs[keepFrom:]
+}
+
+// conversationTranscriptRunes is the replay cost of a pair's tool work.
+func conversationTranscriptRunes(pair ConversationPair) int {
+	total := 0
+	for _, msg := range pair.Transcript {
+		total += len([]rune(msg.Content))
+		for _, call := range msg.ToolCalls {
+			total += len([]rune(call.Function.Arguments)) + len([]rune(call.Function.Name))
+		}
+	}
+	return total
 }
 
 // contextEnvelopeForPlainDirectReply gives every deterministic handled reply an
