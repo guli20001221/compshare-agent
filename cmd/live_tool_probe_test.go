@@ -62,7 +62,14 @@ var (
 	// runs — an earlier A/B did the latter and a mid-run quota kill left the two
 	// arms unequally sampled with no record of which build produced which file.
 	// Encode the arm in -live-tool-out; nothing in the record does.
-	liveToolForcedHop = flag.Bool("live-tool-forced-hop", false, "run with the forced first-hop retrieval arm on (engine.SetForcedKnowledgeHopEnabled)")
+	// Tri-state on purpose. This was a bool defaulting false, from when the Go
+	// default was off AND the config did not ship it on. deploy/conf/config.yaml
+	// now sets forced_knowledge_hop: true, and configureSharedDepsFromEnv applies
+	// that before this flag is read — so the bool could only ever set ON, and an
+	// A/B run through this probe produced two identical arms that read as a null
+	// effect. "" keeps the config's value; "on"/"off" override it, which is what
+	// an arm actually needs.
+	liveToolForcedHop = flag.String("live-tool-forced-hop", "", `forced first-hop retrieval arm: "on" | "off" | "" (use the config value)`)
 	// DescribeCompShareInstance is region-scoped (external.go stamps the request
 	// Region from the user context), so a fixed config region only ever lists that
 	// region's instances. Left as the config default this silently reads empty for
@@ -126,11 +133,22 @@ func TestLiveToolProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build tenant context: %v", err)
 	}
-	if *liveToolForcedHop {
+	switch strings.ToLower(strings.TrimSpace(*liveToolForcedHop)) {
+	case "":
+		// Config decides.
+	case "on", "1", "true":
 		previous := engine.ForcedKnowledgeHopEnabled()
 		engine.SetForcedKnowledgeHopEnabled(true)
 		t.Cleanup(func() { engine.SetForcedKnowledgeHopEnabled(previous) })
+	case "off", "0", "false":
+		previous := engine.ForcedKnowledgeHopEnabled()
+		engine.SetForcedKnowledgeHopEnabled(false)
+		t.Cleanup(func() { engine.SetForcedKnowledgeHopEnabled(previous) })
+	default:
+		t.Fatalf("-live-tool-forced-hop=%q: want \"on\", \"off\" or empty", *liveToolForcedHop)
 	}
+	t.Logf("arm: forced_knowledge_hop=%v (flag=%q, config=%v)",
+		engine.ForcedKnowledgeHopEnabled(), *liveToolForcedHop, cfg.Agent.Features.ForcedKnowledgeHop != nil && *cfg.Agent.Features.ForcedKnowledgeHop)
 	t.Logf("wiring: model=%s mutating=%t rag_mode=%s sts=%t region=%s forced_hop=%t",
 		cfg.Agent.LLM.Model, mutating, getenv("RAG_RETRIEVAL_MODE"), cfg.Agent.STS.ServiceAK != "", cfg.Agent.Region,
 		engine.ForcedKnowledgeHopEnabled())
@@ -400,4 +418,3 @@ func truncateForLog(s string, maxRunes int) string {
 	}
 	return string(r[:maxRunes]) + "…(truncated)"
 }
-
