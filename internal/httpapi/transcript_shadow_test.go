@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -293,4 +295,56 @@ func TestShadowPersist_RunsAfterDoneAndAfterSessionState(t *testing.T) {
 	if shadowAt < stateAt {
 		t.Fatal("shadow write precedes SessionState persistence: an optional migration probe must not delay the write the next turn depends on")
 	}
+}
+
+// TestShadowMilestone_LogsExactlyOncePerHundred closes the evidence gap on the
+// ticket change: the implementation is only correct if the milestone fires once
+// per shadowReportEvery attempts and not once per concurrent completion. The
+// counter-based version could log twice for one milestone or skip one entirely,
+// and neither shows up in a counter assertion — only in the log.
+func TestShadowMilestone_LogsExactlyOncePerHundred(t *testing.T) {
+	resetShadowStats()
+
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&lockedWriter{w: &buf, mu: &mu})
+	log.SetFlags(0)
+	defer func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
+
+	st := &recordingMetaStore{}
+	h := &Handlers{messages: st}
+	owner := store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+
+	// Drive 250 attempts concurrently: milestones fall at 100 and 200.
+	const attempts = 250
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func() {
+			defer wg.Done()
+			h.shadowPersistTranscript(owner, "msg", engineWithToolTurn(t), nil)
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	got := strings.Count(buf.String(), "transcript shadow: attempted=")
+	mu.Unlock()
+
+	if want := attempts / shadowReportEvery; got != want {
+		t.Fatalf("milestone logged %d times over %d attempts, want exactly %d "+
+			"(re-reading the global counter instead of the ticket both duplicates and skips milestones)", got, attempts, want)
+	}
+}
+
+type lockedWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }

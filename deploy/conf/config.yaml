@@ -95,8 +95,12 @@ agent:
     # targetable — there is no pre-model classifier to narrow it to that 3.4%
     # (P6 removed the intent router), and adding one would rebuild the semantic
     # pre-decision layer this program is dismantling. The model calls
-    # SearchKnowledge itself; let it. Set COMPSHARE_FORCED_KNOWLEDGE_HOP=1 to roll
-    # back without a deploy.
+    # SearchKnowledge itself; let it.
+    #
+    # ROLLBACK: set COMPSHARE_FORCED_KNOWLEDGE_HOP=1 and RESTART. This is a
+    # boot-only flag — engine.SetForcedKnowledgeHopEnabled freezes it once at
+    # startup, so a running process will not pick the change up. It avoids
+    # editing YAML or shipping code, not a restart.
     #
     # Deliberately COMMENTED OUT rather than set to false. putBoolEnv records a
     # non-nil *bool unconditionally, and RuntimeGetenv consults that overlay
