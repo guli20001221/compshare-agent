@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/compshare-agent/internal/engine"
@@ -46,7 +47,15 @@ func (noopMessageStore) GetWithOwnerCheck(context.Context, store.Owner, string) 
 	return store.Message{}, nil
 }
 
-func resetShadowStats() { transcriptShadowStats = TranscriptShadowStats{} }
+func resetShadowStats() {
+	transcriptShadowCounters.Attempted.Store(0)
+	transcriptShadowCounters.Succeeded.Store(0)
+	transcriptShadowCounters.NoStore.Store(0)
+	transcriptShadowCounters.NoRowMatch.Store(0)
+	transcriptShadowCounters.Oversized.Store(0)
+	transcriptShadowCounters.Invalid.Store(0)
+	transcriptShadowCounters.WriteError.Store(0)
+}
 
 // fakeTranscriptSource stands in for *engine.Engine's producer side.
 type fakeTranscriptSource struct {
@@ -176,5 +185,36 @@ func TestShadowPersistForwardsOwnerAndPayload(t *testing.T) {
 	}
 	if _, ok := envelope["agent_transcript_v1"]; !ok {
 		t.Fatalf("payload missing agent_transcript_v1: %s", st.got)
+	}
+}
+
+// TestShadowCounters_SurviveConcurrentTurns guards the counter type. The HTTP
+// handler is concurrent, so plain int64 fields incremented with ++ lose updates
+// under load — and they lose them silently, in exactly the number a rollout is
+// reading to decide whether the shadow write works. This asserts the total is
+// exact, which a lost update breaks. (It is a behavioural check: `go test -race`
+// cannot build on the CI/dev toolchain here, so the structural guarantee is
+// atomic.Int64 having no ++ at all, and this is the regression net.)
+func TestShadowCounters_SurviveConcurrentTurns(t *testing.T) {
+	resetShadowStats()
+	const goroutines, perGoroutine = 64, 200
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perGoroutine; j++ {
+				transcriptShadowCounters.Attempted.Add(1)
+				transcriptShadowCounters.Succeeded.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	got := TranscriptShadowSnapshot()
+	want := int64(goroutines * perGoroutine)
+	if got.Attempted != want || got.Succeeded != want {
+		t.Fatalf("stats = %+v, want Attempted=Succeeded=%d; a lost increment here is a misreported rollout number", got, want)
 	}
 }

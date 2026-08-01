@@ -557,18 +557,22 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			TTFTMs:       &ttftMs,
 			LatencyMs:    &latencyMs,
 		})
-	// Shadow-persist the canonical tool transcript. Strictly after the reply is
-	// durable and strictly best-effort: this is a migration probe, and a turn
-	// must never be worse off for it. replyPersistErr keeps its historical
-	// ignored-error semantics on the main path; it is consulted only to avoid
-	// stamping metadata onto a row whose reply never landed.
-	h.shadowPersistTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
 	_ = sw.WriteEvent("done", doneEvent{
 		Content:   reply,
 		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},
 		LatencyMs: latencyMs,
 		TtftMs:    ttftMs,
 	})
+
+	// Shadow-persist the canonical tool transcript. AFTER the done frame, for the
+	// same reason SessionState is below: the client must not wait on a write it
+	// gains nothing from. Swallowing the error was never enough on its own — an
+	// unbounded statement against a blocked database withheld `done` for as long
+	// as the database took, which is a user-visible hang, not a silent failure.
+	// replyPersistErr keeps its historical ignored-error semantics on the main
+	// path; it is consulted only to avoid stamping metadata onto a row whose
+	// reply never landed.
+	h.shadowPersistTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
 
 	// Persist SessionState envelope AFTER the done frame so the client is
 	// not blocked on a DB write. Guarded by sessionStatePersistable, which

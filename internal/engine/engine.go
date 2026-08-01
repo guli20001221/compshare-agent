@@ -4812,13 +4812,29 @@ func capAssembledRequestMessages(msgs []openai.ChatCompletionMessage, cap int) [
 	}
 	excess := len(msgs) - cap
 
-	// Phase 1: drop whole restored RecentConversation pairs from the oldest end.
-	pairRegion := currentUserIdx - headEnd
-	pairsToDrop := (excess + 1) / 2
-	if maxPairs := pairRegion / 2; pairsToDrop > maxPairs {
-		pairsToDrop = maxPairs
+	// Phase 1: drop whole restored exchanges from the oldest end.
+	//
+	// A restored exchange is not a fixed two messages. With the canonical
+	// transcript projected in it is {user, assistant(tool_calls), tool…,
+	// assistant}, so shedding a fixed stride of two would cut into the middle of
+	// one and leave a tool result behind with no assistant call declaring it.
+	// That is not a degraded answer, it is a provider 400 on the whole request.
+	// The boundaries are therefore found, not assumed: each restored exchange
+	// begins at a user message.
+	exchangeStarts := make([]int, 0, 8)
+	for i := headEnd; i < currentUserIdx; i++ {
+		if msgs[i].Role == openai.ChatMessageRoleUser {
+			exchangeStarts = append(exchangeStarts, i)
+		}
 	}
-	dropFromPairs := pairsToDrop * 2
+	dropFromPairs := 0
+	for j := 0; j < len(exchangeStarts) && dropFromPairs < excess; j++ {
+		end := currentUserIdx
+		if j+1 < len(exchangeStarts) {
+			end = exchangeStarts[j+1]
+		}
+		dropFromPairs = end - headEnd
+	}
 
 	// Phase 2: if still over, drop oldest complete in-turn tool groups after the
 	// current question. A group = one assistant message plus the tool results

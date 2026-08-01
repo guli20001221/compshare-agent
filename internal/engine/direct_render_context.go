@@ -203,19 +203,29 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 // attaching one turn's tool results to a different turn's answer. That failure
 // would be invisible and would tell the model a diagnosis belonged to an
 // instance it was never run against.
+//
+// Content equality alone is not enough to identify a turn, because turns repeat:
+// "再试一次" answered by "已确认。" is an ordinary thing to say twice about two
+// different instances. So a record is consumed once and never reused. Both lists
+// are chronological, so first-unused is also the right one; the used[] guard is
+// what stops the second occurrence from silently inheriting the first one's tool
+// evidence. Hot/cold parity cannot catch this on its own — both sides would make
+// the identical substitution and agree.
 func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []ConversationPair {
 	if !canonicalTranscriptEnabled || e == nil || len(e.recentTurns) == 0 {
 		return pairs
 	}
+	consumed := make([]bool, len(e.recentTurns))
 	for i := range pairs {
-		for _, record := range e.recentTurns {
-			if record.Transcript == nil {
+		for j, record := range e.recentTurns {
+			if consumed[j] || record.Transcript == nil {
 				continue
 			}
 			if safeConversationText(record.User) != pairs[i].User ||
 				safeConversationText(record.Assistant) != pairs[i].Assistant {
 				continue
 			}
+			consumed[j] = true
 			pairs[i].Transcript = ProjectTranscript(record.Transcript)
 			break
 		}

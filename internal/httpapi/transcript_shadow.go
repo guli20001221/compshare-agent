@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"sync/atomic"
+	"time"
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/store"
@@ -32,12 +34,39 @@ type TranscriptShadowStats struct {
 	WriteError int64
 }
 
-// transcriptShadowStats is process-global by design: the shadow write has no
-// per-session meaning and the rollout question is aggregate.
-var transcriptShadowStats TranscriptShadowStats
+// transcriptShadowCounters is process-global by design: the shadow write has no
+// per-session meaning and the rollout question is aggregate. The fields are
+// atomic because the HTTP handler is concurrent — plain ++ here is a data race
+// on every simultaneous turn, and a racing counter would misreport exactly the
+// rollout number it exists to provide.
+var transcriptShadowCounters struct {
+	Attempted  atomic.Int64
+	Succeeded  atomic.Int64
+	NoStore    atomic.Int64
+	NoRowMatch atomic.Int64
+	Oversized  atomic.Int64
+	Invalid    atomic.Int64
+	WriteError atomic.Int64
+}
 
 // TranscriptShadowSnapshot returns a copy of the counters for diagnostics.
-func TranscriptShadowSnapshot() TranscriptShadowStats { return transcriptShadowStats }
+func TranscriptShadowSnapshot() TranscriptShadowStats {
+	return TranscriptShadowStats{
+		Attempted:  transcriptShadowCounters.Attempted.Load(),
+		Succeeded:  transcriptShadowCounters.Succeeded.Load(),
+		NoStore:    transcriptShadowCounters.NoStore.Load(),
+		NoRowMatch: transcriptShadowCounters.NoRowMatch.Load(),
+		Oversized:  transcriptShadowCounters.Oversized.Load(),
+		Invalid:    transcriptShadowCounters.Invalid.Load(),
+		WriteError: transcriptShadowCounters.WriteError.Load(),
+	}
+}
+
+// shadowPersistTimeout bounds the extra statement. Errors here were always
+// swallowed, but latency was not: an unbounded context on a blocked database
+// held the turn open indefinitely. The turn owes this write nothing, so it
+// waits a bounded moment and gives up.
+const shadowPersistTimeout = 3 * time.Second
 
 // shadowPersistTranscript writes the just-finished turn's canonical transcript
 // to messages.metadata on the assistant row.
@@ -65,31 +94,34 @@ func (h *Handlers) shadowPersistTranscript(
 	payload, stats := agent.LastTurnTranscript()
 	switch {
 	case stats.Oversized:
-		transcriptShadowStats.Attempted++
-		transcriptShadowStats.Oversized++
+		transcriptShadowCounters.Attempted.Add(1)
+		transcriptShadowCounters.Oversized.Add(1)
 		return
 	case stats.Invalid:
-		transcriptShadowStats.Attempted++
-		transcriptShadowStats.Invalid++
+		transcriptShadowCounters.Attempted.Add(1)
+		transcriptShadowCounters.Invalid.Add(1)
 		return
 	case len(payload) == 0:
 		// Not an attempt: a turn with no tool traffic has nothing to record.
 		return
 	}
 
-	transcriptShadowStats.Attempted++
+	transcriptShadowCounters.Attempted.Add(1)
 	metaStore, ok := h.messages.(store.AssistantMetadataStore)
 	if !ok {
-		transcriptShadowStats.NoStore++
+		transcriptShadowCounters.NoStore.Add(1)
 		return
 	}
-	switch err := metaStore.UpdateAssistantMetadata(context.Background(), owner, assistantMsgID, payload); {
+	writeCtx, cancel := context.WithTimeout(context.Background(), shadowPersistTimeout)
+	defer cancel()
+
+	switch err := metaStore.UpdateAssistantMetadata(writeCtx, owner, assistantMsgID, payload); {
 	case err == nil:
-		transcriptShadowStats.Succeeded++
+		transcriptShadowCounters.Succeeded.Add(1)
 	case errors.Is(err, sql.ErrNoRows):
-		transcriptShadowStats.NoRowMatch++
+		transcriptShadowCounters.NoRowMatch.Add(1)
 	default:
-		transcriptShadowStats.WriteError++
+		transcriptShadowCounters.WriteError.Add(1)
 		log.Printf("transcript shadow write failed (turn unaffected): %v", err)
 	}
 }

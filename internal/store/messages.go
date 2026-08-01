@@ -75,9 +75,16 @@ WHERE s.id = m.session_id
 //
 // Owner scoping mirrors UpdateAssistant; sql.ErrNoRows means nothing matched.
 func (s *MySQLMessageStore) UpdateAssistantMetadata(ctx context.Context, owner Owner, msgID string, metadata json.RawMessage) error {
+	// Top-level merge, not replace. The stored value is an envelope whose whole
+	// point is that keys can be added beside agent_transcript_v1; assigning the
+	// column outright would make each new writer silently delete the others'
+	// keys, and the loser would be whichever wrote first. `||` is a shallow
+	// jsonb merge, so this replaces agent_transcript_v1 and leaves siblings
+	// alone. The COALESCEs keep it total: a NULL on either side of `||` yields
+	// NULL in Postgres, which would blank the column rather than merge into it.
 	res, err := s.db.ExecContext(ctx, `
 UPDATE messages m
-SET metadata = $1
+SET metadata = COALESCE(m.metadata, '{}'::jsonb) || COALESCE($1::jsonb, '{}'::jsonb)
 FROM sessions s
 WHERE s.id = m.session_id
   AND m.id = $2 AND m.role = 'assistant'

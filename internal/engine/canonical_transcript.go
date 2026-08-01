@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -139,16 +140,23 @@ func buildTranscriptV1(messages []openai.ChatCompletionMessage) *TranscriptV1 {
 			Role:       string(msg.Role),
 			ToolCallID: msg.ToolCallID,
 		}
-		converted.Content, converted.Truncated, converted.OrigRunes = boundContent(msg.Content)
+		// Redact before bounding, and before anything is persisted.
+		//
+		// Ordinary replayed history reaches the model through
+		// safeConversationText. The transcript is a second road to the same
+		// place, so it clears the same boundary — otherwise a Jupyter token or
+		// password stripped from the assistant line would survive verbatim in
+		// metadata and be handed back on the next turn, with the redacted and
+		// unredacted forms of the same turn sitting in one row.
+		converted.Content, converted.Truncated, converted.OrigRunes = boundContent(safeConversationText(msg.Content))
 		if msg.Role == openai.ChatMessageRoleTool {
 			converted.Name = nameByCallID[msg.ToolCallID]
 		}
 		for _, call := range msg.ToolCalls {
-			args, _, _ := boundContent(call.Function.Arguments)
 			converted.ToolCalls = append(converted.ToolCalls, TranscriptToolCall{
 				ID:        call.ID,
 				Name:      call.Function.Name,
-				Arguments: args,
+				Arguments: boundToolArguments(safeConversationText(call.Function.Arguments)),
 			})
 		}
 		out = append(out, converted)
@@ -167,6 +175,43 @@ func boundContent(content string) (string, bool, int) {
 		return content, false, 0
 	}
 	return string(runes[:maxTranscriptMessageRunes]), true, len(runes)
+}
+
+// maxToolArgumentPrefixRunes is how much of an over-long argument string is kept
+// inside the marker. It is generous enough to retain the identifying fields —
+// UHostId, Region, Zone — which is the part a later turn actually reads.
+const maxToolArgumentPrefixRunes = 512
+
+// boundToolArguments bounds an argument string without ever emitting invalid
+// JSON.
+//
+// A tool call's arguments are parsed, not read as prose, so a truncated prefix
+// is not a shortened version of the call — it is a broken one, and the model is
+// shown a call it believes it made in a form it could not have made. Over-length
+// arguments are therefore replaced wholesale by a well-formed object that says
+// so and carries the identifying head.
+func boundToolArguments(args string) string {
+	runes := []rune(args)
+	if len(runes) <= maxTranscriptMessageRunes {
+		return args
+	}
+	marker, err := json.Marshal(struct {
+		Truncated bool   `json:"__truncated__"`
+		OrigRunes int    `json:"__orig_runes__"`
+		Prefix    string `json:"__prefix__"`
+	}{true, len(runes), string(runes[:maxToolArgumentPrefixRunes])})
+	if err != nil {
+		return `{"__truncated__":true}`
+	}
+	return string(marker)
+}
+
+// truncationNotice is appended to a shortened body on projection. The stored
+// Truncated flag is useless to the model if only Content is replayed: it would
+// read a prefix of an instance list as the whole list and answer confidently
+// about machines that were simply cut off.
+func truncationNotice(origRunes int) string {
+	return fmt.Sprintf("\n…[内容已截断，原文共 %d 字符；如需完整结果请重新查询]", origRunes)
 }
 
 // shedRoundsToBudget drops whole oldest tool rounds until the transcript fits
@@ -282,6 +327,16 @@ func ParseTranscriptMetadata(raw json.RawMessage) *TranscriptV1 {
 // result whose call did not. Bounding sheds whole rounds so this should never
 // fire, but a half round reaching a provider is a 400 on the whole request —
 // this is the last line, not the first.
+// projectedContent restores one stored body, re-attaching the fact that it was
+// shortened. Storing Truncated and then replaying only Content would leave the
+// model unable to tell a prefix from a complete result.
+func projectedContent(msg TranscriptMessage) string {
+	if !msg.Truncated {
+		return msg.Content
+	}
+	return msg.Content + truncationNotice(msg.OrigRunes)
+}
+
 func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage {
 	if transcript == nil {
 		return nil
@@ -302,13 +357,13 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 			}
 			out = append(out, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
-				Content:    msg.Content,
+				Content:    projectedContent(msg),
 				ToolCallID: msg.ToolCallID,
 			})
 			continue
 		}
 
-		converted := openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content}
+		converted := openai.ChatCompletionMessage{Role: msg.Role, Content: projectedContent(msg)}
 		for _, one := range msg.ToolCalls {
 			if !answered[one.ID] {
 				continue
