@@ -211,7 +211,7 @@ func waitInteractionRequests(t *testing.T, turns *store.PostgresTurnStore, owner
 		}
 		return len(requested) >= count
 	}, 10*time.Second, 50*time.Millisecond,
-		"timed out waiting for interaction.requested to appear on the other replica")
+		"timed out waiting for a durable interaction.requested event in PostgreSQL")
 	return requested
 }
 
@@ -660,16 +660,21 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 	sub, err := cA.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "confirm-1", Message: "stop it"}, nil)
 	require.NoError(t, err)
 
-	// Replica A has to execute the turn far enough to request confirmation, and
-	// replica B has to observe that through PostgreSQL. Under -race in CI that is
-	// several times slower than locally, and 5s was close enough to the real
-	// duration to fail intermittently — on a run that touched nothing in this
-	// package.
+	// The coordinator has to execute the turn far enough to request confirmation
+	// and land the event in PostgreSQL before a reader can see it — here from a
+	// second replica, which is slower still. Under -race in CI that runs several
+	// times slower than locally, and 5s was close enough to the real duration to
+	// fail intermittently, on a run that touched nothing in this package.
 	//
 	// Widened to 10s with a 50ms poll. This is a WAIT, not a timeout being
 	// tuned: the production ExecutionTimeout is untouched, and a healthy run
 	// still finishes in well under a second, so the extra ceiling costs nothing
 	// when things work.
+	//
+	// The turn/event dump below is specific to THIS wait. The shared
+	// waitInteractionRequests helper keeps ordinary Eventually output; it is used
+	// by six tests, not all of them cross-replica, and giving it a bespoke
+	// failure message would overclaim what it knows about its caller.
 	var interactionKey string
 	var sawRequest bool
 	deadline := time.Now().Add(10 * time.Second)
@@ -1092,7 +1097,7 @@ func TestCoordinator_RestartRebindsTheSameEditableConfirmation(t *testing.T) {
 		}
 		return false
 	}, 10*time.Second, 50*time.Millisecond,
-		"timed out waiting for interaction.requested to appear on the other replica")
+		"timed out waiting for a durable interaction.requested event in PostgreSQL")
 	assert.Equal(t, firstKey, interactionKeyFromEvent(t, refreshed), "takeover must refresh the original card key")
 	assert.JSONEq(t, string(firstPayload), string(interactionRequestPayloadFromEvent(t, refreshed)))
 	assert.Greater(t, refreshed.LeaseEpoch, firstRequests[0].LeaseEpoch)
@@ -1174,7 +1179,7 @@ func TestCoordinator_RestartSupersedesAChangedFirstConfirmation(t *testing.T) {
 		}
 		return false
 	}, 10*time.Second, 50*time.Millisecond,
-		"timed out waiting for interaction.requested to appear on the other replica")
+		"timed out waiting for a durable interaction.requested event in PostgreSQL")
 	secondKey := interactionKeyFromEvent(t, second)
 	assert.NotEqual(t, firstKey, secondKey)
 	old, err := turns.GetInteraction(ctx, owner, sub.Turn.ID, firstKey)
@@ -1316,7 +1321,7 @@ func TestCoordinator_ResolvedButExpiredConfirmationCannotAuthorizeRetry(t *testi
 		}
 		return false
 	}, 10*time.Second, 50*time.Millisecond,
-		"timed out waiting for interaction.requested to appear on the other replica")
+		"timed out waiting for a durable interaction.requested event in PostgreSQL")
 	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, key, ConfirmationResponse{Confirmed: true}))
 	waitTurnStatus(t, base, owner, sub.Turn.ID, store.TurnStatusFailedRetryable)
 	_, err = db.Exec(`UPDATE turn_interactions SET expires_at = NOW() - INTERVAL '1 second' WHERE turn_id = $1`, sub.Turn.ID)
