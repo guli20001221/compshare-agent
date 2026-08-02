@@ -656,7 +656,6 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 		}
 	}}
 	cA := coordinatorForTest(t, turnsA, sessions, factory, "replica-a")
-	cB := coordinatorForTest(t, turnsB, sessions, &coordinatorFactory{}, "replica-b")
 	sub, err := cA.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "confirm-1", Message: "stop it"}, nil)
 	require.NoError(t, err)
 
@@ -708,11 +707,26 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 	}
 	require.True(t, strings.HasPrefix(interactionKey, "confirmation/"),
 		"interaction key %q does not name a confirmation", interactionKey)
+
+	// This replica only needs to read and resolve the already-durable card. If
+	// it starts before replica A has persisted that card, its startup recovery
+	// loop can race for the accepted turn and let its unrelated test engine
+	// commit a plain answer. That made this test intermittently assert a
+	// confirmation protocol which it had not actually exercised.
+	var secondaryEngineCalls atomic.Int32
+	secondaryFactory := &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+			secondaryEngineCalls.Add(1)
+			return "", errors.New("secondary replica must not execute the confirmation turn")
+		}
+	}}
+	cB := coordinatorForTest(t, turnsB, sessions, secondaryFactory, "replica-b")
 	require.ErrorIs(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, interactionKey, ConfirmationResponse{
 		Confirmed: true, Overrides: map[string]string{"Password": "must-not-silently-drop"},
 	}), store.ErrInvalidArgument)
 	require.NoError(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, interactionKey, ConfirmationResponse{Confirmed: true}))
 	waitTurnStatus(t, turnsA, owner, sub.Turn.ID, store.TurnStatusCommitted)
+	assert.Zero(t, secondaryEngineCalls.Load(), "replica B may resolve the durable interaction but must not execute replica A's turn")
 
 	interaction, err := turnsB.GetInteraction(ctx, owner, sub.Turn.ID, interactionKey)
 	require.NoError(t, err)
