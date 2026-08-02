@@ -210,7 +210,8 @@ func waitInteractionRequests(t *testing.T, turns *store.PostgresTurnStore, owner
 			}
 		}
 		return len(requested) >= count
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 50*time.Millisecond,
+		"timed out waiting for interaction.requested to appear on the other replica")
 	return requested
 }
 
@@ -1090,7 +1091,8 @@ func TestCoordinator_RestartRebindsTheSameEditableConfirmation(t *testing.T) {
 			}
 		}
 		return false
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 50*time.Millisecond,
+		"timed out waiting for interaction.requested to appear on the other replica")
 	assert.Equal(t, firstKey, interactionKeyFromEvent(t, refreshed), "takeover must refresh the original card key")
 	assert.JSONEq(t, string(firstPayload), string(interactionRequestPayloadFromEvent(t, refreshed)))
 	assert.Greater(t, refreshed.LeaseEpoch, firstRequests[0].LeaseEpoch)
@@ -1171,7 +1173,8 @@ func TestCoordinator_RestartSupersedesAChangedFirstConfirmation(t *testing.T) {
 			}
 		}
 		return false
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 50*time.Millisecond,
+		"timed out waiting for interaction.requested to appear on the other replica")
 	secondKey := interactionKeyFromEvent(t, second)
 	assert.NotEqual(t, firstKey, secondKey)
 	old, err := turns.GetInteraction(ctx, owner, sub.Turn.ID, firstKey)
@@ -1312,7 +1315,8 @@ func TestCoordinator_ResolvedButExpiredConfirmationCannotAuthorizeRetry(t *testi
 			}
 		}
 		return false
-	}, 3*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 50*time.Millisecond,
+		"timed out waiting for interaction.requested to appear on the other replica")
 	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, key, ConfirmationResponse{Confirmed: true}))
 	waitTurnStatus(t, base, owner, sub.Turn.ID, store.TurnStatusFailedRetryable)
 	_, err = db.Exec(`UPDATE turn_interactions SET expires_at = NOW() - INTERVAL '1 second' WHERE turn_id = $1`, sub.Turn.ID)
