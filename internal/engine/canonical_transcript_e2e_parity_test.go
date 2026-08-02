@@ -185,9 +185,17 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 					Role: openai.ChatMessageRoleAssistant, Content: answer})
 			}(),
 			check: func(t *testing.T, assembled []openai.ChatCompletionMessage, _ json.RawMessage) {
+				replayed := renderReplayedRegion(t, assembled)
 				assertToolCallPairsValid(t, assembled)
-				assert.Contains(t, renderReplayedRegion(t, assembled), answer,
+				assert.Contains(t, replayed, answer,
 					"shedding evidence must never shed the answer the user was given")
+				// WHICH end is shed is the policy, and pairing validity alone
+				// would be satisfied by shedding the newest instead. The closing
+				// quote matters: `"id":"c1` is a prefix of `"id":"c10`.
+				assert.NotContains(t, replayed, `"id":"c1"`,
+					"the OLDEST round goes first")
+				assert.Contains(t, replayed, `"id":"c10"`,
+					"and the newest — the one the user is most likely referring to — stays")
 			},
 		},
 	}
@@ -289,6 +297,11 @@ func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
 	// The budget must have bitten — otherwise this test proves nothing.
 	require.NotContains(t, rendered, "e1 这台怎么了",
 		"precondition: six exchanges of this size must exceed maxReplayedHistoryRunes")
+	// And it must bite the correct end. Dropping the newest would satisfy every
+	// other assertion here while destroying the context a follow-up depends on.
+	assert.Contains(t, rendered, "e6 这台怎么了",
+		"the newest exchange is the one 「它」/「刚才那个」 refers to; it is never the one dropped")
+	assert.Contains(t, rendered, `"id":"e6"`, "with its tool evidence intact")
 
 	// Whatever survived, survived whole: question, answer and tool evidence
 	// share one fate per exchange.
