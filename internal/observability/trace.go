@@ -889,10 +889,11 @@ type RetrievalHit struct {
 	// input list). FusionScore is the pre-rerank RRF score, preserved
 	// separately from Score because the reranker overwrites Score with
 	// its relevance signal.
-	BM25Rank    int     `json:"bm25_rank,omitempty"`
-	DenseRank   int     `json:"dense_rank,omitempty"`
-	FusionRank  int     `json:"fusion_rank,omitempty"`
-	FusionScore float64 `json:"fusion_score,omitempty"`
+	BM25Rank     int     `json:"bm25_rank,omitempty"`
+	DenseRank    int     `json:"dense_rank,omitempty"`
+	MetadataRank int     `json:"metadata_rank,omitempty"`
+	FusionRank   int     `json:"fusion_rank,omitempty"`
+	FusionScore  float64 `json:"fusion_score,omitempty"`
 }
 
 type DiagnosisTrace struct {

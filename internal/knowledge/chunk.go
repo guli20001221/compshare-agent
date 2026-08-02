@@ -26,6 +26,30 @@ type KBChunk struct {
 	// Use SurfaceURL for user-facing public URLs.
 	SourceURL  string  `json:"source_url,omitempty"`
 	SurfaceURL *string `json:"surface_url,omitempty"`
+
+	// V2 provenance and hierarchy fields are optional so the loader remains
+	// backward-compatible with the legacy W0 corpus. V2 preprocessing has
+	// emitted the first group since its initial release; retaining them here
+	// prevents json.Unmarshal from silently discarding information the runtime
+	// needs for precise retrieval and incremental source updates.
+	DocumentID    string   `json:"document_id,omitempty"`
+	DocumentTitle string   `json:"document_title,omitempty"`
+	DocumentType  string   `json:"document_type,omitempty"`
+	HeadingPath   []string `json:"heading_path,omitempty"`
+	ChunkRole     string   `json:"chunk_role,omitempty"`
+	EvidenceKind  string   `json:"evidence_kind,omitempty"`
+	SourceRefs    []string `json:"source_refs,omitempty"`
+	V2SourceKind  string   `json:"v2_source_kind,omitempty"`
+
+	// The fields below are emitted by V2-native incremental updates. ParentID
+	// is the stable document-level parent for this child chunk; ChunkOrdinal
+	// gives its position within that parent. ExactTerms is a bounded list of
+	// curated / extracted identifiers (models, error codes, API names, etc.)
+	// used only as an additional RRF candidate leg, never as a hard exclusion.
+	SourceRevision string   `json:"source_revision,omitempty"`
+	ParentID       string   `json:"parent_id,omitempty"`
+	ChunkOrdinal   int      `json:"chunk_ordinal,omitempty"`
+	ExactTerms     []string `json:"exact_terms,omitempty"`
 }
 
 type Corpus struct {

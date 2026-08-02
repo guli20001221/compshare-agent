@@ -83,7 +83,8 @@ Operational notes:
 `qwen3_rrf` is the default retrieval mode. It uses rank-level fusion instead
 of the `qwen3_full` cascade filter. Pipeline:
 
-  BM25 top-50  ⊕  dense-full-corpus top-50   →  RRF (k=60)  →  top-10
+  BM25 top-50  ⊕  dense-full-corpus top-50  [⊕ precise metadata top-20]
+                                              →  RRF (k=60)  →  top-10
                                               →  qwen3-reranker-8b  →  top-3
 
 Critical difference vs `qwen3_full`: when BM25 returns zero candidates,
@@ -103,10 +104,14 @@ To opt in:
 export RAG_RETRIEVAL_MODE=qwen3_rrf
 ```
 
-Reuses the same qwen3 sidecar as `qwen3_full` (no new digest pin). Trace
-JSONL gains 4 optional fields per hit (`bm25_rank`, `dense_rank`,
-`fusion_rank`, `fusion_score`) for debugging rank-level contributions;
-these are omitted from JSONL for non-RRF modes via `omitempty`.
+Reuses the same qwen3 sidecar as `qwen3_full` (no new digest pin). A strong
+model/API/error-code/number identifier may add a bounded metadata candidate
+leg; it is never a hard filter, so ordinary BM25/dense recall is preserved.
+Trace JSONL gains 5 optional fields per hit (`bm25_rank`, `dense_rank`,
+`metadata_rank`, `fusion_rank`, `fusion_score`) for debugging rank-level
+contributions; these are omitted from JSONL for non-RRF modes via `omitempty`.
+See [`docs/rag-v2-metadata-gitlab-sync.md`](../../docs/rag-v2-metadata-gitlab-sync.md)
+for the source contract and GitLab delta-release boundary.
 
 Decision criterion: `qwen3_rrf` ships opt-in until paired-eval shows
 hard-gate clearance (anchor cases unchanged + ≥1 BM25-zero-hit recovery

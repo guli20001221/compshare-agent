@@ -59,6 +59,19 @@ The committed release keeps the promoted runtime sidecars only. Candidate
 sidecars in `deploy/kb/v2` are transient because they duplicate roughly 150 MB
 of runtime data.
 
+## Incremental GitLab updates
+
+For a pure-text GitLab delta, use `python -m scripts.rag_v2.gitlab_sync` to
+produce an isolated **candidate** corpus. It handles added, modified, deleted,
+and renamed Markdown under `pages/` and `public/action_md/`, preserves the
+frozen FAQ-export chunks, and writes `source_revision`, parent-child metadata,
+and bounded exact identifiers for changed documents. It never promotes directly
+into `deploy/kb/` and deliberately sends image/asset changes to review.
+
+The full metadata contract, safe state-cursor behavior, sidecar reuse, and
+production scheduling boundary are documented in
+[`docs/rag-v2-metadata-gitlab-sync.md`](../../docs/rag-v2-metadata-gitlab-sync.md).
+
 ## Evaluation
 
 Release quality is measured on 50 manually reviewed, RAG-relevant production

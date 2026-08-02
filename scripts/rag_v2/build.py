@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError, TypeError):
                 reuse_existing_asset_notes = False
 
-        internal_docs = collect_internal_docs(args.internal_docs) + faq_docs
+        internal_docs = collect_internal_docs(args.internal_docs, source_revision=args.internal_revision) + faq_docs
         all_image_docs = [*internal_docs, *external_docs]
         if args.skip_vl:
             asset_notes, asset_failures = {}, []

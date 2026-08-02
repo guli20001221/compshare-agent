@@ -16,6 +16,12 @@ const (
 	MaxQuestionPatterns           = 20
 	MaxQuestionPatternRunes       = 200
 	MaxKnowledgeContentRunes      = 4000
+	MaxHeadingPathEntries         = 20
+	MaxHeadingPathRunes           = 300
+	MaxSourceRefs                 = 16
+	MaxSourceRefRunes             = 600
+	MaxExactTerms                 = 32
+	MaxExactTermRunes             = 200
 	customerSafeACL               = "customer_safe"
 	confidenceHigh                = "high"
 	confidenceMedium              = "medium"
@@ -148,6 +154,42 @@ func validateChunk(chunk KBChunk) error {
 	}
 	if utf8.RuneCountInString(chunk.Content) > MaxKnowledgeContentRunes {
 		return fmt.Errorf("content exceeds %d runes", MaxKnowledgeContentRunes)
+	}
+	if err := validateOptionalStringSlice("heading_path", chunk.HeadingPath, MaxHeadingPathEntries, MaxHeadingPathRunes, false); err != nil {
+		return err
+	}
+	if err := validateOptionalStringSlice("source_refs", chunk.SourceRefs, MaxSourceRefs, MaxSourceRefRunes, true); err != nil {
+		return err
+	}
+	if err := validateOptionalStringSlice("exact_terms", chunk.ExactTerms, MaxExactTerms, MaxExactTermRunes, true); err != nil {
+		return err
+	}
+	if chunk.ChunkOrdinal < 0 {
+		return fmt.Errorf("chunk_ordinal must be non-negative")
+	}
+	if strings.TrimSpace(chunk.ParentID) != "" && strings.TrimSpace(chunk.DocumentID) == "" {
+		return fmt.Errorf("parent_id requires document_id")
+	}
+	return nil
+}
+
+func validateOptionalStringSlice(field string, values []string, maxEntries, maxRunes int, requireUnique bool) error {
+	if len(values) > maxEntries {
+		return fmt.Errorf("%s must contain at most %d entries", field, maxEntries)
+	}
+	seen := make(map[string]struct{}, len(values))
+	for index, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return fmt.Errorf("%s[%d] must not be empty", field, index)
+		}
+		if utf8.RuneCountInString(value) > maxRunes {
+			return fmt.Errorf("%s[%d] exceeds %d runes", field, index, maxRunes)
+		}
+		if _, ok := seen[value]; ok && requireUnique {
+			return fmt.Errorf("%s[%d] duplicates an earlier entry", field, index)
+		}
+		seen[value] = struct{}{}
 	}
 	return nil
 }
