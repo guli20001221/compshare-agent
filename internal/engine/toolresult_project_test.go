@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/prompt"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,6 +41,7 @@ func TestProjectToolResultForReAct_AvailabilityKeepsGPUFieldsAndShrinks(t *testi
 	assert.Equal(t, "RTX4090", row["GPUType"])
 	assert.Equal(t, float64(2), row["GPU"])
 	assert.NotContains(t, row, "HugeMatrix")
+	requireProjectionMetadata(t, result)
 }
 
 func TestProjectToolResultForReAct_MonitorDropsNestedBulkKeepsNoData(t *testing.T) {
@@ -135,6 +137,7 @@ func TestProjectToolResultForReAct_ReturnsFalseWhenNothingShrinks(t *testing.T) 
 		"already-minimal result must not report projection")
 	assert.Equal(t, before, jsonSize(t, result), "result must be unchanged on a no-op projection")
 	assert.Equal(t, "NO_DATA_IN_REQUESTED_WINDOW", result["MonitorDataStatus"])
+	assert.NotContains(t, result, agentResultProjectionMetadataKey)
 }
 
 func TestExecuteTool_ProjectionFlagOnlyChangesLLMVisibleResult(t *testing.T) {
@@ -175,10 +178,103 @@ func TestExecuteTool_ProjectionFlagOnlyChangesLLMVisibleResult(t *testing.T) {
 	assert.NotContains(t, flagOn, "HugeMatrix")
 	assert.Contains(t, flagOn, "RTX4090")
 	assert.True(t, events[len(events)-1].Projected, "flag on: projection signal recorded for trace")
+	assertFormattedProjectionMetadata(t, flagOn)
 	traceJSON, err := json.Marshal(events[len(events)-1].TraceResult)
 	require.NoError(t, err)
 	assert.Contains(t, string(traceJSON), "HugeMatrix",
 		"projection must not mutate TraceResult")
+}
+
+// Canonical transcript is a replay of the MODEL-visible tool result, not of
+// TraceResult. When the ReAct projection removes fields before FormatToolResult,
+// the same omission marker must survive capture, storage and projection back
+// into a future request. Otherwise a later model reads a partial catalog as if
+// it were complete.
+func TestProjectedToolResultMarksCanonicalTranscript(t *testing.T) {
+	prev := canonicalTranscriptEnabled
+	SetCanonicalTranscriptEnabled(true)
+	defer SetCanonicalTranscriptEnabled(prev)
+
+	result := map[string]any{
+		"RetCode": 0,
+		"ImageSet": []any{map[string]any{
+			"CompShareImageId":   "img-1",
+			"CompShareImageName": "PyTorch 2.1",
+			"ImageType":          "App",
+			"Description":        strings.Repeat("long", 200),
+		}},
+	}
+	require.True(t, projectToolResultForReAct("DescribeCompShareImages", result),
+		"precondition: this fixture must exercise a real projection")
+	liveToolResult := prompt.FormatToolResult(result)
+	assertFormattedProjectionMetadata(t, liveToolResult)
+
+	call := openai.ToolCall{
+		ID:   "call-projected",
+		Type: openai.ToolTypeFunction,
+		Function: openai.FunctionCall{
+			Name:      "DescribeCompShareImages",
+			Arguments: `{}`,
+		},
+	}
+	e := &Engine{messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "sys"},
+		{Role: openai.ChatMessageRoleUser, Content: "有哪些镜像？"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{call}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: call.ID, Content: liveToolResult},
+		{Role: openai.ChatMessageRoleAssistant, Content: "找到了一个镜像。"},
+	}}
+	e.captureTurnTranscript()
+	payload, stats := e.LastTurnTranscript()
+	require.True(t, stats.Attempted)
+	require.NotNil(t, payload)
+
+	stored := ParseTranscriptMetadata(payload)
+	require.NotNil(t, stored)
+	storedToolResult := transcriptToolContent(t, stored)
+	assert.JSONEq(t, liveToolResult, storedToolResult,
+		"canonical storage must preserve the model-visible projected result")
+	assertFormattedProjectionMetadata(t, storedToolResult)
+
+	replayed := ProjectTranscript(stored)
+	var replayedToolResult string
+	for _, msg := range replayed {
+		if msg.Role == openai.ChatMessageRoleTool {
+			replayedToolResult = msg.Content
+			break
+		}
+	}
+	require.NotEmpty(t, replayedToolResult)
+	assert.JSONEq(t, liveToolResult, replayedToolResult,
+		"cold replay must carry the same omission marker as the live turn")
+	assertFormattedProjectionMetadata(t, replayedToolResult)
+}
+
+func requireProjectionMetadata(t *testing.T, result map[string]any) {
+	t.Helper()
+	metadata, ok := result[agentResultProjectionMetadataKey].(map[string]any)
+	require.True(t, ok, "projected results must carry %s", agentResultProjectionMetadataKey)
+	assert.Equal(t, true, metadata["applied"])
+	assert.Equal(t, true, metadata["omitted_content"])
+	assert.Equal(t, agentResultProjectionMetadataNote, metadata["notice"])
+}
+
+func assertFormattedProjectionMetadata(t *testing.T, formatted string) {
+	t.Helper()
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(formatted), &result), "formatted result must remain JSON")
+	requireProjectionMetadata(t, result)
+}
+
+func transcriptToolContent(t *testing.T, transcript *TranscriptV1) string {
+	t.Helper()
+	for _, msg := range transcript.Messages {
+		if msg.Role == string(openai.ChatMessageRoleTool) {
+			return msg.Content
+		}
+	}
+	t.Fatal("transcript contains no tool result")
+	return ""
 }
 
 func jsonSize(t *testing.T, v any) int {

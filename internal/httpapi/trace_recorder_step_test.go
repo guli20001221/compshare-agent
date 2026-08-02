@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 )
@@ -34,4 +35,26 @@ func TestChatTraceRecorder_EmitStepAccumulatesSingleEnqueue(t *testing.T) {
 	assert.Equal(t, observability.ExecutionPathAgent, w.records[0].ActualExecutionPath)
 	require.Len(t, w.tenants, 1)
 	assert.Equal(t, int64(1), w.tenants[0].TopOrgID, "tenant carried on the single Enqueue (Enqueue path, not Append)")
+}
+
+// The raw trace payload is deliberately not the model-facing projection. The
+// boolean is therefore the trace-side fact that tells a later reader that the
+// canonical transcript/model saw a reduced result instead of the hashed source.
+func TestChatTraceRecorder_PersistsToolProjection(t *testing.T) {
+	w := &captureTraceWriter{}
+	base := BaseRequest{RequestUUID: "req-projected", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}
+	rec := newChatTraceRecorder(w, base, "sess-1", 1, "msg", time.Now())
+	require.NotNil(t, rec)
+
+	rec.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "DescribeCompShareImages"})
+	rec.OnStep(engine.StepEvent{
+		Type: engine.StepToolResult, Action: "DescribeCompShareImages",
+		TraceResult: map[string]any{"raw": true}, Projected: true,
+	})
+	require.NoError(t, rec.Finish(nil, time.Now()))
+
+	require.Len(t, w.records, 1)
+	require.Len(t, w.records[0].ToolCalls, 1)
+	assert.True(t, w.records[0].ToolCalls[0].Projected,
+		"the HTTP trace must retain that the model saw a projected result")
 }

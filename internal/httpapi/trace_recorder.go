@@ -265,6 +265,7 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.record.ToolCalls[idx].Status = observability.ToolStatusSuccess
 		r.record.ToolCalls[idx].ResultHash = resultHash
 		r.record.ToolCalls[idx].Attempts = ev.Attempts
+		r.record.ToolCalls[idx].Projected = ev.Projected
 		if r.record.ToolCalls[idx].RequestedTargets > 0 && r.record.ToolCalls[idx].ExecutedTargets == 0 {
 			r.record.ToolCalls[idx].ExecutedTargets = r.record.ToolCalls[idx].RequestedTargets
 		}
