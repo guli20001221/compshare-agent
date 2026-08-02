@@ -127,6 +127,19 @@ func (f *coordinatorFactory) New(
 	return eng, nil
 }
 
+// resolutionOnlyReplicaFactory makes a cross-replica test fail loudly if its
+// resolver replica accidentally becomes the executor through startup recovery.
+// That replica may read and resolve an already-durable interaction, but it must
+// never run the turn's model callback.
+func resolutionOnlyReplicaFactory(calls *atomic.Int32) *coordinatorFactory {
+	return &coordinatorFactory{newChat: func(int) func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+		return func(context.Context, func(engine.StepEvent), engine.ChatOptions) (string, error) {
+			calls.Add(1)
+			return "", errors.New("resolution-only replica must not execute the confirmation turn")
+		}
+	}}
+}
+
 func coordinatorForTest(t *testing.T, dbStore turnStore, sessions store.SessionStore, factory *coordinatorFactory, replica string) *Coordinator {
 	t.Helper()
 	c := NewCoordinator(dbStore, sessions, EngineFactoryFunc(factory.New), Options{
@@ -656,7 +669,6 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 		}
 	}}
 	cA := coordinatorForTest(t, turnsA, sessions, factory, "replica-a")
-	cB := coordinatorForTest(t, turnsB, sessions, &coordinatorFactory{}, "replica-b")
 	sub, err := cA.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "confirm-1", Message: "stop it"}, nil)
 	require.NoError(t, err)
 
@@ -708,11 +720,20 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 	}
 	require.True(t, strings.HasPrefix(interactionKey, "confirmation/"),
 		"interaction key %q does not name a confirmation", interactionKey)
+
+	// This replica only needs to read and resolve the already-durable card. If
+	// it starts before replica A has persisted that card, its startup recovery
+	// loop can race for the accepted turn and let its unrelated test engine
+	// commit a plain answer. That made this test intermittently assert a
+	// confirmation protocol which it had not actually exercised.
+	var secondaryEngineCalls atomic.Int32
+	cB := coordinatorForTest(t, turnsB, sessions, resolutionOnlyReplicaFactory(&secondaryEngineCalls), "replica-b")
 	require.ErrorIs(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, interactionKey, ConfirmationResponse{
 		Confirmed: true, Overrides: map[string]string{"Password": "must-not-silently-drop"},
 	}), store.ErrInvalidArgument)
 	require.NoError(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, interactionKey, ConfirmationResponse{Confirmed: true}))
 	waitTurnStatus(t, turnsA, owner, sub.Turn.ID, store.TurnStatusCommitted)
+	assert.Zero(t, secondaryEngineCalls.Load(), "replica B may resolve the durable interaction but must not execute replica A's turn")
 
 	interaction, err := turnsB.GetInteraction(ctx, owner, sub.Turn.ID, interactionKey)
 	require.NoError(t, err)
@@ -950,7 +971,6 @@ func TestCoordinator_EditableConfirmationIsValidatedFromPersistedFormAcrossRepli
 		}
 	}}
 	cA := coordinatorForTest(t, turnsA, sessions, factory, "editable-replica-a")
-	cB := coordinatorForTest(t, turnsB, sessions, &coordinatorFactory{}, "editable-replica-b")
 	sub, err := cA.Submit(ctx, SubmitInput{
 		Owner: owner, SessionID: session.ID, ClientTurnID: "editable-confirm", Message: "create it", ConfirmForm: true,
 	}, nil)
@@ -968,6 +988,11 @@ func TestCoordinator_EditableConfirmationIsValidatedFromPersistedFormAcrossRepli
 	require.NotNil(t, persisted.Form)
 	assert.Equal(t, durableTestConfirmForm(), persisted.Form)
 
+	// The resolver replica starts only after the first card is durable. Starting
+	// it at setup lets its recovery loop race for the accepted turn and bypass
+	// this test's editable-confirmation callback with an unrelated empty engine.
+	var secondaryEngineCalls atomic.Int32
+	cB := coordinatorForTest(t, turnsB, sessions, resolutionOnlyReplicaFactory(&secondaryEngineCalls), "editable-replica-b")
 	wrongOwner := store.Owner{TopOrganizationID: owner.TopOrganizationID + 1, OrganizationID: owner.OrganizationID}
 	require.ErrorIs(t, cB.ResolveInteraction(ctx, wrongOwner, sub.Turn.ID, key, ConfirmationResponse{
 		Confirmed: true, Overrides: map[string]string{"GpuType": "A800"},
@@ -990,6 +1015,7 @@ func TestCoordinator_EditableConfirmationIsValidatedFromPersistedFormAcrossRepli
 		t.Fatal("engine did not consume the durable editable resolution")
 	}
 	waitTurnStatus(t, turnsA, owner, sub.Turn.ID, store.TurnStatusCommitted)
+	assert.Zero(t, secondaryEngineCalls.Load(), "replica B may resolve the durable form but must not execute replica A's turn")
 	resolved, err := turnsB.GetInteraction(ctx, owner, sub.Turn.ID, key)
 	require.NoError(t, err)
 	assert.Equal(t, store.InteractionStatusResolved, resolved.Status)
