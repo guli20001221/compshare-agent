@@ -75,6 +75,33 @@ func redactValue(v any, mode redactMode, parentKey string) any {
 
 func redactField(key string, value any, mode redactMode) any {
 	if isSecretKey(key) {
+		if mode == redactModeLLM && isPlainSSHLoginCommand(key, value) {
+			// Not a secret, and treating it as one cost a capability.
+			//
+			// guardrails.IsCredentialKey matches any key containing both "ssh"
+			// and "command", which was folded in with a list of token names in
+			// #454 rather than decided about SSH. The value it blanks is a
+			// connection line the user owns — "ssh root@203.0.113.9 -p 23" — with
+			// no credential in it. The same package already decided that string
+			// is displayable: guardrails/output.go documents why IPv4 masking was
+			// removed, and TestRedactOutputLeak_IPv4IsPreserved pins that exact
+			// line under the label "SSH 登录行必须可直接照抄". So the text rule and
+			// the key-name rule disagreed about one string, and the key-name rule
+			// won on the path that matters — the model's.
+			//
+			// The cost was not cosmetic: CLAUDE.md names
+			// DescribeCompShareInstance.SshLoginCommand as the source of truth for
+			// SSH facts (explicitly NOT DescribeCompShareSoftwarePort), so the
+			// agent was denied the one field it is told to use, while IP,
+			// PrivateIP, and the identical string sitting in Remark all passed
+			// through untouched.
+			//
+			// The value still clears the credential boundary via redactValue —
+			// an embedded password or token is stripped, the endpoint is not.
+			// Scoped to redactModeLLM on purpose: persisted traces keep their
+			// current behaviour, so nothing at rest changes.
+			return redactValue(value, mode, key)
+		}
 		return redactedValue
 	}
 	if mode == redactModeTrace {
@@ -92,6 +119,111 @@ func redactField(key string, value any, mode redactMode) any {
 
 func isSecretKey(key string) bool {
 	return guardrails.IsCredentialKey(key)
+}
+
+// sshConnectionKeys are the exact fields whose whole value is an SSH connection
+// command. They are matched exactly, not by substring: a substring rule would be
+// the same mistake being corrected here, and would also swallow a hypothetical
+// SshCommandToken, which IS a secret and must keep being blanked. Adding a name
+// to this list is a deliberate act — the value must be a connection line, not a
+// credential that merely mentions ssh.
+var sshConnectionKeys = map[string]bool{
+	"sshlogincommand": true,
+}
+
+// isPlainSSHLoginCommand reports whether this is the authoritative SSH field
+// carrying a value that is safe to show. Both halves must hold.
+//
+// The value check fails CLOSED, and it is what makes the whole exception safe.
+// Credential redaction alone would not be: those patterns match `key=value` and
+// `key: value`, so a command-flag form like `sshpass -p hunter2 ssh root@host`
+// passes through them untouched. Rather than chase flag syntaxes, this accepts
+// only the shapes the upstream actually returns —
+//
+//	ssh root@1.2.3.4 -p 22
+//	ssh -p 23120 root@cpod-abc.podtcp.compshare.cn
+//	ssh ubuntu@1.2.3.5
+//
+// — one `ssh`, at most one `-p <port>`, exactly one `user@host`, nothing else.
+// An unrecognized token, a second command after `&&`, an `-o ProxyCommand`, or
+// anything that merely starts with `sshpass` all fall back to [REDACTED]. If
+// upstream changes the format the capability is lost again, loudly and safely,
+// rather than leaking whatever the new format carries. The instance Password is
+// a SEPARATE upstream field (see sshops.FetchCredential), so a well-formed value
+// has no credential to strip.
+//
+// Written as a tokenizer rather than a pattern on purpose: architectureguard
+// forbids new regex decision sites, and the token walk states the rule more
+// plainly than the equivalent expression would.
+func isPlainSSHLoginCommand(key string, value any) bool {
+	if !sshConnectionKeys[normalizeKey(key)] {
+		return false
+	}
+	raw, ok := value.(string)
+	if !ok {
+		return false
+	}
+	fields := strings.Fields(strings.TrimSpace(raw))
+	if len(fields) == 0 || fields[0] != "ssh" {
+		return false
+	}
+	seenTarget := false
+	for i := 1; i < len(fields); i++ {
+		switch {
+		case fields[i] == "-p":
+			i++
+			if i >= len(fields) || !isPortToken(fields[i]) {
+				return false
+			}
+		case !seenTarget && isSSHTargetToken(fields[i]):
+			seenTarget = true
+		default:
+			return false
+		}
+	}
+	return seenTarget
+}
+
+func isPortToken(s string) bool {
+	if s == "" || len(s) > 5 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isSSHTargetToken accepts exactly one user@host with no shell metacharacters:
+// the allowed rune set is what makes "&&", quotes and redirections impossible.
+func isSSHTargetToken(s string) bool {
+	at := strings.IndexByte(s, '@')
+	if at <= 0 || at == len(s)-1 {
+		return false
+	}
+	host := s[at+1:]
+	if !isHostRuneSet(s[:at]) || !isHostRuneSet(host) {
+		return false
+	}
+	first := host[0]
+	return first >= 'a' && first <= 'z' || first >= 'A' && first <= 'Z' || first >= '0' && first <= '9'
+}
+
+func isHostRuneSet(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func isBillingOrCostKey(key string) bool {

@@ -31,7 +31,16 @@ func TestRedactForLLM_RedactsSecretsRecursively(t *testing.T) {
 	assert.Equal(t, "[REDACTED]", redacted["api_key"])
 	assert.Equal(t, "[REDACTED]", redacted["Password"])
 	assert.Equal(t, "[REDACTED]", redacted["SSHCommand"])
-	assert.Equal(t, "[REDACTED]", redacted["SshLoginCommand"], "ssh+command must catch the login-infix field name too")
+	// Reversed deliberately. This used to assert that the ssh+command key rule
+	// caught the login-infix name too — it does, and that was the defect: the
+	// authoritative SSH field reached the model blanked, so the agent could not
+	// answer the question that field exists for. A plain login line carries no
+	// credential (the instance Password is a separate upstream field), and the
+	// exception fails closed on anything that is not one. SSHCommand above stays
+	// redacted, which is what keeps this narrow — see
+	// ssh_connection_visibility_test.go.
+	assert.Equal(t, "ssh root@1.2.3.4 -p 22", redacted["SshLoginCommand"],
+		"the authoritative SSH login line must reach the model intact")
 	assert.Equal(t, "[REDACTED]", redacted["JupyterLabToken"])
 	assert.Equal(t, "1.2.3.4", redacted["PublicIP"], "IP is not hidden from LLM context by default")
 	assert.Equal(t, "[REDACTED]", redacted["Nested"].(map[string]any)["access_token"])
