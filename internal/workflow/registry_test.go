@@ -90,11 +90,11 @@ func TestGetWorkflow(t *testing.T) {
 	assert.NotNil(t, def)
 	assert.Len(t, def.Steps, 3)
 
-	// CreateCustomImageWorkflow: query + zone + confirm + optional stop/wait + create + progress
+	// CreateCustomImageWorkflow: query + zone + confirm + create + optional progress
 	def, ok = GetWorkflow("CreateCustomImageWorkflow")
 	assert.True(t, ok)
 	assert.NotNil(t, def)
-	assert.Len(t, def.Steps, 7)
+	assert.Len(t, def.Steps, 5)
 
 	// CloneCustomImageWorkflow: confirm -> sync -> optional progress
 	def, ok = GetWorkflow("CloneCustomImageWorkflow")

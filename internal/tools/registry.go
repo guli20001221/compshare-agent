@@ -1017,7 +1017,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateCustomImageWorkflow",
-			Description: "从已有实例制作当前账号自制镜像的候选请求。用于保存和复用实例环境；普通虚机制作前需停机，容器来源需保持运行。不用于发布社区镜像，也不用于跨可用区克隆已有自制镜像。",
+			Description: "从实例发起自制镜像制作。仅在用户已明确实例和镜像名称时调用；缺任一项先追问。展示确认卡，确认后发起制作；成功仅表示已开始，初始状态为 Making，变为 Available 后才可用于创建、共享或克隆。不会关闭源实例；不用于社区发布或跨可用区克隆。普通虚机可运行或关机，容器来源必须运行。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
