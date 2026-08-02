@@ -260,6 +260,7 @@ func (r *Recorder) OnStep(ev engine.StepEvent) {
 		resultHash, _ := observability.HashTracePayload(ev.TraceResult)
 		call := &r.record.ToolCalls[idx]
 		call.Status, call.ResultHash, call.Attempts = observability.ToolStatusSuccess, resultHash, ev.Attempts
+		call.Projected = ev.Projected
 		if call.RequestedTargets > 0 && call.ExecutedTargets == 0 {
 			call.ExecutedTargets = call.RequestedTargets
 		}

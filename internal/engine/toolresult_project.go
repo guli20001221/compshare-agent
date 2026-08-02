@@ -6,7 +6,11 @@ import (
 	"strings"
 )
 
-const projectedListLimit = 20
+const (
+	projectedListLimit                = 20
+	agentResultProjectionMetadataKey  = "_AgentResultProjection"
+	agentResultProjectionMetadataNote = "该工具结果已按模型上下文裁剪；未展示的字段或列表项不代表不存在。如需完整结果，请带具体筛选条件重新查询。"
+)
 
 var reactProjectionActions = map[string]struct{}{
 	"GetCompShareInstanceMonitor":             {},
@@ -44,6 +48,19 @@ func projectToolResultForReAct(action string, llmResult map[string]any) bool {
 	}
 	if len(projected) == 0 {
 		return false
+	}
+	// The projected value, rather than SafeToolResult.TraceResult, is what is
+	// formatted into e.messages and therefore what canonical transcript capture
+	// persists for a later turn. Keep the omission signal in that same value:
+	// an observability-only Projected bool would leave a replayed result looking
+	// complete even after fields or list entries were removed.
+	//
+	// Add it BEFORE the size comparison. A marker that made the value no smaller
+	// must not cause us to replace the original result or report a projection.
+	projected[agentResultProjectionMetadataKey] = map[string]any{
+		"applied":         true,
+		"omitted_content": true,
+		"notice":          agentResultProjectionMetadataNote,
 	}
 	// Only signal (and replace) when projection actually shrinks the
 	// model-visible result; otherwise the result was already minimal and a
