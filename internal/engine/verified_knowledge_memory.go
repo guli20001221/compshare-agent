@@ -15,10 +15,6 @@ const (
 	verifiedKnowledgeAnswerMaxRunes = 1200
 )
 
-func (e *Engine) hasReusableVerifiedKnowledge() bool {
-	return e != nil && len(e.sessionState.VerifiedKnowledge) > 0
-}
-
 // rememberVerifiedKnowledge stores only answers that have already passed the
 // semantic verifier. The bounded evidence snippets are the durable trust root;
 // arbitrary assistant prose is never promoted merely because it was emitted.

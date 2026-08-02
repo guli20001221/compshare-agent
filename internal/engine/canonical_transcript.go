@@ -333,23 +333,64 @@ func (e transcriptError) Error() string { return string(e) }
 // byte guard. It is a metric, not a turn failure.
 const errTranscriptOversized = transcriptError("canonical transcript exceeds byte budget")
 
+// transcriptParseOutcome names WHY a row yielded no transcript.
+//
+// The distinction does not change the turn — every non-OK outcome degrades to
+// "no transcript" exactly as before — but it is the difference between two
+// rollout states an operator otherwise cannot tell apart: rows that simply do
+// not carry a transcript yet, and rows that carry one this binary refuses to
+// read. Both look like nil at the call site.
+type transcriptParseOutcome int
+
+const (
+	// transcriptParseAbsent is a row with no metadata at all.
+	transcriptParseAbsent transcriptParseOutcome = iota
+	// transcriptParseUnreadable is metadata that is not decodable JSON.
+	transcriptParseUnreadable
+	// transcriptParseNoTranscript is a decodable document carrying no
+	// agent_transcript_v1 key. Expected: the column is general-purpose.
+	transcriptParseNoTranscript
+	// transcriptParseForeignVersion is a transcript at a version this binary does
+	// not read — forward schema drift, the outcome that is silent today.
+	transcriptParseForeignVersion
+	// transcriptParseEmpty is a well-formed transcript with no messages.
+	transcriptParseEmpty
+	transcriptParseOK
+)
+
+// classifyTranscriptMetadata is ParseTranscriptMetadata plus the reason.
+//
+// It is the single decoder; the exported wrapper below discards the reason so
+// its contract is unchanged. Splitting the reason out of the boolean chain is
+// what lets transcriptFromRow count schema drift without a second parse and
+// without any caller having to handle a new error.
+func classifyTranscriptMetadata(raw json.RawMessage) (*TranscriptV1, transcriptParseOutcome) {
+	if len(raw) == 0 {
+		return nil, transcriptParseAbsent
+	}
+	var envelope transcriptEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, transcriptParseUnreadable
+	}
+	transcript := envelope.Transcript
+	switch {
+	case transcript == nil:
+		return nil, transcriptParseNoTranscript
+	case transcript.V != transcriptSchemaVersion:
+		return nil, transcriptParseForeignVersion
+	case len(transcript.Messages) == 0:
+		return nil, transcriptParseEmpty
+	}
+	return transcript, transcriptParseOK
+}
+
 // ParseTranscriptMetadata reads a persisted messages.metadata document back
 // into a transcript. It returns nil for absent, malformed, or unknown-version
 // documents rather than an error: this is a migration carrier, and a row whose
 // metadata cannot be understood must degrade to "no transcript", never to a
 // failed rebuild.
 func ParseTranscriptMetadata(raw json.RawMessage) *TranscriptV1 {
-	if len(raw) == 0 {
-		return nil
-	}
-	var envelope transcriptEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil
-	}
-	transcript := envelope.Transcript
-	if transcript == nil || transcript.V != transcriptSchemaVersion || len(transcript.Messages) == 0 {
-		return nil
-	}
+	transcript, _ := classifyTranscriptMetadata(raw)
 	return transcript
 }
 
@@ -388,9 +429,37 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 	if transcript == nil {
 		return nil
 	}
+	// A call is answered only by a result that comes AFTER it.
+	//
+	// This used to be a position-blind scan, and a row whose result preceded its
+	// call therefore satisfied it: the result was then dropped by the main loop
+	// (nothing had declared it yet) while the call was emitted as answered,
+	// leaving an assistant tool_call with no result — a 400 on the whole request,
+	// which is the exact failure the shedding invariant exists to prevent. The
+	// producer cannot emit that order, so only a row from another binary reaches
+	// it; "our writer cannot do this" is not a property of the reader.
+	//
+	// declIndex also settles duplicates: an id declared twice is declared once,
+	// at its first position. A provider given the same tool_call id twice cannot
+	// pair results to calls, and the second copy is unanswerable by construction.
+	declIndex := make(map[string]int, 4)
+	for i, msg := range transcript.Messages {
+		for _, call := range msg.ToolCalls {
+			if call.ID == "" {
+				continue
+			}
+			if _, dup := declIndex[call.ID]; dup {
+				continue
+			}
+			declIndex[call.ID] = i
+		}
+	}
 	answered := make(map[string]bool, 4)
-	for _, msg := range transcript.Messages {
-		if msg.Role == openai.ChatMessageRoleTool && msg.ToolCallID != "" {
+	for i, msg := range transcript.Messages {
+		if msg.Role != openai.ChatMessageRoleTool || msg.ToolCallID == "" {
+			continue
+		}
+		if declaredAt, ok := declIndex[msg.ToolCallID]; ok && declaredAt < i {
 			answered[msg.ToolCallID] = true
 		}
 	}
@@ -418,11 +487,22 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 
 	out := make([]openai.ChatCompletionMessage, 0, len(transcript.Messages))
 	declared := make(map[string]bool, 4)
+	// Counted rather than merely dropped. The drop above is called "the last
+	// line, not the first" — bounding sheds whole rounds so a half round should
+	// never reach here. That claim was never measured; a silent last line cannot
+	// tell you it is holding.
+	droppedCalls := 0
+	// A second result for the same call is dropped rather than replayed. One
+	// tool_call answered twice is not a richer record — it is a pairing a
+	// provider cannot resolve, and the later copy would silently override the
+	// result the model actually observed.
+	resultEmitted := make(map[string]bool, 4)
 	for _, msg := range transcript.Messages {
 		if msg.Role == openai.ChatMessageRoleTool {
-			if msg.ToolCallID == "" || !declared[msg.ToolCallID] {
+			if msg.ToolCallID == "" || !declared[msg.ToolCallID] || resultEmitted[msg.ToolCallID] {
 				continue
 			}
+			resultEmitted[msg.ToolCallID] = true
 			out = append(out, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
 				Content:    projectedContent(msg),
@@ -433,7 +513,10 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 
 		converted := openai.ChatCompletionMessage{Role: msg.Role, Content: projectedContent(msg)}
 		for _, one := range msg.ToolCalls {
-			if !answered[one.ID] {
+			// declared[] here is the duplicate guard, not bookkeeping: reaching a
+			// call whose id was already emitted means the row declared it twice.
+			if !answered[one.ID] || declared[one.ID] {
+				droppedCalls++
 				continue
 			}
 			declared[one.ID] = true
@@ -457,6 +540,15 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 			continue
 		}
 		out = append(out, converted)
+	}
+	// Gated even though the only production caller is already past the gate:
+	// this function is exported, and an ungated counter would make the read side
+	// observable — and therefore not inert — with the transcript switched off.
+	if canonicalTranscriptEnabled {
+		transcriptReplayCounters.MessagesProjected.Add(int64(len(out)))
+		if droppedCalls > 0 {
+			transcriptReplayCounters.ToolCallsDropped.Add(int64(droppedCalls))
+		}
 	}
 	return out
 }
@@ -515,7 +607,12 @@ func transcriptFromRow(raw json.RawMessage) *TranscriptV1 {
 	if !canonicalTranscriptEnabled {
 		return nil
 	}
-	return ParseTranscriptMetadata(raw)
+	// The classified form is used here and nowhere else: this is the only caller
+	// that knows it is looking at a PERSISTED row, which is what makes "carries a
+	// version we do not read" meaningful rather than just nil.
+	transcript, outcome := classifyTranscriptMetadata(raw)
+	recordTranscriptRowOutcome(outcome)
+	return transcript
 }
 
 func (e *Engine) recordTurn(turn recordedTurn) {

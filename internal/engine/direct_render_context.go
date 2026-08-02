@@ -219,11 +219,27 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 // misattribution by another route. Match on text, then attach only if there is
 // anything to attach.
 func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []ConversationPair {
-	if !canonicalTranscriptEnabled || e == nil || len(e.recentTurns) == 0 {
+	if !canonicalTranscriptEnabled || e == nil {
+		return pairs
+	}
+	// The ticket is taken here rather than at the end so that a build which
+	// attaches nothing still owns its milestone — "we replayed 100 contexts and
+	// attached zero transcripts" is the single most important thing this can say
+	// during a pilot, and a counter that only advances on success cannot say it.
+	ticket := transcriptReplayCounters.ContextBuilds.Add(1)
+	defer func() { reportReplayProgress(ticket) }()
+	transcriptReplayCounters.PairsReplayed.Add(int64(len(pairs)))
+
+	// No records at all while there are pairs to attribute is itself the
+	// divergence this counts, not a reason to skip counting: both lists derive
+	// from e.messages, so with the transcript on they should rise together.
+	if len(e.recentTurns) == 0 {
+		transcriptReplayCounters.MatchMissed.Add(int64(len(pairs)))
 		return pairs
 	}
 	consumed := make([]bool, len(e.recentTurns))
 	for i := range pairs {
+		matched := false
 		for j, record := range e.recentTurns {
 			if consumed[j] {
 				continue
@@ -233,10 +249,15 @@ func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []Conversat
 				continue
 			}
 			consumed[j] = true
+			matched = true
 			if record.Transcript != nil {
 				pairs[i].Transcript = ProjectTranscript(record.Transcript)
+				transcriptReplayCounters.TranscriptsAttached.Add(1)
 			}
 			break
+		}
+		if !matched {
+			transcriptReplayCounters.MatchMissed.Add(1)
 		}
 	}
 	return pairs
@@ -268,6 +289,23 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 		}
 		spent += cost
 		keepFrom = i
+	}
+	// Counted separately from ordinary budget pressure. An exchange dropped for
+	// size is expected; an exchange dropped for size while carrying the tool
+	// evidence the transcript exists to replay is the case where this feature
+	// pays its own budget and loses. Naturally zero with the flag off — nothing
+	// attaches a transcript — but gated anyway so that stays true by
+	// construction rather than by inspection.
+	if canonicalTranscriptEnabled && keepFrom > 0 {
+		dropped := 0
+		for _, pair := range pairs[:keepFrom] {
+			if len(pair.Transcript) > 0 {
+				dropped++
+			}
+		}
+		if dropped > 0 {
+			transcriptReplayCounters.BudgetDropped.Add(int64(dropped))
+		}
 	}
 	return pairs[keepFrom:]
 }
