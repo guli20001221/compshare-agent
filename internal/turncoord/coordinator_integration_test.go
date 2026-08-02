@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -209,7 +210,8 @@ func waitInteractionRequests(t *testing.T, turns *store.PostgresTurnStore, owner
 			}
 		}
 		return len(requested) >= count
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 50*time.Millisecond,
+		"timed out waiting for a durable interaction.requested event in PostgreSQL")
 	return requested
 }
 
@@ -658,13 +660,30 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 	sub, err := cA.Submit(ctx, SubmitInput{Owner: owner, SessionID: session.ID, ClientTurnID: "confirm-1", Message: "stop it"}, nil)
 	require.NoError(t, err)
 
+	// The coordinator has to execute the turn far enough to request confirmation
+	// and land the event in PostgreSQL before a reader can see it — here from a
+	// second replica, which is slower still. Under -race in CI that runs several
+	// times slower than locally, and 5s was close enough to the real duration to
+	// fail intermittently, on a run that touched nothing in this package.
+	//
+	// Widened to 10s with a 50ms poll. This is a WAIT, not a timeout being
+	// tuned: the production ExecutionTimeout is untouched, and a healthy run
+	// still finishes in well under a second, so the extra ceiling costs nothing
+	// when things work.
+	//
+	// The turn/event dump below is specific to THIS wait. The shared
+	// waitInteractionRequests helper keeps ordinary Eventually output; it is used
+	// by six tests, not all of them cross-replica, and giving it a bespoke
+	// failure message would overclaim what it knows about its caller.
 	var interactionKey string
-	deadline := time.Now().Add(5 * time.Second)
+	var sawRequest bool
+	deadline := time.Now().Add(10 * time.Second)
 	for interactionKey == "" && time.Now().Before(deadline) {
 		events, listErr := turnsB.ListEvents(ctx, owner, sub.Turn.ID, 0, 100)
 		require.NoError(t, listErr)
 		for _, event := range events {
 			if event.Type == "interaction.requested" {
+				sawRequest = true
 				var payload struct {
 					InteractionKey string `json:"interaction_key"`
 				}
@@ -673,9 +692,22 @@ func TestCoordinator_DurableConfirmationCanResolveFromAnotherReplica(t *testing.
 				assert.NotContains(t, string(event.Payload), "must-not-persist")
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
-	require.True(t, strings.HasPrefix(interactionKey, "confirmation/"))
+
+	// Two different failures used to arrive as the same bare "Should be true".
+	// An empty key AFTER the event was seen is a protocol defect and must not be
+	// reported as slowness; never seeing the event is a wait that expired, and
+	// then the turn's own state is the thing worth printing.
+	if sawRequest {
+		require.NotEmpty(t, interactionKey,
+			"interaction.requested carried an empty interaction_key: protocol defect, not a timing problem")
+	}
+	if interactionKey == "" {
+		require.FailNow(t, "timed out waiting for interaction.requested", "%s", describeTurnForWaitFailure(ctx, t, turnsB, owner, sub.Turn.ID))
+	}
+	require.True(t, strings.HasPrefix(interactionKey, "confirmation/"),
+		"interaction key %q does not name a confirmation", interactionKey)
 	require.ErrorIs(t, cB.ResolveInteraction(ctx, owner, sub.Turn.ID, interactionKey, ConfirmationResponse{
 		Confirmed: true, Overrides: map[string]string{"Password": "must-not-silently-drop"},
 	}), store.ErrInvalidArgument)
@@ -1064,7 +1096,8 @@ func TestCoordinator_RestartRebindsTheSameEditableConfirmation(t *testing.T) {
 			}
 		}
 		return false
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 50*time.Millisecond,
+		"timed out waiting for a durable interaction.requested event in PostgreSQL")
 	assert.Equal(t, firstKey, interactionKeyFromEvent(t, refreshed), "takeover must refresh the original card key")
 	assert.JSONEq(t, string(firstPayload), string(interactionRequestPayloadFromEvent(t, refreshed)))
 	assert.Greater(t, refreshed.LeaseEpoch, firstRequests[0].LeaseEpoch)
@@ -1145,7 +1178,8 @@ func TestCoordinator_RestartSupersedesAChangedFirstConfirmation(t *testing.T) {
 			}
 		}
 		return false
-	}, 5*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 50*time.Millisecond,
+		"timed out waiting for a durable interaction.requested event in PostgreSQL")
 	secondKey := interactionKeyFromEvent(t, second)
 	assert.NotEqual(t, firstKey, secondKey)
 	old, err := turns.GetInteraction(ctx, owner, sub.Turn.ID, firstKey)
@@ -1286,7 +1320,8 @@ func TestCoordinator_ResolvedButExpiredConfirmationCannotAuthorizeRetry(t *testi
 			}
 		}
 		return false
-	}, 3*time.Second, 20*time.Millisecond)
+	}, 10*time.Second, 50*time.Millisecond,
+		"timed out waiting for a durable interaction.requested event in PostgreSQL")
 	require.NoError(t, c.ResolveInteraction(ctx, owner, sub.Turn.ID, key, ConfirmationResponse{Confirmed: true}))
 	waitTurnStatus(t, base, owner, sub.Turn.ID, store.TurnStatusFailedRetryable)
 	_, err = db.Exec(`UPDATE turn_interactions SET expires_at = NOW() - INTERVAL '1 second' WHERE turn_id = $1`, sub.Turn.ID)
@@ -1550,4 +1585,29 @@ func (l *coordinatorLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.Chat
 		req.OnTextDelta("answer")
 	}
 	return &llm.ChatResponse{Content: "answer"}, nil
+}
+
+// describeTurnForWaitFailure renders what the turn was actually doing when a
+// wait expired. Without it the failure is a bare "Should be true" on an empty
+// string, which says nothing about whether the turn was still running, had
+// already failed, or never started — and a flake that reports nothing is a flake
+// nobody can triage.
+func describeTurnForWaitFailure(ctx context.Context, t *testing.T, turns *store.PostgresTurnStore, owner store.Owner, turnID string) string {
+	t.Helper()
+	var b strings.Builder
+	if turn, err := turns.GetTurn(ctx, owner, turnID); err == nil {
+		fmt.Fprintf(&b, "turn status=%s retry_count=%d", turn.Status, turn.RetryCount)
+	} else {
+		fmt.Fprintf(&b, "turn unreadable: %v", err)
+	}
+	events, err := turns.ListEvents(ctx, owner, turnID, 0, 100)
+	if err != nil {
+		fmt.Fprintf(&b, "; events unreadable: %v", err)
+		return b.String()
+	}
+	fmt.Fprintf(&b, "; %d events:", len(events))
+	for _, event := range events {
+		fmt.Fprintf(&b, " %s", event.Type)
+	}
+	return b.String()
 }
