@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.7"
+const SchemaVersion = "trace.v0.8"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -142,6 +142,11 @@ type TraceRecord struct {
 	Continuity          ContinuityTrace      `json:"continuity"`
 	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
+	// Confirmations records every human confirmation gate that reached a terminal
+	// outcome during this turn. It deliberately carries only action names and
+	// closed-set state/reason values: confirmation arguments and ids stay out of
+	// the trace.
+	Confirmations []ConfirmationTrace `json:"confirmations,omitempty"`
 	// Steps holds workflow step traces. Empty values are omitted for turns that
 	// did not execute a workflow.
 	Steps []StepTrace `json:"steps,omitempty"`
@@ -176,6 +181,7 @@ type traceRecordJSON struct {
 	Continuity          *ContinuityTrace      `json:"continuity,omitempty"`
 	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
+	Confirmations       []ConfirmationTrace   `json:"confirmations,omitempty"`
 	Steps               []StepTrace           `json:"steps,omitempty"`
 	Authorizations      []AuthorizationTrace  `json:"authorizations,omitempty"`
 }
@@ -233,6 +239,9 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if traceOutcomeObserved(r.Outcome) {
 		out.Outcome = &r.Outcome
+	}
+	if len(r.Confirmations) > 0 {
+		out.Confirmations = r.Confirmations
 	}
 	if len(r.Steps) > 0 {
 		out.Steps = r.Steps
@@ -578,6 +587,29 @@ type ToolCallTrace struct {
 	ExecutedTargets  int    `json:"executed_targets"`
 	WindowSeconds    int    `json:"window_seconds"`
 	Projected        bool   `json:"projected,omitempty"`
+}
+
+const (
+	ConfirmationStateConfirmed    = "confirmed"
+	ConfirmationStateNotConfirmed = "not_confirmed"
+
+	ConfirmationReasonUserConfirmed    = "user_confirmed"
+	ConfirmationReasonUserDeclined     = "user_declined"
+	ConfirmationReasonTimeout          = "timeout"
+	ConfirmationReasonClientDisconnect = "client_disconnect"
+	ConfirmationReasonDeliveryFailed   = "delivery_failed"
+	ConfirmationReasonBrokerCancelled  = "broker_cancelled"
+)
+
+// ConfirmationTrace is the terminal observation for one confirmation card.
+// State and TerminalReason are closed-set values above. ElapsedMS measures the
+// wait from presenting the card to its terminal outcome; it may be zero for a
+// synchronous CLI confirmation.
+type ConfirmationTrace struct {
+	Action         string `json:"action"`
+	State          string `json:"state"`
+	TerminalReason string `json:"terminal_reason"`
+	ElapsedMS      int64  `json:"elapsed_ms"`
 }
 
 // AuthorizationTrace is the per-write-target dual-proof audit record: for each

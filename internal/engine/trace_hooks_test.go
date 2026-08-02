@@ -18,6 +18,7 @@ func TestAttachTraceHooksWiresEveryEngineObserver(t *testing.T) {
 		Renderer: func(observability.RendererTrace) {}, HardBlock: func(observability.EngineHardBlockTrace) {},
 		Completion: func(observability.TurnCompletionTrace) {},
 		RateLimit:  func(governance.Decision) {}, TokenUsage: func(llm.TokenUsage) {},
+		Confirmation: func(observability.ConfirmationTrace) {},
 	})
 	require.NotNil(t, eng.retrievalTraceObserver)
 	require.NotNil(t, eng.freshnessTraceObserver)
@@ -28,6 +29,7 @@ func TestAttachTraceHooksWiresEveryEngineObserver(t *testing.T) {
 	require.NotNil(t, eng.turnCompletionObserver)
 	require.NotNil(t, eng.rateLimitObserver)
 	require.NotNil(t, eng.tokenUsageObserver)
+	require.NotNil(t, eng.confirmationTraceObserver)
 }
 
 func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {

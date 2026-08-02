@@ -397,10 +397,13 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"diagnosisTraceObserver":     true,
 		"outcomeTraceObserver":       true,
 		"authorizationTraceObserver": true,
-		"tokenUsageObserver":         true,
-		"rateLimitObserver":          true,
-		"hardBlockObserver":          true,
-		"turnCompletionObserver":     true,
+		// Confirmation outcomes are turn-scoped transport facts. Sharing this
+		// observer would append one tenant's card result to another's trace.
+		"confirmationTraceObserver": true,
+		"tokenUsageObserver":        true,
+		"rateLimitObserver":         true,
+		"hardBlockObserver":         true,
+		"turnCompletionObserver":    true,
 		// Runtime lifecycle evidence is turn/session-local. Sharing either the
 		// event buffer or its observer would mix two tenants' reasoning traces.
 		"agentRuntimeEventsThisTurn": true,
@@ -519,12 +522,14 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// 93 -> 94 / 100 -> 101: recentTurns, the recorded exchanges the canonical
 	// transcript is replayed from. Appended by the hot engine at turn exit and by
 	// a cold rebuild from the persisted rows, so both agree by construction.
-	if want, got := 94, len(perSessionFields); want != got {
+	// 94 -> 95 / 100 -> 101: confirmationTraceObserver records this turn's
+	// human confirmation outcomes and must never be shared across sessions.
+	if want, got := 95, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 100, typ.NumField(); want != got {
+	if want, got := 101, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

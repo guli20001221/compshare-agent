@@ -31,12 +31,15 @@ const (
 	TerminatedByBlocked    = "blocked"
 )
 
-// AbortCause* refine TerminatedBy ∈ {user_cancel, empty_reply}. The confirm-flow
-// causes (confirm_timeout / confirm_declined) land in Phase 1b via the confirm
-// broker hook — they are not derivable from the turn record alone.
+// AbortCause* refine TerminatedBy ∈ {user_cancel, empty_reply}. Confirmation
+// reasons reuse the bounded terminal_reason vocabulary; retaining them here
+// makes an explicit decline, a card timeout and a client disconnect separable
+// without placing any card payload in the trace.
 const (
-	AbortCauseClientDisconnect = "client_disconnect"
-	AbortCauseLLMEmptyStream   = "llm_empty_stream"
+	AbortCauseClientDisconnect    = "client_disconnect"
+	AbortCauseUserDeclined        = "user_declined"
+	AbortCauseConfirmationTimeout = "timeout"
+	AbortCauseLLMEmptyStream      = "llm_empty_stream"
 )
 
 // Resolution* are the DETERMINISTIC subset of outcome.resolution the engine fills.
@@ -99,6 +102,12 @@ func (r TraceRecord) DeriveTerminatedBy(s FinishSignals) string {
 	if r.isGenuineBlock() {
 		return TerminatedByBlocked
 	}
+	if reason := r.latestConfirmationTerminalReason(); ConfirmationReasonIsUserCancellation(reason) {
+		return TerminatedByUserCancel
+	}
+	if reason := r.latestConfirmationTerminalReason(); ConfirmationReasonIsError(reason) {
+		return TerminatedByError
+	}
 	if errors.Is(s.ChatErr, context.Canceled) {
 		return TerminatedByUserCancel
 	}
@@ -121,6 +130,14 @@ func (r TraceRecord) DeriveTerminatedBy(s FinishSignals) string {
 func (r TraceRecord) DeriveAbortCause(s FinishSignals, terminatedBy string) string {
 	switch terminatedBy {
 	case TerminatedByUserCancel:
+		switch r.latestConfirmationTerminalReason() {
+		case ConfirmationReasonUserDeclined:
+			return AbortCauseUserDeclined
+		case ConfirmationReasonTimeout:
+			return AbortCauseConfirmationTimeout
+		case ConfirmationReasonClientDisconnect:
+			return AbortCauseClientDisconnect
+		}
 		return AbortCauseClientDisconnect
 	case TerminatedByEmptyReply:
 		return AbortCauseLLMEmptyStream
@@ -131,7 +148,42 @@ func (r TraceRecord) DeriveAbortCause(s FinishSignals, terminatedBy string) stri
 // DeriveErrorClass classifies the chat error for the error_class axis (shared
 // classifier; "" when chatErr is nil).
 func (r TraceRecord) DeriveErrorClass(s FinishSignals) string {
+	if reason := r.latestConfirmationTerminalReason(); ConfirmationReasonIsError(reason) {
+		return "confirmation_" + reason
+	}
 	return ClassifyErrorClass(s.ChatErr)
+}
+
+// latestConfirmationTerminalReason reads only the final confirmation card for
+// the turn. A guided flow can legitimately have several confirmed selection
+// cards; an earlier decline/timeout must never override a later confirmation
+// and successful completion. Completion fallback keeps older traces, which did
+// not record confirmations, interpretable.
+func (r TraceRecord) latestConfirmationTerminalReason() string {
+	if n := len(r.Confirmations); n > 0 {
+		last := r.Confirmations[n-1]
+		return NormalizeConfirmationTerminalReason(
+			last.State == ConfirmationStateConfirmed,
+			last.TerminalReason,
+		)
+	}
+	if !traceCompletionObserved(r.Completion) {
+		return ""
+	}
+	switch r.Completion.Reason {
+	case CompletionReasonConfirmationDeclined:
+		return ConfirmationReasonUserDeclined
+	case CompletionReasonConfirmationTimeout:
+		return ConfirmationReasonTimeout
+	case CompletionReasonConfirmationClientDisconnect:
+		return ConfirmationReasonClientDisconnect
+	case CompletionReasonConfirmationDeliveryFailed:
+		return ConfirmationReasonDeliveryFailed
+	case CompletionReasonConfirmationBrokerCancelled:
+		return ConfirmationReasonBrokerCancelled
+	default:
+		return ""
+	}
 }
 
 // DeriveResolution fills only the deterministic subset: a blocked turn resolved to

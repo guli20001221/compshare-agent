@@ -77,6 +77,7 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 	agent.SetRateLimitObserver(recorder.SetRateLimitDecision)
 	agent.SetTokenUsageObserver(recorder.AddTokenUsage)
 	agent.SetAuthorizationTraceObserver(recorder.AddAuthorizationTrace)
+	agent.SetConfirmationTraceObserver(recorder.AddConfirmationTrace)
 }
 
 func clearChatTraceObservers(agent *engine.Engine) {
@@ -93,6 +94,7 @@ func clearChatTraceObservers(agent *engine.Engine) {
 	agent.SetRateLimitObserver(nil)
 	agent.SetTokenUsageObserver(nil)
 	agent.SetAuthorizationTraceObserver(nil)
+	agent.SetConfirmationTraceObserver(nil)
 }
 
 func (r *chatTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) observability.EntityRegistryTrace) {
@@ -169,6 +171,16 @@ func (r *chatTraceRecorder) AddAuthorizationTrace(trace observability.Authorizat
 		return
 	}
 	r.record.Authorizations = append(r.record.Authorizations, trace)
+}
+
+// AddConfirmationTrace appends one terminal confirmation outcome. The payload
+// is already bounded by engine.recordConfirmationResult and contains no form
+// values, action arguments or broker ids.
+func (r *chatTraceRecorder) AddConfirmationTrace(trace observability.ConfirmationTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Confirmations = append(r.record.Confirmations, trace)
 }
 
 func (r *chatTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {

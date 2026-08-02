@@ -713,6 +713,15 @@ func (r *cliTraceRecorder) AddAuthorizationTrace(trace observability.Authorizati
 	r.record.Authorizations = append(r.record.Authorizations, trace)
 }
 
+// AddConfirmationTrace appends one bounded terminal confirmation observation.
+// It never receives the confirmation card's arguments, ids or form values.
+func (r *cliTraceRecorder) AddConfirmationTrace(trace observability.ConfirmationTrace) {
+	if r == nil {
+		return
+	}
+	r.record.Confirmations = append(r.record.Confirmations, trace)
+}
+
 func (r *cliTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {
 	if r == nil {
 		return

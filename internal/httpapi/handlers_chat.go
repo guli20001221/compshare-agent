@@ -477,9 +477,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			h.guidedCreateEnabled &&
 			prep.confirmFormOptIn &&
 			prep.guidedCreateOptIn,
-		ConfirmFunc: func(action string, args map[string]any) bool {
+		ConfirmResultFunc: func(action string, args map[string]any) engine.ConfirmationResult {
 			if h.confirmBroker == nil {
-				return false
+				return engine.ConfirmationResult{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 			}
 			confirmID, ch := h.confirmBroker.Register(sessionID, base.Owner)
 			defer h.confirmBroker.Cancel(confirmID)
@@ -492,9 +492,10 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 				TimeoutSeconds: confirmTimeoutSeconds,
 				Label:          serverOwnedConfirmLabel(action),
 			}); err != nil {
-				return false
+				return engine.ConfirmationResult{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 			}
-			return WaitForConfirmation(streamCtx, ch, time.Duration(confirmTimeoutSeconds)*time.Second).Confirmed
+			decision, reason := WaitForConfirmationOutcome(streamCtx, ch, time.Duration(confirmTimeoutSeconds)*time.Second)
+			return engine.ConfirmationResult{Confirmed: decision.Confirmed, TerminalReason: reason}
 		},
 		ConfirmEditsFunc: h.confirmEditsFuncFor(streamCtx, sw, sessionID, base.Owner, prep),
 		KnowledgeOnly:    prep.knowledgeOnlyOptIn,
@@ -563,7 +564,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		LatencyMs: latencyMs,
 		TtftMs:    ttftMs,
 	})
-
 
 	// Persist SessionState envelope AFTER the done frame so the client is
 	// not blocked on a DB write. Guarded by sessionStatePersistable, which
@@ -709,10 +709,10 @@ func (h *Handlers) confirmEditsFuncFor(streamCtx context.Context, sw streamWrite
 			TimeoutSeconds: confirmFormTimeoutSeconds,
 			Form:           form,
 		}); err != nil {
-			return workflow.ConfirmResolution{}
+			return workflow.ConfirmResolution{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 		}
-		d := WaitForConfirmation(streamCtx, ch, time.Duration(confirmFormTimeoutSeconds)*time.Second)
-		return workflow.ConfirmResolution{Confirmed: d.Confirmed, Overrides: d.Overrides}
+		d, reason := WaitForConfirmationOutcome(streamCtx, ch, time.Duration(confirmFormTimeoutSeconds)*time.Second)
+		return workflow.ConfirmResolution{Confirmed: d.Confirmed, Overrides: d.Overrides, TerminalReason: reason}
 	}
 }
 

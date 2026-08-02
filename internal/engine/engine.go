@@ -174,6 +174,20 @@ var (
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
 type ConfirmFunc func(action string, args map[string]any) bool
 
+// ConfirmationResult is the richer per-turn confirmation outcome used by
+// transports that can distinguish an explicit decline from a timeout,
+// disconnect or card-delivery failure. Legacy ConfirmFunc callers remain fully
+// supported; their false result is conservatively classified as user_declined.
+type ConfirmationResult struct {
+	Confirmed      bool
+	TerminalReason string
+}
+
+// ConfirmationResultFunc is the outcome-preserving variant of ConfirmFunc.
+// It is intentionally scoped to ChatOptions so existing Engine construction and
+// CLI callers retain the simple boolean interface.
+type ConfirmationResultFunc func(action string, args map[string]any) ConfirmationResult
+
 // LLMClient abstracts the LLM chat interface for testability.
 type LLMClient interface {
 	Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error)
@@ -229,6 +243,9 @@ type ChatOptions struct {
 	// this turn only. Used by the HTTP path to inject an SSE-backed confirm
 	// that blocks on a channel instead of stdin.
 	ConfirmFunc func(action string, args map[string]any) bool
+	// ConfirmResultFunc is the same gate with a closed-set terminal reason for
+	// observability. When present it takes precedence over ConfirmFunc.
+	ConfirmResultFunc ConfirmationResultFunc
 	// ConfirmEditsFunc, if non-nil, additionally enables the editable confirm
 	// form for workflow StepConfirms that declare one (create-flow 表单化).
 	// Only the HTTP path sets it, and only when COMPSHARE_CONFIRM_FORM is on
@@ -279,6 +296,7 @@ type Engine struct {
 	turnCompletionObserver           func(observability.TurnCompletionTrace)
 	outcomeTraceObserver             func(observability.OutcomeTrace)
 	authorizationTraceObserver       func(observability.AuthorizationTrace)
+	confirmationTraceObserver        func(observability.ConfirmationTrace)
 	tokenUsageObserver               func(llm.TokenUsage)
 	rateLimiter                      governance.RateLimiter
 	rateLimitSubject                 string
@@ -784,6 +802,12 @@ func (e *Engine) SetOutcomeTraceObserver(observer func(observability.OutcomeTrac
 // nil disables it (default), so a turn that never authorizes a write emits nothing.
 func (e *Engine) SetAuthorizationTraceObserver(observer func(observability.AuthorizationTrace)) {
 	e.authorizationTraceObserver = observer
+}
+
+// SetConfirmationTraceObserver wires the terminal observation for each human
+// confirmation card. The trace contains no arguments, IDs or user content.
+func (e *Engine) SetConfirmationTraceObserver(observer func(observability.ConfirmationTrace)) {
+	e.confirmationTraceObserver = observer
 }
 
 // ReactRoundsThisTurn returns the number of ReAct loop rounds entered in the most
@@ -1312,20 +1336,25 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.rateLimitSubject = subject
 		}
 	}
-	// Per-turn confirmation wrapper records an explicit user denial as the
-	// terminal path. It wraps both the HTTP override and the stored CLI gate.
-	if opts.ConfirmFunc != nil || e.confirmFn != nil {
+	// Per-turn confirmation wrapper records the terminal state of every card.
+	// It preserves the legacy boolean ConfirmFunc while allowing HTTP/durable
+	// transports to distinguish decline, timeout, disconnect and delivery errors.
+	if opts.ConfirmResultFunc != nil || opts.ConfirmFunc != nil || e.confirmFn != nil {
 		origConfirm := e.confirmFn
 		confirm := e.confirmFn
 		if opts.ConfirmFunc != nil {
 			confirm = ConfirmFunc(opts.ConfirmFunc)
 		}
 		wrappedConfirm := ConfirmFunc(func(action string, args map[string]any) bool {
-			confirmed := confirm(action, args)
-			if !confirmed {
-				e.markTurnCompletion(observability.CompletionClassConfirmation, observability.CompletionReasonConfirmationDeclined)
+			started := time.Now()
+			result := ConfirmationResult{}
+			if opts.ConfirmResultFunc != nil {
+				result = opts.ConfirmResultFunc(action, args)
+			} else if confirm != nil {
+				result.Confirmed = confirm(action, args)
 			}
-			return confirmed
+			e.recordConfirmationResult(action, result, started)
+			return result.Confirmed
 		})
 		e.confirmFn = wrappedConfirm
 		e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(wrappedConfirm))
@@ -1342,10 +1371,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			confirmEdits = opts.ConfirmEditsFunc
 		}
 		e.confirmEditsFn = func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+			started := time.Now()
 			resolution := confirmEdits(action, args, form)
-			if !resolution.Confirmed {
-				e.markTurnCompletion(observability.CompletionClassConfirmation, observability.CompletionReasonConfirmationDeclined)
-			}
+			e.recordConfirmationResult(action, ConfirmationResult{
+				Confirmed:      resolution.Confirmed,
+				TerminalReason: resolution.TerminalReason,
+			}, started)
 			return resolution
 		}
 		defer func() { e.confirmEditsFn = origEdits }()
