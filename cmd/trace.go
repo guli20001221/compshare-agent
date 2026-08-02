@@ -233,10 +233,11 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 // coerce). Boot-only; the Go-package default (engine.forcedKnowledgeHopEnabled) stays
 // false so engine unit tests are unaffected.
 // canonicalTranscriptEnabledFromEnv parses COMPSHARE_CANONICAL_TRANSCRIPT, the
-// gate that decides whether a prior turn's tool calls and tool results reach the
-// model instead of being deleted and paraphrased back through semantic state.
-// Default off: the record is produced and persisted either way, so a rollout can
-// be flipped on with history already there to project.
+// single gate over the whole transcript pipeline: capture, persistence, and
+// whether a prior turn's tool calls and tool results reach the model instead of
+// being deleted and paraphrased back through semantic state. Default off, and off
+// means none of the three happens — so a rollout starts collecting history the
+// moment it is flipped on, rather than finding it already there.
 func canonicalTranscriptEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_CANONICAL_TRANSCRIPT"))
 	switch strings.ToLower(raw) {

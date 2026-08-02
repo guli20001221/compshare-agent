@@ -36,6 +36,7 @@ func hotTurn() []openai.ChatCompletionMessage {
 // test isolates the rebuild. Adding a credential or an over-long body to it
 // would not be a stronger test; it would assert a property the design rejects.
 func TestHotAndColdProduceIdenticalTurnMessages(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	hot := hotTurn()
 
 	// Hot side: what the live engine holds and would have sent.
@@ -146,6 +147,7 @@ func TestProjectTranscriptDropsEmptiedAssistantMessages(t *testing.T) {
 // What must survive is well-formedness: the question, the answer, and only
 // complete rounds in between.
 func TestShedTurnStaysWellFormedAfterRoundTrip(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	big := make([]rune, maxTranscriptMessageRunes)
 	for i := range big {
 		big[i] = '据'

@@ -304,6 +304,7 @@ func assertProjectedPairsValid(t *testing.T, msgs []openai.ChatCompletionMessage
 // unbounded, and redaction plus []rune conversion run over the whole body before
 // a single character is discarded — on the path the user is waiting on.
 func TestCaptureTurnTranscript_RejectsOversizedRawTurnWithoutScanningIt(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	huge := strings.Repeat("x", maxRawTurnBytes+1)
 	e := &Engine{messages: []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "列一下"},
@@ -326,6 +327,7 @@ func TestCaptureTurnTranscript_RejectsOversizedRawTurnWithoutScanningIt(t *testi
 // A turn just under the raw limit is unaffected — the guard must not be a
 // tightening of the ordinary path.
 func TestCaptureTurnTranscript_KeepsTurnsUnderTheRawLimit(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	body := strings.Repeat("y", 4096)
 	e := &Engine{messages: []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "列一下"},

@@ -38,6 +38,19 @@ func finalMsg(content string) openai.ChatCompletionMessage {
 // The turn boundary must be the same one the model assembler uses. If these
 // ever diverge, the persisted transcript stops being a record of what the model
 // saw, which is the entire point of storing it.
+// enableCanonicalTranscriptForTest turns the pipeline on for one test.
+//
+// COMPSHARE_CANONICAL_TRANSCRIPT is the single switch for capture, persistence
+// and projection, and the Go-package default is off — so a test that exercises
+// any of them must say so. Without this, capture returns immediately and the
+// test passes by measuring nothing.
+func enableCanonicalTranscriptForTest(t *testing.T) {
+	t.Helper()
+	prev := canonicalTranscriptEnabled
+	SetCanonicalTranscriptEnabled(true)
+	t.Cleanup(func() { SetCanonicalTranscriptEnabled(prev) })
+}
+
 func TestCurrentTurnStartIsSharedWithModelAssembler(t *testing.T) {
 	messages := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "sys"},
@@ -268,6 +281,7 @@ func TestMarshalTranscriptMetadataShape(t *testing.T) {
 }
 
 func TestCaptureTurnTranscriptReportsStats(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	e := &Engine{messages: []openai.ChatCompletionMessage{
 		userMsg("q"),
 		assistantCalls(call("c1", "T", `{}`)),
