@@ -49,6 +49,16 @@ func TestRedactForLLM_SSHExceptionFailsClosed(t *testing.T) {
 		"proxy option with a secret": "ssh root@1.2.3.4 -o ProxyCommand='curl -H Authorization:tok_abcdefghij'",
 		"empty host":                 "ssh ubuntu@",
 		"not an ssh command at all":  "tok_abcdefghijklmnopqrst",
+		// The comment on isPlainSSHLoginCommand says "at most one -p"; without a
+		// seenPort flag it did not, and an allowlist that admits inputs its own
+		// contract excludes is not an allowlist.
+		"repeated port flag":   "ssh root@host -p 22 -p 23",
+		"repeated port, split": "ssh -p 22 root@host -p 23",
+		"port zero":            "ssh root@host -p 0",
+		"port above 65535":     "ssh root@host -p 99999",
+		// ssh would read this token as a flag, so accepting it means this check
+		// and ssh disagree about what the string says.
+		"user part looks like a flag": "ssh -root@host -p 22",
 	} {
 		out := RedactForLLM(map[string]any{"SshLoginCommand": value})
 		assert.Equal(t, redactedValue, out.(map[string]any)["SshLoginCommand"],

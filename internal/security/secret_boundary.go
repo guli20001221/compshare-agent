@@ -167,10 +167,17 @@ func isPlainSSHLoginCommand(key string, value any) bool {
 	if len(fields) == 0 || fields[0] != "ssh" {
 		return false
 	}
-	seenTarget := false
+	seenTarget, seenPort := false, false
 	for i := 1; i < len(fields); i++ {
 		switch {
 		case fields[i] == "-p":
+			// At most one. A repeated flag is not a shape this upstream emits,
+			// and an allowlist that accepts inputs its own contract excludes is
+			// not an allowlist.
+			if seenPort {
+				return false
+			}
+			seenPort = true
 			i++
 			if i >= len(fields) || !isPortToken(fields[i]) {
 				return false
@@ -184,27 +191,40 @@ func isPlainSSHLoginCommand(key string, value any) bool {
 	return seenTarget
 }
 
+// isPortToken accepts a decimal port in 1..65535. Range-checked rather than
+// digit-counted: "99999" and "0" are five digits and one digit of nonsense, and
+// letting them through would mean the allowlist admits values the upstream
+// cannot produce.
 func isPortToken(s string) bool {
 	if s == "" || len(s) > 5 {
 		return false
 	}
+	port := 0
 	for _, r := range s {
 		if r < '0' || r > '9' {
 			return false
 		}
+		port = port*10 + int(r-'0')
 	}
-	return true
+	return port >= 1 && port <= 65535
 }
 
 // isSSHTargetToken accepts exactly one user@host with no shell metacharacters:
 // the allowed rune set is what makes "&&", quotes and redirections impossible.
+//
+// The user part may not begin with "-": ssh would read such a token as a flag,
+// so accepting it would mean this function and ssh disagree about what the
+// string says.
 func isSSHTargetToken(s string) bool {
 	at := strings.IndexByte(s, '@')
 	if at <= 0 || at == len(s)-1 {
 		return false
 	}
-	host := s[at+1:]
-	if !isHostRuneSet(s[:at]) || !isHostRuneSet(host) {
+	user, host := s[:at], s[at+1:]
+	if !isHostRuneSet(user) || !isHostRuneSet(host) {
+		return false
+	}
+	if user[0] == '-' {
 		return false
 	}
 	first := host[0]
