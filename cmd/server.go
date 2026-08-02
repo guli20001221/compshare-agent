@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/httpapi"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/ocr"
@@ -108,6 +109,25 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		handlers.SetTurnCoordinator(coordinator)
 		defer coordinator.Close()
 		log.Printf("durable turns enabled: every WebSocket chat uses the globally fenced commit path")
+		if engine.CanonicalTranscriptEnabled() {
+			// The transcript reaches messages.metadata through the legacy
+			// handler's shadow write. The durable path commits its assistant row
+			// through store.AssistantPatch, which has no metadata field at all —
+			// so on this path a turn's tool trajectory is captured, replayed
+			// in-process, and then lost at restart. Hot and cold DIVERGE here,
+			// which is the one property the transcript exists to provide.
+			//
+			// A warning, not a boot failure: durable turns are a deliberate
+			// operational choice and the transcript degrades to today's behaviour
+			// rather than breaking. But it must be said out loud, because the
+			// symptom — history that survives a reconnect on one deploy and not
+			// on another — reads as a transcript bug rather than as this.
+			log.Printf("WARNING: COMPSHARE_CANONICAL_TRANSCRIPT=1 with durable turns — " +
+				"the durable commit path does not persist messages.metadata " +
+				"(store.AssistantPatch carries no metadata field), so transcripts " +
+				"captured on this path are lost at restart. Do not treat hot/cold " +
+				"transcript parity as holding under COMPSHARE_DURABLE_TURNS=1.")
+		}
 	case "", "0":
 		// Compatibility-only mode for local rollback and old tests.
 	default:

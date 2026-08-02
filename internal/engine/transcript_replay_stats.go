@@ -76,6 +76,12 @@ type TranscriptReplayStats struct {
 	RowsUnreadable int64
 	// RowsEmptyTranscript is a well-formed envelope carrying zero messages.
 	RowsEmptyTranscript int64
+	// RowsIllegalStructure is a row this binary refuses to replay: a role outside
+	// user/assistant/tool, tool_calls on a non-assistant message, or a call
+	// missing its id or name. The producer cannot emit any of these, so a
+	// non-zero value means rows are arriving from somewhere else — which is the
+	// only counter here that would justify turning the flag back off.
+	RowsIllegalStructure int64
 }
 
 var transcriptReplayCounters struct {
@@ -92,6 +98,7 @@ var transcriptReplayCounters struct {
 	RowsForeignVersion    atomic.Int64
 	RowsUnreadable        atomic.Int64
 	RowsEmptyTranscript   atomic.Int64
+	RowsIllegalStructure  atomic.Int64
 }
 
 // TranscriptReplaySnapshot returns a copy of the read-side counters.
@@ -110,6 +117,7 @@ func TranscriptReplaySnapshot() TranscriptReplayStats {
 		RowsForeignVersion:    transcriptReplayCounters.RowsForeignVersion.Load(),
 		RowsUnreadable:        transcriptReplayCounters.RowsUnreadable.Load(),
 		RowsEmptyTranscript:   transcriptReplayCounters.RowsEmptyTranscript.Load(),
+		RowsIllegalStructure:  transcriptReplayCounters.RowsIllegalStructure.Load(),
 	}
 }
 
@@ -128,6 +136,8 @@ func recordTranscriptRowOutcome(outcome transcriptParseOutcome) {
 		transcriptReplayCounters.RowsUnreadable.Add(1)
 	case transcriptParseEmpty:
 		transcriptReplayCounters.RowsEmptyTranscript.Add(1)
+	case transcriptParseIllegalStructure:
+		transcriptReplayCounters.RowsIllegalStructure.Add(1)
 	}
 	// transcriptParseAbsent is deliberately uncounted: a row with no metadata at
 	// all is every row the service has ever written before this flag, and
@@ -149,9 +159,9 @@ func reportReplayProgress(ticket int64) {
 	}
 	s := TranscriptReplaySnapshot()
 	log.Printf(
-		"transcript replay: contexts=%d pairs=%d attached=%d match_missed=%d messages=%d tool_calls_dropped=%d budget_dropped=%d | rows ok=%d none=%d foreign_version=%d unreadable=%d empty=%d",
+		"transcript replay: contexts=%d pairs=%d attached=%d match_missed=%d messages=%d tool_calls_dropped=%d budget_dropped=%d | rows ok=%d none=%d foreign_version=%d unreadable=%d empty=%d illegal_structure=%d",
 		s.ContextBuilds, s.PairsReplayed, s.TranscriptsAttached, s.MatchMissed,
 		s.MessagesProjected, s.ToolCallsDropped, s.BudgetDropped,
 		s.RowsParsed, s.RowsWithoutTranscript, s.RowsForeignVersion,
-		s.RowsUnreadable, s.RowsEmptyTranscript)
+		s.RowsUnreadable, s.RowsEmptyTranscript, s.RowsIllegalStructure)
 }
