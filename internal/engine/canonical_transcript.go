@@ -494,6 +494,12 @@ type recordedTurn struct {
 // maxAgentContextPairs — the same window the replayed conversation uses, so the
 // transcript can never outlive the exchange it belongs to.
 func (e *Engine) recordTurn(turn recordedTurn) {
+	// Gated here as well as at the callers, because the cold path reaches this
+	// from RehydrateHistory: with the flag off, a restart must not build a
+	// window that nothing will read.
+	if !canonicalTranscriptEnabled {
+		return
+	}
 	if strings.TrimSpace(turn.User) == "" || strings.TrimSpace(turn.Assistant) == "" {
 		return
 	}
@@ -553,6 +559,19 @@ func (e *Engine) LastTurnTranscript() (json.RawMessage, TranscriptStats) {
 func (e *Engine) captureTurnTranscript() {
 	e.lastTurnTranscript = nil
 	e.lastTurnTranscriptStats = TranscriptStats{}
+
+	// One switch owns the whole pipeline. Off means the transcript does not
+	// exist: nothing is scanned, redacted, serialized or recorded, and the
+	// engine behaves exactly as it did before any of this was written.
+	//
+	// It was briefly otherwise — capture and the shadow write ran
+	// unconditionally while only the projection was gated, so a deploy carried a
+	// permanent background side effect with no way to turn it off short of
+	// shipping a revert. A half-enabled state is not a safer migration than a
+	// gated one; it is the same code with the switch removed.
+	if !canonicalTranscriptEnabled {
+		return
+	}
 
 	// Cheap raw-size guard BEFORE any transcript work.
 	//
