@@ -461,16 +461,21 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 	return out
 }
 
-// canonicalTranscriptEnabled gates whether the recorded transcript reaches the
-// model. Boot-frozen like every other behavior flag here; the Go-package default
-// is off so the whole existing test suite keeps exercising the current path.
+// canonicalTranscriptEnabled gates the WHOLE transcript pipeline: capture,
+// persistence and projection. Boot-frozen like every other behavior flag here;
+// the Go-package default is off so the existing test suite keeps exercising the
+// current path.
 //
-// Producing and persisting the transcript is NOT gated — that is a shadow write
-// with no model-visible effect, and gating it would mean the flag-on rollout
-// starts with no history to project.
+// Off means the transcript does not exist. Nothing is scanned, redacted,
+// serialized, parsed or recorded, on either the hot or the cold path, and no row
+// is stamped. It was briefly otherwise — only the projection was gated, so
+// merging the code meant a permanent background side effect with no switch to
+// stop it. There is deliberately no second flag for the write: two switches
+// recreate that half-enabled state, and the data is only worth collecting once
+// the pipeline it feeds is on.
 var canonicalTranscriptEnabled bool
 
-// SetCanonicalTranscriptEnabled freezes the projection setting at boot.
+// SetCanonicalTranscriptEnabled freezes the pipeline setting at boot.
 func SetCanonicalTranscriptEnabled(enabled bool) { canonicalTranscriptEnabled = enabled }
 
 // CanonicalTranscriptEnabled reports the frozen setting.
@@ -493,6 +498,26 @@ type recordedTurn struct {
 // recordTurn appends a completed exchange, keeping only the newest
 // maxAgentContextPairs — the same window the replayed conversation uses, so the
 // transcript can never outlive the exchange it belongs to.
+// transcriptFromRow decides whether a persisted row's metadata is parsed at all.
+//
+// It exists because recordTurn's own flag check cannot prevent this: Go
+// evaluates a call's arguments before the call, so writing
+// `recordTurn(recordedTurn{Transcript: ParseTranscriptMetadata(raw)})` parses
+// every assistant row's metadata on rehydration even with the flag off. The
+// window was correctly left empty, but the work was still done — which is not
+// what "no transcript pipeline at all" means. The gate has to be in front of the
+// argument, not inside the callee.
+//
+// Reading the metadata COLUMN stays unconditional; it is a general-purpose
+// column and other keys may live beside agent_transcript_v1. Only the canonical
+// parse stops.
+func transcriptFromRow(raw json.RawMessage) *TranscriptV1 {
+	if !canonicalTranscriptEnabled {
+		return nil
+	}
+	return ParseTranscriptMetadata(raw)
+}
+
 func (e *Engine) recordTurn(turn recordedTurn) {
 	// Gated here as well as at the callers, because the cold path reaches this
 	// from RehydrateHistory: with the flag off, a restart must not build a
@@ -537,12 +562,11 @@ type TranscriptStats struct {
 // most recent turn, along with its stats. A nil payload means the turn had no
 // tool traffic worth persisting, or that bounding rejected it — Stats says which.
 //
-// This accessor is the SHADOW-WRITE side only: it hands the serialized document
-// to the persistence path and nothing else. It is not how the transcript reaches
-// the model — that runs through recentTurns and attachRecordedTranscripts, gated
-// by COMPSHARE_CANONICAL_TRANSCRIPT (default off). The two are deliberately
-// separate: the shadow write can be enabled on its own to produce real rows to
-// validate the projection against, without changing what any model sees.
+// This accessor is the PERSISTENCE side: it hands the serialized document to the
+// storage path and nothing else. It is not how the transcript reaches the model —
+// that runs through recentTurns and attachRecordedTranscripts. Both sides answer
+// to the same COMPSHARE_CANONICAL_TRANSCRIPT flag (default off), so with the flag
+// off capture never ran and this returns nil.
 // The nil receiver is answered rather than panicking: callers reach this
 // through an interface, where a nil *Engine is not a nil interface.
 func (e *Engine) LastTurnTranscript() (json.RawMessage, TranscriptStats) {

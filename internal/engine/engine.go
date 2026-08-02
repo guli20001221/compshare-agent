@@ -192,11 +192,13 @@ type HistoryMessage struct {
 	// Transcript is the raw messages.metadata document for an assistant row,
 	// carrying the turn's canonical agent_transcript_v1 when one was persisted.
 	// It is plumbed through so a cold rebuild can reconstruct the same turn the
-	// hot engine held. Whether it then reaches model context is decided by
-	// COMPSHARE_CANONICAL_TRANSCRIPT (default off), which attachRecordedTranscripts
-	// gates — this field is populated either way, so the rebuild is provable
-	// before the projection is enabled. Empty for user rows, for turns with no
-	// tool traffic, and for every row written before the shadow write existed.
+	// hot engine held. The raw column is always carried — metadata is a
+	// general-purpose column and other keys may live beside agent_transcript_v1 —
+	// but PARSING it is gated by COMPSHARE_CANONICAL_TRANSCRIPT (default off);
+	// see transcriptFromRow, which owns that decision because a check inside
+	// recordTurn would run after Go had already evaluated the parse. Empty for
+	// user rows, for turns with no tool traffic, and for every row written before
+	// the transcript existed.
 	Transcript json.RawMessage
 }
 
@@ -1124,7 +1126,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			e.recordTurn(recordedTurn{
 				User:       pendingUser,
 				Assistant:  msg.Content,
-				Transcript: ParseTranscriptMetadata(msg.Transcript),
+				Transcript: transcriptFromRow(msg.Transcript),
 			})
 			pendingUser = ""
 		}

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"reflect"
 	"testing"
 
@@ -233,5 +235,34 @@ func TestFlagOffMeansNoTranscriptPipelineAtAll(t *testing.T) {
 		if len(e.recentTurns) != 0 {
 			t.Fatalf("a restart built a %d-turn window that nothing will read", len(e.recentTurns))
 		}
+	})
+}
+
+// TestTranscriptFromRow_DoesNotParseWithFlagOff pins the gate that recordTurn
+// cannot provide. Go evaluates a call's arguments before the call, so a flag
+// check inside recordTurn leaves ParseTranscriptMetadata running on every
+// assistant row of every rehydration with the flag off. The window came out
+// empty either way, which is exactly what made it easy to miss.
+func TestTranscriptFromRow_DoesNotParseWithFlagOff(t *testing.T) {
+	valid := []byte(`{"agent_transcript_v1":{"v":1,"messages":[` +
+		`{"role":"assistant","tool_calls":[{"id":"c1","name":"T","arguments":"{}"}]},` +
+		`{"role":"tool","tool_call_id":"c1","content":"r"}]}}`)
+
+	// Precondition: this metadata really does parse, so a nil below means the
+	// gate stopped it rather than the input being unusable.
+	require.NotNil(t, ParseTranscriptMetadata(valid),
+		"precondition: the fixture must be parseable, or this test proves nothing")
+
+	t.Run("off", func(t *testing.T) {
+		prev := canonicalTranscriptEnabled
+		SetCanonicalTranscriptEnabled(false)
+		defer SetCanonicalTranscriptEnabled(prev)
+		assert.Nil(t, transcriptFromRow(valid),
+			"with the flag off the canonical parse must not run at all")
+	})
+
+	t.Run("on", func(t *testing.T) {
+		enableCanonicalTranscriptForTest(t)
+		assert.NotNil(t, transcriptFromRow(valid), "and with it on the row must still rebuild")
 	})
 }
