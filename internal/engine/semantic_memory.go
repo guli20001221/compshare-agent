@@ -294,19 +294,67 @@ func (e *Engine) refreshConversationDigest(now time.Time) {
 		digest.UnresolvedTasks = nil
 	}
 	digest.EntityHints = mergeSemanticEntities(digest.EntityHints, task.Entities)
-	if id := compactSemanticText(e.sessionState.SelectedInstanceID); id != "" {
-		digest.EntityHints = mergeSemanticEntities(digest.EntityHints, []SemanticEntityHint{{
-			Kind:      "instance",
-			ID:        id,
-			Name:      compactSemanticText(e.sessionState.SelectedInstanceName),
-			Source:    compactSemanticText(e.sessionState.SelectedInstanceSource),
-			Freshness: normalizedSelectedInstanceFreshness(e.sessionState),
-		}})
-	}
+	// The current selection is deliberately NOT copied in here.
+	//
+	// It used to be, and the copy outlived everything that governs the original.
+	// mergeSemanticEntities keys on (kind, id), so switching instances appended a
+	// second entry rather than replacing the first, and each entry froze the
+	// Source and Freshness it was written with. Nothing expired them:
+	// expireStaleSelectedInstance operates on sessionState, which the copy is not.
+	//
+	// Two opposite failures came out of that, both reproduced:
+	//   - two prior picks in one session left bindInstanceTarget with two
+	//     user_selected entries, so a bare 关掉它 after two SUCCESSFUL operations
+	//     answered 目标引用不唯一;
+	//   - one prior pick outlived selectedInstanceTTLSeconds: the live entry
+	//     correctly went source="" freshness=expired while the frozen copy stayed
+	//     user_selected/fresh, so 31 minutes later a bare 关掉它 still bound the old
+	//     instance. That is the TTL's whole purpose, defeated by a duplicate of
+	//     the value it governs.
+	//
+	// CompileForTurn already supplies the live selection with its real provenance
+	// and its real freshness (direct_render_context.go, the SelectedInstanceID
+	// block). One value, one owner, one expiry.
+	digest.EntityHints = dropCarriedSelectionHints(digest.EntityHints)
 	digest.Narrative = buildConversationNarrative(digest)
 	digest.UpdatedAtUnix = now.Unix()
 	e.sessionState.ConversationDigest = digest
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+}
+
+// dropCarriedSelectionHints removes selection copies from the digest.
+//
+// Not stopping the writer is only half a fix: the digest is persisted
+// (SessionState.ConversationDigest, json conversation_digest), so every session
+// that has already run a mutating operation carries these entries in the
+// database and would keep carrying them across restarts and replica changes
+// with nothing to clear them. Running on every refresh means such a session
+// heals on its next turn — refreshConversationDigest is called at turn entry,
+// before the context view is compiled, so the healed digest is what that turn
+// sees.
+//
+// The filter keys on Source rather than on Kind, because the two vocabularies do
+// not overlap and only one of them belongs to selection state. user_selected is
+// SelectedInstanceSourceUser, written solely by recordSelectedInstanceIDWithSource.
+// TaskSnapshot entities reach the digest with an actionresolver CandidateSource
+// — user_explicit / verified_context / tool_observation / user_confirmation /
+// agent_inference — via ContextFrame.SlotSources, so completed-task entities are
+// untouched. That is what makes this safe without changing selection_binder.
+func dropCarriedSelectionHints(hints []SemanticEntityHint) []SemanticEntityHint {
+	kept := make([]SemanticEntityHint, 0, len(hints))
+	for _, hint := range hints {
+		if hint.Source == SelectedInstanceSourceUser {
+			continue
+		}
+		kept = append(kept, hint)
+	}
+	if len(kept) == 0 {
+		// nil rather than an empty slice: conversationDigestEmpty and the
+		// omitempty JSON tag both test length, and a persisted "entity_hints": []
+		// would be a gratuitous difference from a digest that never had any.
+		return nil
+	}
+	return kept
 }
 
 func normalizedSelectedInstanceFreshness(state SessionState) string {
