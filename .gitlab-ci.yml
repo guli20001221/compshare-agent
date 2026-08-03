@@ -44,7 +44,7 @@ diagnose-production:
                 -e 's#(wss?|https?)://[^[:space:]]+#<redacted-url>#g' \
                 -e 's#(postgres(ql)?://)[^[:space:]]+#\1<redacted-dsn>#g' \
                 -e 's#([Tt]oken|[Ss]ecret|[Pp]assword|[Aa]pi[_-]?[Kk]ey)[=:][^[:space:],]+#\1=<redacted>#g' \
-            | grep -Ei 'runtime:|knowledge:|durable turns|ocr enabled|confirm form|guided create|warning:|error|fatal|panic|schema|postgres|database|listen|server' \
+            | grep -Ei 'startup:|runtime:|knowledge:|durable turns|ocr enabled|confirm form|guided create|warning:|error|fatal|panic|schema|postgres|database|listen|server' \
             | cut -c1-1000 || true
         done
       fi

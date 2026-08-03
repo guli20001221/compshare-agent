@@ -29,6 +29,17 @@ spec:
           ports:
             - name: http
               containerPort: 7429
+          # Keep liveness from killing a process that is still establishing
+          # production-only dependencies. Once this succeeds, liveness and
+          # readiness retain their existing fast failure behavior.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 90
           readinessProbe:
             httpGet:
               path: /healthz
@@ -124,4 +135,3 @@ spec:
       port: 80
       targetPort: http
   type: ClusterIP
-
