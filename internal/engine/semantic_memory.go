@@ -293,20 +293,77 @@ func (e *Engine) refreshConversationDigest(now time.Time) {
 	} else if task.Status == TaskSnapshotStatusResolved {
 		digest.UnresolvedTasks = nil
 	}
+	// Cleared BEFORE the task merge, not after, so this only ever touches state
+	// that was already persisted. Filtering after the merge would put this turn's
+	// task entities through a filter meant for last week's rows; the two Source
+	// vocabularies do not overlap today, so it is the same behaviour either way,
+	// but only this order stays correct if a task entity ever legitimately
+	// carries a source this drops.
+	digest.EntityHints = dropCarriedSelectionHints(digest.EntityHints)
 	digest.EntityHints = mergeSemanticEntities(digest.EntityHints, task.Entities)
-	if id := compactSemanticText(e.sessionState.SelectedInstanceID); id != "" {
-		digest.EntityHints = mergeSemanticEntities(digest.EntityHints, []SemanticEntityHint{{
-			Kind:      "instance",
-			ID:        id,
-			Name:      compactSemanticText(e.sessionState.SelectedInstanceName),
-			Source:    compactSemanticText(e.sessionState.SelectedInstanceSource),
-			Freshness: normalizedSelectedInstanceFreshness(e.sessionState),
-		}})
-	}
+	// The current selection is deliberately NOT copied in here.
+	//
+	// It used to be, and the copy outlived everything that governs the original.
+	// mergeSemanticEntities keys on (kind, id), so a copy is only ever rewritten
+	// while its instance is STILL the live selection. Switching instances appended
+	// a second entry instead, and the first became unreachable by any later
+	// refresh — frozen at the Source and Freshness it was written with for the
+	// life of the session. expireStaleSelectedInstance never saw it: that operates
+	// on sessionState, which the copy is not.
+	//
+	// The failure that produced: two prior picks left bindInstanceTarget with two
+	// user_selected entries, so a bare 关掉它 after two SUCCESSFUL operations
+	// answered 目标引用不唯一.
+	//
+	// A single pick outliving selectedInstanceTTLSeconds was NOT one of them,
+	// though it looks like it should have been. One instance means the copy shares
+	// its key with the live value, so the refresh that always follows
+	// expireStaleSelectedInstance at turn entry overwrote it with the expired
+	// state. See TestSinglePickPastItsTTLDoesNotBind, which pins that and says it
+	// is an invariant rather than a guard for this change.
+	//
+	// CompileForTurn already supplies the live selection with its real provenance
+	// and its real freshness (direct_render_context.go, the SelectedInstanceID
+	// block). One value, one owner, one expiry.
 	digest.Narrative = buildConversationNarrative(digest)
 	digest.UpdatedAtUnix = now.Unix()
 	e.sessionState.ConversationDigest = digest
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+}
+
+// dropCarriedSelectionHints removes selection copies from the digest.
+//
+// Not stopping the writer is only half a fix: the digest is persisted
+// (SessionState.ConversationDigest, json conversation_digest), so every session
+// that has already run a mutating operation carries these entries in the
+// database and would keep carrying them across restarts and replica changes
+// with nothing to clear them. Running on every refresh means such a session
+// heals on its next turn — refreshConversationDigest is called at turn entry,
+// before the context view is compiled, so the healed digest is what that turn
+// sees.
+//
+// The filter keys on Source rather than on Kind, because the two vocabularies do
+// not overlap and only one of them belongs to selection state. user_selected is
+// SelectedInstanceSourceUser, written solely by recordSelectedInstanceIDWithSource.
+// TaskSnapshot entities reach the digest with an actionresolver CandidateSource
+// — user_explicit / verified_context / tool_observation / user_confirmation /
+// agent_inference — via ContextFrame.SlotSources, so completed-task entities are
+// untouched. That is what makes this safe without changing selection_binder.
+func dropCarriedSelectionHints(hints []SemanticEntityHint) []SemanticEntityHint {
+	kept := make([]SemanticEntityHint, 0, len(hints))
+	for _, hint := range hints {
+		if hint.Source == SelectedInstanceSourceUser {
+			continue
+		}
+		kept = append(kept, hint)
+	}
+	if len(kept) == 0 {
+		// nil rather than an empty slice: conversationDigestEmpty and the
+		// omitempty JSON tag both test length, and a persisted "entity_hints": []
+		// would be a gratuitous difference from a digest that never had any.
+		return nil
+	}
+	return kept
 }
 
 func normalizedSelectedInstanceFreshness(state SessionState) string {
