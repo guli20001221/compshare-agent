@@ -87,13 +87,48 @@ func TestInvalidToolCallRoutesBackToTheModelNotTheUser(t *testing.T) {
 	require.False(t, result.Retryable, "the same malformed call must not be re-sent unchanged")
 	require.Nil(t, result.Data)
 
-	// The engine's observation boundary re-parses every tool result and wraps
-	// anything it does not recognise. If correct_tool_call were missing from the
-	// valid set, this result would come back out as a plain success — the exact
-	// regression this whole change removes, restored silently.
+	// The engine's observation boundary re-parses every tool result and re-wraps
+	// anything it does not recognise. A rejected pairing does not fail loudly:
+	// the re-wrap reads the raw envelope's own status field, so this comes back
+	// out as READ_INPUT_INCOMPLETE / ask_user with correct_tool_call buried in
+	// data.next_step — the same question for the user, one layer down.
 	parsed, ok := ParseAgentToolResult(MarshalAgentToolResult(result))
 	require.True(t, ok, "the contract must recognise its own output")
 	require.Equal(t, AgentToolNextCorrectToolCall, parsed.NextStep)
+}
+
+// "Re-send the same call" is safe advice only for arguments this binary rejected
+// before running anything. Bound to the constructor alone, the guarantee lasts
+// until the next hand-built AgentToolResult; bound in the parser, it holds for
+// every result the engine will ever observe — including one that pairs this next
+// step with a real upstream failure, which would be a retry loop against a side
+// effect that already happened.
+func TestTheModelOwnedNextStepIsBoundToTheMalformedArgumentCode(t *testing.T) {
+	for _, code := range []string{
+		"UPSTREAM_RETCODE_8964", "TOOL_EXECUTION_FAILED", "READ_INPUT_INCOMPLETE",
+		"MISSING_REQUIRED_FIELDS", "NO_CITABLE_EVIDENCE", "",
+	} {
+		forged := AgentToolResult{
+			Status:   AgentToolStatusNeedsInput,
+			Error:    AgentToolError{Code: code},
+			NextStep: AgentToolNextCorrectToolCall,
+			Meta:     AgentToolMeta{Action: "CreateInstanceWorkflow"},
+		}
+		_, ok := ParseAgentToolResult(MarshalAgentToolResult(forged))
+		require.Falsef(t, ok, "error code %q must not be allowed to tell the model to re-send the call", code)
+	}
+
+	// Control: the one code that may. Without it this test passes against a
+	// parser that rejects correct_tool_call outright, which would silently undo
+	// the fix above.
+	allowed := AgentToolResult{
+		Status:   AgentToolStatusNeedsInput,
+		Error:    AgentToolError{Code: AgentToolCodeInvalidArguments},
+		NextStep: AgentToolNextCorrectToolCall,
+		Meta:     AgentToolMeta{Action: "SearchKnowledge"},
+	}
+	_, ok := ParseAgentToolResult(MarshalAgentToolResult(allowed))
+	require.True(t, ok, "INVALID_TOOL_ARGUMENTS must still be able to route back to the model")
 }
 
 // Control: no other constructor may quietly adopt the model-owned next step.

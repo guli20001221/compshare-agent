@@ -118,6 +118,11 @@ func AgentToolNoCitableEvidence(action string, data any, meta AgentToolMeta) Age
 	)
 }
 
+// AgentToolCodeInvalidArguments is the only error code that may carry
+// correct_tool_call. See validAgentToolControlPlane for why the binding lives
+// in the parser rather than only in the constructor below.
+const AgentToolCodeInvalidArguments = "INVALID_TOOL_ARGUMENTS"
+
 // AgentToolInvalidToolCall marks a call this binary rejected before executing
 // it because the MODEL emitted arguments that are not a JSON object. The user
 // supplied nothing wrong and has nothing to add, so this must never resolve to
@@ -133,7 +138,7 @@ func AgentToolInvalidToolCall(action string, code, message string, meta AgentToo
 		AgentToolStatusNeedsInput,
 		action,
 		nil,
-		defaultAgentErrorCode(code, "INVALID_TOOL_ARGUMENTS"),
+		defaultAgentErrorCode(code, AgentToolCodeInvalidArguments),
 		message,
 		false,
 		AgentToolNextCorrectToolCall,
@@ -198,12 +203,24 @@ func validAgentToolControlPlane(result AgentToolResult) bool {
 		// Two ways a call can lack valid input, and they are answered by
 		// different parties: the USER has not said something yet (ask_user), or
 		// the MODEL malformed the arguments it just emitted (correct_tool_call).
+		//
+		// correct_tool_call is bound to one error code here, not merely produced
+		// by one constructor. "Ignore the failure and call the same tool again"
+		// is safe advice ONLY for arguments this binary rejected before running
+		// anything; attached to an upstream failure it would be a retry loop
+		// against a real side effect. A constructor-only guarantee holds until
+		// the next hand-built AgentToolResult; this holds for every one of them.
+		if result.NextStep == AgentToolNextCorrectToolCall {
+			return !result.Retryable && result.Error.Code == AgentToolCodeInvalidArguments
+		}
 		// This pairing is enforced here as well as at construction because
-		// agentToolObservation re-parses every result and silently re-wraps
-		// anything it fails to recognise — a rejected pairing does not surface
-		// as an error, it surfaces as a plain success.
-		return !result.Retryable &&
-			(result.NextStep == AgentToolNextAskUser || result.NextStep == AgentToolNextCorrectToolCall)
+		// agentToolObservation re-parses every result and re-wraps anything it
+		// fails to recognise. A rejected pairing does not surface as an error:
+		// the re-wrap reads the raw envelope's own status field, so it comes
+		// back out as READ_INPUT_INCOMPLETE / ask_user with the real instruction
+		// buried in data.next_step — still a question for a user who has nothing
+		// to add, just not a false success.
+		return !result.Retryable && result.NextStep == AgentToolNextAskUser
 	case AgentToolStatusRetryLater:
 		return result.Retryable && result.NextStep == AgentToolNextRetryLater
 	case AgentToolStatusChooseAlternative:
