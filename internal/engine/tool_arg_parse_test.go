@@ -2,9 +2,9 @@ package engine
 
 import (
 	"context"
-	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,9 +15,9 @@ import (
 // calls whose arguments are not a JSON object (flash emits a leaked tag or a bare
 // query string instead of `{"query":"…"}`):
 //
-//  1. The tool result FED BACK to the agent keeps the "parameter parse error:"
-//     contract prefix AND carries an explicit "re-emit valid JSON" hint, so the
-//     next ReAct round can recover instead of stalling on a bare error.
+//  1. The tool result FED BACK to the agent is a P2 needs_input observation with
+//     an explicit valid-JSON hint, so the next ReAct round can recover instead
+//     of stalling on a bare parser error.
 //  2. The RECORDED StepError message (which becomes the trace error_class) stays
 //     the concise parse error WITHOUT the hint — so error_class grouping in
 //     production telemetry is byte-identical to before this change.
@@ -40,17 +40,20 @@ func TestExecuteTool_MalformedArgsReturnsCorrectiveHint(t *testing.T) {
 
 			got := (&Engine{}).executeTool(context.Background(), tool, onStep)
 
-			// (1) Model-facing tool result: parse-error prefix + corrective JSON hint.
-			assert.Truef(t, strings.HasPrefix(got, "parameter parse error:"),
-				"returned result must keep the parse-error prefix, got %q", got)
-			assert.Containsf(t, got, "JSON", "returned result must steer the agent to emit JSON, got %q", got)
-			assert.Contains(t, got, "重新调用", "returned result must tell the agent to retry the call")
+			// (1) Model-facing tool result: stable P2 control plane + corrective hint.
+			result, ok := tools.ParseAgentToolResult(got)
+			require.Truef(t, ok, "returned result must use the agent tool-result contract, got %q", got)
+			assert.Equal(t, tools.AgentToolStatusNeedsInput, result.Status)
+			assert.Equal(t, "INVALID_TOOL_ARGUMENTS", result.Error.Code)
+			assert.Contains(t, result.Error.Message, "JSON")
+			assert.Equal(t, tools.AgentToolNextAskUser, result.NextStep)
+			assert.False(t, result.Retryable)
 
 			// (2) Recorded telemetry (error_class): concise error, NOT the hint.
 			require.Len(t, steps, 1)
 			assert.Equal(t, StepError, steps[0].Type)
 			assert.Equal(t, "SearchKnowledge", steps[0].Action)
-			assert.Truef(t, strings.HasPrefix(steps[0].Message, "parameter parse error:"),
+			assert.Contains(t, steps[0].Message, "parameter parse error:",
 				"recorded message must be the concise parse error, got %q", steps[0].Message)
 			assert.NotContains(t, steps[0].Message, "重新调用",
 				"recorded error_class must NOT carry the corrective hint (telemetry stability)")
