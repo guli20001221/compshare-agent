@@ -29,8 +29,10 @@ func TestChatEmitsExactlyOneCompletionForPreLLMBlock(t *testing.T) {
 	assert.Equal(t, observability.CompletionReasonPolicyBlock, got.Reason)
 	assert.Zero(t, got.ModelCalls)
 	assert.Equal(t, observability.CompletionDecisionNotInvoked, got.ContextDecision)
-	assert.Equal(t, "named", got.ToolScope)
-	assert.Equal(t, centralAgentToolNames(true, false), got.ToolNames)
+	assert.Empty(t, got.ToolScope)
+	assert.Equal(t, "no_model_window", got.ToolScopePhase)
+	assert.Empty(t, got.ToolScopeReason)
+	assert.Empty(t, got.ToolNames)
 }
 
 func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
@@ -54,7 +56,9 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	require.Len(t, completions, 1)
 	assert.Equal(t, observability.CompletionClassAgent, completions[0].Class)
 	assert.Equal(t, 1, completions[0].ModelCalls, "count must come from the real outbound boundary")
-	assert.Equal(t, "named", completions[0].ToolScope)
+	assert.Equal(t, "mutable_full", completions[0].ToolScope)
+	assert.Equal(t, "last_outbound_agent_tool_window", completions[0].ToolScopePhase)
+	assert.Equal(t, scopeReasonFeatureOff, completions[0].ToolScopeReason)
 	assert.Equal(t, centralAgentToolNames(true, false), completions[0].ToolNames)
 }
 
@@ -76,4 +80,26 @@ func TestChatCompletionMarksTerminalRateLimit(t *testing.T) {
 	assert.Equal(t, observability.CompletionClassSafetyBlock, completions[0].Class)
 	assert.Equal(t, observability.CompletionReasonRateLimit, completions[0].Reason)
 	assert.Zero(t, completions[0].ModelCalls)
+	assert.Empty(t, completions[0].ToolScope)
+	assert.Equal(t, "no_model_window", completions[0].ToolScopePhase)
+	assert.Empty(t, completions[0].ToolNames)
+}
+
+func TestCompletionUsesLastOutboundWindowRatherThanLaterPlan(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	var got observability.TurnCompletionTrace
+	eng.SetTurnCompletionObserver(func(trace observability.TurnCompletionTrace) { got = trace })
+	eng.resetTurnCompletion()
+	eng.initializeModelToolWindowScope()
+	initialScope := eng.modelToolWindowScopeThisTurn
+	initialWindow := eng.modelToolWindow(false)
+	eng.recordLastOutboundToolWindow(initialScope, initialWindow)
+	eng.modelToolWindowScopeThisTurn, _ = workflowToolScope("CreateCustomImageWorkflow")
+
+	eng.emitTurnCompletion()
+	assert.Equal(t, string(initialScope.Mode), got.ToolScope)
+	assert.Equal(t, "last_outbound_agent_tool_window", got.ToolScopePhase)
+	assert.Equal(t, initialScope.Reason, got.ToolScopeReason)
+	assert.Equal(t, modelToolWindowNames(initialWindow), got.ToolNames)
+	assert.NotEqual(t, string(eng.modelToolWindowScopeThisTurn.Mode), got.ToolScope)
 }

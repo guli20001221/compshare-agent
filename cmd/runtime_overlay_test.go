@@ -9,6 +9,8 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+func intPtr(v int) *int { return &v }
+
 // emptyBase is a getenv that returns "" for everything — the "no env set" case.
 func emptyBase(string) string { return "" }
 
@@ -61,5 +63,32 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		}
 		enabled, _ := forcedKnowledgeHopEnabledFromEnv(cfg.RuntimeGetenv(base))
 		assert.False(t, enabled, "explicit YAML false must override the env var")
+	})
+	t.Run("typed tool-window rollout reaches both parsers", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{
+			IntentScopedTools:               boolPtr(true),
+			IntentScopedToolsRolloutPercent: intPtr(25),
+		}}}
+		getenv := cfg.RuntimeGetenv(emptyBase)
+		enabled, unknown := intentScopedToolsEnabledFromEnv(getenv)
+		assert.True(t, enabled)
+		assert.Empty(t, unknown)
+		percent, invalid := intentScopedToolsRolloutPercentFromEnv(getenv)
+		assert.Equal(t, 25, percent)
+		assert.Empty(t, invalid)
+	})
+	t.Run("YAML zero stops inherited typed tool-window rollout", func(t *testing.T) {
+		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{
+			IntentScopedToolsRolloutPercent: intPtr(0),
+		}}}
+		getenv := cfg.RuntimeGetenv(func(key string) string {
+			if key == "COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT" {
+				return "100"
+			}
+			return ""
+		})
+		percent, invalid := intentScopedToolsRolloutPercentFromEnv(getenv)
+		assert.Zero(t, percent)
+		assert.Empty(t, invalid)
 	})
 }

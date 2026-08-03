@@ -37,6 +37,12 @@ type FeaturesConfig struct {
 	SessionFactContext     *bool `yaml:"session_fact_context"`     // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
 	ReactResultProjection  *bool `yaml:"react_result_projection"`  // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
 	ReactHistoryCompaction *bool `yaml:"react_history_compaction"` // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
+	// IntentScopedTools activates only a typed Request<Workflow> same-turn
+	// write lane; it does not enable a text intent classifier or use persisted
+	// card/context state. The percentage is a tri-state pointer so YAML 0 can
+	// explicitly override an inherited env.
+	IntentScopedTools               *bool `yaml:"intent_scoped_tools"`                 // COMPSHARE_INTENT_SCOPED_TOOLS (default off)
+	IntentScopedToolsRolloutPercent *int  `yaml:"intent_scoped_tools_rollout_percent"` // COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT (default 0)
 	// DEPRECATED (convergence plan P5): the body-driven skill executor mechanism
 	// was removed. These two fields are now INERT — nothing consumes the
 	// USE_SKILL_EXECUTOR / USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS overrides they emit.
@@ -107,6 +113,8 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "USE_SESSION_FACT_CONTEXT", f.SessionFactContext, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_RESULT_PROJECTION", f.ReactResultProjection, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_HISTORY_COMPACTION", f.ReactHistoryCompaction, "1", "0")
+	putBoolEnv(overrides, "COMPSHARE_INTENT_SCOPED_TOOLS", f.IntentScopedTools, "1", "0")
+	putOptionalIntEnv(overrides, "COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT", f.IntentScopedToolsRolloutPercent)
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_FORCED_KNOWLEDGE_HOP", f.ForcedKnowledgeHop, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CANONICAL_TRANSCRIPT", f.CanonicalTranscript, "1", "0")
@@ -191,4 +199,14 @@ func putIntEnv(m map[string]string, key string, value int) {
 		return
 	}
 	m[key] = strconv.Itoa(value)
+}
+
+// putOptionalIntEnv preserves the same tri-state behavior as feature booleans:
+// a YAML zero is an explicit rollout stop rather than an omitted field that
+// accidentally falls back to a non-zero process environment value.
+func putOptionalIntEnv(m map[string]string, key string, value *int) {
+	if value == nil {
+		return
+	}
+	m[key] = strconv.Itoa(*value)
 }

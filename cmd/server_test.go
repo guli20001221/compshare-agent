@@ -350,6 +350,30 @@ func TestApplySharedDepsReactHistoryCompactionFromEnv(t *testing.T) {
 	require.True(t, deps.ReactHistoryCompactionEnabled)
 }
 
+func TestApplySharedDepsIntentScopedToolsFromEnv(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{
+		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
+	}}
+	deps := &engine.SharedDeps{}
+
+	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
+		switch key {
+		case "COMPSHARE_INTENT_SCOPED_TOOLS":
+			return "1"
+		case "COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT":
+			return "25"
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "off"
+		default:
+			return ""
+		}
+	})
+
+	require.NoError(t, err)
+	require.True(t, deps.IntentScopedToolsEnabled)
+	require.Equal(t, 25, deps.IntentScopedToolsRolloutPercent)
+}
+
 func TestApplySharedDepsDefaultsToQwenRRF(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{

@@ -434,15 +434,25 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"sessionFactContextEnabled":           true,
 		"reactResultProjectionEnabled":        true,
 		"reactHistoryCompactionEnabled":       true,
-		"verifiedInstanceEvidenceThisTurn":    true,
-		"readResponseEvidenceThisTurn":        true,
-		"toolResultsByCallThisTurn":           true,
-		"actionProposalRanThisTurn":           true,
-		"actionProposalDispositionThisTurn":   true,
-		"imageContextThisTurn":                true,
-		"secretInputsThisTurn":                true,
-		"baseUserContext":                     true,
-		"displayedResourceSelectionThisTurn":  true,
+		// P3 typed tool-window rollout configuration, its current-turn plan and
+		// the actual last outbound Agent tool window. All are per-session/per-turn:
+		// sharing a selected write lane or its observed tool names could hide
+		// tools for, or leak a tool-use trace into, another tenant.
+		"intentScopedToolsEnabled":               true,
+		"intentScopedToolsRolloutPercent":        true,
+		"modelToolWindowScopeThisTurn":           true,
+		"lastOutboundToolWindowScopeThisTurn":    true,
+		"lastOutboundToolNamesThisTurn":          true,
+		"lastOutboundToolWindowObservedThisTurn": true,
+		"verifiedInstanceEvidenceThisTurn":       true,
+		"readResponseEvidenceThisTurn":           true,
+		"toolResultsByCallThisTurn":              true,
+		"actionProposalRanThisTurn":              true,
+		"actionProposalDispositionThisTurn":      true,
+		"imageContextThisTurn":                   true,
+		"secretInputsThisTurn":                   true,
+		"baseUserContext":                        true,
+		"displayedResourceSelectionThisTurn":     true,
 		// In-instance SSH diagnosis lane (INV-9/INV-11). instanceOps is copied from
 		// SharedDeps but is per-session-overridable via SetInstanceOps (the CLI path),
 		// so a session can hold a different runner than its siblings — classified
@@ -519,12 +529,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// 93 -> 94 / 100 -> 101: recentTurns, the recorded exchanges the canonical
 	// transcript is replayed from. Appended by the hot engine at turn exit and by
 	// a cold rebuild from the persisted rows, so both agree by construction.
-	if want, got := 94, len(perSessionFields); want != got {
+	// 94 -> 100 / 100 -> 106: P3's typed tool-window rollout configuration,
+	// current-turn plan and the three fields that record the actual last outbound
+	// window. They are reset every turn and cannot be shared across sessions.
+	if want, got := 100, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 100, typ.NumField(); want != got {
+	if want, got := 106, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
@@ -568,6 +581,15 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 	if withDeps.mutatingToolsEnabled != session.mutatingToolsEnabled {
 		t.Errorf("mutatingToolsEnabled differs: NewWithDeps=%v NewSession=%v",
 			withDeps.mutatingToolsEnabled, session.mutatingToolsEnabled)
+	}
+	if withDeps.intentScopedToolsEnabled != session.intentScopedToolsEnabled ||
+		withDeps.intentScopedToolsRolloutPercent != session.intentScopedToolsRolloutPercent {
+		t.Errorf("intent scoped tool defaults differ: NewWithDeps=%v/%d NewSession=%v/%d",
+			withDeps.intentScopedToolsEnabled,
+			withDeps.intentScopedToolsRolloutPercent,
+			session.intentScopedToolsEnabled,
+			session.intentScopedToolsRolloutPercent,
+		)
 	}
 	if withDeps.lastInstanceQueryTurn != session.lastInstanceQueryTurn {
 		t.Errorf("lastInstanceQueryTurn differs: NewWithDeps=%d NewSession=%d",

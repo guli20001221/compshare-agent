@@ -857,6 +857,8 @@ func TestValidateSTSConfigRejectsNegativeRefreshBefore(t *testing.T) {
 
 func boolPtr(b bool) *bool { return &b }
 
+func intPtr(v int) *int { return &v }
+
 func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfig(`
@@ -868,6 +870,8 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     session_fact_context: true
     react_result_projection: true
     react_history_compaction: true
+    intent_scoped_tools: true
+    intent_scoped_tools_rollout_percent: 25
     skill_executor_diagnosis_pilots:
       - diagnose-ssh
       - diagnose-billing
@@ -887,6 +891,10 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	require.NotNil(t, f.MutatingTools)
 	assert.True(t, *f.MutatingTools)
 	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
+	require.NotNil(t, f.IntentScopedTools)
+	assert.True(t, *f.IntentScopedTools)
+	require.NotNil(t, f.IntentScopedToolsRolloutPercent)
+	assert.Equal(t, 25, *f.IntentScopedToolsRolloutPercent)
 	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
 	assert.Equal(t, "qwen3_rrf", cfg.Agent.Retrieval.Mode)
@@ -900,8 +908,10 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	cfg := &Config{Agent: AgentConfig{
 		LLM: LLMConfig{APIKey: "resolved-llm-key"},
 		Features: FeaturesConfig{
-			MutatingTools: boolPtr(true), // YAML true → "1"
-			DurableTurns:  boolPtr(true),
+			MutatingTools:                   boolPtr(true), // YAML true → "1"
+			DurableTurns:                    boolPtr(true),
+			IntentScopedTools:               boolPtr(true),
+			IntentScopedToolsRolloutPercent: intPtr(0),
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
@@ -926,6 +936,8 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
 	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
+	assert.Equal(t, "1", getenv("COMPSHARE_INTENT_SCOPED_TOOLS"))
+	assert.Equal(t, "0", getenv("COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT"), "YAML zero must override an inherited rollout env")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")

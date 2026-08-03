@@ -2,7 +2,6 @@ package engine
 
 import (
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 )
 
 // SetTurnCompletionObserver wires the one-per-turn final control-flow record.
@@ -22,6 +21,9 @@ func (e *Engine) resetTurnCompletion() {
 	e.turnCompletionReasonHint = ""
 	e.turnCompletionEmittedThisTurn = false
 	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
+	e.lastOutboundToolWindowScopeThisTurn = modelToolWindowScope{}
+	e.lastOutboundToolNamesThisTurn = nil
+	e.lastOutboundToolWindowObservedThisTurn = false
 }
 
 // markTurnCompletion records a terminal path that cannot be reconstructed from
@@ -47,8 +49,14 @@ func (e *Engine) emitTurnCompletion() {
 	trace := observability.TurnCompletionTrace{
 		ModelCalls:      e.turnModelCallsThisTurn,
 		ContextDecision: observability.CompletionDecisionNotInvoked,
-		ToolScope:       string(tools.ToolScopeNamed),
-		ToolNames:       centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
+		ToolScopePhase:  "no_model_window",
+	}
+	if e.lastOutboundToolWindowObservedThisTurn {
+		scope := e.lastOutboundToolWindowScopeThisTurn
+		trace.ToolScope = string(scope.Mode)
+		trace.ToolScopePhase = "last_outbound_agent_tool_window"
+		trace.ToolScopeReason = scope.Reason
+		trace.ToolNames = append([]string(nil), e.lastOutboundToolNamesThisTurn...)
 	}
 
 	trace.Class, trace.Reason = e.classifyTurnCompletion()

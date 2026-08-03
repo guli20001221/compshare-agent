@@ -16,6 +16,8 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 			ReadSet:         []string{"user_text", "active_task"},
 			StateDelta:      []string{"task:preserve", "reply:clarify"},
 			ToolScope:       "named",
+			ToolScopePhase:  "last_outbound_agent_tool_window",
+			ToolScopeReason: "reinstall_instance",
 			ToolNames:       []string{"DescribeCompShareInstance"},
 		},
 	}
@@ -34,6 +36,9 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	}
 	if len(decoded.Completion.ReadSet) != 2 || len(decoded.Completion.StateDelta) != 2 {
 		t.Fatalf("context fields lost from completion: %#v", decoded.Completion)
+	}
+	if decoded.Completion.ToolScopePhase != "last_outbound_agent_tool_window" || decoded.Completion.ToolScopeReason != "reinstall_instance" {
+		t.Fatalf("tool scope reason lost from completion: %#v", decoded.Completion)
 	}
 }
 

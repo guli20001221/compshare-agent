@@ -509,6 +509,19 @@ type Engine struct {
 	// deterministic compact summaries and old retrievable-tool placeholders.
 	// Default off.
 	reactHistoryCompactionEnabled bool
+	// intentScopedToolsEnabled gates the P3 deterministic, same-turn write-lane
+	// rollout. It never classifies user text or trusts a carried ContextFrame:
+	// only an advertised typed Request<Workflow> call can select a named scope.
+	intentScopedToolsEnabled        bool
+	intentScopedToolsRolloutPercent int
+	modelToolWindowScopeThisTurn    modelToolWindowScope
+	// lastOutboundToolWindow* records the actual final request sent to the
+	// model, after per-turn tool budgets are applied. It is distinct from the
+	// current planned scope because a workflow/card can finish immediately
+	// after changing the plan, without another model request ever seeing it.
+	lastOutboundToolWindowScopeThisTurn    modelToolWindowScope
+	lastOutboundToolNamesThisTurn          []string
+	lastOutboundToolWindowObservedThisTurn bool
 	// Per-turn instance-binding observability (#3 StateTrace). Captured at turn
 	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
 	// by design (reset every turn) — a shared value would attribute one tenant's
@@ -573,6 +586,11 @@ type SharedDeps struct {
 	// ReactHistoryCompactionEnabled enables deterministic ReAct history
 	// compaction for long sessions. Default false.
 	ReactHistoryCompactionEnabled bool
+	// IntentScopedToolsEnabled gates the deterministic same-turn write lane.
+	// Default false; RolloutPercent=0 leaves every session on the existing full
+	// window.
+	IntentScopedToolsEnabled        bool
+	IntentScopedToolsRolloutPercent int
 	// ExternalExecutor is the underlying tool executor shared across sessions
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
@@ -666,6 +684,10 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	eng.safeExecutor.SetMutatingToolsEnabled(opts.MutatingToolsEnabled)
 	eng.externalExecutor = deps.ExternalExecutor
 	eng.instanceOps = deps.InstanceOps
+	// SharedDeps is exported for the server and focused integration tests. Keep
+	// the same fail-closed range validation as the public setter instead of
+	// trusting every caller to have come through cmd's environment parser.
+	eng.SetIntentScopedTools(deps.IntentScopedToolsEnabled, deps.IntentScopedToolsRolloutPercent)
 	return eng
 }
 
@@ -739,6 +761,18 @@ func (e *Engine) SetReactResultProjectionEnabled(v bool) {
 // SetReactHistoryCompactionEnabled toggles deterministic long-history compaction.
 func (e *Engine) SetReactHistoryCompactionEnabled(v bool) {
 	e.reactHistoryCompactionEnabled = v
+}
+
+// SetIntentScopedTools configures the opt-in P3 tool-window rollout for this
+// session. A percent outside 1..100 fails closed to the existing full window.
+// The server applies the same values through SharedDeps before sessions start.
+func (e *Engine) SetIntentScopedTools(enabled bool, rolloutPercent int) {
+	e.intentScopedToolsEnabled = enabled
+	if rolloutPercent < 1 || rolloutPercent > 100 {
+		e.intentScopedToolsRolloutPercent = 0
+		return
+	}
+	e.intentScopedToolsRolloutPercent = rolloutPercent
 }
 
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
@@ -1409,6 +1443,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.expireStaleSelectedInstance(continuityNow)
 	e.expireStaleToolFacts(continuityNow)
 	e.refreshConversationDigest(continuityNow)
+	e.initializeModelToolWindowScope()
 	// Every turn must carry a non-empty server-side turn identity. The durable
 	// transport supplies one (client turn id / request uuid, see ws_durable.go);
 	// the legacy WS/HTTP and CLI paths pass none. Without one,
@@ -1535,10 +1570,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
 		messages := e.buildMessagesForLLM()
-		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
-		if opts.KnowledgeOnly {
-			toolWindow = centralAgentKnowledgeToolWindow()
-		}
+		toolWindow := e.modelToolWindow(opts.KnowledgeOnly)
 		req := llm.ChatRequest{
 			Messages: messages,
 			Tools:    toolWindow,
@@ -1588,6 +1620,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				streamedDeltas = append(streamedDeltas, s)
 			}
 		}
+		e.recordLastOutboundToolWindow(e.completionToolWindowScope(), req.Tools)
 		resp, err := e.llmClient.Chat(ctx, req)
 		if err != nil {
 			// A write that already committed outranks every other recovery here,
@@ -2775,6 +2808,20 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		})
 		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
 	}
+	if !e.modelToolCallAllowed(action) {
+		const message = "当前任务已收敛到已确认的工具范围；请依据已有结果继续，或向用户说明需要切换任务。"
+		onStep(StepEvent{
+			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
+			Message: message,
+		})
+		return tools.MarshalAgentToolResult(tools.AgentToolFailure(
+			action,
+			nil,
+			"TOOL_NOT_IN_SCOPE",
+			message,
+			tools.AgentToolMeta{SourceStatus: "tool_window"},
+		))
+	}
 	if repeatableAgentTool(action) {
 		if e.toolResultsByCallThisTurn == nil {
 			e.toolResultsByCallThisTurn = map[string]string{}
@@ -2833,6 +2880,10 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			tools.AgentToolMeta{SourceStatus: "argument_parse_error"},
 		))
 	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	e.advanceModelToolWindowScope(action, args)
 
 	// The local GPU knowledge tools (GetGPUSpecs / GetGPURecommendation /
 	// GetModelVRAMRequirement) used to execute here, straight off a hand-maintained

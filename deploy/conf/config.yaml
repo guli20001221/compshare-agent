@@ -83,6 +83,13 @@ agent:
     session_fact_context: true          # near-term fact cache injected into context
     react_result_projection: true       # compress large read tool results before re-feeding ReAct
     react_history_compaction: true      # summarize old turns once history exceeds the window
+    # P3 deterministic same-turn write lane. It never adds a pre-model text
+    # intent router and never treats a persisted card/context as a continuation:
+    # only an advertised typed Request<Workflow> can narrow later ReAct rounds.
+    # Keep disabled until the 53-trace replay and a controlled tenant rollout
+    # are approved; set both fields deliberately.
+    intent_scoped_tools: false
+    intent_scoped_tools_rollout_percent: 0
     # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
     # guards only when their flag-on path is the validated production path.
     domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)

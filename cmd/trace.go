@@ -199,6 +199,36 @@ func reactHistoryCompactionEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// intentScopedToolsEnabledFromEnv gates P3's same-turn write lane. Default off.
+// It deliberately has no user-text routing behavior and never relies on a
+// persisted ContextFrame; the engine narrows only after an advertised typed
+// Request<Workflow> tool call.
+func intentScopedToolsEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	value := strings.TrimSpace(getenv("COMPSHARE_INTENT_SCOPED_TOOLS"))
+	switch value {
+	case "", "0":
+		return false, ""
+	case "1":
+		return true, ""
+	default:
+		return false, value
+	}
+}
+
+// intentScopedToolsRolloutPercentFromEnv parses a deterministic tenant rollout
+// range. Invalid values fail closed to 0 and remain visible to startup logs.
+func intentScopedToolsRolloutPercentFromEnv(getenv getenvFunc) (int, string) {
+	value := strings.TrimSpace(getenv("COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT"))
+	if value == "" {
+		return 0, ""
+	}
+	percent, err := strconv.Atoi(value)
+	if err != nil || percent < 0 || percent > 100 {
+		return 0, value
+	}
+	return percent, ""
+}
+
 // domainMatchGuardEnabledFromEnv gates the #5 wrong-domain REFUSE arm
 // (COMPSHARE_RAG_DOMAIN_MATCH_GUARD). DEFAULT OFF — the domain verdict is always
 // recorded in the trace (all_cited_off_domain / domain_inference_empty), but the

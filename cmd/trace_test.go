@@ -293,6 +293,52 @@ func TestReactHistoryCompactionEnabledFromEnv(t *testing.T) {
 	require.Equal(t, "yes", unknown)
 }
 
+func TestIntentScopedToolsRuntimeParsers(t *testing.T) {
+	enabled, unknown := intentScopedToolsEnabledFromEnv(func(string) string { return "" })
+	require.False(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = intentScopedToolsEnabledFromEnv(func(key string) string {
+		if key == "COMPSHARE_INTENT_SCOPED_TOOLS" {
+			return "1"
+		}
+		return ""
+	})
+	require.True(t, enabled)
+	require.Empty(t, unknown)
+
+	enabled, unknown = intentScopedToolsEnabledFromEnv(func(key string) string {
+		if key == "COMPSHARE_INTENT_SCOPED_TOOLS" {
+			return "yes"
+		}
+		return ""
+	})
+	require.False(t, enabled)
+	require.Equal(t, "yes", unknown)
+
+	percent, invalid := intentScopedToolsRolloutPercentFromEnv(func(string) string { return "" })
+	require.Zero(t, percent)
+	require.Empty(t, invalid)
+
+	percent, invalid = intentScopedToolsRolloutPercentFromEnv(func(key string) string {
+		if key == "COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT" {
+			return "37"
+		}
+		return ""
+	})
+	require.Equal(t, 37, percent)
+	require.Empty(t, invalid)
+
+	percent, invalid = intentScopedToolsRolloutPercentFromEnv(func(key string) string {
+		if key == "COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT" {
+			return "101"
+		}
+		return ""
+	})
+	require.Zero(t, percent)
+	require.Equal(t, "101", invalid)
+}
+
 func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(func(string) string { return "" })
 	if !enabled || unknown != "" {

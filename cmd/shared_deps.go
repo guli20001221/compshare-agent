@@ -104,6 +104,19 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	if reactHistoryCompaction {
 		log.Printf("runtime: HTTP ReAct history compaction enabled (USE_REACT_HISTORY_COMPACTION=1)")
 	}
+	intentScopedTools, unknownIntentScopedTools := intentScopedToolsEnabledFromEnv(getenv)
+	if unknownIntentScopedTools != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_INTENT_SCOPED_TOOLS value %q", unknownIntentScopedTools)
+	}
+	intentScopedToolsRolloutPercent, unknownIntentScopedToolsRolloutPercent := intentScopedToolsRolloutPercentFromEnv(getenv)
+	if unknownIntentScopedToolsRolloutPercent != "" {
+		log.Printf("warning: ignoring invalid COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT value %q", unknownIntentScopedToolsRolloutPercent)
+	}
+	deps.IntentScopedToolsEnabled = intentScopedTools
+	deps.IntentScopedToolsRolloutPercent = intentScopedToolsRolloutPercent
+	if intentScopedTools && intentScopedToolsRolloutPercent > 0 {
+		log.Printf("runtime: HTTP typed tool-window rollout enabled (%d%%)", intentScopedToolsRolloutPercent)
+	}
 	knowledgeRetrievalRequested, unknownKnowledge := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledge != "" {
 		log.Printf("warning: ignoring unknown USE_KNOWLEDGE_RETRIEVAL value %q", unknownKnowledge)

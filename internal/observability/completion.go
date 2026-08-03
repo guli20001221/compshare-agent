@@ -10,7 +10,15 @@ type TurnCompletionTrace struct {
 	ContextDecision string   `json:"context_decision"`
 	ReadSet         []string `json:"read_set,omitempty"`
 	StateDelta      []string `json:"state_delta,omitempty"`
-	ToolScope       string   `json:"tool_scope"`
+	// ToolScope/ToolNames describe the last actual outbound model window. A
+	// multi-round ReAct turn can start from a broader window before P3 selects a
+	// same-turn write lane, and a workflow/card can finish before that lane is
+	// ever sent; ToolScopePhase keeps both cases explicit for rollout analysis.
+	ToolScope      string `json:"tool_scope"`
+	ToolScopePhase string `json:"tool_scope_phase,omitempty"`
+	// ToolScopeReason is a bounded server-generated rollout/state label. It
+	// never includes a user message, tenant, tool arguments, or model text.
+	ToolScopeReason string   `json:"tool_scope_reason,omitempty"`
 	ToolNames       []string `json:"tool_names,omitempty"`
 }
 
@@ -55,5 +63,7 @@ func traceCompletionObserved(trace TurnCompletionTrace) bool {
 		len(trace.ReadSet) > 0 ||
 		len(trace.StateDelta) > 0 ||
 		trace.ToolScope != "" ||
+		trace.ToolScopePhase != "" ||
+		trace.ToolScopeReason != "" ||
 		len(trace.ToolNames) > 0
 }

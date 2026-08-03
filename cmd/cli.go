@@ -159,6 +159,15 @@ func runCLI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown USE_REACT_HISTORY_COMPACTION value %q\n", unknownReactHistoryCompaction)
 	}
 	eng.SetReactHistoryCompactionEnabled(reactHistoryCompaction)
+	intentScopedTools, unknownIntentScopedTools := intentScopedToolsEnabledFromEnv(getenv)
+	if unknownIntentScopedTools != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_INTENT_SCOPED_TOOLS value %q\n", unknownIntentScopedTools)
+	}
+	intentScopedToolsRolloutPercent, unknownIntentScopedToolsRolloutPercent := intentScopedToolsRolloutPercentFromEnv(getenv)
+	if unknownIntentScopedToolsRolloutPercent != "" {
+		fmt.Fprintf(os.Stderr, "warning: ignoring invalid COMPSHARE_INTENT_SCOPED_TOOLS_ROLLOUT_PERCENT value %q\n", unknownIntentScopedToolsRolloutPercent)
+	}
+	eng.SetIntentScopedTools(intentScopedTools, intentScopedToolsRolloutPercent)
 	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
 	if unknownDomainMatchGuard != "" {
 		fmt.Fprintf(os.Stderr, "warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q\n", unknownDomainMatchGuard)
