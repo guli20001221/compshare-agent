@@ -1380,6 +1380,70 @@
       "value": " "
     },
     {
+      "id": "2fd7ee87c5bd460b",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/mcp_retriever.go",
+      "symbol": "classifyMCPReadError",
+      "callee": "strings.Contains",
+      "value": "chunk was not returned"
+    },
+    {
+      "id": "de21ec97813afc6f",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/mcp_retriever.go",
+      "symbol": "classifyMCPReadError",
+      "callee": "strings.Contains",
+      "value": "knowledge evidence token"
+    },
+    {
+      "id": "f4fd2c5a366b444e",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/mcp_retriever.go",
+      "symbol": "classifyMCPReadError",
+      "callee": "strings.Contains",
+      "value": "not returned by the referenced search"
+    },
+    {
+      "id": "38aa2eb285677d80",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/mcp_retriever.go",
+      "symbol": "classifyMCPReadError",
+      "callee": "strings.Contains",
+      "value": "search capability"
+    },
+    {
+      "id": "6dbcf71ffdc44bc6",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/mcp_retriever.go",
+      "symbol": "classifyMCPReadError",
+      "callee": "strings.Contains",
+      "value": "search_id"
+    },
+    {
+      "id": "b434dbf6675b71d0",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/mcp_retriever.go",
+      "symbol": "classifyMCPReadError",
+      "callee": "strings.Contains",
+      "value": "token has expired"
+    },
+    {
+      "id": "39e2e68dff2a792e",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/mcp_retriever.go",
+      "symbol": "classifyMCPReadError",
+      "callee": "strings.Contains",
+      "value": "token is invalid"
+    },
+    {
+      "id": "9ed3144c4c6029bf",
+      "kind": "string_heuristic",
+      "path": "internal/knowledge/mcp_retriever.go",
+      "symbol": "normalizeMCPEndpoint",
+      "callee": "strings.Contains",
+      "value": "://"
+    },
+    {
       "id": "1ad9e57b9afaae11",
       "kind": "string_heuristic",
       "path": "internal/llm/client.go",

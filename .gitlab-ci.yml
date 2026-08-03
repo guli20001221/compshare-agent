@@ -1,0 +1,79 @@
+# GitLab CI/CD for compshare-agent. It follows the compshare-kb delivery path:
+# test on the c5 runner, build an immutable Kaniko image, then require an
+# explicit approval before changing production.
+#
+# Configure protected CI variables UHUB_USER and UHUB_PASS. The deployment
+# runner must already be authorized for prj-ucompshare-prod, and the namespace
+# must contain the regcred image-pull secret.
+
+stages:
+  - test
+  - build
+  - deploy
+
+variables:
+  IMAGE: uhub.service.ucloud.cn/ucompshare-job/compshare-agent
+  GOPROXY: https://goproxy.cn,direct
+
+test:
+  stage: test
+  image: uhub.service.ucloud.cn/ucompshare-job/golang:1.25-alpine
+  tags:
+    - uaek-c5
+  script:
+    - go test ./...
+    - go vet ./...
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+build:
+  stage: build
+  image:
+    name: uhub.service.ucloud.cn/ucompshare-job/kaniko-executor:debug
+    entrypoint: [""]
+  tags:
+    - uaek-c5
+  variables:
+    DOCKER_CONFIG: $CI_PROJECT_DIR/.docker
+  script:
+    - mkdir -p "$DOCKER_CONFIG"
+    - |
+      AUTH=$(printf "%s:%s" "$UHUB_USER" "$UHUB_PASS" | base64 | tr -d '\n')
+      printf '{"auths":{"uhub.service.ucloud.cn":{"auth":"%s"}}}\n' "$AUTH" > "$DOCKER_CONFIG/config.json"
+    - >-
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+      --build-arg "GOPROXY=$GOPROXY"
+      --build-arg "VCS_REF=$CI_COMMIT_SHA"
+      --destination "$IMAGE:$CI_COMMIT_SHORT_SHA"
+      --destination "$IMAGE:latest"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy:
+  stage: deploy
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    APP: compshare-agent
+  script:
+    - >-
+      sed "s|__IMAGE__|$IMAGE:$CI_COMMIT_SHORT_SHA|g"
+      deploy/k8s/deployment.yaml
+      | kubectl -n "$NAMESPACE" apply -f -
+    - kubectl -n "$NAMESPACE" rollout status deployment/"$APP" --timeout=600s
+    - kubectl -n "$NAMESPACE" get service/"$APP"
+    - |
+      POD=$(kubectl -n "$NAMESPACE" get pods -l app="$APP" -o jsonpath='{.items[0].metadata.name}')
+      test -n "$POD"
+      kubectl -n "$NAMESPACE" exec "$POD" -c "$APP" -- python3 -c \
+        'import urllib.request; response = urllib.request.urlopen("http://compshare-agent/healthz", timeout=5); assert response.status == 200'
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  environment:
+    name: production
+

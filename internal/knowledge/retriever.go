@@ -127,6 +127,16 @@ type RetrievalResult struct {
 	Hits            []KBChunk
 	HitItems        []RetrievalHit
 	Empty           bool
+	// SearchID is the opaque, short-lived capability returned by the remote
+	// compshare-kb MCP search. It is intentionally carried only with one
+	// retrieval result; the Engine keeps it in current-turn state and supplies it
+	// to ReadChunks, never to a process-wide retriever cache.
+	SearchID string
+	// Unavailable distinguishes an operational retrieval failure (for example a
+	// remote MCP timeout or no active release) from a successful Empty search.
+	// Existing local retrievers leave it false.
+	Unavailable   bool
+	FailureReason string
 	// HybridMode reports which retrieval path produced Hits. One of:
 	//   "bm25_only"      — sidecar or embedder absent; BM25 top-K directly.
 	//   "hybrid_cosine"  — BM25 top-20 → query-embedding cosine rerank → top-K.

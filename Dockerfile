@@ -1,28 +1,27 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 
-# Docker 1.12.6 is only the production *runtime*.  Build this image with a
-# current BuildKit/buildx and publish it through deploy/docker/build-push-docker-1.12.sh.
+# Docker 1.12.6 is only the legacy production *runtime*. BuildKit/buildx and
+# GitLab's Kaniko runner both build this image, so keep the Dockerfile free of
+# BuildKit-only RUN mounts.
 ARG GO_IMAGE=golang:1.25-bookworm
 ARG NODE_IMAGE=node:22-bullseye-slim
 ARG PYTHON_IMAGE=python:3.13-slim-bullseye
 
-FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS go-builder
-ARG TARGETARCH
-ARG TARGETOS
+FROM ${GO_IMAGE} AS go-builder
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+RUN go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+RUN CGO_ENABLED=0 \
     go build -trimpath -ldflags="-s -w" -o /out/compshare-agent ./cmd
 
 
-FROM --platform=$TARGETPLATFORM ${NODE_IMAGE} AS claude-cli
+FROM ${NODE_IMAGE} AS claude-cli
 ARG CLAUDE_CODE_VERSION=2.1.218
 
 # Keep the CLI on the exact version used by the direct ModelVerse Anthropic smoke.
@@ -36,7 +35,7 @@ RUN npm install --global --omit=dev --no-audit --no-fund \
 # kernel gets a chance to return ENOSYS; avoiding the newer userspace materially
 # reduces that compatibility surface.  A real run on the target engine remains
 # a release gate (see deploy/docker/README.md).
-FROM --platform=$TARGETPLATFORM ${PYTHON_IMAGE} AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
 ARG CLAUDE_CODE_VERSION=2.1.218
 ARG VCS_REF=unknown
 
@@ -57,9 +56,8 @@ RUN apt-get update \
 # Preserve the production interpreter contract requested for the host deploy,
 # while making the environment self-contained in the image.
 COPY deploy/ssh_ops_harness/requirements.txt /tmp/ssh-ops-requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python3 -m venv /opt/miniforge3/envs/py313 \
-    && PIP_CACHE_DIR=/root/.cache/pip /opt/miniforge3/envs/py313/bin/pip install \
+RUN python3 -m venv /opt/miniforge3/envs/py313 \
+    && /opt/miniforge3/envs/py313/bin/pip install --no-cache-dir \
          --requirement /tmp/ssh-ops-requirements.txt \
     && rm /opt/miniforge3/envs/py313/lib/python3.13/site-packages/claude_agent_sdk/_bundled/claude \
     && rm /tmp/ssh-ops-requirements.txt
@@ -74,7 +72,6 @@ COPY --from=claude-cli \
 WORKDIR $APP_HOME
 COPY --from=go-builder /out/compshare-agent ./compshare-agent
 COPY deploy/conf/config.yaml ./deploy/conf/config.yaml
-COPY deploy/kb ./deploy/kb
 COPY deploy/migrations ./deploy/migrations
 COPY deploy/ssh_ops_harness ./deploy/ssh_ops_harness
 

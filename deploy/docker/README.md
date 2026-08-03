@@ -1,11 +1,11 @@
 # Docker 1.12.6 生产部署
 
 生产节点当前是 Docker `1.12.6` / API `1.24` / `linux/amd64`。它只负责 `pull` 和 `run`；
-镜像必须在装有当前版 BuildKit/buildx 的构建机上生成，不能在生产节点上执行本仓库的多阶段
-`Dockerfile`。
+镜像必须在装有当前版 BuildKit/buildx 的构建机，或 GitLab 的 Kaniko runner 上生成，不能在生产节点
+执行本仓库的多阶段 `Dockerfile`。
 
 镜像是自包含交付物：Go 服务、生产 `deploy/conf/config.yaml`、Python 3.13 环境、
-Claude Agent SDK、Claude CLI、知识库和 SSH-ops harness 全部在镜像内。能拉取镜像的人也能读取
+Claude Agent SDK、Claude CLI、远程知识库客户端和 SSH-ops harness 全部在镜像内。能拉取镜像的人也能读取
 其中的生产配置，因此私有仓库的 pull 权限就是凭据权限；每次更换凭据都要用新 tag 重建镜像。
 
 ## 为什么有专用发布命令

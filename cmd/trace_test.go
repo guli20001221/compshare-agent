@@ -364,6 +364,45 @@ func TestKnowledgeRetrieverFromEnvLoadsCorpus(t *testing.T) {
 	}
 }
 
+func TestKnowledgeRetrieverFromEnvPrefersConfiguredMCP(t *testing.T) {
+	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
+		switch key {
+		case "USE_KNOWLEDGE_RETRIEVAL":
+			return "curated"
+		case "COMPSHARE_KB_MCP_URL":
+			return "compshare-kb.prj-ucompshare-prod.svc.c5.u4"
+		case "COMPSHARE_KB_MCP_TIMEOUT_MS":
+			return "9000"
+		case "COMPSHARE_KNOWLEDGE_CORPUS":
+			return filepath.Join(t.TempDir(), "must-not-be-opened.jsonl")
+		default:
+			return ""
+		}
+	})
+
+	require.NoError(t, err)
+	require.True(t, enabled)
+	require.IsType(t, &knowledge.MCPRetriever{}, retriever)
+}
+
+func TestKnowledgeMCPTimeoutFromEnv(t *testing.T) {
+	assertDuration := func(raw string, want time.Duration) {
+		t.Helper()
+		got := knowledgeMCPTimeoutFromEnv(func(key string) string {
+			if key == "COMPSHARE_KB_MCP_TIMEOUT_MS" {
+				return raw
+			}
+			return ""
+		})
+		if got != want {
+			t.Fatalf("knowledgeMCPTimeoutFromEnv(%q) = %s, want %s", raw, got, want)
+		}
+	}
+	assertDuration("", 0)
+	assertDuration("12000", 12*time.Second)
+	assertDuration("bad", 0)
+}
+
 func TestKnowledgeRetrieverFromEnvMissingCorpusDisablesWithError(t *testing.T) {
 	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
 		switch key {

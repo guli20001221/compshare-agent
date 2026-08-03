@@ -66,6 +66,50 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
 }
 
+// A remote MCP outage is an operational result, not a corpus-gap result. The
+// model receives a safe retry signal and the trace must not label it
+// no_evidence, which would send operators to edit KB content for a network or
+// readiness problem.
+func TestExecuteSearchKnowledge_RemoteUnavailableIsDistinctFromEmpty(t *testing.T) {
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled:       true,
+		Empty:         true,
+		Unavailable:   true,
+		FailureReason: "mcp_unavailable",
+	}}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	var traces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) { traces = append(traces, trace) })
+
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "查询知识"}, noopStep)
+
+	assert.Contains(t, out, `"knowledge_unavailable":true`)
+	assert.Contains(t, out, "知识库服务暂时不可用")
+	assert.True(t, eng.searchKnowledgeRanThisTurn)
+	require.Len(t, traces, 1)
+	assert.True(t, traces[0].Unavailable)
+	assert.Equal(t, "mcp_unavailable", traces[0].FailureReason)
+	assert.Empty(t, traces[0].RefusedReason)
+}
+
+func TestExecuteSearchKnowledge_PartialRemoteUnavailableIsVisible(t *testing.T) {
+	eng, retriever := planningEngineWithConversation(t,
+		`{"answer_question":"实例关机后还会产生哪些费用","search_queries":["关机后计费规则","数据盘关机是否计费"]}`,
+		[]knowledge.RetrievalResult{
+			{Enabled: true, Empty: true, Unavailable: true, FailureReason: "mcp_timeout"},
+			{Enabled: true, Empty: true},
+		},
+	)
+
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
+
+	require.Len(t, retriever.calls, 2)
+	assert.Contains(t, out, `"knowledge_unavailable":true`)
+	assert.Contains(t, out, `"partial":true`)
+	assert.Contains(t, out, `"unavailable_queries":1`)
+}
+
 func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(t *testing.T) {
 	chunkA := knowledge.KBChunk{
 		ChunkID:   "chunk-a",

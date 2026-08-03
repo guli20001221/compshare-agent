@@ -15,8 +15,6 @@
 !deploy/
 !deploy/conf/
 !deploy/conf/config.yaml
-!deploy/kb/
-!deploy/kb/**
 !deploy/migrations/
 !deploy/migrations/**
 !deploy/ssh_ops_harness/

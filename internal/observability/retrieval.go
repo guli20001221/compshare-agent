@@ -29,6 +29,13 @@ const (
 // guidance instead of refusing (FloorDroppedAll is still recorded for that turn,
 // so the floor activity stays queryable even though refusal_type is empty).
 func (t RetrievalTrace) DeriveRefusalType() string {
+	// A partial MCP outage makes corpus coverage indeterminate. Even if another
+	// query in the same turn completed empty, do not send the resulting merged
+	// trace down the corpus-gap remediation path; Unavailable carries the
+	// operational signal explicitly.
+	if t.Unavailable {
+		return ""
+	}
 	switch t.RefusedReason {
 	case "no_evidence":
 		if t.FloorDroppedAll {

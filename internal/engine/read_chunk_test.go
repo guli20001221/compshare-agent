@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -16,6 +18,32 @@ import (
 type chunkStoreRetriever struct {
 	scriptedKnowledgeRetriever
 	chunks map[string]knowledge.KBChunk
+}
+
+type remoteChunkStoreRetriever struct {
+	scriptedKnowledgeRetriever
+	chunks map[string]knowledge.KBChunk
+	reads  []remoteChunkRead
+	err    error
+}
+
+type remoteChunkRead struct {
+	searchID string
+	chunkIDs []string
+}
+
+func (r *remoteChunkStoreRetriever) ReadChunks(_ context.Context, searchID string, chunkIDs []string) ([]knowledge.KBChunk, error) {
+	r.reads = append(r.reads, remoteChunkRead{searchID: searchID, chunkIDs: append([]string(nil), chunkIDs...)})
+	if r.err != nil {
+		return nil, r.err
+	}
+	result := make([]knowledge.KBChunk, 0, len(chunkIDs))
+	for _, chunkID := range chunkIDs {
+		if chunk, ok := r.chunks[chunkID]; ok {
+			result = append(result, chunk)
+		}
+	}
+	return result, nil
 }
 
 func (r *chunkStoreRetriever) Chunk(chunkID string) (knowledge.KBChunk, bool) {
@@ -144,6 +172,51 @@ func TestReadChunk_NoChunkReaderIsUnavailable(t *testing.T) {
 	eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{})
 	out := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"c1"}}, noopStep))
 	assert.Contains(t, out["error"].(string), "知识库不可用")
+}
+
+func TestReadChunkRemoteUsesOnlyCurrentTurnSearchCapability(t *testing.T) {
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+			Enabled:  true,
+			SearchID: "current-search-id",
+			Hits: []knowledge.KBChunk{{
+				ChunkID: "visible", Title: "可见证据", Content: "摘要内容", SourceType: "faq",
+			}},
+		}}},
+		chunks: map[string]knowledge.KBChunk{
+			"visible": {ChunkID: "visible", Title: "可见证据", Content: "远程完整正文", ContentTruncated: true, SourceType: "faq"},
+			"hidden":  {ChunkID: "hidden", Title: "不可见证据", Content: "不得读取", SourceType: "faq"},
+		},
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "查询可见证据"}, noopStep)
+	result := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"visible", "hidden"}}, noopStep))
+	items := result["chunks"].([]any)
+	require.Len(t, items, 2)
+	assert.Equal(t, readChunkStatusRead, items[0].(map[string]any)["status"])
+	assert.Equal(t, "远程完整正文", items[0].(map[string]any)["content"])
+	assert.Equal(t, true, items[0].(map[string]any)["truncated"], "the model must know a remote full-body response was bounded")
+	assert.Equal(t, readChunkStatusSearchNeeded, items[1].(map[string]any)["status"])
+	assert.Equal(t, true, result["search_refresh_required"])
+	require.Len(t, retriever.reads, 1)
+	assert.Equal(t, "current-search-id", retriever.reads[0].searchID)
+	assert.Equal(t, []string{"visible"}, retriever.reads[0].chunkIDs)
+}
+
+func TestReadChunkRemoteExpiredCapabilityRequiresNewSearch(t *testing.T) {
+	retriever := &remoteChunkStoreRetriever{err: fmt.Errorf("%w: test", knowledge.ErrSearchCapabilityInvalid)}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.searchKnowledgeCapabilitiesThisTurn = map[string]string{"visible": "expired-search-id"}
+
+	result := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"visible"}}, noopStep))
+	item := result["chunks"].([]any)[0].(map[string]any)
+	assert.Equal(t, readChunkStatusSearchNeeded, item["status"])
+	assert.Equal(t, true, result["search_refresh_required"])
+	require.Len(t, retriever.reads, 1, "the reader gets one capability-bound request and never retries arbitrary IDs")
+	assert.Equal(t, "expired-search-id", retriever.reads[0].searchID)
 }
 
 // ReadChunk is advertised to the agent on the same read-only knowledge lane as

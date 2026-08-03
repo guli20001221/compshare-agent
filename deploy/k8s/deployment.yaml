@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compshare-agent
+  labels:
+    app: compshare-agent
+spec:
+  # The Feishu long-connection adapter runs beside the HTTP server and must
+  # never be duplicated during an update, so use a singleton recreate rollout.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: compshare-agent
+  template:
+    metadata:
+      labels:
+        app: compshare-agent
+    spec:
+      terminationGracePeriodSeconds: 45
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: compshare-agent
+          image: __IMAGE__
+          imagePullPolicy: Always
+          args: ["server"]
+          ports:
+            - name: http
+              containerPort: 7429
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: agent-home
+              mountPath: /home/compshare
+            - name: agent-tmp
+              mountPath: /tmp
+        # The current Feishu config reaches ws://127.0.0.1:7429, so keeping
+        # this adapter in the same Pod preserves the existing host deployment
+        # topology without exposing a second service.
+        - name: compshare-agent-feishu
+          image: __IMAGE__
+          imagePullPolicy: Always
+          args: ["feishu"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: feishu-home
+              mountPath: /home/compshare
+            - name: feishu-tmp
+              mountPath: /tmp
+      volumes:
+        - name: agent-home
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: agent-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: feishu-home
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: feishu-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compshare-agent
+  labels:
+    app: compshare-agent
+spec:
+  selector:
+    app: compshare-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  type: ClusterIP
+

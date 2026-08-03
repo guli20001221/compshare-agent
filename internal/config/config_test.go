@@ -885,6 +885,9 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
       - diagnose-billing
   retrieval:
     knowledge_retrieval: curated
+    mcp_url: http://compshare-kb.example/mcp
+    mcp_bearer_token: read-only-test-token
+    mcp_timeout_ms: 12000
     mode: qwen3_rrf
     hybrid_timeout_ms: 8000
   trace:
@@ -902,6 +905,9 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
 	assert.Equal(t, "qwen3_rrf", cfg.Agent.Retrieval.Mode)
+	assert.Equal(t, "http://compshare-kb.example/mcp", cfg.Agent.Retrieval.MCPURL)
+	assert.Equal(t, "read-only-test-token", cfg.Agent.Retrieval.MCPBearerToken)
+	assert.Equal(t, 12000, cfg.Agent.Retrieval.MCPTimeoutMS)
 	assert.Equal(t, 8000, cfg.Agent.Retrieval.HybridTimeoutMS)
 	require.NotNil(t, cfg.Agent.Trace.Enabled)
 	assert.True(t, *cfg.Agent.Trace.Enabled)
@@ -917,7 +923,10 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
-			Mode: "bm25_only", // YAML string wins
+			Mode:           "bm25_only", // YAML string wins
+			MCPURL:         "http://kb.example/mcp",
+			MCPBearerToken: "read-only-test-token",
+			MCPTimeoutMS:   9000,
 			// KnowledgeRetrieval omitted → base env fallback
 		},
 		Trace: TraceConfig{Sink: "file"},
@@ -940,6 +949,9 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
+	assert.Equal(t, "http://kb.example/mcp", getenv("COMPSHARE_KB_MCP_URL"), "remote knowledge endpoint comes from YAML")
+	assert.Equal(t, "read-only-test-token", getenv("COMPSHARE_KB_MCP_BEARER_TOKEN"), "read-only MCP token comes from YAML")
+	assert.Equal(t, "9000", getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"), "remote knowledge timeout comes from YAML")
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")
 	assert.Equal(t, "file", getenv("COMPSHARE_TRACE_SINK"))
 	assert.Equal(t, "resolved-llm-key", getenv("LLM_API_KEY"), "resolved secret exposed for RAG clients")

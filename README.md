@@ -22,7 +22,8 @@ go build -o compshare-agent ./cmd
 ## 部署
 
 生产交付物是一个自包含 Docker 镜像，内含 Go 服务、生产配置、Python 3.13、Claude Agent SDK、
-Claude CLI、知识库和 SSH-ops harness。生产节点是 Docker 1.12.6，必须用专用发布命令生成
+Claude CLI 和 SSH-ops harness；知识检索通过 `deploy/conf/config.yaml` 中的
+`agent.retrieval.mcp_url` 访问独立的 `compshare-kb` 服务。旧 Docker 1.12.6 宿主机仍须用专用发布命令生成
 `linux/amd64` Docker schema-v2/gzip 镜像：
 
 ```bash
@@ -32,6 +33,10 @@ make docker-push-legacy IMAGE=registry.example.com/compshare/compshare-agent:<�
 构建、目标机兼容性检查、主服务/飞书启动方式见
 [`deploy/docker/README.md`](deploy/docker/README.md)。生产配置会进入镜像层，私有仓库的 pull 权限
 按生产凭据权限管理。
+
+GitLab 持续交付遵循 `compshare-kb` 的三阶段约定：`main` 分支先执行测试和静态检查，再由
+Kaniko 推送提交短 SHA 与 `latest` 两个镜像标签；生产部署必须在 GitLab 中手动确认。Kubernetes
+清单、部署前置条件和所需 CI 变量见 [`deploy/k8s/README.md`](deploy/k8s/README.md)。
 
 旧的宿主机/ally 部署入口仍保留：
 
