@@ -3,9 +3,11 @@
 # Docker 1.12.6 is only the legacy production *runtime*. BuildKit/buildx and
 # GitLab's Kaniko runner both build this image, so keep the Dockerfile free of
 # BuildKit-only RUN mounts.
-ARG GO_IMAGE=golang:1.25-bookworm
-ARG NODE_IMAGE=node:22-bullseye-slim
-ARG PYTHON_IMAGE=python:3.13-slim-bullseye
+# Use the internal registry mirrors that the c5 Kaniko runner can reach.
+# Docker Hub is not routable from that build network.
+ARG GO_IMAGE=uhub.service.ucloud.cn/ucompshare-job/golang:1.25-alpine
+ARG NODE_IMAGE=uhub.service.ucloud.cn/ucompshare-job/node:22-alpine
+ARG PYTHON_IMAGE=uhub.service.ucloud.cn/base-images/python:3.13-slim
 
 FROM ${GO_IMAGE} AS go-builder
 ARG GOPROXY=https://goproxy.cn,direct
@@ -30,11 +32,9 @@ RUN npm install --global --omit=dev --no-audit --no-fund \
     && claude --version
 
 
-# Bullseye deliberately keeps glibc older than Bookworm.  Docker 1.12's 2016
-# default seccomp profile can return EPERM for newer syscalls before an old host
-# kernel gets a chance to return ENOSYS; avoiding the newer userspace materially
-# reduces that compatibility surface.  A real run on the target engine remains
-# a release gate (see deploy/docker/README.md).
+# The runtime base is mirrored in UHub so the production build does not depend
+# on Docker Hub egress. A real run on the target engine remains a release gate
+# (see deploy/docker/README.md).
 FROM ${PYTHON_IMAGE} AS runtime
 ARG CLAUDE_CODE_VERSION=2.1.218
 ARG VCS_REF=unknown
