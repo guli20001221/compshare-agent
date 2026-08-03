@@ -17,6 +17,8 @@ func exactRecommendedImageSnapshot() *deployment.ImageCatalogSnapshot {
 	return deployment.NewImageCatalogSnapshot(true, []deployment.ImageCatalogEntry{{
 		ID:                exactRecommendedImageID,
 		Name:              exactRecommendedImageName,
+		FamilyID:          "group-facefusion",
+		FamilyName:        "FaceFusion",
 		VersionName:       "v3.6.1",
 		Source:            "community",
 		Status:            "Available",
@@ -162,8 +164,9 @@ func TestGuidedCreatePreselectsAndCreatesTheExactRecommendedImageOutsideBrowsePa
 	executor := formMockExecutor()
 	executor.results["DescribeCommunityImages"] = unrelatedCommunityPage()
 	var (
-		imageCards int
-		imageValue string
+		imageCards   int
+		imageValue   string
+		imageOptions []ConfirmFormOption
 	)
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
@@ -172,8 +175,9 @@ func TestGuidedCreatePreselectsAndCreatesTheExactRecommendedImageOutsideBrowsePa
 			imageCards++
 			imageValue = field.Value
 			require.NotEmpty(t, field.Options)
+			imageOptions = append([]ConfirmFormOption(nil), field.Options...)
 			require.Equal(t, exactRecommendedImageID, field.Options[0].Value,
-				"推荐镜像必须排在卡片首位，即使它不在普通浏览页中")
+				"推荐镜像必须是该系列确认卡的默认项")
 		}
 		return ConfirmResolution{Confirmed: true}
 	})
@@ -198,6 +202,9 @@ func TestGuidedCreatePreselectsAndCreatesTheExactRecommendedImageOutsideBrowsePa
 	require.True(t, result.Success, result.Message)
 	assert.Equal(t, 1, imageCards)
 	assert.Equal(t, exactRecommendedImageID, imageValue)
+	require.Len(t, imageOptions, 1,
+		"when the family lookup cannot return siblings, the exact verified recommendation is the only safe option")
+	assert.Equal(t, exactRecommendedImageID, imageOptions[0].Value)
 	createCall, ok := findExecutorCall(executor.calls, "CreateCompShareInstance")
 	require.True(t, ok)
 	assert.Equal(t, exactRecommendedImageID, createCall.args["CompShareImageId"])
@@ -208,7 +215,7 @@ func TestGuidedCreateShowsAllMatchingVersionsWhenUserCopiesOnlyTheName(t *testin
 	executor := formMockExecutor()
 	executor.results["DescribeCommunityImages"] = map[string]any{
 		"CompshareImageGroup": []any{map[string]any{
-			"ImageName": "FaceFusion",
+			"GroupId": "group-facefusion", "ImageName": "FaceFusion",
 			"Data": []any{
 				map[string]any{
 					"CompShareImageId":  exactRecommendedImageID,
@@ -235,7 +242,7 @@ func TestGuidedCreateShowsAllMatchingVersionsWhenUserCopiesOnlyTheName(t *testin
 		require.NotNil(t, form)
 		if field := form.Field("ImageId"); field != nil && field.Editable {
 			imageOptions = append([]ConfirmFormOption(nil), field.Options...)
-			return ConfirmResolution{Confirmed: false}
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageId": olderID}}
 		}
 		return ConfirmResolution{Confirmed: true}
 	})
@@ -258,12 +265,14 @@ func TestGuidedCreateShowsAllMatchingVersionsWhenUserCopiesOnlyTheName(t *testin
 	}, WithReferenceData(ref))
 
 	require.NoError(t, err)
-	require.False(t, result.Success)
+	require.True(t, result.Success, result.Message)
 	require.Len(t, imageOptions, 2,
 		"只复制镜像名称时，卡片应展示所有匹配版本，而不是让 Agent 暗选一个版本")
 	assert.Equal(t, exactRecommendedImageID, imageOptions[0].Value,
 		"经核验的历史推荐可以作为默认项，但仍需用户确认")
 	assert.Equal(t, olderID, imageOptions[1].Value)
-	_, created := findExecutorCall(executor.calls, "CreateCompShareInstance")
-	assert.False(t, created, "测试在镜像卡片取消，不能创建或计费")
+	createCall, created := findExecutorCall(executor.calls, "CreateCompShareInstance")
+	require.True(t, created)
+	assert.Equal(t, olderID, createCall.args["CompShareImageId"],
+		"the downstream capacity, price and create path must use the version the user confirmed")
 }

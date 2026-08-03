@@ -116,6 +116,7 @@ func TestParseCommunityImageEntries_GroupNameIsDisplayName(t *testing.T) {
 	result := map[string]any{
 		"CompshareImageGroup": []any{
 			map[string]any{
+				"GroupId":   "group-stable-diffusion",
 				"ImageName": "Stable Diffusion WebUI",
 				"Data": []any{
 					map[string]any{
@@ -143,6 +144,34 @@ func TestParseCommunityImageEntries_GroupNameIsDisplayName(t *testing.T) {
 	// per-version "SD WebUI v1".
 	if entries[0].Name != "Stable Diffusion WebUI" || entries[1].Name != "Stable Diffusion WebUI" {
 		t.Errorf("group name must be the display name for every version row, got %q / %q", entries[0].Name, entries[1].Name)
+	}
+	if entries[0].FamilyID != "group-stable-diffusion" || entries[1].FamilyID != "group-stable-diffusion" {
+		t.Errorf("every version must retain its upstream family id, got %q / %q", entries[0].FamilyID, entries[1].FamilyID)
+	}
+}
+
+func TestGroupImageFamilies_PreservesCommunityHierarchyAndPlatformSingletons(t *testing.T) {
+	entries := []ImageCatalogEntry{
+		{ID: "community-v2", Name: "LiveTalking", FamilyID: "group-live", FamilyName: "LiveTalking", Source: "community", VersionName: "v2"},
+		{ID: "community-v1", Name: "LiveTalking", FamilyID: "group-live", FamilyName: "LiveTalking", Source: "community", VersionName: "v1"},
+		// IDs are source-local, so an otherwise identical id from platform must
+		// remain a distinct singleton beside the community version.
+		{ID: "community-v2", Name: "PyTorch 2.9", Source: "platform"},
+		{ID: "platform-ubuntu", Name: "Ubuntu 22.04", Source: "platform"},
+	}
+
+	families := GroupImageFamilies(entries)
+	if len(families) != 3 {
+		t.Fatalf("want 3 families, got %#v", families)
+	}
+	if families[0].Name != "LiveTalking" || len(families[0].Variants) != 2 {
+		t.Errorf("community versions must remain one family, got %#v", families[0])
+	}
+	if families[1].Name != "PyTorch 2.9" || len(families[1].Variants) != 1 {
+		t.Errorf("flat platform rows must be singleton families, got %#v", families[1])
+	}
+	if families[0].Key == families[1].Key {
+		t.Errorf("family keys must remain source-scoped, got %q", families[0].Key)
 	}
 }
 

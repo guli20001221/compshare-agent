@@ -41,6 +41,11 @@ type ImageCatalogSnapshot struct {
 type ImageCatalogEntry struct {
 	ID   string
 	Name string
+	// FamilyID is the source-local identifier of the image family. Community
+	// catalogs expose it as CompshareImageGroup.GroupId. Sources without a family
+	// relationship deliberately leave it empty; they are represented as singleton
+	// families keyed by their concrete image id.
+	FamilyID string
 	// FamilyName is the community group (series) name — the recognizable name a user
 	// refers to ("InfiniteTalk"). "" for platform rows, which carry no group.
 	FamilyName string
@@ -93,6 +98,79 @@ func (e ImageCatalogEntry) DisplayLabel() string {
 		return version
 	}
 	return name + " · " + version
+}
+
+// FamilyKey is the stable, source-scoped key used to keep a family selection
+// distinct from a concrete image-version selection. A source that does not publish
+// a family relationship intentionally gets one singleton family per image id.
+func (e ImageCatalogEntry) FamilyKey() string {
+	source := strings.ToLower(strings.TrimSpace(e.Source))
+	if source == "" {
+		source = "unknown"
+	}
+	if id := strings.TrimSpace(e.FamilyID); id != "" {
+		return source + ":family:" + strings.ToLower(id)
+	}
+	if name := strings.TrimSpace(e.FamilyName); name != "" {
+		return source + ":family-name:" + strings.ToLower(name)
+	}
+	return source + ":image:" + strings.ToLower(strings.TrimSpace(e.ID))
+}
+
+// FamilyLabel is the user-facing name of the image family. It deliberately omits
+// a version: a version is a later, concrete choice made from the family.
+func (e ImageCatalogEntry) FamilyLabel() string {
+	if name := strings.TrimSpace(e.FamilyName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(e.Name)
+}
+
+// ImageFamily is a source-provided image family and the concrete versions that
+// remain viable for the current request. It gives callers a common hierarchy for
+// grouped community responses and flat platform responses alike.
+type ImageFamily struct {
+	Key      string
+	Name     string
+	Source   string
+	Variants []ImageCatalogEntry
+}
+
+// GroupImageFamilies preserves the incoming candidate order while grouping concrete
+// image rows into their user-facing families. It never guesses that two flat rows
+// belong together: without an upstream family identity, each image remains a
+// singleton family.
+func GroupImageFamilies(entries []ImageCatalogEntry) []ImageFamily {
+	indexByKey := map[string]int{}
+	seenVariant := map[string]bool{}
+	var out []ImageFamily
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		key := entry.FamilyKey()
+		// Concrete ids are only unique inside their source. Keeping the source in
+		// the dedupe key makes this helper safe for callers that compare catalogs
+		// from more than one source in the future.
+		variantKey := strings.ToLower(strings.TrimSpace(entry.Source)) + ":" + strings.ToLower(strings.TrimSpace(entry.ID))
+		if seenVariant[variantKey] {
+			continue
+		}
+		seenVariant[variantKey] = true
+
+		idx, ok := indexByKey[key]
+		if !ok {
+			idx = len(out)
+			indexByKey[key] = idx
+			out = append(out, ImageFamily{
+				Key:    key,
+				Name:   entry.FamilyLabel(),
+				Source: entry.Source,
+			})
+		}
+		out[idx].Variants = append(out[idx].Variants, entry)
+	}
+	return out
 }
 
 // SoftwareFacts mirrors upstream SoftwareDetail (pkg/api describe_compshare_images.go
@@ -245,6 +323,7 @@ func ParseCommunityImageEntries(result map[string]any) []ImageCatalogEntry {
 			continue
 		}
 		groupName := asString(group, "ImageName")
+		groupID := asString(group, "GroupId")
 		data, ok := group["Data"].([]any)
 		if !ok {
 			continue
@@ -267,8 +346,17 @@ func ParseCommunityImageEntries(result map[string]any) []ImageCatalogEntry {
 			// same family, so capture the version identity first: upstream's VersionName
 			// if it sent one, else the row's own name when it actually differs from the
 			// family name. Without this the picker shows N identical labels.
+			if groupID != "" {
+				e.FamilyID = groupID
+			}
 			if groupName != "" {
 				e.FamilyName = groupName
+				if e.FamilyID == "" {
+					// Some responses omit GroupId. The group name is still the only
+					// upstream family identity available, so retain it rather than
+					// flattening its versions into unrelated singletons.
+					e.FamilyID = groupName
+				}
 				if e.VersionName == "" && e.Name != "" && !strings.EqualFold(e.Name, groupName) {
 					e.VersionName = e.Name
 				}
