@@ -4203,6 +4203,13 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		// model never speaks again — has to be able to say so.
 		e.committedWriteRepliesThisTurn = append(e.committedWriteRepliesThisTurn,
 			committedWriteFallbackReply(action, finalParams, result))
+		// Creating a custom image is asynchronous upstream: Create returns the
+		// image id after the record enters Making, not after it becomes usable.
+		// Keep this deterministic so a narration round cannot turn "started" into
+		// an incorrect claim that the image is already available.
+		if action == "CreateCustomImageWorkflow" {
+			return finalReplyPrefix + customImageWorkflowReply(result)
+		}
 		// Successful no-return-data or password-bearing workflows return a
 		// deterministic final reply so the engine SKIPS the post-workflow LLM
 		// narration round. That extra model call can stall; for
@@ -4307,10 +4314,29 @@ func committedWriteFallbackReply(action string, params map[string]any, result *w
 	if reply, ok := deterministicWorkflowReply(action, params); ok {
 		return reply
 	}
+	if action == "CreateCustomImageWorkflow" {
+		return customImageWorkflowReply(result)
+	}
 	if ids := committedInstanceIDs(result); len(ids) > 0 {
 		return fmt.Sprintf("✅ 已创建实例 %s。", strings.Join(ids, "、"))
 	}
 	return fmt.Sprintf("✅ %s已执行成功。", friendlyActionName(action))
+}
+
+// customImageWorkflowReply describes the server-side state transition actually
+// guaranteed by CreateCompShareCustomImage. Upstream creates the image record in
+// Making and advances it asynchronously, so this must never call a successful
+// create a completed or usable image.
+func customImageWorkflowReply(result *workflow.Result) string {
+	imageID := ""
+	if result != nil && result.Data != nil {
+		imageID, _ = result.Data["CompShareImageId"].(string)
+		imageID = strings.TrimSpace(imageID)
+	}
+	if imageID != "" {
+		return fmt.Sprintf("✅ 已发起自制镜像制作（ID: %s）。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。", imageID)
+	}
+	return "✅ 已发起自制镜像制作。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。"
 }
 
 // committedWriteNarrationFailedNote tells the user the missing half explicitly.

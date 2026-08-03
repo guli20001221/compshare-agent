@@ -357,8 +357,12 @@ func TestDescribeCompShareInstanceDoesNotExposeWithoutGpu(t *testing.T) {
 func TestCustomImageWorkflowIsUserFacingButRawImageCreateIsNot(t *testing.T) {
 	descriptions := registryDescriptions()
 
-	mustContain(t, descriptions["CreateCustomImageWorkflow"], "从已有实例")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "从实例")
 	mustContain(t, descriptions["CreateCustomImageWorkflow"], "自制镜像")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "确认卡")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "Making")
+	mustContain(t, descriptions["CreateCustomImageWorkflow"], "不会关闭源实例")
+	mustNotContain(t, descriptions["CreateCustomImageWorkflow"], "制作前需停机")
 	if _, ok := descriptions["CreateCompShareCustomImage"]; ok {
 		t.Fatal("raw CreateCompShareCustomImage must not be exposed as a user-facing tool")
 	}

@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"fmt"
-	"time"
 )
 
 func CreateCustomImageDef() *Definition {
@@ -12,8 +11,6 @@ func CreateCustomImageDef() *Definition {
 			stepQuerySourceInstanceForCustomImage(),
 			stepQuerySupportZonesForCustomImage(),
 			stepConfirmCreateCustomImage(),
-			stepStopSourceForCustomImage(),
-			stepWaitSourceStoppedForCustomImage(),
 			stepCreateCustomImage(),
 			stepGetCustomImageCreateProgress(),
 		},
@@ -110,55 +107,9 @@ func stepConfirmCreateCustomImage() Step {
 			if description := paramStr(wfCtx.Params, "Description", ""); description != "" {
 				summary["Description"] = description
 			}
-			if sourceCustomImageNeedsStop(wfCtx.Result("查询源实例")) {
-				summary["warning"] = "将先关闭这台普通虚机，待关机完成后创建自制镜像；制作完成后实例保持关机。"
-			} else {
-				summary["warning"] = "将基于该实例创建自制镜像。容器来源实例会保持运行。"
-			}
+			summary["warning"] = "将基于该实例发起自制镜像制作，不会关闭源实例。镜像初始状态为 Making，变为 Available 后才能用于创建实例、共享或克隆。"
 			return summary, nil
 		},
-	}
-}
-
-func stepStopSourceForCustomImage() Step {
-	return Step{
-		Name: "关闭源实例",
-		Type: StepToolCall,
-		Tool: "StopCompShareInstance",
-		SkipIf: func(wfCtx *Context) (bool, error) {
-			return !sourceCustomImageNeedsStop(wfCtx.Result("查询源实例")), nil
-		},
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			args := map[string]any{"UHostId": paramStr(wfCtx.Params, "UHostId", "")}
-			return addCustomImagePlacementArgs(args, wfCtx)
-		},
-	}
-}
-
-func stepWaitSourceStoppedForCustomImage() Step {
-	return Step{
-		Name: "等待源实例关机",
-		Type: StepToolCall,
-		Tool: "DescribeCompShareInstance",
-		SkipIf: func(wfCtx *Context) (bool, error) {
-			return !sourceCustomImageNeedsStop(wfCtx.Result("查询源实例")), nil
-		},
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			return map[string]any{"UHostIds": []any{paramStr(wfCtx.Params, "UHostId", "")}}, nil
-		},
-		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
-			switch state := extractInstanceState(result); state {
-			case "Stopped":
-				return CheckPassed()
-			case "Running", "Stopping":
-				return CheckPending("已发起关机，但实例在等待时限内仍未停止；未创建镜像，请稍后重试。")
-			case "":
-				return CheckFailed("关机后未能重新查询到源实例；未创建镜像。")
-			default:
-				return CheckFailed(fmt.Sprintf("源实例关机后进入了状态 %s；未创建镜像。", state))
-			}
-		},
-		Poll: &PollPolicy{Interval: 2 * time.Second, Timeout: 2 * time.Minute},
 	}
 }
 
@@ -244,10 +195,6 @@ func sourceCustomImagePlacement(result, supportZones map[string]any) (region, zo
 
 func sourceCustomImageRequiresRunning(result map[string]any) bool {
 	return isPodInstanceResult(result) || isContainerInstanceResult(result)
-}
-
-func sourceCustomImageNeedsStop(result map[string]any) bool {
-	return !sourceCustomImageRequiresRunning(result) && extractInstanceState(result) == "Running"
 }
 
 func addCustomImagePlacementArgs(args map[string]any, wfCtx *Context) (map[string]any, error) {
