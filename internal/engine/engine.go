@@ -1813,7 +1813,7 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
-				Content:    verbatimBlockObservation,
+				Content:    agentToolObservation(tc.Function.Name, fmt.Sprintf(`{"observation":%q,"verbatim_delivered":true}`, verbatimBlockObservation)),
 				ToolCallID: tc.ID,
 			})
 			continue
@@ -1845,6 +1845,10 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 			return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
 		}
 
+		// Only this normal-result path can be supplied to a later Agent round.
+		// Keep every such observation on the P2 control-plane contract even when
+		// an older handler still returns its native JSON payload.
+		toolResult = agentToolObservation(tc.Function.Name, toolResult)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:       openai.ChatMessageRoleTool,
 			Content:    toolResult,
@@ -2800,7 +2804,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
 			Message: message,
 		})
-		return message
+		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
 	}
 	if repeatableAgentTool(action) {
 		if e.toolResultsByCallThisTurn == nil {
@@ -2852,7 +2856,13 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		// rejected; the tool-arg contract is unchanged.
 		errClass := fmt.Sprintf("parameter parse error: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass})
-		return errClass + "。工具参数必须是合法的 JSON 对象，请按该工具的参数结构仅输出 JSON 后重新调用。"
+		return tools.MarshalAgentToolResult(tools.AgentToolNeedsInput(
+			action,
+			nil,
+			"INVALID_TOOL_ARGUMENTS",
+			"工具参数必须是合法的 JSON 对象，请按该工具的参数结构重新调用。",
+			tools.AgentToolMeta{SourceStatus: "argument_parse_error"},
+		))
 	}
 
 	// The local GPU knowledge tools (GetGPUSpecs / GetGPURecommendation /
@@ -2925,7 +2935,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	if workflow.IsWorkflowTool(action) {
 		msg := "write workflows are unavailable until a verified ActionProposal is accepted"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return friendlyToolResultJSON(msg)
+		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "WORKFLOW_DIRECT_CALL_REFUSED", msg, tools.AgentToolMeta{}))
 	}
 
 	// In-instance SSH diagnosis lane → its own dispatch, BEFORE the diagnosis-chain
@@ -2978,7 +2988,9 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		}
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
-			return friendlyToolResultJSON(msg)
+			result := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
+			result.Error.Message = msg
+			return tools.MarshalAgentToolResult(result)
 		}
 		if errors.Is(err, tools.ErrDestructiveAction) {
 			msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
@@ -3008,7 +3020,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			errMsg += "\n建议：" + apiErr.Hint
 		}
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg})
-		return errMsg
+		return tools.MarshalAgentToolResult(tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{}))
 	}
 
 	// ReAct fallback truncation for full-account list dumps. The legacy

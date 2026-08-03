@@ -83,6 +83,7 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 	}
 	sections = append(sections, PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
 		PromptSection{ID: "behavior", Text: segmentCentralAgentBehavior},
+		PromptSection{ID: "tool_observation_contract", Text: segmentToolObservationContract},
 		PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy},
 		PromptSection{ID: "reply_style", Text: segmentCentralAgentReplyStyle},
 	)

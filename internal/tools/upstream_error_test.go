@@ -40,23 +40,15 @@ func TestUpstreamAPIError_ErrorStringByteIdentical(t *testing.T) {
 	}
 }
 
-// hintedCodes are the upstream RetCodes that carry an actionable recovery hint,
-// pinned to the upstream gateway errors/code.go (audited 2026-06-26).
-var hintedCodes = []int{
-	120, 150,
-	210, 220, 230, 240, 280,
-	520,
-	8010, 8017, 8027, 8039, 8052, 8067, 8090, 8095, 8097, 8102, 8107, 8108, 8116, 8117,
-	8226, 8314, 8315, 8333, 8350, 8351, 8357, 8360, 8366, 8367, 8372, 8374, 8401, 8421,
-	8433, 8434, 8436, 8438, 8441, 8442, 8443, 8445, 8498, 8510, 8520, 8580,
-	8903, 8905, 8917, 8918, 8919, 8957, 8964, 8968,
-	226601, 226602, 226603, 226604, 226605, 226606, 226607, 226608, 226609, 226611, 226612, 226618, 226619, 226620,
-}
-
-func TestRetCodeHint_KnownAndUnknown(t *testing.T) {
-	for _, code := range hintedCodes {
-		if h := retCodeHint(code); h == "" {
+func TestRetCodeGuidance_KnownAndUnknown(t *testing.T) {
+	for code, guidance := range retCodeGuidanceByCode {
+		if guidance.Hint == "" {
 			t.Errorf("expected a hint for RetCode %d", code)
+		}
+		switch guidance.Disposition {
+		case AgentToolStatusRetryLater, AgentToolStatusChooseAlternative, AgentToolStatusFailed:
+		default:
+			t.Errorf("RetCode %d has invalid disposition %q", code, guidance.Disposition)
 		}
 	}
 	if h := retCodeHint(0); h != "" {
@@ -73,8 +65,8 @@ func TestRetCodeHint_KnownAndUnknown(t *testing.T) {
 // never carry the raw upstream tokens or they could reach the reply.
 func TestRetCodeHint_NoForbiddenTokens(t *testing.T) {
 	forbidden := []string{"RetCode=230", "RetCode", "not available", "CompShareImageId", "zone_id", "az_group"}
-	for _, code := range hintedCodes {
-		h := retCodeHint(code)
+	for code, guidance := range retCodeGuidanceByCode {
+		h := guidance.Hint
 		for _, tok := range forbidden {
 			if strings.Contains(h, tok) {
 				t.Errorf("hint for %d contains forbidden token %q: %s", code, tok, h)
@@ -110,6 +102,24 @@ func TestRetCodeHint_KeyCodeMeanings(t *testing.T) {
 			if !strings.Contains(h, want) {
 				t.Errorf("hint for %d = %q, want substring %q", c.code, h, want)
 			}
+		}
+	}
+}
+
+func TestRetCodeGuidanceCoversThePreviouslyDriftedCodes(t *testing.T) {
+	for code, want := range map[int]AgentToolStatus{
+		240:    AgentToolStatusFailed,
+		8226:   AgentToolStatusFailed,
+		8351:   AgentToolStatusChooseAlternative,
+		226606: AgentToolStatusFailed,
+		226619: AgentToolStatusRetryLater,
+	} {
+		guidance, ok := retCodeGuidanceByCode[code]
+		if !ok {
+			t.Fatalf("RetCode %d must remain in the canonical guidance table", code)
+		}
+		if guidance.Disposition != want {
+			t.Fatalf("RetCode %d disposition=%q want %q", code, guidance.Disposition, want)
 		}
 	}
 }
