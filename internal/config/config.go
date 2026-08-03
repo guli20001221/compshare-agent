@@ -157,7 +157,11 @@ const DefaultMaxSessionTurns = 20
 // A plain literal DSN is passed through unchanged.
 // It is optional at Load time so CLI users are not forced to set the env var.
 type MySQLConfig struct {
-	DSN             string        `yaml:"dsn"`
+	DSN string `yaml:"dsn"`
+	// HostOverride replaces only the host component of a PostgreSQL URL DSN.
+	// It lets a deployment choose its reachable database address without
+	// duplicating the DSN credentials in another config field.
+	HostOverride    string        `yaml:"host_override"`
 	MaxOpenConns    int           `yaml:"max_open_conns"`
 	MaxIdleConns    int           `yaml:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
