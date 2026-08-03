@@ -253,7 +253,7 @@ RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不�
 - **接入** — CLI 单进程单 Engine;HTTP `POST /`(Action 路由)+ `GET /healthz`;WebSocket(`internal/httpapi/ws.go` / `ws_durable.go`,`CreateCSAgentWS`,durable 变体持久化到 PostgreSQL)。身份从请求 body 取(`top_organization_id` / `organization_id` / `request_uuid`,snake_case,网关注入),不走 header。Phase-1 Actions:`GetSession` / `CreateSession` / `Chat`(SSE)/ `GetMeta` / `Feedback`。
 - **会话** — HTTP 路径用 `internal/agentpool` 的 LRU 池(200 / 30min idle)维护 per-session Engine,miss 时从 PostgreSQL 经 `RehydrateHistory` 重建历史;同一会话并发请求串行化。
 - **持久化** — PostgreSQL(`database/sql` + `lib/pq`;从 MySQL/TiDB 迁移,`store.OpenMySQL` 符号、`mysql` 配置键、`MYSQL_DSN` 环境变量名为兼容保留但连的是 postgres)。`messages` 每轮 INSERT 两次(用户即时、assistant 占位)、SSE done 时 UPDATE 一次,不逐 token 写。DDL 由 ops 跑,不是二进制。
-- **配置** — YAML(`deploy/conf/config.yaml`),typed 字段在 `agent.features` / `agent.retrieval` / `agent.trace`(见 `internal/config/runtime.go`);不再走 `.env` / `*.example`。
+- **配置** — YAML(`deploy/conf/config.local.yaml` 加 `config.prod.yaml` 覆盖),typed 字段在 `agent.features` / `agent.retrieval` / `agent.trace`(见 `internal/config/runtime.go`);不再走 `.env` / `*.example`。
 - **凭证** — 生产用 STS AssumeRole 换临时 token,本地开发用静态 AK / SK 直接签名。`SecurityToken` 须先进签名参数再算 HMAC-SHA1。
 
 ## 12. 未来方向

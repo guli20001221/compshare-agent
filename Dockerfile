@@ -70,7 +70,8 @@ COPY --from=claude-cli \
 
 WORKDIR $APP_HOME
 COPY --from=go-builder /out/compshare-agent ./compshare-agent
-COPY deploy/conf/config.yaml ./deploy/conf/config.yaml
+COPY deploy/conf/config.local.yaml ./deploy/conf/config.local.yaml
+COPY deploy/conf/config.prod.yaml ./deploy/conf/config.prod.yaml
 COPY deploy/migrations ./deploy/migrations
 COPY deploy/ssh_ops_harness ./deploy/ssh_ops_harness
 
@@ -100,5 +101,5 @@ STOPSIGNAL SIGTERM
 
 # tini is inside the image because Docker 1.12 predates the deployment's desired
 # init behavior and this service creates Python -> Claude CLI process trees.
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/compshare-agent/compshare-agent", "--config", "/opt/compshare-agent/deploy/conf/config.yaml"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/compshare-agent/compshare-agent", "--config", "/opt/compshare-agent/deploy/conf/config.prod.yaml"]
 CMD ["server"]

@@ -278,7 +278,6 @@ agent:
     # The c5 production cluster reaches PostgreSQL through its IPv6 address.
     # Keep credentials, database, and query parameters in dsn; only this host
     # is deployment-specific.
-    host_override: "2003:da8:2004:1000:0a3c:7623:2712:f9c0"
     max_open_conns: 20
     max_idle_conns: 5
     conn_max_lifetime: "1h"

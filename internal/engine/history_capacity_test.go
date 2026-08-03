@@ -57,7 +57,7 @@ func TestHistoryCeilingClearsARealAgentLoopSession(t *testing.T) {
 // A ceiling that overflows it turns a memory fix into rate-limit rejections.
 func TestHistoryCeilingStaysUnderThePerTurnTokenCap(t *testing.T) {
 	const (
-		maxTokensPerTurn      = 200_000 // deploy/conf/config.yaml agent.rate_limit
+		maxTokensPerTurn      = 200_000 // deploy/conf/config.prod.yaml agent.rate_limit
 		approxTokensPerMsg    = 675     // 27K/40, the estimate the old comment itself used
 		approxSystemPromptTok = 7_000   // measured: 14,744 bytes of CJK
 	)

@@ -26,7 +26,7 @@ $secretPatterns = @(
 )
 
 $allowedSecretFiles = @(
-    'deploy/conf/config.yaml'
+    'deploy/conf/config.local.yaml'
 )
 
 function IsAllowedSecretFile($path) {

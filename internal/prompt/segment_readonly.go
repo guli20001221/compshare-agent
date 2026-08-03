@@ -18,7 +18,7 @@ const segmentReadOnlyBoundaryWithInstanceRepair = `## 当前只读边界
 //
 // The lane is authorized by agent.ssh_ops.allow_writes, which is independent of the platform mutating
 // gate — but the only sentence naming the lane lived inside the boundary above, and builder skips that
-// whole section when mutating tools are on. deploy/conf/config.yaml ships mutating_tools: true with
+// whole section when mutating tools are on. deploy/conf/config.prod.yaml ships mutating_tools: true with
 // ssh_ops.enabled: false, so the gap is not live yet: it fires on the first deployment that turns the
 // lane on, which is exactly what shipping it means. The fix for the measured "我目前没有…权限，无法替你
 // 进实例修复" refusal would have reached read-only deployments only. The lane's own test asserted that

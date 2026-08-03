@@ -45,7 +45,7 @@ func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
 // The assertion above is one-sided: it checks that no read-only boundary LEAKS into mutating mode,
 // and never checks that the lane is still described there. It isn't. The sentence naming the lane
 // lives inside the read-only boundary, and that whole section is skipped when mutating tools are on.
-// deploy/conf/config.yaml ships mutating_tools: true with ssh_ops.enabled: false, so this is latent
+// deploy/conf/config.prod.yaml ships mutating_tools: true with ssh_ops.enabled: false, so this is latent
 // rather than live — and it fires on the first deployment that enables the lane, i.e. on rollout. The
 // fix for the measured "我目前没有…权限，无法替你进实例修复" refusal was wired into read-only mode only.
 //

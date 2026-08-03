@@ -76,7 +76,7 @@ func TestCreateCustomImageOverRealHTTP(t *testing.T) {
 	require.NoError(t, os.Chdir(root))
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
 
-	cfg, err := config.Load(filepath.Join(root, "deploy", "conf", "config.yaml"))
+	cfg, err := config.Load(filepath.Join(root, "deploy", "conf", "config.local.yaml"))
 	require.NoError(t, err)
 	require.NotEmpty(t, cfg.Agent.LLM.APIKey, "real Agent acceptance needs the configured model key")
 	if project := strings.TrimSpace(*customImageHTTPProject); project != "" {

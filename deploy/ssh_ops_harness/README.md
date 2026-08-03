@@ -6,7 +6,7 @@
 
 ## 生产配置
 
-`deploy/conf/config.yaml` 已按 ModelVerse Anthropic 协议直连，并固定到生产镜像内的路径：
+`deploy/conf/config.local.yaml` 已按 ModelVerse Anthropic 协议直连，并被 `config.prod.yaml` 继承到生产镜像内：
 
 ```yaml
   ssh_ops:

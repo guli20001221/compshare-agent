@@ -12,7 +12,7 @@ import (
 var configPath string
 
 const (
-	defaultConfigPath = "deploy/conf/config.yaml"
+	defaultConfigPath = "deploy/conf/config.local.yaml"
 )
 
 var rootCmd = &cobra.Command{

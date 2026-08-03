@@ -9,7 +9,6 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -20,25 +19,55 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestDeployConfigStagesDurableExecutionOffForSafeClusterCutover(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "conf", "config.yaml"))
+	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	require.NoError(t, err)
-	var cfg Config
-	require.NoError(t, yaml.Unmarshal(raw, &cfg))
 	require.NotNil(t, cfg.Agent.Features.DurableTurns)
 	assert.False(t, *cfg.Agent.Features.DurableTurns,
-		"the tracked deploy config must not activate durable execution during a rolling binary deploy")
+		"the tracked production config must not activate durable execution during a rolling binary deploy")
 }
 
 func TestDeployConfigPinsContainerSSHOpsRuntime(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "conf", "config.yaml"))
+	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	require.NoError(t, err)
-	var cfg Config
-	require.NoError(t, yaml.Unmarshal(raw, &cfg))
 	assert.Equal(t,
 		"/opt/compshare-agent/deploy/ssh_ops_harness/harness.py",
 		cfg.Agent.SSHOps.HarnessPath,
 	)
 	assert.Equal(t, "/opt/miniforge3/envs/py313/bin/python", cfg.Agent.SSHOps.Python)
+}
+
+func TestProductionConfigUsesProductionKnowledgeService(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "http://compshare-kb.prj-ucompshare-prod.svc.c5.uae/mcp", cfg.Agent.Retrieval.MCPURL)
+	assert.Equal(t, "2003:da8:2004:1000:0a3c:7623:2712:f9c0", cfg.Agent.MySQL.HostOverride)
+}
+
+func TestLoad_ExtendsBaseConfigAndOverridesNestedValues(t *testing.T) {
+	setRequiredSecretEnv(t)
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "config.local.yaml")
+	prodPath := filepath.Join(dir, "config.prod.yaml")
+	require.NoError(t, os.WriteFile(basePath, []byte(baseConfig(`
+  retrieval:
+    mcp_url: "http://local-kb/mcp"
+  mysql:
+    host_override: "127.0.0.1"
+`)), 0o600))
+	require.NoError(t, os.WriteFile(prodPath, []byte(`
+extends: config.local.yaml
+agent:
+  retrieval:
+    mcp_url: "http://prod-kb/mcp"
+  mysql:
+    host_override: "2001:db8::1"
+`), 0o600))
+
+	cfg, err := Load(prodPath)
+	require.NoError(t, err)
+	assert.Equal(t, "external", cfg.Agent.Executor, "base fields must survive the overlay")
+	assert.Equal(t, "http://prod-kb/mcp", cfg.Agent.Retrieval.MCPURL)
+	assert.Equal(t, "2001:db8::1", cfg.Agent.MySQL.HostOverride)
 }
 
 func setRequiredSecretEnv(t *testing.T) {
@@ -118,7 +147,7 @@ agent:
 func TestLoad_AcceptsInlineLiteralSecretValuesInYAML(t *testing.T) {
 	// YAML-first config migration: a self-contained config.yaml may inline
 	// secrets so a deployment needs no env file at all. The committed
-	// deploy/conf/config.yaml now carries the deploy literals directly.
+	// deploy/conf/config.local.yaml now carries the shared deploy literals directly.
 	path := writeConfig(t, `
 agent:
   executor: external

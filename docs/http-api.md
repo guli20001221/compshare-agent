@@ -2,7 +2,7 @@
 
 面向前端接入的 HTTP 接口文档。所有业务接口走同一个网关入口，按请求体中的 `Action` 字段路由。
 
-- Base URL（默认）：`http://<server-host>:7429` —— 端口来自 `deploy/conf/config.yaml` 的 `agent.http.listen_addr`（当前 `0.0.0.0:7429`），`--addr` 可覆盖。
+- Base URL（默认）：`http://<server-host>:7429` —— 端口来自 `deploy/conf/config.local.yaml`（生产由 `config.prod.yaml` 继承）的 `agent.http.listen_addr`（当前 `0.0.0.0:7429`），`--addr` 可覆盖。
 - 业务入口：`POST /`（根路径直接打）
 - 健康探测：`GET /healthz` → `{"status":"ok"}`
 - Content-Type：`application/json`（也接受 `application/x-www-form-urlencoded`）

@@ -3,7 +3,7 @@ package main
 // In-process behavioral gate (eval P0 阶段0 §②).
 //
 // Drives the REAL engine — same wiring as the HTTP server (configureSharedDepsFromEnv),
-// real ds-v4-flash, real CompShare executor (creds from deploy/conf/config.yaml) — over the recorded
+// real ds-v4-flash, real CompShare executor (creds from deploy/conf/config.local.yaml) — over the recorded
 // multi-turn probe inputs, then evaluates the machine-checkable behavioral contract
 // (eval/realism/ci_behavioral_gates_2026-06-22.jsonl). Each contract assertion checks
 // an OBSERVABLE outcome (which tool/workflow was invoked, whether a confirm frame was
@@ -53,7 +53,7 @@ var (
 	behavioralMinPass   = flag.Float64("behavioral-min-pass", 0, "fail the test if the BLOCK-gate pass rate (%) is below this; 0 = report-only (measurement)")
 	behavioralInput     = flag.String("behavioral-input", "", "replay-input JSONL (case_id + turns[].user); default eval/realism/http_failure_replay_main_20260616_all.jsonl")
 	behavioralContract  = flag.String("behavioral-contract", "", "contract assertions JSONL; default eval/realism/ci_behavioral_gates_2026-06-22.jsonl")
-	behavioralConfig    = flag.String("behavioral-config", "", "config.yaml path; default deploy/conf/config.yaml")
+	behavioralConfig    = flag.String("behavioral-config", "", "config path; default deploy/conf/config.local.yaml")
 	behavioralReplayOut = flag.String("behavioral-replay-out", "", "if set, write the produced replay-output JSONL here (checker-compatible; debug/parity)")
 	behavioralTimeout   = flag.Duration("behavioral-timeout", 240*time.Second, "per-turn engine timeout")
 	behavioralBudget    = flag.Duration("behavioral-budget", 0, "overall wall-clock budget across cases; stop launching new cases once exceeded and report partial (0 = no budget). Keep below the `go test -timeout` so the gate always reaches its report instead of being killed mid-run.")
@@ -180,7 +180,7 @@ func TestBehavioralGate(t *testing.T) {
 
 	cfgPath := *behavioralConfig
 	if cfgPath == "" {
-		cfgPath = filepath.Join(root, "deploy", "conf", "config.yaml")
+		cfgPath = filepath.Join(root, "deploy", "conf", "config.local.yaml")
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {

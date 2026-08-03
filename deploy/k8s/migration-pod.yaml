@@ -17,8 +17,8 @@ spec:
       args:
         - |
           export PGCONNECT_TIMEOUT=15
-          DSN=$(sed -n 's/^[[:space:]]*dsn:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' /opt/compshare-agent/deploy/conf/config.yaml)
-          DB_HOST=$(sed -n 's/^[[:space:]]*host_override:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' /opt/compshare-agent/deploy/conf/config.yaml)
+          DSN=$(sed -n 's/^[[:space:]]*dsn:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' /opt/compshare-agent/deploy/conf/config.local.yaml)
+          DB_HOST=$(sed -n 's/^[[:space:]]*host_override:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' /opt/compshare-agent/deploy/conf/config.prod.yaml)
           test -n "$DSN"
           test -n "$DB_HOST"
           for migration in /opt/compshare-agent/deploy/migrations/*.sql; do

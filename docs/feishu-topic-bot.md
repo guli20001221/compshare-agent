@@ -35,7 +35,7 @@
 
 ## 二、填写项目配置
 
-编辑 `deploy/conf/config.yaml` 中的 `agent.feishu`：
+编辑 `deploy/conf/config.local.yaml` 中的 `agent.feishu`：
 
 ```yaml
 feishu:
@@ -80,13 +80,13 @@ make deploy-all
 先启动 Agent 服务：
 
 ```bash
-go run ./cmd server -c deploy/conf/config.yaml
+go run ./cmd server -c deploy/conf/config.local.yaml
 ```
 
 再启动飞书连接器：
 
 ```bash
-go run ./cmd feishu -c deploy/conf/config.yaml
+go run ./cmd feishu -c deploy/conf/config.local.yaml
 ```
 
 生产环境可以从同一份代码构建一个二进制，再分别以 `server` 和 `feishu` 两个进程运行。

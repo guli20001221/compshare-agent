@@ -52,7 +52,7 @@ var (
 	liveAccRuns   = flag.String("live-acc-runs", "", "comma-separated transcript JSONLs, one per run (required)")
 	liveAccLabels = flag.String("live-acc-labels", "", "capability label JSONL: {case_id,label,capability,note} (required)")
 	liveAccOut    = flag.String("live-acc-out", "", "write the verdicts JSON here")
-	liveAccConfig = flag.String("live-acc-config", "", "config.yaml path; default deploy/conf/config.yaml")
+	liveAccConfig = flag.String("live-acc-config", "", "config path; default deploy/conf/config.local.yaml")
 )
 
 const accJudgePrompt = `你是对话质量评审。给你一个用户问题、它的会话前文、系统这一轮检索到的知识库证据、调用了哪些工具、以及系统给出的答案。只输出 JSON，不要解释。
@@ -161,7 +161,7 @@ func TestLiveAcceptanceJudge(t *testing.T) {
 	}
 
 	root := behavioralRepoRoot(t)
-	cfgPath := orDefault(*liveAccConfig, root+"/deploy/conf/config.yaml")
+	cfgPath := orDefault(*liveAccConfig, root+"/deploy/conf/config.local.yaml")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)

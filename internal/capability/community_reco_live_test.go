@@ -30,7 +30,7 @@ var (
 	recoTopOrg  = flag.Uint("reco-top-org", 0, "top_organization_id (required)")
 	recoOrg     = flag.Uint("reco-org", 0, "organization_id (required)")
 	recoQueries = flag.String("reco-queries", "", "comma-separated queries; an empty element means no FuzzySearch")
-	recoConfig  = flag.String("reco-config", "", "config.yaml path; default ../../deploy/conf/config.yaml")
+	recoConfig  = flag.String("reco-config", "", "config path; default ../../deploy/conf/config.local.yaml")
 )
 
 // TestLiveCommunityFirstPageCoversTheHottest answers the precondition for the
@@ -108,7 +108,7 @@ func recoLiveRuntime(t *testing.T) (context.Context, ReadRuntime) {
 	}
 	cfgPath := *recoConfig
 	if cfgPath == "" {
-		cfgPath = filepath.Join("..", "..", "deploy", "conf", "config.yaml")
+		cfgPath = filepath.Join("..", "..", "deploy", "conf", "config.local.yaml")
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestLiveCommunityRecommendationReach(t *testing.T) {
 	}
 	cfgPath := *recoConfig
 	if cfgPath == "" {
-		cfgPath = filepath.Join("..", "..", "deploy", "conf", "config.yaml")
+		cfgPath = filepath.Join("..", "..", "deploy", "conf", "config.local.yaml")
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {

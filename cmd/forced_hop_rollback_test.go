@@ -10,7 +10,7 @@ import (
 )
 
 // The forced knowledge hop is off, and the claim attached to that decision — in
-// deploy/conf/config.yaml, in CLAUDE.md, and in the commit that made it — is
+// deploy/conf/config.prod.yaml, in CLAUDE.md, and in the commit that made it — is
 // that COMPSHARE_FORCED_KNOWLEDGE_HOP=1 rolls it back without a deploy.
 //
 // That claim is a property of the SHIPPED FILE, not of the code: putBoolEnv
@@ -20,13 +20,13 @@ import (
 // therefore omitted rather than set false. This test reads the real deploy
 // config so the promise cannot drift away from the file that has to keep it.
 func TestDeployConfig_ForcedHopIsOffButEnvCanStillRollItBack(t *testing.T) {
-	path := filepath.Join("..", "deploy", "conf", "config.yaml")
+	path := filepath.Join("..", "deploy", "conf", "config.prod.yaml")
 	require.FileExists(t, path)
 	cfg, err := config.Load(path)
 	require.NoError(t, err, "the shipped deploy config must parse")
 
 	require.Nil(t, cfg.Agent.Features.ForcedKnowledgeHop,
-		"deploy/conf/config.yaml must OMIT forced_knowledge_hop; an explicit false out-ranks COMPSHARE_FORCED_KNOWLEDGE_HOP and breaks the documented rollback")
+		"deploy/conf/config.prod.yaml must OMIT forced_knowledge_hop; an explicit false out-ranks COMPSHARE_FORCED_KNOWLEDGE_HOP and breaks the documented rollback")
 
 	t.Run("shipped default is off", func(t *testing.T) {
 		enabled, unknown := forcedKnowledgeHopEnabledFromEnv(cfg.RuntimeGetenv(func(string) string { return "" }))
