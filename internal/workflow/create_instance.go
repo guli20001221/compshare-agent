@@ -26,6 +26,11 @@ const (
 	// options are computed from the candidates the type left behind — and when that
 	// leaves no tag worth asking about, this card skips itself.
 	guidedStepImageTag
+	// A source may publish several concrete versions of one recognizable image
+	// family. The family is chosen before a concrete version so a category browse
+	// never fills the first screen with one series' versions. Flat sources simply
+	// produce singleton families and skip this step.
+	guidedStepImageFamily
 	guidedStepImage
 	// Charge type sits between the image and the GPU because that is the only
 	// window where it is both askable and still early enough. Everything from the
@@ -401,6 +406,7 @@ func CreateInstanceGuidedDef() *Definition {
 			stepQueryImageTagCatalog(),
 			stepGuidedChooseImageFacets(),
 			stepGuidedChooseImageTag(),
+			stepGuidedChooseImageFamily(),
 			stepGuidedChooseImage(),
 			stepGuidedChooseChargeType(),
 			// One capacity fan-out over every (model, zone) the catalog offers, read
@@ -1543,6 +1549,7 @@ func buildImageCandidateSetForRequest(params map[string]any, images map[string]a
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
 	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
 	wantCategory := strings.TrimSpace(paramStr(params, "ImageCategory", ""))
+	wantFamily := strings.TrimSpace(paramStr(params, "ImageFamily", ""))
 
 	afterType := base
 	if wantType != "" {
@@ -1551,10 +1558,11 @@ func buildImageCandidateSetForRequest(params map[string]any, images map[string]a
 		})
 	}
 	final := afterType
-	if wantTag != "" || wantCategory != "" {
+	if wantTag != "" || wantCategory != "" || wantFamily != "" {
 		final = filterSelections(afterType, func(sel deployment.ImageSelection) bool {
 			return imageSelectionMatchesFacets(snap, sel.ID, "", wantTag) &&
-				imageSelectionMatchesCategory(snap, taxonomy, sel.ID, wantCategory)
+				imageSelectionMatchesCategory(snap, taxonomy, sel.ID, wantCategory) &&
+				imageSelectionMatchesFamily(snap, sel.ID, wantFamily)
 		})
 	}
 	return imageCandidateSet{snap: snap, base: base, afterType: afterType, final: final}
@@ -1600,6 +1608,14 @@ func createImageCandidates(wfCtx *Context) imageCandidateSet {
 	return buildImageCandidateSetForRequest(
 		wfCtx.Params, images, createImageTaxonomy(wfCtx), request,
 	)
+}
+
+// createImageFamilies projects the current, already-filtered candidate set into
+// the source-independent family hierarchy used by the guided picker. Community
+// groups stay grouped; flat catalog rows are intentional one-version families.
+func createImageFamilies(wfCtx *Context) []deployment.ImageFamily {
+	set := createImageCandidates(wfCtx)
+	return deployment.GroupImageFamilies(candidateEntries(set.snap, set.final))
 }
 
 // createZoneIsPod resolves the pinned zone's pod flag from the zone catalog — the
@@ -1651,6 +1667,34 @@ func stepGuidedChooseImageTag() Step {
 				"workflow": "CreateInstanceWorkflow",
 				"step":     guidedStepLabel(wfCtx, guidedStepImageTag),
 				"ImageTag": paramStr(wfCtx.Params, "ImageTag", ""),
+			}, nil
+		},
+	}
+}
+
+// stepGuidedChooseImageFamily selects the user-recognisable image series before
+// resolving a concrete version. It is data-driven: any source whose candidates are
+// all singleton families skips it and retains the existing one-card image picker.
+func stepGuidedChooseImageFamily() Step {
+	return Step{
+		Name:              "选择镜像系列",
+		Type:              StepConfirm,
+		SkipIf:            shouldSkipGuidedImageFamilyStep,
+		BuildForm:         buildGuidedImageFamilyForm,
+		ApplyOverrides:    applyGuidedImageFamilyOverrides,
+		ConfirmSubmitMode: ConfirmSubmitContinue,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			current, opts, _ := guidedImageFamilyFormOptionsForContext(wfCtx)
+			if len(opts) == 0 {
+				return nil, fmt.Errorf("未找到可选镜像系列，请换一个镜像来源或稍后再试")
+			}
+			if current == "" {
+				current = opts[0].Value
+			}
+			return map[string]any{
+				"workflow":    "CreateInstanceWorkflow",
+				"step":        guidedStepLabel(wfCtx, guidedStepImageFamily),
+				"ImageFamily": current,
 			}, nil
 		},
 	}
@@ -2718,6 +2762,9 @@ func createImageResult(wfCtx *Context) map[string]any {
 			"ImageName": entry.Name,
 			"Data":      []any{row},
 		}
+		if entry.FamilyID != "" {
+			group["GroupId"] = entry.FamilyID
+		}
 		out["CompshareImageGroup"] = append([]any{group}, groups...)
 		return out
 	}
@@ -3200,6 +3247,8 @@ func guidedStepSkipped(wfCtx *Context, logical int) bool {
 		skip, err = shouldSkipGuidedImageFacetsStep(wfCtx)
 	case guidedStepImageTag:
 		skip, err = shouldSkipGuidedImageTagStep(wfCtx)
+	case guidedStepImageFamily:
+		skip, err = shouldSkipGuidedImageFamilyStep(wfCtx)
 	case guidedStepImage:
 		skip, err = shouldSkipGuidedImageStep(wfCtx)
 	case guidedStepChargeType:
@@ -3216,12 +3265,12 @@ func guidedStepTitle(index int, title string) string {
 	return fmt.Sprintf("%s，%s", guidedOrdinal(index), title)
 }
 
-// guidedOrdinal names a card's position. The table covers 1..10 because that is
-// the wizard's real ceiling — a full platform run with both narrowing cards is ten
-// — and a run that reached the digits mid-flow rendered "第五步" next to "第6步",
+// guidedOrdinal names a card's position. The table covers 1..11 because that is
+// the wizard's real ceiling once a multi-version family needs its own card — and a
+// run that reached the digits mid-flow rendered "第五步" next to "第6步",
 // which reads as two different numbering schemes rather than one sequence.
 func guidedOrdinal(index int) string {
-	numerals := []string{"一", "二", "三", "四", "五", "六", "七", "八", "九", "十"}
+	numerals := []string{"一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一"}
 	if index >= 1 && index <= len(numerals) {
 		return "第" + numerals[index-1] + "步"
 	}
@@ -3415,6 +3464,38 @@ func shouldSkipGuidedImageTagStep(wfCtx *Context) (bool, error) {
 		return true, nil
 	}
 	return len(imageTagFacetOptions(set)) < 2, nil
+}
+
+// shouldSkipGuidedImageFamilyStep asks for a series only when browsing leaves a
+// real choice BETWEEN families and at least one of them has more than one concrete
+// version. A named image or Agent suggestion already gives the user a useful
+// concrete-image picker, while flat platform rows are singleton families and retain
+// the existing one-card flow.
+func shouldSkipGuidedImageFamilyStep(wfCtx *Context) (bool, error) {
+	if wfCtx == nil {
+		return true, nil
+	}
+	if imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx) {
+		return true, nil
+	}
+	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); catalogIntent {
+		return true, nil
+	}
+	if strings.TrimSpace(paramStr(wfCtx.Params, "ImageFamily", "")) != "" ||
+		strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", "")) != "" ||
+		strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
+		return true, nil
+	}
+	families := createImageFamilies(wfCtx)
+	if len(families) < 2 {
+		return true, nil
+	}
+	for _, family := range families {
+		if len(family.Variants) > 1 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
@@ -3867,6 +3948,7 @@ func imageTypeFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 	order := []string{}
 	count := map[string]int{}
 	label := map[string]string{}
+	familiesByType := map[string]map[string]bool{}
 	for _, e := range candidateEntries(set.snap, set.base) {
 		t := strings.TrimSpace(e.ImageType)
 		if t == "" {
@@ -3876,8 +3958,13 @@ func imageTypeFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 		if _, seen := count[key]; !seen {
 			order = append(order, key)
 			label[key] = t
+			familiesByType[key] = map[string]bool{}
 		}
-		count[key]++
+		familyKey := e.FamilyKey()
+		if !familiesByType[key][familyKey] {
+			familiesByType[key][familyKey] = true
+			count[key]++
+		}
 	}
 	if len(order) < 2 {
 		return nil
@@ -3887,7 +3974,7 @@ func imageTypeFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 		opts = append(opts, ConfirmFormOption{
 			Value: label[key],
 			Label: imageTypeFacetLabel(label[key]),
-			Note:  fmt.Sprintf("%d 个镜像", count[key]),
+			Note:  imageFamilyCountNote(count[key]),
 		})
 	}
 	return opts
@@ -3911,6 +3998,7 @@ func imageTagFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 	order := []string{}
 	count := map[string]int{}
 	label := map[string]string{}
+	familiesByTag := map[string]map[string]bool{}
 	for _, e := range candidateEntries(set.snap, set.afterType) {
 		for _, tag := range e.Tags {
 			t := strings.TrimSpace(tag)
@@ -3921,8 +4009,13 @@ func imageTagFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 			if _, seen := count[key]; !seen {
 				order = append(order, key)
 				label[key] = t
+				familiesByTag[key] = map[string]bool{}
 			}
-			count[key]++
+			familyKey := e.FamilyKey()
+			if !familiesByTag[key][familyKey] {
+				familiesByTag[key][familyKey] = true
+				count[key]++
+			}
 		}
 	}
 	if len(order) == 0 {
@@ -3933,7 +4026,7 @@ func imageTagFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 		opts = append(opts, ConfirmFormOption{
 			Value: label[key],
 			Label: label[key],
-			Note:  fmt.Sprintf("%d 个镜像", count[key]),
+			Note:  imageFamilyCountNote(count[key]),
 		})
 	}
 	return opts
@@ -3970,9 +4063,17 @@ func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, set imageCand
 		return nil
 	}
 	count := map[string]int{}
+	familiesByCategory := map[string]map[string]bool{}
 	for _, e := range candidateEntries(set.snap, set.base) {
 		for _, c := range taxonomy.CategoriesOf(e.Tags) {
-			count[c]++
+			if familiesByCategory[c] == nil {
+				familiesByCategory[c] = map[string]bool{}
+			}
+			familyKey := e.FamilyKey()
+			if !familiesByCategory[c][familyKey] {
+				familiesByCategory[c][familyKey] = true
+				count[c]++
+			}
 		}
 	}
 	var opts []ConfirmFormOption
@@ -3982,7 +4083,7 @@ func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, set imageCand
 			continue
 		}
 		opts = append(opts, ConfirmFormOption{
-			Value: c, Label: c, Note: fmt.Sprintf("%d 个镜像", n),
+			Value: c, Label: c, Note: imageFamilyCountNote(n),
 		})
 	}
 	if len(opts) < 2 {
@@ -4026,13 +4127,15 @@ func filterImagesByFacets(snap *deployment.ImageCatalogSnapshot, ranked []deploy
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
 	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
 	wantCategory := strings.TrimSpace(paramStr(params, "ImageCategory", ""))
-	if wantType == "" && wantTag == "" && wantCategory == "" {
+	wantFamily := strings.TrimSpace(paramStr(params, "ImageFamily", ""))
+	if wantType == "" && wantTag == "" && wantCategory == "" && wantFamily == "" {
 		return ranked
 	}
 	out := make([]deployment.ImageSelection, 0, len(ranked))
 	for _, sel := range ranked {
 		if imageSelectionMatchesFacets(snap, sel.ID, wantType, wantTag) &&
-			imageSelectionMatchesCategory(snap, taxonomy, sel.ID, wantCategory) {
+			imageSelectionMatchesCategory(snap, taxonomy, sel.ID, wantCategory) &&
+			imageSelectionMatchesFamily(snap, sel.ID, wantFamily) {
 			out = append(out, sel)
 		}
 	}
@@ -4056,6 +4159,20 @@ func imageSelectionMatchesCategory(snap *deployment.ImageCatalogSnapshot, taxono
 		return false
 	}
 	return containsFold(taxonomy.CategoriesOf(entry.Tags), wantCategory)
+}
+
+func imageFamilyCountNote(n int) string {
+	return fmt.Sprintf("%d 个镜像系列", n)
+}
+
+// imageSelectionMatchesFamily applies a previously-confirmed family choice. The
+// empty value is deliberately unconstrained, matching the other optional facets.
+func imageSelectionMatchesFamily(snap *deployment.ImageCatalogSnapshot, id, wantFamily string) bool {
+	if wantFamily == "" {
+		return true
+	}
+	entry, ok := snap.ByID(id)
+	return ok && entry.FamilyKey() == wantFamily
 }
 
 // imageSelectionMatchesFacets reports whether one image id satisfies the explicitly
@@ -4118,14 +4235,14 @@ func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 	// reads as the second half of the question the first card asked rather than as a
 	// generic "筛选" step that happens to show different fields.
 	title := "缩小镜像范围"
-	description := "镜像类型来自所选目录里的真实镜像。留空表示不按它筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
+	description := "镜像类型来自所选目录里的真实镜像。留空表示不按它筛选，不会排除任何镜像。选择后下一步只展示匹配的镜像系列，并在需要时选择版本。"
 	switch {
 	case len(categoryOpts) > 0:
 		title = "想跑哪一类"
-		description = "用途分类来自平台自己的镜像分类目录，每项后的数量是当前目录里真实匹配的镜像数。留空表示不按用途筛选，不会排除任何镜像。选择后下一步只展示匹配的真实镜像。"
+		description = "用途分类来自平台自己的镜像分类目录，每项后的数量是当前目录里真实匹配的镜像系列数。留空表示不按用途筛选，不会排除任何镜像。选择后下一步只展示匹配的镜像系列，并在需要时选择版本。"
 	case len(fields) > 0 && fields[0].Key == "ImageType":
 		title = "要哪种底座"
-		description = "系统镜像是干净的操作系统，框架 / 应用镜像预装了 PyTorch、TensorFlow 等环境。每项后的数量是目录里真实匹配的镜像数，留空表示不筛选。"
+		description = "系统镜像是干净的操作系统，框架 / 应用镜像预装了 PyTorch、TensorFlow 等环境。每项后的数量是目录里真实匹配的镜像系列数，留空表示不筛选。"
 	}
 	return &ConfirmForm{
 		Version: 2,
@@ -4164,7 +4281,7 @@ func buildGuidedImageTagForm(wfCtx *Context) (*ConfirmForm, error) {
 			Index:          index,
 			Total:          total,
 			Title:          guidedStepTitle(index, "再按标签缩小范围"),
-			Description:    "标签是所选目录里镜像自带的原始标签，每项后的数量是当前候选里真实带该标签的镜像数。留空表示不按标签筛选，不会排除任何镜像。",
+			Description:    "标签是所选目录里镜像自带的原始标签，每项后的数量是当前候选里真实带该标签的镜像系列数。留空表示不按标签筛选，不会排除任何镜像。",
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
 			Skippable:      true,
@@ -4238,6 +4355,53 @@ func guidedImagePageDescription(shown, candidates int) string {
 		base, shown, candidates)
 }
 
+func guidedImageFamilyPageDescription(shown, families int) string {
+	const base = "先选择想使用的镜像系列；若该系列有多个可用版本，下一步再确认具体版本。"
+	if families <= shown {
+		return base
+	}
+	return fmt.Sprintf("%s当前展示 %d 个，共 %d 个匹配镜像系列；如果这里没有想要的，可回上一步调整筛选，或直接告诉我镜像名称。",
+		base, shown, families)
+}
+
+// buildGuidedImageFamilyForm keeps a catalog's natural hierarchy visible: users
+// choose a recognisable image family first, then a concrete version only when that
+// family actually has a version choice. The same model represents flat sources as
+// singleton families, which skip this card altogether.
+func buildGuidedImageFamilyForm(wfCtx *Context) (*ConfirmForm, error) {
+	current, opts, families := guidedImageFamilyFormOptionsForContext(wfCtx)
+	if len(opts) == 0 {
+		return nil, fmt.Errorf("未找到可选镜像系列，请换一个镜像来源或稍后再试")
+	}
+	if current == "" {
+		current = opts[0].Value
+	}
+	index, total := guidedStepPosition(wfCtx, guidedStepImageFamily)
+	return &ConfirmForm{
+		Version: 2,
+		Step: &ConfirmFormStep{
+			Index:          index,
+			Total:          total,
+			Title:          guidedStepTitle(index, "请选择镜像系列"),
+			Description:    guidedImageFamilyPageDescription(len(opts), families),
+			PrimaryLabel:   "确认选择",
+			SecondaryLabel: "取消",
+		},
+		Fields: []ConfirmFormField{{
+			Key: "ImageFamily", Label: "镜像系列", Type: "select",
+			Value: current, Render: "cards", Editable: true, Options: opts,
+		}},
+	}, nil
+}
+
+func guidedImageVersionPageDescription(family deployment.ImageFamily, shown, candidates int) string {
+	base := fmt.Sprintf("已选择「%s」。请确认实际创建使用的具体版本，后续 GPU、可用区和库存检查都以这个镜像 ID 为准。", family.Name)
+	if candidates <= shown {
+		return base
+	}
+	return fmt.Sprintf("%s当前展示 %d 个，共 %d 个可用版本。", base, shown, candidates)
+}
+
 func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
 	current, opts, candidates := guidedImageFormOptionsForContext(wfCtx, gpuType)
@@ -4248,18 +4412,24 @@ func buildGuidedImageForm(wfCtx *Context) (*ConfirmForm, error) {
 		current = opts[0].Value
 	}
 	index, total := guidedStepPosition(wfCtx, guidedStepImage)
+	title, description, fieldLabel := "请选择具体镜像", guidedImagePageDescription(len(opts), candidates), "镜像"
+	if family, ok := selectedImageFamily(wfCtx); ok && len(family.Variants) > 1 {
+		title = "请选择具体版本"
+		description = guidedImageVersionPageDescription(family, len(opts), candidates)
+		fieldLabel = "版本"
+	}
 	return &ConfirmForm{
 		Version: 2,
 		Step: &ConfirmFormStep{
 			Index:          index,
 			Total:          total,
-			Title:          guidedStepTitle(index, "请选择具体镜像"),
-			Description:    guidedImagePageDescription(len(opts), candidates),
+			Title:          guidedStepTitle(index, title),
+			Description:    description,
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "取消",
 		},
 		Fields: []ConfirmFormField{{
-			Key: "ImageId", Label: "镜像", Type: "select",
+			Key: "ImageId", Label: fieldLabel, Type: "select",
 			Value: current, Render: "cards", Editable: true, Options: opts,
 		}},
 	}, nil
@@ -4363,9 +4533,7 @@ func applyGuidedGPUOverrides(wfCtx *Context, overrides map[string]string) error 
 				delete(wfCtx.Params, "Memory")
 				delete(wfCtx.Params, "Zone")
 				if supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx)); len(supported) > 0 && !containsFold(supported, v) {
-					delete(wfCtx.Params, "CompShareImageId")
-					delete(wfCtx.Params, "ImageName")
-					delete(wfCtx.Params, "GuidedImageLocked")
+					clearGuidedImageSelection(wfCtx)
 				}
 			}
 		default:
@@ -4456,9 +4624,7 @@ func applyGuidedImageFacetsOverrides(wfCtx *Context, overrides map[string]string
 	// carrying a stale id/name that may not match. The source is owned by the earlier
 	// source step and is never touched here. Nothing is silent: the user re-confirms
 	// the refreshed card before anything is created.
-	delete(wfCtx.Params, "CompShareImageId")
-	delete(wfCtx.Params, "ImageName")
-	delete(wfCtx.Params, "GuidedImageLocked")
+	clearGuidedImageSelection(wfCtx)
 	// The tag was chosen against the PREVIOUS type's candidates, so it may now select
 	// nothing. Cleared = absent = "no filter" (honest absence, never "match nothing"),
 	// and the tag card that follows re-asks over the new candidates.
@@ -4474,10 +4640,66 @@ func applyGuidedImageTagOverrides(wfCtx *Context, overrides map[string]string) e
 		}
 		wfCtx.Params["ImageTag"] = strings.TrimSpace(v)
 	}
+	clearGuidedImageSelection(wfCtx)
+	markGuidedStepReached(wfCtx, guidedStepImageTag)
+	return nil
+}
+
+// clearGuidedConcreteImageSelection drops only the resolved version. A selected
+// family can remain while its version card is shown; callers that invalidate the
+// whole catalog-derived choice use clearGuidedImageSelection instead.
+func clearGuidedConcreteImageSelection(wfCtx *Context) {
+	if wfCtx == nil || wfCtx.Params == nil {
+		return
+	}
 	delete(wfCtx.Params, "CompShareImageId")
 	delete(wfCtx.Params, "ImageName")
 	delete(wfCtx.Params, "GuidedImageLocked")
-	markGuidedStepReached(wfCtx, guidedStepImageTag)
+}
+
+func clearGuidedImageSelection(wfCtx *Context) {
+	if wfCtx == nil || wfCtx.Params == nil {
+		return
+	}
+	delete(wfCtx.Params, "ImageFamily")
+	clearGuidedConcreteImageSelection(wfCtx)
+}
+
+// applyGuidedImageFamilyOverrides records a series choice. A singleton family has
+// already resolved the only safe concrete image, so it is locked immediately;
+// multi-version families intentionally proceed to the version picker.
+func applyGuidedImageFamilyOverrides(wfCtx *Context, overrides map[string]string) error {
+	var selected string
+	for k, v := range overrides {
+		if k != "ImageFamily" {
+			return fmt.Errorf("不支持修改字段 %s", k)
+		}
+		selected = strings.TrimSpace(v)
+	}
+	if selected == "" {
+		return fmt.Errorf("镜像系列选择不能为空")
+	}
+	var family deployment.ImageFamily
+	found := false
+	for _, candidate := range createImageFamilies(wfCtx) {
+		if candidate.Key == selected {
+			family, found = candidate, true
+			break
+		}
+	}
+	if !found || len(family.Variants) == 0 {
+		return fmt.Errorf("镜像系列不在当前可选范围内")
+	}
+
+	clearGuidedConcreteImageSelection(wfCtx)
+	wfCtx.Params["ImageFamily"] = family.Key
+	if len(family.Variants) == 1 {
+		if err := applyCreateOverrides(wfCtx, map[string]string{"ImageId": family.Variants[0].ID}); err != nil {
+			return err
+		}
+		wfCtx.Params["GuidedImageLocked"] = true
+	}
+	markGuidedStepReached(wfCtx, guidedStepImageFamily)
 	return nil
 }
 
@@ -4508,9 +4730,7 @@ func applyGuidedImageSourceOverrides(wfCtx *Context, overrides map[string]string
 		// tags is a taxonomy member) while community rows are fully classified, so a
 		// category carried across a source switch can silently match nothing.
 		delete(wfCtx.Params, "ImageCategory")
-		delete(wfCtx.Params, "CompShareImageId")
-		delete(wfCtx.Params, "ImageName")
-		delete(wfCtx.Params, "GuidedImageLocked")
+		clearGuidedImageSelection(wfCtx)
 	}
 	markGuidedStepReached(wfCtx, guidedStepImageSource)
 	return nil
@@ -5555,6 +5775,87 @@ func parseGuidedSpecKey(key string) (zone string, gpu, cpu, memoryMB float64, er
 // rather than inferred because the options are capped at maxGuidedImageOptions:
 // the caller states "共 N 个" from the same set the options came from, so the card
 // can no longer advertise a population it does not show.
+func guidedImageFamilyFormOptionsForContext(wfCtx *Context) (string, []ConfirmFormOption, int) {
+	if wfCtx == nil {
+		return "", nil, 0
+	}
+	return guidedImageFamilyFormOptions(
+		wfCtx.Params,
+		createImageFamilies(wfCtx),
+		paramStr(wfCtx.Params, "GpuType", ""),
+	)
+}
+
+func guidedImageFamilyFormOptions(params map[string]any, families []deployment.ImageFamily, gpuType string) (string, []ConfirmFormOption, int) {
+	current := strings.TrimSpace(paramStr(params, "ImageFamily", ""))
+	total := 0
+	seen := map[string]bool{}
+	var opts []ConfirmFormOption
+	for _, family := range families {
+		if family.Key == "" || seen[family.Key] {
+			continue
+		}
+		name := strings.TrimSpace(family.Name)
+		if name == "" && len(family.Variants) > 0 {
+			name = family.Variants[0].FamilyLabel()
+		}
+		if name == "" {
+			continue
+		}
+		seen[family.Key] = true
+		total++
+		disabled := false
+		reason := ""
+		if gpuType != "" && len(family.Variants) > 0 {
+			anySupported := false
+			for _, variant := range family.Variants {
+				if len(variant.SupportedGPUTypes) == 0 || containsFold(variant.SupportedGPUTypes, gpuType) {
+					anySupported = true
+					break
+				}
+			}
+			if !anySupported {
+				disabled = true
+				reason = "该系列没有支持当前 GPU 的版本"
+			}
+		}
+		if len(opts) >= maxGuidedImageOptions {
+			continue
+		}
+		opts = append(opts, ConfirmFormOption{
+			Value:    family.Key,
+			Label:    name,
+			Note:     fmt.Sprintf("%d 个可选版本", len(family.Variants)),
+			Reason:   reason,
+			Disabled: disabled,
+			Meta: map[string]string{
+				"ImageFamily":  family.Key,
+				"VariantCount": strconv.Itoa(len(family.Variants)),
+			},
+		})
+	}
+	if current == "" || !enabledOptionExists(opts, current) {
+		current = firstEnabledValue(opts)
+	}
+	return current, opts, total
+}
+
+func selectedImageFamily(wfCtx *Context) (deployment.ImageFamily, bool) {
+	if wfCtx == nil {
+		return deployment.ImageFamily{}, false
+	}
+	key := strings.TrimSpace(paramStr(wfCtx.Params, "ImageFamily", ""))
+	if key == "" {
+		return deployment.ImageFamily{}, false
+	}
+	for _, family := range createImageFamilies(wfCtx) {
+		if family.Key == key {
+			return family, true
+		}
+	}
+	return deployment.ImageFamily{}, false
+}
+
 func guidedImageFormOptions(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy, zoneIsPod bool) (string, []ConfirmFormOption, int) {
 	if images == nil {
 		return "", nil, 0
