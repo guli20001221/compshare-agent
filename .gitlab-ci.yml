@@ -10,7 +10,6 @@ stages:
   - diagnose
   - test
   - build
-  - migrate
   - deploy
 
 variables:
@@ -94,56 +93,6 @@ build:
       --destination "$IMAGE:latest"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-
-migrate:
-  stage: migrate
-  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
-  tags:
-    - uaek-c5
-  variables:
-    NAMESPACE: prj-ucompshare-prod
-  script:
-    - |
-      MIGRATION_POD="compshare-agent-migrate-$CI_PIPELINE_ID"
-      cleanup() {
-        kubectl -n "$NAMESPACE" delete pod "$MIGRATION_POD" --ignore-not-found --wait=false >/dev/null || true
-      }
-      trap cleanup EXIT
-      kubectl -n "$NAMESPACE" delete pod "$MIGRATION_POD" --ignore-not-found --wait=true
-      sed \
-        -e "s|__IMAGE__|$IMAGE:$CI_COMMIT_SHORT_SHA|g" \
-        -e "s|__POD_NAME__|$MIGRATION_POD|g" \
-        deploy/k8s/migration-pod.yaml \
-        | kubectl -n "$NAMESPACE" apply -f -
-
-      pod_phase=""
-      attempt=0
-      while test "$attempt" -lt 150; do
-        attempt=$((attempt + 1))
-        pod_phase=$(kubectl -n "$NAMESPACE" get pod "$MIGRATION_POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-        case "$pod_phase" in
-          Succeeded)
-            break
-            ;;
-          Failed)
-            kubectl -n "$NAMESPACE" logs "$MIGRATION_POD" || true
-            exit 1
-            ;;
-        esac
-        sleep 2
-      done
-      if test "$pod_phase" != "Succeeded"; then
-        kubectl -n "$NAMESPACE" logs "$MIGRATION_POD" || true
-        echo "migration pod did not complete before its deadline" >&2
-        exit 1
-      fi
-      kubectl -n "$NAMESPACE" logs "$MIGRATION_POD"
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
-  allow_failure: false
-  environment:
-    name: production
 
 deploy:
   stage: deploy

@@ -53,7 +53,8 @@ docker run --rm "$IMAGE" --help
 
 ## 启动
 
-先执行 `deploy/migrations/*.sql`。镜像内置 `psql`，GitLab 发布流程会在生产集群内执行迁移；手工发布时也可复用该客户端。
+数据库结构变更不属于 GitLab 发布流水线。需要变更时，在已批准的维护窗口由人工执行
+`deploy/migrations/*.sql`；确认完成后再发布服务。镜像内置 `psql`，可作为人工变更时的客户端。
 
 主服务：
 

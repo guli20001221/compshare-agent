@@ -1,3 +1,5 @@
+# Manual-only database migration helper.  It is intentionally not referenced by
+# the GitLab delivery pipeline.
 apiVersion: v1
 kind: Pod
 metadata:
