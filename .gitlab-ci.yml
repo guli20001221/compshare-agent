@@ -52,6 +52,43 @@ diagnose-production:
       when: manual
   allow_failure: true
 
+# Destructive production cleanup is deliberately an explicit manual action.
+# It removes only this workload's controllers and their Pods; the Service and
+# database are retained so an approved deploy can recreate the workload.
+cleanup-production:
+  stage: diagnose
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    APP: compshare-agent
+  script:
+    - kubectl -n "$NAMESPACE" delete deployment/"$APP" --ignore-not-found --wait=true
+    - kubectl -n "$NAMESPACE" delete statefulset/"$APP" --ignore-not-found --wait=true
+    - |
+      if kubectl -n "$NAMESPACE" get deployment/"$APP" >/dev/null 2>&1; then
+        echo "deployment/$APP still exists after cleanup" >&2
+        exit 1
+      fi
+      if kubectl -n "$NAMESPACE" get statefulset/"$APP" >/dev/null 2>&1; then
+        echo "statefulset/$APP still exists after cleanup" >&2
+        exit 1
+      fi
+      if kubectl -n "$NAMESPACE" get pods -l app="$APP" -o name | grep -q .; then
+        echo "Pods for $APP still exist after controller cleanup" >&2
+        kubectl -n "$NAMESPACE" get pods -l app="$APP" -o wide
+        exit 1
+      fi
+      kubectl -n "$NAMESPACE" get service/"$APP" -o name
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: false
+  environment:
+    name: production
+    action: stop
+
 test:
   stage: test
   image: uhub.service.ucloud.cn/ucompshare-job/golang:1.25-alpine
