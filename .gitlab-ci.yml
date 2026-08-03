@@ -75,11 +75,19 @@ cleanup-production:
         echo "statefulset/$APP still exists after cleanup" >&2
         exit 1
       fi
-      if kubectl -n "$NAMESPACE" get pods -l app="$APP" -o name | grep -q .; then
-        echo "Pods for $APP still exist after controller cleanup" >&2
-        kubectl -n "$NAMESPACE" get pods -l app="$APP" -o wide
-        exit 1
-      fi
+      # Controller deletion is asynchronous.  Give Kubernetes up to three
+      # minutes to finish the Pod's configured grace period before treating a
+      # remaining Pod as a cleanup failure.
+      attempt=0
+      while kubectl -n "$NAMESPACE" get pods -l app="$APP" -o name | grep -q .; do
+        attempt=$((attempt + 1))
+        if test "$attempt" -ge 60; then
+          echo "Pods for $APP still exist after controller cleanup" >&2
+          kubectl -n "$NAMESPACE" get pods -l app="$APP" -o wide
+          exit 1
+        fi
+        sleep 3
+      done
       kubectl -n "$NAMESPACE" get service/"$APP" -o name
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
