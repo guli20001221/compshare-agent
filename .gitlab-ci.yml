@@ -38,16 +38,14 @@ diagnose-production:
         kubectl -n "$NAMESPACE" describe pod "$POD"
         kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{range .status.containerStatuses[*]}{.name}{" ready="}{.ready}{" restarts="}{.restartCount}{" waiting="}{.state.waiting.reason}{" terminated="}{.state.terminated.reason}{" exit="}{.state.terminated.exitCode}{"\n"}{end}'
         kubectl -n "$NAMESPACE" get events --field-selector "involvedObject.name=$POD" --sort-by='.lastTimestamp' || true
-        for CONTAINER in "$APP" "$APP-feishu"; do
-          for PREVIOUS in "" "--previous"; do
-            kubectl -n "$NAMESPACE" logs "$POD" -c "$CONTAINER" $PREVIOUS --tail=200 2>&1 \
-              | grep -Ei 'fatal|panic|error|failed|schema|connect|timeout|refused|permission denied|no route|unavailable' \
-              | sed -E \
-                  -e 's#(postgres(ql)?://)[^[:space:]]+#\1<redacted-dsn>#g' \
-                  -e 's#(https?://)[^[:space:]]*(token|secret|password|api[_-]?key)[^[:space:]]*#<redacted-url>#g' \
-                  -e 's#([Tt]oken|[Ss]ecret|[Pp]assword|[Aa]pi[_-]?[Kk]ey)[=:][^[:space:],]+#\1=<redacted>#g' \
-              | cut -c1-1000 || true
-          done
+        for PREVIOUS in "" "--previous"; do
+          kubectl -n "$NAMESPACE" logs "$POD" -c "$APP" $PREVIOUS --tail=200 2>&1 \
+            | sed -E \
+                -e 's#(wss?|https?)://[^[:space:]]+#<redacted-url>#g' \
+                -e 's#(postgres(ql)?://)[^[:space:]]+#\1<redacted-dsn>#g' \
+                -e 's#([Tt]oken|[Ss]ecret|[Pp]assword|[Aa]pi[_-]?[Kk]ey)[=:][^[:space:],]+#\1=<redacted>#g' \
+            | grep -Ei 'runtime:|knowledge:|durable turns|ocr enabled|confirm form|guided create|warning:|error|fatal|panic|schema|postgres|database|listen|server' \
+            | cut -c1-1000 || true
         done
       fi
   rules:
