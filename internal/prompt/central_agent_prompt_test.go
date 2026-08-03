@@ -65,6 +65,13 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 	require.Contains(t, text, "根级 status、data、error.code、retryable、next_step、meta 为准")
 	require.Contains(t, text, "NO_CITABLE_EVIDENCE")
 	require.Equal(t, 1, strings.Count(text, "## 工具结果"))
+	// A call the model itself malformed needs nothing from the user. The
+	// exception is written INTO the needs_input clause rather than after it:
+	// stated separately, the generic "补问缺字段" rule is what the model reads
+	// first, and it turns the model's own JSON mistake into a question for a
+	// user who supplied nothing wrong.
+	require.Contains(t, text, "needs_input 补问缺字段，但 next_step=correct_tool_call 时用户无需补充")
+	require.Contains(t, text, "改正参数后重发同一次调用，不要提问")
 	require.NotContains(t, text, "InfiniteTalk")
 	require.NotContains(t, text, "LiveTalking")
 }

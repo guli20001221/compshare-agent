@@ -2856,9 +2856,8 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		// rejected; the tool-arg contract is unchanged.
 		errClass := fmt.Sprintf("parameter parse error: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass})
-		return tools.MarshalAgentToolResult(tools.AgentToolNeedsInput(
+		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
 			action,
-			nil,
 			"INVALID_TOOL_ARGUMENTS",
 			"工具参数必须是合法的 JSON 对象，请按该工具的参数结构重新调用。",
 			tools.AgentToolMeta{SourceStatus: "argument_parse_error"},

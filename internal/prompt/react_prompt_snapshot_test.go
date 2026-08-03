@@ -105,8 +105,12 @@ const (
 	// 2026-08-03: ordinary model-visible tool observations gained one compact
 	// control-plane contract. It makes the existing result envelope actionable
 	// (including NO_CITABLE_EVIDENCE) without changing final deterministic replies.
-	mutatingReActPromptSHA256 = "24079de3798ecef5fc5b3fa47d1f4c50cdc37c3b5dd86e501963c6e91e81a046"
-	readOnlyReActPromptSHA256 = "1f1b213a6f0f246f9bdf7d7165717e72386120501c155f6a930887aa04f4bb30"
+	// 2026-08-03 (second): one exception added to that contract. A call the model
+	// itself malformed resolves to correct_tool_call, not ask_user — the generic
+	// needs_input rule would otherwise turn the model's own JSON mistake into a
+	// question for a user who supplied nothing wrong.
+	mutatingReActPromptSHA256 = "c928b492e9ff821f90ac73721231e3adc49ebac768a5f686c49aba9d824ff6eb"
+	readOnlyReActPromptSHA256 = "2d040c85552629cb78decb09b933af115a10c533987df12a3d739939edc0bfab"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
 	// That leaves the rollout shape unpinned: deploy/conf/config.yaml already sets
@@ -115,7 +119,7 @@ const (
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
 	// third SHA pins that combination. It includes the same shared 2026-07-31
 	// catalog-candidate contract as the two snapshots above.
-	mutatingWithRepairLaneReActPromptSHA256 = "dd0226af3f364092931635921644984a2f9095d835384758a57a1120fcd8fb77"
+	mutatingWithRepairLaneReActPromptSHA256 = "038ff01ed69a89f8be64cebea2ef166c1706248ccbc16933b6105470a255def8"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

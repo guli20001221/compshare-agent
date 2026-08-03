@@ -46,8 +46,16 @@ func TestExecuteTool_MalformedArgsReturnsCorrectiveHint(t *testing.T) {
 			assert.Equal(t, tools.AgentToolStatusNeedsInput, result.Status)
 			assert.Equal(t, "INVALID_TOOL_ARGUMENTS", result.Error.Code)
 			assert.Contains(t, result.Error.Message, "JSON")
-			assert.Equal(t, tools.AgentToolNextAskUser, result.NextStep)
-			assert.False(t, result.Retryable)
+			// The model malformed its OWN arguments. The user said nothing wrong
+			// and has nothing to add, so this must route back to the model. The
+			// prompt turns ask_user into "补问缺字段", which would make ~4% of
+			// SearchKnowledge calls (the rate this file's fixtures come from) ask
+			// the user to restate a question they already stated correctly.
+			assert.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep)
+			assert.NotEqual(t, tools.AgentToolNextAskUser, result.NextStep,
+				"a model-side format error must never be turned into a question for the user")
+			assert.False(t, result.Retryable,
+				"retryable means the SAME call may succeed later; this one must be corrected first")
 
 			// (2) Recorded telemetry (error_class): concise error, NOT the hint.
 			require.Len(t, steps, 1)
