@@ -58,3 +58,17 @@ func TestChatTraceRecorder_PersistsToolProjection(t *testing.T) {
 	assert.True(t, w.records[0].ToolCalls[0].Projected,
 		"the HTTP trace must retain that the model saw a projected result")
 }
+
+func TestChatTraceRecorderPersistsConfirmationWithoutCardPayload(t *testing.T) {
+	w := &captureTraceWriter{}
+	base := BaseRequest{RequestUUID: "req-confirm", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}
+	rec := newChatTraceRecorder(w, base, "sess-1", 1, "msg", time.Now())
+	rec.AddConfirmationTrace(observability.ConfirmationTrace{
+		Action: "CreateInstanceWorkflow", State: observability.ConfirmationStateNotConfirmed,
+		TerminalReason: observability.ConfirmationReasonTimeout, ElapsedMS: 123,
+	})
+	require.NoError(t, rec.Finish(nil, time.Now()))
+	require.Len(t, w.records, 1)
+	require.Len(t, w.records[0].Confirmations, 1)
+	assert.Equal(t, observability.ConfirmationReasonTimeout, w.records[0].Confirmations[0].TerminalReason)
+}

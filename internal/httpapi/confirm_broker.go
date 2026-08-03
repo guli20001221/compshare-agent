@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/google/uuid"
@@ -147,20 +148,34 @@ func (b *ConfirmBroker) Cancel(confirmationID string) {
 }
 
 // WaitForConfirmation blocks until the confirmation is resolved, the context
-// is cancelled (SSE disconnect), or the timeout expires. The zero decision
-// (denied) is returned on cancel/timeout/closed channel.
+// is cancelled (SSE disconnect), or the timeout expires. It preserves the
+// historical decision-only API for callers that do not need attribution.
 func WaitForConfirmation(ctx context.Context, ch <-chan ConfirmDecision, timeout time.Duration) ConfirmDecision {
+	decision, _ := WaitForConfirmationOutcome(ctx, ch, timeout)
+	return decision
+}
+
+// WaitForConfirmationOutcome preserves the terminal cause that the old boolean
+// confirmation contract intentionally collapsed. The reason is a closed-set
+// observability value: no broker id, form value, user text, or transport error
+// reaches the trace. A closed channel without a resolved decision means the
+// broker removed the interaction; a cancelled context means the client went
+// away before resolving it.
+func WaitForConfirmationOutcome(ctx context.Context, ch <-chan ConfirmDecision, timeout time.Duration) (ConfirmDecision, string) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case decision, ok := <-ch:
 		if !ok {
-			return ConfirmDecision{}
+			return ConfirmDecision{}, observability.ConfirmationReasonBrokerCancelled
 		}
-		return decision
+		if decision.Confirmed {
+			return decision, observability.ConfirmationReasonUserConfirmed
+		}
+		return decision, observability.ConfirmationReasonUserDeclined
 	case <-ctx.Done():
-		return ConfirmDecision{}
+		return ConfirmDecision{}, observability.ConfirmationReasonClientDisconnect
 	case <-timer.C:
-		return ConfirmDecision{}
+		return ConfirmDecision{}, observability.ConfirmationReasonTimeout
 	}
 }

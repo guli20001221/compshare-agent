@@ -647,6 +647,10 @@ func FormDefaultOverrides(form *ConfirmForm) map[string]string {
 type ConfirmResolution struct {
 	Confirmed bool
 	Overrides map[string]string
+	// TerminalReason is transport-supplied, bounded confirmation attribution
+	// (for example user_declined, timeout, client_disconnect). Workflow logic
+	// deliberately does not branch on it; the engine records it for traces.
+	TerminalReason string
 }
 
 // ConfirmEditsFunc is the richer HITL gate used when a StepConfirm carries a

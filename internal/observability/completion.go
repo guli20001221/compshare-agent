@@ -14,9 +14,13 @@ type TurnCompletionTrace struct {
 	ToolNames       []string `json:"tool_names,omitempty"`
 }
 
+// The confirmation class and its reasons were removed with the premature
+// completion lock that produced them: confirmation attribution now lives in
+// TraceRecord.Confirmations and the outcome axes derived from it. Nothing
+// writes a confirmation completion, so naming one here would be vocabulary
+// with no producer.
 const (
 	CompletionClassSafetyBlock           = "safety_block"
-	CompletionClassConfirmation          = "confirmation"
 	CompletionClassDeterministicAnswer   = "deterministic_answer"
 	CompletionClassStructuredClarify     = "structured_clarification"
 	CompletionClassParserFailureFallback = "parser_failure_fallback"
@@ -24,27 +28,26 @@ const (
 )
 
 const (
-	CompletionReasonPolicyBlock               = "policy_block"
-	CompletionReasonRateLimit                 = "rate_limit"
-	CompletionReasonTokenBudget               = "token_budget"
-	CompletionReasonReactRoundCeiling         = "react_round_ceiling"
-	CompletionReasonConfirmationDeclined      = "confirmation_declined"
-	CompletionReasonContextClarification      = "context_clarification"
-	CompletionReasonSelectionRequired         = "selection_required"
-	CompletionReasonMissingTimeWindow         = "missing_time_window"
-	CompletionReasonDirectDispatch            = "direct_dispatch"
-	CompletionReasonDirectStateMachine        = "direct_state_machine"
-	CompletionReasonHandlerFailure            = "handler_failure"
-	CompletionReasonRetrievalNoEvidence       = "retrieval_no_evidence"
-	CompletionReasonRetrievalUnavailable      = "retrieval_unavailable"
-	CompletionReasonRouteParseFailure         = "route_parse_failure"
-	CompletionReasonRouteFallbackWithoutModel = "route_fallback_without_model"
-	CompletionReasonAgentLoop                 = "agent_loop"
-	CompletionReasonAgentDispatch             = "agent_dispatch"
-	CompletionReasonModelAssistedAnswer       = "model_assisted_answer"
-	CompletionReasonUnclassifiedZeroModelExit = "unclassified_zero_model_exit"
-	CompletionDecisionNotInvoked              = "not_invoked"
-	CompletionDecisionError                   = "error"
+	CompletionReasonPolicyBlock                  = "policy_block"
+	CompletionReasonRateLimit                    = "rate_limit"
+	CompletionReasonTokenBudget                  = "token_budget"
+	CompletionReasonReactRoundCeiling            = "react_round_ceiling"
+	CompletionReasonContextClarification         = "context_clarification"
+	CompletionReasonSelectionRequired            = "selection_required"
+	CompletionReasonMissingTimeWindow            = "missing_time_window"
+	CompletionReasonDirectDispatch               = "direct_dispatch"
+	CompletionReasonDirectStateMachine           = "direct_state_machine"
+	CompletionReasonHandlerFailure               = "handler_failure"
+	CompletionReasonRetrievalNoEvidence          = "retrieval_no_evidence"
+	CompletionReasonRetrievalUnavailable         = "retrieval_unavailable"
+	CompletionReasonRouteParseFailure            = "route_parse_failure"
+	CompletionReasonRouteFallbackWithoutModel    = "route_fallback_without_model"
+	CompletionReasonAgentLoop                    = "agent_loop"
+	CompletionReasonAgentDispatch                = "agent_dispatch"
+	CompletionReasonModelAssistedAnswer          = "model_assisted_answer"
+	CompletionReasonUnclassifiedZeroModelExit    = "unclassified_zero_model_exit"
+	CompletionDecisionNotInvoked                 = "not_invoked"
+	CompletionDecisionError                      = "error"
 )
 
 func traceCompletionObserved(trace TurnCompletionTrace) bool {

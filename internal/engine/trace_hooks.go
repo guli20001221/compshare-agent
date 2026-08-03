@@ -22,6 +22,7 @@ type TraceHooks struct {
 	RateLimit     func(governance.Decision)
 	TokenUsage    func(llm.TokenUsage)
 	Authorization func(observability.AuthorizationTrace)
+	Confirmation  func(observability.ConfirmationTrace)
 }
 
 // TraceSnapshot is the final, content-free engine state needed to finish a
@@ -61,6 +62,7 @@ func (e *Engine) AttachTraceHooks(h TraceHooks) {
 	e.SetRateLimitObserver(h.RateLimit)
 	e.SetTokenUsageObserver(h.TokenUsage)
 	e.SetAuthorizationTraceObserver(h.Authorization)
+	e.SetConfirmationTraceObserver(h.Confirmation)
 }
 
 func (e *Engine) TraceSnapshot(now time.Time) TraceSnapshot {

@@ -623,7 +623,10 @@ func (c *Coordinator) run(turn store.Turn) {
 		trace.ContextParseOutcome = contextParseOutcome
 	})
 	journal := NewActionJournal(c.turns, in.Owner, lease, c.opts.SecretKey)
-	confirm := c.confirmFunc(execCtx, in.Owner, lease, cancelCause)
+	confirmResult := c.confirmResultFunc(execCtx, in.Owner, lease, cancelCause)
+	confirm := func(action string, args map[string]any) bool {
+		return confirmResult(action, args).Confirmed
+	}
 	var confirmEdits workflow.ConfirmEditsFunc
 	if in.ConfirmForm {
 		confirmEdits = c.confirmEditsFunc(execCtx, in.Owner, lease, cancelCause)
@@ -690,14 +693,19 @@ func (c *Coordinator) run(turn store.Turn) {
 		}
 		c.deliver(event)
 	}, engine.ChatOptions{
-		TurnID:           lease.TurnID,
-		ImageContext:     in.ImageContext,
-		ConfirmFunc:      confirm,
-		ConfirmEditsFunc: confirmEdits,
-		GuidedCreate:     in.GuidedCreate,
-		KnowledgeOnly:    in.KnowledgeOnly,
-		SecretInputs:     in.SecretInputs,
-		OnUsage:          func(value llm.TokenUsage) { usage = value },
+		TurnID:       lease.TurnID,
+		ImageContext: in.ImageContext,
+		// Keep the legacy callback populated for TurnEngine adapters that have
+		// not yet adopted ConfirmationResultFunc. Engine.ChatWithOptions gives
+		// the richer callback precedence, so the durable interaction is awaited
+		// exactly once on the production path.
+		ConfirmFunc:       confirm,
+		ConfirmResultFunc: confirmResult,
+		ConfirmEditsFunc:  confirmEdits,
+		GuidedCreate:      in.GuidedCreate,
+		KnowledgeOnly:     in.KnowledgeOnly,
+		SecretInputs:      in.SecretInputs,
+		OnUsage:           func(value llm.TokenUsage) { usage = value },
 	})
 	eventMu.Lock()
 	persistEventErr := eventErr
@@ -879,21 +887,26 @@ func (c *Coordinator) renewLoop(ctx context.Context, owner store.Owner, lease st
 	}
 }
 
-func (c *Coordinator) confirmFunc(
+// confirmResultFunc is the durable confirmation bridge with a closed-set
+// terminal reason, and the ONLY one: run() derives the boolean gate that
+// SessionOptions and ChatOptions.ConfirmFunc still take by discarding this
+// result's reason, so a card is awaited exactly once no matter which of the
+// two the caller reaches for.
+func (c *Coordinator) confirmResultFunc(
 	ctx context.Context,
 	owner store.Owner,
 	lease store.ConversationLease,
 	cancel context.CancelCauseFunc,
-) engine.ConfirmFunc {
-	return func(action string, args map[string]any) bool {
+) engine.ConfirmationResultFunc {
+	return func(action string, args map[string]any) engine.ConfirmationResult {
 		payload, err := json.Marshal(map[string]any{"action": action, "summary": sanitizeInteractionArgs(args)})
 		if err != nil {
 			cancel(fmt.Errorf("encode confirmation: %w", err))
-			return false
+			return engine.ConfirmationResult{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 		}
 		key := semanticInteractionKey("confirmation", payload)
-		response, ok := c.awaitConfirmation(ctx, owner, lease, cancel, key, payload)
-		return ok && response.Confirmed
+		response, reason := c.awaitConfirmation(ctx, owner, lease, cancel, key, payload)
+		return engine.ConfirmationResult{Confirmed: response.Confirmed, TerminalReason: reason}
 	}
 }
 
@@ -906,21 +919,18 @@ func (c *Coordinator) confirmEditsFunc(
 	return func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
 		if form == nil {
 			cancel(fmt.Errorf("encode confirmation: missing form"))
-			return workflow.ConfirmResolution{}
+			return workflow.ConfirmResolution{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 		}
 		payload, err := json.Marshal(map[string]any{
 			"action": action, "summary": sanitizeInteractionArgs(args), "form": form,
 		})
 		if err != nil {
 			cancel(fmt.Errorf("encode confirmation: %w", err))
-			return workflow.ConfirmResolution{}
+			return workflow.ConfirmResolution{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 		}
 		key := semanticInteractionKey("confirmation", payload)
-		response, ok := c.awaitConfirmation(ctx, owner, lease, cancel, key, payload)
-		if !ok {
-			return workflow.ConfirmResolution{}
-		}
-		return workflow.ConfirmResolution{Confirmed: response.Confirmed, Overrides: response.Overrides}
+		response, reason := c.awaitConfirmation(ctx, owner, lease, cancel, key, payload)
+		return workflow.ConfirmResolution{Confirmed: response.Confirmed, Overrides: response.Overrides, TerminalReason: reason}
 	}
 }
 
@@ -935,11 +945,11 @@ func (c *Coordinator) awaitConfirmation(
 	cancel context.CancelCauseFunc,
 	key string,
 	payload json.RawMessage,
-) (ConfirmationResponse, bool) {
+) (ConfirmationResponse, string) {
 	interaction, _, err := c.turns.CreateInteraction(ctx, owner, lease, key, "confirmation", payload, c.opts.InteractionTTL)
 	if err != nil {
 		cancel(fmt.Errorf("persist confirmation %s: %w", key, err))
-		return ConfirmationResponse{}, false
+		return ConfirmationResponse{}, observability.ConfirmationReasonDeliveryFailed
 	}
 	key = interaction.Key
 	ticker := time.NewTicker(c.opts.InteractionPoll)
@@ -950,24 +960,30 @@ func (c *Coordinator) awaitConfirmation(
 		// stale approval.
 		if !interaction.ExpiresAt.After(time.Now()) {
 			cancel(fmt.Errorf("confirmation %s: %w", key, store.ErrInteractionExpired))
-			return ConfirmationResponse{}, false
+			return ConfirmationResponse{}, observability.ConfirmationReasonTimeout
 		}
 		if interaction.Status == store.InteractionStatusResolved {
 			var response ConfirmationResponse
 			if err := json.Unmarshal(interaction.ResponsePayload, &response); err != nil {
 				cancel(fmt.Errorf("decode confirmation %s: %w", key, err))
-				return ConfirmationResponse{}, false
+				return ConfirmationResponse{}, observability.ConfirmationReasonDeliveryFailed
 			}
-			return response, true
+			if response.Confirmed {
+				return response, observability.ConfirmationReasonUserConfirmed
+			}
+			return response, observability.ConfirmationReasonUserDeclined
 		}
 		select {
 		case <-ctx.Done():
-			return ConfirmationResponse{}, false
+			if errors.Is(context.Cause(ctx), store.ErrInteractionExpired) {
+				return ConfirmationResponse{}, observability.ConfirmationReasonTimeout
+			}
+			return ConfirmationResponse{}, observability.ConfirmationReasonBrokerCancelled
 		case <-ticker.C:
 			interaction, err = c.turns.GetInteraction(ctx, owner, lease.TurnID, key)
 			if err != nil {
 				cancel(fmt.Errorf("read confirmation %s: %w", key, err))
-				return ConfirmationResponse{}, false
+				return ConfirmationResponse{}, observability.ConfirmationReasonDeliveryFailed
 			}
 		}
 	}
