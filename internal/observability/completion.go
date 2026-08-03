@@ -14,9 +14,13 @@ type TurnCompletionTrace struct {
 	ToolNames       []string `json:"tool_names,omitempty"`
 }
 
+// The confirmation class and its reasons were removed with the premature
+// completion lock that produced them: confirmation attribution now lives in
+// TraceRecord.Confirmations and the outcome axes derived from it. Nothing
+// writes a confirmation completion, so naming one here would be vocabulary
+// with no producer.
 const (
 	CompletionClassSafetyBlock           = "safety_block"
-	CompletionClassConfirmation          = "confirmation"
 	CompletionClassDeterministicAnswer   = "deterministic_answer"
 	CompletionClassStructuredClarify     = "structured_clarification"
 	CompletionClassParserFailureFallback = "parser_failure_fallback"
@@ -28,11 +32,6 @@ const (
 	CompletionReasonRateLimit                    = "rate_limit"
 	CompletionReasonTokenBudget                  = "token_budget"
 	CompletionReasonReactRoundCeiling            = "react_round_ceiling"
-	CompletionReasonConfirmationDeclined         = "confirmation_declined"
-	CompletionReasonConfirmationTimeout          = "confirmation_timeout"
-	CompletionReasonConfirmationClientDisconnect = "confirmation_client_disconnect"
-	CompletionReasonConfirmationDeliveryFailed   = "confirmation_delivery_failed"
-	CompletionReasonConfirmationBrokerCancelled  = "confirmation_broker_cancelled"
 	CompletionReasonContextClarification         = "context_clarification"
 	CompletionReasonSelectionRequired            = "selection_required"
 	CompletionReasonMissingTimeWindow            = "missing_time_window"

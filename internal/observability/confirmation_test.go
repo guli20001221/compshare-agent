@@ -46,20 +46,19 @@ func TestConfirmationOutcomeUsesOnlyTheLatestCard(t *testing.T) {
 	cases := []struct {
 		name          string
 		confirmations []ConfirmationTrace
-		completion    TurnCompletionTrace
 		terminated    string
 		abortCause    string
 	}{
 		{
+			// The turn this PR exists for: the premature completion lock used to
+			// freeze the whole turn on the first card that came back
+			// not-confirmed, so a later confirmed card and its committed write
+			// were still reported as declined.
 			name: "earlier decline then final confirmation completes",
 			confirmations: []ConfirmationTrace{
 				{Action: "OtherWorkflow", State: ConfirmationStateNotConfirmed, TerminalReason: ConfirmationReasonUserDeclined},
 				{Action: "CreateInstanceWorkflow", State: ConfirmationStateConfirmed, TerminalReason: ConfirmationReasonUserConfirmed},
 			},
-			// An older boolean callback could have recorded this hint before the
-			// turn continued. The last card is authoritative once confirmations
-			// exist; do not fall back to the old hint.
-			completion: TurnCompletionTrace{Class: CompletionClassConfirmation, Reason: CompletionReasonConfirmationDeclined},
 			terminated: TerminatedByDone,
 		},
 		{
@@ -68,7 +67,6 @@ func TestConfirmationOutcomeUsesOnlyTheLatestCard(t *testing.T) {
 				{Action: "OtherWorkflow", State: ConfirmationStateNotConfirmed, TerminalReason: ConfirmationReasonTimeout},
 				{Action: "CreateInstanceWorkflow", State: ConfirmationStateConfirmed, TerminalReason: ConfirmationReasonUserConfirmed},
 			},
-			completion: TurnCompletionTrace{Class: CompletionClassConfirmation, Reason: CompletionReasonConfirmationTimeout},
 			terminated: TerminatedByDone,
 		},
 		{
@@ -92,7 +90,7 @@ func TestConfirmationOutcomeUsesOnlyTheLatestCard(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			record := TraceRecord{Confirmations: tc.confirmations, Completion: tc.completion}
+			record := TraceRecord{Confirmations: tc.confirmations}
 			record.FinalizeOutcome(FinishSignals{})
 			if record.Outcome.TerminatedBy != tc.terminated || record.Outcome.AbortCause != tc.abortCause {
 				t.Fatalf("outcome = %#v, want terminated_by=%q abort_cause=%q", record.Outcome, tc.terminated, tc.abortCause)

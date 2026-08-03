@@ -887,21 +887,11 @@ func (c *Coordinator) renewLoop(ctx context.Context, owner store.Owner, lease st
 	}
 }
 
-func (c *Coordinator) confirmFunc(
-	ctx context.Context,
-	owner store.Owner,
-	lease store.ConversationLease,
-	cancel context.CancelCauseFunc,
-) engine.ConfirmFunc {
-	confirmResult := c.confirmResultFunc(ctx, owner, lease, cancel)
-	return func(action string, args map[string]any) bool {
-		return confirmResult(action, args).Confirmed
-	}
-}
-
 // confirmResultFunc is the durable confirmation bridge with a closed-set
-// terminal reason. The legacy confirmFunc above remains for callers that only
-// need a boolean gate (including SessionOptions construction).
+// terminal reason, and the ONLY one: run() derives the boolean gate that
+// SessionOptions and ChatOptions.ConfirmFunc still take by discarding this
+// result's reason, so a card is awaited exactly once no matter which of the
+// two the caller reaches for.
 func (c *Coordinator) confirmResultFunc(
 	ctx context.Context,
 	owner store.Owner,

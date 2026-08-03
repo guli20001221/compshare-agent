@@ -157,33 +157,23 @@ func (r TraceRecord) DeriveErrorClass(s FinishSignals) string {
 // latestConfirmationTerminalReason reads only the final confirmation card for
 // the turn. A guided flow can legitimately have several confirmed selection
 // cards; an earlier decline/timeout must never override a later confirmation
-// and successful completion. Completion fallback keeps older traces, which did
-// not record confirmations, interpretable.
+// and successful completion.
+//
+// Confirmations is the ONLY source. There is deliberately no fallback to
+// Completion: the derivation runs on the record this process just built, never
+// on a replayed historical trace, and this binary no longer writes any
+// confirmation completion reason — so a fallback could only ever be exercised
+// by a fixture the production writer cannot produce.
 func (r TraceRecord) latestConfirmationTerminalReason() string {
-	if n := len(r.Confirmations); n > 0 {
-		last := r.Confirmations[n-1]
-		return NormalizeConfirmationTerminalReason(
-			last.State == ConfirmationStateConfirmed,
-			last.TerminalReason,
-		)
-	}
-	if !traceCompletionObserved(r.Completion) {
+	n := len(r.Confirmations)
+	if n == 0 {
 		return ""
 	}
-	switch r.Completion.Reason {
-	case CompletionReasonConfirmationDeclined:
-		return ConfirmationReasonUserDeclined
-	case CompletionReasonConfirmationTimeout:
-		return ConfirmationReasonTimeout
-	case CompletionReasonConfirmationClientDisconnect:
-		return ConfirmationReasonClientDisconnect
-	case CompletionReasonConfirmationDeliveryFailed:
-		return ConfirmationReasonDeliveryFailed
-	case CompletionReasonConfirmationBrokerCancelled:
-		return ConfirmationReasonBrokerCancelled
-	default:
-		return ""
-	}
+	last := r.Confirmations[n-1]
+	return NormalizeConfirmationTerminalReason(
+		last.State == ConfirmationStateConfirmed,
+		last.TerminalReason,
+	)
 }
 
 // DeriveResolution fills only the deterministic subset: a blocked turn resolved to
