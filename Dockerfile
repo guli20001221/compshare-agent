@@ -62,11 +62,10 @@ RUN python3 -m venv /opt/miniforge3/envs/py313 \
     && rm /opt/miniforge3/envs/py313/lib/python3.13/site-packages/claude_agent_sdk/_bundled/claude \
     && rm /tmp/ssh-ops-requirements.txt
 
-# The npm package is only a build-time fetcher. Its glibc amd64 package contains
-# a self-contained native CLI; copying the wrapper, node_modules and Node runtime
-# would add hundreds of duplicate MiB to the image.
+# The npm package's postinstall writes its self-contained native CLI to this
+# stable wrapper path. Copying the rest of Node/npm would add hundreds of MiB.
 COPY --from=claude-cli \
-     /usr/local/lib/node_modules/@anthropic-ai/claude-code-linux-x64/claude \
+     /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
      /usr/local/bin/claude
 
 WORKDIR $APP_HOME
