@@ -1080,7 +1080,7 @@ func TestGuidedImageSourceAndFacetsFormsAppearWhenNoImageIntent(t *testing.T) {
 	require.NoError(t, err)
 	tag := fieldByKey(t, tagForm, "ImageTag")
 	assert.Equal(t, []string{"", "深度学习", "大模型推理"}, optionValues(tag))
-	assert.Equal(t, "1 个镜像系列", tag.Options[1].Note, "every offered tag states how many image families it has")
+	assert.Equal(t, "1 个镜像", tag.Options[1].Note, "every offered tag states how many images it has")
 }
 
 // TestTheTagCardOnlyOffersTagsTheChosenTypeLeftBehind is the dead-end fix. The live

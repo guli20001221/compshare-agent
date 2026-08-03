@@ -4043,7 +4043,9 @@ func imageTypeFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 	count := map[string]int{}
 	label := map[string]string{}
 	familiesByType := map[string]map[string]bool{}
-	for _, e := range candidateEntries(set.snap, set.base) {
+	entries := candidateEntries(set.snap, set.base)
+	grouped := imageCandidatesGroupIntoFamilies(entries)
+	for _, e := range entries {
 		t := strings.TrimSpace(e.ImageType)
 		if t == "" {
 			continue
@@ -4068,7 +4070,7 @@ func imageTypeFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 		opts = append(opts, ConfirmFormOption{
 			Value: label[key],
 			Label: imageTypeFacetLabel(label[key]),
-			Note:  imageFamilyCountNote(count[key]),
+			Note:  imageFamilyCountNote(count[key], grouped),
 		})
 	}
 	return opts
@@ -4093,7 +4095,9 @@ func imageTagFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 	count := map[string]int{}
 	label := map[string]string{}
 	familiesByTag := map[string]map[string]bool{}
-	for _, e := range candidateEntries(set.snap, set.afterType) {
+	entries := candidateEntries(set.snap, set.afterType)
+	grouped := imageCandidatesGroupIntoFamilies(entries)
+	for _, e := range entries {
 		for _, tag := range e.Tags {
 			t := strings.TrimSpace(tag)
 			if t == "" {
@@ -4120,7 +4124,7 @@ func imageTagFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 		opts = append(opts, ConfirmFormOption{
 			Value: label[key],
 			Label: label[key],
-			Note:  imageFamilyCountNote(count[key]),
+			Note:  imageFamilyCountNote(count[key], grouped),
 		})
 	}
 	return opts
@@ -4158,7 +4162,9 @@ func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, set imageCand
 	}
 	count := map[string]int{}
 	familiesByCategory := map[string]map[string]bool{}
-	for _, e := range candidateEntries(set.snap, set.base) {
+	entries := candidateEntries(set.snap, set.base)
+	grouped := imageCandidatesGroupIntoFamilies(entries)
+	for _, e := range entries {
 		for _, c := range taxonomy.CategoriesOf(e.Tags) {
 			if familiesByCategory[c] == nil {
 				familiesByCategory[c] = map[string]bool{}
@@ -4177,7 +4183,7 @@ func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, set imageCand
 			continue
 		}
 		opts = append(opts, ConfirmFormOption{
-			Value: c, Label: c, Note: imageFamilyCountNote(n),
+			Value: c, Label: c, Note: imageFamilyCountNote(n, grouped),
 		})
 	}
 	if len(opts) < 2 {
@@ -4255,8 +4261,40 @@ func imageSelectionMatchesCategory(snap *deployment.ImageCatalogSnapshot, taxono
 	return containsFold(taxonomy.CategoriesOf(entry.Tags), wantCategory)
 }
 
-func imageFamilyCountNote(n int) string {
-	return fmt.Sprintf("%d 个镜像系列", n)
+// imageCandidatesGroupIntoFamilies reports whether the rows a card counted actually
+// form families — at least one family holding more than one concrete version.
+//
+// Every counted row belongs to some family, so a family count is always computable;
+// that is not the same as the catalog HAVING families. A source that publishes no
+// family relation gets one singleton family per image (FamilyKey falls back to the
+// image id), and there the family count IS the image count — naming it 系列 would
+// describe a hierarchy the source does not have, and promise a family card that
+// shouldSkipGuidedImageFamilyStep will skip.
+//
+// Decided per card, from the same rows that card counted, so the noun cannot
+// disagree with the number beside it.
+func imageCandidatesGroupIntoFamilies(entries []deployment.ImageCatalogEntry) bool {
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		key := e.FamilyKey()
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
+	}
+	return false
+}
+
+// imageCountNoun names what a facet count counts.
+func imageCountNoun(grouped bool) string {
+	if grouped {
+		return "镜像系列"
+	}
+	return "镜像"
+}
+
+func imageFamilyCountNote(n int, grouped bool) string {
+	return fmt.Sprintf("%d 个%s", n, imageCountNoun(grouped))
 }
 
 // imageSelectionMatchesFamily applies a previously-confirmed family choice. The
@@ -4307,6 +4345,7 @@ func imageSelectionMatchesFacets(snap *deployment.ImageCatalogSnapshot, id, want
 // answer leaves behind — see guidedStepImageTag.
 func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 	set := createImageCandidates(wfCtx)
+	grouped := imageCandidatesGroupIntoFamilies(candidateEntries(set.snap, set.base))
 	index, total := guidedStepPosition(wfCtx, guidedStepImageFacets)
 	var fields []ConfirmFormField
 	if opts := imageTypeFacetOptions(set); len(opts) > 0 {
@@ -4328,15 +4367,23 @@ func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 	// Title and copy follow whichever facet this branch actually offers, so the card
 	// reads as the second half of the question the first card asked rather than as a
 	// generic "筛选" step that happens to show different fields.
+	// The noun and the promised next card both follow whether THIS catalog groups.
+	// A flat source skips the family card, so telling a platform user the next step
+	// shows 镜像系列 would name a card that will not appear.
+	noun := imageCountNoun(grouped)
+	nextStep := "选择后下一步只展示匹配的真实镜像。"
+	if grouped {
+		nextStep = "选择后下一步只展示匹配的镜像系列，并在需要时选择版本。"
+	}
 	title := "缩小镜像范围"
-	description := "镜像类型来自所选目录里的真实镜像。留空表示不按它筛选，不会排除任何镜像。选择后下一步只展示匹配的镜像系列，并在需要时选择版本。"
+	description := "镜像类型来自所选目录里的真实镜像。留空表示不按它筛选，不会排除任何镜像。" + nextStep
 	switch {
 	case len(categoryOpts) > 0:
 		title = "想跑哪一类"
-		description = "用途分类来自平台自己的镜像分类目录，每项后的数量是当前目录里真实匹配的镜像系列数。留空表示不按用途筛选，不会排除任何镜像。选择后下一步只展示匹配的镜像系列，并在需要时选择版本。"
+		description = fmt.Sprintf("用途分类来自平台自己的镜像分类目录，每项后的数量是当前目录里真实匹配的%s数。留空表示不按用途筛选，不会排除任何镜像。%s", noun, nextStep)
 	case len(fields) > 0 && fields[0].Key == "ImageType":
 		title = "要哪种底座"
-		description = "系统镜像是干净的操作系统，框架 / 应用镜像预装了 PyTorch、TensorFlow 等环境。每项后的数量是目录里真实匹配的镜像系列数，留空表示不筛选。"
+		description = fmt.Sprintf("系统镜像是干净的操作系统，框架 / 应用镜像预装了 PyTorch、TensorFlow 等环境。每项后的数量是目录里真实匹配的%s数，留空表示不筛选。", noun)
 	}
 	return &ConfirmForm{
 		Version: 2,
@@ -4368,6 +4415,7 @@ func buildGuidedImageTagForm(wfCtx *Context) (*ConfirmForm, error) {
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("当前候选镜像没有可用标签")
 	}
+	noun := imageCountNoun(imageCandidatesGroupIntoFamilies(candidateEntries(set.snap, set.afterType)))
 	index, total := guidedStepPosition(wfCtx, guidedStepImageTag)
 	return &ConfirmForm{
 		Version: 2,
@@ -4375,7 +4423,7 @@ func buildGuidedImageTagForm(wfCtx *Context) (*ConfirmForm, error) {
 			Index:          index,
 			Total:          total,
 			Title:          guidedStepTitle(index, "再按标签缩小范围"),
-			Description:    "标签是所选目录里镜像自带的原始标签，每项后的数量是当前候选里真实带该标签的镜像系列数。留空表示不按标签筛选，不会排除任何镜像。",
+			Description:    fmt.Sprintf("标签是所选目录里镜像自带的原始标签，每项后的数量是当前候选里真实带该标签的%s数。留空表示不按标签筛选，不会排除任何镜像。", noun),
 			PrimaryLabel:   "确认选择",
 			SecondaryLabel: "跳过",
 			Skippable:      true,

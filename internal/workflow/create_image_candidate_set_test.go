@@ -87,7 +87,7 @@ func TestTheFacetCountAndThePickerPopulationAreTheSameNumber(t *testing.T) {
 		picked := candidateWfCtx(map[string]any{"ImageType": opt.Value})
 		_, opts, population := guidedImageFormOptions(picked.Params, picked.Result("查询镜像"), "", nil, false)
 		require.NotEmpty(t, opts, "type %q was offered, so it must reach a picker", opt.Value)
-		assert.Equal(t, fmt.Sprintf("%d 个镜像系列", population), opt.Note,
+		assert.Equal(t, fmt.Sprintf("%d 个镜像", population), opt.Note,
 			"the count on the facet card and the picker's population are one fact")
 	}
 }
@@ -115,9 +115,9 @@ func TestOnAPodZoneTheCountDropsVmOnlyImagesToo(t *testing.T) {
 		return ""
 	}
 
-	require.Equal(t, "3 个镜像系列", appCount(map[string]any{}),
+	require.Equal(t, "3 个镜像", appCount(map[string]any{}),
 		"premise: off a pod zone all three App rows are real candidates")
-	assert.Equal(t, "1 个镜像系列", appCount(map[string]any{"Zone": "cn-bj2-03", "ZoneIsPod": true}),
+	assert.Equal(t, "1 个镜像", appCount(map[string]any{"Zone": "cn-bj2-03", "ZoneIsPod": true}),
 		"a pod zone cannot boot a VM image; the count must not offer what the picker drops")
 
 	// zoneIsPod is now an explicit argument, not read from the params map — that is
@@ -278,9 +278,9 @@ func TestTagCountsDescribeThePostTypeCandidates(t *testing.T) {
 		return ""
 	}
 
-	assert.Equal(t, "3 个镜像系列", note(""), "unfiltered, every row carrying the tag counts")
-	assert.Equal(t, "2 个镜像系列", note("App"), "under a type, only that type's rows count")
-	assert.Equal(t, "1 个镜像系列", note("Other"))
+	assert.Equal(t, "3 个镜像", note(""), "unfiltered, every row carrying the tag counts")
+	assert.Equal(t, "2 个镜像", note("App"), "under a type, only that type's rows count")
+	assert.Equal(t, "1 个镜像", note("Other"))
 }
 
 // TestNearIdenticalUpstreamTagsStayDistinctOptions records a deliberate non-fix.

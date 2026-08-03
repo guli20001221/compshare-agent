@@ -132,8 +132,8 @@ func TestTheTypeFacetNamesEveryTypeTheCatalogReturns(t *testing.T) {
 	assert.Equal(t, "系统镜像", byValue["System"].Label)
 	assert.Equal(t, "框架 / 应用镜像", byValue["App"].Label)
 	assert.Equal(t, "其他镜像", byValue["Other"].Label)
-	assert.Equal(t, "2 个镜像系列", byValue["System"].Note)
-	assert.Equal(t, "1 个镜像系列", byValue["Other"].Note)
+	assert.Equal(t, "2 个镜像", byValue["System"].Note)
+	assert.Equal(t, "1 个镜像", byValue["Other"].Note)
 
 	for _, o := range opts {
 		if o.Value == "" {

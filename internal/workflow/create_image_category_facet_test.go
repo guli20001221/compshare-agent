@@ -69,8 +69,8 @@ func TestCategoryFacetOffersOnlyCategoriesThatHaveImages(t *testing.T) {
 	for _, o := range opts {
 		byValue[o.Value] = o
 	}
-	assert.Equal(t, "1 个镜像系列", byValue["AIGC热门"].Note)
-	assert.Equal(t, "2 个镜像系列", byValue["图像/视频生成"].Note,
+	assert.Equal(t, "1 个镜像", byValue["AIGC热门"].Note)
+	assert.Equal(t, "2 个镜像", byValue["图像/视频生成"].Note,
 		"InfiniteTalk (视频生成) and Wan both land here; the count is what the user will see")
 }
 
