@@ -53,11 +53,13 @@ func TestSupervisorKillsGrandchildProcessGroup(t *testing.T) {
 		t.Fatalf("bad grandchild pid %q: %v", raw, convErr)
 	}
 
-	// Poll: the group-kill must reap the grandchild. Kill(pid, 0) probes existence; ESRCH == gone.
+	// Poll: the group-kill must terminate the grandchild. Kill(pid, 0) probes process-table
+	// presence, but reports a zombie as present until the container's PID 1 reaps it. A zombie
+	// cannot execute and proves the group kill reached the child, so it is terminal for this test.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := syscall.Kill(gcPid, 0); err == syscall.ESRCH {
-			return // reaped — the group kill reached the grandchild
+		if grandchildTerminated(gcPid) {
+			return
 		}
 		if time.Now().After(deadline) {
 			// Clean up the leak we just proved, so the test host isn't polluted.
@@ -66,4 +68,23 @@ func TestSupervisorKillsGrandchildProcessGroup(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func grandchildTerminated(pid int) bool {
+	if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+		return true
+	}
+
+	// /proc/<pid>/stat begins with "pid (comm) state ...". Split after the final ')' so a
+	// process name containing spaces or ')' cannot move the state field.
+	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	lastParen := strings.LastIndex(string(stat), ")")
+	if lastParen < 0 {
+		return false
+	}
+	fields := strings.Fields(string(stat)[lastParen+1:])
+	return len(fields) > 0 && fields[0] == "Z"
 }
