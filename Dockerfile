@@ -47,7 +47,7 @@ ENV APP_HOME=/opt/compshare-agent \
     GIN_MODE=release
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tini \
+    && apt-get install -y --no-install-recommends ca-certificates postgresql-client tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 compshare \
     && useradd --uid 10001 --gid 10001 --create-home \

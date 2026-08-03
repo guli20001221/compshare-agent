@@ -95,17 +95,42 @@ migrate:
     - uaek-c5
   variables:
     NAMESPACE: prj-ucompshare-prod
-  before_script:
-    - apk add --no-cache postgresql-client
   script:
     - |
-      DSN=$(sed -n 's/^[[:space:]]*dsn:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' deploy/conf/config.yaml)
-      DB_HOST=$(sed -n 's/^[[:space:]]*host_override:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' deploy/conf/config.yaml)
-      test -n "$DSN"
-      test -n "$DB_HOST"
-      for migration in deploy/migrations/*.sql; do
-        psql "$DSN" -h "$DB_HOST" -X -v ON_ERROR_STOP=1 -f "$migration"
+      MIGRATION_POD="compshare-agent-migrate-$CI_PIPELINE_ID"
+      cleanup() {
+        kubectl -n "$NAMESPACE" delete pod "$MIGRATION_POD" --ignore-not-found --wait=false >/dev/null || true
+      }
+      trap cleanup EXIT
+      kubectl -n "$NAMESPACE" delete pod "$MIGRATION_POD" --ignore-not-found --wait=true
+      sed \
+        -e "s|__IMAGE__|$IMAGE:$CI_COMMIT_SHORT_SHA|g" \
+        -e "s|__POD_NAME__|$MIGRATION_POD|g" \
+        deploy/k8s/migration-pod.yaml \
+        | kubectl -n "$NAMESPACE" apply -f -
+
+      pod_phase=""
+      attempt=0
+      while test "$attempt" -lt 150; do
+        attempt=$((attempt + 1))
+        pod_phase=$(kubectl -n "$NAMESPACE" get pod "$MIGRATION_POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+        case "$pod_phase" in
+          Succeeded)
+            break
+            ;;
+          Failed)
+            kubectl -n "$NAMESPACE" logs "$MIGRATION_POD" || true
+            exit 1
+            ;;
+        esac
+        sleep 2
       done
+      if test "$pod_phase" != "Succeeded"; then
+        kubectl -n "$NAMESPACE" logs "$MIGRATION_POD" || true
+        echo "migration pod did not complete before its deadline" >&2
+        exit 1
+      fi
+      kubectl -n "$NAMESPACE" logs "$MIGRATION_POD"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
