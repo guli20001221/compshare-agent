@@ -7,6 +7,7 @@
 # must contain the regcred image-pull secret.
 
 stages:
+  - diagnose
   - test
   - build
   - deploy
@@ -14,6 +15,35 @@ stages:
 variables:
   IMAGE: uhub.service.ucloud.cn/ucompshare-job/compshare-agent
   GOPROXY: https://goproxy.cn,direct
+
+# A read-only production diagnostic path. It is optional so it never blocks a
+# release, but makes a failed rollout observable without copying KUN access to
+# a workstation.
+diagnose-production:
+  stage: diagnose
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    APP: compshare-agent
+  script:
+    - kubectl -n "$NAMESPACE" get deployment/"$APP" -o wide
+    - kubectl -n "$NAMESPACE" get pods -l app="$APP" -o wide
+    - kubectl -n "$NAMESPACE" get service/"$APP" -o wide
+    - |
+      POD=$(kubectl -n "$NAMESPACE" get pods -l app="$APP" -o jsonpath='{.items[0].metadata.name}')
+      if test -n "$POD"; then
+        kubectl -n "$NAMESPACE" describe pod "$POD"
+        for CONTAINER in "$APP" "$APP-feishu"; do
+          kubectl -n "$NAMESPACE" logs "$POD" -c "$CONTAINER" --tail=200 || true
+          kubectl -n "$NAMESPACE" logs "$POD" -c "$CONTAINER" --previous --tail=200 || true
+        done
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
 
 test:
   stage: test
