@@ -199,13 +199,55 @@ func safeContextNarrative(value string) string {
 	return compactSemanticNarrative(security.RedactOperationalTokensInText(value))
 }
 
-// renderAgentContextCard serializes only structured semantic memory. Complete
-// recent exchanges are restored as ordinary user/assistant messages by
+// isLiveSelectionHint reports whether one SelectedEntities row is live execution
+// state rather than semantic memory about the conversation.
+//
+// CompileForTurn assembles SelectedEntities from five sources and only three are
+// execution state: the account's sole instance, the pending selection card's
+// numbered candidates, and the current SelectedInstanceID with its provenance
+// (user_selected or observed). The other two — TaskSnapshot.Entities and
+// ConversationDigest.EntityHints — are the semantic layer the canonical transcript
+// replaces, and they arrive carrying actionresolver CandidateSource values
+// (user_explicit / verified_context / tool_observation / user_confirmation /
+// agent_inference).
+//
+// An allowlist rather than a denylist, so a semantic source added later is
+// excluded by default instead of admitted by an out-of-date list.
+func isLiveSelectionHint(hint SemanticEntityHint) bool {
+	switch hint.Source {
+	case selectionSourceAccountSingle, selectionSourcePendingCard,
+		SelectedInstanceSourceUser, SelectedInstanceSourceObserved:
+		return true
+	}
+	return false
+}
+
+// renderAgentContextCard serializes structured semantic memory. Complete recent
+// exchanges are restored as ordinary user/assistant messages by
 // messagesFromAgentContext, so they are not duplicated here.
+//
+// With the canonical transcript on, that transcript IS the semantic history — the
+// model reads prior turns' messages, tool calls and tool results verbatim — so a
+// card restating a summary of them is a second, lossier memory of the same thing.
+// The semantic blocks are therefore suppressed and what remains is what a
+// transcript cannot carry: live execution state (current selection, pending
+// selection card) and this turn's continuity notices (read-only, recovered
+// operation), under the same no-write header.
+//
+// The suppression is HERE, at the model-facing serialization, and deliberately NOT
+// in CompileForTurn. selection_binder (selection_binder.go:143, which keeps its own
+// two-source allowlist over this same slice) and the write-proposal path read
+// view.SelectedEntities as a struct and never see this string; filtering upstream
+// would silently narrow the write path's target binding instead of only changing
+// what the model reads.
+//
+// Every suppression below is guarded by `semantic`, which is true whenever the flag
+// is off — so with the flag off this function is byte-identical to before.
 func renderAgentContextCard(view AgentContext) string {
+	semantic := !canonicalTranscriptEnabled
 	var lines []string
 	lines = append(lines, "【本轮统一上下文；仅帮助理解，不授权任何写操作】")
-	if task := view.ActiveTask; task != nil {
+	if task := view.ActiveTask; semantic && task != nil {
 		parts := []string{"目标=" + safeContextText(task.Goal)}
 		if task.Stage != "" {
 			parts = append(parts, "阶段="+safeContextText(task.Stage))
@@ -225,10 +267,13 @@ func renderAgentContextCard(view AgentContext) string {
 			lines = append(lines, "该任务已过期；仅供理解，不得直接继续执行")
 		}
 	}
-	if narrative := safeContextNarrative(view.ConversationDigest.Narrative); narrative != "" {
+	if narrative := safeContextNarrative(view.ConversationDigest.Narrative); semantic && narrative != "" {
 		lines = append(lines, "较早对话摘要："+narrative)
 	}
 	appendItems := func(label string, values []string) {
+		if !semantic {
+			return
+		}
 		if values = safeContextItems(values); len(values) > 0 {
 			lines = append(lines, label+"："+strings.Join(values, "；"))
 		}
@@ -238,11 +283,16 @@ func renderAgentContextCard(view AgentContext) string {
 	appendItems("已作决定", view.ConversationDigest.Decisions)
 	appendItems("未完成事项", view.ConversationDigest.UnresolvedTasks)
 	for _, excerpt := range view.ConversationDigest.Excerpts {
-		if excerpt.User != "" && excerpt.Assistant != "" {
+		if semantic && excerpt.User != "" && excerpt.Assistant != "" {
 			lines = append(lines, "较早完整摘录：用户="+excerpt.User+"；助手="+excerpt.Assistant)
 		}
 	}
 	for _, entity := range view.SelectedEntities {
+		// The live rows stay: dropping them would take away the current selection,
+		// not a memory of the conversation.
+		if !semantic && !isLiveSelectionHint(entity) {
+			continue
+		}
 		label := strings.TrimSpace(entity.Name + " " + entity.ID)
 		if label != "" {
 			ordinal := ""
@@ -253,12 +303,12 @@ func renderAgentContextCard(view AgentContext) string {
 		}
 	}
 	for _, observation := range view.RecentObservations {
-		if observation.Summary != "" {
+		if semantic && observation.Summary != "" {
 			lines = append(lines, "近期可信观测："+observation.Summary)
 		}
 	}
 	for _, memory := range view.VerifiedKnowledge {
-		if memory.Question != "" && memory.Answer != "" {
+		if semantic && memory.Question != "" && memory.Answer != "" {
 			lines = append(lines, "已验证知识：问="+memory.Question+"；答="+memory.Answer)
 		}
 	}
