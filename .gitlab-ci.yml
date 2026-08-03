@@ -20,6 +20,12 @@ test:
   image: uhub.service.ucloud.cn/ucompshare-job/golang:1.25-alpine
   tags:
     - uaek-c5
+  # SSH-ops supervisor tests launch the configured Python executable.  The
+  # KB's Go-only test suite does not need it, but this Alpine image provides
+  # only python3 after installation.
+  before_script:
+    - apk add --no-cache python3
+    - ln -sf /usr/bin/python3 /usr/local/bin/python
   script:
     - go test ./...
     - go vet ./...
@@ -76,4 +82,3 @@ deploy:
       when: manual
   environment:
     name: production
-
