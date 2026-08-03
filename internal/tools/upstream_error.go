@@ -51,7 +51,7 @@ func (e *UpstreamAPIError) UserMessage() string {
 // NewUpstreamAPIError builds an UpstreamAPIError, attaching a recovery hint for
 // known RetCodes (empty for codes without actionable guidance).
 func NewUpstreamAPIError(code int, msg string) *UpstreamAPIError {
-	return &UpstreamAPIError{Code: code, Message: msg, Hint: retCodeHintForMessage(code, msg)}
+	return &UpstreamAPIError{Code: code, Message: msg, Hint: retCodeGuidanceForMessage(code, msg).Hint}
 }
 
 // UpstreamAPIErrorFrom extracts an *UpstreamAPIError from an error chain.
@@ -63,146 +63,123 @@ func UpstreamAPIErrorFrom(err error) (*UpstreamAPIError, bool) {
 	return nil, false
 }
 
-// retCodeHint maps a known upstream RetCode to a short Chinese recovery hint, or
-// "" when there is no actionable guidance. Without a hint the model only sees the
-// raw "API error (RetCode=N)" and tends to blindly retry the same failing call or
-// give up (the codebase's recorded create-failure root cause), and the
-// direct-dispatch path falls back to the generic "查询暂时失败". Hints deliberately
-// avoid the raw upstream tokens so surfacing one can never leak them into the
-// final reply (eval/regression_6cat_cases.json reply_not_contains gate).
-//
-// The codes and their meaning are pinned to the upstream gateway source
-// (uhost-compshare-api internal/errors/code.go), audited 2026-06-26.
-//
-// Unknown codes fall back to the prior raw-error behavior (no hint).
+// retCodeGuidance is the one authoritative, model-safe policy for a known
+// upstream RetCode. Hint is shared by direct dispatch and the Agent boundary;
+// Disposition is the structured control-flow equivalent. Keeping them in one
+// entry prevents a newly documented recovery hint from silently falling back to
+// a different Agent disposition.
+type retCodeGuidance struct {
+	Hint        string
+	Disposition AgentToolStatus
+}
+
+func retryLaterGuidance(hint string) retCodeGuidance {
+	return retCodeGuidance{Hint: hint, Disposition: AgentToolStatusRetryLater}
+}
+
+func chooseAlternativeGuidance(hint string) retCodeGuidance {
+	return retCodeGuidance{Hint: hint, Disposition: AgentToolStatusChooseAlternative}
+}
+
+func failedGuidance(hint string) retCodeGuidance {
+	return retCodeGuidance{Hint: hint, Disposition: AgentToolStatusFailed}
+}
+
+// retCodeGuidanceByCode is pinned to the upstream gateway source
+// (uhost-compshare-api internal/errors/code.go), audited 2026-06-26. Hints
+// deliberately avoid raw upstream tokens so they can be surfaced to both the
+// Agent and direct-dispatch user replies without reopening the reply_not_contains
+// regression gate. Unknown RetCodes intentionally have no policy entry.
+var retCodeGuidanceByCode = map[int]retCodeGuidance{
+	120:    retryLaterGuidance("上游数据异常：请稍后重试，若持续失败请联系平台支持。"),
+	150:    retryLaterGuidance("服务暂时不可用：请稍后重试。"),
+	210:    chooseAlternativeGuidance("请求缺少必要信息：请补充实例、可用区、规格或价格所需参数后再试。"),
+	220:    chooseAlternativeGuidance("请求参数超出平台允许范围：请调整数值后再试。"),
+	230:    chooseAlternativeGuidance("该可用区/规格/镜像组合不被接受：请更换可用区、规格或镜像后再试，不要重复同一请求。"),
+	240:    failedGuidance("当前账号没有执行该操作的权限：请确认项目、角色或资源归属。"),
+	280:    chooseAlternativeGuidance("参数格式不符合要求：请检查名称、密码、时间或容量格式后再试。"),
+	520:    chooseAlternativeGuidance("账号余额不足：请充值或更换计费方式后再试。"),
+	8010:   chooseAlternativeGuidance("实例不是关机状态：请先关机后再执行该操作。"),
+	8017:   chooseAlternativeGuidance("镜像当前不可用：请更换镜像或稍后再试。"),
+	8027:   chooseAlternativeGuidance("镜像当前不可用：请更换镜像或稍后再试。"),
+	8039:   chooseAlternativeGuidance("目标资源不存在或已释放：请刷新资源列表后再试。"),
+	8052:   chooseAlternativeGuidance("安全组配置异常：请检查网络和安全组设置后再试。"),
+	8067:   chooseAlternativeGuidance("磁盘容量参数不合法：扩盘只能增大到平台允许范围内的容量。"),
+	8090:   retryLaterGuidance("价格查询失败：请稍后重试或到控制台确认费用后再操作。"),
+	8095:   chooseAlternativeGuidance("资源配额不足：请释放部分资源或申请提升配额。"),
+	8097:   retryLaterGuidance("账单或订单信息暂时不可用：请稍后重试或到控制台确认费用。"),
+	8102:   retryLaterGuidance("资源状态更新失败：请刷新资源状态后再试。"),
+	8107:   chooseAlternativeGuidance("磁盘容量参数不合法：扩盘只能增大到平台允许范围内的容量。"),
+	8108:   retryLaterGuidance("账单或订单信息暂时不可用：请稍后重试或到控制台确认费用。"),
+	8116:   chooseAlternativeGuidance("当前资源不支持该计费方式：请更换计费方式后再试。"),
+	8117:   retryLaterGuidance("账单或订单信息暂时不可用：请稍后重试或到控制台确认费用。"),
+	8226:   failedGuidance("账号认证或权限配置异常：请联系平台支持确认账号状态。"),
+	8314:   chooseAlternativeGuidance("密码不符合平台规则：请使用 8-32 位并包含至少两类字符。"),
+	8315:   chooseAlternativeGuidance("系统盘容量不足以使用该镜像：请先扩容系统盘或选择更小的镜像。"),
+	8333:   chooseAlternativeGuidance("CPU 与内存配比不符合平台规格：请换一个推荐配置。"),
+	8350:   chooseAlternativeGuidance("该共享镜像不允许再次共享：请选择其他镜像。"),
+	8351:   chooseAlternativeGuidance("目标资源不存在或已释放：请刷新资源列表后再试。"),
+	8357:   chooseAlternativeGuidance("当前规格资源不足：请更换可用区或规格后再试。"),
+	8360:   chooseAlternativeGuidance("当前系统盘形态不支持该扩容方式：请到控制台确认磁盘状态。"),
+	8366:   retryLaterGuidance("产品价格映射暂时不可用：请稍后重试或到控制台确认费用。"),
+	8367:   retryLaterGuidance("资源配额查询或校验失败：请稍后重试，仍失败请联系平台支持。"),
+	8372:   retryLaterGuidance("代理网络资源分配失败：请稍后重试。"),
+	8374:   chooseAlternativeGuidance("CPU 平台与当前规格不匹配：请换一个平台或规格。"),
+	8401:   chooseAlternativeGuidance("分页参数超出范围：请减小偏移或重新查询。"),
+	8421:   retryLaterGuidance("实例元数据服务暂时不可用：请稍后重试。"),
+	8433:   retryLaterGuidance("服务暂时异常：请稍后重试，若持续失败请联系平台支持。"),
+	8434:   retryLaterGuidance("上游依赖服务暂时异常：请稍后重试，若持续失败请联系平台支持。"),
+	8436:   chooseAlternativeGuidance("当前资源暂不允许修改：请确认资源状态和计费方式后再试。"),
+	8438:   retryLaterGuidance("上游处理超时：请稍后重试，避免重复快速提交。"),
+	8441:   retryLaterGuidance("操作过于频繁：请稍等一会儿再试。"),
+	8442:   chooseAlternativeGuidance("该实例不支持无卡启动：请正常开机或更换支持无卡启动的实例。"),
+	8443:   chooseAlternativeGuidance("已有无卡启动任务在处理中：请等待任务完成后再试。"),
+	8445:   chooseAlternativeGuidance("当前账号已有无卡运行实例限制：请先恢复或关闭已有无卡实例。"),
+	8498:   retryLaterGuidance("上游依赖服务暂时异常：请稍后重试，若持续失败请联系平台支持。"),
+	8510:   retryLaterGuidance("上游依赖服务暂时异常：请稍后重试，若持续失败请联系平台支持。"),
+	8520:   retryLaterGuidance("上游依赖服务暂时异常：请稍后重试，若持续失败请联系平台支持。"),
+	8580:   retryLaterGuidance("上游依赖服务暂时异常：请稍后重试，若持续失败请联系平台支持。"),
+	8903:   chooseAlternativeGuidance("实例正在执行任务：请等待当前任务完成后再操作。"),
+	8905:   chooseAlternativeGuidance("实例电源状态不满足操作条件：请刷新状态后再试。"),
+	8917:   chooseAlternativeGuidance("账号存在未完成订单或支付限制：请处理订单后再操作。"),
+	8918:   chooseAlternativeGuidance("账号存在未完成订单或支付限制：请处理订单后再操作。"),
+	8919:   chooseAlternativeGuidance("账号存在未完成订单或支付限制：请处理订单后再操作。"),
+	8957:   chooseAlternativeGuidance("目标账号不存在或无权限：请确认共享或目标账号信息。"),
+	8964:   chooseAlternativeGuidance("实例正在制作镜像：请等待镜像任务结束后再操作。"),
+	8968:   chooseAlternativeGuidance("镜像版本名已存在：请换一个版本名称。"),
+	226601: chooseAlternativeGuidance("资源已到期或不可用：请续费或选择其他资源。"),
+	226602: chooseAlternativeGuidance("资源已到期或不可用：请续费或选择其他资源。"),
+	226603: chooseAlternativeGuidance("所选镜像不支持该卡型：请更换卡型或镜像后再试。"),
+	226604: chooseAlternativeGuidance("目标可用区的该卡型当前资源不足：请更换可用区或规格，或稍后再试。"),
+	226605: retryLaterGuidance("镜像使用时长更新任务已存在：请等待任务完成后再试。"),
+	226606: failedGuidance("账号实名信息缺失：请完成认证后再试。"),
+	226607: chooseAlternativeGuidance("实例与容器状态不一致：请刷新状态，仍异常请联系平台支持。"),
+	226608: chooseAlternativeGuidance("资源配额不足：请释放部分资源或申请提升配额。"),
+	226609: retryLaterGuidance("实例操作正在处理中：请稍后刷新状态后再试。"),
+	226611: chooseAlternativeGuidance("当前账号未购买对应套餐：请购买套餐后再创建相关资源。"),
+	226612: chooseAlternativeGuidance("资源校验失败：请更换规格、可用区或稍后再试。"),
+	226618: chooseAlternativeGuidance("共享文件存储仍被运行中的实例挂载：请先卸载或关闭相关实例。"),
+	226619: retryLaterGuidance("操作过于频繁：请稍等一会儿再试。"),
+	226620: retryLaterGuidance("镜像正在同步中：请等待同步完成后再操作。"),
+}
+
+func retCodeGuidanceForMessage(code int, msg string) retCodeGuidance {
+	guidance := retCodeGuidanceByCode[code]
+	guidance.Hint = retCodeHintForMessage(code, msg)
+	return guidance
+}
+
 func retCodeHint(code int) string {
-	return retCodeHintForMessage(code, "")
+	return retCodeGuidanceForMessage(code, "").Hint
 }
 
 func retCodeHintForMessage(code int, msg string) string {
-	switch code {
-	case 120:
-		return "上游数据异常：请稍后重试，若持续失败请联系平台支持。"
-	case 150:
-		return "服务暂时不可用：请稍后重试。"
-	case 210:
-		return "请求缺少必要信息：请补充实例、可用区、规格或价格所需参数后再试。"
-	case 220:
-		return "请求参数超出平台允许范围：请调整数值后再试。"
-	case 230:
-		if strings.Contains(strings.ToLower(msg), "existing cfs") {
-			return "该可用区已经存在 CFS 共享文件存储：请直接使用已有 CFS，或换一个支持的 Pod/容器可用区后再创建。"
-		}
-		// Params rejection: the zone/region/image/spec combination is not accepted.
-		return "该可用区/规格/镜像组合不被接受：请更换可用区、规格或镜像后再试，不要重复同一请求。"
-	case 240:
-		return "当前账号没有执行该操作的权限：请确认项目、角色或资源归属。"
-	case 280:
-		return "参数格式不符合要求：请检查名称、密码、时间或容量格式后再试。"
-	case 520:
-		return "账号余额不足：请充值或更换计费方式后再试。"
-	case 8010:
-		return "实例不是关机状态：请先关机后再执行该操作。"
-	case 8017, 8027:
-		return "镜像当前不可用：请更换镜像或稍后再试。"
-	case 8039, 8351:
-		return "目标资源不存在或已释放：请刷新资源列表后再试。"
-	case 8067, 8107:
-		return "磁盘容量参数不合法：扩盘只能增大到平台允许范围内的容量。"
-	case 8052:
-		return "安全组配置异常：请检查网络和安全组设置后再试。"
-	case 8090:
-		return "价格查询失败：请稍后重试或到控制台确认费用后再操作。"
-	case 8095:
-		return "资源配额不足：请释放部分资源或申请提升配额。"
-	case 8367:
-		return "资源配额查询或校验失败：请稍后重试，仍失败请联系平台支持。"
-	case 8097, 8108, 8117:
-		return "账单或订单信息暂时不可用：请稍后重试或到控制台确认费用。"
-	case 8102:
-		return "资源状态更新失败：请刷新资源状态后再试。"
-	case 8116:
-		return "当前资源不支持该计费方式：请更换计费方式后再试。"
-	case 8226:
-		return "账号认证或权限配置异常：请联系平台支持确认账号状态。"
-	case 8314:
-		return "密码不符合平台规则：请使用 8-32 位并包含至少两类字符。"
-	case 8315:
-		return "系统盘容量不足以使用该镜像：请先扩容系统盘或选择更小的镜像。"
-	case 8333:
-		return "CPU 与内存配比不符合平台规格：请换一个推荐配置。"
-	case 8350:
-		return "该共享镜像不允许再次共享：请选择其他镜像。"
-	case 8357:
-		return "当前规格资源不足：请更换可用区或规格后再试。"
-	case 8360:
-		return "当前系统盘形态不支持该扩容方式：请到控制台确认磁盘状态。"
-	case 8366:
-		return "产品价格映射暂时不可用：请稍后重试或到控制台确认费用。"
-	case 8372:
-		return "代理网络资源分配失败：请稍后重试。"
-	case 8374:
-		return "CPU 平台与当前规格不匹配：请换一个平台或规格。"
-	case 8401:
-		return "分页参数超出范围：请减小偏移或重新查询。"
-	case 8421:
-		return "实例元数据服务暂时不可用：请稍后重试。"
-	case 8433:
-		// Generic upstream service error (NOT capacity — see 226604).
-		return "服务暂时异常：请稍后重试，若持续失败请联系平台支持。"
-	case 8434, 8498, 8510, 8520, 8580:
-		return "上游依赖服务暂时异常：请稍后重试，若持续失败请联系平台支持。"
-	case 8436:
-		return "当前资源暂不允许修改：请确认资源状态和计费方式后再试。"
-	case 8438:
-		return "上游处理超时：请稍后重试，避免重复快速提交。"
-	case 8441, 226619:
-		return "操作过于频繁：请稍等一会儿再试。"
-	case 8442:
-		return "该实例不支持无卡启动：请正常开机或更换支持无卡启动的实例。"
-	case 8443:
-		return "已有无卡启动任务在处理中：请等待任务完成后再试。"
-	case 8445:
-		return "当前账号已有无卡运行实例限制：请先恢复或关闭已有无卡实例。"
-	case 8903:
-		return "实例正在执行任务：请等待当前任务完成后再操作。"
-	case 8905:
-		return "实例电源状态不满足操作条件：请刷新状态后再试。"
-	case 8917, 8918, 8919:
-		return "账号存在未完成订单或支付限制：请处理订单后再操作。"
-	case 8957:
-		return "目标账号不存在或无权限：请确认共享或目标账号信息。"
-	case 8964:
-		return "实例正在制作镜像：请等待镜像任务结束后再操作。"
-	case 8968:
-		return "镜像版本名已存在：请换一个版本名称。"
-	case 226601, 226602:
-		return "资源已到期或不可用：请续费或选择其他资源。"
-	case 226605:
-		return "镜像使用时长更新任务已存在：请等待任务完成后再试。"
-	case 226606:
-		return "账号实名信息缺失：请完成认证后再试。"
-	case 226603:
-		// The selected image does not support the requested GPU type.
-		return "所选镜像不支持该卡型：请更换卡型或镜像后再试。"
-	case 226604:
-		// Real capacity / out-of-stock code for the requested (zone, GPU).
-		return "目标可用区的该卡型当前资源不足：请更换可用区或规格，或稍后再试。"
-	case 226607:
-		return "实例与容器状态不一致：请刷新状态，仍异常请联系平台支持。"
-	case 226608:
-		return "资源配额不足：请释放部分资源或申请提升配额。"
-	case 226609:
-		return "实例操作正在处理中：请稍后刷新状态后再试。"
-	case 226611:
-		return "当前账号未购买对应套餐：请购买套餐后再创建相关资源。"
-	case 226612:
-		return "资源校验失败：请更换规格、可用区或稍后再试。"
-	case 226618:
-		return "共享文件存储仍被运行中的实例挂载：请先卸载或关闭相关实例。"
-	case 226620:
-		return "镜像正在同步中：请等待同步完成后再操作。"
-	default:
-		return ""
+	guidance := retCodeGuidanceByCode[code]
+	// Keep this pre-existing message refinement in its historical helper. The
+	// RetCode policy itself remains the single table above; this only selects the
+	// more specific safe hint when the gateway's code 230 identifies existing CFS.
+	if code == 230 && strings.Contains(strings.ToLower(msg), "existing cfs") {
+		return "该可用区已经存在 CFS 共享文件存储：请直接使用已有 CFS，或换一个支持的 Pod/容器可用区后再创建。"
 	}
+	return guidance.Hint
 }

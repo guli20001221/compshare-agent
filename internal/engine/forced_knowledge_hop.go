@@ -147,7 +147,11 @@ func (e *Engine) runForcedKnowledgeHop(ctx context.Context, userMsg string, onSt
 	// never aimed at retrieval. Cleared immediately so an Agent-issued search
 	// later in the same turn is planned normally.
 	e.forcedHopSearchInFlight = true
-	result := annotateForcedKnowledgeHop(e.executeSearchKnowledge(ctx, args, onStep))
+	// This synthetic call bypasses executeTool, so it must cross the same
+	// model-observation boundary explicitly. In particular, an empty knowledge
+	// ledger is not a successful factual answer: the central Agent needs the
+	// NO_CITABLE_EVIDENCE disposition before it decides what it can say next.
+	result := agentToolObservation("SearchKnowledge", annotateForcedKnowledgeHop(e.executeSearchKnowledge(ctx, args, onStep)))
 	e.forcedHopSearchInFlight = false
 
 	// Register under the key executeTool would have computed for the same call,

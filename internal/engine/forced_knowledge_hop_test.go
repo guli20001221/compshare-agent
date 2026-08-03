@@ -8,6 +8,7 @@ import (
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -256,6 +257,15 @@ func TestEmptyForcedHopSaysItFailedRatherThanInvitingARetry(t *testing.T) {
 		require.NotEmpty(t, observation, "the empty hop must still be observable to the Agent")
 		assert.Contains(t, observation, "结果为空",
 			"the note has to survive the annotate/marshal round trip into the request")
+
+		result, ok := tools.ParseAgentToolResult(observation)
+		require.True(t, ok, "a synthetic SearchKnowledge result must use the same contract as an Agent-issued tool call")
+		assert.Equal(t, tools.AgentToolStatusFailed, result.Status)
+		assert.Equal(t, "NO_CITABLE_EVIDENCE", result.Error.Code)
+		assert.Equal(t, tools.AgentToolNextAnswerWithLimits, result.NextStep)
+		data, ok := result.Data.(map[string]any)
+		require.True(t, ok)
+		assert.Contains(t, data["note"], "再检索一次")
 	})
 }
 
