@@ -13,9 +13,14 @@ import (
 // with — outliving expireStaleSelectedInstance, which only ever touches
 // sessionState.
 //
-// Both failures below were reproduced against the pre-fix tree before this file
-// was written. Neither involves the canonical transcript; both are reachable
-// under the shipped config today.
+// Exactly ONE defect was reproduced against the pre-fix tree: multi-instance
+// accumulation, which is what TestBarePronounAfterTwoOperationsBindsTheNewestPick
+// and TestDigestHoldsNoSelectionCopyAtAll cover. It is reachable under the
+// shipped config today and does not involve the canonical transcript.
+//
+// TestSinglePickPastItsTTLDoesNotBind is NOT a second defect. It passed before
+// this change too — see its own comment for why — and is kept as an existing
+// invariant, not as a guard for anything here.
 
 // selectionEngine is a hydrated engine with no history — the smallest thing that
 // can hold a selection and compile a context view.
@@ -80,10 +85,14 @@ func turnEntry(e *Engine, now time.Time) AgentContext {
 // appending. The copy could not outlive the original because it was never a
 // second entry.
 //
-// A probe that called expireStaleSelectedInstance without the refreshconversation
-// digest that always follows it reported the opposite, and it was wrong.
-// The accumulation defect needs two DIFFERENT ids, which never key-collide;
-// that case is TestOlderPickPastItsTTLDoesNotBlockTheLiveOne.
+// A probe that called expireStaleSelectedInstance WITHOUT the
+// refreshConversationDigest that always follows it at turn entry reported the
+// opposite, and it was wrong — the probe skipped a step the runtime always
+// takes.
+//
+// The real defect needs two DIFFERENT ids, which never key-collide and so are
+// never rewritten: TestBarePronounAfterTwoOperationsBindsTheNewestPick and
+// TestDigestHoldsNoSelectionCopyAtAll.
 func TestSinglePickPastItsTTLDoesNotBind(t *testing.T) {
 	base := time.Now()
 	e := selectionEngine()
