@@ -120,6 +120,7 @@ func TestGuidedImageFamilyPicker_PlatformRowsRemainOneCardImageChoices(t *testin
 
 func TestGuidedImageFamilyPicker_AgentRecommendationKeepsConcreteImageConfirmation(t *testing.T) {
 	wfCtx := familyPickerContext()
+	wfCtx.referenceData.ImageCatalog = formImageCatalog(familyPickerCommunityCatalog(), "community")
 	wfCtx.Params["CompShareImageId"] = "live-v2"
 	wfCtx.InitialParams = map[string]any{
 		"ImageSource":      "community",
@@ -140,11 +141,44 @@ func TestGuidedImageFamilyPicker_AgentRecommendationKeepsConcreteImageConfirmati
 
 	form, err := buildGuidedImageForm(wfCtx)
 	require.NoError(t, err)
-	assert.Contains(t, form.Step.Title, "具体镜像")
+	assert.Contains(t, form.Step.Title, "具体版本")
 	field := form.Field("ImageId")
 	require.NotNil(t, field)
-	assert.Equal(t, "镜像", field.Label)
+	assert.Equal(t, "版本", field.Label)
 	assert.Equal(t, "live-v2", field.Value)
+	assert.Equal(t, []string{"live-v2", "live-v1"}, optionValues(field),
+		"an exact recommendation may offer its own family versions, never unrelated community families")
+}
+
+func TestGuidedImageFamilyPicker_RecommendationScopesByUpstreamGroupNotName(t *testing.T) {
+	catalog := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{
+			"GroupId": "group-facefusion-a", "ImageName": "FaceFusion",
+			"Data": []any{
+				map[string]any{"CompShareImageId": "facefusion-a36", "Name": "v3.6", "Status": "Available", "ImageType": "Community"},
+				map[string]any{"CompShareImageId": "facefusion-a35", "Name": "v3.5", "Status": "Available", "ImageType": "Community"},
+			},
+		},
+		map[string]any{
+			// The label happens to match, but this is a different publisher's group.
+			"GroupId": "group-facefusion-b", "ImageName": "FaceFusion",
+			"Data": []any{
+				map[string]any{"CompShareImageId": "facefusion-b36", "Name": "v3.6", "Status": "Available", "ImageType": "Community"},
+			},
+		},
+	}}
+	wfCtx := suggestedImageCtx(map[string]any{
+		"ImageSource": "community", "CompShareImageId": "facefusion-a36", "GpuType": "4090",
+	})
+	wfCtx.StepResults["查询镜像"] = catalog
+	wfCtx.referenceData.ImageCatalog = formImageCatalog(catalog, "community")
+
+	form, err := buildGuidedImageForm(wfCtx)
+	require.NoError(t, err)
+	field := form.Field("ImageId")
+	require.NotNil(t, field)
+	assert.Equal(t, []string{"facefusion-a36", "facefusion-a35"}, optionValues(field),
+		"only the exact recommendation's upstream GroupId may define related versions")
 }
 
 func TestGuidedImageFamilyPicker_SingletonFamilyResolvesWithoutVersionCard(t *testing.T) {

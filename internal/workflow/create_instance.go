@@ -455,18 +455,14 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
 				if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
-					// A user/context-pinned id and every plain-flow id need one exact
-					// row, not a name search. A guided Agent suggestion still browses
-					// alternatives; the resolver-verified row is merged back into that
-					// browse result by createImageResult.
+					// A user-pinned id and every plain-flow id need one exact row. An
+					// Agent-suggested community id is different: the picker remains a
+					// real confirmation, but its alternatives are the upstream-declared
+					// versions of THIS image family, never an unrelated catalog page.
 					if imageUserSettled(wfCtx) || !allowCommunityBrowse {
-						return map[string]any{
-							"CompShareImageId": id,
-							"Limit":            maxGuidedCommunityImageQueryLimit,
-							"ExcludeReadme":    true,
-						}, nil
+						return communityImageExactArgs(id), nil
 					}
-					return communityImageBrowseArgs(""), nil
+					return suggestedCommunityImageQueryArgs(wfCtx, id), nil
 				}
 				name := paramStr(wfCtx.Params, "ImageName", "")
 				if name == "" {
@@ -516,6 +512,14 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 	}
 }
 
+func communityImageExactArgs(id string) map[string]any {
+	return map[string]any{
+		"CompShareImageId": strings.TrimSpace(id),
+		"Limit":            maxGuidedCommunityImageQueryLimit,
+		"ExcludeReadme":    true,
+	}
+}
+
 func communityImageBrowseArgs(name string) map[string]any {
 	args := map[string]any{
 		"Limit":         maxGuidedCommunityImageQueryLimit,
@@ -529,6 +533,20 @@ func communityImageBrowseArgs(name string) map[string]any {
 		args["FuzzySearch"] = name
 	}
 	return args
+}
+
+// suggestedCommunityImageQueryArgs collects only the family corpus that can
+// legitimately appear beside an Agent's exact recommendation. DescribeCommunityImages
+// has no GroupId request parameter, so it searches the source-provided family label;
+// recommendedCommunityImageScope then checks the returned GroupId locally before any
+// card reads it. A missing family label deliberately falls back to the exact row — it
+// must never widen to arbitrary same-name or unrelated community images.
+func suggestedCommunityImageQueryArgs(wfCtx *Context, id string) map[string]any {
+	scope, ok := currentRecommendedCommunityImageScope(wfCtx)
+	if !ok || !scope.hasFamily || strings.TrimSpace(scope.familyQuery) == "" {
+		return communityImageExactArgs(id)
+	}
+	return communityImageBrowseArgs(scope.familyQuery)
 }
 
 // imageCatalogIntentSeed is the evidence captured from the FIRST live catalog
@@ -1522,6 +1540,69 @@ type imageCandidateSet struct {
 	final []deployment.ImageSelection
 }
 
+// recommendedCommunityImageScope is a derived view of an Agent-proposed exact
+// community image. It is not workflow state and is never written to Params: every
+// invocation recomputes it from this turn's verified CompShareImageId and the
+// upstream family facts attached to that exact catalog row.
+//
+// A family key is used only when upstream actually supplied a group identity. A
+// community endpoint can occasionally omit group metadata; in that case exactID is
+// the honest scope. We never infer family membership from overlapping display names.
+type recommendedCommunityImageScope struct {
+	exactID     string
+	familyKey   string
+	familyQuery string
+	hasFamily   bool
+}
+
+// recommendedCommunityImageScope returns the candidate boundary for the single
+// concrete image the Agent chose to carry into THIS create proposal. The Agent remains
+// the conversation interpreter: when the user rejects or changes a prior
+// recommendation, it simply omits that id (or supplies a different verified one) in
+// the new proposal and this scope does not exist.
+func currentRecommendedCommunityImageScope(wfCtx *Context) (recommendedCommunityImageScope, bool) {
+	if wfCtx == nil || imageUserSettled(wfCtx) ||
+		wfCtx.ImageSelection() != ImageSelectionSuggested ||
+		normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) != "community" {
+		return recommendedCommunityImageScope{}, false
+	}
+	id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", ""))
+	if id == "" {
+		return recommendedCommunityImageScope{}, false
+	}
+	entry, ok := wfCtx.ImageCatalog().ByID(id)
+	if !ok || normalizedImageSource(entry.Source) != "community" {
+		return recommendedCommunityImageScope{}, false
+	}
+
+	scope := recommendedCommunityImageScope{exactID: entry.ID}
+	if strings.TrimSpace(entry.FamilyID) == "" && strings.TrimSpace(entry.FamilyName) == "" {
+		return scope, true
+	}
+	scope.familyKey = entry.FamilyKey()
+	scope.familyQuery = entry.FamilyLabel()
+	scope.hasFamily = scope.familyKey != "" && scope.familyQuery != ""
+	return scope, true
+}
+
+func (scope recommendedCommunityImageScope) contains(snap *deployment.ImageCatalogSnapshot, id string) bool {
+	if scope.familyKey == "" {
+		return strings.EqualFold(strings.TrimSpace(scope.exactID), strings.TrimSpace(id))
+	}
+	entry, ok := snap.ByID(id)
+	return ok && entry.FamilyKey() == scope.familyKey
+}
+
+func scopeImageCandidateSet(set imageCandidateSet, scope recommendedCommunityImageScope) imageCandidateSet {
+	keep := func(sel deployment.ImageSelection) bool {
+		return scope.contains(set.snap, sel.ID)
+	}
+	set.base = filterSelections(set.base, keep)
+	set.afterType = filterSelections(set.afterType, keep)
+	set.final = filterSelections(set.final, keep)
+	return set
+}
+
 // buildImageCandidateSet takes zoneIsPod as an EXPLICIT argument rather than
 // reading the ZoneIsPod param, which was the bug. ZoneIsPod is a denormalized cache
 // that syncGuidedZoneMeta only writes at the zone card — and under the image-first
@@ -1592,6 +1673,15 @@ func createImageCandidates(wfCtx *Context) imageCandidateSet {
 			IsPod: createZoneIsPod(wfCtx),
 		},
 	}
+	scope, hasRecommendedCommunityScope := currentRecommendedCommunityImageScope(wfCtx)
+	if hasRecommendedCommunityScope {
+		// The exact recommendation already determines the family boundary. Keeping
+		// the Agent's display-name text as a second rank filter can drop older
+		// versions whose upstream row names differ, turning a family picker back
+		// into a one-row card. Rank the viable rows without a free-text request,
+		// then apply the verified GroupId boundary below.
+		request.Name = ""
+	}
 	if inferred, ok := currentTurnImageCatalogRequest(wfCtx); ok {
 		// The catalog fact is the grounded interpretation of this turn. Do not also
 		// score the Agent's free-text ImageName (for example "最新pytorch"): a row
@@ -1605,9 +1695,13 @@ func createImageCandidates(wfCtx *Context) imageCandidateSet {
 		request.Tag = inferred.Tag
 		request.Source = inferred.Source
 	}
-	return buildImageCandidateSetForRequest(
+	set := buildImageCandidateSetForRequest(
 		wfCtx.Params, images, createImageTaxonomy(wfCtx), request,
 	)
+	if hasRecommendedCommunityScope {
+		return scopeImageCandidateSet(set, scope)
+	}
+	return set
 }
 
 // createImageFamilies projects the current, already-filtered candidate set into
@@ -5845,6 +5939,14 @@ func selectedImageFamily(wfCtx *Context) (deployment.ImageFamily, bool) {
 		return deployment.ImageFamily{}, false
 	}
 	key := strings.TrimSpace(paramStr(wfCtx.Params, "ImageFamily", ""))
+	if key == "" {
+		// A recommended exact community image already names its family through the
+		// verified catalog row. It does not need (and must not synthesize) a prior
+		// family-card submission merely to render a version picker honestly.
+		if scope, ok := currentRecommendedCommunityImageScope(wfCtx); ok {
+			key = scope.familyKey
+		}
+	}
 	if key == "" {
 		return deployment.ImageFamily{}, false
 	}

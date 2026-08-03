@@ -79,7 +79,9 @@ const (
 	ImageSelectionUnset ImageSelectionState = iota
 	// ImageSelectionSuggested: the Agent proposed an image id or name the user did
 	// not name. It is a default to preselect on the picker, NOT a decision — the
-	// picker still shows the whole catalog so the user can choose another.
+	// picker still asks the user to confirm a concrete image. When a verified
+	// community id carries an upstream family identity, that picker is scoped to
+	// the family's versions rather than an unrelated catalog page.
 	ImageSelectionSuggested
 	// ImageSelectionUserPinned: the user's own text named the image (explicit id or
 	// explicit name). Browsing is skipped; a concrete pinned id skips the picker too

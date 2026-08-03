@@ -3,6 +3,7 @@ package workflow
 import (
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,12 +44,11 @@ func TestAnAgentSuggestedImageStillRunsThePicker(t *testing.T) {
 	assert.True(t, skip, "the SAME id, user-pinned, needs no picker — provenance is the only difference")
 }
 
-// TestTheQueryFetchesTheWholeCatalogForASuggestion proves the other half: a picker
-// that shows is still a fake choice if the query was narrowed to the suggested id,
-// because upstream then returns ONE row. For a suggestion the query must NOT carry
-// CompShareImageId (the whole catalog, suggestion preselected from within it); for a
-// user-settled id it must (the picker is skipped, the by-id row feeds capacity/price).
-func TestTheQueryFetchesTheWholeCatalogForASuggestion(t *testing.T) {
+// TestThePlatformQueryFetchesTheWholeCatalogForASuggestion preserves the flat-source
+// behavior. Platform rows expose no upstream family relation, so a suggested platform
+// image still opens the ordinary picker; the community path has its own group-aware
+// contract below.
+func TestThePlatformQueryFetchesTheWholeCatalogForASuggestion(t *testing.T) {
 	step := stepQueryImages(true)
 
 	suggested := suggestedImageCtx(map[string]any{
@@ -70,6 +70,47 @@ func TestTheQueryFetchesTheWholeCatalogForASuggestion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "compshareImage-agentpick", args["CompShareImageId"],
 		"a user-settled id is queried directly; the picker it feeds is skipped")
+}
+
+func TestCommunitySuggestionQueriesItsVerifiedFamilyNotTheWholeCatalog(t *testing.T) {
+	step := stepQueryImages(true)
+	suggested := suggestedImageCtx(map[string]any{
+		"ImageSource":      "community",
+		"CompShareImageId": "facefusion-v36",
+	})
+	suggested.referenceData.ImageCatalog = formImageCatalog(map[string]any{
+		"CompshareImageGroup": []any{map[string]any{
+			"GroupId": "group-facefusion", "ImageName": "FaceFusion",
+			"Data": []any{map[string]any{
+				"CompShareImageId": "facefusion-v36", "Name": "v3.6",
+				"Status": "Available", "ImageType": "Community",
+			}},
+		}},
+	}, "community")
+
+	args, err := step.BuildArgs(suggested)
+	require.NoError(t, err)
+	assert.Equal(t, "FaceFusion", args["FuzzySearch"],
+		"the API has no GroupId filter, so fetch by the verified family label")
+	assert.NotContains(t, args, "CompShareImageId")
+	assert.Equal(t, maxGuidedCommunityImageQueryLimit, args["Limit"])
+}
+
+func TestCommunitySuggestionWithoutFamilyMetadataQueriesOnlyItsExactID(t *testing.T) {
+	step := stepQueryImages(true)
+	suggested := suggestedImageCtx(map[string]any{
+		"ImageSource":      "community",
+		"CompShareImageId": "ungrouped-community-image",
+	})
+	suggested.referenceData.ImageCatalog = deployment.NewImageCatalogSnapshot(true, []deployment.ImageCatalogEntry{{
+		ID: "ungrouped-community-image", Name: "An image", Source: "community", Status: "Available",
+	}})
+
+	args, err := step.BuildArgs(suggested)
+	require.NoError(t, err)
+	assert.Equal(t, "ungrouped-community-image", args["CompShareImageId"])
+	assert.NotContains(t, args, "FuzzySearch",
+		"without upstream family facts, do not guess from a display name or widen to the catalog")
 }
 
 func TestAgentInferredCommunityNameDoesNotBecomeAUserChoice(t *testing.T) {
