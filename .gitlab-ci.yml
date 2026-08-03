@@ -10,6 +10,7 @@ stages:
   - diagnose
   - test
   - build
+  - migrate
   - deploy
 
 variables:
@@ -86,6 +87,31 @@ build:
       --destination "$IMAGE:latest"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
+
+migrate:
+  stage: migrate
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+  before_script:
+    - apk add --no-cache postgresql-client
+  script:
+    - |
+      DSN=$(sed -n 's/^[[:space:]]*dsn:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' deploy/conf/config.yaml)
+      DB_HOST=$(sed -n 's/^[[:space:]]*host_override:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' deploy/conf/config.yaml)
+      test -n "$DSN"
+      test -n "$DB_HOST"
+      for migration in deploy/migrations/*.sql; do
+        psql "$DSN" -h "$DB_HOST" -X -v ON_ERROR_STOP=1 -f "$migration"
+      done
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: false
+  environment:
+    name: production
 
 deploy:
   stage: deploy
