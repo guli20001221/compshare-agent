@@ -10,7 +10,7 @@ import (
 
 func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *testing.T) {
 	text, ids := BuildSystemWithOptionsAndTrace("context", BuildOptions{MutatingToolsEnabled: true})
-	require.Equal(t, []string{"identity", "scope_boundary", "behavior", "knowledge_turn_policy", "reply_style", "user_state"}, ids)
+	require.Equal(t, []string{"identity", "scope_boundary", "behavior", "tool_observation_contract", "knowledge_turn_policy", "reply_style", "user_state"}, ids)
 	for _, action := range workflow.RegisteredWorkflowActions() {
 		require.NotContains(t, text, action)
 	}
@@ -27,6 +27,8 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 	require.Contains(t, text, "用户问的是怎么做、规则、计费或可行性时，直接回答")
 	// 2. submit now with whatever is already known, rather than gathering first.
 	require.Contains(t, text, "适用就立即提交，带上此刻已明确的值")
+	require.Contains(t, text, "即使部分值还只是用户的口头说法或尚未确定，也照样提交")
+	require.Contains(t, text, "无需提交前自己查全或逐条问全")
 	// 3. do not stage the confirm card in prose before calling. B4 moved this from
 	//    the behavior segment to the reply-style segment; it must still be present
 	//    somewhere in the assembled prompt.
@@ -39,6 +41,7 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 	require.Contains(t, text, "不得用普通文字模拟确认卡")
 	require.Equal(t, 1, strings.Count(text, "动作建议不会直接执行"), "shared write behavior must have one prompt source")
 	require.Equal(t, 1, strings.Count(text, "只能并列列为待核查项"), "uncertain observations must have one shared rule")
+	require.Contains(t, text, "不做概率排序，也不得据此排除其他层级的问题")
 	require.Equal(t, 1, strings.Count(text, "扩展只能增加候选"),
 		"catalog recommendation must preserve the user's grounded baseline when expanding a lexical search")
 	require.Equal(t, 1, strings.Count(text, "平台当前目录、可用性、状态、价格、库存、热度和实例详情"),
@@ -53,8 +56,22 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 		"optional facets must not silently become user choices")
 	require.Equal(t, 1, strings.Count(text, "非写目标的目录对象例外"),
 		"historical catalog ids may be carried only through the narrow non-target exception")
+	require.Contains(t, text, "近期完整对话已逐字展示精确 ID 和来源、当前请求承接它时")
 	require.Contains(t, text, "仍须实时核验和确认",
 		"carrying a historical catalog id must never imply availability or user approval")
+
+	// P2 is additive: it teaches the model how to read the structured observation
+	// envelope without weakening the B4 write-authorization wording above.
+	require.Contains(t, text, "根级 status、data、error.code、retryable、next_step、meta 为准")
+	require.Contains(t, text, "NO_CITABLE_EVIDENCE")
+	require.Equal(t, 1, strings.Count(text, "## 工具结果"))
+	// A call the model itself malformed needs nothing from the user. The
+	// exception is written INTO the needs_input clause rather than after it:
+	// stated separately, the generic "补问缺字段" rule is what the model reads
+	// first, and it turns the model's own JSON mistake into a question for a
+	// user who supplied nothing wrong.
+	require.Contains(t, text, "needs_input 补问缺字段，但 next_step=correct_tool_call 时用户无需补充")
+	require.Contains(t, text, "改正参数后重发同一次调用，不要提问")
 	require.NotContains(t, text, "InfiniteTalk")
 	require.NotContains(t, text, "LiveTalking")
 }

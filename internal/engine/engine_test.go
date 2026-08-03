@@ -639,6 +639,32 @@ func TestChat_ExternalTool_L1Denied(t *testing.T) {
 	assert.True(t, hasBlocked)
 }
 
+func TestChat_ConfirmationResultTracePreservesTimeout(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "StopCompShareInstance", `{"UHostId":"uhost-xxx"}`),
+		}},
+		{Content: "操作未执行。"},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+	var confirmations []observability.ConfirmationTrace
+	eng.SetConfirmationTraceObserver(func(trace observability.ConfirmationTrace) {
+		confirmations = append(confirmations, trace)
+	})
+
+	_, err := eng.ChatWithOptions(context.Background(), "关机", noopStep, ChatOptions{
+		ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
+			return ConfirmationResult{TerminalReason: observability.ConfirmationReasonTimeout}
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, confirmations, 1)
+	assert.Equal(t, observability.ConfirmationStateNotConfirmed, confirmations[0].State)
+	assert.Equal(t, observability.ConfirmationReasonTimeout, confirmations[0].TerminalReason)
+	assert.GreaterOrEqual(t, confirmations[0].ElapsedMS, int64(0))
+}
+
 func TestChat_InvalidToolArgs(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{

@@ -174,6 +174,20 @@ var (
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
 type ConfirmFunc func(action string, args map[string]any) bool
 
+// ConfirmationResult is the richer per-turn confirmation outcome used by
+// transports that can distinguish an explicit decline from a timeout,
+// disconnect or card-delivery failure. Legacy ConfirmFunc callers remain fully
+// supported; their false result is conservatively classified as user_declined.
+type ConfirmationResult struct {
+	Confirmed      bool
+	TerminalReason string
+}
+
+// ConfirmationResultFunc is the outcome-preserving variant of ConfirmFunc.
+// It is intentionally scoped to ChatOptions so existing Engine construction and
+// CLI callers retain the simple boolean interface.
+type ConfirmationResultFunc func(action string, args map[string]any) ConfirmationResult
+
 // LLMClient abstracts the LLM chat interface for testability.
 type LLMClient interface {
 	Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error)
@@ -192,11 +206,13 @@ type HistoryMessage struct {
 	// Transcript is the raw messages.metadata document for an assistant row,
 	// carrying the turn's canonical agent_transcript_v1 when one was persisted.
 	// It is plumbed through so a cold rebuild can reconstruct the same turn the
-	// hot engine held. Whether it then reaches model context is decided by
-	// COMPSHARE_CANONICAL_TRANSCRIPT (default off), which attachRecordedTranscripts
-	// gates — this field is populated either way, so the rebuild is provable
-	// before the projection is enabled. Empty for user rows, for turns with no
-	// tool traffic, and for every row written before the shadow write existed.
+	// hot engine held. The raw column is always carried — metadata is a
+	// general-purpose column and other keys may live beside agent_transcript_v1 —
+	// but PARSING it is gated by COMPSHARE_CANONICAL_TRANSCRIPT (default off);
+	// see transcriptFromRow, which owns that decision because a check inside
+	// recordTurn would run after Go had already evaluated the parse. Empty for
+	// user rows, for turns with no tool traffic, and for every row written before
+	// the transcript existed.
 	Transcript json.RawMessage
 }
 
@@ -227,6 +243,9 @@ type ChatOptions struct {
 	// this turn only. Used by the HTTP path to inject an SSE-backed confirm
 	// that blocks on a channel instead of stdin.
 	ConfirmFunc func(action string, args map[string]any) bool
+	// ConfirmResultFunc is the same gate with a closed-set terminal reason for
+	// observability. When present it takes precedence over ConfirmFunc.
+	ConfirmResultFunc ConfirmationResultFunc
 	// ConfirmEditsFunc, if non-nil, additionally enables the editable confirm
 	// form for workflow StepConfirms that declare one (create-flow 表单化).
 	// Only the HTTP path sets it, and only when COMPSHARE_CONFIRM_FORM is on
@@ -277,6 +296,7 @@ type Engine struct {
 	turnCompletionObserver           func(observability.TurnCompletionTrace)
 	outcomeTraceObserver             func(observability.OutcomeTrace)
 	authorizationTraceObserver       func(observability.AuthorizationTrace)
+	confirmationTraceObserver        func(observability.ConfirmationTrace)
 	tokenUsageObserver               func(llm.TokenUsage)
 	rateLimiter                      governance.RateLimiter
 	rateLimitSubject                 string
@@ -784,6 +804,12 @@ func (e *Engine) SetAuthorizationTraceObserver(observer func(observability.Autho
 	e.authorizationTraceObserver = observer
 }
 
+// SetConfirmationTraceObserver wires the terminal observation for each human
+// confirmation card. The trace contains no arguments, IDs or user content.
+func (e *Engine) SetConfirmationTraceObserver(observer func(observability.ConfirmationTrace)) {
+	e.confirmationTraceObserver = observer
+}
+
 // ReactRoundsThisTurn returns the number of ReAct loop rounds entered in the most
 // recent Chat turn (0 when the turn did not run the loop). Read post-turn by the
 // trace recorder to populate outcome.react_rounds and the budget terminus.
@@ -1124,7 +1150,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			e.recordTurn(recordedTurn{
 				User:       pendingUser,
 				Assistant:  msg.Content,
-				Transcript: ParseTranscriptMetadata(msg.Transcript),
+				Transcript: transcriptFromRow(msg.Transcript),
 			})
 			pendingUser = ""
 		}
@@ -1310,20 +1336,25 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.rateLimitSubject = subject
 		}
 	}
-	// Per-turn confirmation wrapper records an explicit user denial as the
-	// terminal path. It wraps both the HTTP override and the stored CLI gate.
-	if opts.ConfirmFunc != nil || e.confirmFn != nil {
+	// Per-turn confirmation wrapper records the terminal state of every card.
+	// It preserves the legacy boolean ConfirmFunc while allowing HTTP/durable
+	// transports to distinguish decline, timeout, disconnect and delivery errors.
+	if opts.ConfirmResultFunc != nil || opts.ConfirmFunc != nil || e.confirmFn != nil {
 		origConfirm := e.confirmFn
 		confirm := e.confirmFn
 		if opts.ConfirmFunc != nil {
 			confirm = ConfirmFunc(opts.ConfirmFunc)
 		}
 		wrappedConfirm := ConfirmFunc(func(action string, args map[string]any) bool {
-			confirmed := confirm(action, args)
-			if !confirmed {
-				e.markTurnCompletion(observability.CompletionClassConfirmation, observability.CompletionReasonConfirmationDeclined)
+			started := time.Now()
+			result := ConfirmationResult{}
+			if opts.ConfirmResultFunc != nil {
+				result = opts.ConfirmResultFunc(action, args)
+			} else if confirm != nil {
+				result.Confirmed = confirm(action, args)
 			}
-			return confirmed
+			e.recordConfirmationResult(action, result, started)
+			return result.Confirmed
 		})
 		e.confirmFn = wrappedConfirm
 		e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(wrappedConfirm))
@@ -1340,10 +1371,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			confirmEdits = opts.ConfirmEditsFunc
 		}
 		e.confirmEditsFn = func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+			started := time.Now()
 			resolution := confirmEdits(action, args, form)
-			if !resolution.Confirmed {
-				e.markTurnCompletion(observability.CompletionClassConfirmation, observability.CompletionReasonConfirmationDeclined)
-			}
+			e.recordConfirmationResult(action, ConfirmationResult{
+				Confirmed:      resolution.Confirmed,
+				TerminalReason: resolution.TerminalReason,
+			}, started)
 			return resolution
 		}
 		defer func() { e.confirmEditsFn = origEdits }()
@@ -1780,7 +1813,7 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
-				Content:    verbatimBlockObservation,
+				Content:    agentToolObservation(tc.Function.Name, fmt.Sprintf(`{"observation":%q,"verbatim_delivered":true}`, verbatimBlockObservation)),
 				ToolCallID: tc.ID,
 			})
 			continue
@@ -1812,6 +1845,10 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 			return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
 		}
 
+		// Only this normal-result path can be supplied to a later Agent round.
+		// Keep every such observation on the P2 control-plane contract even when
+		// an older handler still returns its native JSON payload.
+		toolResult = agentToolObservation(tc.Function.Name, toolResult)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:       openai.ChatMessageRoleTool,
 			Content:    toolResult,
@@ -2767,7 +2804,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
 			Message: message,
 		})
-		return message
+		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
 	}
 	if repeatableAgentTool(action) {
 		if e.toolResultsByCallThisTurn == nil {
@@ -2819,7 +2856,12 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		// rejected; the tool-arg contract is unchanged.
 		errClass := fmt.Sprintf("parameter parse error: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass})
-		return errClass + "。工具参数必须是合法的 JSON 对象，请按该工具的参数结构仅输出 JSON 后重新调用。"
+		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
+			action,
+			"INVALID_TOOL_ARGUMENTS",
+			"工具参数必须是合法的 JSON 对象，请按该工具的参数结构重新调用。",
+			tools.AgentToolMeta{SourceStatus: "argument_parse_error"},
+		))
 	}
 
 	// The local GPU knowledge tools (GetGPUSpecs / GetGPURecommendation /
@@ -2892,7 +2934,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	if workflow.IsWorkflowTool(action) {
 		msg := "write workflows are unavailable until a verified ActionProposal is accepted"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return friendlyToolResultJSON(msg)
+		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "WORKFLOW_DIRECT_CALL_REFUSED", msg, tools.AgentToolMeta{}))
 	}
 
 	// In-instance SSH diagnosis lane → its own dispatch, BEFORE the diagnosis-chain
@@ -2945,7 +2987,9 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		}
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
-			return friendlyToolResultJSON(msg)
+			result := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
+			result.Error.Message = msg
+			return tools.MarshalAgentToolResult(result)
 		}
 		if errors.Is(err, tools.ErrDestructiveAction) {
 			msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
@@ -2975,7 +3019,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			errMsg += "\n建议：" + apiErr.Hint
 		}
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg})
-		return errMsg
+		return tools.MarshalAgentToolResult(tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{}))
 	}
 
 	// ReAct fallback truncation for full-account list dumps. The legacy
@@ -4201,6 +4245,13 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		// model never speaks again — has to be able to say so.
 		e.committedWriteRepliesThisTurn = append(e.committedWriteRepliesThisTurn,
 			committedWriteFallbackReply(action, finalParams, result))
+		// Creating a custom image is asynchronous upstream: Create returns the
+		// image id after the record enters Making, not after it becomes usable.
+		// Keep this deterministic so a narration round cannot turn "started" into
+		// an incorrect claim that the image is already available.
+		if action == "CreateCustomImageWorkflow" {
+			return finalReplyPrefix + customImageWorkflowReply(result)
+		}
 		// Successful no-return-data or password-bearing workflows return a
 		// deterministic final reply so the engine SKIPS the post-workflow LLM
 		// narration round. That extra model call can stall; for
@@ -4305,10 +4356,29 @@ func committedWriteFallbackReply(action string, params map[string]any, result *w
 	if reply, ok := deterministicWorkflowReply(action, params); ok {
 		return reply
 	}
+	if action == "CreateCustomImageWorkflow" {
+		return customImageWorkflowReply(result)
+	}
 	if ids := committedInstanceIDs(result); len(ids) > 0 {
 		return fmt.Sprintf("✅ 已创建实例 %s。", strings.Join(ids, "、"))
 	}
 	return fmt.Sprintf("✅ %s已执行成功。", friendlyActionName(action))
+}
+
+// customImageWorkflowReply describes the server-side state transition actually
+// guaranteed by CreateCompShareCustomImage. Upstream creates the image record in
+// Making and advances it asynchronously, so this must never call a successful
+// create a completed or usable image.
+func customImageWorkflowReply(result *workflow.Result) string {
+	imageID := ""
+	if result != nil && result.Data != nil {
+		imageID, _ = result.Data["CompShareImageId"].(string)
+		imageID = strings.TrimSpace(imageID)
+	}
+	if imageID != "" {
+		return fmt.Sprintf("✅ 已发起自制镜像制作（ID: %s）。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。", imageID)
+	}
+	return "✅ 已发起自制镜像制作。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。"
 }
 
 // committedWriteNarrationFailedNote tells the user the missing half explicitly.

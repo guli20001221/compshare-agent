@@ -88,6 +88,12 @@ func (h *Handlers) shadowPersistTranscript(
 	agent turnTranscriptSource,
 	replyPersistErr error,
 ) {
+	// Same switch as capture and projection. With it off there is no payload to
+	// read and no row to stamp — the turn does not touch messages.metadata at
+	// all, rather than doing the work and discovering it has nothing to write.
+	if !engine.CanonicalTranscriptEnabled() {
+		return
+	}
 	if agent == nil || assistantMsgID == "" || replyPersistErr != nil {
 		return
 	}

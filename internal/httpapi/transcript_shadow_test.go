@@ -104,7 +104,23 @@ func engineWithPlainTurn(t *testing.T) turnTranscriptSource {
 // The load-bearing invariant: a store with no metadata support must not panic,
 // must not error, and must be counted distinctly. A silent no-op that reports
 // success would make a broken rollout look healthy.
+// enableCanonicalTranscriptForTest turns the pipeline on for one test.
+//
+// COMPSHARE_CANONICAL_TRANSCRIPT is the single switch for capture, persistence
+// and projection, and the Go-package default is off — so shadowPersistTranscript
+// now returns immediately without it. Every test in this file must enable it,
+// including the two that assert the store is NOT called: without the flag they
+// would pass because the gate short-circuited, not because the logic they name
+// works.
+func enableCanonicalTranscriptForTest(t *testing.T) {
+	t.Helper()
+	prev := engine.CanonicalTranscriptEnabled()
+	engine.SetCanonicalTranscriptEnabled(true)
+	t.Cleanup(func() { engine.SetCanonicalTranscriptEnabled(prev) })
+}
+
 func TestShadowPersistDegradesWhenStoreLacksMetadataSupport(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	resetShadowStats()
 	h := &Handlers{messages: noopMessageStore{}}
 	agent := engineWithToolTurn(t)
@@ -119,6 +135,7 @@ func TestShadowPersistDegradesWhenStoreLacksMetadataSupport(t *testing.T) {
 
 // Every write failure shape must be swallowed and counted, never propagated.
 func TestShadowPersistSwallowsEveryWriteFailure(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -150,6 +167,7 @@ func TestShadowPersistSwallowsEveryWriteFailure(t *testing.T) {
 // The shadow write must never stamp metadata onto a row whose reply failed to
 // persist — that row is not a valid turn record.
 func TestShadowPersistSkipsWhenReplyDidNotPersist(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	resetShadowStats()
 	st := &recordingMetaStore{}
 	h := &Handlers{messages: st}
@@ -168,6 +186,7 @@ func TestShadowPersistSkipsWhenReplyDidNotPersist(t *testing.T) {
 // attempt — otherwise the success rate is diluted by turns that had nothing to
 // write, and a real regression hides inside it.
 func TestShadowPersistDoesNotCountToolFreeTurns(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	resetShadowStats()
 	st := &recordingMetaStore{}
 	h := &Handlers{messages: st}
@@ -183,6 +202,7 @@ func TestShadowPersistDoesNotCountToolFreeTurns(t *testing.T) {
 }
 
 func TestShadowPersistForwardsOwnerAndPayload(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	resetShadowStats()
 	st := &recordingMetaStore{}
 	h := &Handlers{messages: st}
@@ -210,6 +230,7 @@ func TestShadowPersistForwardsOwnerAndPayload(t *testing.T) {
 // cannot build on the CI/dev toolchain here, so the structural guarantee is
 // atomic.Int64 having no ++ at all, and this is the regression net.)
 func TestShadowCounters_SurviveConcurrentTurns(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	resetShadowStats()
 	const goroutines, perGoroutine = 64, 200
 
@@ -255,6 +276,7 @@ func (s *blockingMetaStore) UpdateAssistantMetadata(ctx context.Context, _ store
 // it does nothing about a store that simply does not return. Without a deadline
 // the turn holds its session's engine lease for as long as the database stalls.
 func TestShadowPersist_BoundsTheWriteWithADeadline(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	resetShadowStats()
 	st := &blockingMetaStore{entered: make(chan struct{}), release: make(chan struct{})}
 	h := &Handlers{messages: st}
@@ -286,6 +308,7 @@ func TestShadowPersist_BoundsTheWriteWithADeadline(t *testing.T) {
 // than the runtime because the alternative — driving chatStream with a blocking
 // store — would deadlock on the very ordering it is trying to assert.
 func TestShadowPersist_RunsAfterDoneAndAfterSessionState(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	src, err := os.ReadFile("handlers_chat.go")
 	if err != nil {
 		t.Fatalf("read handlers_chat.go: %v", err)
@@ -312,6 +335,7 @@ func TestShadowPersist_RunsAfterDoneAndAfterSessionState(t *testing.T) {
 // counter-based version could log twice for one milestone or skip one entirely,
 // and neither shows up in a counter assertion — only in the log.
 func TestShadowMilestone_LogsExactlyOncePerHundred(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	resetShadowStats()
 
 	var buf bytes.Buffer
@@ -364,4 +388,28 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.w.Write(p)
+}
+
+// With the flag off the turn must not touch messages.metadata at all — not
+// attempt it, not count it, not read a payload. This is the half of the single
+// switch that lives outside the engine, and the half whose absence made a deploy
+// carry an unstoppable background write.
+func TestShadowPersistIsInertWhenTranscriptDisabled(t *testing.T) {
+	prev := engine.CanonicalTranscriptEnabled()
+	engine.SetCanonicalTranscriptEnabled(false)
+	defer engine.SetCanonicalTranscriptEnabled(prev)
+
+	resetShadowStats()
+	st := &recordingMetaStore{}
+	h := &Handlers{messages: st}
+
+	h.shadowPersistTranscript(store.Owner{TopOrganizationID: 1, OrganizationID: 2},
+		"assistant-msg", engineWithToolTurn(t), nil)
+
+	if st.calls != 0 {
+		t.Fatalf("wrote metadata with the transcript disabled (%d calls)", st.calls)
+	}
+	if got := TranscriptShadowSnapshot(); got != (TranscriptShadowStats{}) {
+		t.Fatalf("counted %+v with the transcript disabled; off must mean off", got)
+	}
 }

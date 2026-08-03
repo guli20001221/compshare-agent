@@ -92,6 +92,7 @@ func (r *Recorder) Hooks() engine.TraceHooks {
 		Completion: r.SetTurnCompletionTrace,
 		RateLimit:  r.SetRateLimitDecision, TokenUsage: r.AddTokenUsage,
 		Authorization: r.AddAuthorizationTrace,
+		Confirmation:  r.AddConfirmationTrace,
 	}
 }
 
@@ -105,6 +106,17 @@ func (r *Recorder) AddAuthorizationTrace(trace observability.AuthorizationTrace)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.record.Authorizations = append(r.record.Authorizations, trace)
+}
+
+// AddConfirmationTrace appends one closed-set terminal outcome for a human
+// confirmation card. The engine deliberately omits card arguments and ids.
+func (r *Recorder) AddConfirmationTrace(trace observability.ConfirmationTrace) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.record.Confirmations = append(r.record.Confirmations, trace)
 }
 
 func (r *Recorder) SetContinuity(update func(*observability.ContinuityTrace)) {
@@ -260,6 +272,7 @@ func (r *Recorder) OnStep(ev engine.StepEvent) {
 		resultHash, _ := observability.HashTracePayload(ev.TraceResult)
 		call := &r.record.ToolCalls[idx]
 		call.Status, call.ResultHash, call.Attempts = observability.ToolStatusSuccess, resultHash, ev.Attempts
+		call.Projected = ev.Projected
 		if call.RequestedTargets > 0 && call.ExecutedTargets == 0 {
 			call.ExecutedTargets = call.RequestedTargets
 		}

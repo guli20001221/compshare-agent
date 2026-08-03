@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"reflect"
 	"testing"
 
@@ -49,6 +51,7 @@ func TestFlagOffLeavesModelHistoryByteIdentical(t *testing.T) {
 // The payoff: with the flag on, the next turn sees what the previous turn
 // actually did, not a prose summary of it.
 func TestPriorTurnToolTrafficReachesTheModel(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	withCanonicalTranscript(t, true)
 	e := &Engine{messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "sys"}}}
 	finishTurn(e, hotTurn())
@@ -93,6 +96,7 @@ func TestPriorTurnToolTrafficReachesTheModel(t *testing.T) {
 // same history. This is the claim the whole migration rests on, asserted across
 // a turn boundary rather than within one turn.
 func TestHotAndColdAgreeOnReplayedHistory(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	withCanonicalTranscript(t, true)
 
 	hot := &Engine{messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "sys"}}}
@@ -122,6 +126,7 @@ func TestHotAndColdAgreeOnReplayedHistory(t *testing.T) {
 // invisible and would tell the model a diagnosis belonged to an instance it was
 // never run against. Matching is by content for exactly that reason.
 func TestTranscriptsAreNotAttachedToTheWrongExchange(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	withCanonicalTranscript(t, true)
 	turnA := &TranscriptV1{V: 1, Messages: []TranscriptMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "问题 A"},
@@ -150,6 +155,7 @@ func TestTranscriptsAreNotAttachedToTheWrongExchange(t *testing.T) {
 // The replay budget exists to bound history. Once tool traffic is part of
 // history, a budget that ignores it bounds only the part that did not grow.
 func TestReplayBudgetChargesForToolTraffic(t *testing.T) {
+	enableCanonicalTranscriptForTest(t)
 	big := make([]rune, maxReplayedHistoryRunes)
 	for i := range big {
 		big[i] = '据'
@@ -179,4 +185,84 @@ func TestReplayBudgetChargesForToolTraffic(t *testing.T) {
 	if kept[len(kept)-1].User != "new q" {
 		t.Fatalf("newest exchange was shed: %#v", kept)
 	}
+}
+
+// TestFlagOffMeansNoTranscriptPipelineAtAll is the property the single switch
+// exists to provide. For a while it did not hold: capture and the shadow write
+// ran unconditionally while only the projection was gated, so deploying the code
+// carried a permanent background side effect — CPU on every tool-bearing turn
+// and a write to messages.metadata — with no way to stop it short of shipping a
+// revert.
+//
+// Off must mean off: nothing scanned, nothing redacted, nothing serialized,
+// nothing recorded, and nothing for the persistence path to pick up.
+func TestFlagOffMeansNoTranscriptPipelineAtAll(t *testing.T) {
+	prev := canonicalTranscriptEnabled
+	SetCanonicalTranscriptEnabled(false)
+	defer SetCanonicalTranscriptEnabled(prev)
+
+	turn := []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "查一下"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			toolCall("c1", "DescribeCompShareInstance", `{"UHostId":"uhost-a"}`)}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: `{"RetCode":0}`},
+		{Role: openai.ChatMessageRoleAssistant, Content: "已确认。"},
+	}
+
+	t.Run("hot capture records nothing", func(t *testing.T) {
+		e := &Engine{messages: turn}
+		e.captureTurnTranscript()
+
+		payload, stats := e.LastTurnTranscript()
+		if payload != nil {
+			t.Fatalf("produced a payload with the flag off: %s", payload)
+		}
+		if stats.Attempted {
+			t.Fatal("counted an attempt with the flag off; the persistence path would then try to write")
+		}
+		if len(e.recentTurns) != 0 {
+			t.Fatalf("recorded %d turns with the flag off", len(e.recentTurns))
+		}
+	})
+
+	t.Run("cold rebuild records nothing", func(t *testing.T) {
+		e := &Engine{}
+		e.RehydrateHistory([]HistoryMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "查一下"},
+			{Role: openai.ChatMessageRoleAssistant, Content: "已确认。",
+				Transcript: []byte(`{"agent_transcript_v1":{"v":1,"messages":[{"role":"user","content":"查一下"}]}}`)},
+		})
+		if len(e.recentTurns) != 0 {
+			t.Fatalf("a restart built a %d-turn window that nothing will read", len(e.recentTurns))
+		}
+	})
+}
+
+// TestTranscriptFromRow_DoesNotParseWithFlagOff pins the gate that recordTurn
+// cannot provide. Go evaluates a call's arguments before the call, so a flag
+// check inside recordTurn leaves ParseTranscriptMetadata running on every
+// assistant row of every rehydration with the flag off. The window came out
+// empty either way, which is exactly what made it easy to miss.
+func TestTranscriptFromRow_DoesNotParseWithFlagOff(t *testing.T) {
+	valid := []byte(`{"agent_transcript_v1":{"v":1,"messages":[` +
+		`{"role":"assistant","tool_calls":[{"id":"c1","name":"T","arguments":"{}"}]},` +
+		`{"role":"tool","tool_call_id":"c1","content":"r"}]}}`)
+
+	// Precondition: this metadata really does parse, so a nil below means the
+	// gate stopped it rather than the input being unusable.
+	require.NotNil(t, ParseTranscriptMetadata(valid),
+		"precondition: the fixture must be parseable, or this test proves nothing")
+
+	t.Run("off", func(t *testing.T) {
+		prev := canonicalTranscriptEnabled
+		SetCanonicalTranscriptEnabled(false)
+		defer SetCanonicalTranscriptEnabled(prev)
+		assert.Nil(t, transcriptFromRow(valid),
+			"with the flag off the canonical parse must not run at all")
+	})
+
+	t.Run("on", func(t *testing.T) {
+		enableCanonicalTranscriptForTest(t)
+		assert.NotNil(t, transcriptFromRow(valid), "and with it on the row must still rebuild")
+	})
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,6 +70,36 @@ func TestConfirmBroker_Cancel(t *testing.T) {
 
 	result := WaitForConfirmation(context.Background(), ch, 50*time.Millisecond)
 	assert.False(t, result.Confirmed, "cancelled confirmation should return false")
+}
+
+func TestWaitForConfirmationOutcomeDistinguishesTerminalReasons(t *testing.T) {
+	confirmed := make(chan ConfirmDecision, 1)
+	confirmed <- ConfirmDecision{Confirmed: true}
+	close(confirmed)
+	decision, reason := WaitForConfirmationOutcome(context.Background(), confirmed, time.Second)
+	assert.True(t, decision.Confirmed)
+	assert.Equal(t, observability.ConfirmationReasonUserConfirmed, reason)
+
+	denied := make(chan ConfirmDecision, 1)
+	denied <- ConfirmDecision{}
+	close(denied)
+	decision, reason = WaitForConfirmationOutcome(context.Background(), denied, time.Second)
+	assert.False(t, decision.Confirmed)
+	assert.Equal(t, observability.ConfirmationReasonUserDeclined, reason)
+
+	timeoutCh := make(chan ConfirmDecision)
+	_, reason = WaitForConfirmationOutcome(context.Background(), timeoutCh, time.Millisecond)
+	assert.Equal(t, observability.ConfirmationReasonTimeout, reason)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, reason = WaitForConfirmationOutcome(ctx, make(chan ConfirmDecision), time.Second)
+	assert.Equal(t, observability.ConfirmationReasonClientDisconnect, reason)
+
+	closed := make(chan ConfirmDecision)
+	close(closed)
+	_, reason = WaitForConfirmationOutcome(context.Background(), closed, time.Second)
+	assert.Equal(t, observability.ConfirmationReasonBrokerCancelled, reason)
 }
 
 func TestConfirmBroker_DoubleResolve(t *testing.T) {

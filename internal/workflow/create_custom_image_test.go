@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -70,30 +69,6 @@ func customImageSupportZoneResult() map[string]any {
 	}}}
 }
 
-type customImageLifecycleExecutor struct {
-	base      *mockExecutor
-	stopped   bool
-	pollCount int
-}
-
-func (e *customImageLifecycleExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
-	if action == "DescribeCompShareInstance" {
-		e.base.calls = append(e.base.calls, executorCall{action: action, args: args})
-		if !e.stopped {
-			return customImageInstanceResult("Running"), nil
-		}
-		e.pollCount++
-		if e.pollCount == 1 {
-			return customImageInstanceResult("Stopping"), nil
-		}
-		return customImageInstanceResult("Stopped"), nil
-	}
-	if action == "StopCompShareInstance" {
-		e.stopped = true
-	}
-	return e.base.Execute(ctx, action, args)
-}
-
 func findExecutorCall(calls []executorCall, action string) (executorCall, bool) {
 	for _, call := range calls {
 		if call.action == action {
@@ -109,7 +84,7 @@ func TestCreateCustomImage_DefinitionIsRegistered(t *testing.T) {
 	require.NotNil(t, def)
 	assert.Equal(t, "CreateCustomImageWorkflow", def.Name)
 
-	var sawConfirm, sawCreate, sawDelete bool
+	var sawConfirm, sawCreate, sawStopOrWait, sawDelete bool
 	for i, step := range def.Steps {
 		if step.Type == StepConfirm {
 			sawConfirm = true
@@ -122,12 +97,16 @@ func TestCreateCustomImage_DefinitionIsRegistered(t *testing.T) {
 			sawCreate = true
 			assert.True(t, sawConfirm, "create step must appear after confirmation; step index %d", i)
 		}
+		if tool == "StopCompShareInstance" || step.Name == "等待源实例关机" {
+			sawStopOrWait = true
+		}
 		if tool == "TerminateCompShareCustomImage" || tool == "TerminateCompShareInstance" || tool == "DeleteCompshareDisk" {
 			sawDelete = true
 		}
 	}
 	assert.True(t, sawConfirm, "workflow must have a confirmation step")
 	assert.True(t, sawCreate, "workflow must create a custom image")
+	assert.False(t, sawStopOrWait, "custom-image creation must not stop or wait for a normal VM")
 	assert.False(t, sawDelete, "workflow must not include destructive steps")
 }
 
@@ -240,17 +219,13 @@ func TestCreateCustomImage_HappyPathThreadsSourceZoneRegionAndQueriesProgress(t 
 	assert.Equal(t, "cn-sh2-02", progressCall.args["Zone"])
 }
 
-func TestCreateCustomImage_RunningVMStopsWaitsThenCreates(t *testing.T) {
-	base := customImageMockExecutor()
-	executor := &customImageLifecycleExecutor{base: base}
+func TestCreateCustomImage_RunningVMCreatesWithoutStopping(t *testing.T) {
+	executor := customImageMockExecutor()
+	executor.results["DescribeCompShareInstance"] = customImageInstanceResult("Running")
 	def := CreateCustomImageDef()
-	for i := range def.Steps {
-		if def.Steps[i].Name == "等待源实例关机" {
-			def.Steps[i].Poll = &PollPolicy{Interval: time.Millisecond, Timeout: time.Second}
-		}
-	}
 	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
-		assert.Contains(t, args["warning"], "先关闭")
+		assert.Contains(t, args["warning"], "不会关闭源实例")
+		assert.Contains(t, args["warning"], "Making")
 		return true
 	}, nil)
 
@@ -261,11 +236,11 @@ func TestCreateCustomImage_RunningVMStopsWaitsThenCreates(t *testing.T) {
 
 	require.NoError(t, err)
 	require.True(t, result.Success)
-	_, stopped := findExecutorCall(base.calls, "StopCompShareInstance")
-	require.True(t, stopped, "a running VM must be stopped after confirmation")
-	_, created := findExecutorCall(base.calls, "CreateCompShareCustomImage")
-	require.True(t, created, "image creation must wait for the stopped observation")
-	assert.Equal(t, 2, executor.pollCount)
+	_, stopped := findExecutorCall(executor.calls, "StopCompShareInstance")
+	require.False(t, stopped, "a running VM must not be stopped before image creation")
+	_, created := findExecutorCall(executor.calls, "CreateCompShareCustomImage")
+	require.True(t, created, "image creation must proceed from a running VM")
+	assert.Len(t, executor.calls, 4, "query instance + query zone + create + optional progress")
 }
 
 func TestCreateCustomImage_MissingSourceZoneRegionStopsBeforeConfirmation(t *testing.T) {

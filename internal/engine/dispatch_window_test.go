@@ -34,10 +34,10 @@ func TestProposalToolExposureAndMapping(t *testing.T) {
 	require.False(t, ok, "the retired alias must no longer resolve to an operation")
 }
 
-// The system prompt owns the shared write-proposal behavior. Request tools carry
-// only their operation-specific semantic boundary, sourced from the capability
-// registry rather than the workflow's internal execution-step description.
-func TestRequestToolDescriptionUsesCapabilityBoundaryNotWorkflowSteps(t *testing.T) {
+// Request tools carry an operation-specific boundary plus the P2 interaction
+// template. The template is derived at catalog construction from the capability
+// registry, never from a workflow's internal execution-step description.
+func TestRequestToolDescriptionUsesCapabilityBoundaryAndP2Template(t *testing.T) {
 	var desc string
 	for _, tool := range centralAgentToolWindow(true, false) {
 		if tool.Function != nil && tool.Function.Name == "RequestCreateInstance" {
@@ -48,10 +48,14 @@ func TestRequestToolDescriptionUsesCapabilityBoundaryNotWorkflowSteps(t *testing
 	require.NotEmpty(t, desc, "RequestCreateInstance must be advertised when mutating is enabled")
 	capability, ok := tools.DefaultCapabilityRegistry().Lookup("CreateInstanceWorkflow")
 	require.True(t, ok)
-	require.Equal(t, capability.AgentInstruction, desc)
-	require.NotContains(t, desc, "→", "workflow execution steps are runtime-only")
-	require.NotContains(t, desc, "参数可不完整", "shared proposal behavior belongs only in the system prompt")
-	require.NotContains(t, desc, "本工具不直接执行", "shared proposal behavior belongs only in the system prompt")
+	require.Equal(t, tools.WorkflowAgentDescription("CreateInstanceWorkflow", capability.AgentInstruction, true), desc)
+	for _, section := range []string{"调用/边界：", "接续：", "失败："} {
+		require.Contains(t, desc, section)
+	}
+	require.Contains(t, desc, "输入示例")
+	for _, internalAPI := range []string{"DescribeCompShare", "GetCompShare", "CreateCompShare", "SyncCompShare"} {
+		require.NotContains(t, desc, internalAPI)
+	}
 }
 
 func TestRequestToolDescriptionsDoNotRepeatSharedPromptOrExecutionChains(t *testing.T) {
@@ -61,10 +65,10 @@ func TestRequestToolDescriptionsDoNotRepeatSharedPromptOrExecutionChains(t *test
 		}
 		desc := tool.Function.Description
 		require.NotEmpty(t, desc, tool.Function.Name)
-		require.NotContains(t, desc, "参数可不完整", tool.Function.Name)
+		for _, section := range []string{"调用/边界：", "接续：", "失败："} {
+			require.Contains(t, desc, section, tool.Function.Name)
+		}
 		require.NotContains(t, desc, "服务端负责缺失字段", tool.Function.Name)
-		require.NotContains(t, desc, "本工具不直接执行", tool.Function.Name)
-		require.NotContains(t, desc, "→", tool.Function.Name)
 		require.NotContains(t, desc, "->", tool.Function.Name)
 		require.NotContains(t, desc, "自动执行", tool.Function.Name)
 		require.NotContains(t, desc, "确认式工作流", tool.Function.Name)
@@ -94,9 +98,24 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		t.Logf("mutating=%t system_bytes=%d system_runes=%d tool_bytes=%d tool_runes=%d total_bytes=%d total_runes=%d",
 			mutating, len(system), len([]rune(system)), len(toolJSON), len([]rune(string(toolJSON))),
 			len(system)+len(toolJSON), len([]rune(system))+len([]rune(string(toolJSON))))
-		require.LessOrEqual(t, len(system), 4500, "central system prompt grew past its reviewed byte budget")
-		require.LessOrEqual(t, len(toolJSON), 30000, "model-visible tool window grew past its reviewed byte budget")
-		require.LessOrEqual(t, len(system)+len(toolJSON), 35000,
+		// P2 adds one compact, shared observation contract. Keep B4's measured
+		// write-authorization wording verbatim instead of recovering this budget
+		// by weakening its anti-over-questioning safeguards.
+		//
+		// 4800 -> 4900 (2026-08-03): +128 bytes for the correct_tool_call
+		// exception inside the needs_input clause. Bought deliberately: without
+		// it the generic "补问缺字段" rule makes the model ask the user to restate
+		// a question they already stated correctly, on the ~4% of SearchKnowledge
+		// calls whose arguments the MODEL malformed (rate recorded in
+		// engine.go's parse-error comment and tool_arg_parse_test's fixtures).
+		// That is the over-questioning this budget exists to protect against, so
+		// squeezing the exception into ambiguity would defeat its own purpose.
+		require.LessOrEqual(t, len(system), 4900, "central system prompt grew past its reviewed byte budget")
+		// Each Request tool keeps its operation-specific safety boundary and adds
+		// a compact card/failed-result continuation. This is the full mutating
+		// fallback window; no intent-scoping assumption is used to hide its cost.
+		require.LessOrEqual(t, len(toolJSON), 33000, "model-visible tool window grew past its reviewed byte budget")
+		require.LessOrEqual(t, len(system)+len(toolJSON), 37500,
 			"static prompt plus tool schemas grew past its reviewed byte budget")
 	}
 }
