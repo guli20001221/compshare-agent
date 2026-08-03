@@ -293,29 +293,38 @@ func (e *Engine) refreshConversationDigest(now time.Time) {
 	} else if task.Status == TaskSnapshotStatusResolved {
 		digest.UnresolvedTasks = nil
 	}
+	// Cleared BEFORE the task merge, not after, so this only ever touches state
+	// that was already persisted. Filtering after the merge would put this turn's
+	// task entities through a filter meant for last week's rows; the two Source
+	// vocabularies do not overlap today, so it is the same behaviour either way,
+	// but only this order stays correct if a task entity ever legitimately
+	// carries a source this drops.
+	digest.EntityHints = dropCarriedSelectionHints(digest.EntityHints)
 	digest.EntityHints = mergeSemanticEntities(digest.EntityHints, task.Entities)
 	// The current selection is deliberately NOT copied in here.
 	//
 	// It used to be, and the copy outlived everything that governs the original.
-	// mergeSemanticEntities keys on (kind, id), so switching instances appended a
-	// second entry rather than replacing the first, and each entry froze the
-	// Source and Freshness it was written with. Nothing expired them:
-	// expireStaleSelectedInstance operates on sessionState, which the copy is not.
+	// mergeSemanticEntities keys on (kind, id), so a copy is only ever rewritten
+	// while its instance is STILL the live selection. Switching instances appended
+	// a second entry instead, and the first became unreachable by any later
+	// refresh — frozen at the Source and Freshness it was written with for the
+	// life of the session. expireStaleSelectedInstance never saw it: that operates
+	// on sessionState, which the copy is not.
 	//
-	// Two opposite failures came out of that, both reproduced:
-	//   - two prior picks in one session left bindInstanceTarget with two
-	//     user_selected entries, so a bare 关掉它 after two SUCCESSFUL operations
-	//     answered 目标引用不唯一;
-	//   - one prior pick outlived selectedInstanceTTLSeconds: the live entry
-	//     correctly went source="" freshness=expired while the frozen copy stayed
-	//     user_selected/fresh, so 31 minutes later a bare 关掉它 still bound the old
-	//     instance. That is the TTL's whole purpose, defeated by a duplicate of
-	//     the value it governs.
+	// The failure that produced: two prior picks left bindInstanceTarget with two
+	// user_selected entries, so a bare 关掉它 after two SUCCESSFUL operations
+	// answered 目标引用不唯一.
+	//
+	// A single pick outliving selectedInstanceTTLSeconds was NOT one of them,
+	// though it looks like it should have been. One instance means the copy shares
+	// its key with the live value, so the refresh that always follows
+	// expireStaleSelectedInstance at turn entry overwrote it with the expired
+	// state. See TestSinglePickPastItsTTLDoesNotBind, which pins that and says it
+	// is an invariant rather than a guard for this change.
 	//
 	// CompileForTurn already supplies the live selection with its real provenance
 	// and its real freshness (direct_render_context.go, the SelectedInstanceID
 	// block). One value, one owner, one expiry.
-	digest.EntityHints = dropCarriedSelectionHints(digest.EntityHints)
 	digest.Narrative = buildConversationNarrative(digest)
 	digest.UpdatedAtUnix = now.Unix()
 	e.sessionState.ConversationDigest = digest
