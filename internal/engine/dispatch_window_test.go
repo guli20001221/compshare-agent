@@ -101,7 +101,16 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// P2 adds one compact, shared observation contract. Keep B4's measured
 		// write-authorization wording verbatim instead of recovering this budget
 		// by weakening its anti-over-questioning safeguards.
-		require.LessOrEqual(t, len(system), 4800, "central system prompt grew past its reviewed byte budget")
+		//
+		// 4800 -> 4900 (2026-08-03): +128 bytes for the correct_tool_call
+		// exception inside the needs_input clause. Bought deliberately: without
+		// it the generic "补问缺字段" rule makes the model ask the user to restate
+		// a question they already stated correctly, on the ~4% of SearchKnowledge
+		// calls whose arguments the MODEL malformed (rate recorded in
+		// engine.go's parse-error comment and tool_arg_parse_test's fixtures).
+		// That is the over-questioning this budget exists to protect against, so
+		// squeezing the exception into ambiguity would defeat its own purpose.
+		require.LessOrEqual(t, len(system), 4900, "central system prompt grew past its reviewed byte budget")
 		// Each Request tool keeps its operation-specific safety boundary and adds
 		// a compact card/failed-result continuation. This is the full mutating
 		// fallback window; no intent-scoping assumption is used to hide its cost.

@@ -40,6 +40,10 @@ const (
 	AgentToolNextAskUser          AgentToolNextStep = "ask_user"
 	AgentToolNextRetryLater       AgentToolNextStep = "retry_later"
 	AgentToolNextChooseOption     AgentToolNextStep = "ask_user_to_choose"
+	// AgentToolNextCorrectToolCall is the one next step the model owns entirely.
+	// It exists because the other four all end in the user doing something, and
+	// a call the model itself malformed needs nothing from the user at all.
+	AgentToolNextCorrectToolCall AgentToolNextStep = "correct_tool_call"
 )
 
 // AgentToolError is always present, including successful results. Code NONE is
@@ -114,6 +118,29 @@ func AgentToolNoCitableEvidence(action string, data any, meta AgentToolMeta) Age
 	)
 }
 
+// AgentToolInvalidToolCall marks a call this binary rejected before executing
+// it because the MODEL emitted arguments that are not a JSON object. The user
+// supplied nothing wrong and has nothing to add, so this must never resolve to
+// ask_user: the fix is for the model to re-emit the same call with valid JSON
+// on the next round, which is what engine.executeToolOnce's comment has always
+// said the corrective hint is for.
+//
+// It keeps status needs_input — the call really is missing valid input — and
+// carries the whole instruction in next_step, so the closed status vocabulary
+// stays at five.
+func AgentToolInvalidToolCall(action string, code, message string, meta AgentToolMeta) AgentToolResult {
+	return newAgentToolResult(
+		AgentToolStatusNeedsInput,
+		action,
+		nil,
+		defaultAgentErrorCode(code, "INVALID_TOOL_ARGUMENTS"),
+		message,
+		false,
+		AgentToolNextCorrectToolCall,
+		meta,
+	)
+}
+
 func newAgentToolResult(status AgentToolStatus, action string, data any, code, message string, retryable bool, next AgentToolNextStep, meta AgentToolMeta) AgentToolResult {
 	meta.Action = strings.TrimSpace(action)
 	if meta.Action == "" {
@@ -168,7 +195,15 @@ func validAgentToolControlPlane(result AgentToolResult) bool {
 	case AgentToolStatusSuccess:
 		return !result.Retryable && result.NextStep == AgentToolNextAnswerUser && result.Error.Code == agentToolNoErrorCode
 	case AgentToolStatusNeedsInput:
-		return !result.Retryable && result.NextStep == AgentToolNextAskUser
+		// Two ways a call can lack valid input, and they are answered by
+		// different parties: the USER has not said something yet (ask_user), or
+		// the MODEL malformed the arguments it just emitted (correct_tool_call).
+		// This pairing is enforced here as well as at construction because
+		// agentToolObservation re-parses every result and silently re-wraps
+		// anything it fails to recognise — a rejected pairing does not surface
+		// as an error, it surfaces as a plain success.
+		return !result.Retryable &&
+			(result.NextStep == AgentToolNextAskUser || result.NextStep == AgentToolNextCorrectToolCall)
 	case AgentToolStatusRetryLater:
 		return result.Retryable && result.NextStep == AgentToolNextRetryLater
 	case AgentToolStatusChooseAlternative:
@@ -191,7 +226,8 @@ func validAgentToolStatus(status AgentToolStatus) bool {
 
 func validAgentToolNextStep(step AgentToolNextStep) bool {
 	switch step {
-	case AgentToolNextAnswerUser, AgentToolNextAnswerWithLimits, AgentToolNextAskUser, AgentToolNextRetryLater, AgentToolNextChooseOption:
+	case AgentToolNextAnswerUser, AgentToolNextAnswerWithLimits, AgentToolNextAskUser,
+		AgentToolNextRetryLater, AgentToolNextChooseOption, AgentToolNextCorrectToolCall:
 		return true
 	default:
 		return false

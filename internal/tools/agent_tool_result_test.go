@@ -68,3 +68,49 @@ func TestAgentToolResultFromUnknownUpstreamErrorKeepsOnlySafeDiagnosticCode(t *t
 	require.Equal(t, "上游服务未能完成本次请求。", result.Error.Message)
 	require.NotContains(t, MarshalAgentToolResult(result), "raw upstream tenant")
 }
+
+// A malformed tool call is the one failure the user cannot help with, so it is
+// the one next step that must not end in a question. The rest of the contract
+// deliberately does end there — that is why the exception needs pinning.
+func TestInvalidToolCallRoutesBackToTheModelNotTheUser(t *testing.T) {
+	result := AgentToolInvalidToolCall(
+		"SearchKnowledge",
+		"INVALID_TOOL_ARGUMENTS",
+		"工具参数必须是合法的 JSON 对象，请按该工具的参数结构重新调用。",
+		AgentToolMeta{SourceStatus: "argument_parse_error"},
+	)
+
+	require.Equal(t, AgentToolNextCorrectToolCall, result.NextStep)
+	require.NotEqual(t, AgentToolNextAskUser, result.NextStep)
+	require.Equal(t, AgentToolStatusNeedsInput, result.Status)
+	require.Equal(t, "INVALID_TOOL_ARGUMENTS", result.Error.Code)
+	require.False(t, result.Retryable, "the same malformed call must not be re-sent unchanged")
+	require.Nil(t, result.Data)
+
+	// The engine's observation boundary re-parses every tool result and wraps
+	// anything it does not recognise. If correct_tool_call were missing from the
+	// valid set, this result would come back out as a plain success — the exact
+	// regression this whole change removes, restored silently.
+	parsed, ok := ParseAgentToolResult(MarshalAgentToolResult(result))
+	require.True(t, ok, "the contract must recognise its own output")
+	require.Equal(t, AgentToolNextCorrectToolCall, parsed.NextStep)
+}
+
+// Control: no other constructor may quietly adopt the model-owned next step.
+// Without this, a later edit could route an upstream failure to correct_tool_call
+// and the assertion above would still pass.
+func TestOnlyAMalformedCallGetsTheModelOwnedNextStep(t *testing.T) {
+	others := []AgentToolResult{
+		AgentToolSuccess("A", nil, AgentToolMeta{}),
+		AgentToolNeedsInput("A", nil, "", "", AgentToolMeta{}),
+		AgentToolRetryLater("A", nil, "", "", AgentToolMeta{}),
+		AgentToolChooseAlternative("A", nil, "", "", AgentToolMeta{}),
+		AgentToolFailure("A", nil, "", "", AgentToolMeta{}),
+		AgentToolNoCitableEvidence("A", nil, AgentToolMeta{}),
+		AgentToolResultFromError("A", NewUpstreamAPIError(17000, "x"), AgentToolMeta{}),
+	}
+	for _, result := range others {
+		require.NotEqual(t, AgentToolNextCorrectToolCall, result.NextStep,
+			"%s/%s must not claim the model-owned next step", result.Status, result.Error.Code)
+	}
+}
