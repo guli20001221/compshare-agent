@@ -6,7 +6,7 @@
 # Use the internal registry mirrors that the c5 Kaniko runner can reach.
 # Docker Hub is not routable from that build network.
 ARG GO_IMAGE=uhub.service.ucloud.cn/ucompshare-job/golang:1.25-alpine
-ARG NODE_IMAGE=uhub.service.ucloud.cn/ucompshare-job/node:22-alpine
+ARG NODE_IMAGE=uhub.service.ucloud.cn/ai-mas-public/node:22-bookworm-slim
 ARG PYTHON_IMAGE=uhub.service.ucloud.cn/base-images/python:3.13-slim
 
 FROM ${GO_IMAGE} AS go-builder
@@ -62,11 +62,11 @@ RUN python3 -m venv /opt/miniforge3/envs/py313 \
     && rm /opt/miniforge3/envs/py313/lib/python3.13/site-packages/claude_agent_sdk/_bundled/claude \
     && rm /tmp/ssh-ops-requirements.txt
 
-# The npm package is only a build-time fetcher.  Its amd64 package contains a
-# self-contained native CLI; copying the wrapper, node_modules and Node runtime
-# would add hundreds of duplicate MiB to the old daemon's storage driver.
+# The npm package is only a build-time fetcher. Its glibc amd64 package contains
+# a self-contained native CLI; copying the wrapper, node_modules and Node runtime
+# would add hundreds of duplicate MiB to the image.
 COPY --from=claude-cli \
-     /usr/local/lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude \
+     /usr/local/lib/node_modules/@anthropic-ai/claude-code-linux-x64/claude \
      /usr/local/bin/claude
 
 WORKDIR $APP_HOME
