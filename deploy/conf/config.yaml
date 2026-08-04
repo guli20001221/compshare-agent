@@ -83,6 +83,36 @@ agent:
     session_fact_context: true          # near-term fact cache injected into context
     react_result_projection: true       # compress large read tool results before re-feeding ReAct
     react_history_compaction: true      # summarize old turns once history exceeds the window
+    # ON since 2026-08-04. One switch owns the whole transcript pipeline: the
+    # turn's messages, tool calls and tool results are captured, persisted to
+    # messages.metadata (agent_transcript_v1) and replayed to the model, instead
+    # of being deleted and paraphrased back through semantic state.
+    #
+    # With it on the context card stops restating a summary of the same turns
+    # (#510) and keeps only what a transcript cannot carry: the live selection,
+    # the pending selection card, and this turn's continuity notices. The
+    # semantic layer (ConversationDigest / RecentFacts / VerifiedKnowledge /
+    # TaskSnapshot) is still computed and persisted — it is no longer injected.
+    # Deleting it is a later, separate step, deliberately not taken until this
+    # has run in production, because until then THIS FLAG is the rollback.
+    #
+    # Cold start: capture is gated too, so sessions that ran before the flip have
+    # no stored transcript. Their plain user/assistant exchanges still replay
+    # (that path is not gated), but their old turns have no tool trace while the
+    # card is already suppressed. New sessions are unaffected and in-flight ones
+    # recover from their next turn. Flip during a low-traffic window.
+    #
+    # Size is bounded and was already costed for this: maxReplayedHistoryRunes
+    # (12000) charges the transcript together with the exchange it belongs to,
+    # per-message 6000 runes, per-turn 40000, envelope 256KB. An oversized turn
+    # is recorded with no transcript rather than truncated before redaction.
+    #
+    # ROLLBACK: set this to false and RESTART. NOT via the environment — see the
+    # forced_knowledge_hop note below: an explicit value here out-ranks os.Getenv
+    # (internal/config/runtime.go), so COMPSHARE_CANONICAL_TRANSCRIPT=0 would
+    # silently do nothing while this key is present. Boot-only either way;
+    # engine.SetCanonicalTranscriptEnabled freezes it once at startup.
+    canonical_transcript: true
     # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
     # guards only when their flag-on path is the validated production path.
     domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
