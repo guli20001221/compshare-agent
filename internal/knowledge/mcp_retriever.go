@@ -124,11 +124,7 @@ func (r *MCPRetriever) RetrieveContext(ctx context.Context, question, contextHin
 		RerankerLatencyMS:      response.Retrieval.RerankerLatencyMS,
 		RerankerFallbackReason: strings.TrimSpace(response.Retrieval.RerankerFallbackReason),
 	}
-	if result.HybridMode == "" {
-		// compshare-kb always supplies mode, but keep the established BM25-safe
-		// default if an older server omits it.
-		result.HybridMode = RetrievalModeBM25Only
-	}
+	result.HybridMode, result.HybridFallbackReason = normalizeRemoteScoreScale(result.HybridMode, result.HybridFallbackReason)
 	if result.Empty {
 		result.SearchID = ""
 	}
@@ -179,6 +175,43 @@ func (r *MCPRetriever) ReadChunks(ctx context.Context, searchID string, chunkIDs
 		})
 	}
 	return items, nil
+}
+
+// normalizeRemoteScoreScale decides whether this process may judge the remote's
+// scores against a relevance floor, and says so in the mode itself.
+//
+// It exists because the previous behavior — defaulting an absent mode to
+// bm25_only and calling that "BM25-safe" — is only safe when the scores really
+// are BM25 scores. The BM25 floor is 55.0 and a reranker/cosine scale tops out
+// at 1.0, so guessing wrong in that direction rejects EVERY hit, empties the
+// ledger, and reads downstream as "the corpus has nothing" rather than as a
+// missing metadata field. That is the same failure the qwen3_rrf reranker
+// fallback already caused once (see isWeakEvidence in internal/engine), and it
+// gets the same answer: when the scale is not identifiable, decline to judge
+// rather than judge on a guess.
+//
+// An UNRECOGNIZED mode is treated exactly like an absent one, and deliberately
+// so: compshare-kb owns its own retrieval pipeline and can rename or add a mode
+// without this repo shipping, which makes "a mode we have never calibrated"
+// more likely over time than "no mode at all".
+//
+// The raw value is never dropped — it is preserved in the fallback reason so an
+// operator can see which unknown mode disabled the floor.
+func normalizeRemoteScoreScale(mode, fallbackReason string) (string, string) {
+	mode = strings.TrimSpace(mode)
+	if KnownRetrievalMode(mode) {
+		return mode, fallbackReason
+	}
+	reason := "remote_mode_unrecognized:" + mode
+	if mode == "" {
+		reason = "remote_mode_missing"
+	}
+	if trimmed := strings.TrimSpace(fallbackReason); trimmed != "" {
+		// Keep whatever the remote said about its own degradation; this marker is
+		// additional information, not a replacement for it.
+		reason = trimmed + "; " + reason
+	}
+	return RetrievalModeUnknownRemote, reason
 }
 
 func unavailableMCPRetrieval(question string, err error) RetrievalResult {

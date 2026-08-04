@@ -2106,6 +2106,16 @@ func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerS
 	if hybridMode == "qwen3_rrf" && !rerankerScored {
 		return false
 	}
+	if hybridMode == knowledge.RetrievalModeUnknownRemote {
+		// Same rule as the qwen3_rrf branch above, reached a different way: a
+		// remote retriever reported a scoring path this process has never
+		// calibrated, so there is no threshold that means anything against these
+		// scores. Guessing picks the BM25 floor (55.0), which rejects an entire
+		// [0,1] scale — the exact "empties the ledger and forces fabrication"
+		// outcome the branch above exists to prevent. Decline to judge instead;
+		// HybridFallbackReason names the unknown mode.
+		return false
+	}
 	return items[0].Score < weakEvidenceThresholdFor(hybridMode)
 }
 
@@ -2115,6 +2125,15 @@ func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerS
 // path. Mode-aware so the spread threshold matches the score scale in use.
 func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool {
 	if len(items) < 2 {
+		return false
+	}
+	if hybridMode == knowledge.RetrievalModeUnknownRemote {
+		// A spread is only meaningful against a known scale, for the same reason
+		// the floor is. This one is telemetry-only, so guessing would not change
+		// an answer — it would mark nearly every remote turn a ranking-error
+		// candidate (the BM25 spread is wide relative to a [0,1] scale) and make
+		// the metric useless exactly when someone is using it to diagnose the
+		// remote.
 		return false
 	}
 	return items[0].Score-items[1].Score < rankingAmbiguousSpreadFor(hybridMode)
@@ -2127,6 +2146,11 @@ func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool 
 // fixture-pinned behavior.
 func weakEvidenceThresholdFor(hybridMode string) float64 {
 	switch hybridMode {
+	case knowledge.RetrievalModeUnknownRemote:
+		// No floor ran (see isWeakEvidence), so there is no floor value. Zero
+		// makes RetrievalTrace.FloorValue omitempty drop the field rather than
+		// record a threshold nothing was compared against.
+		return 0
 	case "hybrid_cosine", "hybrid_rerank", "qwen3_full", "qwen3_rrf":
 		// qwen3_rrf's final Score is qwen3-reranker-8b relevance score
 		// (same reranker as qwen3_full), so same [0,1] semantic threshold

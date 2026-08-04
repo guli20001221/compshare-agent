@@ -57,7 +57,36 @@ const (
 	RetrievalModeHybridRerank = "hybrid_rerank"
 	RetrievalModeQwen3Full    = "qwen3_full"
 	RetrievalModeQwen3RRF     = "qwen3_rrf"
+	// RetrievalModeBM25Fallback is not a configurable mode: a hybrid path
+	// relabels itself to this when the embedding step failed mid-flight, so the
+	// scores are BM25 scores again. Named here because KnownRetrievalMode and the
+	// engine's floor tables both have to agree that it is judgeable.
+	RetrievalModeBM25Fallback = "bm25_fallback"
+	// RetrievalModeUnknownRemote marks a result whose SCORE SCALE this process
+	// cannot identify: a remote retriever reported a mode that is not in the list
+	// above (or reported none at all). It is deliberately NOT one of the modes —
+	// it is the absence of one, named so downstream code can branch on it instead
+	// of guessing.
+	//
+	// Only the remote adapter produces it. A local Retriever always knows which
+	// path it ran, and the empty string keeps meaning "mock fixture" for the
+	// pre-mode-aware tests that rely on it.
+	RetrievalModeUnknownRemote = "unknown_remote"
 )
+
+// KnownRetrievalMode reports whether mode names a scoring path this process has
+// a calibrated relevance floor for. It is the single membership test behind that
+// claim: engine's threshold tables and the remote adapter's normalization must
+// not disagree about which modes are judgeable.
+func KnownRetrievalMode(mode string) bool {
+	switch mode {
+	case RetrievalModeBM25Only, RetrievalModeHybridCosine, RetrievalModeHybridRerank,
+		RetrievalModeQwen3Full, RetrievalModeQwen3RRF, RetrievalModeBM25Fallback:
+		return true
+	default:
+		return false
+	}
+}
 
 // VectorEmbedder is satisfied by *internal/embedding.Client and by test
 // doubles. Keeping it as a local interface lets the retriever stay free of
@@ -386,7 +415,7 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 			// empty (legitimate "nothing matches"); that case still
 			// returns no hits.
 			finalCandidates = bm25Candidates
-			hybridMode = "bm25_fallback"
+			hybridMode = RetrievalModeBM25Fallback
 			hybridFallbackReason = denseFallbackReason
 		} else {
 			embeddingModel = r.embeddingModel
@@ -431,7 +460,7 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 				// Cosine stage failed: BM25 pool returned unchanged, mark
 				// bm25_fallback, leave embeddingModel empty (no valid cosine
 				// signal was produced), and skip reranker entirely.
-				hybridMode = "bm25_fallback"
+				hybridMode = RetrievalModeBM25Fallback
 				hybridFallbackReason = fallbackReason
 			} else {
 				hybridMode = "hybrid_cosine"
