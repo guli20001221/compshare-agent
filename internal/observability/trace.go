@@ -867,10 +867,21 @@ type RetrievalTrace struct {
 	AnswerEchoedChunkID string `json:"answer_echoed_chunk_id,omitempty"`
 	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
 	// One of "bm25_only" | "hybrid_cosine" | "hybrid_rerank" | "qwen3_full"
-	// | "bm25_fallback". Empty when retrieval is disabled.
+	// | "qwen3_rrf" | "bm25_fallback" | "unknown_remote". Empty when retrieval is
+	// disabled.
+	//
+	// "unknown_remote" is an operational signal, not a pipeline: the remote
+	// knowledge service reported a scoring path this build has no calibrated
+	// floor for, so the relevance floor and the ranking-ambiguity metric were
+	// both SKIPPED for that query and FloorValue is absent. Query it to find a
+	// remote whose retrieval metadata this build no longer understands;
+	// HybridFallbackReason carries the raw mode it sent.
 	HybridMode string `json:"hybrid_mode,omitempty"`
-	// HybridFallbackReason is non-empty only when HybridMode == "bm25_fallback".
-	// One of "embedding_timeout" | "embedding_error" | "embedding_empty".
+	// HybridFallbackReason is non-empty when HybridMode == "bm25_fallback"
+	// ("embedding_timeout" | "embedding_error" | "embedding_empty") or when
+	// HybridMode == "unknown_remote" ("remote_mode_missing" |
+	// "remote_mode_unrecognized:<raw>"). A remote that reported its own
+	// degradation reason keeps it, joined with "; ".
 	HybridFallbackReason string `json:"hybrid_fallback_reason,omitempty"`
 	// EmbeddingLatencyMS mirrors internal/knowledge/retriever.RetrievalResult.EmbeddingLatencyMS.
 	// Pointer to distinguish three states: nil = embedder not invoked

@@ -2100,13 +2100,47 @@ func citedRefsFromChunkIDs(chunkIDs []string, refs []observability.RetrievalRefe
 // a degraded ledger is far better than an empty one. The reranker fallback is
 // still observable via RerankerFallbackReason.
 func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerScored bool) bool {
+	floor, judged := appliedFloor(items, hybridMode, rerankerScored)
+	if !judged {
+		return false
+	}
+	return items[0].Score < floor
+}
+
+// appliedFloor is the SINGLE producer of "was a relevance floor applied to these
+// hits, and what was it". Both the verdict (isWeakEvidence) and the trace
+// (RetrievalTrace.FloorValue) read it, so they cannot describe different events.
+//
+// Two consumers deriving the same conditions independently is what produced the
+// defect this replaced: FloorValue reported weakEvidenceThresholdFor(mode) while
+// isWeakEvidence had already declined to compare, so a qwen3_rrf turn whose
+// reranker timed out recorded "0.031 judged against 0.5" for a comparison that
+// never happened — pointing an operator at scores when the fault was a reranker
+// fallback. Keeping the conditions in sync across two functions would have fixed
+// that instance and left the shape intact.
+//
+// judged is false in every case where no comparison occurs:
+//   - no hits: there is nothing to compare.
+//   - unknown score scale: a remote reported a scoring path this build never
+//     calibrated. Guessing picks BM25's 55.0, which rejects an entire [0,1]
+//     scale — see normalizeRemoteScoreScale.
+//   - qwen3_rrf without reranker scores: the mode KEEPS its label on a reranker
+//     fallback while its scores revert to the RRF fusion scale (~0.03), so the
+//     0.5 reranker floor would reject every query. The floor_reranker probe
+//     measured that emptying the ledger forces the agent to fabricate from
+//     prior; a degraded ledger is far better than an empty one. Observable via
+//     RerankerFallbackReason.
+func appliedFloor(items []knowledge.RetrievalHit, hybridMode string, rerankerScored bool) (float64, bool) {
 	if len(items) == 0 {
-		return false
+		return 0, false
 	}
-	if hybridMode == "qwen3_rrf" && !rerankerScored {
-		return false
+	if knowledge.ScoreScaleFor(hybridMode) == knowledge.ScoreScaleUnknown {
+		return 0, false
 	}
-	return items[0].Score < weakEvidenceThresholdFor(hybridMode)
+	if hybridMode == knowledge.RetrievalModeQwen3RRF && !rerankerScored {
+		return 0, false
+	}
+	return weakEvidenceThresholdFor(hybridMode), true
 }
 
 // isRankingAmbiguous reports whether the top two hits are close enough on the
@@ -2115,6 +2149,15 @@ func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerS
 // path. Mode-aware so the spread threshold matches the score scale in use.
 func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool {
 	if len(items) < 2 {
+		return false
+	}
+	if knowledge.ScoreScaleFor(hybridMode) == knowledge.ScoreScaleUnknown {
+		// A spread is only meaningful against a known scale, for the same reason
+		// the floor is. This one is telemetry-only, so guessing would not change
+		// an answer — it would mark nearly every remote turn a ranking-error
+		// candidate (the BM25 spread is wide relative to a [0,1] scale) and make
+		// the metric useless exactly when someone is using it to diagnose the
+		// remote.
 		return false
 	}
 	return items[0].Score-items[1].Score < rankingAmbiguousSpreadFor(hybridMode)
@@ -2126,25 +2169,29 @@ func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool 
 // the BM25 threshold so existing tests with mock RetrievalResult{} keep their
 // fixture-pinned behavior.
 func weakEvidenceThresholdFor(hybridMode string) float64 {
-	switch hybridMode {
-	case "hybrid_cosine", "hybrid_rerank", "qwen3_full", "qwen3_rrf":
-		// qwen3_rrf's final Score is qwen3-reranker-8b relevance score
-		// (same reranker as qwen3_full), so same [0,1] semantic threshold
-		// applies. Without this case the default branch would pick the
-		// BM25 threshold (designed for 0..N BM25 raw scores) and
-		// false-refuse on perfectly cited cross-encoder evidence.
+	switch knowledge.ScoreScaleFor(hybridMode) {
+	case knowledge.ScoreScaleSemantic:
+		// The [0,1] cross-encoder / cosine scale. qwen3_rrf's final Score is a
+		// qwen3-reranker-8b relevance score (same reranker as qwen3_full), so it
+		// belongs here too; classifying it as BM25 would false-refuse perfectly
+		// cited cross-encoder evidence.
 		return weakEvidenceSemanticThreshold
 	default:
-		// "bm25_only", "bm25_fallback", "", or any unrecognized value.
+		// ScoreScaleBM25 and ScoreScaleUnknown. Unknown deliberately still gets a
+		// real threshold: appliedFloor is what declines to judge it, and if this
+		// table returned 0 instead then `score < 0` would disable the floor as a
+		// side effect — the two would cover for each other and a mutation
+		// deleting the real guard would survive. It did, once.
 		return weakEvidenceBM25Threshold
 	}
 }
 
-// rankingAmbiguousSpreadFor maps HybridMode to the spread threshold under which
-// the top two hits are considered tied. Same default-to-BM25 rule as above.
+// rankingAmbiguousSpreadFor maps a score scale to the spread under which the top
+// two hits are considered tied. Keyed by scale for the same reason the floor is:
+// a spread is a distance on a scale, not a property of a pipeline.
 func rankingAmbiguousSpreadFor(hybridMode string) float64 {
-	switch hybridMode {
-	case "hybrid_cosine", "hybrid_rerank", "qwen3_full", "qwen3_rrf":
+	switch knowledge.ScoreScaleFor(hybridMode) {
+	case knowledge.ScoreScaleSemantic:
 		return rankingAmbiguousSemanticSpread
 	default:
 		return rankingAmbiguousBM25Spread
@@ -2710,6 +2757,11 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 			hitItems = append(hitItems, knowledge.RetrievalHit{Chunk: chunk, Kept: true})
 		}
 	}
+	// hitItems is what the floor was (or was not) applied to, so the trace value
+	// comes from the same producer as the verdict rather than being re-derived
+	// from the mode alone. An unavailable retrieval and an empty result both
+	// arrive here with no hits, and both correctly record no floor.
+	appliedFloorValue, _ := appliedFloor(hitItems, retrieved.HybridMode, retrieved.RerankerMode != "")
 	trace := observability.RetrievalTrace{
 		Enabled:                retrieved.Enabled,
 		Unavailable:            retrieved.Unavailable,
@@ -2728,7 +2780,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
 		RerankerFallbackReason: retrieved.RerankerFallbackReason,
 		FloorDroppedAll:        floorDroppedAll,
-		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
+		FloorValue:             appliedFloorValue,
 		Activities: []observability.RetrievalActivity{{
 			ID:              activityID,
 			Query:           query,

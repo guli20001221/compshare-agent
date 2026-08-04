@@ -104,7 +104,12 @@ func TestLiveFloorRerankerArtifact(t *testing.T) {
 	report := func(tag string, r *knowledge.Retriever, tgt target, q string) {
 		res := r.Retrieve(q, "")
 		hits := res.HitItems
-		floor := weakEvidenceThresholdFor(res.HybridMode)
+		// The floor this query was ACTUALLY judged against — not the one its mode
+		// would use. This probe exists to demonstrate the reranker-fallback case,
+		// where those differ: weakEvidenceThresholdFor would print 0.5 beside an
+		// RRF-fusion score that isWeakEvidence never compared to anything, which
+		// is precisely the reading error the probe is trying to expose.
+		floor, _ := appliedFloor(hits, res.HybridMode, res.RerankerMode != "")
 		dropped := isWeakEvidence(hits, res.HybridMode, res.RerankerMode != "")
 		top1 := -1.0
 		if len(hits) > 0 {
