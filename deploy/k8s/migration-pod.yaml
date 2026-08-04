@@ -1,0 +1,51 @@
+# Manual-only database migration helper.  It is intentionally not referenced by
+# the GitLab delivery pipeline.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __POD_NAME__
+  labels:
+    app.kubernetes.io/name: compshare-agent-migrate
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 300
+  imagePullSecrets:
+    - name: regcred
+  containers:
+    - name: migrate
+      image: __IMAGE__
+      imagePullPolicy: Always
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          export PGCONNECT_TIMEOUT=15
+          DSN=$(sed -n 's/^[[:space:]]*dsn:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' /opt/compshare-agent/deploy/conf/config.local.yaml)
+          DB_HOST=$(sed -n 's/^[[:space:]]*host_override:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' /opt/compshare-agent/deploy/conf/config.prod.yaml)
+          test -n "$DSN"
+          test -n "$DB_HOST"
+          DSN=$(python3 - "$DSN" "$DB_HOST" <<'PY'
+          from urllib.parse import urlsplit, urlunsplit
+          import sys
+
+          dsn, host = sys.argv[1:]
+          parsed = urlsplit(dsn)
+          userinfo, separator, _ = parsed.netloc.rpartition("@")
+          if not separator:
+              raise SystemExit("database DSN is missing user info")
+          port = parsed.port or 5432
+          netloc = f"{userinfo}@[{host}]:{port}"
+          print(urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)))
+          PY
+          )
+          for migration in /opt/compshare-agent/deploy/migrations/*.sql; do
+            psql "$DSN" -X -v ON_ERROR_STOP=1 -f "$migration"
+          done
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        capabilities:
+          drop:
+            - ALL

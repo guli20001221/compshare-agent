@@ -153,6 +153,11 @@ agent:
   # at a non-default corpus or tune timeouts.
   retrieval:
     knowledge_retrieval: curated        # curated | off
+    # Production retrieval is served by the independently deployed KB.  When
+    # this endpoint is set, the agent does not open the bundled corpus.
+    mcp_url: "http://compshare-kb.prj-ucompshare-prod.svc.c5.u4/mcp"
+    # mcp_bearer_token: ""             # COMPSHARE_KB_MCP_BEARER_TOKEN (read token only)
+    # mcp_timeout_ms: 12000             # COMPSHARE_KB_MCP_TIMEOUT_MS
     mode: qwen3_rrf                     # qwen3_rrf | bm25_only | hybrid_cosine | hybrid_rerank | qwen3_full
     # qwen3 embed + rerank key (authorized for qwen3-embedding-8b /
     # qwen3-reranker-8b). SEPARATE from the terra answer key in agent.llm above.
@@ -195,7 +200,7 @@ agent:
     # claude_agent_sdk, and the only symptom is a diagnosis that fails after the user already
     # approved the card.
     enabled: true
-    harness_path: ""                   # absolute path to deploy/ssh_ops_harness/harness.py (required when enabled)
+    harness_path: "/opt/compshare-agent/deploy/ssh_ops_harness/harness.py" # baked into the production image
     base_url: "https://api.modelverse.cn" # direct Anthropic-compatible /v1/messages endpoint
     api_key: ""                        # empty = inherit agent.llm.api_key (the production Terra key)
     python: "/opt/miniforge3/envs/py313/bin/python" # production Python 3.13 env with requirements.txt installed
@@ -300,6 +305,9 @@ agent:
   # postgresql://user:pass@host:5432/db?sslmode=disable.
   mysql:
     dsn: "postgresql://root:U3JSFCnwt5dfcC5f@117.50.198.43:5432/postgres?sslmode=disable"
+    # The c5 production cluster reaches PostgreSQL through its IPv6 address.
+    # Keep credentials, database, and query parameters in dsn; only this host
+    # is deployment-specific.
     max_open_conns: 20
     max_idle_conns: 5
     conn_max_lifetime: "1h"

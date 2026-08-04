@@ -9,7 +9,6 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -20,13 +19,55 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestDeployConfigStagesDurableExecutionOffForSafeClusterCutover(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "conf", "config.yaml"))
+	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	require.NoError(t, err)
-	var cfg Config
-	require.NoError(t, yaml.Unmarshal(raw, &cfg))
 	require.NotNil(t, cfg.Agent.Features.DurableTurns)
 	assert.False(t, *cfg.Agent.Features.DurableTurns,
-		"the tracked deploy config must not activate durable execution during a rolling binary deploy")
+		"the tracked production config must not activate durable execution during a rolling binary deploy")
+}
+
+func TestDeployConfigPinsContainerSSHOpsRuntime(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t,
+		"/opt/compshare-agent/deploy/ssh_ops_harness/harness.py",
+		cfg.Agent.SSHOps.HarnessPath,
+	)
+	assert.Equal(t, "/opt/miniforge3/envs/py313/bin/python", cfg.Agent.SSHOps.Python)
+}
+
+func TestProductionConfigUsesProductionKnowledgeService(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "http://compshare-kb.prj-ucompshare-prod.svc.c5.uae/mcp", cfg.Agent.Retrieval.MCPURL)
+	assert.Equal(t, "2003:da8:2004:1000:0a3c:7623:2712:f9c0", cfg.Agent.MySQL.HostOverride)
+}
+
+func TestLoad_ExtendsBaseConfigAndOverridesNestedValues(t *testing.T) {
+	setRequiredSecretEnv(t)
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "config.local.yaml")
+	prodPath := filepath.Join(dir, "config.prod.yaml")
+	require.NoError(t, os.WriteFile(basePath, []byte(baseConfig(`
+  retrieval:
+    mcp_url: "http://local-kb/mcp"
+  mysql:
+    host_override: "127.0.0.1"
+`)), 0o600))
+	require.NoError(t, os.WriteFile(prodPath, []byte(`
+extends: config.local.yaml
+agent:
+  retrieval:
+    mcp_url: "http://prod-kb/mcp"
+  mysql:
+    host_override: "2001:db8::1"
+`), 0o600))
+
+	cfg, err := Load(prodPath)
+	require.NoError(t, err)
+	assert.Equal(t, "external", cfg.Agent.Executor, "base fields must survive the overlay")
+	assert.Equal(t, "http://prod-kb/mcp", cfg.Agent.Retrieval.MCPURL)
+	assert.Equal(t, "2001:db8::1", cfg.Agent.MySQL.HostOverride)
 }
 
 func setRequiredSecretEnv(t *testing.T) {
@@ -106,7 +147,7 @@ agent:
 func TestLoad_AcceptsInlineLiteralSecretValuesInYAML(t *testing.T) {
 	// YAML-first config migration: a self-contained config.yaml may inline
 	// secrets so a deployment needs no env file at all. The committed
-	// deploy/conf/config.yaml now carries the deploy literals directly.
+	// deploy/conf/config.local.yaml now carries the shared deploy literals directly.
 	path := writeConfig(t, `
 agent:
   executor: external
@@ -873,6 +914,9 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
       - diagnose-billing
   retrieval:
     knowledge_retrieval: curated
+    mcp_url: http://compshare-kb.example/mcp
+    mcp_bearer_token: read-only-test-token
+    mcp_timeout_ms: 12000
     mode: qwen3_rrf
     hybrid_timeout_ms: 8000
   trace:
@@ -890,6 +934,9 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
 	assert.Equal(t, "qwen3_rrf", cfg.Agent.Retrieval.Mode)
+	assert.Equal(t, "http://compshare-kb.example/mcp", cfg.Agent.Retrieval.MCPURL)
+	assert.Equal(t, "read-only-test-token", cfg.Agent.Retrieval.MCPBearerToken)
+	assert.Equal(t, 12000, cfg.Agent.Retrieval.MCPTimeoutMS)
 	assert.Equal(t, 8000, cfg.Agent.Retrieval.HybridTimeoutMS)
 	require.NotNil(t, cfg.Agent.Trace.Enabled)
 	assert.True(t, *cfg.Agent.Trace.Enabled)
@@ -905,7 +952,10 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
-			Mode: "bm25_only", // YAML string wins
+			Mode:           "bm25_only", // YAML string wins
+			MCPURL:         "http://kb.example/mcp",
+			MCPBearerToken: "read-only-test-token",
+			MCPTimeoutMS:   9000,
 			// KnowledgeRetrieval omitted → base env fallback
 		},
 		Trace: TraceConfig{Sink: "file"},
@@ -928,6 +978,9 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
+	assert.Equal(t, "http://kb.example/mcp", getenv("COMPSHARE_KB_MCP_URL"), "remote knowledge endpoint comes from YAML")
+	assert.Equal(t, "read-only-test-token", getenv("COMPSHARE_KB_MCP_BEARER_TOKEN"), "read-only MCP token comes from YAML")
+	assert.Equal(t, "9000", getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"), "remote knowledge timeout comes from YAML")
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")
 	assert.Equal(t, "file", getenv("COMPSHARE_TRACE_SINK"))
 	assert.Equal(t, "resolved-llm-key", getenv("LLM_API_KEY"), "resolved secret exposed for RAG clients")

@@ -90,6 +90,7 @@ var allowedSharedDepMethods = map[string]struct{}{}
 var sharedDepConcreteTypes = []reflect.Type{
 	reflect.TypeOf((*llm.Client)(nil)),                     // SharedDeps.LLMClient
 	reflect.TypeOf((*knowledge.Retriever)(nil)),            // SharedDeps.KnowledgeRetriever
+	reflect.TypeOf((*knowledge.MCPRetriever)(nil)),         // SharedDeps.KnowledgeRetriever (remote adapter)
 	reflect.TypeOf((*governance.InMemoryRateLimiter)(nil)), // SharedDeps.RateLimiter
 	reflect.TypeOf((*knowledge.EmbeddingSidecar)(nil)),     // injected into knowledge.Retriever
 	reflect.TypeOf((*embedding.Client)(nil)),               // upstream of knowledge.EmbeddingSidecar

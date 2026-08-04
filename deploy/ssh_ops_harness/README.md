@@ -6,12 +6,11 @@
 
 ## 生产配置
 
-`deploy/conf/config.yaml` 已按 ModelVerse Anthropic 协议直连；部署时只需把 `harness_path`
-换成该 checkout 的绝对路径：
+`deploy/conf/config.local.yaml` 已按 ModelVerse Anthropic 协议直连，并被 `config.prod.yaml` 继承到生产镜像内：
 
 ```yaml
   ssh_ops:
-    harness_path: "<部署目录>/deploy/ssh_ops_harness/harness.py"   # 绝对路径
+    harness_path: "/opt/compshare-agent/deploy/ssh_ops_harness/harness.py"
     base_url: "https://api.modelverse.cn"
     api_key: ""                                                  # 空 = 复用 agent.llm.api_key
     python: "/opt/miniforge3/envs/py313/bin/python"              # 生产环境固定解释器
@@ -20,16 +19,22 @@
 
 `harness_path` / `base_url` 留空，或 `api_key` 和 `agent.llm.api_key` 同时为空，**服务起不来**。
 `python` 留空**不报错**，会悄悄回退到系统 `python3` —— 那上面没有 `claude_agent_sdk`，
-症状是用户点完授权卡之后诊断失败。换了 checkout 目录，`harness_path` 要跟着改。
+症状是用户点完授权卡之后诊断失败。
 
-## 机器上要装的
+## 运行环境
+
+生产 Docker 镜像会安装并在构建时验证 Python 依赖与固定版本的 `claude` CLI，宿主机不需要再装。
+镜像构建和 Docker 1.12.6 目标机门禁见 [`../docker/README.md`](../docker/README.md)。
+
+只有继续使用旧的宿主机/ally 部署时，才需要手动执行：
 
 ```bash
-/opt/miniforge3/envs/py313/bin/python -m pip install -r <部署目录>/deploy/ssh_ops_harness/requirements.txt
+/opt/miniforge3/envs/py313/bin/python -m pip install -r /opt/compshare-agent/deploy/ssh_ops_harness/requirements.txt
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < deploy/migrations/0011_create_ssh_ops_audit.sql
 ```
 
-还需要 **`claude` CLI**。harness 通过 `ANTHROPIC_BASE_URL=https://api.modelverse.cn` 和
+还需要固定为 `2.1.218` 的 **`claude` CLI**。SDK 自带的 `2.1.185` 会被默认优先选择，所以
+harness 显式设置 `cli_path` 使用 PATH 中的受控版本。它通过 `ANTHROPIC_BASE_URL=https://api.modelverse.cn` 和
 `ANTHROPIC_AUTH_TOKEN` 直连 ModelVerse；不需要 claude-code-router。Token 只进入该次
 Python/Claude CLI 子进程的最小环境，不会复用完整的服务进程环境。
 

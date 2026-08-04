@@ -23,6 +23,7 @@ const (
 	ToolSourceWorkflowInternal  = "workflow_internal"
 	ToolSourceDiagnosisInternal = "diagnosis_internal"
 	ToolSourceKnowledgeLocal    = "knowledge_local"
+	ToolSourceKnowledgeMCP      = "knowledge_mcp"
 	ToolSourceInitContext       = "init_context"
 	ToolSourceShadowOnly        = "shadow_only"
 	ToolSourcePlannerHandler    = "planner_handler"
@@ -404,7 +405,7 @@ func (r TraceRecord) DeriveActualExecutionPath() string {
 	}
 	for _, call := range r.ToolCalls {
 		switch call.Source {
-		case ToolSourceMainReAct, ToolSourceWorkflowInternal, ToolSourceDiagnosisInternal, ToolSourceKnowledgeLocal:
+		case ToolSourceMainReAct, ToolSourceWorkflowInternal, ToolSourceDiagnosisInternal, ToolSourceKnowledgeLocal, ToolSourceKnowledgeMCP:
 			return ExecutionPathAgent
 		}
 	}
@@ -697,7 +698,7 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 	if next.TurnAggregate || len(next.CitedChunkIDs) > 0 || len(next.CitedRefs) > 0 {
 		if !traceRetrievalObserved(current) {
-			return next
+			return mergeRetrievalAvailability(next, current, next)
 		}
 		merged := current
 		if next.TurnAggregate {
@@ -742,12 +743,34 @@ func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 				merged.Activities = mergeRetrievalActivities(merged.Activities, next.Activities)
 			}
 		}
-		return merged
+		return mergeRetrievalAvailability(merged, current, next)
 	}
 	if current.Enabled && current.Hits > 0 && (!next.Enabled || next.Hits == 0) {
-		return current
+		return mergeRetrievalAvailability(current, current, next)
 	}
-	return next
+	return mergeRetrievalAvailability(next, current, next)
+}
+
+// mergeRetrievalAvailability preserves an outage observed during any retrieval
+// hop even when the evidence-bearing trace comes from another hop. This keeps
+// the historical "substantive hits win" projection without erasing a useful
+// operational signal from a partial remote-KB outage.
+func mergeRetrievalAvailability(merged, current, next RetrievalTrace) RetrievalTrace {
+	if !current.Unavailable && !next.Unavailable {
+		return merged
+	}
+	merged.Unavailable = true
+	if merged.FailureReason != "" {
+		return merged
+	}
+	if next.Unavailable && next.FailureReason != "" {
+		merged.FailureReason = next.FailureReason
+		return merged
+	}
+	if current.Unavailable {
+		merged.FailureReason = current.FailureReason
+	}
+	return merged
 }
 
 func mergeRetrievalActivities(current, next []RetrievalActivity) []RetrievalActivity {
@@ -786,6 +809,10 @@ type RateLimitTrace struct {
 
 type RetrievalTrace struct {
 	Enabled bool `json:"enabled"`
+	// Unavailable distinguishes a knowledge-service outage (or no active remote
+	// release) from a completed empty search. It is not a corpus-gap refusal.
+	Unavailable   bool   `json:"unavailable,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
 	// TurnAggregate marks the final de-duplicated evidence snapshot for the
 	// entire turn. It is emitted for both grounded answers and grounding
 	// failures so a multi-search failure does not retain only its last call.
@@ -1244,6 +1271,8 @@ func traceFreshnessObserved(trace FreshnessTrace) bool {
 
 func traceRetrievalObserved(trace RetrievalTrace) bool {
 	return trace.Enabled ||
+		trace.Unavailable ||
+		trace.FailureReason != "" ||
 		trace.KBVersion != "" ||
 		trace.QueryRaw != "" ||
 		trace.QueryNormalized != "" ||

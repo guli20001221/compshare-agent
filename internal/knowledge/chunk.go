@@ -22,6 +22,11 @@ type KBChunk struct {
 	Title            string   `json:"title"`
 	QuestionPatterns []string `json:"question_patterns,omitempty"`
 	Content          string   `json:"content"`
+	// ContentTruncated is set only for a body returned by the remote MCP Read
+	// operation. It tells the caller that compshare-kb applied its own response
+	// limit before the agent's local context limit runs. It is intentionally not
+	// persisted with the corpus: source chunks are always the canonical bodies.
+	ContentTruncated bool `json:"-"`
 	// Deprecated: SourceURL is legacy and must be empty in new chunks.
 	// Use SurfaceURL for user-facing public URLs.
 	SourceURL  string  `json:"source_url,omitempty"`

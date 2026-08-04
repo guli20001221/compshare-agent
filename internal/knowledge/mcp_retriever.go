@@ -1,0 +1,437 @@
+package knowledge
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+const defaultMCPRequestTimeout = 12 * time.Second
+
+// ErrSearchCapabilityInvalid means the short-lived search_id presented to the
+// remote knowledge service can no longer authorize a read. Callers must issue a
+// new search; they must not retry a read against an arbitrary chunk ID.
+var ErrSearchCapabilityInvalid = errors.New("knowledge: search capability is invalid or expired")
+
+// MCPRetrieverOptions configures the read-only client for compshare-kb's
+// streamable HTTP MCP endpoint. BearerToken is optional because deployments may
+// protect an in-cluster endpoint with network policy instead; it is never used
+// for the management /admin/mcp endpoint.
+type MCPRetrieverOptions struct {
+	Endpoint    string
+	BearerToken string
+	Timeout     time.Duration
+	HTTPClient  *http.Client
+}
+
+// MCPRetriever is the remote adapter behind the existing retrieval seam. It
+// contains only immutable connection configuration, so one instance is safe to
+// share through engine.SharedDeps. Per-search capabilities deliberately remain
+// in the calling Engine's current-turn state.
+type MCPRetriever struct {
+	endpoint   string
+	timeout    time.Duration
+	httpClient *http.Client
+}
+
+// NewMCPRetriever validates and normalizes an endpoint. A bare in-cluster DNS
+// name is accepted for deployment ergonomics and becomes an http URL; an empty
+// path becomes /mcp.
+func NewMCPRetriever(options MCPRetrieverOptions) (*MCPRetriever, error) {
+	endpoint, err := normalizeMCPEndpoint(options.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = defaultMCPRequestTimeout
+	}
+	client := cloneHTTPClientWithBearer(options.HTTPClient, options.BearerToken)
+	return &MCPRetriever{
+		endpoint:   endpoint,
+		timeout:    timeout,
+		httpClient: client,
+	}, nil
+}
+
+// Retrieve keeps MCPRetriever compatible with the original synchronous
+// KnowledgeRetriever interface. Engine uses RetrieveContext when available so
+// HTTP request cancellation still reaches the remote MCP call.
+func (r *MCPRetriever) Retrieve(question, contextHint string) RetrievalResult {
+	return r.RetrieveContext(context.Background(), question, contextHint)
+}
+
+// RetrieveContext searches the active remote knowledge release and projects its
+// bounded snippets onto the agent's existing RetrievalResult shape.
+func (r *MCPRetriever) RetrieveContext(ctx context.Context, question, contextHint string) RetrievalResult {
+	question = strings.TrimSpace(question)
+	if r == nil || question == "" {
+		return RetrievalResult{Enabled: true, Empty: true, Unavailable: true, FailureReason: "mcp_not_configured"}
+	}
+
+	var response mcpSearchResponse
+	if err := r.callTool(ctx, "search_knowledge", map[string]any{
+		"query":        question,
+		"context_hint": strings.TrimSpace(contextHint),
+	}, &response); err != nil {
+		return unavailableMCPRetrieval(question, err)
+	}
+	if strings.TrimSpace(response.Release.Version) == "" {
+		return unavailableMCPRetrieval(question, errors.New("search response omitted kb_version"))
+	}
+
+	hits := make([]KBChunk, 0, len(response.Hits))
+	hitItems := make([]RetrievalHit, 0, len(response.Hits))
+	for _, hit := range response.Hits {
+		chunkID := strings.TrimSpace(hit.ChunkID)
+		if chunkID == "" {
+			return unavailableMCPRetrieval(question, errors.New("search response contained an empty chunk_id"))
+		}
+		chunk := KBChunk{
+			ChunkID:      chunkID,
+			KBVersion:    strings.TrimSpace(response.Release.Version),
+			SourceType:   strings.TrimSpace(hit.SourceType),
+			SourceOrigin: strings.TrimSpace(hit.SourceOrigin),
+			ProductArea:  strings.TrimSpace(hit.ProductArea),
+			Title:        strings.TrimSpace(hit.Title),
+			Content:      strings.TrimSpace(hit.Snippet),
+			SurfaceURL:   cloneStringPtr(hit.SurfaceURL),
+		}
+		hits = append(hits, chunk)
+		hitItems = append(hitItems, RetrievalHit{Chunk: chunk, Score: hit.Score, Kept: true})
+	}
+
+	result := RetrievalResult{
+		Enabled:                true,
+		KBVersion:              strings.TrimSpace(response.Release.Version),
+		QueryNormalized:        NormalizeQuery(question),
+		Hits:                   hits,
+		HitItems:               hitItems,
+		Empty:                  response.Empty || len(hits) == 0,
+		SearchID:               strings.TrimSpace(response.SearchID),
+		HybridMode:             strings.TrimSpace(response.Retrieval.Mode),
+		HybridFallbackReason:   strings.TrimSpace(response.Retrieval.FallbackReason),
+		EmbeddingLatencyMS:     response.Retrieval.EmbeddingLatencyMS,
+		EmbeddingModel:         strings.TrimSpace(response.Retrieval.EmbeddingModel),
+		RerankerMode:           strings.TrimSpace(response.Retrieval.RerankerModel),
+		RerankerLatencyMS:      response.Retrieval.RerankerLatencyMS,
+		RerankerFallbackReason: strings.TrimSpace(response.Retrieval.RerankerFallbackReason),
+	}
+	if result.HybridMode == "" {
+		// compshare-kb always supplies mode, but keep the established BM25-safe
+		// default if an older server omits it.
+		result.HybridMode = RetrievalModeBM25Only
+	}
+	if result.Empty {
+		result.SearchID = ""
+	}
+	return result
+}
+
+// ReadChunks reads full evidence only through the search capability returned by
+// the immediately preceding search. It deliberately accepts a searchID rather
+// than retaining one on MCPRetriever, preventing cross-turn or cross-session
+// capability reuse.
+func (r *MCPRetriever) ReadChunks(ctx context.Context, searchID string, chunkIDs []string) ([]KBChunk, error) {
+	if r == nil {
+		return nil, errors.New("knowledge MCP retriever is not configured")
+	}
+	searchID = strings.TrimSpace(searchID)
+	chunkIDs = uniqueChunkIDs(chunkIDs)
+	if searchID == "" || len(chunkIDs) == 0 {
+		return nil, fmt.Errorf("%w: search_id and chunk_ids are required", ErrSearchCapabilityInvalid)
+	}
+
+	var response mcpReadResponse
+	if err := r.callTool(ctx, "read_knowledge_chunk", map[string]any{
+		"search_id": searchID,
+		"chunk_ids": chunkIDs,
+	}, &response); err != nil {
+		return nil, classifyMCPReadError(err)
+	}
+	if strings.TrimSpace(response.Release.Version) == "" {
+		return nil, errors.New("knowledge MCP read response omitted kb_version")
+	}
+
+	items := make([]KBChunk, 0, len(response.Items))
+	for _, item := range response.Items {
+		chunkID := strings.TrimSpace(item.ChunkID)
+		if chunkID == "" {
+			return nil, errors.New("knowledge MCP read response contained an empty chunk_id")
+		}
+		items = append(items, KBChunk{
+			ChunkID:          chunkID,
+			KBVersion:        strings.TrimSpace(response.Release.Version),
+			SourceType:       strings.TrimSpace(item.SourceType),
+			SourceOrigin:     strings.TrimSpace(item.SourceOrigin),
+			ProductArea:      strings.TrimSpace(item.ProductArea),
+			Title:            strings.TrimSpace(item.Title),
+			Content:          strings.TrimSpace(item.Content),
+			ContentTruncated: item.Truncated,
+			SurfaceURL:       cloneStringPtr(item.SurfaceURL),
+		})
+	}
+	return items, nil
+}
+
+func unavailableMCPRetrieval(question string, err error) RetrievalResult {
+	return RetrievalResult{
+		Enabled:         true,
+		QueryNormalized: NormalizeQuery(question),
+		Empty:           true,
+		Unavailable:     true,
+		FailureReason:   mcpFailureReason(err),
+	}
+}
+
+func (r *MCPRetriever) callTool(ctx context.Context, name string, arguments map[string]any, output any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	client := mcp.NewClient(&mcp.Implementation{
+		Name:    "compshare-agent",
+		Version: "1.0.0",
+	}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:             r.endpoint,
+		HTTPClient:           r.httpClient,
+		DisableStandaloneSSE: true,
+		MaxRetries:           -1,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("connect knowledge MCP: %w", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		return fmt.Errorf("call knowledge MCP tool %q: %w", name, err)
+	}
+	if err := decodeMCPToolResult(result, output); err != nil {
+		return fmt.Errorf("decode knowledge MCP tool %q: %w", name, err)
+	}
+	return nil
+}
+
+func decodeMCPToolResult(result *mcp.CallToolResult, output any) error {
+	if result == nil {
+		return errors.New("empty tool result")
+	}
+	if result.IsError {
+		return &mcpToolError{message: mcpToolResultText(result)}
+	}
+	if result.StructuredContent != nil {
+		encoded, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			return fmt.Errorf("marshal structured content: %w", err)
+		}
+		if err := json.Unmarshal(encoded, output); err != nil {
+			return fmt.Errorf("unmarshal structured content: %w", err)
+		}
+		return nil
+	}
+	for _, content := range result.Content {
+		text, ok := content.(*mcp.TextContent)
+		if !ok || strings.TrimSpace(text.Text) == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(text.Text), output); err != nil {
+			return fmt.Errorf("unmarshal text content: %w", err)
+		}
+		return nil
+	}
+	return errors.New("tool result did not include structured or JSON text content")
+}
+
+type mcpToolError struct{ message string }
+
+func (e *mcpToolError) Error() string {
+	if e == nil || strings.TrimSpace(e.message) == "" {
+		return "knowledge MCP tool returned an error"
+	}
+	return strings.TrimSpace(e.message)
+}
+
+func mcpToolResultText(result *mcp.CallToolResult) string {
+	texts := make([]string, 0, len(result.Content))
+	for _, content := range result.Content {
+		if text, ok := content.(*mcp.TextContent); ok && strings.TrimSpace(text.Text) != "" {
+			texts = append(texts, strings.TrimSpace(text.Text))
+		}
+	}
+	return strings.Join(texts, "; ")
+}
+
+func classifyMCPReadError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "search capability") ||
+		strings.Contains(message, "search_id") ||
+		strings.Contains(message, "chunk was not returned") ||
+		strings.Contains(message, "not returned by the referenced search") ||
+		strings.Contains(message, "knowledge evidence token") ||
+		strings.Contains(message, "token has expired") ||
+		strings.Contains(message, "token is invalid") {
+		return fmt.Errorf("%w: %v", ErrSearchCapabilityInvalid, err)
+	}
+	return err
+}
+
+func mcpFailureReason(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "mcp_timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "mcp_canceled"
+	}
+	return "mcp_unavailable"
+}
+
+func normalizeMCPEndpoint(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("knowledge MCP endpoint is required")
+	}
+	if !strings.Contains(value, "://") {
+		value = "http://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("parse knowledge MCP endpoint: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("knowledge MCP endpoint scheme %q must be http or https", parsed.Scheme)
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return "", errors.New("knowledge MCP endpoint host is required")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("knowledge MCP endpoint must not contain user credentials, query, or fragment")
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if path == "" {
+		parsed.Path = "/mcp"
+	} else {
+		parsed.Path = path
+	}
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
+func cloneHTTPClientWithBearer(base *http.Client, bearerToken string) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	cloned := *base
+	if token := strings.TrimSpace(bearerToken); token != "" {
+		transport := cloned.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		cloned.Transport = bearerRoundTripper{next: transport, token: token}
+	}
+	return &cloned
+}
+
+type bearerRoundTripper struct {
+	next  http.RoundTripper
+	token string
+}
+
+func (t bearerRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	cloned := request.Clone(request.Context())
+	cloned.Header = request.Header.Clone()
+	cloned.Header.Set("Authorization", "Bearer "+t.token)
+	return t.next.RoundTrip(cloned)
+}
+
+func uniqueChunkIDs(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func cloneStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+type mcpRelease struct {
+	ID      string `json:"release_id"`
+	Version string `json:"kb_version"`
+}
+
+type mcpRetrievalMeta struct {
+	Mode                   string `json:"mode"`
+	EmbeddingModel         string `json:"embedding_model"`
+	RerankerModel          string `json:"reranker_model"`
+	FallbackReason         string `json:"fallback_reason"`
+	RerankerFallbackReason string `json:"reranker_fallback_reason"`
+	EmbeddingLatencyMS     *int64 `json:"embedding_latency_ms"`
+	RerankerLatencyMS      *int64 `json:"reranker_latency_ms"`
+}
+
+type mcpEvidenceHit struct {
+	ChunkID      string  `json:"chunk_id"`
+	Title        string  `json:"title"`
+	Snippet      string  `json:"snippet"`
+	Score        float64 `json:"score"`
+	SourceType   string  `json:"source_type"`
+	SourceOrigin string  `json:"source_origin"`
+	ProductArea  string  `json:"product_area"`
+	SurfaceURL   *string `json:"surface_url"`
+}
+
+type mcpSearchResponse struct {
+	SearchID  string           `json:"search_id"`
+	Release   mcpRelease       `json:"release"`
+	Hits      []mcpEvidenceHit `json:"hits"`
+	Empty     bool             `json:"empty"`
+	Retrieval mcpRetrievalMeta `json:"retrieval"`
+}
+
+type mcpReadChunk struct {
+	ChunkID      string  `json:"chunk_id"`
+	Title        string  `json:"title"`
+	Content      string  `json:"content"`
+	Truncated    bool    `json:"truncated,omitempty"`
+	SourceType   string  `json:"source_type"`
+	SourceOrigin string  `json:"source_origin"`
+	ProductArea  string  `json:"product_area"`
+	SurfaceURL   *string `json:"surface_url"`
+}
+
+type mcpReadResponse struct {
+	Release mcpRelease     `json:"release"`
+	Items   []mcpReadChunk `json:"items"`
+}
+
+var _ interface {
+	Retrieve(string, string) RetrievalResult
+} = (*MCPRetriever)(nil)

@@ -47,12 +47,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateServerConfig(cfg); err != nil {
 		return err
 	}
+	log.Printf("startup: configuration validated")
 
 	db, err := store.OpenMySQL(cfg.Agent.MySQL)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	log.Printf("startup: database connection and schema verified")
 
 	sessionStore := store.NewSessionStore(db)
 	messageStore := store.NewMessageStore(db)
@@ -88,6 +90,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer pool.Close()
+	log.Printf("startup: shared HTTP dependencies initialized")
 
 	handlers := newServerHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter, overlayGetenv)
 	switch value := overlayGetenv("COMPSHARE_DURABLE_TURNS"); value {
@@ -149,6 +152,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ReadTimeout:  cfg.Agent.HTTP.ReadTimeout,
 		WriteTimeout: cfg.Agent.HTTP.WriteTimeout,
 	}
+	log.Printf("startup: serving HTTP on %s", cfg.Agent.HTTP.ListenAddr)
 	return serveUntilSignal(srv)
 }
 

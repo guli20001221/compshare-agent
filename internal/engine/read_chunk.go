@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -23,9 +25,9 @@ import (
 const (
 	// maxReadChunkCallsPerTurn bounds how many times the agent may read this turn.
 	// A read is not a retrieval, so it is NOT charged to maxRetrievalQueriesPerTurn:
-	// that budget prices embedder/reranker round-trips, while a read is a local
-	// lookup whose only cost is context. Mixing them would let reading starve the
-	// multi-hop search the read is supposed to serve.
+	// that budget prices search/rerank round-trips, while a read is a separately
+	// bounded evidence-body fetch (remote MCP in production) with its own context
+	// cap. Mixing them would let reading starve the multi-hop search it serves.
 	maxReadChunkCallsPerTurn = 2
 	maxReadChunkIDsPerCall   = 3
 	// maxReadChunkRunesPerCall bounds the total body text one call returns. The
@@ -38,10 +40,12 @@ const (
 )
 
 const (
-	readChunkStatusRead        = "read"
-	readChunkStatusAlreadyRead = "already_read"
-	readChunkStatusNotFound    = "not_found"
-	readChunkStatusSizeLimit   = "size_limit_reached"
+	readChunkStatusRead         = "read"
+	readChunkStatusAlreadyRead  = "already_read"
+	readChunkStatusNotFound     = "not_found"
+	readChunkStatusSizeLimit    = "size_limit_reached"
+	readChunkStatusSearchNeeded = "search_required"
+	readChunkStatusUnavailable  = "unavailable"
 )
 
 // chunkReader is the optional capability a KnowledgeRetriever may implement to
@@ -53,6 +57,13 @@ type chunkReader interface {
 	Chunk(chunkID string) (knowledge.KBChunk, bool)
 }
 
+// searchBoundChunkReader is the remote half of knowledge retrieval. The Engine
+// supplies the search_id it recorded for this turn; a reader never retains it,
+// which prevents a capability from leaking between sessions or turns.
+type searchBoundChunkReader interface {
+	ReadChunks(ctx context.Context, searchID string, chunkIDs []string) ([]knowledge.KBChunk, error)
+}
+
 type readChunkItem struct {
 	ChunkID    string `json:"chunk_id"`
 	Status     string `json:"status"`
@@ -62,18 +73,20 @@ type readChunkItem struct {
 	Truncated  bool   `json:"truncated,omitempty"`
 }
 
-// executeReadChunk runs the ReadChunk tool. Read-only by construction: it reads
-// the in-process corpus and never touches SafeToolExecutor or the network.
+// executeReadChunk runs the ReadChunk tool. It is read-only by construction:
+// local development reads the in-process corpus, while production reads only a
+// capability-authorized body from MCP. It never touches SafeToolExecutor or a
+// mutating endpoint.
 func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) string {
 	ids := readChunkIDArgs(args)
 	onStep(StepEvent{
 		Type:   StepToolCall,
 		Action: "ReadChunk",
-		Source: observability.ToolSourceKnowledgeLocal,
+		Source: e.knowledgeToolSource(),
 		Args:   map[string]any{"chunk_ids": append([]string(nil), ids...)},
 	})
 	if len(ids) == 0 {
-		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: observability.ToolSourceKnowledgeLocal, Message: "缺少 chunk_id"})
+		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "缺少 chunk_id"})
 		return readChunkResultJSON(nil, map[string]any{"error": "chunk_ids 不能为空，请填入 SearchKnowledge 返回过的 chunk_id。"})
 	}
 	// Never drop a requested id silently: a truncated read must not look like a
@@ -83,13 +96,16 @@ func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) s
 		droppedIDs = len(ids) - maxReadChunkIDsPerCall
 		ids = ids[:maxReadChunkIDsPerCall]
 	}
+	if reader, ok := e.knowledgeRetriever.(searchBoundChunkReader); ok {
+		return e.executeRemoteReadChunk(reader, ids, droppedIDs, onStep)
+	}
 	reader, ok := e.knowledgeRetriever.(chunkReader)
 	if !ok {
-		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
+		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "知识库不可用"})
 		return readChunkResultJSON(nil, map[string]any{"error": "知识库不可用。"})
 	}
 	if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn {
-		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: observability.ToolSourceKnowledgeLocal, Message: "本轮读取次数已达上限"})
+		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "本轮读取次数已达上限"})
 		return readChunkResultJSON(nil, map[string]any{"read_limit_reached": true})
 	}
 	e.readChunkCallsThisTurn++
@@ -114,7 +130,7 @@ func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) s
 			continue
 		}
 		content := strings.TrimSpace(chunk.Content)
-		truncated := utf8.RuneCountInString(content) > runesLeft
+		truncated := chunk.ContentTruncated || utf8.RuneCountInString(content) > runesLeft
 		if truncated {
 			content = truncateRunes(content, runesLeft)
 		}
@@ -139,11 +155,151 @@ func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) s
 	onStep(StepEvent{
 		Type:        StepToolResult,
 		Action:      "ReadChunk",
-		Source:      observability.ToolSourceKnowledgeLocal,
+		Source:      e.knowledgeToolSource(),
 		Message:     "读取完成",
 		TraceResult: map[string]any{"requested": len(items) + droppedIDs, "read": len(read), "dropped_ids": droppedIDs},
 	})
 	return readChunkResultJSON(items, meta)
+}
+
+func (e *Engine) executeRemoteReadChunk(reader searchBoundChunkReader, ids []string, droppedIDs int, onStep func(StepEvent)) string {
+	if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn {
+		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "本轮读取次数已达上限"})
+		return readChunkResultJSON(nil, map[string]any{"read_limit_reached": true})
+	}
+	e.readChunkCallsThisTurn++
+
+	itemsByID := make(map[string]readChunkItem, len(ids))
+	groups := make([]remoteReadGroup, 0, len(ids))
+	groupIndex := map[string]int{}
+	searchRefreshNeeded := false
+	for _, id := range ids {
+		if _, seen := e.readChunkIDsThisTurn[id]; seen {
+			itemsByID[id] = readChunkItem{ChunkID: id, Status: readChunkStatusAlreadyRead}
+			continue
+		}
+		searchID := ""
+		if e.searchKnowledgeCapabilitiesThisTurn != nil {
+			searchID = strings.TrimSpace(e.searchKnowledgeCapabilitiesThisTurn[id])
+		}
+		if searchID == "" {
+			// Do not send a guessed chunk_id to the remote service. A model may
+			// only read an ID that appeared in its own SearchKnowledge result.
+			itemsByID[id] = readChunkItem{ChunkID: id, Status: readChunkStatusSearchNeeded}
+			searchRefreshNeeded = true
+			continue
+		}
+		index, ok := groupIndex[searchID]
+		if !ok {
+			index = len(groups)
+			groupIndex[searchID] = index
+			groups = append(groups, remoteReadGroup{searchID: searchID})
+		}
+		groups[index].ids = append(groups[index].ids, id)
+	}
+
+	ctx := e.currentCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	chunksByID := make(map[string]knowledge.KBChunk, len(ids))
+	remoteUnavailable := false
+	for _, group := range groups {
+		chunks, err := reader.ReadChunks(ctx, group.searchID, group.ids)
+		if err != nil {
+			if errors.Is(err, knowledge.ErrSearchCapabilityInvalid) {
+				searchRefreshNeeded = true
+				for _, id := range group.ids {
+					itemsByID[id] = readChunkItem{ChunkID: id, Status: readChunkStatusSearchNeeded}
+				}
+				continue
+			}
+			remoteUnavailable = true
+			for _, id := range group.ids {
+				itemsByID[id] = readChunkItem{ChunkID: id, Status: readChunkStatusUnavailable}
+			}
+			continue
+		}
+		for _, chunk := range chunks {
+			chunkID := strings.TrimSpace(chunk.ChunkID)
+			if chunkID != "" {
+				chunksByID[chunkID] = chunk
+			}
+		}
+	}
+
+	items := make([]readChunkItem, 0, len(ids))
+	read := make([]knowledge.KBChunk, 0, len(ids))
+	runesLeft := maxReadChunkRunesPerCall
+	for _, id := range ids {
+		if item, done := itemsByID[id]; done {
+			items = append(items, item)
+			continue
+		}
+		chunk, found := chunksByID[id]
+		if !found {
+			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusNotFound})
+			continue
+		}
+		if runesLeft <= 0 {
+			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusSizeLimit})
+			continue
+		}
+		content := strings.TrimSpace(chunk.Content)
+		truncated := chunk.ContentTruncated || utf8.RuneCountInString(content) > runesLeft
+		if truncated {
+			content = truncateRunes(content, runesLeft)
+		}
+		runesLeft -= utf8.RuneCountInString(content)
+		e.markChunkRead(id)
+		read = append(read, chunk)
+		items = append(items, readChunkItem{
+			ChunkID:    id,
+			Status:     readChunkStatusRead,
+			Title:      strings.TrimSpace(chunk.Title),
+			SourceType: strings.TrimSpace(chunk.SourceType),
+			Content:    content,
+			Truncated:  truncated,
+		})
+	}
+	e.recordReadChunksAsEvidence(read)
+
+	meta := map[string]any{}
+	if droppedIDs > 0 {
+		meta["dropped_ids"] = droppedIDs
+	}
+	if searchRefreshNeeded {
+		meta["search_refresh_required"] = true
+	}
+	if remoteUnavailable {
+		meta["knowledge_unavailable"] = true
+	}
+	message := "读取完成"
+	if remoteUnavailable {
+		message = "知识库服务暂时不可用"
+	} else if searchRefreshNeeded {
+		message = "检索凭证已失效，请重新搜索"
+	}
+	onStep(StepEvent{
+		Type:        StepToolResult,
+		Action:      "ReadChunk",
+		Source:      e.knowledgeToolSource(),
+		Message:     message,
+		TraceResult: map[string]any{"requested": len(items) + droppedIDs, "read": len(read), "dropped_ids": droppedIDs, "search_refresh_required": searchRefreshNeeded, "knowledge_unavailable": remoteUnavailable},
+	})
+	return readChunkResultJSON(items, meta)
+}
+
+type remoteReadGroup struct {
+	searchID string
+	ids      []string
+}
+
+func (e *Engine) knowledgeToolSource() string {
+	if _, ok := e.knowledgeRetriever.(searchBoundChunkReader); ok {
+		return observability.ToolSourceKnowledgeMCP
+	}
+	return observability.ToolSourceKnowledgeLocal
 }
 
 func (e *Engine) markChunkRead(chunkID string) {

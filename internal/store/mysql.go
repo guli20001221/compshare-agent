@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
@@ -22,7 +25,11 @@ func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("database dsn is required")
 	}
-	db, err := sql.Open("postgres", cfg.DSN)
+	dsn, err := dsnWithHostOverride(cfg.DSN, cfg.HostOverride)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
@@ -42,6 +49,35 @@ func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// dsnWithHostOverride preserves URL credentials, database, query parameters,
+// and port while replacing only the reachable database host. IPv6 is rendered
+// with the brackets required by PostgreSQL URL DSNs.
+func dsnWithHostOverride(dsn, hostOverride string) (string, error) {
+	host := strings.Trim(strings.TrimSpace(hostOverride), "[]")
+	if host == "" {
+		return dsn, nil
+	}
+
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", fmt.Errorf("parse database dsn for host override: %w", err)
+	}
+	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+		return "", fmt.Errorf("database host_override requires a postgres URL dsn")
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("database host_override requires a dsn host")
+	}
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort(host, port)
+	} else if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		u.Host = "[" + host + "]"
+	} else {
+		u.Host = host
+	}
+	return u.String(), nil
 }
 
 // VerifySchema checks that all expected tables and columns exist by running

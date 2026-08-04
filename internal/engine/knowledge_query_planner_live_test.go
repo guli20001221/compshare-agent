@@ -17,7 +17,7 @@
 //
 // Env:
 //
-//	COMPSHARE_LIVE_CONFIG        config.yaml path (default ../../deploy/conf/config.yaml)
+//	COMPSHARE_LIVE_CONFIG        config path (default ../../deploy/conf/config.local.yaml)
 //	COMPSHARE_REAL_QUERY_CORPUS  JSONL with {case_id,date,category,query}
 //	COMPSHARE_PROBE_OUT          optional path for the JSON summary
 package engine
@@ -70,7 +70,7 @@ func loadLiveConfig(t *testing.T) *config.Config {
 	t.Helper()
 	path := os.Getenv("COMPSHARE_LIVE_CONFIG")
 	if path == "" {
-		path = filepath.Join("..", "..", "deploy", "conf", "config.yaml")
+		path = filepath.Join("..", "..", "deploy", "conf", "config.local.yaml")
 	}
 	cfg, err := config.Load(path)
 	if err != nil {

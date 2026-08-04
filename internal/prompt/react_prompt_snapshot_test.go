@@ -113,7 +113,7 @@ const (
 	readOnlyReActPromptSHA256 = "2d040c85552629cb78decb09b933af115a10c533987df12a3d739939edc0bfab"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
-	// That leaves the rollout shape unpinned: deploy/conf/config.yaml already sets
+	// That leaves the rollout shape unpinned: deploy/conf/config.prod.yaml already sets
 	// mutating_tools: true, so enabling ssh_ops there produces a fourth combination no snapshot
 	// covered — and that is how it went unnoticed that no section named the lane in it at all (the
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This

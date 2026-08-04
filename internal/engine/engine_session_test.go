@@ -279,7 +279,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 7 shared + 83 per-session = 90 fields. Any drift
+// Whitelist totals: 6 shared + 96 per-session = 102 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -332,6 +332,10 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// other tenant never saw. Reset every turn.
 		"readChunkCallsThisTurn": true,
 		"readChunkIDsThisTurn":   true,
+		// Remote search capabilities are short-lived and must never leave the
+		// current Engine turn. Sharing this map would authorize a cross-tenant
+		// ReadChunk against another user's search result.
+		"searchKnowledgeCapabilitiesThisTurn": true,
 		// Per-turn SearchKnowledge budgets: calls counts the agent's decisions to
 		// search (feeds the agent-loop search cap that withdraws the tool);
 		// queries counts the retrievals those calls cost, including the planner's
@@ -524,12 +528,14 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// a cold rebuild from the persisted rows, so both agree by construction.
 	// 94 -> 95 / 100 -> 101: confirmationTraceObserver records this turn's
 	// human confirmation outcomes and must never be shared across sessions.
-	if want, got := 95, len(perSessionFields); want != got {
+	// 95 -> 96 / 101 -> 102: searchKnowledgeCapabilitiesThisTurn binds a
+	// remote MCP search_id only to this Engine's active turn.
+	if want, got := 96, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 101, typ.NumField(); want != got {
+	if want, got := 102, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

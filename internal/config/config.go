@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -174,7 +175,11 @@ const DefaultMaxSessionTurns = 20
 // A plain literal DSN is passed through unchanged.
 // It is optional at Load time so CLI users are not forced to set the env var.
 type MySQLConfig struct {
-	DSN             string        `yaml:"dsn"`
+	DSN string `yaml:"dsn"`
+	// HostOverride replaces only the host component of a PostgreSQL URL DSN.
+	// It lets a deployment choose its reachable database address without
+	// duplicating the DSN credentials in another config field.
+	HostOverride    string        `yaml:"host_override"`
 	MaxOpenConns    int           `yaml:"max_open_conns"`
 	MaxIdleConns    int           `yaml:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
@@ -263,9 +268,13 @@ func (c RateLimitConfig) Limits() governance.Limits {
 }
 
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	raw, err := loadConfigMap(path, map[string]struct{}{})
 	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		return nil, err
+	}
+	data, err := yaml.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("render merged config: %w", err)
 	}
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -353,6 +362,68 @@ func Load(path string) (*Config, error) {
 	applyMetaDefaults(&cfg.Agent.Meta, cfg.Agent.HTTP.MaxInputLength)
 
 	return &cfg, nil
+}
+
+// loadConfigMap loads a YAML mapping and applies an optional relative
+// "extends" file before the current file's values. Environment-specific
+// configs therefore need to carry only their deliberate overrides instead of
+// duplicating credential-bearing settings from the local base configuration.
+func loadConfigMap(path string, stack map[string]struct{}) (map[string]any, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config path: %w", err)
+	}
+	if _, seen := stack[absPath]; seen {
+		return nil, fmt.Errorf("config extends cycle at %s", absPath)
+	}
+	stack[absPath] = struct{}{}
+	defer delete(stack, absPath)
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	raw := make(map[string]any)
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	basePath, hasBase := raw["extends"]
+	if !hasBase {
+		return raw, nil
+	}
+	delete(raw, "extends")
+	extends, ok := basePath.(string)
+	if !ok || strings.TrimSpace(extends) == "" {
+		return nil, fmt.Errorf("config %s: extends must be a non-empty relative path", absPath)
+	}
+	if filepath.IsAbs(extends) {
+		return nil, fmt.Errorf("config %s: extends must be relative", absPath)
+	}
+
+	base, err := loadConfigMap(filepath.Join(filepath.Dir(absPath), extends), stack)
+	if err != nil {
+		return nil, err
+	}
+	return mergeConfigMaps(base, raw), nil
+}
+
+func mergeConfigMaps(base, override map[string]any) map[string]any {
+	merged := make(map[string]any, len(base)+len(override))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, overrideValue := range override {
+		baseValue, hasBaseValue := merged[key]
+		baseMap, baseIsMap := baseValue.(map[string]any)
+		overrideMap, overrideIsMap := overrideValue.(map[string]any)
+		if hasBaseValue && baseIsMap && overrideIsMap {
+			merged[key] = mergeConfigMaps(baseMap, overrideMap)
+			continue
+		}
+		merged[key] = overrideValue
+	}
+	return merged
 }
 
 func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {

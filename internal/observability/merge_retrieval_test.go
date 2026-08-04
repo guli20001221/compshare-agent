@@ -36,6 +36,21 @@ func TestMergeRetrievalTrace(t *testing.T) {
 	}
 }
 
+func TestMergeRetrievalTraceRetainsRemoteUnavailableSignal(t *testing.T) {
+	hits := RetrievalTrace{Enabled: true, KBVersion: "kb.v1", Hits: 1}
+	unavailable := RetrievalTrace{Enabled: true, Unavailable: true, FailureReason: "mcp_timeout"}
+
+	for _, traces := range [][2]RetrievalTrace{{hits, unavailable}, {unavailable, hits}} {
+		got := MergeRetrievalTrace(traces[0], traces[1])
+		if got.Hits != 1 {
+			t.Fatalf("Hits = %d, want the substantive retrieval", got.Hits)
+		}
+		if !got.Unavailable || got.FailureReason != "mcp_timeout" {
+			t.Fatalf("remote availability signal was lost: %#v", got)
+		}
+	}
+}
+
 func TestMergeRetrievalTraceOverlaysFinalCitations(t *testing.T) {
 	current := RetrievalTrace{
 		Enabled:      true,

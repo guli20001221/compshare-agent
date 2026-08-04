@@ -1,12 +1,12 @@
 #!/bin/sh
-# Build artifacts and secrets are configured in deploy/conf/config.yaml.
+# Build artifacts and production overrides are configured in deploy/conf/config.prod.yaml.
 # This script only registers the current checkout's binary with ally.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CONFIG_FILE="$APP_DIR/deploy/conf/config.yaml"
+CONFIG_FILE="$APP_DIR/deploy/conf/config.prod.yaml"
 APP_BIN="$APP_DIR/compshare-agent"
 
 if [ ! -f "$APP_BIN" ]; then

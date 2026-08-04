@@ -52,7 +52,7 @@ var (
 	liveToolProbe   = flag.Bool("live-tool-probe", false, "run the live end-to-end tool probe (real model + real CompShare API); off = skip")
 	liveToolQueries = flag.String("live-tool-queries", "", "query JSONL: {case_id, query} or {case_id, turns:[{user}]} (required)")
 	liveToolOut     = flag.String("live-tool-out", "", "write the transcript JSONL here (replay-output shape); empty = log only")
-	liveToolConfig  = flag.String("live-tool-config", "", "config.yaml path; default deploy/conf/config.yaml")
+	liveToolConfig  = flag.String("live-tool-config", "", "config path; default deploy/conf/config.local.yaml")
 	liveToolTopOrg  = flag.Uint("live-tool-top-org", 0, "top_organization_id for the STS role URN (required)")
 	liveToolOrg     = flag.Uint("live-tool-org", 0, "organization_id (required)")
 	liveToolEmail   = flag.String("live-tool-email", "", "user_email injected the way the gateway injects it (only some actions need it)")
@@ -63,7 +63,7 @@ var (
 	// arms unequally sampled with no record of which build produced which file.
 	// Encode the arm in -live-tool-out; nothing in the record does.
 	// Tri-state on purpose. This was a bool defaulting false, which could only
-	// ever set the flag ON: deploy/conf/config.yaml shipped
+	// ever set the flag ON: deploy/conf/config.local.yaml shipped
 	// forced_knowledge_hop: true and configureSharedDepsFromEnv applied that
 	// before this flag was read, so an A/B run through this probe produced two
 	// identical arms that read as a null effect. The config no longer sets the
@@ -105,7 +105,7 @@ func TestLiveToolProbe(t *testing.T) {
 		t.Cleanup(func() { _ = os.Chdir(orig) })
 	}
 
-	cfgPath := orDefault(*liveToolConfig, filepath.Join(root, "deploy", "conf", "config.yaml"))
+	cfgPath := orDefault(*liveToolConfig, filepath.Join(root, "deploy", "conf", "config.local.yaml"))
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatalf("config.Load(%s): %v", cfgPath, err)

@@ -126,7 +126,7 @@ go test ./... -count=1                                                     # 全
 ```
 
 ### 7.2 端到端（HTTP/WS）
-启动 `./agent server -c deploy/conf/config.yaml`（监听 :7429），通过 WS 发起一轮 chat：
+启动 `./agent server -c deploy/conf/config.local.yaml`（监听 :7429），通过 WS 发起一轮 chat：
 
 正例 `我要转人工` → 收到 `meta` → `token`（完整 canned 文案含 QR markdown）→ `done`：
 ```

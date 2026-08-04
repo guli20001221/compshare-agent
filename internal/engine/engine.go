@@ -197,6 +197,21 @@ type KnowledgeRetriever interface {
 	Retrieve(question, productArea string) knowledge.RetrievalResult
 }
 
+// contextKnowledgeRetriever is an optional extension at the retrieval seam.
+// The long-lived local retriever and existing test doubles keep the compact
+// KnowledgeRetriever interface, while the remote MCP adapter can propagate the
+// current HTTP request's cancellation and deadline.
+type contextKnowledgeRetriever interface {
+	RetrieveContext(ctx context.Context, question, productArea string) knowledge.RetrievalResult
+}
+
+func retrieveKnowledge(ctx context.Context, retriever KnowledgeRetriever, question, productArea string) knowledge.RetrievalResult {
+	if contextual, ok := retriever.(contextKnowledgeRetriever); ok {
+		return contextual.RetrieveContext(ctx, question, productArea)
+	}
+	return retriever.Retrieve(question, productArea)
+}
+
 // HistoryMessage is a simplified turn for rehydrating a conversation from
 // persistent storage (e.g. MySQL). Only user and assistant roles are accepted;
 // all other roles and empty content are silently skipped.
@@ -321,6 +336,11 @@ type Engine struct {
 	// Per-session/per-turn for the same reason as the hits above. Reset every turn.
 	readChunkCallsThisTurn int
 	readChunkIDsThisTurn   map[string]struct{}
+	// searchKnowledgeCapabilitiesThisTurn maps only model-visible chunk IDs to
+	// the short-lived remote search_id that surfaced them. It is intentionally
+	// engine-local: sharing it through the process-wide retriever would let one
+	// user's capability authorize another user's evidence read.
+	searchKnowledgeCapabilitiesThisTurn map[string]string
 	// searchKnowledgeCallsThisTurn counts how many times the agent CHOSE to call
 	// SearchKnowledge this turn — one increment per tool call, regardless of how
 	// many query variants the multi-turn planner fans that call out into. The
@@ -1409,6 +1429,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.answerEchoedChunkIDThisTurn = ""
 	e.readChunkCallsThisTurn = 0
 	e.readChunkIDsThisTurn = nil
+	e.searchKnowledgeCapabilitiesThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeQueriesThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
@@ -2558,17 +2579,18 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// follow-ups formed from evidence the agent has actually seen. No-op unless
 	// the flag was frozen on at boot.
 	plan = narrowPlanForGapDrivenRetrieval(plan)
+	knowledgeSource := e.knowledgeToolSource()
 	onStep(StepEvent{
 		Type:   StepToolCall,
 		Action: "SearchKnowledge",
-		Source: observability.ToolSourceKnowledgeLocal,
+		Source: knowledgeSource,
 		Args: map[string]any{
 			"answer_question": resolvedQuestion,
 			"queries":         append([]string(nil), plan.SearchQueries...),
 		},
 	})
 	if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
-		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "本轮检索次数已达上限"})
+		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "本轮检索次数已达上限"})
 		return `{"EvidenceLedger":{"items":[]},"empty":true,"search_limit_reached":true}`
 	}
 	// One agent decision to search costs exactly one unit of the call budget,
@@ -2576,13 +2598,15 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// themselves are charged to maxRetrievalQueriesPerTurn below.
 	e.searchKnowledgeCallsThisTurn++
 	if e.knowledgeRetriever == nil || len(plan.SearchQueries) == 0 {
-		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: observability.ToolSourceKnowledgeLocal, Message: "知识库不可用"})
+		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true, "")
 	}
 
 	combined := knowledge.EvidenceLedger{Query: resolvedQuestion}
 	executedQueries := 0
 	droppedQueries := 0
+	unavailableQueries := 0
+	successfulQueries := 0
 	for _, plannedQuery := range plan.SearchQueries {
 		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
 			// Never drop a planned query silently: the trace must show that the
@@ -2594,7 +2618,19 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		e.searchKnowledgeQueriesThisTurn++
 		executedQueries++
 		activityID := fmt.Sprintf("search_%d", e.searchKnowledgeQueriesThisTurn)
-		retrieved := e.knowledgeRetriever.Retrieve(plannedQuery, "")
+		retrieved := retrieveKnowledge(ctx, e.knowledgeRetriever, plannedQuery, hint)
+		e.searchKnowledgeRanThisTurn = true
+		if retrieved.Unavailable {
+			unavailableQueries++
+			e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
+				ID:    activityID,
+				Query: plannedQuery,
+				Hits:  0,
+			}, nil)
+			e.emitSearchKnowledgeRetrievalTrace(plannedQuery, retrieved, nil, false, activityID)
+			continue
+		}
+		successfulQueries++
 		rawHits := retrieved.HitItems
 		hits := rawHits
 		floorDroppedAll := false
@@ -2604,7 +2640,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		}
 		ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 		combined = knowledge.MergeEvidenceLedgers(combined, ledger, maxKnowledgePlanQueries*knowledge.DefaultEvidenceLedgerMaxItems)
-		e.searchKnowledgeRanThisTurn = true
+		e.recordSearchKnowledgeCapabilities(retrieved.SearchID, ledger)
 		e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
 		e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
 			ID:              activityID,
@@ -2617,19 +2653,48 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
 	empty := len(combined.Items) == 0
 	affordance := e.followUpAffordance(len(combined.Items))
+	message := "搜索完成"
+	if successfulQueries == 0 && unavailableQueries > 0 {
+		message = "知识库服务暂时不可用"
+	}
 	onStep(StepEvent{
 		Type:    StepToolResult,
 		Action:  "SearchKnowledge",
-		Source:  observability.ToolSourceKnowledgeLocal,
-		Message: "搜索完成",
+		Source:  knowledgeSource,
+		Message: message,
 		TraceResult: map[string]any{
-			"items":           len(combined.Items),
-			"queries":         executedQueries,
-			"planned_queries": len(plan.SearchQueries),
-			"dropped_queries": droppedQueries,
+			"items":               len(combined.Items),
+			"queries":             executedQueries,
+			"planned_queries":     len(plan.SearchQueries),
+			"dropped_queries":     droppedQueries,
+			"unavailable_queries": unavailableQueries,
 		},
 	})
+	if successfulQueries == 0 && unavailableQueries > 0 {
+		return searchKnowledgeUnavailableResultJSON(combined, affordance)
+	}
+	if unavailableQueries > 0 {
+		return searchKnowledgePartialUnavailableResultJSON(combined, affordance, unavailableQueries)
+	}
 	return searchKnowledgeResultJSON(combined, empty, affordance)
+}
+
+func (e *Engine) recordSearchKnowledgeCapabilities(searchID string, ledger knowledge.EvidenceLedger) {
+	searchID = strings.TrimSpace(searchID)
+	if searchID == "" {
+		return
+	}
+	if e.searchKnowledgeCapabilitiesThisTurn == nil {
+		e.searchKnowledgeCapabilitiesThisTurn = map[string]string{}
+	}
+	for _, item := range ledger.Items {
+		chunkID := strings.TrimSpace(item.ChunkID)
+		if chunkID != "" {
+			// A new search supersedes a prior capability for the same chunk. The
+			// previous search_id is deliberately not retained as a fallback.
+			e.searchKnowledgeCapabilitiesThisTurn[chunkID] = searchID
+		}
+	}
 }
 
 // emitSearchKnowledgeRetrievalTrace records the agent-lane SearchKnowledge
@@ -2647,6 +2712,8 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 	}
 	trace := observability.RetrievalTrace{
 		Enabled:                retrieved.Enabled,
+		Unavailable:            retrieved.Unavailable,
+		FailureReason:          retrieved.FailureReason,
 		KBVersion:              retrieved.KBVersion,
 		AnswerQuestion:         e.resolvedKnowledgeQuestionThisTurn,
 		QueryRaw:               query,
@@ -2675,7 +2742,11 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
 	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
 	trace.References = retrievalReferencesFromHits(hitItems, activityID)
-	if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
+	if retrieved.Unavailable {
+		// Service health is explicitly separate from corpus coverage. Do not
+		// stamp no_evidence here: that would send operators to edit corpus data
+		// for an MCP network/auth/readiness failure.
+	} else if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
 		trace.RefusedReason = "no_evidence"
 		trace.RankingErrorCandidate = true
 	} else {
@@ -2796,6 +2867,50 @@ func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool, foll
 	return string(b)
 }
 
+// searchKnowledgeUnavailableResultJSON preserves the distinction between an
+// operational remote-KB failure and a successful search that simply returned no
+// evidence. The model receives a safe retry instruction rather than opaque MCP
+// transport details.
+func searchKnowledgeUnavailableResultJSON(ledger knowledge.EvidenceLedger, followUp string) string {
+	result := map[string]any{
+		"EvidenceLedger":        ledger,
+		"empty":                 len(ledger.Items) == 0,
+		"knowledge_unavailable": true,
+		"error":                 "知识库服务暂时不可用，请稍后重试。",
+	}
+	if followUp != "" {
+		result["follow_up"] = followUp
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return `{"EvidenceLedger":{"items":[]},"knowledge_unavailable":true,"error":"知识库服务暂时不可用，请稍后重试。"}`
+	}
+	return string(b)
+}
+
+// searchKnowledgePartialUnavailableResultJSON keeps successful evidence usable
+// while making an incomplete multi-query retrieval visible to the model. Without
+// this marker, a later successful empty search could mask an earlier MCP outage
+// as a definitive corpus miss.
+func searchKnowledgePartialUnavailableResultJSON(ledger knowledge.EvidenceLedger, followUp string, unavailableQueries int) string {
+	result := map[string]any{
+		"EvidenceLedger":        ledger,
+		"empty":                 len(ledger.Items) == 0,
+		"knowledge_unavailable": true,
+		"partial":               true,
+		"unavailable_queries":   unavailableQueries,
+		"error":                 "知识库部分检索暂时不可用，当前证据可能不完整。",
+	}
+	if followUp != "" {
+		result["follow_up"] = followUp
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return `{"EvidenceLedger":{"items":[]},"knowledge_unavailable":true,"partial":true,"error":"知识库部分检索暂时不可用，当前证据可能不完整。"}`
+	}
+	return string(b)
+}
+
 func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
 	action := tc.Function.Name
 	if e.knowledgeOnlyThisTurn && !knowledgeOnlyToolAllowed(action) {
@@ -2874,17 +2989,19 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// from memory — a retired, drift-prone answer path reachable by hallucination,
 	// at an UNMEASURED rate.
 
-	// SearchKnowledge executes locally on the engine's retriever, never through
-	// SafeToolExecutor. The knowledge-route check above is the authorization
-	// boundary and rejects calls invented outside that lane.
+	// SearchKnowledge executes through the engine's configured retriever (remote
+	// MCP in production), never through SafeToolExecutor. The knowledge-route
+	// check above is the authorization boundary and rejects calls invented outside
+	// that lane.
 	if action == "SearchKnowledge" {
 		e.knowledgeQAAgentLoopThisTurn = true
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
 	}
 
-	// ReadChunk shares that lane: it reads the same in-process corpus by id, so it
-	// is local and read-only for the same reasons.
+	// ReadChunk shares that lane: it can read only an evidence ID returned by the
+	// current turn's search (via its MCP capability in production), so it remains
+	// read-only for the same reasons.
 	if action == "ReadChunk" {
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeReadChunk(args, onStep)

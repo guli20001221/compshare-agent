@@ -1,0 +1,21 @@
+# The checkout is ~1.8 GiB (mostly local .claude state).  Use an allowlist so
+# neither local data nor unrelated tracked files can enter the build context.
+**
+
+!Dockerfile
+!.dockerignore
+!go.mod
+!go.sum
+
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+
+!deploy/
+!deploy/conf/
+!deploy/conf/config.yaml
+!deploy/migrations/
+!deploy/migrations/**
+!deploy/ssh_ops_harness/
+!deploy/ssh_ops_harness/**

@@ -50,6 +50,9 @@ type FeaturesConfig struct {
 // Empty string / zero int means "omitted — fall through to env, then default".
 type RetrievalConfig struct {
 	KnowledgeRetrieval     string `yaml:"knowledge_retrieval"`      // USE_KNOWLEDGE_RETRIEVAL: curated|off
+	MCPURL                 string `yaml:"mcp_url"`                  // COMPSHARE_KB_MCP_URL (remote compshare-kb /mcp)
+	MCPBearerToken         string `yaml:"mcp_bearer_token"`         // COMPSHARE_KB_MCP_BEARER_TOKEN (read-only token; optional in trusted cluster)
+	MCPTimeoutMS           int    `yaml:"mcp_timeout_ms"`           // COMPSHARE_KB_MCP_TIMEOUT_MS
 	Mode                   string `yaml:"mode"`                     // RAG_RETRIEVAL_MODE: qwen3_rrf|bm25_only|hybrid_cosine|hybrid_rerank|qwen3_full
 	CorpusPath             string `yaml:"corpus_path"`              // COMPSHARE_KNOWLEDGE_CORPUS
 	EmbeddingsPath         string `yaml:"embeddings_path"`          // COMPSHARE_KNOWLEDGE_EMBEDDINGS
@@ -117,6 +120,9 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 
 	r := c.Agent.Retrieval
 	putStrEnv(overrides, "USE_KNOWLEDGE_RETRIEVAL", r.KnowledgeRetrieval)
+	putStrEnv(overrides, "COMPSHARE_KB_MCP_URL", r.MCPURL)
+	putStrEnv(overrides, "COMPSHARE_KB_MCP_BEARER_TOKEN", r.MCPBearerToken)
+	putIntEnv(overrides, "COMPSHARE_KB_MCP_TIMEOUT_MS", r.MCPTimeoutMS)
 	putStrEnv(overrides, "RAG_RETRIEVAL_MODE", r.Mode)
 	putStrEnv(overrides, "COMPSHARE_KNOWLEDGE_CORPUS", r.CorpusPath)
 	putStrEnv(overrides, "COMPSHARE_KNOWLEDGE_EMBEDDINGS", r.EmbeddingsPath)

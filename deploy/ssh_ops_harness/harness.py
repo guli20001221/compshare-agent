@@ -556,6 +556,19 @@ def stage_skills(allow_writes: bool = False) -> str:
 DEFAULT_MAX_TURNS = 50
 
 
+def resolve_claude_cli() -> str:
+    """Select the operator-installed CLI explicitly.
+
+    claude-agent-sdk 0.2.106 bundles Claude Code 2.1.185 and prefers that binary before PATH.
+    Production validates and installs 2.1.218, the version used by the direct ModelVerse smoke;
+    leaving cli_path unset would silently run the older bundled binary instead.
+    """
+    cli = shutil.which("claude")
+    if not cli:
+        raise SystemExit("claude CLI not found on PATH (production requires pinned Claude Code 2.1.218)")
+    return cli
+
+
 def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, allow_writes=False):
     from claude_agent_sdk import ClaudeAgentOptions
     opts = ClaudeAgentOptions(
@@ -568,6 +581,7 @@ def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, allow_writes=False
         setting_sources=["project"],                     # required for skill discovery; see stage_skills
         max_turns=max_turns,
         model=model,
+        cli_path=resolve_claude_cli(),                    # never silently use the SDK's older bundled CLI
     )
     assert_single_tool(opts)                              # fail closed before any turn runs
     return opts

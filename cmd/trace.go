@@ -285,10 +285,43 @@ func knowledgeCorpusPathFromEnv(getenv getenvFunc) string {
 	return path
 }
 
-func knowledgeRetrieverFromEnv(getenv getenvFunc) (*knowledge.Retriever, bool, error) {
+// knowledgeMCPURLFromEnv returns the optional remote knowledge-query endpoint.
+// When configured, production never opens the bundled corpus or embedding
+// sidecars; the legacy local path remains only for developer fixtures that omit
+// this setting.
+func knowledgeMCPURLFromEnv(getenv getenvFunc) string {
+	return strings.TrimSpace(getenv("COMPSHARE_KB_MCP_URL"))
+}
+
+func knowledgeMCPTimeoutFromEnv(getenv getenvFunc) time.Duration {
+	raw := strings.TrimSpace(getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"))
+	if raw == "" {
+		return 0
+	}
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms <= 0 {
+		log.Printf("knowledge MCP: invalid COMPSHARE_KB_MCP_TIMEOUT_MS=%q; using default", raw)
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func knowledgeRetrieverFromEnv(getenv getenvFunc) (engine.KnowledgeRetriever, bool, error) {
 	enabled, unknown := knowledgeRetrievalModeFromEnv(getenv)
 	if unknown != "" || !enabled {
 		return nil, false, nil
+	}
+	if endpoint := knowledgeMCPURLFromEnv(getenv); endpoint != "" {
+		retriever, err := knowledge.NewMCPRetriever(knowledge.MCPRetrieverOptions{
+			Endpoint:    endpoint,
+			BearerToken: strings.TrimSpace(getenv("COMPSHARE_KB_MCP_BEARER_TOKEN")),
+			Timeout:     knowledgeMCPTimeoutFromEnv(getenv),
+		})
+		if err != nil {
+			return nil, false, fmt.Errorf("knowledge MCP client: %w", err)
+		}
+		log.Printf("knowledge: using remote MCP endpoint %s", endpoint)
+		return retriever, true, nil
 	}
 	corpusPath := knowledgeCorpusPathFromEnv(getenv)
 	mode := ragRetrievalModeFromEnv(getenv)

@@ -29,7 +29,7 @@ import (
 
 var (
 	upstreamContractLive       = flag.Bool("upstream-contract-live", false, "run one real CompShare API action")
-	upstreamContractConfig     = flag.String("upstream-contract-config", "", "config.yaml path; default deploy/conf/config.yaml")
+	upstreamContractConfig     = flag.String("upstream-contract-config", "", "config path; default deploy/conf/config.local.yaml")
 	upstreamContractTopOrg     = flag.Uint("upstream-contract-top-org", 0, "top organization id")
 	upstreamContractOrg        = flag.Uint("upstream-contract-org", 0, "organization id")
 	upstreamContractProject    = flag.String("upstream-contract-project", "", "project id")
@@ -61,7 +61,7 @@ func TestUpstreamContractLive(t *testing.T) {
 	root := behavioralRepoRoot(t)
 	cfgPath := *upstreamContractConfig
 	if cfgPath == "" {
-		cfgPath = filepath.Join(root, "deploy", "conf", "config.yaml")
+		cfgPath = filepath.Join(root, "deploy", "conf", "config.local.yaml")
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {

@@ -44,7 +44,7 @@ func TestCatalogAndChargeAcceptanceOverRealHTTP(t *testing.T) {
 	require.NoError(t, os.Chdir(root))
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
 
-	cfg, err := config.Load(filepath.Join(root, "deploy", "conf", "config.yaml"))
+	cfg, err := config.Load(filepath.Join(root, "deploy", "conf", "config.local.yaml"))
 	require.NoError(t, err)
 	require.NotEmpty(t, cfg.Agent.LLM.APIKey)
 	cfg.Agent.ProjectId = ""
@@ -275,7 +275,7 @@ func TestResourceRenderingOverRealHTTP(t *testing.T) {
 	require.NoError(t, os.Chdir(root))
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
 
-	cfg, err := config.Load(filepath.Join(root, "deploy", "conf", "config.yaml"))
+	cfg, err := config.Load(filepath.Join(root, "deploy", "conf", "config.local.yaml"))
 	require.NoError(t, err)
 	require.NotEmpty(t, cfg.Agent.LLM.APIKey)
 	if project := strings.TrimSpace(os.Getenv("COMPSHARE_LIVE_PROJECT_ID")); project != "" {

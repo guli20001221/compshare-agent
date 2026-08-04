@@ -1,12 +1,12 @@
 # compshare-agent
 
-优云算力共享 AI 助手（CompShare GPU 平台）。Go 1.22 单二进制，`server` 子命令提供 HTTP/WS 服务。
+优云算力共享 AI 助手（CompShare GPU 平台）。Go 1.25 单二进制，`server` 子命令提供 HTTP/WS 服务。
 
 ## 配置
 
-唯一部署配置文件是 `deploy/conf/config.yaml`。运行时开关、模型配置、数据库 DSN、STS/直连密钥都直接写在这个文件里，不再使用 `.env` 或 `*.example` 模板。
+配置分为 `deploy/conf/config.local.yaml` 和 `deploy/conf/config.prod.yaml`。前者保存共享基线（运行时开关、模型配置、数据库 DSN、STS/直连密钥）；后者通过 `extends` 继承基线，只保留生产网络覆盖项，不再使用 `.env` 或 `*.example` 模板。
 
-默认启动路径也是 `deploy/conf/config.yaml`：
+本地默认启动路径是 `deploy/conf/config.local.yaml`：
 
 ```bash
 go build -o compshare-agent ./cmd
@@ -21,13 +21,30 @@ go build -o compshare-agent ./cmd
 
 ## 部署
 
-部署入口简化为：
+生产交付物是一个自包含 Docker 镜像，内含 Go 服务、`config.local.yaml` 与 `config.prod.yaml`、Python 3.13、Claude Agent SDK、
+Claude CLI 和 SSH-ops harness；生产知识检索通过 `config.prod.yaml` 中的
+`agent.retrieval.mcp_url` 访问独立的 `compshare-kb` 服务。旧 Docker 1.12.6 宿主机仍须用专用发布命令生成
+`linux/amd64` Docker schema-v2/gzip 镜像：
+
+```bash
+make docker-push-legacy IMAGE=registry.example.com/compshare/compshare-agent:<不可变版本>
+```
+
+构建、目标机兼容性检查、主服务/飞书启动方式见
+[`deploy/docker/README.md`](deploy/docker/README.md)。生产配置会进入镜像层，私有仓库的 pull 权限
+按生产凭据权限管理。
+
+GitLab 持续交付遵循 `compshare-kb` 的三阶段约定：`main` 分支先执行测试和静态检查，再由
+Kaniko 推送提交短 SHA 与 `latest` 两个镜像标签；生产部署必须在 GitLab 中手动确认。Kubernetes
+清单、部署前置条件和所需 CI 变量见 [`deploy/k8s/README.md`](deploy/k8s/README.md)。
+
+旧的宿主机/ally 部署入口仍保留：
 
 ```bash
 make deploy
 ```
 
-`make deploy` 不会编译；它会直接使用项目根目录已有的 `./compshare-agent`，然后调用 `deploy/scripts/deploy.sh` 用 `deploy/conf/config.yaml` 注册服务。管理机上部署前，先在本地编译并把二进制上传到项目根目录。
+`make deploy` 不会编译；它会直接使用项目根目录已有的 `./compshare-agent`，然后调用 `deploy/scripts/deploy.sh` 用 `deploy/conf/config.prod.yaml` 注册服务。管理机上部署前，先在本地编译并把二进制上传到项目根目录。
 
 ## 本地数据库
 
@@ -39,7 +56,7 @@ for f in deploy/migrations/*.sql; do
 done
 ```
 
-`deploy/conf/config.yaml` 中的 `agent.mysql.dsn` 需要填 PostgreSQL libpq URL，例如：
+`deploy/conf/config.local.yaml` 中的 `agent.mysql.dsn` 需要填 PostgreSQL libpq URL，例如：
 
 ```text
 postgresql://user:pass@host:5432/compshare_agent?sslmode=disable

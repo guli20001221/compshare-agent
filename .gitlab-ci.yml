@@ -1,0 +1,166 @@
+# GitLab CI/CD for compshare-agent. It follows the compshare-kb delivery path:
+# test on the c5 runner, build an immutable Kaniko image, then require an
+# explicit approval before changing production.
+#
+# Configure protected CI variables UHUB_USER and UHUB_PASS. The deployment
+# runner must already be authorized for prj-ucompshare-prod, and the namespace
+# must contain the regcred image-pull secret.
+
+stages:
+  - diagnose
+  - test
+  - build
+  - deploy
+
+variables:
+  IMAGE: uhub.service.ucloud.cn/ucompshare-job/compshare-agent
+  GOPROXY: https://goproxy.cn,direct
+
+# A read-only production diagnostic path. It is optional so it never blocks a
+# release, but makes a failed rollout observable without copying KUN access to
+# a workstation.
+diagnose-production:
+  stage: diagnose
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    APP: compshare-agent
+  script:
+    - kubectl -n "$NAMESPACE" get deployment/"$APP" -o wide
+    - kubectl -n "$NAMESPACE" get pods -l app="$APP" -o wide
+    - kubectl -n "$NAMESPACE" get service/"$APP" -o wide
+    - |
+      POD=$(kubectl -n "$NAMESPACE" get pods -l app="$APP" -o jsonpath='{.items[0].metadata.name}')
+      if test -n "$POD"; then
+        kubectl -n "$NAMESPACE" describe pod "$POD"
+        kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{range .status.containerStatuses[*]}{.name}{" ready="}{.ready}{" restarts="}{.restartCount}{" waiting="}{.state.waiting.reason}{" terminated="}{.state.terminated.reason}{" exit="}{.state.terminated.exitCode}{"\n"}{end}'
+        kubectl -n "$NAMESPACE" get events --field-selector "involvedObject.name=$POD" --sort-by='.lastTimestamp' || true
+        for PREVIOUS in "" "--previous"; do
+          kubectl -n "$NAMESPACE" logs "$POD" -c "$APP" $PREVIOUS --tail=200 2>&1 \
+            | sed -E \
+                -e 's#(wss?|https?)://[^[:space:]]+#<redacted-url>#g' \
+                -e 's#(postgres(ql)?://)[^[:space:]]+#\1<redacted-dsn>#g' \
+                -e 's#([Tt]oken|[Ss]ecret|[Pp]assword|[Aa]pi[_-]?[Kk]ey)[=:][^[:space:],]+#\1=<redacted>#g' \
+            | grep -Ei 'startup:|runtime:|knowledge:|durable turns|ocr enabled|confirm form|guided create|warning:|error|fatal|panic|schema|postgres|database|listen|server' \
+            | cut -c1-1000 || true
+        done
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+
+# Destructive production cleanup is deliberately an explicit manual action.
+# It removes only this workload's controllers and their Pods; the Service and
+# database are retained so an approved deploy can recreate the workload.
+cleanup-production:
+  stage: diagnose
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    APP: compshare-agent
+  script:
+    - kubectl -n "$NAMESPACE" delete deployment/"$APP" --ignore-not-found --wait=true
+    - kubectl -n "$NAMESPACE" delete statefulset/"$APP" --ignore-not-found --wait=true
+    - |
+      if kubectl -n "$NAMESPACE" get deployment/"$APP" >/dev/null 2>&1; then
+        echo "deployment/$APP still exists after cleanup" >&2
+        exit 1
+      fi
+      if kubectl -n "$NAMESPACE" get statefulset/"$APP" >/dev/null 2>&1; then
+        echo "statefulset/$APP still exists after cleanup" >&2
+        exit 1
+      fi
+      # Controller deletion is asynchronous.  Give Kubernetes up to three
+      # minutes to finish the Pod's configured grace period before treating a
+      # remaining Pod as a cleanup failure.
+      attempt=0
+      while kubectl -n "$NAMESPACE" get pods -l app="$APP" -o name | grep -q .; do
+        attempt=$((attempt + 1))
+        if test "$attempt" -ge 60; then
+          echo "Pods for $APP still exist after controller cleanup" >&2
+          kubectl -n "$NAMESPACE" get pods -l app="$APP" -o wide
+          exit 1
+        fi
+        sleep 3
+      done
+      kubectl -n "$NAMESPACE" get service/"$APP" -o name
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: false
+  environment:
+    name: production
+    action: stop
+
+test:
+  stage: test
+  image: uhub.service.ucloud.cn/ucompshare-job/golang:1.25-alpine
+  tags:
+    - uaek-c5
+  # SSH-ops supervisor tests launch the configured Python executable.  The
+  # KB's Go-only test suite does not need it, but this Alpine image provides
+  # only python3 after installation.
+  before_script:
+    - apk add --no-cache python3
+    - ln -sf /usr/bin/python3 /usr/local/bin/python
+  script:
+    - go test ./...
+    - go vet ./...
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+build:
+  stage: build
+  image:
+    name: uhub.service.ucloud.cn/ucompshare-job/kaniko-executor:debug
+    entrypoint: [""]
+  tags:
+    - uaek-c5
+  variables:
+    DOCKER_CONFIG: $CI_PROJECT_DIR/.docker
+  script:
+    - mkdir -p "$DOCKER_CONFIG"
+    - |
+      AUTH=$(printf "%s:%s" "$UHUB_USER" "$UHUB_PASS" | base64 | tr -d '\n')
+      printf '{"auths":{"uhub.service.ucloud.cn":{"auth":"%s"}}}\n' "$AUTH" > "$DOCKER_CONFIG/config.json"
+    - >-
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+      --build-arg "GOPROXY=$GOPROXY"
+      --build-arg "VCS_REF=$CI_COMMIT_SHA"
+      --destination "$IMAGE:$CI_COMMIT_SHORT_SHA"
+      --destination "$IMAGE:latest"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy:
+  stage: deploy
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    APP: compshare-agent
+  script:
+    - >-
+      sed "s|__IMAGE__|$IMAGE:$CI_COMMIT_SHORT_SHA|g"
+      deploy/k8s/deployment.yaml
+      | kubectl -n "$NAMESPACE" apply -f -
+    - kubectl -n "$NAMESPACE" rollout status deployment/"$APP" --timeout=600s
+    - kubectl -n "$NAMESPACE" get service/"$APP"
+    - |
+      POD=$(kubectl -n "$NAMESPACE" get pods -l app="$APP" -o jsonpath='{.items[0].metadata.name}')
+      test -n "$POD"
+      kubectl -n "$NAMESPACE" exec "$POD" -c "$APP" -- python3 -c \
+        'import urllib.request; response = urllib.request.urlopen("http://compshare-agent/healthz", timeout=5); assert response.status == 200'
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  environment:
+    name: production

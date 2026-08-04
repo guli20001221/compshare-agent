@@ -1,12 +1,12 @@
 #!/bin/sh
 # Register the Feishu long-connection adapter as a separate ally service.
-# Configuration is read from deploy/conf/config.yaml.
+# Configuration is read from deploy/conf/config.prod.yaml.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CONFIG_FILE="$APP_DIR/deploy/conf/config.yaml"
+CONFIG_FILE="$APP_DIR/deploy/conf/config.prod.yaml"
 APP_BIN="$APP_DIR/compshare-agent"
 
 if [ ! -f "$APP_BIN" ]; then

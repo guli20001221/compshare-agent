@@ -15,9 +15,33 @@ import (
 // and validates, so it would need the deployment's secrets present to answer a
 // question about one integer. Parsing the file is the narrower thing to do and it
 // cannot pass for the wrong reason — a missing key unmarshals to 0, which fails.
+// baselineConfigCandidates are the names the baseline config file goes by. The
+// deploy repo split config.yaml into config.local.yaml (the baseline, holding
+// everything including agent.features and agent.rate_limit) plus a thin
+// config.prod.yaml that `extends` it with production network overrides; github
+// still carries the pre-split config.yaml. Both layouts are live right now, so
+// this resolves by name rather than assuming one — and fails loudly if NEITHER
+// exists, which is the case that would otherwise turn this test into a no-op.
+var baselineConfigCandidates = []string{
+	"../../deploy/conf/config.local.yaml",
+	"../../deploy/conf/config.yaml",
+}
+
+func readBaselineConfig(t *testing.T) []byte {
+	t.Helper()
+	for _, path := range baselineConfigCandidates {
+		if raw, err := os.ReadFile(path); err == nil {
+			t.Logf("baseline config: %s", path)
+			return raw
+		}
+	}
+	t.Fatalf("no baseline config found at any of %v — the file was renamed again and this "+
+		"test would otherwise silently stop checking anything", baselineConfigCandidates)
+	return nil
+}
+
 func TestShippedConfigMatchesTheTokenCapConstant(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/conf/config.yaml")
-	require.NoError(t, err, "the shipped config is tracked; this test reads it, not a fixture")
+	raw := readBaselineConfig(t)
 
 	var shipped struct {
 		Agent struct {
@@ -33,7 +57,7 @@ func TestShippedConfigMatchesTheTokenCapConstant(t *testing.T) {
 			"below assert nothing if the constant were ever zeroed too")
 
 	require.Equal(t, ShippedMaxTokensPerTurn, shipped.Agent.RateLimit.MaxTokensPerTurn,
-		"deploy/conf/config.yaml raised the per-turn token cap without updating "+
+		"the baseline deploy config raised the per-turn token cap without updating "+
 			"ShippedMaxTokensPerTurn. Everything that sizes history against the cap "+
 			"(maxReplayedHistoryRunes, the history ceiling) derives from this number, "+
 			"so a silent divergence re-creates the two-producer drift the constant "+

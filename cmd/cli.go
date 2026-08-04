@@ -13,7 +13,6 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
-	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/tools"
@@ -360,7 +359,7 @@ func cliUserContextFromConfig(cfg *config.Config, getenv getenvFunc) (tools.User
 	}, true
 }
 
-func applyKnowledgeRetrieverStartup(eng *engine.Engine, requested bool, retriever *knowledge.Retriever, enabled bool, err error) {
+func applyKnowledgeRetrieverStartup(eng *engine.Engine, requested bool, retriever engine.KnowledgeRetriever, enabled bool, err error) {
 	if requested && err != nil {
 		startupFatalf("RAG enabled but retrieval setup failed (refusing to start): %v", err)
 		return
