@@ -58,10 +58,10 @@ git config core.hooksPath .githooks
 | Var | Values | Effect |
 |---|---|---|
 | `COMPSHARE_ENABLE_MUTATING_TOOLS` | `1` | Enables start/stop/reboot/reset-password/create. Default off — read-only mode. |
-| `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Wires the RAG retriever into the engine. Combine with `RAG_RETRIEVAL_MODE`. |
-| `RAG_RETRIEVAL_MODE` | `qwen3_rrf` (default), `bm25_only`, `hybrid_cosine`, `hybrid_rerank`, `qwen3_full` | Picks the retrieval pipeline. Hybrid/qwen3 modes require `MODELVERSE_API_KEY` or `LLM_API_KEY` and the matching pinned sidecar under `deploy/kb/`. |
-| `RAG_HYBRID_ENABLED` | `1` | Legacy switch; only consulted when `RAG_RETRIEVAL_MODE` is unset. |
-| `COMPSHARE_EXTERNAL_KNOWLEDGE` | default **on**; `0`/`off`/`false` disables | Merges the stable external tool/ops corpus (`deploy/kb/external_w0.jsonl`: platform-neutral GPU/runtime troubleshooting, OpenAI-compatible API semantics, RAG/Agent app basics, data transfer, security, and professional GPU workflows) into the qwen3 retrieval index. Volatile platform facts stay in the internal corpus. Additive; `loadKnowledgeCorpora` degrades to platform-only if the external file is missing/bad. Boot-only; set `0` to roll back to platform-only. |
+| `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Enables or disables the remote knowledge MCP adapter. |
+| `COMPSHARE_KB_MCP_URL` | complete `http(s)://.../mcp` URL | Required whenever knowledge retrieval is enabled. |
+| `COMPSHARE_KB_MCP_BEARER_TOKEN` | read-only token | Optional on trusted in-cluster endpoints; never use an `/admin/mcp` token. |
+| `COMPSHARE_KB_MCP_TIMEOUT_MS` | positive milliseconds | Per-call MCP timeout; default 12 seconds. |
 | `COMPSHARE_CONFIRM_FORM` | `1` | **Server-only.** Boot half of the editable-confirm-form double gate (create-flow 表单化): with it on AND the client opting in per turn (`SendCSAgentChat` `Features:["confirm_form_v1"]`), `confirmation` frames for `CreateInstanceWorkflow` carry a select-only `Form` (GPU/zone/image/charge-type whitelists) and `ConfirmCSAgentAction` may return `Overrides`; every edit re-runs the stock+price steps and re-confirms a refreshed card (≤3 edits). Off → confirmation frames stay byte-identical, Overrides rejected. CLI confirm and the deploy_model saga are unaffected either way. **Go code default off; deploy config ships it on.** |
 | `COMPSHARE_GUIDED_CREATE` | `1` | **Server-only.** Boot half of the guided GPU create order, paired with the client's per-turn `guided_create_v1` opt-in. Requires `COMPSHARE_CONFIRM_FORM=1` — `cmd/server.go` logs a warning and treats guided create as off otherwise. **Go code default off; deploy config ships it on.** |
 | `COMPSHARE_FORCED_KNOWLEDGE_HOP` | `1` | The engine performs one retrieval on the user's own words before the Agent's first model call of the turn and injects the result as an ordinary tool observation, instead of leaving the decision to search up to the model (`internal/engine/forced_knowledge_hop.go` documents the measurement that motivated it: a complaint phrased as 好贵 searched 0/5, the same topic phrased as a question 5/5). The planner expands that query rather than merely de-referencing it, and keeps the user's raw words as the last query. Boot-only, frozen via `engine.SetForcedKnowledgeHopEnabled`. **Off everywhere since 2026-08-01** (the shared `deploy/conf/config.local.yaml` deliberately **omits** the key rather than setting `false` — see the rollback note below). Base rates over 4348 real questions: the statement-form-needing-knowledge shape it targets is 3.4% of traffic, while 43.7% are questions that retrieve unprompted anyway; a 6-shape x N=5 live A/B measured 4.7x SearchKnowledge calls and +39.6% wall clock for identical work. Narrowing the trigger would need a pre-model classifier that no longer exists (P6 removed the intent router) and would rebuild the layer the canonical-transcript program is removing. Rollback is `COMPSHARE_FORCED_KNOWLEDGE_HOP=1` **plus a restart** — the flag is boot-only (`engine.SetForcedKnowledgeHopEnabled` freezes it at startup), so this avoids editing YAML or shipping code, not a process restart. It works at all only because the deploy config omits the key: `putBoolEnv` records a non-nil `*bool` unconditionally and `RuntimeGetenv` consults that overlay before `os.Getenv`, so an explicit YAML `false` would out-rank the env var (pinned by `cmd/runtime_overlay_test.go`). |
@@ -81,15 +81,15 @@ Unknown values for any of the above are logged as warnings and treated as off �
 
 **STS credentials are not env vars in the current deploy.** `agent.sts.service_ak` / `service_sk` / `default_role_urn` are written literally into `deploy/conf/config.local.yaml`. The loader does support `${VAR}` substitution (`internal/config/config.go`), so `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` / `COMPSHARE_DEFAULT_ROLE_URN` still work as placeholder names — but the shipped config uses none of them.
 
-## Knowledge base — pinned digests
+## Knowledge base — offline fixtures
 
-`deploy/kb/` holds the customer-safe FAQ corpus and embedding sidecars. All three artifacts are byte-pinned by LF-normalized SHA256 in `internal/knowledge/corpus_digest.go`:
+Production no longer loads or packages `deploy/kb/`; `compshare-kb` owns corpus composition, embedding, reranking, releases and digests. The directory remains only for offline retrieval evaluations and historical rebuild scripts. Its artifacts are byte-pinned by LF-normalized SHA256 in `internal/knowledge/corpus_digest.go`:
 
 - `stage2b_w0.jsonl` → `CorpusDigestExpected`
 - `embeddings_<digest>.jsonl` (text-embedding-3-large, 3072d) → `EmbeddingDigestExpected`
 - `embeddings_<digest>_qwen3-embedding-8b.jsonl` (qwen3, 4096d) → `EmbeddingDigestExpectedQwen3`
 
-The loader **refuses to start** if any pin mismatches. When the corpus changes, regenerate **both** sidecars and update **all three** digest constants in the same change. See `deploy/kb/README.md` for the rebuild commands and PR #113/#114 for the 8-step flow.
+Offline loaders reject digest mismatches. New production knowledge releases must be built and published through `compshare-kb`.
 
 ## Architecture
 
@@ -108,7 +108,7 @@ Model-visible read capabilities live in `internal/capability/read_*.go`. Each ow
 Multi-step mutating flows (create/start/stop/reboot/reset-password/rename) live as `*Workflow` types. Confirmation is delivered via the `engine.ConfirmFunc` callback (CLI implementation in `cmd/agent.go::cliConfirm`).
 
 ### Knowledge / RAG (`internal/knowledge/`)
-Retriever modes are listed above. The production Agent's **system prompt** is built from the Go segments in `internal/prompt/segments.go` (assembled by `builder.go`); there is no shared Go/Python prompt directory. The old terminal-RAG `internal/prompt/rag_system_segments/` snippets and the Python `evaluate_answers` answer-grading harness that read them were removed — RAG is now an in-loop tool the central Agent calls, not a separate terminal-RAG prompt, and answer-quality eval should be re-derived from real HTTP/WebSocket traces rather than a second Python prompt. Reranker / embedder timeouts are knobbed by `RAG_HYBRID_TIMEOUT_MS` / `RAG_RERANKER_TIMEOUT_MS`.
+Production uses `MCPRetriever` exclusively. `SearchKnowledge` calls `search_knowledge`; `ReadChunk` presents the corresponding short-lived `search_id` to `read_knowledge_chunk`. The in-process Retriever remains for offline evaluations and unit tests, not runtime fallback. The production Agent's **system prompt** is built from the Go segments in `internal/prompt/segments.go` (assembled by `builder.go`).
 
 ### Diagnosis (`internal/diagnosis/`)
 Read-only diagnostic chains. **`DiagnoseBilling` is the only model-visible one** — `registeredDiagnosisActions` and `chainRegistry` in `registry.go` both hold exactly that one entry, so an unadvertised diagnosis name cannot resolve to a chain (`TestDiagnosisRegistryHasNoUnadvertisedChains`; model-invisible ≠ unreachable). The init-failure, GPU-not-detected, image-issue, and port/firewall chains were deleted outright in the pre-P7 convergence (no diagnosis value, or superseded by the central Agent gathering evidence via `SearchKnowledge` + `DescribeCompShareInstance`).

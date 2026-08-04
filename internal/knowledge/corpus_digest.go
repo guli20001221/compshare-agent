@@ -19,15 +19,13 @@ const CorpusDigestExpected = "c4421ea2ef5b9f83226d36d2c2d3b5bc0b319591af59dc659b
 // EmbeddingDigestExpected pins the hybrid retrieval embedding sidecar produced by
 // scripts/rag_w0/build_corpus_embeddings.py over the CorpusDigestExpected corpus
 // with text-embedding-3-large (3072-dim). Mismatch indicates the sidecar is
-// stale relative to the deployed corpus and RAG hybrid path must refuse to load.
+// stale relative to the offline fixture corpus and the loader must refuse it.
 const EmbeddingDigestExpected = "9dcb902bb6026836b43cf52be159af6690bb4c93818e1b34915f053818b9189c"
 
 // EmbeddingDigestExpectedQwen3 pins the qwen3-embedding-8b sidecar produced by
 // the same script over the CorpusDigestExpected corpus (--embed-model
-// qwen3-embedding-8b, 4096-dim default). Selected only when
-// RAG_RETRIEVAL_MODE=qwen3_full; the text-emb-3 sidecar above remains the
-// default for hybrid_cosine / hybrid_rerank modes. Same mismatch semantics
-// as EmbeddingDigestExpected: stale sidecar = hybrid path refuses to load.
+// qwen3-embedding-8b, 4096-dim default). Offline evaluations select it through
+// RetrieverOptions. Same mismatch semantics as EmbeddingDigestExpected.
 const EmbeddingDigestExpectedQwen3 = "e0bd57ee7f4fb3de588486761f6ca5564727cecb1cb2d8df6a6f7dae9533db32"
 
 // ExternalCorpusDigestExpected pins deploy/kb/external_w0.jsonl — the separate

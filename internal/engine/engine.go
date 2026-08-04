@@ -194,22 +194,7 @@ type LLMClient interface {
 }
 
 type KnowledgeRetriever interface {
-	Retrieve(question, productArea string) knowledge.RetrievalResult
-}
-
-// contextKnowledgeRetriever is an optional extension at the retrieval seam.
-// The long-lived local retriever and existing test doubles keep the compact
-// KnowledgeRetriever interface, while the remote MCP adapter can propagate the
-// current HTTP request's cancellation and deadline.
-type contextKnowledgeRetriever interface {
 	RetrieveContext(ctx context.Context, question, productArea string) knowledge.RetrievalResult
-}
-
-func retrieveKnowledge(ctx context.Context, retriever KnowledgeRetriever, question, productArea string) knowledge.RetrievalResult {
-	if contextual, ok := retriever.(contextKnowledgeRetriever); ok {
-		return contextual.RetrieveContext(ctx, question, productArea)
-	}
-	return retriever.Retrieve(question, productArea)
 }
 
 // HistoryMessage is a simplified turn for rehydrating a conversation from
@@ -2646,7 +2631,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	e.searchKnowledgeCallsThisTurn++
 	if e.knowledgeRetriever == nil || len(plan.SearchQueries) == 0 {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "知识库不可用"})
-		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, true, "")
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, "", nil)
 	}
 
 	combined := knowledge.EvidenceLedger{Query: resolvedQuestion}
@@ -2665,7 +2650,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		e.searchKnowledgeQueriesThisTurn++
 		executedQueries++
 		activityID := fmt.Sprintf("search_%d", e.searchKnowledgeQueriesThisTurn)
-		retrieved := retrieveKnowledge(ctx, e.knowledgeRetriever, plannedQuery, hint)
+		retrieved := e.knowledgeRetriever.RetrieveContext(ctx, plannedQuery, hint)
 		e.searchKnowledgeRanThisTurn = true
 		if retrieved.Unavailable {
 			unavailableQueries++
@@ -2698,7 +2683,6 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		e.emitSearchKnowledgeRetrievalTrace(plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
 	}
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
-	empty := len(combined.Items) == 0
 	affordance := e.followUpAffordance(len(combined.Items))
 	message := "搜索完成"
 	if successfulQueries == 0 && unavailableQueries > 0 {
@@ -2718,12 +2702,20 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		},
 	})
 	if successfulQueries == 0 && unavailableQueries > 0 {
-		return searchKnowledgeUnavailableResultJSON(combined, affordance)
+		return searchKnowledgeResultJSON(combined, affordance, map[string]any{
+			"knowledge_unavailable": true,
+			"error":                 "知识库服务暂时不可用，请稍后重试。",
+		})
 	}
 	if unavailableQueries > 0 {
-		return searchKnowledgePartialUnavailableResultJSON(combined, affordance, unavailableQueries)
+		return searchKnowledgeResultJSON(combined, affordance, map[string]any{
+			"knowledge_unavailable": true,
+			"partial":               true,
+			"unavailable_queries":   unavailableQueries,
+			"error":                 "知识库部分检索暂时不可用，当前证据可能不完整。",
+		})
 	}
-	return searchKnowledgeResultJSON(combined, empty, affordance)
+	return searchKnowledgeResultJSON(combined, affordance, nil)
 }
 
 func (e *Engine) recordSearchKnowledgeCapabilities(searchID string, ledger knowledge.EvidenceLedger) {
@@ -2900,65 +2892,22 @@ func searchKnowledgeArg(args map[string]any, key string) string {
 	return ""
 }
 
-// searchKnowledgeResultJSON renders one SearchKnowledge observation. followUp is
-// the optional gap-driven affordance; it is omitted entirely when empty, so the
-// default arm's tool results stay byte-identical to before that experiment
-// existed.
-func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, empty bool, followUp string) string {
+// searchKnowledgeResultJSON renders every SearchKnowledge observation through
+// one serializer. meta carries only exceptional state such as a remote outage.
+func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, followUp string, meta map[string]any) string {
 	result := map[string]any{"EvidenceLedger": ledger}
-	if empty || len(ledger.Items) == 0 {
+	if len(ledger.Items) == 0 {
 		result["empty"] = true
 	}
 	if followUp != "" {
 		result["follow_up"] = followUp
 	}
+	for key, value := range meta {
+		result[key] = value
+	}
 	b, err := json.Marshal(result)
 	if err != nil {
 		return `{"EvidenceLedger":{"items":[]},"empty":true}`
-	}
-	return string(b)
-}
-
-// searchKnowledgeUnavailableResultJSON preserves the distinction between an
-// operational remote-KB failure and a successful search that simply returned no
-// evidence. The model receives a safe retry instruction rather than opaque MCP
-// transport details.
-func searchKnowledgeUnavailableResultJSON(ledger knowledge.EvidenceLedger, followUp string) string {
-	result := map[string]any{
-		"EvidenceLedger":        ledger,
-		"empty":                 len(ledger.Items) == 0,
-		"knowledge_unavailable": true,
-		"error":                 "知识库服务暂时不可用，请稍后重试。",
-	}
-	if followUp != "" {
-		result["follow_up"] = followUp
-	}
-	b, err := json.Marshal(result)
-	if err != nil {
-		return `{"EvidenceLedger":{"items":[]},"knowledge_unavailable":true,"error":"知识库服务暂时不可用，请稍后重试。"}`
-	}
-	return string(b)
-}
-
-// searchKnowledgePartialUnavailableResultJSON keeps successful evidence usable
-// while making an incomplete multi-query retrieval visible to the model. Without
-// this marker, a later successful empty search could mask an earlier MCP outage
-// as a definitive corpus miss.
-func searchKnowledgePartialUnavailableResultJSON(ledger knowledge.EvidenceLedger, followUp string, unavailableQueries int) string {
-	result := map[string]any{
-		"EvidenceLedger":        ledger,
-		"empty":                 len(ledger.Items) == 0,
-		"knowledge_unavailable": true,
-		"partial":               true,
-		"unavailable_queries":   unavailableQueries,
-		"error":                 "知识库部分检索暂时不可用，当前证据可能不完整。",
-	}
-	if followUp != "" {
-		result["follow_up"] = followUp
-	}
-	b, err := json.Marshal(result)
-	if err != nil {
-		return `{"EvidenceLedger":{"items":[]},"knowledge_unavailable":true,"partial":true,"error":"知识库部分检索暂时不可用，当前证据可能不完整。"}`
 	}
 	return string(b)
 }

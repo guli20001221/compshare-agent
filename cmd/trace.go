@@ -3,21 +3,19 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/compshare-agent/internal/embedding"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/reranker"
 )
 
 type getenvFunc func(string) string
@@ -262,9 +260,6 @@ func forcedKnowledgeHopEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-const defaultKnowledgeCorpusPath = "deploy/kb/stage2b_w0.jsonl"
-const defaultExternalKnowledgeCorpusPath = "deploy/kb/external_w0.jsonl"
-
 func knowledgeRetrievalModeFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.ToLower(strings.TrimSpace(getenv("USE_KNOWLEDGE_RETRIEVAL")))
 	switch raw {
@@ -275,22 +270,6 @@ func knowledgeRetrievalModeFromEnv(getenv getenvFunc) (bool, string) {
 	default:
 		return false, raw
 	}
-}
-
-func knowledgeCorpusPathFromEnv(getenv getenvFunc) string {
-	path := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_CORPUS"))
-	if path == "" {
-		return defaultKnowledgeCorpusPath
-	}
-	return path
-}
-
-// knowledgeMCPURLFromEnv returns the optional remote knowledge-query endpoint.
-// When configured, production never opens the bundled corpus or embedding
-// sidecars; the legacy local path remains only for developer fixtures that omit
-// this setting.
-func knowledgeMCPURLFromEnv(getenv getenvFunc) string {
-	return strings.TrimSpace(getenv("COMPSHARE_KB_MCP_URL"))
 }
 
 func knowledgeMCPTimeoutFromEnv(getenv getenvFunc) time.Duration {
@@ -311,350 +290,20 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (engine.KnowledgeRetriever, bo
 	if unknown != "" || !enabled {
 		return nil, false, nil
 	}
-	if endpoint := knowledgeMCPURLFromEnv(getenv); endpoint != "" {
-		retriever, err := knowledge.NewMCPRetriever(knowledge.MCPRetrieverOptions{
-			Endpoint:    endpoint,
-			BearerToken: strings.TrimSpace(getenv("COMPSHARE_KB_MCP_BEARER_TOKEN")),
-			Timeout:     knowledgeMCPTimeoutFromEnv(getenv),
-		})
-		if err != nil {
-			return nil, false, fmt.Errorf("knowledge MCP client: %w", err)
-		}
-		log.Printf("knowledge: using remote MCP endpoint %s", endpoint)
-		return retriever, true, nil
+	endpoint := strings.TrimSpace(getenv("COMPSHARE_KB_MCP_URL"))
+	if endpoint == "" {
+		return nil, false, errors.New("COMPSHARE_KB_MCP_URL is required when knowledge retrieval is enabled")
 	}
-	corpusPath := knowledgeCorpusPathFromEnv(getenv)
-	mode := ragRetrievalModeFromEnv(getenv)
-	if mode == knowledge.RetrievalModeBM25Only {
-		corpus, err := knowledge.LoadPinnedCorpus(corpusPath)
-		if err != nil {
-			return nil, false, err
-		}
-		return knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{
-			Mode: knowledge.RetrievalModeBM25Only,
-		}), true, nil
-	}
-	// Hybrid-or-better path: corpus + embedding sidecar must both load and
-	// pass their pinned-digest checks. Failure is fatal — the runtime must
-	// never serve a hybrid result against a stale or mismatched index (see
-	// memory feedback_constraints_anchor_to_validated_artifact).
-	embedModel := embedModelForMode(mode, getenv)
-	expectedDigest := embeddingDigestForMode(mode)
-	embeddingsPath := hybridEmbeddingsPathFromEnv(getenv, corpusPath, embedModel)
-	corpus, sidecar, err := loadKnowledgeCorpora(getenv, mode, corpusPath, embeddingsPath, expectedDigest)
-	if err != nil {
-		return nil, false, fmt.Errorf("rag hybrid load (mode=%s): %w", mode, err)
-	}
-	embedClient, err := embeddingClientFromEnvWithModel(getenv, embedModel)
-	if err != nil {
-		return nil, false, fmt.Errorf("rag hybrid embedding client: %w", err)
-	}
-	opts := knowledge.RetrieverOptions{
-		EmbeddingSidecar:     &sidecar,
-		Embedder:             embedClient,
-		EmbeddingModel:       embedModel,
-		HybridContextTimeout: hybridTimeoutFromEnv(getenv),
-		Mode:                 mode,
-	}
-	if mode == knowledge.RetrievalModeHybridRerank ||
-		mode == knowledge.RetrievalModeQwen3Full ||
-		mode == knowledge.RetrievalModeQwen3RRF {
-		rerankerModel := strings.TrimSpace(getenv("MODELVERSE_RERANKER_MODEL"))
-		if rerankerModel == "" {
-			rerankerModel = "qwen3-reranker-8b"
-		}
-		rerankerClient, err := rerankerClientFromEnv(getenv, rerankerModel)
-		if err != nil {
-			return nil, false, fmt.Errorf("rag reranker client: %w", err)
-		}
-		opts.Reranker = rerankerClient
-		opts.RerankerModel = rerankerModel
-		opts.RerankerContextTimeout = rerankerTimeoutFromEnv(getenv)
-	}
-	return knowledge.NewRetriever(corpus, opts), true, nil
-}
-
-// ragRetrievalModeFromEnv resolves the effective retrieval mode with this
-// precedence: explicit RAG_RETRIEVAL_MODE > legacy RAG_HYBRID_ENABLED.
-// Unset and unrecognized values yield qwen3_rrf, the current default answer
-// retrieval path. Legacy RAG_HYBRID_ENABLED=1 still maps to hybrid_cosine for
-// old smoke scripts that have not moved to RAG_RETRIEVAL_MODE.
-func ragRetrievalModeFromEnv(getenv getenvFunc) string {
-	mode := strings.ToLower(strings.TrimSpace(getenv("RAG_RETRIEVAL_MODE")))
-	switch mode {
-	case knowledge.RetrievalModeBM25Only,
-		knowledge.RetrievalModeHybridCosine,
-		knowledge.RetrievalModeHybridRerank,
-		knowledge.RetrievalModeQwen3Full,
-		knowledge.RetrievalModeQwen3RRF:
-		return mode
-	case "":
-		if hybridEnabledFromEnv(getenv) {
-			return knowledge.RetrievalModeHybridCosine
-		}
-		return knowledge.RetrievalModeQwen3RRF
-	default:
-		log.Printf("rag: unrecognized RAG_RETRIEVAL_MODE=%q, falling back to legacy RAG_HYBRID_ENABLED check", mode)
-		if hybridEnabledFromEnv(getenv) {
-			return knowledge.RetrievalModeHybridCosine
-		}
-		return knowledge.RetrievalModeQwen3RRF
-	}
-}
-
-// embedModelForMode returns the embedding model that goes with the chosen
-// retrieval mode. qwen3_full and qwen3_rrf both use qwen3-embedding-8b
-// (and the same pinned sidecar); other hybrid modes use text-embedding-3-large.
-func embedModelForMode(mode string, getenv getenvFunc) string {
-	if mode == knowledge.RetrievalModeQwen3Full || mode == knowledge.RetrievalModeQwen3RRF {
-		if explicit := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL")); explicit != "" {
-			return explicit
-		}
-		return "qwen3-embedding-8b"
-	}
-	if explicit := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL")); explicit != "" {
-		return explicit
-	}
-	return "text-embedding-3-large"
-}
-
-// embeddingDigestForMode returns the pinned sidecar digest that goes with
-// the chosen retrieval mode. qwen3_full and qwen3_rrf both pin the
-// qwen3-embedding-8b sidecar; other hybrid modes pin the
-// text-embedding-3-large sidecar.
-func embeddingDigestForMode(mode string) string {
-	if mode == knowledge.RetrievalModeQwen3Full || mode == knowledge.RetrievalModeQwen3RRF {
-		return knowledge.EmbeddingDigestExpectedQwen3
-	}
-	return knowledge.EmbeddingDigestExpected
-}
-
-func hybridEnabledFromEnv(getenv getenvFunc) bool {
-	switch strings.ToLower(strings.TrimSpace(getenv("RAG_HYBRID_ENABLED"))) {
-	case "1", "true", "yes":
-		return true
-	default:
-		return false
-	}
-}
-
-// hybridEmbeddingsPathFromEnv picks the sidecar file. When the embed model
-// is the default text-embedding-3-large the path matches the legacy
-// embeddings_<digest>.jsonl (no model suffix) so existing deployments are
-// untouched; non-default models get the _<model> suffix per B.2.
-//
-// COMPSHARE_KNOWLEDGE_EMBEDDINGS overrides the computed path so tests +
-// staged sidecar files can be wired without renaming.
-func hybridEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath, embedModel string) string {
-	if override := strings.TrimSpace(getenv("COMPSHARE_KNOWLEDGE_EMBEDDINGS")); override != "" {
-		return override
-	}
-	dir := filepath.Dir(corpusPath)
-	if embedModel == "" || embedModel == "text-embedding-3-large" {
-		return filepath.Join(dir, "embeddings_"+knowledge.CorpusDigestExpected+".jsonl")
-	}
-	return filepath.Join(dir, "embeddings_"+knowledge.CorpusDigestExpected+"_"+embedModel+".jsonl")
-}
-
-// externalKnowledgeEnabled gates the additive external tool/ops corpus
-// (deploy/kb/external_w0.jsonl). DEFAULT ON: ""/1/true/yes/on => the retriever
-// merges the external corpus into the index; 0/off/false/no => platform-only
-// (byte-identical to pre-Phase-2); unknown => off + warn (CLAUDE.md: never silently
-// coerce). The merge stays ADDITIVE and safe: loadKnowledgeCorpora falls back to
-// platform-only if the external corpus is missing/bad/digest-drifted, so a broken
-// external file never takes down platform RAG. Platform retrieval parity is
-// preserved (the merged 687+55 index keeps platform Top-3 unchanged, re-verified
-// per the #237 256-Q parity gate after the Linux-ops + PyTorch-basics vertical).
-// Rollback =
-// COMPSHARE_EXTERNAL_KNOWLEDGE=0.
-func externalKnowledgeEnabled(getenv getenvFunc) bool {
-	raw := strings.TrimSpace(getenv("COMPSHARE_EXTERNAL_KNOWLEDGE"))
-	switch strings.ToLower(raw) {
-	case "", "1", "true", "yes", "on":
-		return true
-	case "0", "off", "no", "false", "disabled", "none":
-		return false
-	default:
-		log.Printf("warning: ignoring unknown COMPSHARE_EXTERNAL_KNOWLEDGE value %q; treating as off", raw)
-		return false
-	}
-}
-
-// externalEmbeddingsPathFromEnv derives the external qwen3 sidecar path, mirroring
-// hybridEmbeddingsPathFromEnv. COMPSHARE_EXTERNAL_KNOWLEDGE_EMBEDDINGS overrides it.
-func externalEmbeddingsPathFromEnv(getenv getenvFunc, corpusPath string) string {
-	if override := strings.TrimSpace(getenv("COMPSHARE_EXTERNAL_KNOWLEDGE_EMBEDDINGS")); override != "" {
-		return override
-	}
-	dir := filepath.Dir(corpusPath)
-	return filepath.Join(dir, "embeddings_"+knowledge.ExternalCorpusDigestExpected+"_qwen3-embedding-8b.jsonl")
-}
-
-// externalKnowledgeSource returns the pinned external source to merge, or
-// ok=false to serve platform-only. External is opt-in (externalKnowledgeEnabled)
-// and ships only a qwen3 sidecar, so it can merge only in the qwen3 retrieval
-// modes; any other mode logs and is skipped.
-func externalKnowledgeSource(getenv getenvFunc, mode string) (knowledge.PinnedCorpusSource, bool) {
-	if !externalKnowledgeEnabled(getenv) {
-		return knowledge.PinnedCorpusSource{}, false
-	}
-	if mode != knowledge.RetrievalModeQwen3Full && mode != knowledge.RetrievalModeQwen3RRF {
-		log.Printf("rag: COMPSHARE_EXTERNAL_KNOWLEDGE set but mode=%s is not qwen3-based; serving platform-only", mode)
-		return knowledge.PinnedCorpusSource{}, false
-	}
-	corpusPath := strings.TrimSpace(getenv("COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS"))
-	if corpusPath == "" {
-		corpusPath = defaultExternalKnowledgeCorpusPath
-	}
-	return knowledge.PinnedCorpusSource{
-		CorpusPath:              corpusPath,
-		EmbeddingsPath:          externalEmbeddingsPathFromEnv(getenv, corpusPath),
-		ExpectedCorpusDigest:    knowledge.ExternalCorpusDigestExpected,
-		ExpectedEmbeddingDigest: knowledge.ExternalEmbeddingDigestExpectedQwen3,
-	}, true
-}
-
-// loadKnowledgeCorpora loads the platform corpus + sidecar, optionally merging
-// the external corpus when enabled. External is ADDITIVE and must never take
-// down platform RAG: if it is enabled but fails to load (bad/missing file, digest
-// drift), we log and fall back to the platform-only load — the exact pre-Phase-2
-// behavior. When external is off, this is byte-identical to the single-source
-// LoadPinnedCorpusWithEmbeddingsDigest.
-func loadKnowledgeCorpora(getenv getenvFunc, mode, corpusPath, embeddingsPath, expectedDigest string) (knowledge.Corpus, knowledge.EmbeddingSidecar, error) {
-	extSrc, ok := externalKnowledgeSource(getenv, mode)
-	if !ok {
-		return knowledge.LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest)
-	}
-	platform := knowledge.PinnedCorpusSource{
-		CorpusPath:              corpusPath,
-		EmbeddingsPath:          embeddingsPath,
-		ExpectedCorpusDigest:    knowledge.CorpusDigestExpected,
-		ExpectedEmbeddingDigest: expectedDigest,
-	}
-	merged, sidecar, err := knowledge.LoadPinnedCorporaWithEmbeddings([]knowledge.PinnedCorpusSource{platform, extSrc})
-	if err != nil {
-		log.Printf("rag: external knowledge corpus %s failed to load (%v); serving platform-only", extSrc.CorpusPath, err)
-		return knowledge.LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest)
-	}
-	log.Printf("rag: merged external knowledge corpus %s into the index (%d total chunks)", extSrc.CorpusPath, len(merged.Chunks))
-	return merged, sidecar, nil
-}
-
-// hybridTimeoutFromEnv reads RAG_HYBRID_TIMEOUT_MS and returns a duration.
-// Zero return means "use retriever default" — knowledge.NewRetriever
-// substitutes 5s when HybridContextTimeout <= 0, preserving baseline
-// behavior when the env var is unset or invalid. Set this env var in
-// production to override; the value must be a positive integer in
-// milliseconds (e.g. "8000" for 8s).
-func hybridTimeoutFromEnv(getenv getenvFunc) time.Duration {
-	raw := strings.TrimSpace(getenv("RAG_HYBRID_TIMEOUT_MS"))
-	if raw == "" {
-		return 0
-	}
-	ms, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || ms <= 0 {
-		log.Printf("rag.hybrid: invalid RAG_HYBRID_TIMEOUT_MS=%q, falling back to retriever default", raw)
-		return 0
-	}
-	return time.Duration(ms) * time.Millisecond
-}
-
-func embeddingClientFromEnv(getenv getenvFunc) (*embedding.Client, error) {
-	model := strings.TrimSpace(getenv("MODELVERSE_EMBED_MODEL"))
-	if model == "" {
-		model = "text-embedding-3-large"
-	}
-	return embeddingClientFromEnvWithModel(getenv, model)
-}
-
-// embeddingClientFromEnvWithModel builds an embedding client with an
-// explicit model override. Used by knowledgeRetrieverFromEnv to honor the
-// mode-driven model selection (qwen3-embedding-8b for qwen3_full,
-// text-embedding-3-large for hybrid_cosine / hybrid_rerank) without
-// requiring callers to also set MODELVERSE_EMBED_MODEL.
-func embeddingClientFromEnvWithModel(getenv getenvFunc, model string) (*embedding.Client, error) {
-	apiKey := modelverseAPIKeyFromEnv(getenv)
-	if apiKey == "" {
-		return nil, fmt.Errorf("MODELVERSE_API_KEY or LLM_API_KEY is required for hybrid retrieval")
-	}
-	baseURL := strings.TrimSpace(getenv("MODELVERSE_BASE_URL"))
-	if baseURL == "" {
-		baseURL = "https://api.modelverse.cn/v1"
-	}
-	if strings.TrimSpace(model) == "" {
-		model = "text-embedding-3-large"
-	}
-	return embedding.NewClient(embedding.ClientOptions{
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-		Model:   model,
-	})
-}
-
-// rerankerClientAdapter wraps reranker.Client (which returns
-// []reranker.Result) into knowledge.RerankerClient (which returns
-// []knowledge.RerankerResult). The knowledge package stays free of the
-// reranker package import — same pattern as VectorEmbedder.
-type rerankerClientAdapter struct {
-	client reranker.Client
-}
-
-func (a rerankerClientAdapter) Rerank(ctx context.Context, query string, docs []string, topN int) ([]knowledge.RerankerResult, error) {
-	results, err := a.client.Rerank(ctx, query, docs, topN)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]knowledge.RerankerResult, 0, len(results))
-	for _, r := range results {
-		out = append(out, knowledge.RerankerResult{Index: r.Index, Score: r.Score})
-	}
-	return out, nil
-}
-
-func rerankerClientFromEnv(getenv getenvFunc, model string) (knowledge.RerankerClient, error) {
-	apiKey := modelverseAPIKeyFromEnv(getenv)
-	if apiKey == "" {
-		return nil, fmt.Errorf("MODELVERSE_API_KEY or LLM_API_KEY is required for reranker")
-	}
-	baseURL := strings.TrimSpace(getenv("MODELVERSE_BASE_URL"))
-	if baseURL == "" {
-		baseURL = "https://api.modelverse.cn/v1"
-	}
-	if strings.TrimSpace(model) == "" {
-		model = "qwen3-reranker-8b"
-	}
-	client, err := reranker.NewModelverseClient(reranker.ClientOptions{
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-		Model:   model,
-		Timeout: rerankerTimeoutFromEnv(getenv),
+	retriever, err := knowledge.NewMCPRetriever(knowledge.MCPRetrieverOptions{
+		Endpoint:    endpoint,
+		BearerToken: strings.TrimSpace(getenv("COMPSHARE_KB_MCP_BEARER_TOKEN")),
+		Timeout:     knowledgeMCPTimeoutFromEnv(getenv),
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, fmt.Errorf("knowledge MCP client: %w", err)
 	}
-	return rerankerClientAdapter{client: client}, nil
-}
-
-func modelverseAPIKeyFromEnv(getenv getenvFunc) string {
-	if apiKey := strings.TrimSpace(getenv("MODELVERSE_API_KEY")); apiKey != "" {
-		return apiKey
-	}
-	return strings.TrimSpace(getenv("LLM_API_KEY"))
-}
-
-// rerankerTimeoutFromEnv parses RAG_RERANKER_TIMEOUT_MS. Zero return means
-// "use reranker package default" (5s, matches B.0 probe sizing).
-func rerankerTimeoutFromEnv(getenv getenvFunc) time.Duration {
-	raw := strings.TrimSpace(getenv("RAG_RERANKER_TIMEOUT_MS"))
-	if raw == "" {
-		return 0
-	}
-	ms, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || ms <= 0 {
-		log.Printf("rag.reranker: invalid RAG_RERANKER_TIMEOUT_MS=%q, falling back to reranker default", raw)
-		return 0
-	}
-	return time.Duration(ms) * time.Millisecond
+	log.Printf("knowledge: using remote MCP endpoint %s", endpoint)
+	return retriever, true, nil
 }
 
 type cliTraceRecorder struct {

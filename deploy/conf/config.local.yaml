@@ -36,12 +36,11 @@ agent:
 
   llm:
     base_url: "https://api.modelverse.cn/v1"
-    # Answer model key (gpt-5.6-terra). Authorized ONLY for terra — NOT for qwen3
-    # embed/rerank — so it is a SEPARATE key from the retrieval key
-    # (agent.retrieval.api_key below). Inlined per deploy convention; like the
-    # platform key it is published in this repo's history, so rotate it with the
-    # standing key rotation. To run a pro/flash answerer instead, put a
-    # qwen3-capable key here and change model (then retrieval may inherit it).
+    # Answer model key (gpt-5.6-terra). Knowledge retrieval is owned by the
+    # separately deployed compshare-kb service, so this process never reuses the
+    # answer key for embedding or reranking. Inlined per deploy convention; like
+    # the platform key it is published in this repo's history, so rotate it with
+    # the standing key rotation.
     api_key: "HpiGXzD7p1cuChPiCe8e5841-048D-4e73-9675-E83dD0D1"
     # gpt-5.6-terra (ModelVerse GPT-5 Codex), default answerer since 2026-07-24:
     # on the reranked source-gap probes it reproduced in-corpus facts verbatim and
@@ -78,7 +77,6 @@ agent:
     guided_create: true
     # Agentic knowledge answering is a fixed runtime capability: retrieval is
     # chosen in-loop and every released knowledge answer uses the shared proof.
-    external_knowledge: true            # merge external tool/ops corpus (vLLM/CUDA/Linux/PyTorch)
     # Context-engineering optimizations.
     session_fact_context: true          # near-term fact cache injected into context
     react_result_projection: true       # compress large read tool results before re-feeding ReAct
@@ -147,10 +145,9 @@ agent:
     skill_executor: false
     skill_executor_diagnosis_pilots: []
 
-  # Knowledge retrieval / RAG. The default answer stack: curated retrieval,
-  # qwen3 RRF. corpus/embeddings/model/timeout fields
-  # are left empty = use the pinned built-in defaults; set them only to point
-  # at a non-default corpus or tune timeouts.
+  # Knowledge retrieval. Query evidence now comes from the separately deployed
+  # compshare-kb service; this agent image no longer carries corpus JSONL,
+  # embedding sidecars, or the ModelVerse key used to build that index.
   retrieval:
     knowledge_retrieval: curated        # curated | off
     # Production retrieval is served by the independently deployed KB.  When
@@ -158,23 +155,6 @@ agent:
     mcp_url: "http://compshare-kb.prj-ucompshare-prod.svc.c5.u4/mcp"
     # mcp_bearer_token: ""             # COMPSHARE_KB_MCP_BEARER_TOKEN (read token only)
     # mcp_timeout_ms: 12000             # COMPSHARE_KB_MCP_TIMEOUT_MS
-    mode: qwen3_rrf                     # qwen3_rrf | bm25_only | hybrid_cosine | hybrid_rerank | qwen3_full
-    # qwen3 embed + rerank key (authorized for qwen3-embedding-8b /
-    # qwen3-reranker-8b). SEPARATE from the terra answer key in agent.llm above.
-    # Empty = inherit agent.llm.api_key (single-key mode, for a qwen3-capable
-    # answer key). This platform key is already in the repo's git history; rotate
-    # it with the standing key rotation. To move it out of the repo entirely,
-    # replace with ${MODELVERSE_API_KEY} and set that env var.
-    api_key: "Q1J7v8S9PewEW16c2e84171e-cBb5-4763-929D-6c03Fe44"
-    # corpus_path: ""                  # COMPSHARE_KNOWLEDGE_CORPUS (default deploy/kb/stage2b_w0.jsonl)
-    # embeddings_path: ""              # COMPSHARE_KNOWLEDGE_EMBEDDINGS (default: computed from digest)
-    # external_corpus_path: ""        # COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS (default deploy/kb/external_w0.jsonl)
-    # external_embeddings_path: ""    # COMPSHARE_EXTERNAL_KNOWLEDGE_EMBEDDINGS
-    # embed_model: ""                 # MODELVERSE_EMBED_MODEL (default by mode)
-    # reranker_model: ""              # MODELVERSE_RERANKER_MODEL (default qwen3-reranker-8b)
-    # modelverse_base_url: ""         # MODELVERSE_BASE_URL (default https://api.modelverse.cn/v1)
-    # hybrid_timeout_ms: 0            # RAG_HYBRID_TIMEOUT_MS (0 = retriever default 5s)
-    # reranker_timeout_ms: 0          # RAG_RERANKER_TIMEOUT_MS (0 = reranker default 5s)
 
   # Per-turn trace/observability. sink=mysql writes one agent_traces row per
   # turn to the PostgreSQL database. PREREQUISITE: ops must run

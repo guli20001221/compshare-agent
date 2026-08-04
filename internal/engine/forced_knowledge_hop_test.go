@@ -168,7 +168,7 @@ func TestForcedKnowledgeHopKeepsTheTranscriptWellFormed(t *testing.T) {
 // result is ignorable — and it must stay valid JSON while doing so.
 func TestForcedKnowledgeHopObservationDeclaresItsProvenance(t *testing.T) {
 	annotated := annotateForcedKnowledgeHop(
-		searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: "关机后还收什么"}, true, ""))
+		searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: "关机后还收什么"}, "", nil))
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal([]byte(annotated), &payload),
@@ -209,7 +209,7 @@ func TestEmptyForcedHopSaysItFailedRatherThanInvitingARetry(t *testing.T) {
 
 	t.Run("empty evidence reports the search failed", func(t *testing.T) {
 		note := noteFor(t, searchKnowledgeResultJSON(
-			knowledge.EvidenceLedger{Query: "扩容之后要重启吗"}, true, ""))
+			knowledge.EvidenceLedger{Query: "扩容之后要重启吗"}, "", nil))
 
 		assert.Contains(t, note, "结果为空", "the agent must be told the search came back with nothing")
 		assert.Contains(t, note, "再检索一次", "and told to search again")
@@ -224,7 +224,7 @@ func TestEmptyForcedHopSaysItFailedRatherThanInvitingARetry(t *testing.T) {
 			Query: "扩容之后要重启吗",
 			Items: []knowledge.EvidenceItem{{ChunkID: "chunk-1", Title: "扩容", Summary: "evidence"}},
 		}
-		note := noteFor(t, searchKnowledgeResultJSON(ledger, false, ""))
+		note := noteFor(t, searchKnowledgeResultJSON(ledger, "", nil))
 
 		assert.Equal(t, forcedKnowledgeHopNote, note)
 		assert.NotContains(t, note, "结果为空",

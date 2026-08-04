@@ -150,8 +150,8 @@ func TestLiveToolProbe(t *testing.T) {
 	}
 	t.Logf("arm: forced_knowledge_hop=%v (flag=%q, config=%v)",
 		engine.ForcedKnowledgeHopEnabled(), *liveToolForcedHop, cfg.Agent.Features.ForcedKnowledgeHop != nil && *cfg.Agent.Features.ForcedKnowledgeHop)
-	t.Logf("wiring: model=%s mutating=%t rag_mode=%s sts=%t region=%s forced_hop=%t",
-		cfg.Agent.LLM.Model, mutating, getenv("RAG_RETRIEVAL_MODE"), cfg.Agent.STS.ServiceAK != "", cfg.Agent.Region,
+	t.Logf("wiring: model=%s mutating=%t knowledge_mcp=%s sts=%t region=%s forced_hop=%t",
+		cfg.Agent.LLM.Model, mutating, getenv("COMPSHARE_KB_MCP_URL"), cfg.Agent.STS.ServiceAK != "", cfg.Agent.Region,
 		engine.ForcedKnowledgeHopEnabled())
 
 	cases := loadLiveToolQueries(t, *liveToolQueries)

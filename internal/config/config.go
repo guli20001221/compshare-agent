@@ -295,12 +295,6 @@ func Load(path string) (*Config, error) {
 	if err := resolveOptionalCredential(&cfg.Agent.SSHOps.APIKey, "agent.ssh_ops.api_key"); err != nil {
 		return nil, err
 	}
-	// Optional separate key for the qwen3 embed/rerank stack. Empty = inherit
-	// agent.llm.api_key (single-key mode). Set when the answer model and the
-	// retrieval stack are authorized under different ModelVerse keys.
-	if err := resolveOptionalCredential(&cfg.Agent.Retrieval.APIKey, "agent.retrieval.api_key"); err != nil {
-		return nil, err
-	}
 	if err := resolveOptionalPlaceholder(&cfg.Agent.ProjectId, "agent.project_id"); err != nil {
 		return nil, err
 	}

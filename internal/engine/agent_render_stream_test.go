@@ -62,4 +62,3 @@ func (m *streamingSeqMockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm
 	}
 	return &resp, nil
 }
-

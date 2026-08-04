@@ -20,7 +20,7 @@ import (
 //
 //   - nil            → field omitted in YAML; fall back to the env var, then to
 //     the built-in default for that flag (NOT all default off — e.g.
-//     knowledge verification / external_knowledge default ON).
+//     knowledge verification default ON).
 //   - &true / &false → explicit value; it WINS over any env var.
 //
 // SkillExecutorDiagnosisPilots is a list (joined to the CSV the env parser
@@ -30,7 +30,6 @@ type FeaturesConfig struct {
 	DurableTurns           *bool `yaml:"durable_turns"`            // COMPSHARE_DURABLE_TURNS (server-only, default off)
 	ConfirmForm            *bool `yaml:"confirm_form"`             // COMPSHARE_CONFIRM_FORM (server-only, default off)
 	GuidedCreate           *bool `yaml:"guided_create"`            // COMPSHARE_GUIDED_CREATE (server-only, default off)
-	ExternalKnowledge      *bool `yaml:"external_knowledge"`       // COMPSHARE_EXTERNAL_KNOWLEDGE (default ON)
 	DomainMatchGuard       *bool `yaml:"domain_match_guard"`       // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
 	ForcedKnowledgeHop     *bool `yaml:"forced_knowledge_hop"`     // COMPSHARE_FORCED_KNOWLEDGE_HOP (off everywhere since 2026-08-01; key omitted from the deploy config so the env var can still enable it)
 	CanonicalTranscript    *bool `yaml:"canonical_transcript"`     // COMPSHARE_CANONICAL_TRANSCRIPT (default off everywhere)
@@ -46,29 +45,13 @@ type FeaturesConfig struct {
 	SkillExecutorDiagnosisPilots []string `yaml:"skill_executor_diagnosis_pilots"` // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (inert)
 }
 
-// RetrievalConfig holds the RAG / knowledge retrieval knobs.
+// RetrievalConfig holds the remote knowledge retrieval knobs.
 // Empty string / zero int means "omitted — fall through to env, then default".
 type RetrievalConfig struct {
-	KnowledgeRetrieval     string `yaml:"knowledge_retrieval"`      // USE_KNOWLEDGE_RETRIEVAL: curated|off
-	MCPURL                 string `yaml:"mcp_url"`                  // COMPSHARE_KB_MCP_URL (remote compshare-kb /mcp)
-	MCPBearerToken         string `yaml:"mcp_bearer_token"`         // COMPSHARE_KB_MCP_BEARER_TOKEN (read-only token; optional in trusted cluster)
-	MCPTimeoutMS           int    `yaml:"mcp_timeout_ms"`           // COMPSHARE_KB_MCP_TIMEOUT_MS
-	Mode                   string `yaml:"mode"`                     // RAG_RETRIEVAL_MODE: qwen3_rrf|bm25_only|hybrid_cosine|hybrid_rerank|qwen3_full
-	CorpusPath             string `yaml:"corpus_path"`              // COMPSHARE_KNOWLEDGE_CORPUS
-	EmbeddingsPath         string `yaml:"embeddings_path"`          // COMPSHARE_KNOWLEDGE_EMBEDDINGS
-	ExternalCorpusPath     string `yaml:"external_corpus_path"`     // COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS
-	ExternalEmbeddingsPath string `yaml:"external_embeddings_path"` // COMPSHARE_EXTERNAL_KNOWLEDGE_EMBEDDINGS
-	EmbedModel             string `yaml:"embed_model"`              // MODELVERSE_EMBED_MODEL
-	RerankerModel          string `yaml:"reranker_model"`           // MODELVERSE_RERANKER_MODEL
-	ModelverseBaseURL      string `yaml:"modelverse_base_url"`      // MODELVERSE_BASE_URL
-	// APIKey is the key for the embed + rerank calls (MODELVERSE_API_KEY),
-	// SEPARATE from agent.llm.api_key: the answer model and the qwen3 retrieval
-	// stack can be authorized under different ModelVerse keys (e.g. a gpt-5.6-terra
-	// answer key is NOT authorized for qwen3-embedding-8b / qwen3-reranker-8b).
-	// Empty = inherit agent.llm.api_key (single-key mode).
-	APIKey            string `yaml:"api_key"`             // MODELVERSE_API_KEY (embed/rerank; empty = inherit agent.llm.api_key)
-	HybridTimeoutMS   int    `yaml:"hybrid_timeout_ms"`   // RAG_HYBRID_TIMEOUT_MS
-	RerankerTimeoutMS int    `yaml:"reranker_timeout_ms"` // RAG_RERANKER_TIMEOUT_MS
+	KnowledgeRetrieval string `yaml:"knowledge_retrieval"` // USE_KNOWLEDGE_RETRIEVAL: curated|off
+	MCPURL             string `yaml:"mcp_url"`             // COMPSHARE_KB_MCP_URL (complete remote compshare-kb /mcp URL)
+	MCPBearerToken     string `yaml:"mcp_bearer_token"`    // COMPSHARE_KB_MCP_BEARER_TOKEN (read-only token; optional in trusted cluster)
+	MCPTimeoutMS       int    `yaml:"mcp_timeout_ms"`      // COMPSHARE_KB_MCP_TIMEOUT_MS
 }
 
 // TraceConfig holds the per-turn JSONL/DB trace sink settings.
@@ -113,7 +96,6 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_FORCED_KNOWLEDGE_HOP", f.ForcedKnowledgeHop, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CANONICAL_TRANSCRIPT", f.CanonicalTranscript, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE", f.ExternalKnowledge, "1", "0")
 	if len(f.SkillExecutorDiagnosisPilots) > 0 {
 		overrides["USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"] = strings.Join(f.SkillExecutorDiagnosisPilots, ",")
 	}
@@ -123,21 +105,6 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putStrEnv(overrides, "COMPSHARE_KB_MCP_URL", r.MCPURL)
 	putStrEnv(overrides, "COMPSHARE_KB_MCP_BEARER_TOKEN", r.MCPBearerToken)
 	putIntEnv(overrides, "COMPSHARE_KB_MCP_TIMEOUT_MS", r.MCPTimeoutMS)
-	putStrEnv(overrides, "RAG_RETRIEVAL_MODE", r.Mode)
-	putStrEnv(overrides, "COMPSHARE_KNOWLEDGE_CORPUS", r.CorpusPath)
-	putStrEnv(overrides, "COMPSHARE_KNOWLEDGE_EMBEDDINGS", r.EmbeddingsPath)
-	putStrEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE_CORPUS", r.ExternalCorpusPath)
-	putStrEnv(overrides, "COMPSHARE_EXTERNAL_KNOWLEDGE_EMBEDDINGS", r.ExternalEmbeddingsPath)
-	putStrEnv(overrides, "MODELVERSE_EMBED_MODEL", r.EmbedModel)
-	putStrEnv(overrides, "MODELVERSE_RERANKER_MODEL", r.RerankerModel)
-	putStrEnv(overrides, "MODELVERSE_BASE_URL", r.ModelverseBaseURL)
-	// Separate embed/rerank key. modelverseAPIKeyFromEnv reads MODELVERSE_API_KEY
-	// FIRST, then LLM_API_KEY, so a value here routes retrieval to its own key
-	// while the answer model keeps agent.llm.api_key; empty leaves no override, so
-	// retrieval falls through to the LLM key (single-key mode) — a no-op when unset.
-	putStrEnv(overrides, "MODELVERSE_API_KEY", r.APIKey)
-	putIntEnv(overrides, "RAG_HYBRID_TIMEOUT_MS", r.HybridTimeoutMS)
-	putIntEnv(overrides, "RAG_RERANKER_TIMEOUT_MS", r.RerankerTimeoutMS)
 
 	t := c.Agent.Trace
 	putBoolEnv(overrides, "COMPSHARE_TRACE_ENABLED", t.Enabled, "1", "0")
@@ -149,10 +116,8 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	// straight off cfg.Agent.SSHOps by the cmd wiring, not through getenv.
 	putBoolEnv(overrides, "COMPSHARE_SSH_OPS", c.Agent.SSHOps.Enabled, "1", "0")
 
-	// The RAG embedding/reranker clients read the API key through getenv
-	// (MODELVERSE_API_KEY, falling back to LLM_API_KEY). Expose the resolved
-	// LLM key so a fully-inlined config.yaml (no env) still powers hybrid /
-	// qwen3 retrieval. MYSQL_DSN stays handled by serverTraceGetenv.
+	// Expose the resolved answer-model key to legacy getenv-based callers.
+	// MYSQL_DSN stays handled by serverTraceGetenv.
 	putStrEnv(overrides, "LLM_API_KEY", c.Agent.LLM.APIKey)
 
 	if len(overrides) == 0 {

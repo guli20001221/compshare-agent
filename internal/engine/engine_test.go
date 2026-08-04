@@ -134,7 +134,7 @@ type knowledgeRetrievalCall struct {
 	productArea string
 }
 
-func (r *scriptedKnowledgeRetriever) Retrieve(question, productArea string) knowledge.RetrievalResult {
+func (r *scriptedKnowledgeRetriever) RetrieveContext(_ context.Context, question, productArea string) knowledge.RetrievalResult {
 	r.calls = append(r.calls, knowledgeRetrievalCall{
 		question:    question,
 		productArea: productArea,
