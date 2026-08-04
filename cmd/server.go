@@ -65,7 +65,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// fallback for any field omitted in YAML. Every flag the server reads below
 	// goes through it so a single config.yaml can configure the whole server.
 	overlayGetenv := cfg.RuntimeGetenv(os.Getenv)
-	serverGetenv := serverTraceGetenv(overlayGetenv, cfg.Agent.MySQL.DSN)
+	serverGetenv, err := serverTraceGetenv(overlayGetenv, cfg.Agent.MySQL)
+	if err != nil {
+		return fmt.Errorf("resolve trace database dsn: %w", err)
+	}
 	if traceMySQLSinkEnabled(serverGetenv) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := store.VerifyTraceSchema(ctx, db); err != nil {
@@ -73,12 +76,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("%w; run deploy/migrations/0002_create_agent_traces.sql before enabling PostgreSQL trace persistence", err)
 		}
 		cancel()
+		log.Printf("startup: trace database schema verified")
 	}
 	traceWriter, traceEnabled, traceErr := traceWriterFromEnv(serverGetenv)
 	if traceErr != nil {
 		return fmt.Errorf("trace writer setup: %w", traceErr)
 	}
 	if traceEnabled {
+		log.Printf("startup: trace writer initialized")
 		if err := cleanupTraceWriter(traceWriter, time.Now()); err != nil {
 			log.Printf("warning: trace cleanup failed: %v", err)
 		}
@@ -241,13 +246,17 @@ func closeServerTraceWriter(writer observability.Writer) {
 	}
 }
 
-func serverTraceGetenv(getenv getenvFunc, mysqlDSN string) getenvFunc {
+func serverTraceGetenv(getenv getenvFunc, mysqlConfig config.MySQLConfig) (getenvFunc, error) {
+	mysqlDSN, err := store.ResolvePostgresDSN(mysqlConfig)
+	if err != nil {
+		return nil, err
+	}
 	return func(key string) string {
 		if key == "MYSQL_DSN" {
 			return mysqlDSN
 		}
 		return getenv(key)
-	}
+	}, nil
 }
 
 func validateServerConfig(cfg *config.Config) error {

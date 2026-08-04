@@ -22,10 +22,7 @@ import (
 // server, and verifies the schema. It closes the DB and returns an error on any
 // failure. (Name retained for call-site stability; backend is PostgreSQL.)
 func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
-	if cfg.DSN == "" {
-		return nil, fmt.Errorf("database dsn is required")
-	}
-	dsn, err := dsnWithHostOverride(cfg.DSN, cfg.HostOverride)
+	dsn, err := ResolvePostgresDSN(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +46,17 @@ func OpenMySQL(cfg config.MySQLConfig) (*sql.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// ResolvePostgresDSN returns the exact DSN every PostgreSQL-backed component
+// must use. Keeping host_override resolution in one exported function prevents
+// secondary connections (for example the trace writer) from accidentally
+// falling back to the unreachable host embedded in the base DSN.
+func ResolvePostgresDSN(cfg config.MySQLConfig) (string, error) {
+	if cfg.DSN == "" {
+		return "", fmt.Errorf("database dsn is required")
+	}
+	return dsnWithHostOverride(cfg.DSN, cfg.HostOverride)
 }
 
 // dsnWithHostOverride preserves URL credentials, database, query parameters,
