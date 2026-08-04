@@ -71,12 +71,27 @@ func TestIsWeakEvidenceByHybridMode(t *testing.T) {
 		{"qwen3_rrf fallback even 0.001 not weak", "qwen3_rrf", 0.001, false, false},
 		{"qwen3_rrf fallback high fusion not weak", "qwen3_rrf", 0.2, false, false},
 
-		// Empty / unknown HybridMode defaults to BM25 — protects existing
-		// engine_test.go mocks that don't set HybridMode explicitly.
+		// Empty HybridMode still defaults to BM25 — protects existing
+		// engine_test.go mocks that don't set HybridMode explicitly. This is the
+		// fixture artifact, and knowledge.ScoreScaleFor keeps it classified.
 		{"empty mode defaults to BM25 80", "", 80.0, false, false},
 		{"empty mode defaults to BM25 54.9", "", 54.9, false, true},
-		{"unknown mode defaults to BM25 80", "unknown_future_mode", 80.0, false, false},
-		{"unknown mode defaults to BM25 30", "unknown_future_mode", 30.0, false, true},
+
+		// CHANGED 2026-08-04: an UNRECOGNIZED mode is no longer judged as BM25.
+		// It used to be, on the same "BM25-safe default" reasoning the MCP adapter
+		// used — and it is wrong for the same reason: the BM25 floor is 55.0 while
+		// a semantic scale tops out at 1.0, so guessing BM25 for a mode whose
+		// scale nobody classified rejects every hit on a [0,1] scale and empties
+		// the ledger. There is no safe guess; the only safe move is not to guess.
+		//
+		// The old rows asserted 30.0 was weak. Nothing in-tree produces an
+		// unrecognized mode: the local Retriever emits only classified values, and
+		// the MCP adapter normalizes anything else to unknown_remote before the
+		// engine sees it (normalizeRemoteScoreScale). So this widens a defence
+		// rather than removing one — a future caller that skips the adapter now
+		// degrades to "decline to judge" instead of to a scale it never verified.
+		{"unrecognized mode is not judged, high score", "unknown_future_mode", 80.0, false, false},
+		{"unrecognized mode is not judged, low score", "unknown_future_mode", 30.0, false, false},
 	}
 
 	for _, tc := range cases {

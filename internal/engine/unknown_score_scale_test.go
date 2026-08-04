@@ -46,9 +46,9 @@ func TestUnknownRemoteScaleIsNotFlooredAsWeakEvidence(t *testing.T) {
 		"an unidentifiable score scale must not be judged against a guessed floor")
 }
 
-// TestKnownScalesStillFloor is the control. The fix must exempt exactly one
-// value; if it disabled the floor generally, the whole weak-evidence guard would
-// be gone and every assertion above would still pass.
+// TestKnownScalesStillFloor is the control. The fix must exempt exactly the
+// unjudgeable cases; if it disabled the floor generally, the whole weak-evidence
+// guard would be gone and every assertion above would still pass.
 func TestKnownScalesStillFloor(t *testing.T) {
 	assert.True(t, isWeakEvidence(remoteHits(0.2), knowledge.RetrievalModeQwen3Full, true),
 		"a semantic score below 0.5 is still weak evidence")
@@ -60,42 +60,106 @@ func TestKnownScalesStillFloor(t *testing.T) {
 		"a strong semantic score is not weak evidence")
 }
 
-// TestUnknownRemoteScaleReportsNoFloorValue pins the trace side. Recording 55.0
-// for a floor that never ran would send an operator looking at scores instead of
-// at the remote's metadata.
-func TestUnknownRemoteScaleReportsNoFloorValue(t *testing.T) {
-	assert.Zero(t, floorValueForTrace(knowledge.RetrievalModeUnknownRemote),
-		"no floor ran, so RetrievalTrace.FloorValue must be omitted")
-	assert.Equal(t, weakEvidenceBM25Threshold, floorValueForTrace(knowledge.RetrievalModeBM25Only),
-		"control: a known mode still reports the floor it was judged against")
+// TestFloorValueReportsOnlyAFloorThatActuallyRan pins the trace semantic that
+// FloorValue claims. Reporting a threshold nothing was compared against sends an
+// operator to look at scores when the fault is elsewhere.
+//
+// The qwen3_rrf case is the one that mattered and the one an earlier version of
+// this fix got wrong: the mode KEEPS its label through a reranker fallback while
+// its scores revert to the RRF fusion scale, so the verdict skipped the 0.5
+// floor while the trace still printed 0.5 beside a 0.031 score.
+func TestFloorValueReportsOnlyAFloorThatActuallyRan(t *testing.T) {
+	rrfScores := remoteHits(0.031, 0.028)
+
+	t.Run("qwen3_rrf without reranker scores reports no floor", func(t *testing.T) {
+		require.False(t, isWeakEvidence(rrfScores, knowledge.RetrievalModeQwen3RRF, false),
+			"premise: the verdict already declines to judge RRF fusion scores")
+
+		_, judged := appliedFloor(rrfScores, knowledge.RetrievalModeQwen3RRF, false)
+		assert.False(t, judged, "no comparison happened, so FloorValue must be omitted")
+	})
+
+	t.Run("qwen3_rrf WITH reranker scores reports the semantic floor", func(t *testing.T) {
+		floor, judged := appliedFloor(remoteHits(0.7), knowledge.RetrievalModeQwen3RRF, true)
+		require.True(t, judged, "control: the reranker scored, so the floor does run")
+		assert.Equal(t, weakEvidenceSemanticThreshold, floor)
+	})
+
+	t.Run("an unknown remote scale reports no floor", func(t *testing.T) {
+		_, judged := appliedFloor(remoteHits(0.91), knowledge.RetrievalModeUnknownRemote, true)
+		assert.False(t, judged)
+	})
+
+	t.Run("no hits means no comparison", func(t *testing.T) {
+		_, judged := appliedFloor(nil, knowledge.RetrievalModeQwen3Full, true)
+		assert.False(t, judged, "an empty or unavailable retrieval compared nothing")
+	})
+
+	t.Run("a judged query still reports its floor", func(t *testing.T) {
+		floor, judged := appliedFloor(remoteHits(3.0), knowledge.RetrievalModeBM25Only, false)
+		require.True(t, judged)
+		assert.Equal(t, weakEvidenceBM25Threshold, floor)
+	})
 }
 
-// TestTheFloorExemptionDoesNotRideOnTheDisplayValue keeps the two mechanisms
+// TestVerdictAndTraceShareOneProducer is the structural assertion behind the fix
+// above. Syncing conditions across two functions would have fixed the qwen3_rrf
+// instance and left the shape that produced it, so what is pinned here is not a
+// case list but the invariant: whenever isWeakEvidence declines to judge, the
+// trace reports no floor, and whenever it judges, the trace reports the floor it
+// used.
+func TestVerdictAndTraceShareOneProducer(t *testing.T) {
+	scales := append(knowledge.AllRetrievalModes(), knowledge.RetrievalModeUnknownRemote, "", "hybrid_v2")
+	scores := [][]knowledge.RetrievalHit{nil, remoteHits(0.031), remoteHits(0.7), remoteHits(90.0)}
+
+	for _, mode := range scales {
+		for _, reranked := range []bool{true, false} {
+			for _, hits := range scores {
+				floor, judged := appliedFloor(hits, mode, reranked)
+				weak := isWeakEvidence(hits, mode, reranked)
+				if !judged {
+					assert.Zero(t, floor, "mode=%q reranked=%v: no floor ran, so none may be reported", mode, reranked)
+					assert.False(t, weak, "mode=%q reranked=%v: nothing was compared, so nothing is weak", mode, reranked)
+					continue
+				}
+				assert.NotZero(t, floor, "mode=%q reranked=%v: a floor ran, so it must be reportable", mode, reranked)
+				assert.Equal(t, hits[0].Score < floor, weak,
+					"mode=%q reranked=%v: the verdict must be exactly the reported floor applied to the top hit", mode, reranked)
+			}
+		}
+	}
+}
+
+// TestTheFloorExemptionDoesNotRideOnTheDisplayValue keeps the mechanisms
 // separate. An earlier version of this fix expressed the exemption by returning
 // 0 from weakEvidenceThresholdFor, which disabled the floor as a SIDE EFFECT of
-// a trace display value: `score < 0` is false for any positive score. The two
-// changes then covered for each other, and a mutation deleting the real guard
-// survived the whole suite.
-//
-// weakEvidenceThresholdFor must therefore keep reporting a real threshold for
-// the unknown scale — the point is that isWeakEvidence never reaches it.
+// a display value: `score < 0` is false for any positive score. The two changes
+// then covered for each other, and a mutation deleting the real guard survived
+// the whole suite.
 func TestTheFloorExemptionDoesNotRideOnTheDisplayValue(t *testing.T) {
 	assert.NotZero(t, weakEvidenceThresholdFor(knowledge.RetrievalModeUnknownRemote),
-		"the scale table must not be the thing that disables the floor; the guard in "+
-			"isWeakEvidence is, and it has to be independently killable")
+		"the scale table must not be the thing that disables the floor; appliedFloor is, "+
+			"and it has to be independently killable")
 }
 
-// TestUnknownRemoteScaleIsNotRankingAmbiguous covers the telemetry twin. The
-// BM25 spread is wide relative to a [0,1] scale, so guessing would mark nearly
-// every remote turn a ranking-error candidate.
-func TestUnknownRemoteScaleIsNotRankingAmbiguous(t *testing.T) {
-	hits := remoteHits(0.91, 0.88)
+// TestEveryShippedModeHasACalibratedFloor is the drift guard, and it enumerates
+// from the source rather than restating a list — the previous version of this
+// test wrote the same six modes down a second time, which cannot catch drift
+// because both copies are edited by whoever is causing it.
+//
+// A mode that ships without a score-scale classification lands in
+// ScoreScaleUnknown, so both the adapter gate and the floor silently stop
+// honoring it. That is safe-by-construction but not intended, so it fails here.
+func TestEveryShippedModeHasACalibratedFloor(t *testing.T) {
+	for _, mode := range knowledge.AllRetrievalModes() {
+		assert.NotEqual(t, knowledge.ScoreScaleUnknown, knowledge.ScoreScaleFor(mode),
+			"%q ships but has no score scale, so it would be passed through by the adapter "+
+				"and then never judged — classify it in knowledge.ScoreScaleFor", mode)
+		assert.True(t, knowledge.KnownRetrievalMode(mode),
+			"%q ships, so a remote may claim it", mode)
 
-	require.True(t, isRankingAmbiguous(hits, knowledge.RetrievalModeBM25Only),
-		"premise: on the BM25 spread this pair reads as tied — that is the old behavior")
-
-	assert.False(t, isRankingAmbiguous(hits, knowledge.RetrievalModeUnknownRemote),
-		"an unidentifiable scale must not feed the ranking-ambiguity metric")
-	assert.True(t, isRankingAmbiguous(remoteHits(0.91, 0.905), knowledge.RetrievalModeQwen3Full),
-		"control: a known scale still detects a tie")
+		floor, judged := appliedFloor(remoteHits(0.7), mode, true)
+		assert.True(t, judged, "%q ships and must be judgeable", mode)
+		assert.NotZero(t, floor, "%q ships and must have a floor", mode)
+	}
 }
