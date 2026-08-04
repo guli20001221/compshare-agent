@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -136,7 +137,7 @@ func TestValidateServerConfigAcceptsSTSDefaultRoleUrnWithoutTemplate(t *testing.
 }
 
 func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
-	getenv := serverTraceGetenv(func(key string) string {
+	getenv, err := serverTraceGetenv(func(key string) string {
 		switch key {
 		case "MYSQL_DSN":
 			return "env-dsn"
@@ -147,11 +148,27 @@ func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
 		default:
 			return ""
 		}
-	}, "configured-dsn")
+	}, config.MySQLConfig{DSN: "configured-dsn"})
+	require.NoError(t, err)
 
 	require.Equal(t, "configured-dsn", getenv("MYSQL_DSN"))
 	require.Equal(t, "1", getenv("COMPSHARE_TRACE_ENABLED"))
 	require.True(t, traceMySQLSinkEnabled(getenv))
+}
+
+func TestServerTraceGetenvAppliesProductionHostOverride(t *testing.T) {
+	getenv, err := serverTraceGetenv(func(string) string { return "" }, config.MySQLConfig{
+		DSN:          "postgresql://user:password@117.50.198.43:5432/postgres?sslmode=disable",
+		HostOverride: "2003:da8:2004:1000:0a3c:7623:2712:f9c0",
+	})
+	require.NoError(t, err)
+
+	parsed, err := url.Parse(getenv("MYSQL_DSN"))
+	require.NoError(t, err)
+	require.Equal(t, "2003:da8:2004:1000:0a3c:7623:2712:f9c0", parsed.Hostname())
+	require.Equal(t, "5432", parsed.Port())
+	require.Equal(t, "/postgres", parsed.Path)
+	require.Equal(t, "disable", parsed.Query().Get("sslmode"))
 }
 
 func TestServerDurableCoordinatorReceivesProductionTraceWriter(t *testing.T) {

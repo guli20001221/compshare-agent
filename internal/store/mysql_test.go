@@ -3,15 +3,17 @@ package store
 import (
 	"net/url"
 	"testing"
+
+	"github.com/compshare-agent/internal/config"
 )
 
-func TestDSNWithHostOverrideIPv6PreservesConnectionDetails(t *testing.T) {
-	got, err := dsnWithHostOverride(
-		"postgresql://user:password@old.example:5432/compshare?sslmode=disable",
-		"2003:da8:2004:1000:0a3c:7623:2712:f9c0",
-	)
+func TestResolvePostgresDSNIPv6PreservesConnectionDetails(t *testing.T) {
+	got, err := ResolvePostgresDSN(config.MySQLConfig{
+		DSN:          "postgresql://user:password@old.example:5432/compshare?sslmode=disable",
+		HostOverride: "2003:da8:2004:1000:0a3c:7623:2712:f9c0",
+	})
 	if err != nil {
-		t.Fatalf("dsnWithHostOverride returned error: %v", err)
+		t.Fatalf("ResolvePostgresDSN returned error: %v", err)
 	}
 
 	u, err := url.Parse(got)
@@ -29,11 +31,11 @@ func TestDSNWithHostOverrideIPv6PreservesConnectionDetails(t *testing.T) {
 	}
 }
 
-func TestDSNWithHostOverrideLeavesDSNUnchangedWhenUnset(t *testing.T) {
+func TestResolvePostgresDSNLeavesDSNUnchangedWhenUnset(t *testing.T) {
 	const dsn = "postgresql://user:password@old.example:5432/compshare?sslmode=disable"
-	got, err := dsnWithHostOverride(dsn, "")
+	got, err := ResolvePostgresDSN(config.MySQLConfig{DSN: dsn})
 	if err != nil {
-		t.Fatalf("dsnWithHostOverride returned error: %v", err)
+		t.Fatalf("ResolvePostgresDSN returned error: %v", err)
 	}
 	if got != dsn {
 		t.Fatalf("DSN changed without an override: %q", got)
