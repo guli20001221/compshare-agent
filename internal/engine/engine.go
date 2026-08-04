@@ -2146,11 +2146,6 @@ func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool 
 // fixture-pinned behavior.
 func weakEvidenceThresholdFor(hybridMode string) float64 {
 	switch hybridMode {
-	case knowledge.RetrievalModeUnknownRemote:
-		// No floor ran (see isWeakEvidence), so there is no floor value. Zero
-		// makes RetrievalTrace.FloorValue omitempty drop the field rather than
-		// record a threshold nothing was compared against.
-		return 0
 	case "hybrid_cosine", "hybrid_rerank", "qwen3_full", "qwen3_rrf":
 		// qwen3_rrf's final Score is qwen3-reranker-8b relevance score
 		// (same reranker as qwen3_full), so same [0,1] semantic threshold
@@ -2162,6 +2157,27 @@ func weakEvidenceThresholdFor(hybridMode string) float64 {
 		// "bm25_only", "bm25_fallback", "", or any unrecognized value.
 		return weakEvidenceBM25Threshold
 	}
+}
+
+// floorValueForTrace reports the floor a query was ACTUALLY judged against, for
+// RetrievalTrace.FloorValue. It is deliberately not weakEvidenceThresholdFor:
+// that function answers "which scale would this mode use", while the trace has
+// to answer "what did this query get compared to". Those diverge whenever
+// isWeakEvidence declines to judge, and the trace must not report a threshold
+// nothing was measured against — an operator reading floor_value=55 next to a
+// 0.91 top hit would go looking at scores instead of at the remote's metadata.
+//
+// Keeping this separate also keeps the exemption honest: if it were expressed by
+// returning 0 from weakEvidenceThresholdFor, the floor would be disabled as a
+// side effect of a display value, and restoring a diagnostic non-zero floor
+// value later would silently switch the floor back on.
+func floorValueForTrace(hybridMode string) float64 {
+	if hybridMode == knowledge.RetrievalModeUnknownRemote {
+		// No floor ran (isWeakEvidence returns early), so there is no value.
+		// Zero lets the omitempty tag drop the field entirely.
+		return 0
+	}
+	return weakEvidenceThresholdFor(hybridMode)
 }
 
 // rankingAmbiguousSpreadFor maps HybridMode to the spread threshold under which
@@ -2752,7 +2768,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		RerankerLatencyMS:      retrieved.RerankerLatencyMS,
 		RerankerFallbackReason: retrieved.RerankerFallbackReason,
 		FloorDroppedAll:        floorDroppedAll,
-		FloorValue:             weakEvidenceThresholdFor(retrieved.HybridMode),
+		FloorValue:             floorValueForTrace(retrieved.HybridMode),
 		Activities: []observability.RetrievalActivity{{
 			ID:              activityID,
 			Query:           query,

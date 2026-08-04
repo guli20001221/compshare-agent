@@ -64,10 +64,25 @@ func TestKnownScalesStillFloor(t *testing.T) {
 // for a floor that never ran would send an operator looking at scores instead of
 // at the remote's metadata.
 func TestUnknownRemoteScaleReportsNoFloorValue(t *testing.T) {
-	assert.Zero(t, weakEvidenceThresholdFor(knowledge.RetrievalModeUnknownRemote),
+	assert.Zero(t, floorValueForTrace(knowledge.RetrievalModeUnknownRemote),
 		"no floor ran, so RetrievalTrace.FloorValue must be omitted")
-	assert.Equal(t, weakEvidenceBM25Threshold, weakEvidenceThresholdFor(knowledge.RetrievalModeBM25Only),
-		"control: a known mode still reports its floor")
+	assert.Equal(t, weakEvidenceBM25Threshold, floorValueForTrace(knowledge.RetrievalModeBM25Only),
+		"control: a known mode still reports the floor it was judged against")
+}
+
+// TestTheFloorExemptionDoesNotRideOnTheDisplayValue keeps the two mechanisms
+// separate. An earlier version of this fix expressed the exemption by returning
+// 0 from weakEvidenceThresholdFor, which disabled the floor as a SIDE EFFECT of
+// a trace display value: `score < 0` is false for any positive score. The two
+// changes then covered for each other, and a mutation deleting the real guard
+// survived the whole suite.
+//
+// weakEvidenceThresholdFor must therefore keep reporting a real threshold for
+// the unknown scale — the point is that isWeakEvidence never reaches it.
+func TestTheFloorExemptionDoesNotRideOnTheDisplayValue(t *testing.T) {
+	assert.NotZero(t, weakEvidenceThresholdFor(knowledge.RetrievalModeUnknownRemote),
+		"the scale table must not be the thing that disables the floor; the guard in "+
+			"isWeakEvidence is, and it has to be independently killable")
 }
 
 // TestUnknownRemoteScaleIsNotRankingAmbiguous covers the telemetry twin. The
