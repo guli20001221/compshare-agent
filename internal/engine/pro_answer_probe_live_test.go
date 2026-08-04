@@ -90,27 +90,24 @@ func answerLLMConfig(cfg *config.Config) config.LLMConfig {
 	return ac
 }
 
-// retrievalKey returns the key for the qwen3 embed/rerank stack: the separate
-// agent.retrieval.api_key when set (the two-key production layout, where the
-// answer key may be a gpt-5.6-terra key NOT authorized for qwen3), else
-// agent.llm.api_key (single-key mode). Mirrors production's
-// modelverseAPIKeyFromEnv precedence (MODELVERSE_API_KEY before LLM_API_KEY).
+// retrievalKey is only for this offline local-retriever probe. Production uses
+// compshare-kb and never constructs an embedding or reranking client here.
 func retrievalKey(cfg *config.Config) string {
-	if k := strings.TrimSpace(cfg.Agent.Retrieval.APIKey); k != "" {
+	if k := strings.TrimSpace(os.Getenv("MODELVERSE_API_KEY")); k != "" {
 		return k
 	}
 	return cfg.Agent.LLM.APIKey
 }
 
 type proAnswer struct {
-	CaseID   string `json:"case_id"`
-	Category string `json:"category"`
-	Query    string `json:"query"`
+	CaseID    string `json:"case_id"`
+	Category  string `json:"category"`
+	Query     string `json:"query"`
 	AuditNote string `json:"audit_note"`
-	Searches int    `json:"searches"`
-	Queries  int    `json:"queries"`
-	Answer   string `json:"answer"`
-	Err      string `json:"err,omitempty"`
+	Searches  int    `json:"searches"`
+	Queries   int    `json:"queries"`
+	Answer    string `json:"answer"`
+	Err       string `json:"err,omitempty"`
 }
 
 func TestLiveProAnswersSourceGaps(t *testing.T) {

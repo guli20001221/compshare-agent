@@ -32,9 +32,8 @@ const (
 	rrfK             = 60
 )
 
-// Retrieval modes select which retrieval pipeline the Retriever runs. The
-// modes are env-driven via RAG_RETRIEVAL_MODE (parsed in cmd/trace.go);
-// unset env falls back to legacy RAG_HYBRID_ENABLED behavior.
+// Retrieval modes select which pipeline the offline in-process Retriever runs.
+// Production uses MCPRetriever; evaluations choose a mode through RetrieverOptions.
 //
 //	RetrievalModeBM25Only     — BM25 top-K, no embedding/reranker stage.
 //	RetrievalModeHybridCosine — BM25 top-20 → cosine top-K. (legacy hybrid_on)
@@ -415,6 +414,14 @@ func (r *Retriever) rerankerEnabled() bool {
 		return true
 	}
 	return false
+}
+
+// RetrieveContext keeps the in-process retriever usable by offline tests and
+// evaluation callers while satisfying the engine's cancellation-aware seam.
+// Its local work already propagates context to embedding and reranking calls
+// through the Retriever's bounded internal contexts.
+func (r *Retriever) RetrieveContext(_ context.Context, question, productArea string) RetrievalResult {
+	return r.Retrieve(question, productArea)
 }
 
 func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {

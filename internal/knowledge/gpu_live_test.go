@@ -62,4 +62,3 @@ func TestParseAvailableGPUs_ZoneFilter(t *testing.T) {
 	assert.Equal(t, map[string]bool{"4090": true, "A100": true}, wlcb, "only cn-wlcb-01 cards; cn-sh2-02-only 2080Ti dropped")
 	assert.True(t, names(ParseAvailableGPUs(result, ""))["2080Ti"], "empty zone keeps all zones")
 }
-

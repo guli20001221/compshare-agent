@@ -1,7 +1,11 @@
 # Knowledge Base (Stage 2B W0+)
 
-This directory holds the deployed knowledge corpus + retrieval embedding
-sidecars for the CompShare console agent's RAG path.
+This directory holds offline corpus and embedding fixtures for retrieval
+evaluations. Production no longer reads or packages these files; corpus
+composition, indexing and release publication now belong to `compshare-kb`.
+
+> The mode and environment-variable notes below document the retired local
+> runtime and remain only for reproducing historical evaluations.
 
 ## Files
 

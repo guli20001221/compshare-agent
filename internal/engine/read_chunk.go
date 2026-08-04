@@ -96,11 +96,9 @@ func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) s
 		droppedIDs = len(ids) - maxReadChunkIDsPerCall
 		ids = ids[:maxReadChunkIDsPerCall]
 	}
-	if reader, ok := e.knowledgeRetriever.(searchBoundChunkReader); ok {
-		return e.executeRemoteReadChunk(reader, ids, droppedIDs, onStep)
-	}
-	reader, ok := e.knowledgeRetriever.(chunkReader)
-	if !ok {
+	remoteReader, remote := e.knowledgeRetriever.(searchBoundChunkReader)
+	localReader, local := e.knowledgeRetriever.(chunkReader)
+	if !remote && !local {
 		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "知识库不可用"})
 		return readChunkResultJSON(nil, map[string]any{"error": "知识库不可用。"})
 	}
@@ -109,66 +107,14 @@ func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) s
 		return readChunkResultJSON(nil, map[string]any{"read_limit_reached": true})
 	}
 	e.readChunkCallsThisTurn++
-
-	items := make([]readChunkItem, 0, len(ids))
-	read := make([]knowledge.KBChunk, 0, len(ids))
-	runesLeft := maxReadChunkRunesPerCall
-	for _, id := range ids {
-		if _, seen := e.readChunkIDsThisTurn[id]; seen {
-			// Already in the conversation from an earlier read this turn. Re-sending
-			// the body would duplicate it in context for no new information.
-			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusAlreadyRead})
-			continue
-		}
-		chunk, found := reader.Chunk(id)
-		if !found {
-			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusNotFound})
-			continue
-		}
-		if runesLeft <= 0 {
-			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusSizeLimit})
-			continue
-		}
-		content := strings.TrimSpace(chunk.Content)
-		truncated := chunk.ContentTruncated || utf8.RuneCountInString(content) > runesLeft
-		if truncated {
-			content = truncateRunes(content, runesLeft)
-		}
-		runesLeft -= utf8.RuneCountInString(content)
-		e.markChunkRead(id)
-		read = append(read, chunk)
-		items = append(items, readChunkItem{
-			ChunkID:    id,
-			Status:     readChunkStatusRead,
-			Title:      strings.TrimSpace(chunk.Title),
-			SourceType: strings.TrimSpace(chunk.SourceType),
-			Content:    content,
-			Truncated:  truncated,
-		})
+	if remote {
+		return e.executeRemoteReadChunk(remoteReader, ids, droppedIDs, onStep)
 	}
-	e.recordReadChunksAsEvidence(read)
-
-	meta := map[string]any{}
-	if droppedIDs > 0 {
-		meta["dropped_ids"] = droppedIDs
-	}
-	onStep(StepEvent{
-		Type:        StepToolResult,
-		Action:      "ReadChunk",
-		Source:      e.knowledgeToolSource(),
-		Message:     "读取完成",
-		TraceResult: map[string]any{"requested": len(items) + droppedIDs, "read": len(read), "dropped_ids": droppedIDs},
-	})
-	return readChunkResultJSON(items, meta)
+	items, read := e.materializeReadChunks(ids, nil, localReader.Chunk)
+	return e.finishReadChunk(items, read, droppedIDs, nil, "读取完成", onStep)
 }
 
 func (e *Engine) executeRemoteReadChunk(reader searchBoundChunkReader, ids []string, droppedIDs int, onStep func(StepEvent)) string {
-	if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn {
-		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "本轮读取次数已达上限"})
-		return readChunkResultJSON(nil, map[string]any{"read_limit_reached": true})
-	}
-	e.readChunkCallsThisTurn++
-
 	itemsByID := make(map[string]readChunkItem, len(ids))
 	groups := make([]remoteReadGroup, 0, len(ids))
 	groupIndex := map[string]int{}
@@ -228,6 +174,31 @@ func (e *Engine) executeRemoteReadChunk(reader searchBoundChunkReader, ids []str
 		}
 	}
 
+	items, read := e.materializeReadChunks(ids, itemsByID, func(id string) (knowledge.KBChunk, bool) {
+		chunk, found := chunksByID[id]
+		return chunk, found
+	})
+	meta := map[string]any{}
+	if searchRefreshNeeded {
+		meta["search_refresh_required"] = true
+	}
+	if remoteUnavailable {
+		meta["knowledge_unavailable"] = true
+	}
+	message := "读取完成"
+	if remoteUnavailable {
+		message = "知识库服务暂时不可用"
+	} else if searchRefreshNeeded {
+		message = "检索凭证已失效，请重新搜索"
+	}
+	return e.finishReadChunk(items, read, droppedIDs, meta, message, onStep)
+}
+
+func (e *Engine) materializeReadChunks(
+	ids []string,
+	itemsByID map[string]readChunkItem,
+	lookup func(string) (knowledge.KBChunk, bool),
+) ([]readChunkItem, []knowledge.KBChunk) {
 	items := make([]readChunkItem, 0, len(ids))
 	read := make([]knowledge.KBChunk, 0, len(ids))
 	runesLeft := maxReadChunkRunesPerCall
@@ -236,7 +207,11 @@ func (e *Engine) executeRemoteReadChunk(reader searchBoundChunkReader, ids []str
 			items = append(items, item)
 			continue
 		}
-		chunk, found := chunksByID[id]
+		if _, seen := e.readChunkIDsThisTurn[id]; seen {
+			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusAlreadyRead})
+			continue
+		}
+		chunk, found := lookup(id)
 		if !found {
 			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusNotFound})
 			continue
@@ -262,30 +237,38 @@ func (e *Engine) executeRemoteReadChunk(reader searchBoundChunkReader, ids []str
 			Truncated:  truncated,
 		})
 	}
-	e.recordReadChunksAsEvidence(read)
+	return items, read
+}
 
-	meta := map[string]any{}
+func (e *Engine) finishReadChunk(
+	items []readChunkItem,
+	read []knowledge.KBChunk,
+	droppedIDs int,
+	meta map[string]any,
+	message string,
+	onStep func(StepEvent),
+) string {
+	e.recordReadChunksAsEvidence(read)
+	if meta == nil {
+		meta = map[string]any{}
+	}
 	if droppedIDs > 0 {
 		meta["dropped_ids"] = droppedIDs
 	}
-	if searchRefreshNeeded {
-		meta["search_refresh_required"] = true
+	traceResult := map[string]any{
+		"requested":   len(items) + droppedIDs,
+		"read":        len(read),
+		"dropped_ids": droppedIDs,
 	}
-	if remoteUnavailable {
-		meta["knowledge_unavailable"] = true
-	}
-	message := "读取完成"
-	if remoteUnavailable {
-		message = "知识库服务暂时不可用"
-	} else if searchRefreshNeeded {
-		message = "检索凭证已失效，请重新搜索"
+	for key, value := range meta {
+		traceResult[key] = value
 	}
 	onStep(StepEvent{
 		Type:        StepToolResult,
 		Action:      "ReadChunk",
 		Source:      e.knowledgeToolSource(),
 		Message:     message,
-		TraceResult: map[string]any{"requested": len(items) + droppedIDs, "read": len(read), "dropped_ids": droppedIDs, "search_refresh_required": searchRefreshNeeded, "knowledge_unavailable": remoteUnavailable},
+		TraceResult: traceResult,
 	})
 	return readChunkResultJSON(items, meta)
 }

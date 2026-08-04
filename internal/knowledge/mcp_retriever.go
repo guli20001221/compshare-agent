@@ -61,13 +61,6 @@ func NewMCPRetriever(options MCPRetrieverOptions) (*MCPRetriever, error) {
 	}, nil
 }
 
-// Retrieve keeps MCPRetriever compatible with the original synchronous
-// KnowledgeRetriever interface. Engine uses RetrieveContext when available so
-// HTTP request cancellation still reaches the remote MCP call.
-func (r *MCPRetriever) Retrieve(question, contextHint string) RetrievalResult {
-	return r.RetrieveContext(context.Background(), question, contextHint)
-}
-
 // RetrieveContext searches the active remote knowledge release and projects its
 // bounded snippets onto the agent's existing RetrievalResult shape.
 func (r *MCPRetriever) RetrieveContext(ctx context.Context, question, contextHint string) RetrievalResult {
@@ -464,7 +457,3 @@ type mcpReadResponse struct {
 	Release mcpRelease     `json:"release"`
 	Items   []mcpReadChunk `json:"items"`
 }
-
-var _ interface {
-	Retrieve(string, string) RetrievalResult
-} = (*MCPRetriever)(nil)

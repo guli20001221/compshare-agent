@@ -905,7 +905,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     mutating_tools: true
     confirm_form: true
     guided_create: true
-    external_knowledge: true
     session_fact_context: true
     react_result_projection: true
     react_history_compaction: true
@@ -917,8 +916,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     mcp_url: http://compshare-kb.example/mcp
     mcp_bearer_token: read-only-test-token
     mcp_timeout_ms: 12000
-    mode: qwen3_rrf
-    hybrid_timeout_ms: 8000
   trace:
     enabled: true
     sink: mysql
@@ -933,11 +930,9 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
 	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
-	assert.Equal(t, "qwen3_rrf", cfg.Agent.Retrieval.Mode)
 	assert.Equal(t, "http://compshare-kb.example/mcp", cfg.Agent.Retrieval.MCPURL)
 	assert.Equal(t, "read-only-test-token", cfg.Agent.Retrieval.MCPBearerToken)
 	assert.Equal(t, 12000, cfg.Agent.Retrieval.MCPTimeoutMS)
-	assert.Equal(t, 8000, cfg.Agent.Retrieval.HybridTimeoutMS)
 	require.NotNil(t, cfg.Agent.Trace.Enabled)
 	assert.True(t, *cfg.Agent.Trace.Enabled)
 	assert.Equal(t, "mysql", cfg.Agent.Trace.Sink)
@@ -952,7 +947,6 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
-			Mode:           "bm25_only", // YAML string wins
 			MCPURL:         "http://kb.example/mcp",
 			MCPBearerToken: "read-only-test-token",
 			MCPTimeoutMS:   9000,
@@ -977,13 +971,12 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
 	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
-	assert.Equal(t, "bm25_only", getenv("RAG_RETRIEVAL_MODE"), "YAML string wins")
 	assert.Equal(t, "http://kb.example/mcp", getenv("COMPSHARE_KB_MCP_URL"), "remote knowledge endpoint comes from YAML")
 	assert.Equal(t, "read-only-test-token", getenv("COMPSHARE_KB_MCP_BEARER_TOKEN"), "read-only MCP token comes from YAML")
 	assert.Equal(t, "9000", getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"), "remote knowledge timeout comes from YAML")
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")
 	assert.Equal(t, "file", getenv("COMPSHARE_TRACE_SINK"))
-	assert.Equal(t, "resolved-llm-key", getenv("LLM_API_KEY"), "resolved secret exposed for RAG clients")
+	assert.Equal(t, "resolved-llm-key", getenv("LLM_API_KEY"), "resolved answer-model secret is exposed")
 	assert.Equal(t, "passthrough", getenv("SOME_UNMAPPED_VAR"), "unmapped key → base passthrough")
 }
 
@@ -992,31 +985,6 @@ func TestRuntimeGetenv_NilConfigReturnsBase(t *testing.T) {
 	base := func(string) string { return "from-base" }
 	getenv := cfg.RuntimeGetenv(base)
 	assert.Equal(t, "from-base", getenv("ANYTHING"))
-}
-
-// TestRuntimeGetenv_SeparateRetrievalKey locks the two-key wiring: when
-// agent.retrieval.api_key is set it is exposed as MODELVERSE_API_KEY, which
-// modelverseAPIKeyFromEnv reads BEFORE LLM_API_KEY, so the qwen3 embed/rerank
-// stack runs on its own key while the answer model keeps agent.llm.api_key.
-// This is what lets a gpt-5.6-terra answer key (not authorized for qwen3
-// embed/rerank) coexist with the platform retrieval key. When the field is
-// empty there is NO override, so retrieval falls through to the LLM key — the
-// single-key behavior that predates this field.
-func TestRuntimeGetenv_SeparateRetrievalKey(t *testing.T) {
-	base := func(string) string { return "" }
-
-	twoKey := (&Config{Agent: AgentConfig{
-		LLM:       LLMConfig{APIKey: "terra-answer-key"},
-		Retrieval: RetrievalConfig{APIKey: "qwen3-retrieval-key"},
-	}}).RuntimeGetenv(base)
-	assert.Equal(t, "qwen3-retrieval-key", twoKey("MODELVERSE_API_KEY"), "retrieval key exposed as MODELVERSE_API_KEY (read before LLM_API_KEY)")
-	assert.Equal(t, "terra-answer-key", twoKey("LLM_API_KEY"), "answer key stays on LLM_API_KEY")
-
-	single := (&Config{Agent: AgentConfig{
-		LLM: LLMConfig{APIKey: "one-key"},
-	}}).RuntimeGetenv(base)
-	assert.Equal(t, "", single("MODELVERSE_API_KEY"), "no MODELVERSE_API_KEY override when retrieval key omitted")
-	assert.Equal(t, "one-key", single("LLM_API_KEY"), "retrieval inherits the LLM key via modelverseAPIKeyFromEnv fallback")
 }
 
 // A session that outlives the model's replay window forgets its own opening with

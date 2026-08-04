@@ -23,4 +23,3 @@
 
 部署 job 在 rollout 完成后，从主容器经 Kubernetes Service 请求 `/healthz`；这会同时确认 Pod
 就绪和 Service 到 endpoint 的转发，而不仅是容器进程存活。
-

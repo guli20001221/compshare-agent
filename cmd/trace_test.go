@@ -318,63 +318,28 @@ func TestKnowledgeRetrievalModeFromEnv(t *testing.T) {
 	}
 }
 
-func TestRagRetrievalModeFromEnvDefaultsToQwen3RRF(t *testing.T) {
-	got := ragRetrievalModeFromEnv(func(string) string { return "" })
-	require.Equal(t, knowledge.RetrievalModeQwen3RRF, got)
-}
-
-func TestKnowledgeCorpusPathFromEnv(t *testing.T) {
-	if got := knowledgeCorpusPathFromEnv(func(string) string { return "" }); got != defaultKnowledgeCorpusPath {
-		t.Fatalf("default corpus path = %q, want %q", got, defaultKnowledgeCorpusPath)
-	}
-	if got := defaultKnowledgeCorpusPath; got != "deploy/kb/stage2b_w0.jsonl" {
-		t.Fatalf("default corpus path = %q, want stage2b W0 corpus", got)
-	}
-	got := knowledgeCorpusPathFromEnv(func(key string) string {
-		if key == "COMPSHARE_KNOWLEDGE_CORPUS" {
-			return " custom.jsonl "
+func TestKnowledgeRetrieverFromEnvRequiresMCP(t *testing.T) {
+	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
+		if key == "USE_KNOWLEDGE_RETRIEVAL" {
+			return "curated"
 		}
 		return ""
 	})
-	if got != "custom.jsonl" {
-		t.Fatalf("custom corpus path = %q", got)
-	}
+
+	require.ErrorContains(t, err, "COMPSHARE_KB_MCP_URL")
+	require.False(t, enabled)
+	require.Nil(t, retriever)
 }
 
-func TestKnowledgeRetrieverFromEnvLoadsCorpus(t *testing.T) {
-	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
-		switch key {
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "curated"
-		case "COMPSHARE_KNOWLEDGE_CORPUS":
-			return filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
-		case "RAG_RETRIEVAL_MODE":
-			return knowledge.RetrievalModeBM25Only
-		default:
-			return ""
-		}
-	})
-
-	require.NoError(t, err)
-	require.True(t, enabled)
-	require.NotNil(t, retriever)
-	result := retriever.Retrieve("Windows 远程登录", "windows")
-	if result.Empty || len(result.Hits) == 0 || result.KBVersion != "kb.platform.v2.2026-07-15" {
-		t.Fatalf("retrieval result = %#v", result)
-	}
-}
-
-func TestKnowledgeRetrieverFromEnvPrefersConfiguredMCP(t *testing.T) {
+func TestKnowledgeRetrieverFromEnvBuildsMCP(t *testing.T) {
 	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
 		switch key {
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "curated"
 		case "COMPSHARE_KB_MCP_URL":
-			return "compshare-kb.prj-ucompshare-prod.svc.c5.u4"
+			return "http://compshare-kb.prj-ucompshare-prod.svc.c5.u4/mcp"
 		case "COMPSHARE_KB_MCP_TIMEOUT_MS":
 			return "9000"
-		case "COMPSHARE_KNOWLEDGE_CORPUS":
-			return filepath.Join(t.TempDir(), "must-not-be-opened.jsonl")
 		default:
 			return ""
 		}
@@ -401,181 +366,6 @@ func TestKnowledgeMCPTimeoutFromEnv(t *testing.T) {
 	assertDuration("", 0)
 	assertDuration("12000", 12*time.Second)
 	assertDuration("bad", 0)
-}
-
-func TestKnowledgeRetrieverFromEnvMissingCorpusDisablesWithError(t *testing.T) {
-	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
-		switch key {
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "curated"
-		case "COMPSHARE_KNOWLEDGE_CORPUS":
-			return filepath.Join(t.TempDir(), "missing.jsonl")
-		default:
-			return ""
-		}
-	})
-	if err == nil {
-		t.Fatal("missing corpus should return an error")
-	}
-	if enabled || retriever != nil {
-		t.Fatalf("missing corpus = enabled %v retriever %#v, want disabled nil", enabled, retriever)
-	}
-}
-
-func TestHybridEnabledFromEnv(t *testing.T) {
-	cases := map[string]bool{
-		"":      false,
-		"0":     false,
-		"false": false,
-		"1":     true,
-		"true":  true,
-		"TRUE":  true,
-		"yes":   true,
-		"no":    false,
-	}
-	for raw, want := range cases {
-		raw, want := raw, want
-		t.Run(raw, func(t *testing.T) {
-			got := hybridEnabledFromEnv(func(key string) string {
-				if key == "RAG_HYBRID_ENABLED" {
-					return raw
-				}
-				return ""
-			})
-			if got != want {
-				t.Fatalf("hybridEnabledFromEnv(%q) = %v, want %v", raw, got, want)
-			}
-		})
-	}
-}
-
-func TestHybridEmbeddingsPathFromEnv(t *testing.T) {
-	getenv := func(_ string) string { return "" }
-	corpus := filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
-	// Default embed model (text-embedding-3-large) keeps the legacy
-	// no-suffix filename for backward compatibility with the pinned
-	// EmbeddingDigestExpected sidecar.
-	got := hybridEmbeddingsPathFromEnv(getenv, corpus, "text-embedding-3-large")
-	wantSuffix := "embeddings_" + knowledge.CorpusDigestExpected + ".jsonl"
-	if !strings.HasSuffix(got, wantSuffix) {
-		t.Fatalf("default sidecar path %q lacks suffix %q", got, wantSuffix)
-	}
-	// Empty model also returns the legacy filename — same default as
-	// text-embedding-3-large per hybridEmbeddingsPathFromEnv contract.
-	if empty := hybridEmbeddingsPathFromEnv(getenv, corpus, ""); !strings.HasSuffix(empty, wantSuffix) {
-		t.Fatalf("empty-model sidecar path %q lacks suffix %q", empty, wantSuffix)
-	}
-}
-
-func TestHybridEmbeddingsPathFromEnvNonDefaultModelAppendsSuffix(t *testing.T) {
-	getenv := func(_ string) string { return "" }
-	corpus := filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
-	got := hybridEmbeddingsPathFromEnv(getenv, corpus, "qwen3-embedding-8b")
-	wantSuffix := "embeddings_" + knowledge.CorpusDigestExpected + "_qwen3-embedding-8b.jsonl"
-	if !strings.HasSuffix(got, wantSuffix) {
-		t.Fatalf("qwen3 sidecar path %q lacks suffix %q", got, wantSuffix)
-	}
-}
-
-func TestHybridEmbeddingsPathFromEnvOverride(t *testing.T) {
-	override := filepath.Join(t.TempDir(), "custom.jsonl")
-	got := hybridEmbeddingsPathFromEnv(func(key string) string {
-		if key == "COMPSHARE_KNOWLEDGE_EMBEDDINGS" {
-			return override
-		}
-		return ""
-	}, "ignored.jsonl", "text-embedding-3-large")
-	if got != override {
-		t.Fatalf("override = %q, want %q", got, override)
-	}
-}
-
-func TestEmbeddingClientFromEnvRequiresKey(t *testing.T) {
-	_, err := embeddingClientFromEnv(func(_ string) string { return "" })
-	if err == nil {
-		t.Fatal("expected error when MODELVERSE_API_KEY and LLM_API_KEY are missing")
-	}
-}
-
-func TestEmbeddingClientFromEnvDefaults(t *testing.T) {
-	client, err := embeddingClientFromEnv(func(key string) string {
-		if key == "MODELVERSE_API_KEY" {
-			return "key-stub"
-		}
-		return ""
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if client == nil {
-		t.Fatal("expected client when key is present")
-	}
-}
-
-func TestEmbeddingClientFromEnvFallsBackToLLMAPIKey(t *testing.T) {
-	client, err := embeddingClientFromEnv(func(key string) string {
-		if key == "LLM_API_KEY" {
-			return "llm-key-stub"
-		}
-		return ""
-	})
-	require.NoError(t, err)
-	require.NotNil(t, client)
-}
-
-func TestKnowledgeRetrieverFromEnvHybridMissingSidecarErrors(t *testing.T) {
-	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
-		switch key {
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "curated"
-		case "COMPSHARE_KNOWLEDGE_CORPUS":
-			return filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
-		case "RAG_HYBRID_ENABLED":
-			return "1"
-		case "COMPSHARE_KNOWLEDGE_EMBEDDINGS":
-			return filepath.Join(t.TempDir(), "no-such-sidecar.jsonl")
-		case "MODELVERSE_API_KEY":
-			return "key-stub"
-		default:
-			return ""
-		}
-	})
-	if err == nil {
-		t.Fatal("missing sidecar should return an error in hybrid mode")
-	}
-	if enabled || retriever != nil {
-		t.Fatalf("missing sidecar = enabled %v retriever %#v, want disabled nil", enabled, retriever)
-	}
-}
-
-func TestKnowledgeRetrieverFromEnvHybridLoadsSidecar(t *testing.T) {
-	// Skip if the text-embedding-3-large sidecar is not present in deploy/kb.
-	// W1-R2 onward, increments no longer rebuild the text-emb-3 sidecar
-	// (qwen3-embedding-8b is the default for qwen3_rrf), so hybrid_cosine /
-	// hybrid_rerank are effectively dead unless a fresh sidecar is built.
-	sidecar := filepath.Join("..", "deploy", "kb", "embeddings_"+knowledge.CorpusDigestExpected+".jsonl")
-	if _, err := os.Stat(sidecar); err != nil {
-		t.Skipf("text-emb-3 sidecar absent for current corpus digest (%v); skipping hybrid_cosine load smoke", err)
-	}
-	retriever, enabled, err := knowledgeRetrieverFromEnv(func(key string) string {
-		switch key {
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "curated"
-		case "COMPSHARE_KNOWLEDGE_CORPUS":
-			return filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
-		case "RAG_HYBRID_ENABLED":
-			return "1"
-		case "MODELVERSE_API_KEY":
-			return "key-stub"
-		default:
-			return ""
-		}
-	})
-	require.NoError(t, err)
-	require.True(t, enabled)
-	require.NotNil(t, retriever)
-	// Don't actually call Retrieve here — it would hit the embedding endpoint
-	// with the stub key. Just verify the retriever was constructed.
 }
 
 func TestCLITraceRecorderWritesRuntimeTrace(t *testing.T) {

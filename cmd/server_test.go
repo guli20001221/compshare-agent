@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -367,7 +367,7 @@ func TestApplySharedDepsReactHistoryCompactionFromEnv(t *testing.T) {
 	require.True(t, deps.ReactHistoryCompactionEnabled)
 }
 
-func TestApplySharedDepsDefaultsToQwenRRF(t *testing.T) {
+func TestApplySharedDepsDefaultsToKnowledgeMCP(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{
 			BaseURL: "http://localhost:1",
@@ -379,17 +379,15 @@ func TestApplySharedDepsDefaultsToQwenRRF(t *testing.T) {
 
 	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
 		switch key {
-		case "LLM_API_KEY":
-			return "llm-key"
-		case "COMPSHARE_KNOWLEDGE_CORPUS":
-			return filepath.Join("..", "deploy", "kb", "stage2b_w0.jsonl")
+		case "COMPSHARE_KB_MCP_URL":
+			return "http://compshare-kb.example/mcp"
 		default:
 			return ""
 		}
 	})
 
 	require.NoError(t, err)
-	require.NotNil(t, deps.KnowledgeRetriever, "default runtime should enable qwen3_rrf retrieval")
+	require.IsType(t, &knowledge.MCPRetriever{}, deps.KnowledgeRetriever)
 }
 
 func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {
