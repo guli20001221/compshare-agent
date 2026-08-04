@@ -92,7 +92,10 @@ cleanup-production:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
-  allow_failure: false
+  # Optional maintenance action: merely being present must not block normal
+  # test/build/deploy pipelines. A triggered cleanup still reports its own
+  # success or failure in the job status.
+  allow_failure: true
   environment:
     name: production
     action: stop
