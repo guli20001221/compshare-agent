@@ -4369,6 +4369,11 @@ func committedWriteFallbackReply(action string, params map[string]any, result *w
 // guaranteed by CreateCompShareCustomImage. Upstream creates the image record in
 // Making and advances it asynchronously, so this must never call a successful
 // create a completed or usable image.
+// customImageSourceInstanceNote is the workflow's own sentence, not a copy of it.
+// The card sets this expectation before the write and this reply restates it
+// after; a user who skimmed one must not get different facts from the other.
+const customImageSourceInstanceNote = workflow.CustomImageSourceInstanceNote
+
 func customImageWorkflowReply(result *workflow.Result) string {
 	imageID := ""
 	if result != nil && result.Data != nil {
@@ -4376,9 +4381,9 @@ func customImageWorkflowReply(result *workflow.Result) string {
 		imageID = strings.TrimSpace(imageID)
 	}
 	if imageID != "" {
-		return fmt.Sprintf("✅ 已发起自制镜像制作（ID: %s）。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。", imageID)
+		return fmt.Sprintf("✅ 已发起自制镜像制作（ID: %s）。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。%s", imageID, customImageSourceInstanceNote)
 	}
-	return "✅ 已发起自制镜像制作。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。"
+	return "✅ 已发起自制镜像制作。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。" + customImageSourceInstanceNote
 }
 
 // committedWriteNarrationFailedNote tells the user the missing half explicitly.

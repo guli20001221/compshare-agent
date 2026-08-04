@@ -359,3 +359,34 @@ func TestCreateCustomImage_ProgressFailureDoesNotHideCreatedImage(t *testing.T) 
 	_, progressQueried := findExecutorCall(executor.calls, "GetCompShareImageCreateProgress")
 	assert.True(t, progressQueried)
 }
+
+// The confirmation card must state the ImageMaking consequences BEFORE the write.
+// Driven through the real step rather than asserting the constant, because the
+// constant being right is worthless if the card stops composing it in.
+func TestCustomImageConfirmCardWarnsAboutTheSourceInstanceGoingIntoImageMaking(t *testing.T) {
+	def := CreateCustomImageDef()
+	var confirm *Step
+	for i := range def.Steps {
+		if def.Steps[i].Type == StepConfirm {
+			confirm = &def.Steps[i]
+			break
+		}
+	}
+	require.NotNil(t, confirm, "premise: the custom-image flow still has a confirmation step")
+
+	// The confirm step reads the two query results the flow already ran.
+	wfCtx := NewContext(map[string]any{"UHostId": "uhost-src", "Name": "my-image"})
+	wfCtx.StepResults["查询源实例"] = customImageInstanceResult("Stopped")
+	wfCtx.StepResults["查询源实例可用区"] = customImageSupportZoneResult()
+	args, err := confirm.BuildArgs(wfCtx)
+	require.NoError(t, err)
+
+	warning, _ := args["warning"].(string)
+	require.NotEmpty(t, warning, "the card carries a warning; without one this test asserts nothing")
+
+	assert.Contains(t, warning, CustomImageSourceInstanceNote,
+		"the card stopped composing in the source-instance note, so the user confirms "+
+			"without being told the machine loses its public address and refuses 开关机")
+	assert.Contains(t, warning, "不会关闭源实例",
+		"the earlier correction must survive: 制作 genuinely does not shut the instance down")
+}

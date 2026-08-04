@@ -3,6 +3,7 @@ package engine
 import (
 	"testing"
 
+	"github.com/compshare-agent/internal/config"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,10 +58,14 @@ func TestHistoryCeilingClearsARealAgentLoopSession(t *testing.T) {
 // A ceiling that overflows it turns a memory fix into rate-limit rejections.
 func TestHistoryCeilingStaysUnderThePerTurnTokenCap(t *testing.T) {
 	const (
-		maxTokensPerTurn      = 200_000 // deploy/conf/config.yaml agent.rate_limit
-		approxTokensPerMsg    = 675     // 27K/40, the estimate the old comment itself used
-		approxSystemPromptTok = 7_000   // measured: 14,744 bytes of CJK
+		approxTokensPerMsg    = 675   // 27K/40, the estimate the old comment itself used
+		approxSystemPromptTok = 7_000 // measured: 14,744 bytes of CJK
 	)
+	// The cap comes from config.ShippedMaxTokensPerTurn, not a literal here. This
+	// test used to carry its own 200_000, which was right until the shipped config
+	// was raised to 400_000 on 2026-07-23 and then quietly was not — it kept passing
+	// because the stale copy was the strict direction, so nothing ever reported it.
+	maxTokensPerTurn := config.ShippedMaxTokensPerTurn
 	worstCase := maxHistoryMessages*approxTokensPerMsg + approxSystemPromptTok
 
 	assert.Less(t, worstCase, maxTokensPerTurn,

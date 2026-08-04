@@ -144,6 +144,23 @@ type HTTPConfig struct {
 // error and no log line — the failure mode this constant exists to prevent.
 const MaxReplayedExchanges = 20
 
+// ShippedMaxTokensPerTurn mirrors agent.rate_limit.max_tokens_per_turn in
+// deploy/conf/config.yaml, for the code that has to SIZE ITSELF against the
+// deployed cap rather than read it from a loaded Config.
+//
+// It exists because that number had grown two producers that disagreed.
+// maxReplayedHistoryRunes derives its 12000 from 400000; the history-ceiling
+// test asserted against a hardcoded 200000 that was correct until the config was
+// raised on 2026-07-23 and then silently was not. The stale copy happened to be
+// the conservative direction, so nothing failed — which is precisely why it
+// survived, and why the next drift could as easily go the other way.
+//
+// TestShippedConfigMatchesTheTokenCapConstant reads the yaml and fails if the two
+// diverge, so this is a pinned mirror rather than a third copy. Runtime enforcement
+// still reads the operator's loaded RateLimitConfig.MaxTokensPerTurn — a deployment
+// may set its own value, and this constant does not override it.
+const ShippedMaxTokensPerTurn = 400_000
+
 // DefaultMaxSessionTurns is the compatibility-path fallback when
 // agent.http.max_session_turns is zero or unset. The durable turn coordinator
 // never consults it. Must stay <= MaxReplayedExchanges; validateHTTPConfig

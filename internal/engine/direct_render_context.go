@@ -73,13 +73,20 @@ const (
 // was a hard 5,120-rune ceiling no matter what the user pasted, and 20 unbounded
 // pairs of the largest messages in the production export would be ~155,000 runes.
 //
-// Derivation, from the constraint that actually binds. agent.rate_limit
-// .max_tokens_per_turn = 400000 is prompt+completion summed across the WHOLE
-// turn, and history is re-sent on every one of up to maxReActRounds = 16 model
-// calls, so history's real cost is 16x its per-request size — comparing a single
-// request against 400000 is the wrong comparison. Holding history to at most half
-// the turn budget gives 200000/16 = 12500 tokens per request; at a deliberately
-// conservative 1 rune = 1 token for CJK that is ~12000 runes.
+// Derivation, from the constraint that actually binds. config
+// .ShippedMaxTokensPerTurn (agent.rate_limit.max_tokens_per_turn) is
+// prompt+completion summed across the WHOLE turn, and history is re-sent on every
+// one of up to maxReActRounds = 16 model calls, so history's real cost is 16x its
+// per-request size — comparing a single request against the cap is the wrong
+// comparison. Holding history to at most half the turn budget gives
+// 400000/2/16 = 12500 tokens per request; at a deliberately conservative
+// 1 rune = 1 token for CJK that is ~12000 runes.
+//
+// The 400000 above is spelled out because this is arithmetic a reader has to
+// follow, but it is not a second source: config.ShippedMaxTokensPerTurn is pinned
+// to the shipped yaml by TestShippedConfigMatchesTheTokenCapConstant, and
+// TestReplayBudgetStillMatchesItsDerivation re-runs this derivation against the
+// constant so a raised cap cannot leave this number silently behind.
 //
 // Cross-check against production: the largest full-history replay in the three
 // 2026-07 exports is 11,271 runes (p90 1,801; p99 5,764), so every session
