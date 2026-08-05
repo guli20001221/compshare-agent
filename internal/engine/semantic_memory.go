@@ -334,4 +334,3 @@ func taskSnapshotEmpty(task TaskSnapshot) bool {
 		len(task.Entities) == 0 && task.Status == "" && task.Freshness == "" && task.EndReason == "" &&
 		task.UpdatedAtUnix == 0
 }
-
