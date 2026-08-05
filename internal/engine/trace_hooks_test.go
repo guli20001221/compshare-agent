@@ -39,7 +39,6 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 			RecentConversation: []ConversationPair{{User: "secret user", Assistant: "secret answer"}},
 			ConversationDigest: ConversationDigest{Narrative: "secret digest"},
 			ActiveTask:         &TaskSnapshot{Goal: "secret task"},
-			VerifiedKnowledge:  []VerifiedKnowledgeTurn{{Question: "secret knowledge"}},
 			ContinuityNotices:  []string{"secret notice"},
 		},
 		promptSectionIDsThisTurn:   []string{"identity", "knowledge_turn_policy", "user_state"},
@@ -47,7 +46,7 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 		groundingOutcomeThisTurn:   groundingSupported,
 	}
 	snapshot := eng.TraceSnapshot(time.Now())
-	require.Equal(t, []string{"recent_pairs", "digest", "active_task", "verified_knowledge", "notices"}, snapshot.ContextSources)
+	require.Equal(t, []string{"recent_pairs", "digest", "active_task", "notices"}, snapshot.ContextSources)
 	require.Equal(t, string(ResponseAgent), snapshot.ResponseContract)
 	require.Equal(t, []string{"identity", "knowledge_turn_policy", "user_state"}, snapshot.PromptSectionIDs)
 	require.Equal(t, memoryUpdateCompactor, snapshot.MemoryUpdateSource)

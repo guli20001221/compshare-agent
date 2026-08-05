@@ -47,7 +47,6 @@ type AgentContext struct {
 	ActiveTask         *TaskSnapshot
 	SelectedEntities   []SemanticEntityHint
 	RecentObservations []ToolObservationView
-	VerifiedKnowledge  []VerifiedKnowledgeTurn
 	ContinuityNotices  []string
 	BuiltAtUnix        int64
 }
@@ -62,9 +61,8 @@ const (
 	// max_session_turns larger than it (a session outliving the window forgets its
 	// own opening with no error). The real bound on size is maxReplayedHistoryRunes
 	// below; this only caps how far back we look.
-	maxAgentContextPairs             = config.MaxReplayedExchanges
-	maxAgentContextObservations      = 8
-	maxAgentContextVerifiedKnowledge = 4
+	maxAgentContextPairs        = config.MaxReplayedExchanges
+	maxAgentContextObservations = 8
 )
 
 // maxReplayedHistoryRunes budgets the restored exchanges by SIZE, which the pair
@@ -121,7 +119,6 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		return cloneAgentContext(view)
 	}
 	view.ConversationDigest = cloneConversationDigest(e.sessionState.ConversationDigest)
-	view.VerifiedKnowledge = cloneVerifiedKnowledge(e.sessionState.VerifiedKnowledge, maxAgentContextVerifiedKnowledge)
 	view.ContinuityNotices = compactSemanticItems(append([]string(nil), e.continuityAdvisories.Notices...))
 	if e.continuityAdvisories.ReadOnly {
 		view.ContinuityNotices = compactSemanticItems(append(view.ContinuityNotices, "本轮上下文只读，不得执行写操作"))

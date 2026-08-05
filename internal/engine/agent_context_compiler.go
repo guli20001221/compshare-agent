@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/security"
 )
 
@@ -19,7 +18,6 @@ func cloneAgentContext(in AgentContext) AgentContext {
 	}
 	out.SelectedEntities = cloneEntityHints(in.SelectedEntities)
 	out.RecentObservations = append([]ToolObservationView(nil), in.RecentObservations...)
-	out.VerifiedKnowledge = cloneVerifiedKnowledge(in.VerifiedKnowledge, len(in.VerifiedKnowledge))
 	out.ContinuityNotices = append([]string(nil), in.ContinuityNotices...)
 	return out
 }
@@ -71,27 +69,6 @@ func cloneEntityHints(in []SemanticEntityHint) []SemanticEntityHint {
 	return out
 }
 
-func cloneVerifiedKnowledge(in []VerifiedKnowledgeTurn, limit int) []VerifiedKnowledgeTurn {
-	if limit <= 0 || len(in) == 0 {
-		return nil
-	}
-	if len(in) > limit {
-		in = in[len(in)-limit:]
-	}
-	out := make([]VerifiedKnowledgeTurn, 0, len(in))
-	for _, item := range in {
-		copy := item
-		copy.Question = safeContextText(item.Question)
-		copy.Answer = safeContextNarrative(item.Answer)
-		copy.Evidence = knowledge.EvidenceLedger{
-			Query: safeContextText(item.Evidence.Query),
-			Items: cloneEvidenceItems(item.Evidence.Items),
-		}
-		out = append(out, copy)
-	}
-	return out
-}
-
 func safeContextItems(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, value := range in {
@@ -108,21 +85,6 @@ func cloneSourcedMemory(in []SourcedMemory) []SourcedMemory {
 		memory.Value = safeContextText(memory.Value)
 		memory.Quote = safeContextText(memory.Quote)
 		out = append(out, memory)
-	}
-	return out
-}
-
-func cloneEvidenceItems(in []knowledge.EvidenceItem) []knowledge.EvidenceItem {
-	out := make([]knowledge.EvidenceItem, 0, len(in))
-	for _, item := range in {
-		item.ChunkID = safeContextText(item.ChunkID)
-		item.Title = safeContextText(item.Title)
-		item.ProductArea = safeContextText(item.ProductArea)
-		item.SourceType = safeContextText(item.SourceType)
-		item.ScoreBucket = safeContextText(item.ScoreBucket)
-		item.Summary = safeContextNarrative(item.Summary)
-		item.Snippet = safeContextNarrative(item.Snippet)
-		out = append(out, item)
 	}
 	return out
 }
@@ -305,11 +267,6 @@ func renderAgentContextCard(view AgentContext) string {
 	for _, observation := range view.RecentObservations {
 		if semantic && observation.Summary != "" {
 			lines = append(lines, "近期可信观测："+observation.Summary)
-		}
-	}
-	for _, memory := range view.VerifiedKnowledge {
-		if semantic && memory.Question != "" && memory.Answer != "" {
-			lines = append(lines, "已验证知识：问="+memory.Question+"；答="+memory.Answer)
 		}
 	}
 	for _, notice := range view.ContinuityNotices {
