@@ -29,8 +29,9 @@ const SessionStateSchemaV3 = "3.0"
 const SessionStateSchemaV4 = "4.0"
 
 // SessionStateSchemaV5 adds durable semantic memory and explicit freshness.
-// TaskSnapshot and ConversationDigest are safe, compact projections; raw tool
-// transcripts are deliberately not part of this schema.
+// TaskSnapshot is a safe, compact projection; raw tool transcripts are
+// deliberately not part of this schema. It also added ConversationDigest, which
+// this binary no longer has — a V5 row still decodes, and that field is dropped.
 const SessionStateSchemaV5 = "5.0"
 
 // SessionStateSchemaV6 persists bounded evidence from answers that passed the

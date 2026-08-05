@@ -49,7 +49,11 @@ func (s *committedTailStore) ListCommittedTail(
 	return append([]store.Message(nil), s.tail...), nil
 }
 
-func TestNewTurnEngine_ReadsOneOverlapTurnForDurableCompaction(t *testing.T) {
+// The overlap turn is now only an overlap margin: the ConversationDigest it used
+// to be compacted into no longer exists. This pins the constant so the durable
+// path cannot change what it reads by accident, not the rationale — see
+// committedTailTurnLimit for why the number outlived its reason.
+func TestNewTurnEngine_ReadsOneOverlapTurn(t *testing.T) {
 	ms := &committedTailStore{mockMessageStore: &mockMessageStore{}}
 	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{})
 	defer pool.Close()
@@ -57,7 +61,7 @@ func TestNewTurnEngine_ReadsOneOverlapTurnForDurableCompaction(t *testing.T) {
 	_, err := pool.NewTurnEngine(context.Background(), owner1, "sess-summary-frontier")
 	require.NoError(t, err)
 	assert.Equal(t, 61, ms.lastTurnLimit,
-		"the cold rebuild must read one turn beyond the raw history window so it can persist the disappearing turn into ConversationDigest")
+		"the cold rebuild must read one turn beyond the raw history window")
 }
 
 func TestNewTurnEngine_IsPrivateAndUsesOnlyCommittedTail(t *testing.T) {

@@ -10,12 +10,21 @@ import (
 	"github.com/compshare-agent/internal/store"
 )
 
-// committedTailTurnLimit deliberately reads one complete turn beyond the
-// engine's 120 non-system-message window. ChatWithOptions compacts that overlap
-// into the persisted ConversationDigest before appending the new user message.
-// Reading exactly 60 turns would never overflow at turn entry, so the oldest
-// turn would disappear from the next cold rebuild without ever reaching the
-// durable summary.
+// committedTailTurnLimit reads one complete turn beyond the engine's 120
+// non-system-message window.
+//
+// ITS ORIGINAL REASON IS GONE, and the number is kept rather than re-derived
+// because changing it is a durable-path behaviour change and durable turns are
+// off. The +1 existed so the overflowing turn would be compacted into the
+// persisted ConversationDigest before it fell out of the raw window — reading
+// exactly 60 turns never overflowed at turn entry, so the oldest turn vanished
+// from the next cold rebuild without ever reaching the durable summary. There is
+// no durable summary now: the digest and its producer were deleted once the
+// canonical transcript replaced the semantic layer.
+//
+// What the extra turn buys today is an overlap margin, nothing more. If durable
+// turns are ever enabled, re-derive this against what the rebuild actually needs
+// instead of inheriting a number whose justification was removed.
 const committedTailTurnLimit = 61
 
 // denyConfirm is used as the ConfirmFunc for HTTP-path engines. All L1
