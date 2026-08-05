@@ -11,34 +11,12 @@ import (
 func cloneAgentContext(in AgentContext) AgentContext {
 	out := in
 	out.RecentConversation = append([]ConversationPair(nil), in.RecentConversation...)
-	out.ConversationDigest = cloneConversationDigest(in.ConversationDigest)
 	if in.ActiveTask != nil {
 		copy := cloneTaskSnapshot(*in.ActiveTask)
 		out.ActiveTask = &copy
 	}
 	out.SelectedEntities = cloneEntityHints(in.SelectedEntities)
 	out.ContinuityNotices = append([]string(nil), in.ContinuityNotices...)
-	return out
-}
-
-func cloneConversationDigest(in ConversationDigest) ConversationDigest {
-	out := in
-	out.Narrative = safeContextNarrative(in.Narrative)
-	out.Goals = safeContextItems(in.Goals)
-	out.Constraints = safeContextItems(in.Constraints)
-	out.Decisions = safeContextItems(in.Decisions)
-	out.UnresolvedTasks = safeContextItems(in.UnresolvedTasks)
-	out.EntityHints = cloneEntityHints(in.EntityHints)
-	out.Excerpts = make([]ConversationExcerpt, 0, len(in.Excerpts))
-	for _, excerpt := range in.Excerpts {
-		out.Excerpts = append(out.Excerpts, ConversationExcerpt{User: safeContextText(excerpt.User), Assistant: safeContextText(excerpt.Assistant)})
-	}
-	out.Sources = MemoryDelta{
-		Goals:           cloneSourcedMemory(in.Sources.Goals),
-		Constraints:     cloneSourcedMemory(in.Sources.Constraints),
-		Decisions:       cloneSourcedMemory(in.Sources.Decisions),
-		UnresolvedTasks: cloneSourcedMemory(in.Sources.UnresolvedTasks),
-	}
 	return out
 }
 
@@ -216,32 +194,14 @@ func renderAgentContextCard(view AgentContext) string {
 			parts = append(parts, "新鲜度="+safeContextText(task.Freshness))
 		}
 		lines = append(lines, "活动任务："+strings.Join(parts, "；"))
-		// task-level constraints/decisions are not re-rendered here: refreshConversationDigest
-		// merges them into ConversationDigest.Constraints/Decisions at turn entry, which the
-		// card already surfaces below as 既有约束 / 已作决定. The task-expired caution has no
-		// digest home, so it is restored here.
+		// Task-level constraints and decisions used to reach the card indirectly:
+		// refreshConversationDigest merged them into the digest and the card
+		// rendered them as 既有约束 / 已作决定. Those digest lines are deleted, so
+		// they no longer surface anywhere the model reads. The merge itself is left
+		// alone — it feeds the compaction accumulator, which is the next step's
+		// problem, not this one's.
 		if task.Status == TaskSnapshotStatusExpired {
 			lines = append(lines, "该任务已过期；仅供理解，不得直接继续执行")
-		}
-	}
-	if narrative := safeContextNarrative(view.ConversationDigest.Narrative); semantic && narrative != "" {
-		lines = append(lines, "较早对话摘要："+narrative)
-	}
-	appendItems := func(label string, values []string) {
-		if !semantic {
-			return
-		}
-		if values = safeContextItems(values); len(values) > 0 {
-			lines = append(lines, label+"："+strings.Join(values, "；"))
-		}
-	}
-	appendItems("目标", view.ConversationDigest.Goals)
-	appendItems("既有约束", view.ConversationDigest.Constraints)
-	appendItems("已作决定", view.ConversationDigest.Decisions)
-	appendItems("未完成事项", view.ConversationDigest.UnresolvedTasks)
-	for _, excerpt := range view.ConversationDigest.Excerpts {
-		if semantic && excerpt.User != "" && excerpt.Assistant != "" {
-			lines = append(lines, "较早完整摘录：用户="+excerpt.User+"；助手="+excerpt.Assistant)
 		}
 	}
 	for _, entity := range view.SelectedEntities {

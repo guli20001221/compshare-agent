@@ -29,14 +29,6 @@ func fullyPopulatedContext() AgentContext {
 			Goal: "创建一台推理机器", Stage: "选规格", MissingSlots: []string{"GPU 型号"},
 			Freshness: ContinuityFreshnessFresh,
 		},
-		ConversationDigest: ConversationDigest{
-			Narrative:       "用户先问了价格，再问库存",
-			Goals:           []string{"跑 SDXL"},
-			Constraints:     []string{"预算每小时 5 元以内"},
-			Decisions:       []string{"选用按量计费"},
-			UnresolvedTasks: []string{"还没决定可用区"},
-			Excerpts:        []ConversationExcerpt{{User: "有 4090 吗", Assistant: "有"}},
-		},
 		SelectedEntities: []SemanticEntityHint{
 			// Live execution state — must survive suppression.
 			{Kind: "instance", ID: "inst-LIVE", Name: "web-01",
@@ -52,7 +44,7 @@ func fullyPopulatedContext() AgentContext {
 			{Kind: "instance", ID: "inst-RECALLED", Name: "from-a-summary",
 				Source: "agent_inference", Freshness: ContinuityFreshnessFresh},
 		},
-		ContinuityNotices:  []string{"上一轮的停止操作已恢复"},
+		ContinuityNotices: []string{"上一轮的停止操作已恢复"},
 	}
 }
 
@@ -67,16 +59,16 @@ func entityIDs(hints []SemanticEntityHint) []string {
 // semanticCardBlocks are the labels the transcript replaces. Listed by label rather
 // than by count so that adding a block to the card without deciding which side of
 // this line it falls on is a visible omission here, not a silent pass.
-// 已验证知识 and 近期可信观测 are deliberately absent: they are no longer
-// suppressed, they are DELETED.
+// 已验证知识, 近期可信观测 and every ConversationDigest block (较早对话摘要,
+// 目标, 既有约束, 已作决定, 未完成事项, 较早完整摘录) are deliberately absent:
+// they are no longer suppressed, they are DELETED.
 // The card projection and AgentContext.VerifiedKnowledge were removed once the
 // transcript carried the same turns verbatim, so no flag position brings the
 // block back. That is the step, and this list is where it had to be declared.
 // What survives is the verifier's evidence ledger, which the model never reads:
 // see TestVerifierStillSeesPriorEvidenceAfterTheInjectionIsGone.
 var semanticCardBlocks = []string{
-	"活动任务：", "较早对话摘要：", "目标：", "既有约束：", "已作决定：",
-	"未完成事项：", "较早完整摘录：",
+	"活动任务：",
 }
 
 func TestWithTheTranscriptOffTheCardStillCarriesEverySemanticBlock(t *testing.T) {
@@ -117,8 +109,10 @@ func TestWithTheTranscriptOnTheCardKeepsOnlyLiveExecutionState(t *testing.T) {
 
 func TestSuppressionEmptiesTheCardRatherThanShippingABareHeader(t *testing.T) {
 	withCanonicalTranscript(t, true)
+	// ActiveTask is the last semantic block still rendered by the card; the digest
+	// blocks it used to share this test with are deleted, not suppressed.
 	semanticOnly := AgentContext{
-		ConversationDigest: ConversationDigest{Narrative: "只有摘要"},
+		ActiveTask: &TaskSnapshot{Goal: "只有目标"},
 		SelectedEntities: []SemanticEntityHint{
 			{Kind: "instance", ID: "inst-RECALLED", Source: "agent_inference"},
 		},
@@ -176,4 +170,38 @@ func TestSuppressingTheCardDoesNotChangeWhatTheWriteVerifierSees(t *testing.T) {
 	onCard := renderAgentContextCard(fullyPopulatedContext())
 	require.NotEqual(t, offCard, onCard, "premise: the flag changes the card")
 	require.Less(t, len(strings.Split(onCard, "\n")), len(strings.Split(offCard, "\n")))
+}
+
+// deletedCardBlocks are the labels that are GONE, not gated. Each was a second,
+// lossier copy of turns the canonical transcript replays verbatim, and each was
+// removed in its own commit: 已验证知识 with the VerifiedKnowledge injection,
+// 近期可信观测 with the RecentFacts projection, and the six digest blocks with
+// the ConversationDigest projection.
+//
+// semanticCardBlocks cannot carry them any more — that list means "suppressed
+// when the transcript is on, present when it is off", and these are absent in
+// both positions. This list is the tripwire for reintroduction, and it is
+// checked in BOTH flag positions on purpose: a test that only looked at the
+// transcript-on path would keep passing if someone put a block back behind the
+// flag, which is precisely the state these deletions were meant to leave behind.
+var deletedCardBlocks = []string{
+	"已验证知识：", "近期可信观测：",
+	"较早对话摘要：", "目标：", "既有约束：", "已作决定：", "未完成事项：", "较早完整摘录：",
+}
+
+func TestDeletedCardBlocksStayDeletedInBothFlagPositions(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		withCanonicalTranscript(t, on)
+		card := renderAgentContextCard(fullyPopulatedContext())
+
+		// Without this the assertions below pass on an empty card, which is how
+		// two earlier versions of this cut read as green while proving nothing.
+		require.Contains(t, card, "【本轮统一上下文",
+			"canonical=%v: premise — the card must have rendered", on)
+
+		for _, block := range deletedCardBlocks {
+			assert.NotContains(t, card, block,
+				"canonical=%v: %s was deleted, not gated; no flag position brings it back", on, block)
+		}
+	}
 }

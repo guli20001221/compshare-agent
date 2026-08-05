@@ -100,10 +100,9 @@ func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 		}},
 	}, 1)
 
-	// Mirror turn entry: refreshConversationDigest merges the task's
-	// constraints/decisions into the digest before the view is compiled, which is
-	// how those signals reach the card (as 既有约束 / 已作决定) without being
-	// re-rendered task-side.
+	// Mirror turn entry: refreshConversationDigest still runs, and still merges the
+	// task's constraints/decisions into the digest. What changed is that nothing
+	// renders them any more.
 	eng.refreshConversationDigest(now)
 	card := renderAgentContextCard((ContextCompiler{}).CompileForTurn(eng, "现在怎么样", "", now))
 
@@ -112,8 +111,20 @@ func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 	assert.Contains(t, card, "train-box")
 	assert.Contains(t, card, "uhost-123")
 	assert.Contains(t, card, "把训练机监控看板恢复")
-	assert.Contains(t, card, "只看最近五分钟", "task-level constraints must survive in the card")
-	assert.Contains(t, card, "先重启监控 agent", "task-level decisions must survive in the card")
+	// NOTE ON WHAT THIS NO LONGER ASSERTS. Task constraints and decisions used to
+	// reach the card indirectly: refreshConversationDigest merged them into
+	// ConversationDigest.Constraints/Decisions and the card rendered them as
+	// 既有约束 / 已作决定. Those blocks are deleted — the canonical transcript
+	// replays the turns themselves — so the merge still runs but nothing the
+	// model reads consumes it.
+	//
+	// The consequence worth naming: turns older than the replay window
+	// (maxAgentContextPairs) had the digest summary as their only survivor, and
+	// now have none. That gap is not introduced here — suppressing the blocks
+	// produced it in production on 2026-08-04 — but this deletion makes it
+	// permanent, and closing it is what the token-budget compaction step is for.
+	assert.NotContains(t, card, "只看最近五分钟")
+	assert.NotContains(t, card, "先重启监控 agent")
 	assert.Contains(t, card, "该任务已过期", "the task-expired notice must survive in the card")
 	assert.Contains(t, card, "必须重新查询")
 	assert.NotContains(t, card, "Running",

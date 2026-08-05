@@ -24,11 +24,6 @@ func contextSourceIDs(view TurnContextView) []string {
 	if len(view.RecentConversation) > 0 {
 		ids = append(ids, "recent_pairs")
 	}
-	digest := view.ConversationDigest
-	if digest.Narrative != "" || len(digest.Excerpts) > 0 || len(digest.Goals) > 0 ||
-		len(digest.Constraints) > 0 || len(digest.Decisions) > 0 || len(digest.UnresolvedTasks) > 0 {
-		ids = append(ids, "digest")
-	}
 	if view.ActiveTask != nil {
 		ids = append(ids, "active_task")
 	}

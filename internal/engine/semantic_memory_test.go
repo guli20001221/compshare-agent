@@ -184,8 +184,11 @@ func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSignalsInCard(t *te
 	eng.refreshConversationDigest(now)
 	card := renderAgentContextCard((ContextCompiler{}).Compile(eng, "继续扩盘", now))
 	assert.Contains(t, card, "把训练机的数据盘扩到 200G")
-	assert.Contains(t, card, "instance=uhost-a")
-	assert.Contains(t, card, "target_size_gb=200")
+	// instance=uhost-a and target_size_gb=200 reached the card through the digest's
+	// 既有约束 / 已作决定 blocks, which are deleted; the transcript replays the turn
+	// that produced them instead. The task's own line is what the card still keeps.
+	assert.NotContains(t, card, "instance=uhost-a")
+	assert.NotContains(t, card, "target_size_gb=200")
 	assert.Contains(t, card, "disk_id")
 	assert.NotContains(t, card, "MUST_NOT_SURVIVE")
 }

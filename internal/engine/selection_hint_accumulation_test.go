@@ -191,14 +191,26 @@ func TestTaskEntitiesSurviveTheSelectionHintCleanup(t *testing.T) {
 		"inst-OBS":  "tool_observation",
 	}, got, "the cleanup must remove only user_selected copies")
 
-	// And they still reach the model-visible view, which is what they are for.
+	// They no longer reach AgentContext at all. CompileForTurn used to append
+	// ConversationDigest.EntityHints to SelectedEntities; that feed is deleted with
+	// the rest of the digest projection.
+	//
+	// Which is safe, and this is the re-verification rather than a citation of the
+	// comment on dropCarriedSelectionHints: the binder's allowlist accepts only
+	// user_selected and the account-single source, and the card's accepts those two
+	// plus the pending card and an observed referent. Digest hints carry
+	// actionresolver CandidateSource values — user_explicit / verified_context /
+	// tool_observation — so neither surface ever accepted them. Removing the feed
+	// deletes the CLASS of defect the cleanup above was written to heal: a digest
+	// copy can no longer reach bindInstanceTarget even in a session an older binary
+	// poisoned.
 	view := (ContextCompiler{}).CompileForTurn(e, "看看", "t", now)
-	seen := map[string]bool{}
 	for _, ent := range view.SelectedEntities {
-		seen[ent.ID] = true
+		require.NotContains(t, []string{"inst-TASK", "img-1", "inst-OBS"}, ent.ID,
+			"a digest-carried hint reached the compiled view: %+v", ent)
 	}
-	require.True(t, seen["inst-TASK"] && seen["img-1"] && seen["inst-OBS"],
-		"completed-task entities stopped reaching AgentContext: %+v", view.SelectedEntities)
+	require.False(t, e.bindInstanceTarget(view).conflict,
+		"and the write path is unaffected: these sources were never bindable")
 }
 
 // A single live pick must still bind — the fix removes a duplicate, not the

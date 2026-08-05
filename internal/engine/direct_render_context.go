@@ -29,7 +29,6 @@ type AgentContext struct {
 	TurnID             string
 	CurrentQuestion    string
 	RecentConversation []ConversationPair
-	ConversationDigest ConversationDigest
 	ActiveTask         *TaskSnapshot
 	SelectedEntities   []SemanticEntityHint
 	ContinuityNotices  []string
@@ -103,7 +102,6 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	if e == nil || !e.sessionStateHydrated {
 		return cloneAgentContext(view)
 	}
-	view.ConversationDigest = cloneConversationDigest(e.sessionState.ConversationDigest)
 	view.ContinuityNotices = compactSemanticItems(append([]string(nil), e.continuityAdvisories.Notices...))
 	if e.continuityAdvisories.ReadOnly {
 		view.ContinuityNotices = compactSemanticItems(append(view.ContinuityNotices, "本轮上下文只读，不得执行写操作"))
@@ -118,7 +116,6 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		view.ActiveTask = &copy
 		view.SelectedEntities = append(view.SelectedEntities, task.Entities...)
 	}
-	view.SelectedEntities = append(view.SelectedEntities, e.sessionState.ConversationDigest.EntityHints...)
 	if !isPersistedSelectionExpired(buildAt.Unix(), e.sessionState) {
 		for _, item := range e.sessionState.PendingSelectionItems {
 			view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
