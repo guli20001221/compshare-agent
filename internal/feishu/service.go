@@ -3,7 +3,6 @@ package feishu
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkchannel "github.com/larksuite/oapi-sdk-go/v3/channel"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
@@ -31,6 +31,8 @@ type job struct {
 	imageKeys []string
 }
 
+var errExternalGroupImageResourceUnsupported = errors.New("Feishu does not support downloading message images in external groups")
+
 type Service struct {
 	cfg       config.FeishuConfig
 	agent     *AgentClient
@@ -39,6 +41,10 @@ type Service struct {
 	botUserID string
 	allowed   map[string]struct{}
 	queue     chan job
+	// externalImageUserToken is optional. The default tenant-token path remains
+	// the only path for internal groups; this is used only after Feishu rejects
+	// an external-group image resource request.
+	externalImageUserToken userAccessTokenProvider
 
 	sessionsMu sync.Mutex
 	sessions   map[string]string
@@ -48,7 +54,15 @@ type Service struct {
 	seen   map[string]time.Time
 }
 
-func NewService(ctx context.Context, cfg config.FeishuConfig) (*Service, error) {
+type ServiceOption func(*Service)
+
+func WithExternalImageUserToken(provider userAccessTokenProvider) ServiceOption {
+	return func(service *Service) {
+		service.externalImageUserToken = provider
+	}
+}
+
+func NewService(ctx context.Context, cfg config.FeishuConfig, options ...ServiceOption) (*Service, error) {
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -69,11 +83,17 @@ func NewService(ctx context.Context, cfg config.FeishuConfig) (*Service, error) 
 	if maxConcurrent <= 0 {
 		maxConcurrent = 4
 	}
-	return &Service{
+	service := &Service{
 		cfg: cfg, agent: agent, api: api, botOpenID: bot.OpenID, botUserID: bot.UserID, allowed: allowed,
 		queue:    make(chan job, maxConcurrent*16),
 		sessions: make(map[string]string), seen: make(map[string]time.Time),
-	}, nil
+	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 func ValidateConfig(cfg config.FeishuConfig) error {
@@ -121,7 +141,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.AppSecret,
 		larkws.WithEventHandler(eventHandler),
 	)
-	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, knowledge_only=true", len(s.allowed), workers)
+	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, knowledge_only=true, auto_reply_new_topics=%t", len(s.allowed), workers, s.cfg.AutoReplyNewTopics)
 	started := make(chan error, 1)
 	go func() {
 		started <- client.Start(ctx)
@@ -209,6 +229,11 @@ func (s *Service) handleJob(ctx context.Context, item job) {
 		if len(item.imageKeys) > 1 {
 			log.Printf("Feishu message=%s contains %d images; OCR uses the first image", item.messageID, len(item.imageKeys))
 		}
+		if err != nil {
+			log.Printf("warning: Feishu image read failed message=%s: %v", item.messageID, err)
+			_ = s.reply(ctx, item.messageID, imageReadFailureReply(err))
+			return
+		}
 	}
 	var sessionID string
 	if err == nil {
@@ -244,17 +269,45 @@ func (s *Service) handleJob(ctx context.Context, item job) {
 }
 
 func (s *Service) downloadImageDataURL(ctx context.Context, messageID, imageKey string) (string, error) {
+	data, err := s.downloadImageBytes(ctx, messageID, imageKey)
+	if errors.Is(err, errExternalGroupImageResourceUnsupported) && s.externalImageUserToken != nil {
+		userAccessToken, tokenErr := s.externalImageUserToken.AccessToken(ctx)
+		if tokenErr != nil {
+			return "", fmt.Errorf("%w: %v", errExternalImageUserAuthorizationUnavailable, tokenErr)
+		}
+		data, err = s.downloadImageBytes(ctx, messageID, imageKey, larkcore.WithUserAccessToken(userAccessToken))
+	}
+	if err != nil {
+		return "", err
+	}
+	maxBytes := s.cfg.MaxImageBytes
+	if maxBytes <= 0 {
+		maxBytes = 5 << 20
+	}
+	return encodeImageDataURL(data, maxBytes)
+}
+
+func (s *Service) downloadImageBytes(ctx context.Context, messageID, imageKey string, options ...larkcore.RequestOptionFunc) ([]byte, error) {
 	req := larkim.NewGetMessageResourceReqBuilder().
 		MessageId(messageID).
 		FileKey(imageKey).
 		Type("image").
 		Build()
-	resp, err := s.api.Im.V1.MessageResource.Get(ctx, req)
+	resp, err := s.api.Im.V1.MessageResource.Get(ctx, req, options...)
 	if err != nil {
-		return "", fmt.Errorf("download Feishu image: %w", err)
+		return nil, fmt.Errorf("download Feishu image: %w", err)
 	}
-	if resp == nil || resp.File == nil {
-		return "", fmt.Errorf("download Feishu image: empty response")
+	if resp == nil {
+		return nil, fmt.Errorf("download Feishu image: empty response")
+	}
+	if !resp.Success() {
+		if resp.Code == 234009 {
+			return nil, fmt.Errorf("download Feishu image: %w", errExternalGroupImageResourceUnsupported)
+		}
+		return nil, fmt.Errorf("download Feishu image: code=%d message=%s request_id=%s", resp.Code, resp.Msg, resp.RequestId())
+	}
+	if resp.File == nil {
+		return nil, fmt.Errorf("download Feishu image: empty file")
 	}
 	maxBytes := s.cfg.MaxImageBytes
 	if maxBytes <= 0 {
@@ -262,9 +315,19 @@ func (s *Service) downloadImageDataURL(ctx context.Context, messageID, imageKey 
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.File, int64(maxBytes)+1))
 	if err != nil {
-		return "", fmt.Errorf("read Feishu image: %w", err)
+		return nil, fmt.Errorf("read Feishu image: %w", err)
 	}
-	return encodeImageDataURL(data, maxBytes)
+	return data, nil
+}
+
+func imageReadFailureReply(err error) string {
+	if errors.Is(err, errExternalImageUserAuthorizationUnavailable) {
+		return "外部群截图读取尚未完成授权。请让目标群内的一名本企业成员在本机执行机器人截图授权；完成后可直接在话题中上传截图提问。"
+	}
+	if errors.Is(err, errExternalGroupImageResourceUnsupported) {
+		return "飞书目前不允许机器人读取外部群消息中的原始图片，因此暂时无法识别这张截图。请将关键报错文字粘贴到话题中；如需截图问答，请在内部群中使用机器人。"
+	}
+	return "抱歉，这张截图没有读取成功。请重试，或将关键报错文字复制到消息中。"
 }
 
 func encodeImageDataURL(data []byte, maxBytes int) (string, error) {
@@ -314,7 +377,7 @@ func (s *Service) deleteSession(topicKey string) {
 func (s *Service) reply(ctx context.Context, messageID, answer string) error {
 	parts := splitReply(answer, s.cfg.MaxReplyRunes)
 	for i, part := range parts {
-		content, err := json.Marshal(map[string]string{"text": part})
+		content, err := markdownPostContent(part)
 		if err != nil {
 			return err
 		}
@@ -322,8 +385,8 @@ func (s *Service) reply(ctx context.Context, messageID, answer string) error {
 		req := larkim.NewReplyMessageReqBuilder().
 			MessageId(messageID).
 			Body(larkim.NewReplyMessageReqBodyBuilder().
-				Content(string(content)).
-				MsgType("text").
+				Content(content).
+				MsgType("post").
 				ReplyInThread(true).
 				Uuid(idempotencyID).
 				Build()).

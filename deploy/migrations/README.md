@@ -48,7 +48,12 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.
 # table is fail-closed, so a missing 0011 disables the lane silently — the server
 # starts and logs the reason; it does not error.
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0011_create_ssh_ops_audit.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0012_create_feishu_oauth_tokens.sql
 ```
+
+`0012` is required only before enabling `agent.feishu.external_image_oauth`. It
+creates `feishu_oauth_tokens`, which holds AES-GCM ciphertext for the rotating
+delegated Feishu user token; it contains no plaintext access or refresh token.
 
 Every file is idempotent, so the whole list can be applied to any database
 regardless of how far it already is — a new one, or a deployment still on 0004.

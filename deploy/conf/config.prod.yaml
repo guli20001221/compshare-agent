@@ -3,6 +3,11 @@
 extends: config.local.yaml
 
 agent:
+  # Keep the public production overlay credential-free. The baseline config
+  # contains the allowlist and Feishu credentials; this enables root-topic
+  # replies without requiring an @ mention in that allowlisted topic group.
+  feishu:
+    auto_reply_new_topics: true
   retrieval:
     mcp_url: "http://compshare-kb.prj-ucompshare-prod.svc.c5.uae/mcp"
   mysql:

@@ -84,6 +84,19 @@ type FeishuConfig struct {
 	MaxConcurrent      int  `yaml:"max_concurrent"`
 	MaxReplyRunes      int  `yaml:"max_reply_runes"`
 	MaxImageBytes      int  `yaml:"max_image_bytes"`
+	// ExternalImageOAuth lets the Feishu adapter use a consenting internal
+	// group member's user_access_token to read an image uploaded in an external
+	// group. It is intentionally off unless configured explicitly.
+	ExternalImageOAuth ExternalImageOAuthConfig `yaml:"external_image_oauth"`
+}
+
+type ExternalImageOAuthConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// BootstrapRefreshToken is consumed only when PostgreSQL has no stored
+	// token yet. The adapter rotates and encrypts the replacement in PostgreSQL.
+	BootstrapRefreshToken string `yaml:"bootstrap_refresh_token"`
+	// RedirectURL is used only by the local `feishu-authorize` command.
+	RedirectURL string `yaml:"redirect_url"`
 }
 
 // SSHOpsConfig configures the consent-gated, read-only in-instance SSH-ops lane

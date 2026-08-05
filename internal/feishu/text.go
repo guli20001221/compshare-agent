@@ -10,6 +10,30 @@ import (
 
 const imageOnlyQuestion = "请识别图片内容，并结合知识库回答图片中的问题。"
 
+// markdownPostContent wraps Markdown in Feishu's rich-text post format. A
+// plain text message does not render Markdown; an md element in a post does.
+func markdownPostContent(markdown string) (string, error) {
+	content := struct {
+		ZhCN struct {
+			Content [][]struct {
+				Tag  string `json:"tag"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"zh_cn"`
+	}{}
+	content.ZhCN.Content = [][]struct {
+		Tag  string `json:"tag"`
+		Text string `json:"text"`
+	}{
+		{{Tag: "md", Text: markdown}},
+	}
+	raw, err := json.Marshal(content)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
 type messageInput struct {
 	Question  string
 	ImageKeys []string
