@@ -84,7 +84,14 @@ func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report k
 	e.retractKnowledgeHardBlock()
 	display := knowledge.StripCiteMarkers(answer)
 	if len(e.readResponseEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
-		e.rememberVerifiedKnowledge(resolved, display, e.knowledgeLedgerForVerification(resolved))
+		// What is stored is what THIS turn retrieved, not the merged ledger the
+		// verifier judged against. Storing the merge would copy prior chunks into
+		// the new entry with a fresh VerifiedAtUnix, so a chunk fetched once would
+		// be re-stamped by every later grounded answer and never leave the
+		// verifiedKnowledgeMaxTurns window. An answer grounded purely on prior
+		// evidence therefore stores nothing new — which is the intended outcome:
+		// that evidence already has an entry, and it should age out on its own.
+		e.rememberVerifiedKnowledge(resolved, display, e.currentTurnEvidenceLedger(resolved))
 	}
 	e.groundingOutcomeThisTurn = outcome
 	return display
