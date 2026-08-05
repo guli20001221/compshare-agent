@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"strings"
+
+	"github.com/compshare-agent/internal/prompt"
 	"testing"
 	"time"
 
@@ -30,15 +32,18 @@ func TestAssembledRequestStaysUnderBudgetOnHighFanoutTurns(t *testing.T) {
 	for _, perResult := range []int{2000, 4142, 6000} {
 		t.Run(fmt.Sprintf("result=%drunes", perResult), func(t *testing.T) {
 			e := highFanoutEngine(t, maxReadExpensiveCallsPerTurn, perResult)
+			tools := productionToolWindow()
 
 			raw := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
-			require.Greater(t, assembledRequestRunes(raw), maxAssembledRequestRunes,
-				"premise: the unbounded assembly must actually overflow, or this test proves nothing")
+			require.Greater(t, assembledRequestRunes(raw)+toolWindowRunes(tools), maxAssembledRequestRunes,
+				"premise: the unbounded request must actually overflow, or this test proves nothing")
 
-			out := e.buildMessagesForLLM()
+			out := e.buildMessagesForLLM(tools)
 
-			assert.LessOrEqual(t, assembledRequestRunes(out), maxAssembledRequestRunes,
-				"%d reads x %d runes assembled past the request ceiling", maxReadExpensiveCallsPerTurn, perResult)
+			assert.LessOrEqual(t, assembledRequestRunes(out)+toolWindowRunes(tools), maxAssembledRequestRunes,
+				"%d reads x %d runes assembled past the request ceiling (messages=%d + tools=%d)",
+				maxReadExpensiveCallsPerTurn, perResult,
+				assembledRequestRunes(out), toolWindowRunes(tools))
 			assert.LessOrEqual(t, len(out), maxAssembledRequestMessages)
 			assertToolCallPairsValid(t, out)
 
@@ -62,11 +67,12 @@ func TestOrdinaryTurnIsNotTrimmedByTheRequestBudget(t *testing.T) {
 	e := highFanoutEngine(t, 2, 4142)
 
 	raw := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
-	out := e.buildMessagesForLLM()
+	out := e.buildMessagesForLLM(productionToolWindow())
 
 	require.Equal(t, len(raw), len(out),
 		"a p90-shaped turn was trimmed; the budget is sized for the tail, not for ordinary traffic")
-	assert.LessOrEqual(t, assembledRequestRunes(out), maxAssembledRequestRunes)
+	assert.LessOrEqual(t, assembledRequestRunes(out)+toolWindowRunes(productionToolWindow()),
+		maxAssembledRequestRunes)
 
 	// How much history survives here is decided by maxReplayedHistoryRunes at turn
 	// entry, NOT by the request budget — 20 transcript-bearing turns at the median
@@ -101,7 +107,7 @@ func TestHistoryIsShedBeforeThisTurnsToolResults(t *testing.T) {
 	e := highFanoutEngine(t, maxReadExpensiveCallsPerTurn, 4142)
 
 	raw := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
-	out := e.buildMessagesForLLM()
+	out := e.buildMessagesForLLM(productionToolWindow())
 
 	rawHistory, rawGroups := replayedExchanges(raw), inTurnToolGroups(raw)
 	gotHistory, gotGroups := replayedExchanges(out), inTurnToolGroups(out)
@@ -151,6 +157,57 @@ func inTurnToolGroups(msgs []openai.ChatCompletionMessage) int {
 
 const currentFanoutQuestion = "帮我全面排查一下"
 
+// productionToolWindow is the window the deploy config actually ships:
+// mutating_tools: true and ssh_ops.enabled: true. It is 40 schemas and ~22,800
+// serialized runes — an order of magnitude larger than the system prompt, and
+// invisible in the message list, which is how it went unbudgeted.
+func productionToolWindow() []openai.Tool { return centralAgentToolWindow(true, true) }
+
+// The tool window is not one size. Its two extremes bracket what a request can
+// be asked to carry, so the budget is exercised against both rather than against
+// whichever one a fixture happened to pick.
+func toolWindowShapes() map[string][]openai.Tool {
+	return map[string][]openai.Tool{
+		"production (mutating + ssh-ops)": productionToolWindow(),
+		"read-only":                       centralAgentToolWindow(false, false),
+		"knowledge-only":                  centralAgentKnowledgeToolWindow(),
+	}
+}
+
+// The tool window is charged at its serialized size, and that size is real
+// enough to matter: the production window alone is over a fifth of the request
+// budget. This is the arithmetic the previous version of the budget omitted
+// entirely — messages were trimmed to 100,000 and then ~22,800 runes of schemas
+// were appended by llm.ChatRequest.Tools, outside anything that had counted.
+func TestToolWindowIsChargedAgainstTheRequestBudget(t *testing.T) {
+	for name, tools := range toolWindowShapes() {
+		cost := toolWindowRunes(tools)
+		require.Greater(t, cost, 0, "%s: premise — a non-empty window must cost something", name)
+		assert.Less(t, cost, maxAssembledRequestRunes/2,
+			"%s window costs %d runes, over half the %d request budget: the messages it exists to "+
+				"serve would have almost nothing left", name, cost, maxAssembledRequestRunes)
+		t.Logf("%-32s %2d tools, %6d runes (%.1f%% of the request budget)",
+			name, len(tools), cost, 100*float64(cost)/float64(maxAssembledRequestRunes))
+	}
+	assert.Equal(t, 0, toolWindowRunes(nil), "an empty window costs nothing")
+}
+
+// The high-fanout bound must hold for whichever window the turn is running, not
+// just the one a fixture picked.
+func TestRequestBudgetHoldsAcrossToolWindowShapes(t *testing.T) {
+	for name, tools := range toolWindowShapes() {
+		t.Run(name, func(t *testing.T) {
+			e := highFanoutEngine(t, maxReadExpensiveCallsPerTurn, 4142)
+			out := e.buildMessagesForLLM(tools)
+			total := assembledRequestRunes(out) + toolWindowRunes(tools)
+			assert.LessOrEqual(t, total, maxAssembledRequestRunes,
+				"messages=%d + tools=%d = %d", assembledRequestRunes(out), toolWindowRunes(tools), total)
+			assertToolCallPairsValid(t, out)
+			assert.Contains(t, renderTestMessages(out), currentFanoutQuestion)
+		})
+	}
+}
+
 // highFanoutEngine builds an engine whose history is at budget (a full replay
 // window of transcript-bearing turns at the measured median) and whose current
 // turn has issued `reads` expensive reads of `perResult` runes each.
@@ -160,9 +217,12 @@ func highFanoutEngine(t *testing.T, reads, perResult int) *Engine {
 
 	e := &Engine{}
 	e.sessionStateHydrated = true
+	// The REAL system prompt, not a stand-in. A 15,000-rune block of filler stood
+	// here and was wrong twice over: the real prompt is ~1,900 runes, and the tool
+	// schemas it was pretending to include do not live in the message list at all —
+	// they travel as llm.ChatRequest.Tools and are charged separately below.
 	e.messages = []openai.ChatCompletionMessage{
-		// A stand-in for the real system prompt plus 40 tool schemas.
-		{Role: openai.ChatMessageRoleSystem, Content: strings.Repeat("系", 15000)},
+		{Role: openai.ChatMessageRoleSystem, Content: prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())},
 	}
 	for i := 0; i < maxAgentContextPairs; i++ {
 		q, a := fmt.Sprintf("问题%d", i), fmt.Sprintf("回答%d", i)

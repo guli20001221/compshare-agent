@@ -52,7 +52,7 @@ func assembleNextTurn(e *Engine, question string) []openai.ChatCompletionMessage
 	})
 	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, question, "turn-parity", fixedBuildAt)
 	e.turnContextViewReady = true
-	return e.buildMessagesForLLM()
+	return e.buildMessagesForLLM(centralAgentToolWindow(false, false))
 }
 
 // runHotTurn holds one turn the way a live engine does and captures it.

@@ -1570,36 +1570,41 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			})
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
-		messages := e.buildMessagesForLLM()
+		// The tool window is decided FIRST, and narrowed to its final shape, because
+		// it is part of the request the provider sizes against and the message
+		// budget has to be told how much of the request it has already spent. It
+		// travels as its own field (llm.ChatRequest.Tools), so nothing about it is
+		// visible in the message list — the production window is 40 schemas and
+		// 22,806 runes, larger than the system prompt by an order of magnitude.
 		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
 		if opts.KnowledgeOnly {
 			toolWindow = centralAgentKnowledgeToolWindow()
-		}
-		req := llm.ChatRequest{
-			Messages: messages,
-			Tools:    toolWindow,
 		}
 		// Once the bounded search budget is exhausted, remove the capability. The
 		// observations already in the conversation are sufficient for the Agent's
 		// next decision; injecting another policy prompt here would create a second
 		// and potentially conflicting knowledge contract.
 		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn &&
-			toolListContainsFunction(req.Tools, "SearchKnowledge") {
-			req.Tools = toolListWithoutFunction(req.Tools, "SearchKnowledge")
+			toolListContainsFunction(toolWindow, "SearchKnowledge") {
+			toolWindow = toolListWithoutFunction(toolWindow, "SearchKnowledge")
 		}
 		// Same rule for full-body reads, on their own budget.
 		if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn &&
-			toolListContainsFunction(req.Tools, "ReadChunk") {
-			req.Tools = toolListWithoutFunction(req.Tools, "ReadChunk")
+			toolListContainsFunction(toolWindow, "ReadChunk") {
+			toolWindow = toolListWithoutFunction(toolWindow, "ReadChunk")
 		}
 		// A whole-catalog read is complete after one successful observation. The
 		// model may still reason over that observation, but cannot spend later
 		// rounds asking the same immutable snapshot with cosmetic query variants.
-		for _, tool := range req.Tools {
+		for _, tool := range toolWindow {
 			if tool.Function != nil && singleShotAgentTool(tool.Function.Name) &&
 				completedAgentToolCall(e.toolResultsByCallThisTurn, tool.Function.Name) {
-				req.Tools = toolListWithoutFunction(req.Tools, tool.Function.Name)
+				toolWindow = toolListWithoutFunction(toolWindow, tool.Function.Name)
 			}
+		}
+		req := llm.ChatRequest{
+			Messages: e.buildMessagesForLLM(toolWindow),
+			Tools:    toolWindow,
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
@@ -4957,15 +4962,37 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 // buildMessagesForLLM returns the message slice to send to the LLM.
 // Freshness and refresh requirements are part of the single compiled
 // AgentContext; this function does not add turn-local policy prompts.
-func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
+// buildMessagesForLLM assembles the message list for one request. toolWindow is
+// the FINAL, already-narrowed window that will travel alongside it: the size
+// budget covers the whole request, and the tools are a large part of it that the
+// message list never mentions.
+func (e *Engine) buildMessagesForLLM(toolWindow []openai.Tool) []openai.ChatCompletionMessage {
 	assembled := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
-	capped := trimAssembledRequest(assembled, maxAssembledRequestMessages, maxAssembledRequestRunes)
+	messageBudget := maxAssembledRequestRunes - toolWindowRunes(toolWindow)
+	capped := trimAssembledRequest(assembled, maxAssembledRequestMessages, messageBudget)
 	e.recordPromptAssembly(len(e.messages), len(assembled), len(capped))
 	return capped
 }
 
-// maxAssembledRequestRunes is the SIZE ceiling on one assembled request, and it
-// is the only bound that sees the whole request at once.
+// toolWindowRunes is what the tool schemas cost on the wire. Serializing them is
+// the honest measure: the provider receives this JSON, and the schemas' own
+// descriptions and enums are most of it.
+func toolWindowRunes(tools []openai.Tool) int {
+	if len(tools) == 0 {
+		return 0
+	}
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		// Unmarshalable tools would fail the request anyway; charge the production
+		// window's size rather than 0, so a marshalling bug cannot silently hand
+		// the message list the whole budget.
+		return maxAssembledRequestRunes / 4
+	}
+	return len([]rune(string(raw)))
+}
+
+// maxAssembledRequestRunes is the SIZE ceiling on one whole request — messages
+// AND the tool window — and it is the only bound that sees all of it at once.
 //
 // It exists because maxReplayedHistoryRunes cannot do this job. That budget is
 // applied at turn ENTRY, by recentCompleteConversationPairs, when the turn has
