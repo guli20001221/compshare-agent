@@ -19,9 +19,9 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	content := e.guardMonitorNoDataFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
 
-	// SearchKnowledge validates only Agent-authored documentary claims.
-	// Deterministic read blocks are composed afterwards, so an unrelated RAG
-	// attempt cannot strip or rewrite exact instance/price/monitor facts.
+	// SearchKnowledge validates only the Agent-authored draft. Ordinary read
+	// facts already reached the Agent as tool evidence, and no second read block
+	// is composed afterwards by this gateway.
 	if e.searchKnowledgeRanThisTurn {
 		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
 	} else {

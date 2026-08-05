@@ -70,22 +70,23 @@ Mutation stays behind workflow code and confirmation gates; a read capability or
 ### Typed Observation
 
 A tool result is not free text. A read capability returns a
-`ReadCapabilityObservation` carrying status, a structured envelope, and — when it
-has exact fields to show — a `render_ref` placeholder plus a `RenderContract`
-instruction. The Agent reasons over the observation and places `render_ref` in
-its answer where exact identifiers/quantities/prices/stock/specs/status belong.
+`ReadCapabilityObservation` carrying status and a structured evidence envelope.
+The Agent reasons over those facts and authors the final Markdown itself. The
+ordinary read renderer's text is not a user-visible block and is never appended
+to the Agent response a second time.
 
 ### Response Gateway
 
-The response gateway (`engine`'s `finalizeResponse` /
-`substituteReadObservationBlocks`) substitutes the Agent-placed `render_ref` with
-the observation's deterministic rendering in the final answer. It also enforces
-the never-0% monitor invariant (all-no-data historical monitor → whole-answer
-"cannot confirm", never 0%/healthy).
+The response gateway (`engine`'s `finalizeResponse`) does not substitute or
+append ordinary read results. It enforces the never-0% monitor invariant
+(all-no-data historical monitor → whole-answer "cannot confirm", never
+0%/healthy) and is the narrow server-side delivery path for credentials that
+must not enter model context.
 
-Note: `render_ref` insertion is a model instruction, not a machine guarantee.
-"Exact values always reach the final answer" is a P7 acceptance item, not yet
-code-enforced.
+Note: ordinary read fidelity is intentionally delegated to the Agent, grounded
+in the envelope facts; it is not a verbatim-insertion contract. The configured-
+model monitor acceptance checks the reply against those facts without prescribing
+the reply's wording or layout.
 
 ### RAG Evidence
 
@@ -141,7 +142,7 @@ user request
   -> input guard (inputguard / guardrails)
   -> central Agent loop (engine): each round selects one of
        read capability  |  SearchKnowledge  |  propose write -> resolver -> sealed workflow
-  -> response gateway (render_ref -> deterministic rendering)
+  -> response gateway (safety invariants / sensitive credential delivery)
   -> output guard (sanitizer / policy)
 ```
 
