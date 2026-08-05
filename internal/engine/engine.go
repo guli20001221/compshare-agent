@@ -511,8 +511,14 @@ type Engine struct {
 	promptSectionIDsThisTurn   []string
 	memoryUpdateSourceThisTurn string
 	groundingOutcomeThisTurn   string
-	// sessionFactContextEnabled injects fresh RecentFacts into the system
-	// prompt as advisory same-session context. Default off.
+	// sessionFactContextEnabled INJECTS NOTHING. It reads as a prompt-injection
+	// switch and was documented as one, but the only path that ever put a
+	// RecentFact in front of the model was the context card's 近期可信观测 block,
+	// which this flag did not gate and which was deleted once the canonical
+	// transcript replayed the original tool results instead. What survives is
+	// refreshSystemPrompt's BOOLEAN use of assembleFactContext, deciding whether
+	// the turn's instance binding is traced as ResolutionSourceFactCache. Default
+	// off; the deploy config ships it on, where it changes a trace field.
 	sessionFactContextEnabled bool
 	// reactResultProjectionEnabled shrinks selected bulky tool results before
 	// they are formatted back into the ReAct model-visible history. Default off.
@@ -531,8 +537,9 @@ type Engine struct {
 	//     determined (observability.ResolutionSource* — session_state /
 	//     single_host / fact_cache / unresolved).
 	//   - factCacheOldestAgeSecondsThisTurn: age of the oldest still-fresh fact
-	//     injected this turn, or -1 when none. Bucketed before it leaves the
-	//     recorder.
+	//     the turn HAD, or -1 when none. Nothing is injected — see
+	//     sessionFactContextEnabled; the facts decide a trace label, not the
+	//     prompt. Bucketed before it leaves the recorder.
 	selectedInstanceIDAtTurnStart     string
 	instanceResolutionSourceThisTurn  string
 	factCacheOldestAgeSecondsThisTurn int
@@ -738,7 +745,9 @@ func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
 	e.instanceOps = r
 }
 
-// SetSessionFactContextEnabled toggles advisory RecentFacts prompt injection.
+// SetSessionFactContextEnabled toggles the fact-cache TRACE LABEL. It does not
+// inject RecentFacts into the prompt; see the field for why the name outlived
+// the behaviour.
 func (e *Engine) SetSessionFactContextEnabled(v bool) {
 	e.sessionFactContextEnabled = v
 }
@@ -864,8 +873,10 @@ func (e *Engine) SelectedInstanceIDAtTurnStart() string { return e.selectedInsta
 func (e *Engine) InstanceResolutionSource() string { return e.instanceResolutionSourceThisTurn }
 
 // FactCacheOldestAgeSeconds returns the age in seconds of the oldest still-fresh
-// fact injected into the most recent turn's prompt, or -1 when none was. The
-// recorder buckets it (observability.BucketFactCacheAge) before persisting.
+// fact the most recent turn held, or -1 when there was none. It says "into the
+// prompt" in no version of this comment any more: nothing is injected, the value
+// only labels a trace. The recorder buckets it
+// (observability.BucketFactCacheAge) before persisting.
 func (e *Engine) FactCacheOldestAgeSeconds() int { return e.factCacheOldestAgeSecondsThisTurn }
 
 func (e *Engine) SetTokenUsageObserver(observer func(llm.TokenUsage)) {
