@@ -59,7 +59,7 @@ func entityIDs(hints []SemanticEntityHint) []string {
 // semanticCardBlocks are the labels the transcript replaces. Listed by label rather
 // than by count so that adding a block to the card without deciding which side of
 // this line it falls on is a visible omission here, not a silent pass.
-// 已验证知识, 近期可信观测 and every ConversationDigest block (较早对话摘要,
+// 已验证知识, 近期可信观测 and every former ConversationDigest block (较早对话摘要,
 // 目标, 既有约束, 已作决定, 未完成事项, 较早完整摘录) are deliberately absent:
 // they are no longer suppressed, they are DELETED.
 // The card projection and AgentContext.VerifiedKnowledge were removed once the
@@ -147,7 +147,6 @@ func TestSuppressingTheCardDoesNotChangeWhatTheWriteVerifierSees(t *testing.T) {
 				Source: "agent_inference", Freshness: ContinuityFreshnessFresh,
 			}},
 		}
-		e.refreshConversationDigest(now)
 		view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
 		return view, e.bindInstanceTarget(view)
 	}

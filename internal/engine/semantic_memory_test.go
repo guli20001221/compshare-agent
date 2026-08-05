@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -27,17 +28,6 @@ func TestSemanticMemory_V7RoundTripAndAdvisoriesStayEphemeral(t *testing.T) {
 			Freshness:     ContinuityFreshnessFresh,
 			UpdatedAtUnix: 1_800_000_000,
 		},
-		ConversationDigest: ConversationDigest{
-			Narrative:       "目标：给训练机扩容。未完成：需要选择数据盘",
-			Goals:           []string{"给训练机扩容"},
-			UnresolvedTasks: []string{"需要选择数据盘"},
-			Sources: MemoryDelta{Goals: []SourcedMemory{{
-				Value: "给训练机扩容", PairIndex: 0, Quote: "给训练机扩容",
-			}}},
-			Excerpts:        []ConversationExcerpt{{User: "继续", Assistant: "请先选择数据盘"}},
-			SummaryFrontier: 12,
-			UpdatedAtUnix:   1_800_000_000,
-		},
 	}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(state, 7)
@@ -61,7 +51,8 @@ func TestSemanticMemory_V7RoundTripAndAdvisoriesStayEphemeral(t *testing.T) {
 	roundTrip, err := ParsePersistedContext(envelopeRaw)
 	require.NoError(t, err)
 	assert.Equal(t, state.TaskSnapshot, roundTrip.AgentSessionState.TaskSnapshot)
-	assert.Equal(t, state.ConversationDigest, roundTrip.AgentSessionState.ConversationDigest)
+	assert.NotContains(t, string(raw), "conversation_digest",
+		"the digest is deleted, not merely unrendered: it must not reappear on the wire")
 }
 
 func TestChat_ExpiredFrameKeepsSemanticsButCannotResume(t *testing.T) {
@@ -104,7 +95,6 @@ func TestChat_ExpiredFrameKeepsSemanticsButCannotResume(t *testing.T) {
 	assert.Equal(t, "missing_slots", state.TaskSnapshot.Stage)
 	assert.Equal(t, []string{"disk_id"}, state.TaskSnapshot.MissingSlots)
 	assert.Equal(t, TaskSnapshotStatusExpired, state.TaskSnapshot.Status)
-	assert.Contains(t, state.ConversationDigest.Narrative, "把训练机的数据盘扩到 200G")
 	assert.Contains(t, renderTestMessages(eng.llmClient.(*mockLLM).calls[0].Messages), "新鲜度=expired")
 	_, active := eng.activeContextFrame(time.Now())
 	assert.False(t, active, "semantic retention must never reactivate an expired workflow")
@@ -177,45 +167,60 @@ func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSignalsInCard(t *te
 	assert.Equal(t, "查到了，接下来要扩盘。", eng.messages[len(eng.messages)-1].Content)
 
 	// The structured task signals cross the turn boundary through the single
-	// context card, not a second summary block; raw tool JSON never does.
-	// refreshConversationDigest (turn entry) merges the task's constraints and
-	// decisions into the digest, which the card then surfaces.
+	// context card; raw tool JSON never does.
 	now := time.Now()
-	eng.refreshConversationDigest(now)
 	card := renderAgentContextCard((ContextCompiler{}).Compile(eng, "继续扩盘", now))
 	assert.Contains(t, card, "把训练机的数据盘扩到 200G")
 	// instance=uhost-a and target_size_gb=200 reached the card through the digest's
-	// 既有约束 / 已作决定 blocks, which are deleted; the transcript replays the turn
-	// that produced them instead. The task's own line is what the card still keeps.
+	// 既有约束 / 已作决定 blocks. Those blocks and the merge that fed them are both
+	// deleted; the transcript replays the turn that produced them instead. The
+	// task's own line is what the card still keeps.
 	assert.NotContains(t, card, "instance=uhost-a")
 	assert.NotContains(t, card, "target_size_gb=200")
 	assert.Contains(t, card, "disk_id")
 	assert.NotContains(t, card, "MUST_NOT_SURVIVE")
 }
 
-func TestTrimHistory_PreservesDiscardedTurnsWithoutGuessingTheirMeaning(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV5}, 1)
-	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system"}}
-	for i := 0; i < maxHistoryMessages; i++ {
-		user := "普通问题"
-		if i < maxHistoryMessages/2 {
-			user = "第二种，区域保持不变"
-		}
-		eng.messages = append(eng.messages,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: user},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "已记录"},
-		)
+// Trimming discards. It used to distil evicted turns into ConversationDigest, and
+// the test here asserted that the excerpts survived; both the digest and that
+// hand-off are gone.
+//
+// What replaces the assertion is the reason the hand-off was not load-bearing:
+// the model's cross-turn memory is the replay window, and the window is INSIDE
+// what the trim leaves. maxHistoryMessages/2 pairs survive against a
+// maxAgentContextPairs window, so an exchange can only leave the model's view by
+// ageing past the window or by losing the rune budget — never by this trim.
+//
+// BOTH branches are run. trimHistoryWithContext forks on
+// reactHistoryCompactionEnabled and only one side lives in history_compaction.go;
+// a first version of this test exercised the other one, and a mutation that
+// lowered the compaction ceiling to maxAgentContextPairs — squarely into the
+// replay window — passed it. A trim test that never reaches the trim under test
+// is the same empty gate as no test.
+func TestTrimmingNeverReachesTheReplayWindow(t *testing.T) {
+	for _, compaction := range []bool{false, true} {
+		t.Run(fmt.Sprintf("compaction=%v", compaction), func(t *testing.T) {
+			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+			eng.SetReactHistoryCompactionEnabled(compaction)
+			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+			eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system"}}
+			for i := 0; i < maxHistoryMessages; i++ {
+				eng.messages = append(eng.messages,
+					openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("问题%d", i)},
+					openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("回答%d", i)},
+				)
+			}
+			require.Greater(t, len(eng.messages), 1+maxHistoryMessages, "premise: the input must overflow")
+
+			before := eng.recentCompleteConversationPairs(maxAgentContextPairs)
+			require.Len(t, before, maxAgentContextPairs, "premise: a full replay window before the trim")
+
+			eng.trimHistory()
+
+			require.LessOrEqual(t, len(eng.messages), 1+maxHistoryMessages,
+				"the trim must actually have fired, or the comparison below is between two identical values")
+			assert.Equal(t, before, eng.recentCompleteConversationPairs(maxAgentContextPairs),
+				"the trim changed what the model reads; the ceiling must stay clear of the replay window")
+		})
 	}
-	require.Greater(t, len(eng.messages), 1+maxHistoryMessages)
-
-	eng.trimHistory()
-
-	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.ConversationDigest.Goals)
-	assert.Empty(t, state.ConversationDigest.Decisions)
-	require.NotEmpty(t, state.ConversationDigest.Excerpts)
-	assert.Contains(t, state.ConversationDigest.Excerpts[0].User, "第二种")
-	assert.Greater(t, state.ConversationDigest.SummaryFrontier, int64(0))
-	assert.LessOrEqual(t, len(eng.messages), 1+maxHistoryMessages)
 }

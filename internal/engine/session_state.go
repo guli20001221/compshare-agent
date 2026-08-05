@@ -116,7 +116,6 @@ type SessionState struct {
 	ContextFrame                    ContextFrame            `json:"context_frame,omitempty"`
 	RecentFacts                     []ToolFact              `json:"recent_facts,omitempty"`
 	TaskSnapshot                    TaskSnapshot            `json:"task_snapshot,omitempty"`
-	ConversationDigest              ConversationDigest      `json:"conversation_digest,omitempty"`
 	VerifiedKnowledge               []VerifiedKnowledgeTurn `json:"verified_knowledge,omitempty"`
 }
 
@@ -458,12 +457,9 @@ func (s SessionState) MarshalJSON() ([]byte, error) {
 		if taskSnapshotEmpty(s.TaskSnapshot) {
 			delete(m, "task_snapshot")
 		}
-		if conversationDigestEmpty(s.ConversationDigest) {
-			delete(m, "conversation_digest")
-		}
 		return json.Marshal(m)
 	}
-	if !taskSnapshotEmpty(s.TaskSnapshot) && !conversationDigestEmpty(s.ConversationDigest) {
+	if !taskSnapshotEmpty(s.TaskSnapshot) {
 		return raw, nil
 	}
 	var m map[string]any
@@ -472,9 +468,6 @@ func (s SessionState) MarshalJSON() ([]byte, error) {
 	}
 	if taskSnapshotEmpty(s.TaskSnapshot) {
 		delete(m, "task_snapshot")
-	}
-	if conversationDigestEmpty(s.ConversationDigest) {
-		delete(m, "conversation_digest")
 	}
 	return json.Marshal(m)
 }

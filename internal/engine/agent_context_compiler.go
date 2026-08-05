@@ -56,15 +56,6 @@ func safeContextItems(in []string) []string {
 	return out
 }
 
-func cloneSourcedMemory(in []SourcedMemory) []SourcedMemory {
-	out := make([]SourcedMemory, 0, len(in))
-	for _, memory := range in {
-		memory.Value = safeContextText(memory.Value)
-		memory.Quote = safeContextText(memory.Quote)
-		out = append(out, memory)
-	}
-	return out
-}
 
 // staleObservationNotices is what survives of the RecentFacts projection.
 //

@@ -111,7 +111,6 @@ func TestContextCompilerRedactsSecretsAndNeverCarriesPriorRawToolJSON(t *testing
 func TestContextCompilerHotColdSemanticEquivalence(t *testing.T) {
 	now := time.Unix(1_750_000_000, 0)
 	state := SessionState{
-		ConversationDigest: ConversationDigest{Narrative: "用户要排查训练机", Decisions: []string{"先看监控"}},
 		SelectedInstanceID: "uhost-1", SelectedInstanceName: "训练机", SelectedInstanceFreshness: ContinuityFreshnessFresh,
 	}
 	messages := []openai.ChatCompletionMessage{

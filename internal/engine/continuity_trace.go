@@ -10,8 +10,6 @@ const (
 const (
 	memoryUpdateNone       = "none"
 	memoryUpdateStructured = "structured_event"
-	memoryUpdateCompactor  = "compactor"
-	memoryUpdateExcerpt    = "excerpt"
 
 	groundingSupported   = "supported"
 	groundingRepaired    = "repaired"
@@ -50,7 +48,11 @@ func (e *Engine) markMemoryUpdateSource(source string) {
 	if e == nil {
 		return
 	}
-	priority := map[string]int{memoryUpdateNone: 0, memoryUpdateStructured: 1, memoryUpdateExcerpt: 2, memoryUpdateCompactor: 3}
+	// Two tiers, not four: the "excerpt" and "compactor" tiers were produced only
+	// by the ConversationDigest writers, which are gone. The highest-wins shape is
+	// kept because that is the contract — a turn reports its strongest memory
+	// write, not its last one.
+	priority := map[string]int{memoryUpdateNone: 0, memoryUpdateStructured: 1}
 	if priority[source] > priority[e.memoryUpdateSourceThisTurn] {
 		e.memoryUpdateSourceThisTurn = source
 	}
@@ -58,7 +60,7 @@ func (e *Engine) markMemoryUpdateSource(source string) {
 
 func normalizedMemoryUpdateSource(source string) string {
 	switch source {
-	case memoryUpdateStructured, memoryUpdateCompactor, memoryUpdateExcerpt:
+	case memoryUpdateStructured:
 		return source
 	default:
 		return memoryUpdateNone

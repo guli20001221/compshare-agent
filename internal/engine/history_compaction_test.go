@@ -1,68 +1,16 @@
 package engine
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	openai "github.com/sashabaranov/go-openai"
 )
-
-func TestConversationMemoryCompactorAcceptsOnlySourcedSemanticDelta(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{
-  "goals":[],
-  "constraints":[{"value":"区域保持上海","pair_index":1,"quote":"区域还是上海"}],
-  "decisions":[{"value":"采用第二种方案","pair_index":1,"quote":"第二种"}],
-  "unresolved_tasks":[]
-}`}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	messages := []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleUser, Content: "比较一下两个方案"},
-		{Role: openai.ChatMessageRoleAssistant, Content: "第一种省钱，第二种更稳定"},
-		{Role: openai.ChatMessageRoleUser, Content: "第二种，区域还是上海"},
-		{Role: openai.ChatMessageRoleAssistant, Content: "好的，后续按这个配置继续"},
-	}
-
-	eng.compactEvictedConversation(context.Background(), messages, time.Unix(3_000, 0))
-
-	state, _, _ := eng.SessionStateSnapshot()
-	assert.Contains(t, state.ConversationDigest.Decisions, "采用第二种方案")
-	assert.Contains(t, state.ConversationDigest.Constraints, "区域保持上海")
-	require.Len(t, state.ConversationDigest.Sources.Decisions, 1)
-	assert.Equal(t, "第二种", state.ConversationDigest.Sources.Decisions[0].Quote)
-	assert.Empty(t, state.ConversationDigest.Excerpts)
-	assert.Equal(t, int64(2), state.ConversationDigest.SummaryFrontier)
-	require.Len(t, mock.calls, 1)
-}
-
-func TestConversationMemoryCompactorInvalidSourceFallsBackToVerbatimExcerpt(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{
-  "goals":[],"constraints":[],
-  "decisions":[{"value":"擅自猜出的决定","pair_index":0,"quote":"原文中不存在"}],
-  "unresolved_tasks":[]
-}`}}}
-	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	messages := []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleUser, Content: "同配置再看上海"},
-		{Role: openai.ChatMessageRoleAssistant, Content: "我会继续比较"},
-	}
-
-	eng.compactEvictedConversation(context.Background(), messages, time.Unix(3_001, 0))
-
-	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.ConversationDigest.Decisions)
-	require.Len(t, state.ConversationDigest.Excerpts, 1)
-	assert.Equal(t, "同配置再看上海", state.ConversationDigest.Excerpts[0].User)
-	assert.Equal(t, int64(1), state.ConversationDigest.SummaryFrontier)
-}
 
 // The single context card must carry every structured signal the retired
 // buildReActHistorySummary block surfaced: task-level constraints/decisions, the
@@ -100,10 +48,6 @@ func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 		}},
 	}, 1)
 
-	// Mirror turn entry: refreshConversationDigest still runs, and still merges the
-	// task's constraints/decisions into the digest. What changed is that nothing
-	// renders them any more.
-	eng.refreshConversationDigest(now)
 	card := renderAgentContextCard((ContextCompiler{}).CompileForTurn(eng, "现在怎么样", "", now))
 
 	assert.NotContains(t, card, "上次意图",
@@ -114,15 +58,17 @@ func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 	// NOTE ON WHAT THIS NO LONGER ASSERTS. Task constraints and decisions used to
 	// reach the card indirectly: refreshConversationDigest merged them into
 	// ConversationDigest.Constraints/Decisions and the card rendered them as
-	// 既有约束 / 已作决定. Those blocks are deleted — the canonical transcript
-	// replays the turns themselves — so the merge still runs but nothing the
-	// model reads consumes it.
+	// 既有约束 / 已作决定. Both the blocks and the merge are now deleted; the
+	// canonical transcript replays the turns that produced them.
 	//
-	// The consequence worth naming: turns older than the replay window
-	// (maxAgentContextPairs) had the digest summary as their only survivor, and
-	// now have none. That gap is not introduced here — suppressing the blocks
-	// produced it in production on 2026-08-04 — but this deletion makes it
-	// permanent, and closing it is what the token-budget compaction step is for.
+	// The cost this was once thought to carry — that turns older than the replay
+	// window had the digest summary as their only survivor — did not materialise
+	// on the shipped path and should not be cited as one. History compaction is
+	// what fed the digest, and it cannot fire inside a session:
+	// stripHistoricalToolTranscript leaves 2 messages per turn, so its trigger
+	// needs 61 turns while agent.http.max_session_turns caps the compatibility
+	// path at 20. Measured against the replay database, 0 of 127 sessions held a
+	// single digest excerpt.
 	assert.NotContains(t, card, "只看最近五分钟")
 	assert.NotContains(t, card, "先重启监控 agent")
 	assert.Contains(t, card, "该任务已过期", "the task-expired notice must survive in the card")

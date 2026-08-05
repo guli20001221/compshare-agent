@@ -1445,7 +1445,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.expireContextFrame(continuityNow)
 	e.expireStaleSelectedInstance(continuityNow)
 	e.expireStaleToolFacts(continuityNow)
-	e.refreshConversationDigest(continuityNow)
 	// Every turn must carry a non-empty server-side turn identity. The durable
 	// transport supplies one (client turn id / request uuid, see ws_durable.go);
 	// the legacy WS/HTTP and CLI paths pass none. Without one,
@@ -4950,7 +4949,6 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 		return // no safe cut point found, don't trim
 	}
 
-	e.absorbConversationDigest(e.messages[1:safeStart], time.Now())
 	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
 	e.historyTrimmedThisSession = true

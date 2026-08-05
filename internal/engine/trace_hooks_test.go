@@ -41,14 +41,14 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 			ContinuityNotices:  []string{"secret notice"},
 		},
 		promptSectionIDsThisTurn:   []string{"identity", "knowledge_turn_policy", "user_state"},
-		memoryUpdateSourceThisTurn: memoryUpdateCompactor,
+		memoryUpdateSourceThisTurn: memoryUpdateStructured,
 		groundingOutcomeThisTurn:   groundingSupported,
 	}
 	snapshot := eng.TraceSnapshot(time.Now())
 	require.Equal(t, []string{"recent_pairs", "active_task", "notices"}, snapshot.ContextSources)
 	require.Equal(t, string(ResponseAgent), snapshot.ResponseContract)
 	require.Equal(t, []string{"identity", "knowledge_turn_policy", "user_state"}, snapshot.PromptSectionIDs)
-	require.Equal(t, memoryUpdateCompactor, snapshot.MemoryUpdateSource)
+	require.Equal(t, memoryUpdateStructured, snapshot.MemoryUpdateSource)
 	require.Equal(t, groundingSupported, snapshot.GroundingOutcome)
 	for _, value := range append(append([]string{}, snapshot.ContextSources...), snapshot.PromptSectionIDs...) {
 		require.NotContains(t, value, "secret")

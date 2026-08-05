@@ -230,7 +230,6 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	assert.Equal(t, SessionStateSchemaV5, pc.AgentSessionState.SchemaVersion)
 	assert.Equal(t, "给训练机扩容", pc.AgentSessionState.TaskSnapshot.Goal)
 	assert.Equal(t, []string{"target_size_gb"}, pc.AgentSessionState.TaskSnapshot.MissingSlots)
-	assert.Equal(t, "目标：给训练机扩容", pc.AgentSessionState.ConversationDigest.Narrative)
 
 	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"6.0","verified_knowledge":[{"question":"终端怎么粘贴","answer":"使用 Ctrl+Shift+V","evidence":{"query":"终端怎么粘贴","items":[{"chunk_id":"terminal-paste-001","snippet":"使用 Ctrl+Shift+V 粘贴"}]},"verified_at_unix":1716530100}]}}`)
 	pc, err = ParsePersistedContext(raw)
@@ -242,10 +241,11 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"7.0","conversation_digest":{"decisions":["采用第二种方案"],"sources":{"decisions":[{"value":"采用第二种方案","pair_index":1,"quote":"第二种"}]},"excerpts":[{"user":"继续","assistant":"请确认实例"}],"summary_frontier":8}}}`)
 	pc, err = ParsePersistedContext(raw)
 	require.NoError(t, err)
+	// V5 and V7 rows still decode, and their conversation_digest is simply
+	// dropped — the schema version is what identifies the row, not the presence of
+	// a field this binary no longer has. TestSessionRowFromAnOlderBinaryDropsItsDigest
+	// covers the consequence for a row that carried poisoned selection copies.
 	assert.Equal(t, SessionStateSchemaV7, pc.AgentSessionState.SchemaVersion)
-	require.Len(t, pc.AgentSessionState.ConversationDigest.Sources.Decisions, 1)
-	assert.Equal(t, "第二种", pc.AgentSessionState.ConversationDigest.Sources.Decisions[0].Quote)
-	assert.Equal(t, int64(8), pc.AgentSessionState.ConversationDigest.SummaryFrontier)
 }
 
 func TestSessionState_VerifiedKnowledgeRoundTrip(t *testing.T) {
