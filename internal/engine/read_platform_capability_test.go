@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
@@ -188,28 +187,51 @@ func TestAccountFinanceUnavailableReturnsStructuredUnavailable(t *testing.T) {
 	require.Empty(t, executor.calls, "an unavailable capability must not call any upstream API")
 }
 
-// TestStockReadAppliesRememberStockReferentEffect proves the typed-effect
-// mechanism closes the RC017 loop that was dead: the stock read's resolved model
-// is carried as a RememberStockReferent effect the engine applies, so a later
-// subject-eliding follow-up ("现在还有吗") resolves to it. Before the effect
-// wiring the referent recorders had no caller in the typed path.
-func TestStockReadAppliesRememberStockReferentEffect(t *testing.T) {
+// This replaces TestStockReadAppliesRememberStockReferentEffect, which asserted
+// the carry it is now the point to NOT have: a stock read used to write the model
+// it resolved to into session state (RememberStockReferent -> a StockSnapshot
+// fact / LastStockGpuModel), and the next stock read used it as the filter when
+// the model sent no gpu_type. That is a second semantic memory beside the
+// canonical transcript, and it made a tool call answer a question other than the
+// one its arguments asked.
+//
+// The follow-up 「现在还有吗」 is still meant to work — through the transcript,
+// which replays the earlier call and its result, so the model can put the card
+// name in gpu_type itself. What must not happen is the SERVER doing it silently.
+func TestStockReadLeavesNoCrossTurnReferent(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{
 				map[string]any{"Name": "4090", "Status": "SoldOut", "Zone": "cn-wlcb-01"},
+				map[string]any{"Name": "A100", "Status": "SoldOut", "Zone": "cn-wlcb-01"},
 			},
 		},
 	}}
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
-	out := eng.executeTool(context.Background(),
+	named := eng.executeTool(context.Background(),
 		toolCall("read", capability.ReadToolName(intent.IntentStockAvailability), `{"gpu_type":"4090"}`), noopStep)
-
-	_, ok := isFinalReply(out)
+	_, ok := isFinalReply(named)
 	require.False(t, ok, "a read capability is an observation and must never end the turn")
-	assert.Equal(t, "4090", eng.fallbackStockGpuModel(time.Now()),
-		"the stock read must remember the resolved model so a subject-eliding follow-up resolves to it")
+	require.Contains(t, named, "4090", "premise: the named turn resolved to a single card")
+	require.NotContains(t, named, "A100", "premise: and filtered the other one out")
+
+	// The subject-eliding follow-up, as the model would send it when it did NOT
+	// carry the card forward: no gpu_type at all.
+	followUp := eng.executeTool(context.Background(),
+		toolCall("read", capability.ReadToolName(intent.IntentStockAvailability), `{}`), noopStep)
+
+	assert.Contains(t, followUp, "A100",
+		"the unfiltered follow-up was still filtered to the previous turn's card; the server is "+
+			"remembering what the user meant and editing the model's arguments to match")
+	assert.Contains(t, followUp, "4090", "an unfiltered listing includes everything")
+
+	// And nothing was written down to do it with next time either.
+	for _, fact := range eng.sessionState.RecentFacts {
+		assert.NotEqual(t, "stock_availability", fact.Payload["action"],
+			"the referent-carry fact is still being produced, with nothing left to read it")
+	}
 }
 
 func TestReadBoundaryRejectsUngroundedMonitorAbsoluteWindow(t *testing.T) {

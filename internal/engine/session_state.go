@@ -93,10 +93,12 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // resolved by ordinal/name/ID in a later turn. known_constraints /
 // pending_action remain deferred.
 //
-// LastStockGpuModel is the legacy stock referent used only when
-// USE_SESSION_FACT_CONTEXT is disabled or the engine is running without
-// persisted session facts. With fact context enabled, stock follow-ups use
-// RecentFacts StockSnapshot entries instead.
+// LastStockGpuModel is DELETED (2026-08-05). It carried the GPU model a prior
+// stock turn resolved to, so the server could filter a later unfiltered stock
+// query to that card. Removing the field from this struct means an old persisted
+// row's last_stock_gpu_model is simply not unmarshalled — the same graceful
+// ignore any removed field gets, and it was never read from a row anyway before
+// the same session wrote it.
 type SessionState struct {
 	SchemaVersion                   string                  `json:"schema_version"`
 	SelectedInstanceID              string                  `json:"selected_instance_id,omitempty"`
@@ -104,7 +106,6 @@ type SessionState struct {
 	SelectedInstanceSource          string                  `json:"selected_instance_source,omitempty"`
 	SelectedInstanceAtUnix          int64                   `json:"selected_instance_at_unix,omitempty"`
 	SelectedInstanceFreshness       string                  `json:"selected_instance_freshness,omitempty"`
-	LastStockGpuModel               string                  `json:"last_stock_gpu_model,omitempty"`
 	PendingSelectionKind            string                  `json:"pending_selection_kind,omitempty"`
 	PendingSelectionIntent          string                  `json:"pending_selection_intent,omitempty"`
 	PendingSelectionOriginalUserMsg string                  `json:"pending_selection_original_user_msg,omitempty"`

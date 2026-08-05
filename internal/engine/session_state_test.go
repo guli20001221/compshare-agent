@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
@@ -577,7 +576,6 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 			SelectedInstanceName:            "gpu-prod",
 			SelectedInstanceSource:          "user",
 			SelectedInstanceAtUnix:          1716530000,
-			LastStockGpuModel:               "4090",
 			PendingSelectionKind:            "instance",
 			PendingSelectionIntent:          string(intent.IntentResourceInfo),
 			PendingSelectionOriginalUserMsg: "我有哪些实例",
@@ -659,112 +657,18 @@ func TestSessionState_RoundTripWithRecentFacts(t *testing.T) {
 		"byte-equal round-trip required for multi-replica preservation")
 }
 
-// TestRecordLastStockGpuModel_UngatedByHydration is the RC017 record-side
-// contract. Unlike recordSelectedInstanceID, the stock referent must be
-// recorded even when the engine is NOT hydrated (the CLI in-memory
-// single-session path never hydrates yet must carry the referent across
-// turns). It also must NOT clear a referent on a list-all/ambiguous turn
-// (model == ""), and a new single referent overwrites.
-func TestRecordLastStockGpuModel_UngatedByHydration(t *testing.T) {
-	e := newEngineForSessionStateTest(t)
-	require.False(t, e.sessionStateHydrated,
-		"fresh CLI-style engine must be un-hydrated — this is the path the gate must survive")
-
-	e.recordLastStockGpuModel("4090")
-	assert.Equal(t, "4090", e.sessionState.LastStockGpuModel,
-		"referent must record without hydration so the CLI direct-dispatch path carries it")
-
-	e.recordLastStockGpuModel("")
-	assert.Equal(t, "4090", e.sessionState.LastStockGpuModel,
-		"a list-all / ambiguous turn (empty model) must NOT clear the prior referent")
-
-	e.recordLastStockGpuModel("5090")
-	assert.Equal(t, "5090", e.sessionState.LastStockGpuModel,
-		"a new single referent overwrites the prior one")
-}
-
-func TestRecordLastStockGpuModel_UsesRecentFactsWhenSessionFactContextEnabled(t *testing.T) {
-	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{
-		SchemaVersion:     SessionStateSchemaCurrent,
-		LastStockGpuModel: "4090",
-	}, 1)
-	e.sessionFactContextEnabled = true
-
-	e.recordLastStockGpuModel("5090")
-
-	assert.Empty(t, e.sessionState.LastStockGpuModel,
-		"fact-enabled HTTP path must not keep writing the legacy stock scalar")
-}
-
-func TestRecordLastStockGpuModel_FactContextDoesNotWriteLegacyWithoutHydration(t *testing.T) {
-	e := newEngineForSessionStateTest(t)
-	require.False(t, e.sessionStateHydrated)
-	e.sessionFactContextEnabled = true
-
-	e.recordLastStockGpuModel("5090")
-
-	assert.Empty(t, e.sessionState.LastStockGpuModel,
-		"fact context enabled must not write the legacy stock scalar even on non-persisted engines")
-}
-
-func TestStockGpuModelFromRecentFacts_UsesLatestFreshSpecificModel(t *testing.T) {
-	now := time.Unix(2_000, 0)
-	facts := []ToolFact{
-		{
-			Kind:           FactKindStockSnapshot,
-			SubjectID:      "stock:4090",
-			Payload:        map[string]any{"model": "4090"},
-			ProducedAtUnix: now.Add(-4 * time.Second).Unix(),
-			TTLSeconds:     factTTLSecondsStockSnapshot,
-		},
-		{
-			Kind:           FactKindStockSnapshot,
-			SubjectID:      "stock:all",
-			Payload:        map[string]any{"model": "all"},
-			ProducedAtUnix: now.Add(-2 * time.Second).Unix(),
-			TTLSeconds:     factTTLSecondsStockSnapshot,
-		},
-		{
-			Kind:           FactKindStockSnapshot,
-			SubjectID:      "stock:5090",
-			Payload:        map[string]any{"model": "5090"},
-			ProducedAtUnix: now.Add(-1 * time.Second).Unix(),
-			TTLSeconds:     factTTLSecondsStockSnapshot,
-		},
-	}
-
-	assert.Equal(t, "5090", stockGpuModelFromRecentFacts(facts, now))
-
-	facts[2].ProducedAtUnix = now.Add(-time.Duration(factTTLSecondsStockSnapshot+1) * time.Second).Unix()
-	assert.Equal(t, "4090", stockGpuModelFromRecentFacts(facts, now))
-}
-
-func TestFallbackStockGpuModel_RecentFactsRequireSessionFactContext(t *testing.T) {
-	now := time.Unix(2_000, 0)
-	eng := newEngineForSessionStateTest(t)
-	eng.sessionState.RecentFacts = []ToolFact{{
-		Kind:           FactKindStockSnapshot,
-		SubjectID:      "stock:5090",
-		Payload:        map[string]any{"model": "5090"},
-		ProducedAtUnix: now.Unix(),
-		TTLSeconds:     factTTLSecondsStockSnapshot,
-	}}
-
-	assert.Empty(t, eng.fallbackStockGpuModel(now), "flag-off must not consume RecentFacts")
-
-	eng.sessionFactContextEnabled = true
-	assert.Equal(t, "5090", eng.fallbackStockGpuModel(now), "flag-on may consume RecentFacts")
-
-	eng.sessionState.LastStockGpuModel = "4090"
-	assert.Equal(t, "5090", eng.fallbackStockGpuModel(now), "fresh RecentFacts should be the primary stock referent when fact context is enabled")
-
-	eng.sessionState.RecentFacts[0].ProducedAtUnix = now.Add(-time.Duration(factTTLSecondsStockSnapshot+1) * time.Second).Unix()
-	assert.Empty(t, eng.fallbackStockGpuModel(now), "fact-on path must not fall back to the legacy scalar after the stock fact expires")
-
-	eng.sessionFactContextEnabled = false
-	assert.Equal(t, "4090", eng.fallbackStockGpuModel(now), "legacy stock memory remains available with flag off")
-}
+// The five RC017 referent tests that stood here are deleted with the mechanism
+// they pinned: recordLastStockGpuModel / SessionState.LastStockGpuModel /
+// recordResolvedStockGpuFact / stockGpuModelFromRecentFacts /
+// fallbackStockGpuModel. They described in detail how the server carried "the
+// last GPU the user meant" across turns and which of two stores won -- a
+// contract that only mattered because something was going to substitute that
+// value into the next tool call.
+//
+// What replaces them is not a smaller version of the same thing. It is
+// TestStockReadLeavesNoCrossTurnReferent (read_platform_capability_test.go),
+// which asserts the absence: an unfiltered stock call stays unfiltered no matter
+// what the previous turn resolved to.
 
 // TestToolFact_TTLDefaultsByKind verifies the per-kind default TTL constants.
 // Adding a new kind requires adding a TTL constant and the case in

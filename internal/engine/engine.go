@@ -3783,70 +3783,16 @@ func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	e.sessionState.SelectedInstanceFreshness = continuityFreshness(at, selectedInstanceTTLSeconds, now)
 }
 
-// recordLastStockGpuModel tracks the legacy stock referent for paths that do
-// not consume RecentFacts. When session fact context is enabled, stock
-// follow-ups must use the structured StockSnapshot fact instead of writing this
-// scalar carry.
-func (e *Engine) recordLastStockGpuModel(model string) {
-	if model == "" {
-		return
-	}
-	if e.sessionFactContextEnabled {
-		if e.sessionStateHydrated {
-			e.sessionState.LastStockGpuModel = ""
-		}
-		return
-	}
-	e.sessionState.LastStockGpuModel = model
-}
-
-func (e *Engine) recordResolvedStockGpuFact(model string) {
-	model = strings.TrimSpace(model)
-	if model == "" || !e.sessionStateHydrated {
-		return
-	}
-	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
-		Kind:      FactKindStockSnapshot,
-		SubjectID: "stock:" + model,
-		Payload: map[string]any{
-			"model":  model,
-			"action": "stock_availability",
-		},
-		ProducedAtTurn: e.userTurn,
-		ProducedAtUnix: time.Now().Unix(),
-		TTLSeconds:     factTTLSecondsStockSnapshot,
-	})
-}
-
-func stockGpuModelFromRecentFacts(facts []ToolFact, now time.Time) string {
-	nowUnix := now.Unix()
-	var model string
-	var newest int64
-	for _, fact := range facts {
-		if fact.Kind != FactKindStockSnapshot || fact.SubjectID == "" || !factFresh(fact, nowUnix) {
-			continue
-		}
-		candidate := factString(fact.Payload, "model")
-		if candidate == "" || strings.EqualFold(candidate, "all") {
-			continue
-		}
-		if fact.ProducedAtUnix >= newest {
-			model = candidate
-			newest = fact.ProducedAtUnix
-		}
-	}
-	return model
-}
-
-func (e *Engine) fallbackStockGpuModel(now time.Time) string {
-	if e.sessionFactContextEnabled {
-		if model := stockGpuModelFromRecentFacts(e.sessionState.RecentFacts, now); model != "" {
-			return model
-		}
-		return ""
-	}
-	return e.sessionState.LastStockGpuModel
-}
+// The stock referent carry lived here: recordResolvedStockGpuFact wrote a
+// minimal {model, action} StockSnapshot fact whose only reader was
+// stockGpuModelFromRecentFacts, which fallbackStockGpuModel handed to the stock
+// capability as the filter for a turn that did not name a card. Together with
+// recordLastStockGpuModel / SessionState.LastStockGpuModel they are deleted:
+// the server no longer remembers which GPU the user meant, so it can no longer
+// answer a different question from the one the model asked.
+//
+// The richer StockSnapshot fact recorded from an actual capacity/stock tool
+// response is a different producer and stays.
 
 func (e *Engine) markRegistryInvalidated(action string) {
 	if e.registry == nil {

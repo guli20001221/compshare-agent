@@ -82,7 +82,7 @@ These paths now use the shared context decision and frame model:
 
 Some legacy session fields remain intentionally:
 
-- `LastStockGpuModel` is the fallback stock referent when session facts are disabled.
+- `LastStockGpuModel` is **deleted** (2026-08-05), together with the whole stock-referent carry: `recordResolvedStockGpuFact`, `stockGpuModelFromRecentFacts`, `fallbackStockGpuModel`, `ReadRuntime.FallbackGPUModel` and the `RememberStockReferent` effect. It was not a compatibility field waiting to age out — it was the server remembering which GPU the user meant and substituting it into a later tool call whose arguments did not name one. The canonical transcript replays the earlier stock turn, so the model can carry the card itself.
 - `LastDeployWorkload`, `LastDeployZone`, and `PendingDeployModel` remain read-only fallbacks for sessions written by older binaries; new turns write the unified context frame.
 - `PendingSelection*` is not legacy behavior by itself; it is the persisted candidate list used by both old and new selection paths.
 
@@ -130,10 +130,12 @@ Invariants every path preserves (do not regress):
 
 ## Next Migration Candidates
 
-1. Retire compatibility fields (`LastStockGpuModel`, `LastDeployWorkload`,
-   `LastDeployZone`, `PendingDeployModel`) only after their feature flags and
-   rollback behavior are no longer needed. `PendingSelection*` stays (shared
-   candidate store, not legacy).
+1. Retire compatibility fields (`LastDeployWorkload`, `LastDeployZone`,
+   `PendingDeployModel`) only after their feature flags and rollback behavior are
+   no longer needed. `PendingSelection*` stays (shared candidate store, not
+   legacy). `LastStockGpuModel` was removed on 2026-08-05 and did not wait for
+   that criterion, because it was not read for compatibility — it was read to
+   edit the next tool call's arguments.
 2. (Optional, low priority) atomic persistence of the per-turn message writes
    and the session context write, which are currently separate non-transactional
    calls; a failed context write is logged, not rolled back. Accepted as

@@ -97,11 +97,10 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 	now := time.Now()
 	snapshot := e.RegistrySnapshot()
 	rt := capability.ReadRuntime{
-		Executor:         capabilityHandlerExecutor{engine: e, onStep: onStep},
-		Resolver:         snapshot,
-		Now:              now,
-		FallbackGPUModel: e.fallbackStockGpuModel(now),
-		SyncRegistry:     e.syncRegistryFromDescribe,
+		Executor:     capabilityHandlerExecutor{engine: e, onStep: onStep},
+		Resolver:     snapshot,
+		Now:          now,
+		SyncRegistry: e.syncRegistryFromDescribe,
 	}
 	if capabilityLabel == string(intent.IntentZoneCatalog) {
 		rt.ZoneCatalog = e.zoneCatalogSnapshot(ctx)
@@ -214,12 +213,6 @@ func readRenderContract(presentation capability.ReadPresentation) string {
 func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
 	for _, effect := range effects {
 		switch eff := effect.(type) {
-		case capability.RememberStockReferent:
-			// RC017: feed the resolved stock referent to both the structured-fact
-			// path (session-fact context on) and the legacy scalar (off); each is
-			// mode-gated internally, so a subject-eliding stock follow-up resolves.
-			e.recordResolvedStockGpuFact(eff.GPUModel)
-			e.recordLastStockGpuModel(eff.GPUModel)
 		case capability.RememberVerifiedInstances:
 			// Same-id-verified existence evidence for the write path (concern #6):
 			// only a resource_info response echoing the exact id lands here, so a

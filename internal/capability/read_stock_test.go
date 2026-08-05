@@ -23,10 +23,10 @@ func stockSupportZonesFixture() map[string]any {
 	}}
 }
 
-func runStock(t *testing.T, exec ReadExecutor, fallbackGPUModel string, req StockAvailabilityRequest) ReadResult {
+func runStock(t *testing.T, exec ReadExecutor, req StockAvailabilityRequest) ReadResult {
 	t.Helper()
 	reg := NewReadCapability(stockReadSpec())
-	return reg.Run(context.Background(), req, ReadRuntime{Executor: exec, FallbackGPUModel: fallbackGPUModel})
+	return reg.Run(context.Background(), req, ReadRuntime{Executor: exec})
 }
 
 func TestStockRequestHasNoRequiredFields(t *testing.T) {
@@ -73,7 +73,7 @@ func TestStockListingStatesItsCaveatOncePerListNotOncePerMachineType(t *testing.
 func TestStockHandle_EmptyCatalog(t *testing.T) {
 	exec := &fakeReadExec{result: map[string]any{"AvailableInstanceTypes": []any{}}}
 
-	result := runStock(t, exec, "", StockAvailabilityRequest{})
+	result := runStock(t, exec, StockAvailabilityRequest{})
 
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
 	assert.Equal(t, noStockReply, result.Reply)
@@ -102,18 +102,34 @@ func TestStockEnvelope_SubjectsAndDisclaimer(t *testing.T) {
 	assert.True(t, disclaimer, "envelope carries the sold-out disclaimer")
 }
 
-// --- RC017 referent parity ------------------------------------------------------
+// --- the request is the only filter ---------------------------------------------
 
-func TestStockReferentText_RC017(t *testing.T) {
-	items := []any{map[string]any{"Name": "4090", "Status": "Normal"}}
-	// explicit query is authoritative
-	assert.Equal(t, "4090", stockReferentText(StockAvailabilityRequest{GPUType: "4090"}, "A100", items))
-	// subject-eliding + prior model still offered → prior model is the referent
-	assert.Equal(t, "4090", stockReferentText(StockAvailabilityRequest{}, "4090", items))
-	// subject-eliding + prior model no longer offered → no referent
-	assert.Equal(t, "", stockReferentText(StockAvailabilityRequest{}, "H100", items))
-	// no query, no fallback → no referent
-	assert.Equal(t, "", stockReferentText(StockAvailabilityRequest{}, "", items))
+// This replaces TestStockReferentText_RC017, which pinned the opposite: that an
+// empty gpu_type would be filled from the model a PRIOR stock turn resolved to,
+// as long as that model was still offered. The capability no longer has that
+// second input, so what is worth pinning is that identical requests produce
+// identical answers — a read whose result depends on session history is a read
+// nobody can reason about from its arguments.
+func TestStockFilterComesOnlyFromTheRequest(t *testing.T) {
+	catalog := func() ReadExecutor {
+		return &fakeReadExec{result: map[string]any{"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "4090", "Status": "SoldOut"},
+			map[string]any{"Name": "A100", "Status": "SoldOut"},
+		}}}
+	}
+
+	named := runStock(t, catalog(), StockAvailabilityRequest{GPUType: "4090"})
+	assert.Contains(t, named.Reply, "4090", "an explicit gpu_type still filters")
+	assert.NotContains(t, named.Reply, "A100", "and still excludes the others")
+
+	// The same capability, run twice with no gpu_type, before and after a named
+	// query. Both must be the full listing: there is nowhere for the named turn to
+	// leave a referent behind.
+	for _, label := range []string{"first", "after a named query"} {
+		out := runStock(t, catalog(), StockAvailabilityRequest{})
+		assert.Contains(t, out.Reply, "4090", "%s: unfiltered request lists everything", label)
+		assert.Contains(t, out.Reply, "A100", "%s: including the card no turn ever named", label)
+	}
 }
 
 // --- handler: plain-listing path (no matched Normal entry) ----------------------
@@ -126,7 +142,7 @@ func TestStockHandle_PlainListingAttachesEnvelope(t *testing.T) {
 
 	// Empty query → no matched Normal entry → the capacity precheck falls through
 	// to the plain catalog listing, with an envelope.
-	result := runStock(t, exec, "", StockAvailabilityRequest{})
+	result := runStock(t, exec, StockAvailabilityRequest{})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", result.ToolAction)
@@ -168,7 +184,7 @@ func TestStockHandle_CapacityPrecheckForMatchedNormalGPU(t *testing.T) {
 		},
 	}}
 
-	result := runStock(t, exec, "", StockAvailabilityRequest{GPUType: "4090"})
+	result := runStock(t, exec, StockAvailabilityRequest{GPUType: "4090"})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", result.ToolAction)
@@ -181,8 +197,9 @@ func TestStockHandle_CapacityPrecheckForMatchedNormalGPU(t *testing.T) {
 	assert.NotContains(t, result.Reply, "暂时不能新建实例", "a sample all-false must not be generalized to a global creation denial")
 	assert.NotContains(t, result.Reply, "暂无可创建库存")
 	assert.NotContains(t, result.Reply, "ResourceEnough", "no implementation details leak")
-	require.Equal(t, []ReadEffect{RememberStockReferent{GPUModel: "4090"}}, result.Effects,
-		"single matched model is remembered as a typed RC017 effect, not a shared-result field")
+	assert.Empty(t, result.Effects,
+		"a stock read records nothing about the session; it used to emit RememberStockReferent, "+
+			"which became the next unfiltered turn's silent filter")
 	assert.Nil(t, result.Envelope, "the capacity-precheck path carries no envelope (legacy parity)")
 
 	// Raw GPU-count inventory is not an authority for user-facing creatability;
@@ -308,7 +325,7 @@ func TestStockHandle_PodInventoryStillReportedWhenSaleCatalogOmitsRequestedZone(
 		}},
 	}
 
-	result := runStock(t, exec, "", StockAvailabilityRequest{
+	result := runStock(t, exec, StockAvailabilityRequest{
 		GPUType: "4090", ZoneMentions: []string{"华北二C"},
 	})
 
@@ -354,7 +371,7 @@ func TestStockHandle_PrechecksEverySaleZone(t *testing.T) {
 		},
 	}}
 
-	result := runStock(t, exec, "", StockAvailabilityRequest{GPUType: "4090"})
+	result := runStock(t, exec, StockAvailabilityRequest{GPUType: "4090"})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	var capacityCalls int
@@ -391,7 +408,7 @@ func TestStockHandle_MultipleNamedZonesAreExactAndNeverCrossZone(t *testing.T) {
 		}},
 	}}
 
-	result := runStock(t, exec, "", StockAvailabilityRequest{
+	result := runStock(t, exec, StockAvailabilityRequest{
 		GPUType: "4090", ZoneMentions: []string{"华北一C", "华北二C"},
 	})
 
@@ -427,7 +444,7 @@ func TestStockHandle_UnresolvedNamedZoneFailsClosed(t *testing.T) {
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
 	}}
 
-	result := runStock(t, exec, "", StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{"华北九Z"}})
+	result := runStock(t, exec, StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{"华北九Z"}})
 	require.Equal(t, platform.ReadStatusConflict, result.Status)
 	for _, call := range exec.calls {
 		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action,
@@ -436,7 +453,7 @@ func TestStockHandle_UnresolvedNamedZoneFailsClosed(t *testing.T) {
 }
 
 func TestStockHandle_UpstreamError(t *testing.T) {
-	result := runStock(t, errReadExec{err: errors.New("boom")}, "", StockAvailabilityRequest{GPUType: "4090"})
+	result := runStock(t, errReadExec{err: errors.New("boom")}, StockAvailabilityRequest{GPUType: "4090"})
 
 	require.Equal(t, platform.ReadStatusFailureAfterTool, result.Status)
 	assert.Equal(t, platform.ReadFailureGenericRead, result.FailureClass)
