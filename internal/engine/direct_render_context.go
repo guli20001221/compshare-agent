@@ -22,20 +22,6 @@ type ConversationPair struct {
 	Transcript []openai.ChatCompletionMessage
 }
 
-// ToolObservationView is the bounded semantic projection of a prior tool
-// result. Summary is present only while the observation is fresh. Raw tool JSON
-// is never part of AgentContext.
-type ToolObservationView struct {
-	Kind            string
-	SubjectID       string
-	Summary         string
-	Source          string
-	Completeness    string
-	Freshness       string
-	RefreshRequired bool
-	ProducedAtUnix  int64
-}
-
 // AgentContext is the single immutable, read-only projection compiled at turn
 // entry. SessionState and committed messages remain the sources of truth; this
 // value is not persisted and never grants execution authority.
@@ -43,11 +29,8 @@ type AgentContext struct {
 	TurnID             string
 	CurrentQuestion    string
 	RecentConversation []ConversationPair
-	ConversationDigest ConversationDigest
 	ActiveTask         *TaskSnapshot
 	SelectedEntities   []SemanticEntityHint
-	RecentObservations []ToolObservationView
-	VerifiedKnowledge  []VerifiedKnowledgeTurn
 	ContinuityNotices  []string
 	BuiltAtUnix        int64
 }
@@ -62,10 +45,20 @@ const (
 	// max_session_turns larger than it (a session outliving the window forgets its
 	// own opening with no error). The real bound on size is maxReplayedHistoryRunes
 	// below; this only caps how far back we look.
-	maxAgentContextPairs             = config.MaxReplayedExchanges
-	maxAgentContextObservations      = 8
-	maxAgentContextVerifiedKnowledge = 4
+	maxAgentContextPairs        = config.MaxReplayedExchanges
+	maxAgentContextObservations = 8
 )
+
+// measuredContextWindowFloorTokens is a LOWER BOUND on gpt-5.6-terra's context
+// window, established by probe rather than by a published figure: on 2026-08-05 a
+// 130,000-rune CJK prompt was accepted and billed 130,006 prompt tokens. That
+// second number is the more useful half — 1 CJK rune is 1 token exactly, so runes
+// and tokens are interchangeable in the derivation below, and the older note
+// calling 1:1 "deliberately conservative" was describing a measurement it had not
+// taken. Nothing in the codebase reads a model's real window (there is no such
+// field anywhere), so this is the only bound available; treat it as a floor that
+// a larger probe may raise, never as the window itself.
+const measuredContextWindowFloorTokens = 130000
 
 // maxReplayedHistoryRunes budgets the restored exchanges by SIZE, which the pair
 // count alone does not. Replaying exchanges verbatim (the fix for the 320-rune
@@ -73,25 +66,51 @@ const (
 // was a hard 5,120-rune ceiling no matter what the user pasted, and 20 unbounded
 // pairs of the largest messages in the production export would be ~155,000 runes.
 //
-// Derivation, from the constraint that actually binds. config
-// .ShippedMaxTokensPerTurn (agent.rate_limit.max_tokens_per_turn) is
-// prompt+completion summed across the WHOLE turn, and history is re-sent on every
-// one of up to maxReActRounds = 16 model calls, so history's real cost is 16x its
-// per-request size — comparing a single request against the cap is the wrong
-// comparison. Holding history to at most half the turn budget gives
-// 400000/2/16 = 12500 tokens per request; at a deliberately conservative
-// 1 rune = 1 token for CJK that is ~12000 runes.
+// IT IS NOT THE BOUND ON A REQUEST, and an earlier version of this comment said
+// it was. It is applied at turn ENTRY by recentCompleteConversationPairs, when
+// the turn has issued no tools yet, and is never re-checked as the turn
+// accumulates tool results. The derivation it carried —
 //
-// The 400000 above is spelled out because this is arithmetic a reader has to
-// follow, but it is not a second source: config.ShippedMaxTokensPerTurn is pinned
-// to the shipped yaml by TestShippedConfigMatchesTheTokenCapConstant, and
-// TestReplayBudgetStillMatchesItsDerivation re-runs this derivation against the
-// constant so a raised cap cannot leave this number silently behind.
+//	130,000 window floor − 40,000 "this turn's own transcript" − 15,000 system = 75,000
 //
-// Cross-check against production: the largest full-history replay in the three
-// 2026-07 exports is 11,271 runes (p90 1,801; p99 5,764), so every session
-// observed to date still replays complete. The budget bites only past that.
-const maxReplayedHistoryRunes = 12000
+// — was wrong in its middle term: maxTranscriptTotalRunes = 40000 bounds what
+// captureTurnTranscript PERSISTS at the end of a turn, not what is sent during
+// one. Nothing bounded the live side at all, so with history at this budget and a
+// full replay window, 20 expensive reads at the p90 result size assembled 142,856
+// runes. maxAssembledRequestRunes now owns that, at assembly, where the whole
+// request is visible.
+//
+// WHAT THIS NUMBER STILL DOES: it caps how much history is worth ASSEMBLING. On
+// an ordinary turn — p90 is 2 tool calls — nothing is shed later, so this is what
+// the model actually gets, and it wants to be generous. On a tool-heavy turn the
+// assembly bound takes it back down. 48,000 sits well inside what a request can
+// hold once system prompt and completion are reserved (130,000 − 15,000 − 16,000
+// ≈ 99,000), so history alone can never be the thing that overflows a request.
+//
+// WHY NOT THE PREVIOUS DERIVATION, which produced 12,000. It divided half of
+// config.ShippedMaxTokensPerTurn by maxReActRounds, on the reasoning that history
+// is re-sent on every round so its real cost is 16x its per-request size. Two
+// things are wrong with that. It double-counts a guard that already exists: the
+// per-turn cap is enforced at runtime by tokenBudgetExceeded, which has its own
+// recovery exit, so the history bound does not have to pre-guarantee it. And 16
+// is the ceiling, not the shape of traffic — across 648 replayed production turns
+// the p90 is 2 tool calls and 0.3% of turns reach 16 rounds, so every ordinary
+// turn was sized for the deepest one.
+//
+// WHAT IT COST, once the canonical transcript began sharing this budget on
+// 2026-08-04. 24 real replayed turns carry a median 5,486 runes of transcript
+// (p90 7,659; max 17,686 — one turn alone exceeding the entire old budget). At
+// the median, budgetReplayedPairs left the model 2 of 20 exchanges; at the p90,
+// 1. The 20-exchange window was nominal and actual cross-turn memory was two
+// turns, which is the state TestTranscriptSizedHistoryStillReplaysASession pins
+// against. The plain-text cross-check that used to justify 12,000 (largest
+// full-history replay in the three 2026-07 exports = 11,271 runes; p90 1,801)
+// was taken before transcripts existed and measured the wrong payload.
+//
+// TestReplayBudgetStillMatchesItsDerivation re-runs the arithmetic above against
+// the constants, so a raised producer bound or a re-probed window cannot leave
+// this number silently behind.
+const maxReplayedHistoryRunes = 48000
 
 // ContextCompiler owns all conversion from persisted/in-memory state to the
 // model-visible semantic view. It is intentionally stateless; BuildAt is
@@ -120,13 +139,11 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	if e == nil || !e.sessionStateHydrated {
 		return cloneAgentContext(view)
 	}
-	view.ConversationDigest = cloneConversationDigest(e.sessionState.ConversationDigest)
-	view.VerifiedKnowledge = cloneVerifiedKnowledge(e.sessionState.VerifiedKnowledge, maxAgentContextVerifiedKnowledge)
 	view.ContinuityNotices = compactSemanticItems(append([]string(nil), e.continuityAdvisories.Notices...))
 	if e.continuityAdvisories.ReadOnly {
 		view.ContinuityNotices = compactSemanticItems(append(view.ContinuityNotices, "本轮上下文只读，不得执行写操作"))
 	}
-	view.RecentObservations, view.ContinuityNotices = compileObservationViews(
+	view.ContinuityNotices = staleObservationNotices(
 		e.sessionState.RecentFacts,
 		buildAt,
 		view.ContinuityNotices,
@@ -136,7 +153,6 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		view.ActiveTask = &copy
 		view.SelectedEntities = append(view.SelectedEntities, task.Entities...)
 	}
-	view.SelectedEntities = append(view.SelectedEntities, e.sessionState.ConversationDigest.EntityHints...)
 	if !isPersistedSelectionExpired(buildAt.Unix(), e.sessionState) {
 		for _, item := range e.sessionState.PendingSelectionItems {
 			view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{

@@ -58,12 +58,24 @@ func TestContextCompilerExpiresVolatileFactsWithoutPresentingTheirValues(t *test
 	}}}
 
 	view := (ContextCompiler{}).Compile(eng, "现在呢", now)
-	require.Len(t, view.RecentObservations, 2)
-	require.Empty(t, view.RecentObservations[0].Summary)
-	require.True(t, view.RecentObservations[0].RefreshRequired)
-	require.Contains(t, strings.Join(view.ContinuityNotices, "\n"), "必须重新查询")
-	require.Contains(t, view.RecentObservations[1].Summary, "数量 3")
-	require.NotContains(t, renderAgentContextCard(view), "9.99")
+	card := renderAgentContextCard(view)
+
+	// The STALE fact still produces its notice. This half survived the deletion
+	// on purpose: the canonical transcript replays the original tool output, and
+	// that output carries no expiry, so the TTL is the only thing that knows the
+	// number has gone stale.
+	require.Contains(t, strings.Join(view.ContinuityNotices, "\n"), "必须重新查询",
+		"a stale fact must still warn; the transcript cannot carry expiry")
+	require.Contains(t, strings.Join(view.ContinuityNotices, "\n"), "gpu-4090",
+		"the notice must name the subject, or it cannot be acted on")
+	require.NotContains(t, card, "9.99", "an expired value must never be presented")
+
+	// The FRESH fact no longer gets a card summary. It used to render as
+	// 近期可信观测：…数量 3, which restated a tool result the transcript already
+	// replays verbatim.
+	require.NotContains(t, card, "近期可信观测")
+	require.NotContains(t, card, "数量 3",
+		"the fresh fact's value belongs to the replayed tool result, not to a second copy")
 }
 
 func TestContextCompilerRedactsSecretsAndNeverCarriesPriorRawToolJSON(t *testing.T) {
@@ -90,13 +102,15 @@ func TestContextCompilerRedactsSecretsAndNeverCarriesPriorRawToolJSON(t *testing
 	require.NotContains(t, rendered, "must-not-survive")
 	require.NotContains(t, rendered, "plain-token-123")
 	require.Contains(t, rendered, "[REDACTED]")
-	require.NotContains(t, view.VerifiedKnowledge[0].Evidence.Items[0].Snippet, "plain-token-123")
+	// The VerifiedKnowledge assertion that used to sit here checked the CARD copy,
+	// which no longer exists: the model-facing projection was deleted with the
+	// semantic injection. The stored entry survives for the verifier ledger, which
+	// the model never reads, and the assertions above still cover everything it does.
 }
 
 func TestContextCompilerHotColdSemanticEquivalence(t *testing.T) {
 	now := time.Unix(1_750_000_000, 0)
 	state := SessionState{
-		ConversationDigest: ConversationDigest{Narrative: "用户要排查训练机", Decisions: []string{"先看监控"}},
 		SelectedInstanceID: "uhost-1", SelectedInstanceName: "训练机", SelectedInstanceFreshness: ContinuityFreshnessFresh,
 	}
 	messages := []openai.ChatCompletionMessage{

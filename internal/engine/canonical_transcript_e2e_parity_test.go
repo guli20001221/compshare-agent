@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +52,7 @@ func assembleNextTurn(e *Engine, question string) []openai.ChatCompletionMessage
 	})
 	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, question, "turn-parity", fixedBuildAt)
 	e.turnContextViewReady = true
-	return e.buildMessagesForLLM()
+	return e.buildMessagesForLLM(centralAgentToolWindow(false, false))
 }
 
 // runHotTurn holds one turn the way a live engine does and captures it.
@@ -254,10 +255,28 @@ func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
 	hot := &Engine{messages: []openai.ChatCompletionMessage{paritySystemMessage()}}
 	var history []exchange
 
-	// Six exchanges, each carrying a tool round with a ~3000-rune result. Six
-	// times that is well past maxReplayedHistoryRunes (12000), so the budget must
-	// drop the oldest whole exchanges.
-	for _, tag := range []string{"e1", "e2", "e3", "e4", "e5", "e6"} {
+	// The fixture is SIZED OFF the budget rather than against a copy of it. Six
+	// 3000-rune exchanges used to overflow because the budget was 12000; when it
+	// was raised to 48000 this test kept passing every assertion about how a trim
+	// behaves while no longer trimming at all, and only the "precondition" guard
+	// below caught it. Deriving the count means the next change to either constant
+	// re-sizes the fixture instead of silently disarming the test.
+	//
+	// padRunes stays under maxTranscriptMessageRunes so the producer does not
+	// truncate the result and change what is being measured.
+	const padRunes = 4000
+	require.Less(t, padRunes, maxTranscriptMessageRunes, "premise: the pad must survive capture intact")
+	exchangeCount := maxReplayedHistoryRunes/padRunes + 2
+	require.LessOrEqual(t, exchangeCount, maxAgentContextPairs,
+		"premise: the RUNE budget must be what trims here, not the pair count")
+
+	tags := make([]string, 0, exchangeCount)
+	for i := 1; i <= exchangeCount; i++ {
+		tags = append(tags, fmt.Sprintf("e%d", i))
+	}
+	oldest, newest := tags[0], tags[len(tags)-1]
+
+	for _, tag := range tags {
 		q := tag + " 这台怎么了"
 		a := tag + " 已确认。"
 		hot.messages = append(hot.messages,
@@ -265,7 +284,7 @@ func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant,
 				ToolCalls: []openai.ToolCall{toolCall(tag, "DescribeCompShareInstance", `{"UHostId":"`+tag+`"}`)}},
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: tag,
-				Content: `{"id":"` + tag + `","pad":"` + strings.Repeat("资", 3000) + `"}`},
+				Content: `{"id":"` + tag + `","pad":"` + strings.Repeat("资", padRunes) + `"}`},
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: a},
 		)
 		hot.captureTurnTranscript()
@@ -295,17 +314,19 @@ func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
 	assertToolCallPairsValid(t, hotAssembled)
 
 	// The budget must have bitten — otherwise this test proves nothing.
-	require.NotContains(t, rendered, "e1 这台怎么了",
-		"precondition: six exchanges of this size must exceed maxReplayedHistoryRunes")
+	require.NotContains(t, rendered, oldest+" 这台怎么了",
+		"precondition: %d exchanges of %d runes must exceed maxReplayedHistoryRunes=%d — "+
+			"without a trim every assertion below passes vacuously",
+		exchangeCount, padRunes, maxReplayedHistoryRunes)
 	// And it must bite the correct end. Dropping the newest would satisfy every
 	// other assertion here while destroying the context a follow-up depends on.
-	assert.Contains(t, rendered, "e6 这台怎么了",
+	assert.Contains(t, rendered, newest+" 这台怎么了",
 		"the newest exchange is the one 「它」/「刚才那个」 refers to; it is never the one dropped")
-	assert.Contains(t, rendered, `"id":"e6"`, "with its tool evidence intact")
+	assert.Contains(t, rendered, `"id":"`+newest+`"`, "with its tool evidence intact")
 
 	// Whatever survived, survived whole: question, answer and tool evidence
 	// share one fate per exchange.
-	for _, tag := range []string{"e1", "e2", "e3", "e4", "e5", "e6"} {
+	for _, tag := range tags {
 		question := strings.Contains(rendered, tag+" 这台怎么了")
 		answer := strings.Contains(rendered, tag+" 已确认。")
 		evidence := strings.Contains(rendered, `"id":"`+tag+`"`)

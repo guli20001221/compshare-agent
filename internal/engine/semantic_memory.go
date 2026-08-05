@@ -51,42 +51,9 @@ type TaskSnapshot struct {
 	UpdatedAtUnix int64                `json:"updated_at_unix,omitempty"`
 }
 
-// ConversationDigest is reference-only memory for early conversation
-// semantics. It stores no model messages or raw tool JSON.
-type ConversationDigest struct {
-	Narrative       string                `json:"narrative,omitempty"`
-	Goals           []string              `json:"goals,omitempty"`
-	Constraints     []string              `json:"constraints,omitempty"`
-	Decisions       []string              `json:"decisions,omitempty"`
-	UnresolvedTasks []string              `json:"unresolved_tasks,omitempty"`
-	EntityHints     []SemanticEntityHint  `json:"entity_hints,omitempty"`
-	Sources         MemoryDelta           `json:"sources,omitempty"`
-	Excerpts        []ConversationExcerpt `json:"excerpts,omitempty"`
-	SummaryFrontier int64                 `json:"summary_frontier,omitempty"`
-	UpdatedAtUnix   int64                 `json:"updated_at_unix,omitempty"`
-}
 
-// SourcedMemory is accepted only when Quote occurs verbatim in PairIndex.
-// Value is the compact semantic projection shown to later turns.
-type SourcedMemory struct {
-	Value     string `json:"value,omitempty"`
-	PairIndex int    `json:"pair_index"`
-	Quote     string `json:"quote,omitempty"`
-}
 
-type MemoryDelta struct {
-	Goals           []SourcedMemory `json:"goals,omitempty"`
-	Constraints     []SourcedMemory `json:"constraints,omitempty"`
-	Decisions       []SourcedMemory `json:"decisions,omitempty"`
-	UnresolvedTasks []SourcedMemory `json:"unresolved_tasks,omitempty"`
-}
 
-// ConversationExcerpt is an unlabelled fallback. It preserves what was said
-// without guessing whether the text was a goal, decision, or constraint.
-type ConversationExcerpt struct {
-	User      string `json:"user,omitempty"`
-	Assistant string `json:"assistant,omitempty"`
-}
 
 // ContinuityAdvisories is an ephemeral coordinator-to-engine view. It MUST NOT
 // be embedded in SessionState: durable turn/action truth lives in turn tables.
@@ -270,101 +237,7 @@ func normalizeToolFactForStore(fact ToolFact) ToolFact {
 	return fact
 }
 
-func (e *Engine) refreshConversationDigest(now time.Time) {
-	if e == nil || !e.sessionStateHydrated {
-		return
-	}
-	digest := e.sessionState.ConversationDigest
-	task := e.sessionState.TaskSnapshot
-	if task.Goal != "" {
-		digest.Goals = mergeSemanticItems(digest.Goals, []string{task.Goal})
-	}
-	digest.Constraints = mergeSemanticItems(digest.Constraints, task.Constraints)
-	digest.Decisions = mergeSemanticItems(digest.Decisions, task.Decisions)
-	if task.Status == TaskSnapshotStatusActive || task.Status == TaskSnapshotStatusExpired {
-		unresolved := task.Goal
-		if unresolved == "" {
-			unresolved = firstNonEmptySemantic(task.Workflow, task.Intent)
-		}
-		if len(task.MissingSlots) > 0 {
-			unresolved += "；待补充：" + strings.Join(task.MissingSlots, "、")
-		}
-		digest.UnresolvedTasks = compactSemanticItems([]string{unresolved})
-	} else if task.Status == TaskSnapshotStatusResolved {
-		digest.UnresolvedTasks = nil
-	}
-	// Cleared BEFORE the task merge, not after, so this only ever touches state
-	// that was already persisted. Filtering after the merge would put this turn's
-	// task entities through a filter meant for last week's rows; the two Source
-	// vocabularies do not overlap today, so it is the same behaviour either way,
-	// but only this order stays correct if a task entity ever legitimately
-	// carries a source this drops.
-	digest.EntityHints = dropCarriedSelectionHints(digest.EntityHints)
-	digest.EntityHints = mergeSemanticEntities(digest.EntityHints, task.Entities)
-	// The current selection is deliberately NOT copied in here.
-	//
-	// It used to be, and the copy outlived everything that governs the original.
-	// mergeSemanticEntities keys on (kind, id), so a copy is only ever rewritten
-	// while its instance is STILL the live selection. Switching instances appended
-	// a second entry instead, and the first became unreachable by any later
-	// refresh — frozen at the Source and Freshness it was written with for the
-	// life of the session. expireStaleSelectedInstance never saw it: that operates
-	// on sessionState, which the copy is not.
-	//
-	// The failure that produced: two prior picks left bindInstanceTarget with two
-	// user_selected entries, so a bare 关掉它 after two SUCCESSFUL operations
-	// answered 目标引用不唯一.
-	//
-	// A single pick outliving selectedInstanceTTLSeconds was NOT one of them,
-	// though it looks like it should have been. One instance means the copy shares
-	// its key with the live value, so the refresh that always follows
-	// expireStaleSelectedInstance at turn entry overwrote it with the expired
-	// state. See TestSinglePickPastItsTTLDoesNotBind, which pins that and says it
-	// is an invariant rather than a guard for this change.
-	//
-	// CompileForTurn already supplies the live selection with its real provenance
-	// and its real freshness (direct_render_context.go, the SelectedInstanceID
-	// block). One value, one owner, one expiry.
-	digest.Narrative = buildConversationNarrative(digest)
-	digest.UpdatedAtUnix = now.Unix()
-	e.sessionState.ConversationDigest = digest
-	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
-}
 
-// dropCarriedSelectionHints removes selection copies from the digest.
-//
-// Not stopping the writer is only half a fix: the digest is persisted
-// (SessionState.ConversationDigest, json conversation_digest), so every session
-// that has already run a mutating operation carries these entries in the
-// database and would keep carrying them across restarts and replica changes
-// with nothing to clear them. Running on every refresh means such a session
-// heals on its next turn — refreshConversationDigest is called at turn entry,
-// before the context view is compiled, so the healed digest is what that turn
-// sees.
-//
-// The filter keys on Source rather than on Kind, because the two vocabularies do
-// not overlap and only one of them belongs to selection state. user_selected is
-// SelectedInstanceSourceUser, written solely by recordSelectedInstanceIDWithSource.
-// TaskSnapshot entities reach the digest with an actionresolver CandidateSource
-// — user_explicit / verified_context / tool_observation / user_confirmation /
-// agent_inference — via ContextFrame.SlotSources, so completed-task entities are
-// untouched. That is what makes this safe without changing selection_binder.
-func dropCarriedSelectionHints(hints []SemanticEntityHint) []SemanticEntityHint {
-	kept := make([]SemanticEntityHint, 0, len(hints))
-	for _, hint := range hints {
-		if hint.Source == SelectedInstanceSourceUser {
-			continue
-		}
-		kept = append(kept, hint)
-	}
-	if len(kept) == 0 {
-		// nil rather than an empty slice: conversationDigestEmpty and the
-		// omitempty JSON tag both test length, and a persisted "entity_hints": []
-		// would be a gratuitous difference from a digest that never had any.
-		return nil
-	}
-	return kept
-}
 
 func normalizedSelectedInstanceFreshness(state SessionState) string {
 	if state.SelectedInstanceFreshness != "" {
@@ -379,22 +252,6 @@ func normalizedSelectedInstanceFreshness(state SessionState) string {
 	return ContinuityFreshnessFresh
 }
 
-func buildConversationNarrative(digest ConversationDigest) string {
-	var parts []string
-	if len(digest.Goals) > 0 {
-		parts = append(parts, "目标："+strings.Join(recentSemanticItems(digest.Goals, 4), "；"))
-	}
-	if len(digest.UnresolvedTasks) > 0 {
-		parts = append(parts, "未完成："+strings.Join(recentSemanticItems(digest.UnresolvedTasks, 4), "；"))
-	}
-	if len(digest.Constraints) > 0 {
-		parts = append(parts, "限制："+strings.Join(recentSemanticItems(digest.Constraints, 4), "；"))
-	}
-	if len(digest.Decisions) > 0 {
-		parts = append(parts, "已决定："+strings.Join(recentSemanticItems(digest.Decisions, 4), "；"))
-	}
-	return compactSemanticNarrative(strings.Join(parts, "。"))
-}
 
 func compactSemanticPairs(values map[string]string) []string {
 	keys := make([]string, 0, len(values))
@@ -429,12 +286,6 @@ func compactSemanticNarrative(value string) string {
 	return value
 }
 
-func recentSemanticItems(values []string, limit int) []string {
-	if limit <= 0 || len(values) <= limit {
-		return values
-	}
-	return values[len(values)-limit:]
-}
 
 func compactSemanticItems(values []string) []string {
 	return mergeSemanticItems(nil, values)
@@ -467,36 +318,6 @@ func mergeSemanticItems(existing, incoming []string) []string {
 	return out
 }
 
-func mergeSemanticEntities(existing, incoming []SemanticEntityHint) []SemanticEntityHint {
-	out := make([]SemanticEntityHint, 0, len(existing)+len(incoming))
-	positions := map[string]int{}
-	put := func(entity SemanticEntityHint) {
-		entity.Kind = compactSemanticText(entity.Kind)
-		entity.ID = compactSemanticText(entity.ID)
-		entity.Name = compactSemanticText(entity.Name)
-		entity.Source = compactSemanticText(entity.Source)
-		if entity.ID == "" {
-			return
-		}
-		key := strings.ToLower(entity.Kind + "\x00" + entity.ID)
-		if idx, ok := positions[key]; ok {
-			out[idx] = entity
-			return
-		}
-		positions[key] = len(out)
-		out = append(out, entity)
-	}
-	for _, entity := range existing {
-		put(entity)
-	}
-	for _, entity := range incoming {
-		put(entity)
-	}
-	if len(out) > maxSemanticItems {
-		out = out[len(out)-maxSemanticItems:]
-	}
-	return out
-}
 
 func firstNonEmptySemantic(values ...string) string {
 	for _, value := range values {
@@ -512,13 +333,4 @@ func taskSnapshotEmpty(task TaskSnapshot) bool {
 		len(task.Constraints) == 0 && len(task.Decisions) == 0 && len(task.MissingSlots) == 0 &&
 		len(task.Entities) == 0 && task.Status == "" && task.Freshness == "" && task.EndReason == "" &&
 		task.UpdatedAtUnix == 0
-}
-
-func conversationDigestEmpty(digest ConversationDigest) bool {
-	return digest.Narrative == "" && len(digest.Goals) == 0 && len(digest.Constraints) == 0 &&
-		len(digest.Decisions) == 0 && len(digest.UnresolvedTasks) == 0 && len(digest.EntityHints) == 0 &&
-		len(digest.Sources.Goals) == 0 && len(digest.Sources.Constraints) == 0 &&
-		len(digest.Sources.Decisions) == 0 && len(digest.Sources.UnresolvedTasks) == 0 &&
-		len(digest.Excerpts) == 0 && digest.SummaryFrontier == 0 &&
-		digest.UpdatedAtUnix == 0
 }

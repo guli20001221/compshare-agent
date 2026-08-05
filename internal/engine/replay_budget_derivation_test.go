@@ -1,57 +1,123 @@
 package engine
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/config"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // maxReplayedHistoryRunes is not a tuning knob, it is the result of an arithmetic
-// derivation over three inputs: the per-turn token cap, how many times a turn
-// re-sends history, and the share of the turn budget history is allowed.
+// derivation. Pinning the number alone would let any of its inputs move without
+// the number moving with it — which is exactly what happened to the
+// history-ceiling test's copy of the token cap, and, more expensively, to the
+// budget itself when the canonical transcript started sharing it.
 //
-// Pinning the number alone would let any of those three move without the number
-// moving with it — which is exactly what happened to the history-ceiling test's
-// copy of the cap. So this re-runs the derivation instead of restating its output.
+// So this re-runs the derivation rather than restating its output.
 func TestReplayBudgetStillMatchesItsDerivation(t *testing.T) {
-	// The share is the one genuinely chosen input: history gets at most half the
-	// turn, leaving the other half for the system prompt, tool results and the
-	// completion. Changing it is a decision, so it is written here rather than
-	// inferred.
-	const historyShareDenominator = 2
+	// The two genuinely chosen inputs, written here rather than inferred: what a
+	// request holds besides history and this turn's tool work (the 40 tool schemas
+	// dominate it), and what must stay free for the answer.
+	const (
+		systemAndToolSchemaTokens = 15000
+		completionReserveTokens   = 16000
+	)
 
-	perRequestTokens := config.ShippedMaxTokensPerTurn / historyShareDenominator / maxReActRounds
-
-	// 1 rune = 1 token for CJK, the deliberately conservative side: CJK is closer
-	// to 1 token per character than Latin, so this under-counts capacity rather
-	// than over-committing it.
+	// Runes and tokens are interchangeable here because CJK bills 1:1 — see
+	// measuredContextWindowFloorTokens for the probe.
 	//
-	// Asserted as a band, not equality: the shipped 12000 is the derived 12500
-	// rounded down to a legible number, and pinning equality would mean either
-	// writing 12500 or carrying a magic offset that looks like arithmetic and is
-	// not. The band says what is actually required — at or under the derivation,
-	// and close enough to it to still BE the derivation.
-	assert.LessOrEqual(t, maxReplayedHistoryRunes, perRequestTokens,
-		"maxReplayedHistoryRunes=%d exceeds its own derivation: %d tokens/turn ÷ %d ÷ %d "+
-			"rounds = %d per request",
-		maxReplayedHistoryRunes, config.ShippedMaxTokensPerTurn, historyShareDenominator,
-		maxReActRounds, perRequestTokens)
+	// maxTranscriptTotalRunes is deliberately NOT a term. It bounds what
+	// captureTurnTranscript persists after a turn, not what a request carries
+	// during one; treating it as a live reservation is the error this test was
+	// rewritten to stop restating.
+	assert.LessOrEqual(t, maxAssembledRequestRunes,
+		measuredContextWindowFloorTokens-completionReserveTokens,
+		"maxAssembledRequestRunes=%d leaves under %d of the %d window floor for the completion. "+
+			"terra bills reasoning tokens, so an answer needs real room",
+		maxAssembledRequestRunes, completionReserveTokens, measuredContextWindowFloorTokens)
 
-	assert.Greater(t, maxReplayedHistoryRunes, perRequestTokens*4/5,
-		"maxReplayedHistoryRunes=%d has fallen well below the %d its inputs now derive. "+
-			"One of them moved — most likely the token cap or maxReActRounds — and the "+
-			"budget was left at a number that used to be right",
-		maxReplayedHistoryRunes, perRequestTokens)
+	// History is a component of a request, so it must fit inside the request bound
+	// with the fixed overhead already spent — otherwise history alone could be the
+	// thing that forces shedding on an ordinary, tool-light turn.
+	historyHeadroom := maxAssembledRequestRunes - systemAndToolSchemaTokens
+	assert.LessOrEqual(t, maxReplayedHistoryRunes, historyHeadroom,
+		"maxReplayedHistoryRunes=%d exceeds what a request can hold once system+schemas (%d) are "+
+			"spent against maxAssembledRequestRunes (%d) = %d. Assembling history that will always "+
+			"be shed is work done to be thrown away",
+		maxReplayedHistoryRunes, systemAndToolSchemaTokens, maxAssembledRequestRunes, historyHeadroom)
+
+	assert.Greater(t, maxReplayedHistoryRunes, historyHeadroom/2,
+		"maxReplayedHistoryRunes=%d has fallen well below the %d its inputs now allow. One of them "+
+			"moved and the budget was left at a number that used to be right — the failure this "+
+			"test exists to catch",
+		maxReplayedHistoryRunes, historyHeadroom)
+
+	// The per-turn token cap is a SEPARATE, runtime-enforced guard (see
+	// tokenBudgetExceeded), not an input to this derivation — the previous
+	// derivation treated it as one and pre-divided by maxReActRounds, which sized
+	// every ordinary turn for the 0.3% that reach 16 rounds. What still has to hold
+	// is that history at a REALISTIC depth does not eat the whole cap on its own.
+	// p90 across 648 replayed production turns is 2 tool calls, so ~3 model calls.
+	const p90ModelCallsPerTurn = 3
+	assert.Less(t, maxReplayedHistoryRunes*p90ModelCallsPerTurn, config.ShippedMaxTokensPerTurn/2,
+		"at the p90 depth of %d model calls, history alone would spend %d of the %d-token turn cap. "+
+			"Deep turns are allowed to trip that cap and exit through the recovery path; typical "+
+			"turns are not",
+		p90ModelCallsPerTurn, maxReplayedHistoryRunes*p90ModelCallsPerTurn, config.ShippedMaxTokensPerTurn)
 }
 
-// The budget is worth having only if it is bigger than real sessions, or it trims
-// every conversation. 11,271 runes is the largest full-history replay measured
-// across the three 2026-07 production exports (p90 1,801; p99 5,764).
-func TestReplayBudgetClearsTheLargestObservedSession(t *testing.T) {
-	const largestObservedReplayRunes = 11_271
+// The regression the raised budget is FOR, stated as behaviour rather than as a
+// number. With the canonical transcript on, a session of ordinary tool-using
+// turns must still replay as history — before the raise it did not: at the
+// measured median transcript size the model saw 2 of 20 exchanges, and at the p90
+// it saw 1, so a session that looked twenty turns deep had two turns of memory.
+//
+// Sizes below are measured, not invented: 24 real transcripts persisted by an
+// arm-B replay of production traffic have a median of 5,486 runes and a p90 of
+// 7,659 (max 17,686, which alone exceeded the entire previous budget).
+func TestTranscriptSizedHistoryStillReplaysASession(t *testing.T) {
+	withCanonicalTranscript(t, true)
 
-	assert.Greater(t, maxReplayedHistoryRunes, largestObservedReplayRunes,
-		"the budget now bites on sessions that have actually occurred; every observed "+
-			"session replayed complete when it was set")
+	for _, tc := range []struct {
+		name    string
+		perTurn int
+		atLeast int
+	}{
+		{"median transcript", 5486, 6},
+		{"p90 transcript", 7659, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pairs := make([]ConversationPair, 0, maxAgentContextPairs)
+			for i := 0; i < maxAgentContextPairs; i++ {
+				pair := ConversationPair{
+					User:      fmt.Sprintf("问题%d", i),
+					Assistant: fmt.Sprintf("回答%d", i),
+				}
+				pair.Transcript = []openai.ChatCompletionMessage{
+					{Role: openai.ChatMessageRoleUser, Content: pair.User},
+					{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("字", tc.perTurn)},
+					{Role: openai.ChatMessageRoleAssistant, Content: pair.Assistant},
+				}
+				pairs = append(pairs, pair)
+			}
+			require.Len(t, pairs, maxAgentContextPairs, "premise: a full window of tool-using turns")
+
+			kept := budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
+			assert.GreaterOrEqual(t, len(kept), tc.atLeast,
+				"%d-rune transcripts left only %d of %d exchanges. The pair count is then nominal: "+
+					"the model's real cross-turn memory is what survives this budget, not "+
+					"maxAgentContextPairs",
+				tc.perTurn, len(kept), maxAgentContextPairs)
+
+			// The newest exchange is kept unconditionally by budgetReplayedPairs, so
+			// a budget of zero would also "keep" one. Assert the tail is contiguous
+			// and ends at the newest, which a degenerate result would not be.
+			assert.Equal(t, pairs[len(pairs)-1].User, kept[len(kept)-1].User,
+				"the kept window must end at the newest exchange")
+		})
+	}
 }

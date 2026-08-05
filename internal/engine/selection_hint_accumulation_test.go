@@ -1,26 +1,30 @@
 package engine
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-// The digest used to keep its own copy of the selected instance. Because
-// mergeSemanticEntities keys on (kind, id), switching instances appended rather
-// than replaced, and each copy froze the Source and Freshness it was written
-// with — outliving expireStaleSelectedInstance, which only ever touches
-// sessionState.
+// This file used to be about ConversationDigest.EntityHints: the digest kept its
+// own copy of the selected instance, mergeSemanticEntities keyed on (kind, id) so
+// switching instances APPENDED rather than replaced, and each copy froze the
+// Source and Freshness it was written with — outliving expireStaleSelectedInstance,
+// which only ever touches sessionState. Two successful operations therefore left
+// two user_selected entries and the next bare 关掉它 answered 目标引用不唯一.
 //
-// Exactly ONE defect was reproduced against the pre-fix tree: multi-instance
-// accumulation, which is what TestBarePronounAfterTwoOperationsBindsTheNewestPick
-// and TestDigestHoldsNoSelectionCopyAtAll cover. It is reachable under the
-// shipped config today and does not involve the canonical transcript.
+// That storage no longer exists. The defect is now unreachable by construction
+// rather than by cleanup, and SessionState has no field that could hold such a
+// copy. What survives here is the BEHAVIOUR those tests were protecting, which is
+// about live selection and is unaffected by the digest's removal — plus one new
+// test for the only way a poisoned copy could still arrive: a row written by an
+// older binary.
 //
-// TestSinglePickPastItsTTLDoesNotBind is NOT a second defect. It passed before
-// this change too — see its own comment for why — and is kept as an existing
-// invariant, not as a guard for anything here.
+// TestSinglePickPastItsTTLDoesNotBind was never a regression guard for any of
+// this; it is an invariant, kept for the reason its own comment gives.
 
 // selectionEngine is a hydrated engine with no history — the smallest thing that
 // can hold a selection and compile a context view.
@@ -34,27 +38,23 @@ func selectionEngine() *Engine {
 //
 // Neither operation is blocked: both name their instance explicitly and bind
 // through the binder's explicit-reference tier. It is the turn AFTER them that
-// broke — the two picks each left a user_selected copy in the digest, and
-// bindInstanceTarget refuses to act when more than one is carried, so the reply
-// became 目标引用不唯一，请明确指定要操作的实例.
+// broke.
 func TestBarePronounAfterTwoOperationsBindsTheNewestPick(t *testing.T) {
 	now := time.Now()
 	e := selectionEngine()
 
 	e.recordSelectedInstanceIDWithSource("inst-AAA", "web-01", SelectedInstanceSourceUser)
-	e.refreshConversationDigest(now)
 	e.recordSelectedInstanceIDWithSource("inst-BBB", "web-02", SelectedInstanceSourceUser)
-	e.refreshConversationDigest(now.Add(time.Minute))
 
-	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now.Add(time.Minute))
+	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
 	binding := e.bindInstanceTarget(view)
 
 	require.False(t, binding.conflict,
 		"a superseded pick collided with the live one; the user is told 目标引用不唯一 after two operations that both worked")
 	require.Equal(t, "inst-BBB", binding.id, "the newest pick must win")
 
-	// The live selection must still be the only instance the view carries as a
-	// user pick, or the assertion above could hold for the wrong reason.
+	// The live selection must be the only instance the view carries as a user
+	// pick, or the assertion above could hold for the wrong reason.
 	picks := 0
 	for _, ent := range view.SelectedEntities {
 		if ent.Kind == "instance" && ent.Source == SelectedInstanceSourceUser {
@@ -64,41 +64,29 @@ func TestBarePronounAfterTwoOperationsBindsTheNewestPick(t *testing.T) {
 	require.Equal(t, 1, picks, "expected exactly one carried user pick, got %d", picks)
 }
 
-// turnEntry is the production order: expire, then refresh, then compile.
-// engine.go runs exactly this sequence at the top of every turn, and getting it
-// wrong is what made an earlier probe of this area report a defect that does not
-// exist — see TestSinglePickPastItsTTLDoesNotBind.
+// turnEntry is the production order: expire, then compile. The digest refresh that
+// used to sit between them is gone.
 func turnEntry(e *Engine, now time.Time) AgentContext {
 	e.expireStaleSelectedInstance(now)
-	e.refreshConversationDigest(now)
 	return (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
 }
 
-// An invariant, NOT a regression guard for this change: it held before the fix
-// too, and restoring the old writer does not break it.
+// An invariant, NOT a regression guard: it held before the digest was removed and
+// it holds after.
 //
-// It is here because it looks like it should have been broken, and the reason it
-// was not is worth recording. With one instance the digest copy shares its
-// (kind, id) key with the live value, so the refresh that runs immediately after
-// expireStaleSelectedInstance on every turn entry OVERWRITES the copy with the
-// expired state — mergeSemanticEntities assigns on key match rather than
-// appending. The copy could not outlive the original because it was never a
-// second entry.
-//
-// A probe that called expireStaleSelectedInstance WITHOUT the
-// refreshConversationDigest that always follows it at turn entry reported the
-// opposite, and it was wrong — the probe skipped a step the runtime always
-// takes.
-//
-// The real defect needs two DIFFERENT ids, which never key-collide and so are
-// never rewritten: TestBarePronounAfterTwoOperationsBindsTheNewestPick and
-// TestDigestHoldsNoSelectionCopyAtAll.
+// It is here because it looks like it should have been broken by the old digest
+// copy, and the reason it was not is worth keeping. With ONE instance the copy
+// shared its (kind, id) key with the live value, so the refresh that ran
+// immediately after expireStaleSelectedInstance overwrote it with the expired
+// state — the copy could not outlive the original because it was never a second
+// entry. A probe that called expireStaleSelectedInstance without that refresh
+// reported the opposite and was wrong: it skipped a step the runtime always took.
+// The real defect needed two DIFFERENT ids, which never key-collide.
 func TestSinglePickPastItsTTLDoesNotBind(t *testing.T) {
 	base := time.Now()
 	e := selectionEngine()
 
 	e.recordSelectedInstanceIDWithSource("inst-AAA", "web-01", SelectedInstanceSourceUser)
-	e.refreshConversationDigest(base)
 
 	later := base.Add(time.Duration(selectedInstanceTTLSeconds+60) * time.Second)
 	view := turnEntry(e, later)
@@ -112,103 +100,74 @@ func TestSinglePickPastItsTTLDoesNotBind(t *testing.T) {
 	require.False(t, binding.conflict, "an expired pick should simply not bind, not become a conflict")
 }
 
-// Why elapsed time is irrelevant once a switch has happened, stated without a
-// clock.
-//
-// A copy is only ever rewritten while its instance is still the live selection —
-// mergeSemanticEntities assigns on (kind, id) match. The moment the user moves to
-// a different instance, the previous copy is unreachable by any later refresh and
-// keeps its Source and Freshness for the life of the session, through expiry and
-// through a restart. So the fix is not "expire the copies"; it is that the digest
-// must hold none, which is what this asserts.
-//
-// A clock-based version of this cannot be written honestly here:
-// recordSelectedInstanceIDWithSource stamps SelectedInstanceAtUnix from the real
-// wall clock while expire/refresh/compile take an injected now, so advancing the
-// injected clock past a TTL also expires a selection recorded moments ago.
-func TestDigestHoldsNoSelectionCopyAtAll(t *testing.T) {
-	now := time.Now()
+// The one route by which a poisoned copy could still arrive: a session row written
+// by a binary that had the digest. Deleting the writer does nothing about rows
+// already in the database, and this is the assertion that could not be made from
+// our own types — a round-trip test cannot produce input its own writer can no
+// longer construct, so the fixture is hand-authored old wire format.
+func TestSessionRowFromAnOlderBinaryDropsItsDigest(t *testing.T) {
+	// Exactly what an old binary persisted for a session that had run two
+	// mutating operations: two frozen user_selected picks, plus the semantic
+	// blocks and the compactor's sourced memory. selected_instance_at_unix is
+	// stamped live because the binder reads it against the wall clock — a literal
+	// would make this test pass or fail by calendar date.
+	//
+	// The field VALUES are taken from real rows, not from the Go constants: the
+	// replay database holds "user_selected" and "observed" for
+	// selected_instance_source. Writing the plausible-looking "user" here made this
+	// test fail against a binder that was working correctly, which is the whole
+	// point of using a foreign fixture rather than marshalling our own types.
+	raw := json.RawMessage(fmt.Sprintf(`{"agent_session_state":{
+		"schema_version":"7.0",
+		"selected_instance_id":"inst-BBB",
+		"selected_instance_source":"user_selected",
+		"selected_instance_at_unix":%d,
+		"selected_instance_freshness":"fresh",
+		"conversation_digest":{
+			"narrative":"目标：给训练机扩容",
+			"goals":["给训练机扩容"],
+			"decisions":["采用第二种方案"],
+			"entity_hints":[
+				{"kind":"instance","id":"inst-AAA","name":"web-01","source":"user_selected","freshness":"fresh"},
+				{"kind":"instance","id":"inst-BBB","name":"web-02","source":"user_selected","freshness":"fresh"}
+			],
+			"sources":{"decisions":[{"value":"采用第二种方案","pair_index":1,"quote":"第二种"}]},
+			"excerpts":[{"user":"继续","assistant":"请确认实例"}],
+			"summary_frontier":8
+		}
+	}}`, time.Now().Unix()))
+
+	pc, err := ParsePersistedContext(raw)
+	require.NoError(t, err,
+		"an unknown field must not fail the decode — that would make every pre-cut session unloadable")
+	require.Equal(t, SessionStateSchemaV7, pc.AgentSessionState.SchemaVersion)
+	require.Equal(t, "inst-BBB", pc.AgentSessionState.SelectedInstanceID,
+		"premise: the rest of the row must survive, or this proves only that decoding failed")
+
+	// Re-serialising must not carry the digest back out.
+	out, err := json.Marshal(pc.AgentSessionState)
+	require.NoError(t, err)
+	require.NotContains(t, string(out), "conversation_digest")
+	require.NotContains(t, string(out), "inst-AAA",
+		"the frozen pick must be gone, not merely unrendered")
+
+	// And the poisoned session binds cleanly on its next turn.
 	e := selectionEngine()
-
-	e.recordSelectedInstanceIDWithSource("inst-AAA", "web-01", SelectedInstanceSourceUser)
-	e.refreshConversationDigest(now)
-	e.recordSelectedInstanceIDWithSource("inst-BBB", "web-02", SelectedInstanceSourceUser)
-	e.refreshConversationDigest(now.Add(time.Minute))
-
-	for _, hint := range e.sessionState.ConversationDigest.EntityHints {
-		require.NotEqual(t, SelectedInstanceSourceUser, hint.Source,
-			"the digest kept a selection copy (%s); nothing will ever rewrite or expire it", hint.ID)
-	}
+	e.sessionState = pc.AgentSessionState
+	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", time.Now())
+	binding := e.bindInstanceTarget(view)
+	require.False(t, binding.conflict,
+		"a session poisoned by an older binary still reports 目标引用不唯一")
+	require.Equal(t, "inst-BBB", binding.id)
 }
 
-// The digest is persisted, so sessions poisoned before this fix carry the copies
-// in the database. Stopping the writer alone would leave them there across
-// restarts and replica changes with nothing to clear them.
-func TestAlreadyPersistedSelectionHintsAreCleanedOnRefresh(t *testing.T) {
-	now := time.Now()
-	e := selectionEngine()
-	// A digest as an old binary left it: two frozen picks, both fresh forever.
-	e.sessionState.ConversationDigest.EntityHints = []SemanticEntityHint{
-		{Kind: "instance", ID: "inst-AAA", Name: "web-01", Source: SelectedInstanceSourceUser, Freshness: ContinuityFreshnessFresh},
-		{Kind: "instance", ID: "inst-BBB", Name: "web-02", Source: SelectedInstanceSourceUser, Freshness: ContinuityFreshnessFresh},
-	}
-
-	e.refreshConversationDigest(now)
-
-	require.Empty(t, e.sessionState.ConversationDigest.EntityHints,
-		"a session poisoned by an older binary still carries its stale picks")
-
-	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
-	require.False(t, e.bindInstanceTarget(view).conflict)
-}
-
-// The cleanup keys on Source, and the two vocabularies do not overlap:
-// user_selected is written only by recordSelectedInstanceIDWithSource, while
-// TaskSnapshot entities carry an actionresolver CandidateSource through
-// ContextFrame.SlotSources. Completed-task entities are the digest's only unique
-// contribution to SelectedEntities — CompileForTurn appends TaskSnapshot.Entities
-// directly only while the task is unresolved — so losing them would be a real
-// regression, not a cleanup.
-func TestTaskEntitiesSurviveTheSelectionHintCleanup(t *testing.T) {
-	now := time.Now()
-	e := selectionEngine()
-	e.sessionState.ConversationDigest.EntityHints = []SemanticEntityHint{
-		{Kind: "instance", ID: "inst-AAA", Source: SelectedInstanceSourceUser, Freshness: ContinuityFreshnessFresh},
-		{Kind: "instance", ID: "inst-TASK", Source: "user_explicit", Freshness: ContinuityFreshnessFresh},
-		{Kind: "image", ID: "img-1", Source: "verified_context", Freshness: ContinuityFreshnessFresh},
-		{Kind: "instance", ID: "inst-OBS", Source: "tool_observation", Freshness: ContinuityFreshnessStale},
-	}
-
-	e.refreshConversationDigest(now)
-
-	got := map[string]string{}
-	for _, hint := range e.sessionState.ConversationDigest.EntityHints {
-		got[hint.ID] = hint.Source
-	}
-	require.Equal(t, map[string]string{
-		"inst-TASK": "user_explicit",
-		"img-1":     "verified_context",
-		"inst-OBS":  "tool_observation",
-	}, got, "the cleanup must remove only user_selected copies")
-
-	// And they still reach the model-visible view, which is what they are for.
-	view := (ContextCompiler{}).CompileForTurn(e, "看看", "t", now)
-	seen := map[string]bool{}
-	for _, ent := range view.SelectedEntities {
-		seen[ent.ID] = true
-	}
-	require.True(t, seen["inst-TASK"] && seen["img-1"] && seen["inst-OBS"],
-		"completed-task entities stopped reaching AgentContext: %+v", view.SelectedEntities)
-}
-
-// A single live pick must still bind — the fix removes a duplicate, not the
-// feature. Without this, every assertion above is satisfied by a binder that
-// never binds anything.
+// A single live pick must still bind — the removal takes away a duplicate, not the
+// feature. Without this, every assertion above is satisfied by a binder that never
+// binds anything.
 func TestSingleLivePickStillBindsABarePronoun(t *testing.T) {
 	now := time.Now()
 	e := selectionEngine()
 	e.recordSelectedInstanceIDWithSource("inst-AAA", "web-01", SelectedInstanceSourceUser)
-	e.refreshConversationDigest(now)
 
 	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
 	binding := e.bindInstanceTarget(view)

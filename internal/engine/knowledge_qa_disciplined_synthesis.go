@@ -32,9 +32,18 @@ type knowledgeSynthesisOutput struct {
 // It is a SINGLE central-Agent model call (no verifier persona, no repair prompt),
 // and its output goes through the same deterministic, fail-open citation handling
 // as the normal exit: markers that resolve are recorded, all markers are stripped
-// for display, and the answer ships even if uncited. Returns ("", false) only when
-// nothing was retrieved (the "no evidence → refuse, never fabricate" guard) or the
+// for display, and the answer ships even if uncited. Returns ("", false) when THIS
+// TURN retrieved nothing (the "no evidence → refuse, never fabricate" guard) or the
 // call fails — in which case the caller keeps the canned budget refusal.
+//
+// "This turn" is load-bearing and was once wrong here. The ledger came from
+// knowledgeLedgerForVerification, which merges prior verified evidence in — that is
+// correct for a VERIFIER, whose job is to check a follow-up against what an earlier
+// turn established, and wrong for a GENERATOR, whose output is the answer the user
+// reads. A turn that retrieved nothing would synthesize a fresh answer out of a
+// chunk fetched for a different question several turns ago, and then store the
+// result, re-stamping that chunk so it never aged out. Both halves are pinned by
+// TestBudgetRecoveryRefusesOnPriorEvidenceAlone.
 func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string) (string, bool) {
 	resolved := e.resolvedKnowledgeQuestion(userMsg)
 	// The recovery paths can fire before the SearchKnowledge handler folded its
@@ -43,7 +52,7 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 	if len(e.searchKnowledgeLedgerThisTurn.Items) == 0 && len(e.searchKnowledgeHitsThisTurn) > 0 {
 		e.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(resolved, e.searchKnowledgeHitsThisTurn, searchKnowledgeLedgerTurnMaxItems, 0)
 	}
-	ledger := e.knowledgeLedgerForVerification(resolved)
+	ledger := e.currentTurnEvidenceLedger(resolved)
 	if len(ledger.Items) == 0 {
 		return "", false
 	}

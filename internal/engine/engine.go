@@ -1445,7 +1445,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.expireContextFrame(continuityNow)
 	e.expireStaleSelectedInstance(continuityNow)
 	e.expireStaleToolFacts(continuityNow)
-	e.refreshConversationDigest(continuityNow)
 	// Every turn must carry a non-empty server-side turn identity. The durable
 	// transport supplies one (client turn id / request uuid, see ws_durable.go);
 	// the legacy WS/HTTP and CLI paths pass none. Without one,
@@ -1571,36 +1570,41 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			})
 			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
 		}
-		messages := e.buildMessagesForLLM()
+		// The tool window is decided FIRST, and narrowed to its final shape, because
+		// it is part of the request the provider sizes against and the message
+		// budget has to be told how much of the request it has already spent. It
+		// travels as its own field (llm.ChatRequest.Tools), so nothing about it is
+		// visible in the message list — the production window is 40 schemas and
+		// 22,806 runes, larger than the system prompt by an order of magnitude.
 		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
 		if opts.KnowledgeOnly {
 			toolWindow = centralAgentKnowledgeToolWindow()
-		}
-		req := llm.ChatRequest{
-			Messages: messages,
-			Tools:    toolWindow,
 		}
 		// Once the bounded search budget is exhausted, remove the capability. The
 		// observations already in the conversation are sufficient for the Agent's
 		// next decision; injecting another policy prompt here would create a second
 		// and potentially conflicting knowledge contract.
 		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn &&
-			toolListContainsFunction(req.Tools, "SearchKnowledge") {
-			req.Tools = toolListWithoutFunction(req.Tools, "SearchKnowledge")
+			toolListContainsFunction(toolWindow, "SearchKnowledge") {
+			toolWindow = toolListWithoutFunction(toolWindow, "SearchKnowledge")
 		}
 		// Same rule for full-body reads, on their own budget.
 		if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn &&
-			toolListContainsFunction(req.Tools, "ReadChunk") {
-			req.Tools = toolListWithoutFunction(req.Tools, "ReadChunk")
+			toolListContainsFunction(toolWindow, "ReadChunk") {
+			toolWindow = toolListWithoutFunction(toolWindow, "ReadChunk")
 		}
 		// A whole-catalog read is complete after one successful observation. The
 		// model may still reason over that observation, but cannot spend later
 		// rounds asking the same immutable snapshot with cosmetic query variants.
-		for _, tool := range req.Tools {
+		for _, tool := range toolWindow {
 			if tool.Function != nil && singleShotAgentTool(tool.Function.Name) &&
 				completedAgentToolCall(e.toolResultsByCallThisTurn, tool.Function.Name) {
-				req.Tools = toolListWithoutFunction(req.Tools, tool.Function.Name)
+				toolWindow = toolListWithoutFunction(toolWindow, tool.Function.Name)
 			}
+		}
+		req := llm.ChatRequest{
+			Messages: e.buildMessagesForLLM(toolWindow),
+			Tools:    toolWindow,
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
@@ -4950,7 +4954,6 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 		return // no safe cut point found, don't trim
 	}
 
-	e.absorbConversationDigest(e.messages[1:safeStart], time.Now())
 	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
 	e.historyTrimmedThisSession = true
@@ -4959,12 +4962,62 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 // buildMessagesForLLM returns the message slice to send to the LLM.
 // Freshness and refresh requirements are part of the single compiled
 // AgentContext; this function does not add turn-local policy prompts.
-func (e *Engine) buildMessagesForLLM() []openai.ChatCompletionMessage {
+// buildMessagesForLLM assembles the message list for one request. toolWindow is
+// the FINAL, already-narrowed window that will travel alongside it: the size
+// budget covers the whole request, and the tools are a large part of it that the
+// message list never mentions.
+func (e *Engine) buildMessagesForLLM(toolWindow []openai.Tool) []openai.ChatCompletionMessage {
 	assembled := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
-	capped := capAssembledRequestMessages(assembled, maxAssembledRequestMessages)
+	messageBudget := maxAssembledRequestRunes - toolWindowRunes(toolWindow)
+	capped := trimAssembledRequest(assembled, maxAssembledRequestMessages, messageBudget)
 	e.recordPromptAssembly(len(e.messages), len(assembled), len(capped))
 	return capped
 }
+
+// toolWindowRunes is what the tool schemas cost on the wire. Serializing them is
+// the honest measure: the provider receives this JSON, and the schemas' own
+// descriptions and enums are most of it.
+func toolWindowRunes(tools []openai.Tool) int {
+	if len(tools) == 0 {
+		return 0
+	}
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		// Unmarshalable tools would fail the request anyway; charge the production
+		// window's size rather than 0, so a marshalling bug cannot silently hand
+		// the message list the whole budget.
+		return maxAssembledRequestRunes / 4
+	}
+	return len([]rune(string(raw)))
+}
+
+// maxAssembledRequestRunes is the SIZE ceiling on one whole request — messages
+// AND the tool window — and it is the only bound that sees all of it at once.
+//
+// It exists because maxReplayedHistoryRunes cannot do this job. That budget is
+// applied at turn ENTRY, by recentCompleteConversationPairs, when the turn has
+// issued no tools yet — so it bounds history against an empty current turn and
+// then never looks again, while the turn goes on to accumulate up to
+// maxReadExpensiveCallsPerTurn tool results that are re-sent on every subsequent
+// round.
+//
+// Nothing else bounded that. maxAssembledRequestMessages counts messages, not
+// size. maxTranscriptTotalRunes = 40000 looks like it applies and does not:
+// captureTurnTranscript is deferred to the END of the turn (engine.go), so that
+// constant bounds what is PERSISTED and never what is sent. An earlier version
+// of the maxReplayedHistoryRunes derivation reserved 40000 for "this turn's own
+// transcript" on exactly that misreading.
+//
+// Measured, with history at budget and a full replay window of transcript-
+// bearing turns: at the p90 tool-result size of 4142 runes, 20 expensive reads
+// assemble 142,856 runes and 30 assemble 184,696 — both past
+// measuredContextWindowFloorTokens, which is itself a floor rather than a known
+// window.
+//
+// 100000 leaves 30,000 of that floor for the completion (terra is a reasoning
+// model and bills reasoning tokens), for the per-message wrapper overhead that a
+// rune count does not see, and for the floor being one probe.
+const maxAssembledRequestRunes = 100000
 
 // maxAssembledRequestMessages is a conservative hard ceiling on the number of
 // messages in a single assembled LLM request. The legitimate maximum is now ~93
@@ -4980,13 +5033,50 @@ const maxAssembledRequestMessages = 100
 
 // capAssembledRequestMessages bounds an already-assembled request to at most
 // `cap` messages without ever producing an API-invalid transcript. It sheds the
-// oldest restored RecentConversation exchanges first (complete plain-text pairs
-// already distilled into the context card), then, only if still over, the oldest
-// complete in-turn tool groups after the current question. An assistant message
-// carrying tool_calls is always dropped together with its tool results, so no
-// tool result is ever orphaned and the current question is always retained.
+// oldest restored history first — plain pairs or projected transcripts, whole
+// exchanges either way; nothing summarises them elsewhere any more, so shedding
+// one drops it — then, only if still over, the oldest complete in-turn tool
+// groups after the current question. An assistant message carrying tool_calls is
+// always dropped together with its tool results, so no tool result is ever
+// orphaned and the current question is always retained.
+// capAssembledRequestMessages is the count-only entry point, kept for the tests
+// that exercise shedding at small message limits.
 func capAssembledRequestMessages(msgs []openai.ChatCompletionMessage, cap int) []openai.ChatCompletionMessage {
-	if cap <= 0 || len(msgs) <= cap {
+	return trimAssembledRequest(msgs, cap, 0)
+}
+
+// assembledRequestRunes is the size a request is charged at: message content
+// plus tool-call names and arguments, which are as real to the provider as the
+// content and are what a tool-heavy turn is mostly made of.
+func assembledRequestRunes(msgs []openai.ChatCompletionMessage) int {
+	total := 0
+	for _, msg := range msgs {
+		total += len([]rune(msg.Content))
+		for _, call := range msg.ToolCalls {
+			total += len([]rune(call.Function.Name)) + len([]rune(call.Function.Arguments))
+		}
+	}
+	return total
+}
+
+// trimAssembledRequest bounds an already-assembled request by BOTH message count
+// and size, without ever producing an API-invalid transcript. Either limit may be
+// 0 to disable it.
+//
+// Shedding order is the same for both metrics, and it is an order of preference,
+// not an implementation detail: restored history goes first (oldest exchange
+// first — it is context, and the turn can still be answered without it), and only
+// if that is not enough do the oldest in-turn tool groups go (the model asked for
+// those this turn, so losing them may cost a re-read). The current question and
+// the leading system block are never shed.
+//
+// Both limits are satisfied jointly rather than in two passes: a count pass
+// followed by a size pass could shed for one metric a group that the other pass
+// then sheds again, dropping more than either limit required.
+func trimAssembledRequest(msgs []openai.ChatCompletionMessage, maxMessages, maxRunes int) []openai.ChatCompletionMessage {
+	overCount := maxMessages > 0 && len(msgs) > maxMessages
+	overRunes := maxRunes > 0 && assembledRequestRunes(msgs) > maxRunes
+	if !overCount && !overRunes {
 		return msgs
 	}
 	headEnd := 0
@@ -5005,7 +5095,21 @@ func capAssembledRequestMessages(msgs []openai.ChatCompletionMessage, cap int) [
 	if currentUserIdx < headEnd {
 		return msgs
 	}
-	excess := len(msgs) - cap
+
+	assemble := func(dropFromPairs, cut int) []openai.ChatCompletionMessage {
+		out := make([]openai.ChatCompletionMessage, 0, len(msgs)-dropFromPairs)
+		out = append(out, msgs[:headEnd]...)
+		out = append(out, msgs[headEnd+dropFromPairs:currentUserIdx]...)
+		out = append(out, msgs[currentUserIdx])
+		out = append(out, msgs[cut:]...)
+		return out
+	}
+	fits := func(candidate []openai.ChatCompletionMessage) bool {
+		if maxMessages > 0 && len(candidate) > maxMessages {
+			return false
+		}
+		return maxRunes <= 0 || assembledRequestRunes(candidate) <= maxRunes
+	}
 
 	// Phase 1: drop whole restored exchanges from the oldest end.
 	//
@@ -5022,8 +5126,11 @@ func capAssembledRequestMessages(msgs []openai.ChatCompletionMessage, cap int) [
 			exchangeStarts = append(exchangeStarts, i)
 		}
 	}
-	dropFromPairs := 0
-	for j := 0; j < len(exchangeStarts) && dropFromPairs < excess; j++ {
+	dropFromPairs, firstTurnCut := 0, currentUserIdx+1
+	for j := 0; j < len(exchangeStarts); j++ {
+		if fits(assemble(dropFromPairs, firstTurnCut)) {
+			break
+		}
 		end := currentUserIdx
 		if j+1 < len(exchangeStarts) {
 			end = exchangeStarts[j+1]
@@ -5034,23 +5141,14 @@ func capAssembledRequestMessages(msgs []openai.ChatCompletionMessage, cap int) [
 	// Phase 2: if still over, drop oldest complete in-turn tool groups after the
 	// current question. A group = one assistant message plus the tool results
 	// that answer it; both go together so nothing is orphaned.
-	remaining := excess - dropFromPairs
-	cut := currentUserIdx + 1
-	for remaining > 0 && cut < len(msgs) {
+	cut := firstTurnCut
+	for cut < len(msgs) && !fits(assemble(dropFromPairs, cut)) {
 		cut++ // drop the message that starts this group
-		remaining--
 		for cut < len(msgs) && msgs[cut].Role == openai.ChatMessageRoleTool {
 			cut++
-			remaining--
 		}
 	}
-
-	out := make([]openai.ChatCompletionMessage, 0, len(msgs)-dropFromPairs)
-	out = append(out, msgs[:headEnd]...)
-	out = append(out, msgs[headEnd+dropFromPairs:currentUserIdx]...)
-	out = append(out, msgs[currentUserIdx])
-	out = append(out, msgs[cut:]...)
-	return out
+	return assemble(dropFromPairs, cut)
 }
 
 // recordPromptAssembly captures per-turn, content-free observability for the

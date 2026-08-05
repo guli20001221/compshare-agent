@@ -10,8 +10,6 @@ const (
 const (
 	memoryUpdateNone       = "none"
 	memoryUpdateStructured = "structured_event"
-	memoryUpdateCompactor  = "compactor"
-	memoryUpdateExcerpt    = "excerpt"
 
 	groundingSupported   = "supported"
 	groundingRepaired    = "repaired"
@@ -24,22 +22,11 @@ func contextSourceIDs(view TurnContextView) []string {
 	if len(view.RecentConversation) > 0 {
 		ids = append(ids, "recent_pairs")
 	}
-	digest := view.ConversationDigest
-	if digest.Narrative != "" || len(digest.Excerpts) > 0 || len(digest.Goals) > 0 ||
-		len(digest.Constraints) > 0 || len(digest.Decisions) > 0 || len(digest.UnresolvedTasks) > 0 {
-		ids = append(ids, "digest")
-	}
 	if view.ActiveTask != nil {
 		ids = append(ids, "active_task")
 	}
 	if len(view.SelectedEntities) > 0 {
 		ids = append(ids, "selected_entities")
-	}
-	if len(view.RecentObservations) > 0 {
-		ids = append(ids, "recent_observations")
-	}
-	if len(view.VerifiedKnowledge) > 0 {
-		ids = append(ids, "verified_knowledge")
 	}
 	if len(view.ContinuityNotices) > 0 {
 		ids = append(ids, "notices")
@@ -61,7 +48,11 @@ func (e *Engine) markMemoryUpdateSource(source string) {
 	if e == nil {
 		return
 	}
-	priority := map[string]int{memoryUpdateNone: 0, memoryUpdateStructured: 1, memoryUpdateExcerpt: 2, memoryUpdateCompactor: 3}
+	// Two tiers, not four: the "excerpt" and "compactor" tiers were produced only
+	// by the ConversationDigest writers, which are gone. The highest-wins shape is
+	// kept because that is the contract — a turn reports its strongest memory
+	// write, not its last one.
+	priority := map[string]int{memoryUpdateNone: 0, memoryUpdateStructured: 1}
 	if priority[source] > priority[e.memoryUpdateSourceThisTurn] {
 		e.memoryUpdateSourceThisTurn = source
 	}
@@ -69,7 +60,7 @@ func (e *Engine) markMemoryUpdateSource(source string) {
 
 func normalizedMemoryUpdateSource(source string) string {
 	switch source {
-	case memoryUpdateStructured, memoryUpdateCompactor, memoryUpdateExcerpt:
+	case memoryUpdateStructured:
 		return source
 	default:
 		return memoryUpdateNone

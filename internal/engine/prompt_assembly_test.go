@@ -27,7 +27,6 @@ func TestAssembledContext_SingleMemoryBlock_WithCompactionOn(t *testing.T) {
 			Goal:   "把训练机扩容到 200G",
 			Status: TaskSnapshotStatusActive,
 		},
-		ConversationDigest: ConversationDigest{Narrative: "用户在配置训练机"},
 	}, 1)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "system"},

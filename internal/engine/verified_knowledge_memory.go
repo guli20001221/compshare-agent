@@ -15,10 +15,6 @@ const (
 	verifiedKnowledgeAnswerMaxRunes = 1200
 )
 
-func (e *Engine) hasReusableVerifiedKnowledge() bool {
-	return e != nil && len(e.sessionState.VerifiedKnowledge) > 0
-}
-
 // rememberVerifiedKnowledge stores only answers that have already passed the
 // semantic verifier. The bounded evidence snippets are the durable trust root;
 // arbitrary assistant prose is never promoted merely because it was emitted.
@@ -97,22 +93,41 @@ func (e *Engine) verifiedKnowledgeLedgerForQuestion(question string) knowledge.E
 	return out
 }
 
-func (e *Engine) knowledgeLedgerForVerification(question string) knowledge.EvidenceLedger {
+// currentTurnEvidenceLedger is everything THIS turn gathered: platform reads plus
+// this turn's retrieval. It is the only ledger an answer may be GENERATED from and
+// the only one that may be STORED as an answer's evidence.
+//
+// The distinction against knowledgeLedgerForVerification is not stylistic. Prior
+// verified evidence is legitimate to CHECK a new answer against — a follow-up that
+// retrieves nothing of its own has nothing else to be checked against. It is not
+// legitimate to WRITE a new answer from, because "the question we retrieved for"
+// and "the question being answered" are then different questions, and the user
+// cannot tell. Nor may it be stored again: re-stamping a chunk into each new entry
+// gives it a fresh VerifiedAtUnix every turn, so evidence retrieved once never
+// leaves the 4-turn window.
+func (e *Engine) currentTurnEvidenceLedger(question string) knowledge.EvidenceLedger {
 	question = strings.TrimSpace(question)
 	tools := e.currentReadEvidenceLedger(question)
 	current := e.searchKnowledgeLedgerThisTurn
 	current.Query = question
-	prior := e.verifiedKnowledgeLedgerForQuestion(question)
 	// The Agent has already seen every current-turn tool and retrieval item. The
 	// verifier must judge against that same evidence set; the small durable-memory
 	// cap must not truncate later searches and create false negatives.
-	currentMax := len(tools.Items) + len(current.Items)
-	var out knowledge.EvidenceLedger
-	if currentMax > 0 {
-		out = knowledge.MergeEvidenceLedgers(tools, current, currentMax)
+	limit := len(tools.Items) + len(current.Items)
+	if limit == 0 {
+		return knowledge.EvidenceLedger{Query: question, Items: []knowledge.EvidenceItem{}}
 	}
+	out := knowledge.MergeEvidenceLedgers(tools, current, limit)
+	out.Query = question
+	return out
+}
+
+func (e *Engine) knowledgeLedgerForVerification(question string) knowledge.EvidenceLedger {
+	question = strings.TrimSpace(question)
+	out := e.currentTurnEvidenceLedger(question)
 	// Prior verified memory remains separately bounded. It is supplementary and
 	// never displaces evidence gathered for the current answer.
+	prior := e.verifiedKnowledgeLedgerForQuestion(question)
 	out = knowledge.MergeEvidenceLedgers(out, prior, len(out.Items)+verifiedKnowledgeMaxItems)
 	out.Query = question
 	return out
