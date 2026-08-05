@@ -66,17 +66,26 @@ const measuredContextWindowFloorTokens = 130000
 // was a hard 5,120-rune ceiling no matter what the user pasted, and 20 unbounded
 // pairs of the largest messages in the production export would be ~155,000 runes.
 //
-// DERIVATION, against the limit that actually binds — the context window. One
-// request carries the system prompt and tool schemas, the replayed history, and
-// this turn's own tool work:
+// IT IS NOT THE BOUND ON A REQUEST, and an earlier version of this comment said
+// it was. It is applied at turn ENTRY by recentCompleteConversationPairs, when
+// the turn has issued no tools yet, and is never re-checked as the turn
+// accumulates tool results. The derivation it carried —
 //
-//	 130,000  measuredContextWindowFloorTokens
-//	- 40,000  this turn's own transcript, bounded by maxTranscriptTotalRunes
-//	- 15,000  system prompt + the 40 tool schemas
-//	= 75,000  available to history
+//	130,000 window floor − 40,000 "this turn's own transcript" − 15,000 system = 75,000
 //
-// 48,000 takes roughly two thirds of that. The remaining third is margin for the
-// window being a floor from a single probe, not a published number.
+// — was wrong in its middle term: maxTranscriptTotalRunes = 40000 bounds what
+// captureTurnTranscript PERSISTS at the end of a turn, not what is sent during
+// one. Nothing bounded the live side at all, so with history at this budget and a
+// full replay window, 20 expensive reads at the p90 result size assembled 142,856
+// runes. maxAssembledRequestRunes now owns that, at assembly, where the whole
+// request is visible.
+//
+// WHAT THIS NUMBER STILL DOES: it caps how much history is worth ASSEMBLING. On
+// an ordinary turn — p90 is 2 tool calls — nothing is shed later, so this is what
+// the model actually gets, and it wants to be generous. On a tool-heavy turn the
+// assembly bound takes it back down. 48,000 sits well inside what a request can
+// hold once system prompt and completion are reserved (130,000 − 15,000 − 16,000
+// ≈ 99,000), so history alone can never be the thing that overflows a request.
 //
 // WHY NOT THE PREVIOUS DERIVATION, which produced 12,000. It divided half of
 // config.ShippedMaxTokensPerTurn by maxReActRounds, on the reasoning that history

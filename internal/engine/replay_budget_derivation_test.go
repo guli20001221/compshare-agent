@@ -19,35 +19,42 @@ import (
 //
 // So this re-runs the derivation rather than restating its output.
 func TestReplayBudgetStillMatchesItsDerivation(t *testing.T) {
-	// The one genuinely chosen input, written here rather than inferred: what a
-	// request holds besides history and this turn's own tool work. The 40 tool
-	// schemas dominate it.
-	const systemAndToolSchemaTokens = 15000
+	// The two genuinely chosen inputs, written here rather than inferred: what a
+	// request holds besides history and this turn's tool work (the 40 tool schemas
+	// dominate it), and what must stay free for the answer.
+	const (
+		systemAndToolSchemaTokens = 15000
+		completionReserveTokens   = 16000
+	)
 
-	// A single request must fit the window: system + schemas, plus this turn's own
-	// transcript (bounded at the producer by maxTranscriptTotalRunes), plus the
-	// replayed history. Runes and tokens are interchangeable here because CJK bills
-	// 1:1 — see measuredContextWindowFloorTokens for the probe.
-	headroom := measuredContextWindowFloorTokens - maxTranscriptTotalRunes - systemAndToolSchemaTokens
+	// Runes and tokens are interchangeable here because CJK bills 1:1 — see
+	// measuredContextWindowFloorTokens for the probe.
+	//
+	// maxTranscriptTotalRunes is deliberately NOT a term. It bounds what
+	// captureTurnTranscript persists after a turn, not what a request carries
+	// during one; treating it as a live reservation is the error this test was
+	// rewritten to stop restating.
+	assert.LessOrEqual(t, maxAssembledRequestRunes,
+		measuredContextWindowFloorTokens-completionReserveTokens,
+		"maxAssembledRequestRunes=%d leaves under %d of the %d window floor for the completion. "+
+			"terra bills reasoning tokens, so an answer needs real room",
+		maxAssembledRequestRunes, completionReserveTokens, measuredContextWindowFloorTokens)
 
-	assert.LessOrEqual(t, maxReplayedHistoryRunes, headroom,
-		"maxReplayedHistoryRunes=%d exceeds its derivation: %d window floor − %d for this turn's "+
-			"transcript − %d for system+schemas = %d available to history. A request built at this "+
-			"size can be rejected outright by the provider, and nothing in this codebase checks a "+
-			"context window before sending",
-		maxReplayedHistoryRunes, measuredContextWindowFloorTokens, maxTranscriptTotalRunes,
-		systemAndToolSchemaTokens, headroom)
+	// History is a component of a request, so it must fit inside the request bound
+	// with the fixed overhead already spent — otherwise history alone could be the
+	// thing that forces shedding on an ordinary, tool-light turn.
+	historyHeadroom := maxAssembledRequestRunes - systemAndToolSchemaTokens
+	assert.LessOrEqual(t, maxReplayedHistoryRunes, historyHeadroom,
+		"maxReplayedHistoryRunes=%d exceeds what a request can hold once system+schemas (%d) are "+
+			"spent against maxAssembledRequestRunes (%d) = %d. Assembling history that will always "+
+			"be shed is work done to be thrown away",
+		maxReplayedHistoryRunes, systemAndToolSchemaTokens, maxAssembledRequestRunes, historyHeadroom)
 
-	assert.LessOrEqual(t, maxReplayedHistoryRunes, headroom*3/4,
-		"maxReplayedHistoryRunes=%d leaves no margin against a window floor (%d) that came from a "+
-			"single probe rather than a published figure. Re-probe before spending the last quarter",
-		maxReplayedHistoryRunes, measuredContextWindowFloorTokens)
-
-	assert.Greater(t, maxReplayedHistoryRunes, headroom/2,
+	assert.Greater(t, maxReplayedHistoryRunes, historyHeadroom/2,
 		"maxReplayedHistoryRunes=%d has fallen well below the %d its inputs now allow. One of them "+
 			"moved and the budget was left at a number that used to be right — the failure this "+
 			"test exists to catch",
-		maxReplayedHistoryRunes, headroom)
+		maxReplayedHistoryRunes, historyHeadroom)
 
 	// The per-turn token cap is a SEPARATE, runtime-enforced guard (see
 	// tokenBudgetExceeded), not an input to this derivation — the previous
