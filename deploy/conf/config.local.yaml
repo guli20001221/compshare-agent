@@ -80,7 +80,7 @@ agent:
     # Context-engineering optimizations.
     session_fact_context: true          # trace label only — decides whether the turn's binding is traced as fact_cache; injects nothing
     react_result_projection: true       # compress large read tool results before re-feeding ReAct
-    react_history_compaction: true      # summarize old turns once history exceeds the window
+    react_history_compaction: true      # deterministic history trim past maxHistoryMessages; no longer summarizes (the digest producer is deleted)
     # ON since 2026-08-04. One switch owns the whole transcript pipeline: the
     # turn's messages, tool calls and tool results are captured, persisted to
     # messages.metadata (agent_transcript_v1) and replayed to the model, instead
@@ -88,7 +88,8 @@ agent:
     #
     # With it on the context card stops restating a summary of the same turns
     # (#510) and keeps only what a transcript cannot carry: the live selection,
-    # the pending selection card, and this turn's continuity notices. The
+    # the pending selection card, and this turn's continuity notices.
+    #
     # The semantic layer it replaced is now DELETED, not suppressed:
     # ConversationDigest (with its producer and persisted field), RecentFacts and
     # VerifiedKnowledge no longer reach the model in either flag position, and
@@ -114,11 +115,13 @@ agent:
     # (100000) is what keeps one assembled request inside the context window on a
     # high-fanout tool turn.
     #
-    # ROLLBACK: set this to false and RESTART. NOT via the environment — see the
-    # forced_knowledge_hop note below: an explicit value here out-ranks os.Getenv
-    # (internal/config/runtime.go), so COMPSHARE_CANONICAL_TRANSCRIPT=0 would
-    # silently do nothing while this key is present. Boot-only either way;
-    # engine.SetCanonicalTranscriptEnabled freezes it once at startup.
+    # FLIPPING IT (a migration switch, not a rollback — see above; false does NOT
+    # restore the deleted semantic layer): set this to false and RESTART. NOT via
+    # the environment — see the forced_knowledge_hop note below: an explicit value
+    # here out-ranks os.Getenv (internal/config/runtime.go), so
+    # COMPSHARE_CANONICAL_TRANSCRIPT=0 would silently do nothing while this key is
+    # present. Boot-only either way; engine.SetCanonicalTranscriptEnabled freezes
+    # it once at startup.
     canonical_transcript: true
     # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
     # guards only when their flag-on path is the validated production path.

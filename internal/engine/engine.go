@@ -5033,11 +5033,12 @@ const maxAssembledRequestMessages = 100
 
 // capAssembledRequestMessages bounds an already-assembled request to at most
 // `cap` messages without ever producing an API-invalid transcript. It sheds the
-// oldest restored RecentConversation exchanges first (complete plain-text pairs
-// already distilled into the context card), then, only if still over, the oldest
-// complete in-turn tool groups after the current question. An assistant message
-// carrying tool_calls is always dropped together with its tool results, so no
-// tool result is ever orphaned and the current question is always retained.
+// oldest restored history first — plain pairs or projected transcripts, whole
+// exchanges either way; nothing summarises them elsewhere any more, so shedding
+// one drops it — then, only if still over, the oldest complete in-turn tool
+// groups after the current question. An assistant message carrying tool_calls is
+// always dropped together with its tool results, so no tool result is ever
+// orphaned and the current question is always retained.
 // capAssembledRequestMessages is the count-only entry point, kept for the tests
 // that exercise shedding at small message limits.
 func capAssembledRequestMessages(msgs []openai.ChatCompletionMessage, cap int) []openai.ChatCompletionMessage {

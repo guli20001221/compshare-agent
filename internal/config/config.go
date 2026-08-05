@@ -149,12 +149,19 @@ const MaxReplayedExchanges = 20
 // deploy/conf/config.yaml, for the code that has to SIZE ITSELF against the
 // deployed cap rather than read it from a loaded Config.
 //
-// It exists because that number had grown two producers that disagreed.
-// maxReplayedHistoryRunes derives its 12000 from 400000; the history-ceiling
-// test asserted against a hardcoded 200000 that was correct until the config was
-// raised on 2026-07-23 and then silently was not. The stale copy happened to be
-// the conservative direction, so nothing failed — which is precisely why it
-// survived, and why the next drift could as easily go the other way.
+// It exists because that number had grown two producers that disagreed: the
+// history-ceiling test asserted against a hardcoded 200000 that was correct until
+// the config was raised on 2026-07-23 and then silently was not. The stale copy
+// happened to be the conservative direction, so nothing failed — which is
+// precisely why it survived, and why the next drift could as easily go the other
+// way.
+//
+// maxReplayedHistoryRunes NO LONGER DERIVES FROM THIS CAP. It was sized against
+// half of it divided by maxReActRounds until 2026-08-05. The request budget now
+// derives from the context window instead (engine.maxAssembledRequestRunes),
+// because this cap is a per-turn RATE limit enforced at runtime across every
+// round, not a bound on any single request — and a single request is what a
+// provider rejects.
 //
 // TestShippedConfigMatchesTheTokenCapConstant reads the yaml and fails if the two
 // diverge, so this is a pinned mirror rather than a third copy. Runtime enforcement
