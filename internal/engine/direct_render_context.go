@@ -22,20 +22,6 @@ type ConversationPair struct {
 	Transcript []openai.ChatCompletionMessage
 }
 
-// ToolObservationView is the bounded semantic projection of a prior tool
-// result. Summary is present only while the observation is fresh. Raw tool JSON
-// is never part of AgentContext.
-type ToolObservationView struct {
-	Kind            string
-	SubjectID       string
-	Summary         string
-	Source          string
-	Completeness    string
-	Freshness       string
-	RefreshRequired bool
-	ProducedAtUnix  int64
-}
-
 // AgentContext is the single immutable, read-only projection compiled at turn
 // entry. SessionState and committed messages remain the sources of truth; this
 // value is not persisted and never grants execution authority.
@@ -46,7 +32,6 @@ type AgentContext struct {
 	ConversationDigest ConversationDigest
 	ActiveTask         *TaskSnapshot
 	SelectedEntities   []SemanticEntityHint
-	RecentObservations []ToolObservationView
 	ContinuityNotices  []string
 	BuiltAtUnix        int64
 }
@@ -123,7 +108,7 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	if e.continuityAdvisories.ReadOnly {
 		view.ContinuityNotices = compactSemanticItems(append(view.ContinuityNotices, "本轮上下文只读，不得执行写操作"))
 	}
-	view.RecentObservations, view.ContinuityNotices = compileObservationViews(
+	view.ContinuityNotices = staleObservationNotices(
 		e.sessionState.RecentFacts,
 		buildAt,
 		view.ContinuityNotices,

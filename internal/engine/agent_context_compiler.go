@@ -17,7 +17,6 @@ func cloneAgentContext(in AgentContext) AgentContext {
 		out.ActiveTask = &copy
 	}
 	out.SelectedEntities = cloneEntityHints(in.SelectedEntities)
-	out.RecentObservations = append([]ToolObservationView(nil), in.RecentObservations...)
 	out.ContinuityNotices = append([]string(nil), in.ContinuityNotices...)
 	return out
 }
@@ -89,44 +88,40 @@ func cloneSourcedMemory(in []SourcedMemory) []SourcedMemory {
 	return out
 }
 
-func compileObservationViews(facts []ToolFact, now time.Time, notices []string) ([]ToolObservationView, []string) {
+// staleObservationNotices is what survives of the RecentFacts projection.
+//
+// The per-fact SUMMARY it used to build (rendered as 近期可信观测) restated a tool
+// result the canonical transcript now replays verbatim, so it was a second and
+// lossier copy and it is gone. The staleness notice is the opposite case: the
+// transcript carries the ORIGINAL tool output, and that output has no expiry in
+// it. Only the fact's TTL knows the value has since gone stale, so with the
+// transcript on this notice is needed MORE than before, not less — it is the
+// only thing standing between a replayed stock or price number and the model
+// quoting it as current.
+func staleObservationNotices(facts []ToolFact, now time.Time, notices []string) []string {
 	if len(facts) == 0 {
-		return nil, notices
+		return notices
 	}
 	limit := len(facts)
 	if limit > maxAgentContextObservations {
 		limit = maxAgentContextObservations
 	}
-	views := make([]ToolObservationView, 0, limit)
 	for _, fact := range facts[:limit] {
 		freshness := fact.Freshness
 		if freshness == "" {
 			freshness = continuityFreshness(fact.ProducedAtUnix, fact.TTLSeconds, now)
 		}
-		view := ToolObservationView{
-			Kind:            safeContextText(fact.Kind),
-			SubjectID:       safeContextText(fact.SubjectID),
-			Source:          safeContextText(fact.Source),
-			Completeness:    safeContextText(fact.Completeness),
-			Freshness:       freshness,
-			RefreshRequired: fact.RefreshRequired || freshness != ContinuityFreshnessFresh,
-			ProducedAtUnix:  fact.ProducedAtUnix,
-		}
 		if freshness == ContinuityFreshnessFresh {
-			view.Summary = observationSummary(fact, now)
-		} else if view.Kind != "" || view.SubjectID != "" {
-			notices = append(notices, fmt.Sprintf("历史观测 %s %s 已过期或不再新鲜，当前值必须重新查询", view.SubjectID, view.Kind))
+			continue
 		}
-		views = append(views, view)
+		kind := safeContextText(fact.Kind)
+		subject := safeContextText(fact.SubjectID)
+		if kind == "" && subject == "" {
+			continue
+		}
+		notices = append(notices, fmt.Sprintf("历史观测 %s %s 已过期或不再新鲜，当前值必须重新查询", subject, kind))
 	}
-	return views, compactSemanticItems(notices)
-}
-
-func observationSummary(fact ToolFact, now time.Time) string {
-	rendered := assembleFactContext([]ToolFact{fact}, now)
-	rendered = strings.TrimPrefix(rendered, recentObservationPrefix)
-	rendered = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rendered), "- "))
-	return safeContextNarrative(rendered)
+	return compactSemanticItems(notices)
 }
 
 func safeContextText(value string) string {
@@ -262,11 +257,6 @@ func renderAgentContextCard(view AgentContext) string {
 				ordinal = fmt.Sprintf("，序号=%d", entity.Ordinal)
 			}
 			lines = append(lines, fmt.Sprintf("相关对象：%s（类型=%s，来源=%s，新鲜度=%s%s）", safeContextText(label), safeContextText(entity.Kind), safeContextText(entity.Source), safeContextText(entity.Freshness), ordinal))
-		}
-	}
-	for _, observation := range view.RecentObservations {
-		if semantic && observation.Summary != "" {
-			lines = append(lines, "近期可信观测："+observation.Summary)
 		}
 	}
 	for _, notice := range view.ContinuityNotices {

@@ -52,7 +52,6 @@ func fullyPopulatedContext() AgentContext {
 			{Kind: "instance", ID: "inst-RECALLED", Name: "from-a-summary",
 				Source: "agent_inference", Freshness: ContinuityFreshnessFresh},
 		},
-		RecentObservations: []ToolObservationView{{Summary: "inst-LIVE 当前为 Running"}},
 		ContinuityNotices:  []string{"上一轮的停止操作已恢复"},
 	}
 }
@@ -68,7 +67,8 @@ func entityIDs(hints []SemanticEntityHint) []string {
 // semanticCardBlocks are the labels the transcript replaces. Listed by label rather
 // than by count so that adding a block to the card without deciding which side of
 // this line it falls on is a visible omission here, not a silent pass.
-// 已验证知识 is deliberately absent: it is no longer suppressed, it is DELETED.
+// 已验证知识 and 近期可信观测 are deliberately absent: they are no longer
+// suppressed, they are DELETED.
 // The card projection and AgentContext.VerifiedKnowledge were removed once the
 // transcript carried the same turns verbatim, so no flag position brings the
 // block back. That is the step, and this list is where it had to be declared.
@@ -76,7 +76,7 @@ func entityIDs(hints []SemanticEntityHint) []string {
 // see TestVerifierStillSeesPriorEvidenceAfterTheInjectionIsGone.
 var semanticCardBlocks = []string{
 	"活动任务：", "较早对话摘要：", "目标：", "既有约束：", "已作决定：",
-	"未完成事项：", "较早完整摘录：", "近期可信观测：",
+	"未完成事项：", "较早完整摘录：",
 }
 
 func TestWithTheTranscriptOffTheCardStillCarriesEverySemanticBlock(t *testing.T) {

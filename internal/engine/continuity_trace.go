@@ -35,9 +35,6 @@ func contextSourceIDs(view TurnContextView) []string {
 	if len(view.SelectedEntities) > 0 {
 		ids = append(ids, "selected_entities")
 	}
-	if len(view.RecentObservations) > 0 {
-		ids = append(ids, "recent_observations")
-	}
 	if len(view.ContinuityNotices) > 0 {
 		ids = append(ids, "notices")
 	}

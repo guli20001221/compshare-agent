@@ -208,10 +208,15 @@ func TestSessionState_FactContextHydratedHTTPPrompt(t *testing.T) {
 	assert.True(t, sink.has("done"))
 	require.NotEmpty(t, llmFake.systemPrompts)
 	systemPrompt := llmFake.systemPrompts[0]
-	assert.Contains(t, systemPrompt, "本轮统一上下文")
-	assert.Contains(t, systemPrompt, "近期可信观测")
-	assert.Contains(t, systemPrompt, "http-fact-box")
-	assert.Contains(t, systemPrompt, "uhost-http-fact")
+	// The hydrated HTTP path still compiles and sends the card; what it no longer
+	// does is restate a stored RecentFact inside it. The fact reaches the model, if
+	// at all, as the prior turn's replayed tool result — see the canonical
+	// transcript — not as a second summary of it.
+	assert.Contains(t, systemPrompt, "本轮统一上下文",
+		"premise: the card is still assembled on the hydrated HTTP path")
+	assert.NotContains(t, systemPrompt, "近期可信观测")
+	assert.NotContains(t, systemPrompt, "http-fact-box")
+	assert.NotContains(t, systemPrompt, "uhost-http-fact")
 }
 
 // newChatTestHandlersWith is a variant of newChatTestHandlers that takes
