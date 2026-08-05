@@ -142,6 +142,57 @@ build:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+# The external-group screenshot reader persists a rotating Feishu user token.
+# Its table is a separate, explicit production change: operators trigger this
+# job from GitLab before enabling agent.feishu.external_image_oauth. It uses the
+# existing migration helper and never prints the database URL or token values.
+migrate-feishu-oauth:
+  stage: deploy
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+  script:
+    - |
+      set -eu
+      POD="compshare-agent-migrate-feishu-oauth-${CI_PIPELINE_ID}"
+      cleanup() {
+        kubectl -n "$NAMESPACE" delete pod "$POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      }
+      trap cleanup EXIT
+      sed \
+        -e "s|__IMAGE__|$IMAGE:$CI_COMMIT_SHORT_SHA|g" \
+        -e "s|__POD_NAME__|$POD|g" \
+        deploy/k8s/migration-pod.yaml \
+        | kubectl -n "$NAMESPACE" apply -f -
+      attempt=0
+      while :; do
+        phase=$(kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{.status.phase}')
+        case "$phase" in
+          Succeeded)
+            kubectl -n "$NAMESPACE" logs "$POD" -c migrate --tail=200
+            exit 0
+            ;;
+          Failed)
+            kubectl -n "$NAMESPACE" logs "$POD" -c migrate --tail=200 || true
+            exit 1
+            ;;
+        esac
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 150 ]; then
+          kubectl -n "$NAMESPACE" logs "$POD" -c migrate --tail=200 || true
+          echo "migration pod timed out" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  environment:
+    name: production
+
 deploy:
   stage: deploy
   image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17

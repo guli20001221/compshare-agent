@@ -206,3 +206,24 @@ func TestHTTPMigrationsCreateSSHOpsAudit(t *testing.T) {
 	// the crown-jewel secret must never have a column to land in (its field name is "password")
 	assert.NotContains(t, strings.ToLower(ddl), "password")
 }
+
+// TestHTTPMigrationsCreateFeishuOAuthTokens pins the schema used by the
+// external-group screenshot adapter. The durable fields must be ciphertexts:
+// a future migration must not accidentally turn the database into a plaintext
+// OAuth-token store.
+func TestHTTPMigrationsCreateFeishuOAuthTokens(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0012_create_feishu_oauth_tokens.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	assert.Contains(t, ddl, "CREATE TABLE IF NOT EXISTS feishu_oauth_tokens")
+	for _, column := range []string{
+		"purpose", "access_token_ciphertext", "refresh_token_ciphertext",
+		"access_expires_at", "refresh_token_expires_at", "updated_at",
+	} {
+		assert.Contains(t, ddl, column, "0012 must define column %s", column)
+	}
+	assert.NotContains(t, strings.ToLower(ddl), "access_token TEXT")
+	assert.NotContains(t, strings.ToLower(ddl), "refresh_token TEXT")
+}
