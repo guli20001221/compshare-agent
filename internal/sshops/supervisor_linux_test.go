@@ -31,7 +31,7 @@ func TestSupervisorKillsGrandchildProcessGroup(t *testing.T) {
 		"time.sleep(120)\n"
 
 	sup := Supervisor{
-		Python:      pythonBin(),
+		Python:      requirePython(t),
 		HarnessPath: writeFakeHarness(t, body),
 		BaseURL:     testAnthropicBaseURL,
 		APIKey:      testAnthropicAPIKey,

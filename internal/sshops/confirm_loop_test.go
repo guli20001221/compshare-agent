@@ -32,7 +32,7 @@ print("<<<END>>>")
 func newConfirmSup(t *testing.T) Supervisor {
 	t.Helper()
 	return Supervisor{
-		Python:      pythonBin(),
+		Python:      requirePython(t),
 		HarnessPath: writeFakeHarness(t, fakeConfirmHarness),
 		BaseURL:     testAnthropicBaseURL,
 		APIKey:      testAnthropicAPIKey,
