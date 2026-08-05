@@ -49,31 +49,59 @@ const (
 	maxAgentContextObservations = 8
 )
 
+// measuredContextWindowFloorTokens is a LOWER BOUND on gpt-5.6-terra's context
+// window, established by probe rather than by a published figure: on 2026-08-05 a
+// 130,000-rune CJK prompt was accepted and billed 130,006 prompt tokens. That
+// second number is the more useful half — 1 CJK rune is 1 token exactly, so runes
+// and tokens are interchangeable in the derivation below, and the older note
+// calling 1:1 "deliberately conservative" was describing a measurement it had not
+// taken. Nothing in the codebase reads a model's real window (there is no such
+// field anywhere), so this is the only bound available; treat it as a floor that
+// a larger probe may raise, never as the window itself.
+const measuredContextWindowFloorTokens = 130000
+
 // maxReplayedHistoryRunes budgets the restored exchanges by SIZE, which the pair
 // count alone does not. Replaying exchanges verbatim (the fix for the 320-rune
 // truncation) removed the only size bound they had: 8 pairs x 2 sides x 320 runes
 // was a hard 5,120-rune ceiling no matter what the user pasted, and 20 unbounded
 // pairs of the largest messages in the production export would be ~155,000 runes.
 //
-// Derivation, from the constraint that actually binds. config
-// .ShippedMaxTokensPerTurn (agent.rate_limit.max_tokens_per_turn) is
-// prompt+completion summed across the WHOLE turn, and history is re-sent on every
-// one of up to maxReActRounds = 16 model calls, so history's real cost is 16x its
-// per-request size — comparing a single request against the cap is the wrong
-// comparison. Holding history to at most half the turn budget gives
-// 400000/2/16 = 12500 tokens per request; at a deliberately conservative
-// 1 rune = 1 token for CJK that is ~12000 runes.
+// DERIVATION, against the limit that actually binds — the context window. One
+// request carries the system prompt and tool schemas, the replayed history, and
+// this turn's own tool work:
 //
-// The 400000 above is spelled out because this is arithmetic a reader has to
-// follow, but it is not a second source: config.ShippedMaxTokensPerTurn is pinned
-// to the shipped yaml by TestShippedConfigMatchesTheTokenCapConstant, and
-// TestReplayBudgetStillMatchesItsDerivation re-runs this derivation against the
-// constant so a raised cap cannot leave this number silently behind.
+//	 130,000  measuredContextWindowFloorTokens
+//	- 40,000  this turn's own transcript, bounded by maxTranscriptTotalRunes
+//	- 15,000  system prompt + the 40 tool schemas
+//	= 75,000  available to history
 //
-// Cross-check against production: the largest full-history replay in the three
-// 2026-07 exports is 11,271 runes (p90 1,801; p99 5,764), so every session
-// observed to date still replays complete. The budget bites only past that.
-const maxReplayedHistoryRunes = 12000
+// 48,000 takes roughly two thirds of that. The remaining third is margin for the
+// window being a floor from a single probe, not a published number.
+//
+// WHY NOT THE PREVIOUS DERIVATION, which produced 12,000. It divided half of
+// config.ShippedMaxTokensPerTurn by maxReActRounds, on the reasoning that history
+// is re-sent on every round so its real cost is 16x its per-request size. Two
+// things are wrong with that. It double-counts a guard that already exists: the
+// per-turn cap is enforced at runtime by tokenBudgetExceeded, which has its own
+// recovery exit, so the history bound does not have to pre-guarantee it. And 16
+// is the ceiling, not the shape of traffic — across 648 replayed production turns
+// the p90 is 2 tool calls and 0.3% of turns reach 16 rounds, so every ordinary
+// turn was sized for the deepest one.
+//
+// WHAT IT COST, once the canonical transcript began sharing this budget on
+// 2026-08-04. 24 real replayed turns carry a median 5,486 runes of transcript
+// (p90 7,659; max 17,686 — one turn alone exceeding the entire old budget). At
+// the median, budgetReplayedPairs left the model 2 of 20 exchanges; at the p90,
+// 1. The 20-exchange window was nominal and actual cross-turn memory was two
+// turns, which is the state TestTranscriptSizedHistoryStillReplaysASession pins
+// against. The plain-text cross-check that used to justify 12,000 (largest
+// full-history replay in the three 2026-07 exports = 11,271 runes; p90 1,801)
+// was taken before transcripts existed and measured the wrong payload.
+//
+// TestReplayBudgetStillMatchesItsDerivation re-runs the arithmetic above against
+// the constants, so a raised producer bound or a re-probed window cannot leave
+// this number silently behind.
+const maxReplayedHistoryRunes = 48000
 
 // ContextCompiler owns all conversion from persisted/in-memory state to the
 // model-visible semantic view. It is intentionally stateless; BuildAt is
