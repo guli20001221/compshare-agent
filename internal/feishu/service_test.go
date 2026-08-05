@@ -22,13 +22,14 @@ func TestNewTopicIsQueuedWithoutMentionButReplyIsNot(t *testing.T) {
 	senderType := "user"
 	messageType := "post"
 	content := `{"title":"新问题","content":[[{"tag":"text","text":"怎么解决？"}]]}`
+	threadID := "omt_topic"
 	rootMessageID := "om_root"
 	rootEvent := &larkim.P2MessageReceiveV1{
 		Event: &larkim.P2MessageReceiveV1Data{
 			Sender: &larkim.EventSender{SenderType: &senderType},
 			Message: &larkim.EventMessage{
 				MessageId: &rootMessageID, ChatId: &chatID, ChatType: &chatType,
-				MessageType: &messageType, Content: &content,
+				ThreadId: &threadID, MessageType: &messageType, Content: &content,
 			},
 		},
 	}
@@ -41,8 +42,9 @@ func TestNewTopicIsQueuedWithoutMentionButReplyIsNot(t *testing.T) {
 		Event: &larkim.P2MessageReceiveV1Data{
 			Sender: &larkim.EventSender{SenderType: &senderType},
 			Message: &larkim.EventMessage{
-				MessageId: &replyMessageID, RootId: &rootMessageID,
+				MessageId: &replyMessageID, RootId: &rootMessageID, ParentId: &rootMessageID,
 				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &content,
+				ThreadId: &threadID,
 			},
 		},
 	}

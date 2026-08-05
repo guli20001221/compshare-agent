@@ -114,9 +114,15 @@ func inputFromMessage(message *larkim.EventMessage) (messageInput, bool) {
 	return input, input.Question != ""
 }
 
+// isNewTopicRoot accepts only a documented root-message shape from a topic
+// group. Feishu supplies thread_id for topic messages, while replies inside a
+// topic carry root_id and parent_id pointing at the root message. Requiring all
+// three conditions makes an incomplete or unexpected event fail closed instead
+// of turning every message in a topic group into an automatic reply.
 func isNewTopicRoot(message *larkim.EventMessage) bool {
 	return message != nil &&
 		stringValue(message.ChatType) == "topic_group" &&
+		stringValue(message.ThreadId) != "" &&
 		stringValue(message.RootId) == "" &&
 		stringValue(message.ParentId) == ""
 }

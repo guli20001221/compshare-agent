@@ -75,14 +75,23 @@ func TestInputFromImageUsesOCRQuestion(t *testing.T) {
 
 func TestNewTopicRootIsDistinctFromTopicReply(t *testing.T) {
 	chatType := "topic_group"
-	root := &larkim.EventMessage{ChatType: &chatType}
+	threadID := "omt_topic"
+	rootID := "om_root"
+	root := &larkim.EventMessage{MessageId: &rootID, ChatType: &chatType, ThreadId: &threadID}
 	require.True(t, isNewTopicRoot(root))
 	require.True(t, shouldRespond(root, false, true))
-	rootID := "om_root"
-	reply := &larkim.EventMessage{ChatType: &chatType, RootId: &rootID}
+	replyID := "om_reply"
+	// Topic replies use the same thread_id and point both IDs to the root.
+	reply := &larkim.EventMessage{
+		MessageId: &replyID, ChatType: &chatType, ThreadId: &threadID,
+		RootId: &rootID, ParentId: &rootID,
+	}
 	require.False(t, isNewTopicRoot(reply))
 	require.False(t, shouldRespond(reply, false, true))
 	require.True(t, shouldRespond(reply, true, true))
+
+	incomplete := &larkim.EventMessage{ChatType: &chatType}
+	require.False(t, isNewTopicRoot(incomplete), "missing thread_id must fail closed")
 }
 
 func TestEncodeImageDataURLForExistingOCRProtocol(t *testing.T) {
