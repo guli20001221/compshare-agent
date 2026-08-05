@@ -12,24 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRequiredEvidenceIsPrependedWhenTheAgentOmitsItsPlaceholder covers the
-// force-insert mechanism itself, at the gateway, rather than through whichever
-// capability happens to be classified `required` this week. resource_info was
-// that capability and no longer is (a targeted question does not want the whole
-// instance list stapled on), so without this the guarantee would have lost its
-// only test when the classification changed.
-func TestRequiredEvidenceIsPrependedWhenTheAgentOmitsItsPlaceholder(t *testing.T) {
-	evidence := []readResponseEvidence{
-		{Capability: "stock_availability", Reply: "4090 华北二A 余量 3", Placeholder: "{{READ_OBSERVATION_1}}", Required: true},
-		{Capability: "image_list", Reply: "目录若干", Placeholder: "{{READ_OBSERVATION_2}}"},
-	}
-	got := substituteReadObservationBlocks("库存我看过了。", evidence)
-	require.Equal(t, "4090 华北二A 余量 3\n\n库存我看过了。", got,
-		"a required block the Agent left out must still reach the user")
-
-	// The optional one is not prepended — only substituted where it was asked for.
-	require.Equal(t, "见 目录若干 。",
-		substituteReadObservationBlocks("见 {{READ_OBSERVATION_2}} 。", evidence[1:]))
+// Sensitive credentials stay outside model context and are the only read result
+// the server composes into the final response.
+func TestSensitiveReplyIsPrependedWithoutAnyAgentReference(t *testing.T) {
+	got := prependSensitiveReplies("已获取访问凭据。", []string{"Jupyter Token：opaque-token"})
+	require.Equal(t, "Jupyter Token：opaque-token\n\n已获取访问凭据。", got,
+		"the server delivers a secret once without exposing it to the Agent")
+	require.Equal(t, "普通答案。", prependSensitiveReplies("普通答案。", nil))
 }
 
 // TestResourceInfoDoesNotStapleTheWholeListOntoATargetedAnswer is the measured
@@ -63,27 +52,6 @@ func TestResourceInfoDoesNotStapleTheWholeListOntoATargetedAnswer(t *testing.T) 
 func TestResponseGatewayDoesNotOverrideConversationOnlyAnswer(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	require.Equal(t, "结合上一轮的回答继续即可。", eng.finalizeResponse(context.Background(), "那继续呢", "结合上一轮的回答继续即可。"))
-}
-
-func TestResponseGatewaySubstitutesOnlyAgentSelectedObservationBlocks(t *testing.T) {
-	evidence := []readResponseEvidence{
-		{Reply: "精确实例表", Placeholder: "{{READ_OBSERVATION_1}}"},
-		{Reply: "精确价格表", Placeholder: "{{READ_OBSERVATION_2}}"},
-	}
-	require.Equal(t, "结论如下：\n精确价格表", substituteReadObservationBlocks("结论如下：\n{{READ_OBSERVATION_2}}", evidence))
-	require.Equal(t, "只做解释，不展示精确表格。", substituteReadObservationBlocks("只做解释，不展示精确表格。", evidence))
-}
-
-func TestResponseGatewayInsertsMissingRequiredObservationBlock(t *testing.T) {
-	evidence := []readResponseEvidence{{
-		Reply: "opaque token", Placeholder: "{{READ_OBSERVATION_1}}", Required: true,
-	}}
-	require.Equal(t,
-		"opaque token\n\nToken 已获取。",
-		substituteReadObservationBlocks("Token 已获取。", evidence))
-	require.Equal(t,
-		"opaque token",
-		substituteReadObservationBlocks("{{READ_OBSERVATION_1}}", evidence))
 }
 
 func TestResponseGatewayNeverShipsToolProtocolMarkup(t *testing.T) {

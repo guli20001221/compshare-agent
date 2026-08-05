@@ -451,10 +451,14 @@ type Engine struct {
 	// attribute why a create proposal did or did not card. "" when no proposal ran
 	// this turn. Per-turn; reset at the top of Chat.
 	actionProposalDispositionThisTurn string
-	// readResponseEvidenceThisTurn keeps server-rendered replies for successful
-	// central read capabilities. The Response Gateway can submit these facts
-	// without asking the model to retype identifiers, counts or measurements.
-	readResponseEvidenceThisTurn []readResponseEvidence
+	// platformReadEvidenceThisTurn is proof of facts returned by read tools. It
+	// supports server-side grounding and authorization checks, but it never
+	// renders a second user-facing answer: the Agent sees the same evidence and
+	// writes the final Markdown itself.
+	platformReadEvidenceThisTurn []platformReadEvidence
+	// sensitiveRepliesThisTurn contains credentials intentionally withheld from
+	// model context. The response gateway delivers each one once.
+	sensitiveRepliesThisTurn []string
 	// committedWriteRepliesThisTurn holds one model-free sentence per mutating
 	// workflow that COMMITTED this turn, in execution order.
 	//
@@ -1423,7 +1427,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.forcedHopSearchInFlight = false
 	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
-	e.readResponseEvidenceThisTurn = nil
+	e.platformReadEvidenceThisTurn = nil
+	e.sensitiveRepliesThisTurn = nil
 	e.committedWriteRepliesThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
 	e.actionProposalRanThisTurn = false

@@ -70,9 +70,8 @@ type PricingResponse struct {
 // read catalog and dispatched through the typed kernel.
 func pricingReadSpec() ReadCapabilitySpec[PricingRequest, PricingResponse] {
 	return ReadCapabilitySpec[PricingRequest, PricingResponse]{
-		Label:        pricingCapabilityLabel,
-		Description:  "查询拟创建 GPU 配置及可选系统盘/数据盘在各可用区的实时账号净报价或目录价。用于配置报价，不用于核对已有实例当前费用；后者使用 DiagnoseBilling。云存储 Pro 使用 CFS 创建报价能力。报价已包含上游适用的减免，但接口不返回免费额度数值。",
-		Presentation: ReadPresentationRequired,
+		Label:       pricingCapabilityLabel,
+		Description: "查询拟创建 GPU 配置及可选系统盘/数据盘在各可用区的实时账号净报价或目录价。用于配置报价，不用于核对已有实例当前费用；后者使用 DiagnoseBilling。云存储 Pro 使用 CFS 创建报价能力。报价已包含上游适用的减免，但接口不返回免费额度数值。",
 		Params: objectParam(map[string]schemaNode{
 			"gpu_type":     stringParam().described("真实 GPU 机型名称；精确名称不会自动替换成显存变体。"),
 			"gpu_count":    integerParam(1).described("卡数；省略时默认为 1。"),

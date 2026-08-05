@@ -287,9 +287,6 @@ func TestStockHandle_PositiveCapacityUsesGroupedCardCountsAndQueriesBothInventor
 	assert.Contains(t, result.Reply, "- 4090 / 华北二C (cn-wlcb-03)：1 卡；抢占约 7 张")
 	assert.NotContains(t, result.Reply, "原始 GPU 库存",
 		"still no separate pool-total block underneath the table")
-	assert.Equal(t, ReadPresentationRequired, result.Presentation,
-		"the exact capacity table must survive model wording")
-
 	var inventoryCalls []fakeReadExecCall
 	for _, call := range exec.calls {
 		if call.action == "DescribeCompShareGpuInventory" {
@@ -542,12 +539,11 @@ func TestStockInventoryExplicitZeroAndNoPositivePrecheckRemainsUncertain(t *test
 	assert.NotContains(t, reply, "当前暂无可用库存")
 }
 
-// The capacity block is inserted into the answer VERBATIM (render_ref), so its
-// shape is what the user reads. A real 4090 turn passes three zones x eight
-// CPU/memory variants: flattened, that was 24 items joined by "、" inside one
-// sentence. Group by 可用区 and keep the card counts — and say in the header that
-// the CPU/memory dimension was collapsed, because dropping detail silently from
-// a verbatim factual block is how a summary becomes a claim.
+// The capacity reply is the Agent's factual source. A real 4090 turn passes
+// three zones x eight CPU/memory variants: flattened, that was 24 items joined
+// by "、" inside one sentence. Group by 可用区 and keep the card counts — and say
+// in the header that the CPU/memory dimension was collapsed, so the Agent can
+// summarize the result without silently changing what was checked.
 func TestRenderStockCapacity_GroupsByZoneAndCollapsesCPUMemoryVariants(t *testing.T) {
 	specs := func(counts ...string) []capacitySpec {
 		out := make([]capacitySpec, 0, len(counts)*2)

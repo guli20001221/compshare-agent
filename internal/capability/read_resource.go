@@ -48,15 +48,12 @@ func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResp
 		// reads 96 GB / 启动于 2026-07-29 16:52. Forcing the block in as well made a
 		// targeted question worse, not better: measured live 2026-07-29,
 		// 「我那台 4090 的内存是多少」 got all 10 instances (three of them 5090s)
-		// stapled above the answer, 2/2 — because the block is the whole list
-		// whenever the Agent queried without targets. exact keeps the readable
-		// render and leaves the block optional, so a one-instance question stays a
-		// one-instance answer.
-		Presentation: ReadPresentationExact,
-		Params:       objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
-		Handle:       resourceHandle,
-		Render:       resourceRender,
-		Observe:      resourceObserve,
+		// stapled above the answer, 2/2. The list is therefore evidence for the
+		// Agent to curate, never a second server-rendered answer.
+		Params:  objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
+		Handle:  resourceHandle,
+		Render:  resourceRender,
+		Observe: resourceObserve,
 	}
 }
 

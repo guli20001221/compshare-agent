@@ -91,7 +91,7 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 	e.recordAnswerEvidenceEcho(answer)
 	if report := knowledge.ValidateGroundedCitations(answer, ledger); report.HasCitation {
 		e.emitSearchKnowledgeCitationTrace(report)
-		if len(e.readResponseEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
+		if len(e.platformReadEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
 			e.rememberVerifiedKnowledge(resolved, knowledge.StripCiteMarkers(answer), ledger)
 		}
 	}

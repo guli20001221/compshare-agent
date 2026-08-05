@@ -69,12 +69,12 @@ func TestInstanceAccessDiagnosisCanContinueToAgentAndKnowledge(t *testing.T) {
 	var observation ReadCapabilityObservation
 	require.NoError(t, json.Unmarshal([]byte(out), &observation))
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
-	require.NotEmpty(t, observation.RenderRef)
-	require.Contains(t, observation.RenderContract, "可以继续查询资料")
-	require.Contains(t, observation.RenderContract, "不得改写")
+	require.NotNil(t, observation.Envelope)
+	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
+	require.Empty(t, eng.sensitiveRepliesThisTurn)
 }
 
-func TestJupyterTokenReturnsOpaqueRequiredObservation(t *testing.T) {
+func TestJupyterTokenReturnsOpaqueObservation(t *testing.T) {
 	const token = "stable-console-visible-token"
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -98,18 +98,10 @@ func TestJupyterTokenReturnsOpaqueRequiredObservation(t *testing.T) {
 	var observation ReadCapabilityObservation
 	require.NoError(t, json.Unmarshal([]byte(out), &observation))
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
-	require.NotEmpty(t, observation.RenderRef)
+	require.Contains(t, observation.Guidance, "敏感访问凭据")
 	require.NotContains(t, out, token, "the opaque value must not pass through the model")
-	require.Len(t, eng.readResponseEvidenceThisTurn, 1)
-	require.True(t, eng.readResponseEvidenceThisTurn[0].Required)
-	require.Contains(t, eng.readResponseEvidenceThisTurn[0].Reply, token)
-	require.NotContains(t, observation.RenderContract, "只输出 render_ref，不要在前后复述",
-		"stock's no-duplication rule must not leak into opaque access observations")
-}
-
-func TestReadRenderContractDistinguishesRequiredFromSelectableExact(t *testing.T) {
-	require.Contains(t, readRenderContract(capability.ReadPresentationRequired), "必须原样插入")
-	require.NotContains(t, readRenderContract(capability.ReadPresentationExact), "必须原样插入")
+	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
+	require.Contains(t, eng.sensitiveRepliesThisTurn[0], token)
 }
 
 func TestRecentPriorUserTextsExcludesCurrentTurnAndAssistantText(t *testing.T) {

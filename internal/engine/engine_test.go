@@ -1959,7 +1959,7 @@ func TestChat_InstanceAccessDiagnosisCanUseKnowledgeWithoutRewritingFacts(t *tes
 		{ToolCalls: []openai.ToolCall{
 			toolCall("knowledge", "SearchKnowledge", `{"query":"Pod 添加 TCP 端口映射的方法"}`),
 		}},
-		{Content: "{{READ_OBSERVATION_1}}\n\n处理建议：按平台文档添加 TCP 8188 映射，然后确认应用监听该端口。[[" + chunkID + "]]"},
+		{Content: "诊断结果：Pod 当前云侧端口配置中没有登记 TCP 8188。\n\n处理建议：按平台文档添加 TCP 8188 映射，然后确认应用监听该端口。[[" + chunkID + "]]"},
 	}}
 	chunk := knowledge.KBChunk{
 		ChunkID: chunkID, KBVersion: "test", Title: "Pod 端口配置",

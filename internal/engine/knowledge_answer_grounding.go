@@ -83,7 +83,7 @@ func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report k
 	e.emitSearchKnowledgeCitationTrace(report)
 	e.retractKnowledgeHardBlock()
 	display := knowledge.StripCiteMarkers(answer)
-	if len(e.readResponseEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
+	if len(e.platformReadEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
 		// What is stored is what THIS turn retrieved, not the merged ledger the
 		// verifier judged against. Storing the merge would copy prior chunks into
 		// the new entry with a fresh VerifiedAtUnix, so a chunk fetched once would

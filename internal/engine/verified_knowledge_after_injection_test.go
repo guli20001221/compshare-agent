@@ -42,7 +42,7 @@ func TestVerifierStillSeesPriorEvidenceAfterTheInjectionIsGone(t *testing.T) {
 	// The follow-up turn: no retrieval of its own, no platform read. This is the
 	// case the deletion could have broken.
 	require.Empty(t, eng.searchKnowledgeLedgerThisTurn.Items, "premise: this turn retrieved nothing")
-	require.Empty(t, eng.readResponseEvidenceThisTurn, "premise: this turn read nothing")
+	require.Empty(t, eng.platformReadEvidenceThisTurn, "premise: this turn read nothing")
 
 	ledger := eng.knowledgeLedgerForVerification("那包月呢")
 	assert.Equal(t, "那包月呢", ledger.Query,
