@@ -401,10 +401,17 @@ def run_command(command: str) -> dict:
                     "is_error": True, "tier": tier, "executed": True}
         if res.get("error"):
             entry["disposition"] = res["error"]
+            # Same catch-all as the preflight (see _PREFLIGHT_REASONS): anything that is not an
+            # AuthenticationException arrives as connect_failed, so "the instance was unreachable"
+            # asserted a cause we did not observe. State the dial, and carry the exception class so
+            # the model reports something the operator can act on instead of a guess.
             hint = ("the stored instance password may be stale (changed inside the instance); suggest a "
                     "password reset or SSH key auth" if res["error"] == "auth_failed"
-                    else "the instance was unreachable")
-            return {"text": f"⚠ SSH {res['error']} — {hint}.", "is_error": True,
+                    else "the dial did not complete — the instance may be down, its SSH port closed, or "
+                         "this host may have no route to it")
+            detail = str(res.get("detail") or "").strip()
+            label = res["error"] + (f" ({detail})" if detail else "")
+            return {"text": f"⚠ SSH {label} — {hint}.", "is_error": True,
                     "tier": tier, "executed": False}
         entry.update(executed=True, exit_code=res["exit_code"],
                      disposition="ran_mutating" if tier == "mutating" else "ran_read_only",
@@ -424,22 +431,53 @@ def run_command(command: str) -> dict:
 # unreachable / stopped instance returns an instant, actionable verdict instead of the agent burning
 # its whole turn/time budget with every proposed command hanging at the 15s connect timeout. The probe
 # is deterministic (not model-chosen) and read-only — a fixed `true` no-op — so it needs no guardrail.
+#
+# `connect_failed` is the CATCH-ALL, not a diagnosis: ssh_transport maps ONLY
+# paramiko.AuthenticationException to auth_failed, so every other exception class — DNS failure,
+# banner timeout, algorithm negotiation, socket timeout, and any bug of our own — lands here.
+# It used to be worded as though we had observed a specific cause ("网络 / 安全组未放通 SSH 端口").
+# On 2026-08-05 that sentence sent an investigation at the instance's port and at the
+# SshLoginCommand parser, and produced a fix to code that had already run successfully; the
+# instance was in fact reachable, its command parsed correctly, and this harness's own dial to it
+# succeeded from another host. Two rules follow, and both are load-bearing:
+#   - say what was OBSERVED (one dial did not complete) and offer the causes AS candidates;
+#   - carry the exception class ssh_transport already records in `detail`. It was captured at
+#     ssh_transport.py:141 and then had no consumer anywhere in the tree, so the one fact that
+#     separates "no route from this host" from "port closed" from "our own TypeError" was
+#     collected and discarded on every failure.
+# The candidate list also names the direction that was missing and that actually mattered: the
+# host running THIS service may have no route to the instance, which is invisible to a user who
+# can SSH to the same box from their laptop.
 _PREFLIGHT_REASONS = {
     "auth_failed": "SSH 认证失败——实例内的登录凭证可能已变更（改过密码或禁用了密码登录）。"
                    "建议在控制台重置密码或改用 SSH 密钥后重试。",
-    "connect_failed": "无法建立 SSH 连接——实例可能已关机 / 正在重启，或网络 / 安全组未放通 SSH 端口。"
-                      "请确认实例为运行中且 SSH 端口可达后重试。",
+    "connect_failed": "无法建立 SSH 连接：一次拨号没有完成，尚未进入实例。"
+                      "可能是实例已关机 / 正在重启、SSH 端口未放通，"
+                      "或运行本服务的主机到该实例的网络不通（后者从您本机 SSH 是看不出来的）。",
 }
+
+
+def _preflight_reason(res: dict) -> str:
+    """Operator-facing reason for a failed dial, carrying the exception class ssh_transport recorded.
+
+    `detail` is `type(e).__name__` — a type name only. It never contains the credential, the host or
+    any response body, so it is safe in text the user reads (and it is what they can relay to whoever
+    owns the deployment)."""
+    err = res.get("error") or ""
+    reason = _PREFLIGHT_REASONS.get(err, f"SSH 预检失败（{err}）。")
+    detail = str(res.get("detail") or "").strip()
+    if not detail:
+        return reason
+    return f"{reason}（{detail}）"
 
 
 def preflight_probe(conn):
     """Return None if the box answers a trivial SSH command, else a Chinese operator-facing reason.
     The credential is used only for the dial and is never logged or returned."""
     res = ssh_transport.run_ssh(conn, "true", secrets=_secrets())
-    err = res.get("error")
-    if not err:
+    if not res.get("error"):
         return None
-    return _PREFLIGHT_REASONS.get(err, f"SSH 预检失败（{err}）。")
+    return _preflight_reason(res)
 
 
 TOOLS_BASE = ["Skill"]                                   # see assert_single_tool

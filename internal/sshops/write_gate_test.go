@@ -34,7 +34,7 @@ func TestSupervisorSendsWriteGateOnHandshake(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sup := Supervisor{
-				Python:      pythonBin(),
+				Python:      requirePython(t),
 				HarnessPath: writeFakeHarness(t, fakeEchoWrites),
 				BaseURL:     testAnthropicBaseURL,
 				APIKey:      testAnthropicAPIKey,

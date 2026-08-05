@@ -103,6 +103,24 @@ check("auth-fail-no-credential", "Pl4inPwd77x" not in r_auth["text"])
 check("auth-fail-hints-stale", "stale" in r_auth["text"])
 
 
+# --- connect_failed is a CATCH-ALL, so the exception class ssh_transport recorded has to reach the
+# text. It was captured and dropped on every failure, which is how a 2026-08-05 investigation spent
+# its time on a port that was in fact correct. The class name is a type name — no credential, no
+# host — so it is safe to show. ---
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed",
+                                                        "detail": "NoValidConnectionsError"}
+r_conn = harness.run_command("df -h /")
+check("connect-fail-not-executed", r_conn["is_error"] and not r_conn["executed"])
+check("connect-fail-carries-exception-class", "NoValidConnectionsError" in r_conn["text"])
+check("connect-fail-no-credential", "Pl4inPwd77x" not in r_conn["text"])
+# It must NOT assert a cause it never observed; "unreachable" was stated as fact for every class.
+check("connect-fail-states-dial-not-verdict", "did not complete" in r_conn["text"])
+
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed"}
+r_conn_bare = harness.run_command("df -h /")
+check("connect-fail-without-detail-has-no-empty-parens", "()" not in r_conn_bare["text"])
+
+
 # --- F2 preflight: reachable -> None; connect/auth failure -> actionable Chinese reason (fast-fail).
 # WHY: without it, an unreachable instance makes the agent spend its whole time budget with every
 # proposed command hanging at the SSH connect timeout (observed as a 5-minute 0-output timeout). ---
@@ -121,6 +139,22 @@ check("preflight-uses-fixed-benign-cmd", _pf_cmds == ["true"])   # deterministic
 ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed"}
 _pf_conn = harness.preflight_probe(harness._CONN)
 check("preflight-unreachable-reason", isinstance(_pf_conn, str) and "无法建立 SSH 连接" in _pf_conn)
+# The candidate that was missing and that actually mattered: a user who can SSH from their own
+# machine cannot see that the host running this service has no route to the same box.
+check("preflight-names-this-hosts-route", "运行本服务的主机" in _pf_conn)
+check("preflight-without-detail-has-no-empty-parens", "（）" not in _pf_conn)
+
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed",
+                                                        "detail": "gaierror"}
+_pf_cls = harness.preflight_probe(harness._CONN)
+check("preflight-carries-exception-class", "gaierror" in _pf_cls)
+# A class the map does not know must still reach the operator rather than collapsing to a generic
+# sentence — an unrecognised error is exactly the case where the class name is the only evidence.
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "ssh_transport_exploded",
+                                                        "detail": "TypeError"}
+_pf_unknown = harness.preflight_probe(harness._CONN)
+check("preflight-unknown-class-still-reports-both",
+      "ssh_transport_exploded" in _pf_unknown and "TypeError" in _pf_unknown)
 
 ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "auth_failed"}
 _pf_auth = harness.preflight_probe(harness._CONN)

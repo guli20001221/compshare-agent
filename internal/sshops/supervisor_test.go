@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -28,13 +29,77 @@ func writeFakeHarness(t *testing.T, body string) string {
 	return p
 }
 
+// pythonBin resolves an interpreter that will actually RUN, not one that will install one.
+//
+// On Windows, %LOCALAPPDATA%\Microsoft\WindowsApps is on PATH by default and holds
+// app-execution aliases: zero-byte reparse stubs that, when spawned, hand off to the Microsoft
+// Store / Python Install Manager. `python3` resolves to such a stub on a stock box even when a
+// real interpreter is installed under a different name, and LookPath cannot tell them apart —
+// it only checks that the name is executable.
+//
+// Spawning the stub does not fail. It INSTALLS a runtime, and because `go test` runs each package
+// with its own directory as the working directory, the manager wrote ~135MB into
+// internal/sshops/Python — untracked, not ignored, and one `git add -A` away from being committed
+// (3788 files). Observed 2026-08-05; it reappeared within seconds of being deleted, which is how it
+// was mistaken for a leftover from someone's editing session.
+//
+// A zero-byte candidate is never a real interpreter on any platform, so size is the mechanism to
+// test rather than a path heuristic that only knows today's alias directory.
 func pythonBin() string {
 	for _, c := range []string{"python3", "python"} {
-		if path, err := exec.LookPath(c); err == nil {
-			return path
+		path, err := exec.LookPath(c)
+		if err != nil {
+			continue
+		}
+		if info, statErr := os.Stat(path); statErr == nil && info.Size() == 0 {
+			continue // app-execution alias stub — spawning it installs an interpreter
+		}
+		return path
+	}
+	return "" // no interpreter that will run; see requirePython
+}
+
+// requirePython returns a VERIFIED interpreter path, or skips the test.
+//
+// pythonBin deliberately returns "" rather than a bare name. Falling back to "python" undid the
+// whole check: exec.Command resolves a bare name through PATH itself, so on the very box this
+// guards against — a stock Windows install where BOTH python.exe and python3.exe are alias stubs,
+// which is the DEFAULT state when no interpreter is installed — it handed the just-rejected stub
+// straight back to the spawner and launched the installer anyway.
+func requirePython(t *testing.T) string {
+	t.Helper()
+	if p := pythonBin(); p != "" {
+		return p
+	}
+	t.Skip("no real python interpreter on PATH (every candidate is a zero-byte app-execution " +
+		"alias); install one, or put a real interpreter earlier on PATH")
+	return ""
+}
+
+// TestPythonBinRefusesWhenEveryCandidateIsAnAliasStub pins the case the size check exists for and
+// the one a developer box with a real Python cannot reach: EVERY candidate is a stub. Skipping them
+// is not enough — what matters is that nothing resolvable is handed back, because exec.Command
+// re-resolves a bare name through the same PATH.
+func TestPythonBinRefusesWhenEveryCandidateIsAnAliasStub(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"python", "python3"} {
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		// Zero bytes is the shape of a Windows app-execution alias: a reparse stub that reports no
+		// content but is still "executable" as far as LookPath is concerned.
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o755); err != nil {
+			t.Fatalf("write stub: %v", err)
 		}
 	}
-	return "python" // resolved via PATH by exec
+	t.Setenv("PATH", dir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("PATHEXT", ".EXE")
+	}
+	if got := pythonBin(); got != "" {
+		t.Fatalf("pythonBin returned %q when every candidate on PATH was a zero-byte alias stub; "+
+			"exec.Command resolves that back to the stub and spawning it installs an interpreter", got)
+	}
 }
 
 const fakeEcho = `
@@ -58,7 +123,7 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	defer os.Unsetenv("MYSQL_DSN")
 
 	sup := Supervisor{
-		Python:      pythonBin(),
+		Python:      requirePython(t),
 		HarnessPath: writeFakeHarness(t, fakeEcho),
 		BaseURL:     testAnthropicBaseURL,
 		APIKey:      testAnthropicAPIKey,
@@ -107,7 +172,7 @@ func TestSupervisorCredentialAndTaskNotInArgv(t *testing.T) {
 	fake := "import sys,json; json.loads(sys.stdin.readline()); " +
 		"print('<<<VERDICT>>>'); print('ARGV=' + ' '.join(sys.argv[1:])); print('<<<END>>>')"
 	sup := Supervisor{
-		Python:      pythonBin(),
+		Python:      requirePython(t),
 		HarnessPath: writeFakeHarness(t, fake),
 		BaseURL:     testAnthropicBaseURL,
 		APIKey:      testAnthropicAPIKey,
@@ -131,7 +196,7 @@ func TestSupervisorCredentialAndTaskNotInArgv(t *testing.T) {
 
 func TestSupervisorAbortKillsProcess(t *testing.T) {
 	sup := Supervisor{
-		Python:      pythonBin(),
+		Python:      requirePython(t),
 		HarnessPath: writeFakeHarness(t, "import sys,time; sys.stdin.readline(); time.sleep(60); print('SHOULD_NOT_PRINT')"),
 		BaseURL:     testAnthropicBaseURL,
 		APIKey:      testAnthropicAPIKey,

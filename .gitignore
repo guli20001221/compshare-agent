@@ -98,3 +98,11 @@ eval/traces_pr5_ab/
 # already tracked under it are unaffected: git never ignores a tracked path. To
 # add a genuinely publishable report here, use `git add -f`.
 eval/reports/
+
+# Belt-and-braces for the Windows app-execution alias trap (see pythonBin in
+# internal/sshops/supervisor_test.go, which is the actual fix). Spawning the
+# zero-byte `python3` stub under WindowsApps installs a runtime, and `go test`
+# runs each package from its own directory, so it landed ~135MB / 3788 files
+# here. The cause is fixed; this line only stops an older checkout, or a future
+# alias directory we have not seen, from putting it one `git add -A` away.
+internal/sshops/Python/
