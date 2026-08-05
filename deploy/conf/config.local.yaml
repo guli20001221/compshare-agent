@@ -80,7 +80,7 @@ agent:
     # Context-engineering optimizations.
     session_fact_context: true          # trace label only — decides whether the turn's binding is traced as fact_cache; injects nothing
     react_result_projection: true       # compress large read tool results before re-feeding ReAct
-    react_history_compaction: true      # deterministic history trim past maxHistoryMessages; no longer summarizes (the digest producer is deleted)
+    react_history_compaction: true      # deterministic history trim past maxRawHistoryRunes (a SIZE since 2026-08-05, not the old 120-message count); no longer summarizes — the digest producer is deleted
     # ON since 2026-08-04. One switch owns the whole transcript pipeline: the
     # turn's messages, tool calls and tool results are captured, persisted to
     # messages.metadata (agent_transcript_v1) and replayed to the model, instead
@@ -281,8 +281,13 @@ agent:
     # Compatibility-path setting only. After the coordinated durable cutover,
     # conversations continue from committed history and do not roll to an empty
     # session at all. Until then, the legacy path still uses this cap.
-    # Keep <= engine.maxAgentContextPairs (20): the restored pair window is the
-    # model's entire cross-turn memory, so turns past it are invisible to it.
+    # Keep <= config.MaxSessionTurnsCeiling (20), which the loader enforces.
+    # This used to be capped by engine.maxAgentContextPairs, on the grounds that
+    # the restored pair window WAS the model's entire cross-turn memory. That
+    # count is deleted: memory is now decided by size (engine.maxReplayedHistoryRunes).
+    # What still binds a larger value is the COLD path — agentpool.buildEngine
+    # reads a fixed 100 messages ordered oldest-first, so past ~50 turns a restart
+    # would rebuild the session from its opening and lose everything recent.
     max_session_turns: 20
     # Skip the built-in CORS middleware. Default false = agent emits
     # Access-Control-Allow-* headers itself (needed when the front-end dev

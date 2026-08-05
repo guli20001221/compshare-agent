@@ -267,8 +267,6 @@ func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
 	const padRunes = 4000
 	require.Less(t, padRunes, maxTranscriptMessageRunes, "premise: the pad must survive capture intact")
 	exchangeCount := maxReplayedHistoryRunes/padRunes + 2
-	require.LessOrEqual(t, exchangeCount, maxAgentContextPairs,
-		"premise: the RUNE budget must be what trims here, not the pair count")
 
 	tags := make([]string, 0, exchangeCount)
 	for i := 1; i <= exchangeCount; i++ {
@@ -292,6 +290,13 @@ func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
 		require.True(t, stats.Attempted, "%s: precondition", tag)
 		history = append(history, exchange{question: q, answer: a, metadata: payload})
 	}
+
+	// The trim measured below has to be maxReplayedHistoryRunes and not one of the
+	// two SOURCE lists running out first. That premise used to be
+	// `exchangeCount <= maxAgentContextPairs`; with the count windows deleted, the
+	// direct form is that every exchange is still on hand when the budget runs.
+	require.Len(t, hot.recentTurns, exchangeCount,
+		"premise: budgetRecordedTurns must not be what drops an exchange here")
 
 	cold := &Engine{}
 	rows := make([]HistoryMessage, 0, len(history)*2)

@@ -146,17 +146,34 @@ type HTTPConfig struct {
 	DisableCORS bool `yaml:"disable_cors"`
 }
 
-// MaxReplayedExchanges is how many completed exchanges the engine replays into
-// the model's request (engine.maxAgentContextPairs reads this constant, so there
-// is exactly one number, not two that can drift). It is the model's ENTIRE
-// cross-turn memory: messagesFromAgentContext discards every other prior-turn
-// message, so an exchange outside this window is invisible to the model.
+// MaxSessionTurnsCeiling is the largest agent.http.max_session_turns a
+// deployment may configure. It is a PRODUCT QUOTA and nothing else.
 //
-// It lives here rather than in engine because validateHTTPConfig must reject a
-// max_session_turns larger than it. Letting a deployment run 30-turn sessions
-// against a 20-exchange window would forget turn 1 from turn 22 onward with no
-// error and no log line — the failure mode this constant exists to prevent.
-const MaxReplayedExchanges = 20
+// It used to be MaxReplayedExchanges, and it used to mean something stronger:
+// engine.maxAgentContextPairs read it, so it was simultaneously the model's
+// entire cross-turn memory, and the validation below existed to stop a
+// deployment running 30-turn sessions against a 20-exchange window — turn 1
+// forgotten from turn 22 with no error and no log line.
+//
+// That coupling is gone. The engine no longer caps replayed exchanges by count
+// at all; what the model remembers is decided by engine.maxReplayedHistoryRunes
+// and then by engine.maxAssembledRequestRunes, both of which are sizes. So this
+// number no longer describes memory, and a larger session no longer silently
+// truncates history — it just fills the size budget sooner.
+//
+// The quota is kept at 20 because lifting it is a product decision, not a
+// consequence of the engine change.
+//
+// LIFTING IT PAST ~50 TURNS IS NOT FREE, and an earlier draft of this comment
+// claimed it was. agentpool.buildEngine rebuilds a cold session by reading a
+// fixed 100 messages with ORDER BY created_at ASC — the OLDEST 100, not the
+// newest — so past 50 turns a restart or an LRU eviction would restore the
+// beginning of the conversation and drop everything recent. The engine's own
+// ceilings no longer stand in the way; that read does. It is left alone here
+// because at 20 turns a session is ~40 messages and the page cannot truncate,
+// and because a token-aware tail belongs with whatever raises the quota rather
+// than with the change that removed the count ceilings.
+const MaxSessionTurnsCeiling = 20
 
 // ShippedMaxTokensPerTurn mirrors agent.rate_limit.max_tokens_per_turn in
 // deploy/conf/config.yaml, for the code that has to SIZE ITSELF against the
@@ -184,8 +201,8 @@ const ShippedMaxTokensPerTurn = 400_000
 
 // DefaultMaxSessionTurns is the compatibility-path fallback when
 // agent.http.max_session_turns is zero or unset. The durable turn coordinator
-// never consults it. Must stay <= MaxReplayedExchanges; validateHTTPConfig
-// enforces that for configured values and TestDefaultTurnCapFitsReplayWindow
+// never consults it. Must stay <= MaxSessionTurnsCeiling; validateHTTPConfig
+// enforces that for configured values and TestDefaultTurnCapFitsSessionQuota
 // for this one.
 const DefaultMaxSessionTurns = 20
 
@@ -534,15 +551,14 @@ func validateHTTPConfig(h *HTTPConfig) error {
 	if h.MaxSessionTurns < 0 {
 		return negativeValueError("agent.http.max_session_turns")
 	}
-	// A session may not be allowed to outlive the model's memory of it. Past
-	// MaxReplayedExchanges the oldest exchanges stop reaching the model, and the
-	// symptom — the agent forgetting what the user said ten turns ago — looks
-	// like a model defect rather than a config one. Fail the boot instead.
-	if h.MaxSessionTurns > MaxReplayedExchanges {
+	// The product quota. This used to guard the model's memory as well — past the
+	// replayed-history window the oldest exchanges stopped reaching the model, and
+	// the symptom looked like a model defect rather than a config one. The engine
+	// no longer has a count window, so this is now only what it says it is.
+	if h.MaxSessionTurns > MaxSessionTurnsCeiling {
 		return fmt.Errorf(
-			"agent.http.max_session_turns=%d exceeds the model's replayed-history window (%d); "+
-				"turns beyond it would be silently invisible to the model",
-			h.MaxSessionTurns, MaxReplayedExchanges)
+			"agent.http.max_session_turns=%d exceeds the configured session quota (%d)",
+			h.MaxSessionTurns, MaxSessionTurnsCeiling)
 	}
 	return nil
 }

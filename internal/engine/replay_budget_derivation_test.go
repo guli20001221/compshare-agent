@@ -91,8 +91,8 @@ func TestTranscriptSizedHistoryStillReplaysASession(t *testing.T) {
 		{"p90 transcript", 7659, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pairs := make([]ConversationPair, 0, maxAgentContextPairs)
-			for i := 0; i < maxAgentContextPairs; i++ {
+			pairs := make([]ConversationPair, 0, deepestProductionSession)
+			for i := 0; i < deepestProductionSession; i++ {
 				pair := ConversationPair{
 					User:      fmt.Sprintf("问题%d", i),
 					Assistant: fmt.Sprintf("回答%d", i),
@@ -104,14 +104,13 @@ func TestTranscriptSizedHistoryStillReplaysASession(t *testing.T) {
 				}
 				pairs = append(pairs, pair)
 			}
-			require.Len(t, pairs, maxAgentContextPairs, "premise: a full window of tool-using turns")
+			require.Len(t, pairs, deepestProductionSession, "premise: a full session of tool-using turns")
 
 			kept := budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
 			assert.GreaterOrEqual(t, len(kept), tc.atLeast,
-				"%d-rune transcripts left only %d of %d exchanges. The pair count is then nominal: "+
-					"the model's real cross-turn memory is what survives this budget, not "+
-					"maxAgentContextPairs",
-				tc.perTurn, len(kept), maxAgentContextPairs)
+				"%d-rune transcripts left only %d of %d exchanges. What survives this budget IS "+
+					"the model's cross-turn memory — there is no count window behind it any more",
+				tc.perTurn, len(kept), deepestProductionSession)
 
 			// The newest exchange is kept unconditionally by budgetReplayedPairs, so
 			// a budget of zero would also "keep" one. Assert the tail is contiguous

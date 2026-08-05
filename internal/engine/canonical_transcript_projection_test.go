@@ -32,7 +32,7 @@ func TestFlagOffLeavesModelHistoryByteIdentical(t *testing.T) {
 		e := &Engine{messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "sys"}}}
 		finishTurn(e, hotTurn())
 		e.messages = append(e.messages, userMsg("下一轮"))
-		pairs := e.recentCompleteConversationPairs(maxAgentContextPairs)
+		pairs := e.recentCompleteConversationPairs()
 		return messagesFromAgentContext(e.messages, AgentContext{RecentConversation: pairs}, true)
 	}
 
@@ -59,7 +59,7 @@ func TestPriorTurnToolTrafficReachesTheModel(t *testing.T) {
 	// the previous one actually did?
 	e.messages = append(e.messages, userMsg("那再帮我看看磁盘"))
 
-	pairs := e.recentCompleteConversationPairs(maxAgentContextPairs)
+	pairs := e.recentCompleteConversationPairs()
 	assembled := messagesFromAgentContext(e.messages, AgentContext{RecentConversation: pairs}, true)
 
 	var sawCall, sawResult bool
@@ -112,8 +112,8 @@ func TestHotAndColdAgreeOnReplayedHistory(t *testing.T) {
 		{Role: openai.ChatMessageRoleAssistant, Content: "没有掉卡。", Transcript: persisted},
 	})
 
-	hotPairs := hot.recentCompleteConversationPairs(maxAgentContextPairs)
-	coldPairs := cold.recentCompleteConversationPairs(maxAgentContextPairs)
+	hotPairs := hot.recentCompleteConversationPairs()
+	coldPairs := cold.recentCompleteConversationPairs()
 	if !reflect.DeepEqual(hotPairs, coldPairs) {
 		t.Fatalf("hot/cold replayed history diverged\n hot: %#v\ncold: %#v", hotPairs, coldPairs)
 	}

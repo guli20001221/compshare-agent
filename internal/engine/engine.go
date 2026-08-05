@@ -44,32 +44,20 @@ const (
 	// ceiling stays agent.rate_limit.max_tokens_per_turn, which is enforced
 	// per turn and trips long before 16 rounds of tool traffic.
 	maxReActRounds = 16
-	// maxHistoryMessages is the maximum number of non-system messages to keep.
+	// The raw-history ceiling used to live here as maxHistoryMessages = 120. It is
+	// now maxRawHistoryRunes (direct_render_context.go), a size, and the comment
+	// that stood here is preserved as the reason: it said in as many words that
+	// "counting messages rather than tokens is still the wrong unit", and that it
+	// was raising a ceiling out of the way "without pretending to fix that". The
+	// unit is what is fixed here.
 	//
-	// This was 40, sized for "a 32K context window" — a model we no longer run.
-	// The model's window is not remotely the binding constraint; the real ceiling
-	// is agent.rate_limit.max_tokens_per_turn, shipped at 400000 (prompt+completion
-	// summed across the whole turn, not per request). We were amputating context to
-	// respect a limit that no longer exists.
-	//
-	// Measured on the 2026-07 production export for scale: a single request peaks at
-	// 29,768 prompt tokens (median 14,517) and a whole turn at 249,410 total (median
-	// 39,944), with 0 of 2807 turns reaching the ceiling.
-	//
-	// The unit is also wrong in a way that bites hardest exactly where we are
-	// headed: this counts MESSAGES, and e.messages holds every tool response, so an
-	// agent-loop turn costs ~4-6 messages (user + assistant-with-tool_calls + N tool
-	// results + final assistant) against ~2 on the fast path. At 40 the ceiling was
-	// therefore ~8 agent-loop turns — INSIDE observed session lengths (real sessions
-	// reach 10 turns; the traffic sample is truncated at 10, so that is a floor, not
-	// a max). Routing everything through the agent loop would have re-introduced the
-	// amnesia the cutover exists to cure, at turn 8, silently.
-	//
-	// 120 covers ~24 agent-loop turns (~81K tokens + ~7K system ≈ 44% of the per-turn
-	// cap), leaving real headroom for a large tool-result burst. Counting messages
-	// rather than tokens is still the wrong unit; this raises the ceiling out of the
-	// way of real traffic without pretending to fix that.
-	maxHistoryMessages           = 120
+	// What it was working around, kept because the numbers are measured: at 40 the
+	// ceiling was ~8 agent-loop turns — INSIDE observed session lengths (the traffic
+	// sample is truncated at 10 turns, so 10 is a floor, not a max) — because
+	// e.messages holds every tool response, so an agent-loop turn costs ~4-6
+	// messages against ~2 on the fast path. Routing everything through the agent
+	// loop would have re-introduced amnesia at turn 8, silently. A per-turn cost
+	// that varies by 3x is exactly what a message count cannot express.
 	maxKnowledgeHistoryRunes     = 4000
 	maxReadExpensiveCallsPerTurn = 30
 	// maxSearchKnowledgeCallsPerTurn bounds how many times the agent may CALL
@@ -436,7 +424,8 @@ type Engine struct {
 	// recentTurns is the cross-turn memory the canonical transcript replaces the
 	// stripped history with: one record per completed exchange, appended by the
 	// hot engine at turn exit and by a cold rebuild from the persisted rows, so
-	// the two agree by construction. Bounded to maxAgentContextPairs.
+	// the two agree by construction. Bounded by size (maxRawHistoryRunes), not by
+	// a count of exchanges.
 	recentTurns []recordedTurn
 	// mutatingToolsEnabled controls whether instance-changing workflows and
 	// L1 mutating API actions are exposed and executable. Production defaults
@@ -4909,10 +4898,10 @@ type StepEvent struct {
 	Projected                  bool // ReAct result projection shrank this result (observability only)
 }
 
-// trimHistory keeps the message list under maxHistoryMessages by dropping
-// the oldest non-system messages. The system prompt (index 0) is always kept.
-// Cut point is aligned to a safe message boundary to avoid orphaned tool_calls
-// or tool responses (which would make the history malformed for the LLM).
+// trimHistory keeps the message list under maxRawHistoryRunes by dropping the
+// oldest non-system messages. The system prompt (index 0) is always kept. The cut
+// point is aligned to a safe message boundary to avoid orphaned tool_calls or
+// tool responses (which would make the history malformed for the LLM).
 func (e *Engine) trimHistory() {
 	e.trimHistoryWithContext(context.Background())
 }
@@ -4923,40 +4912,47 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 		e.trimHistoryByCompactionContext(ctx, time.Now())
 		return
 	}
-	if len(e.messages) <= 1+maxHistoryMessages {
+	safeStart := rawHistoryCutPoint(e.messages, maxRawHistoryRunes)
+	if safeStart < 0 {
 		return
 	}
-
-	// Target: keep system (index 0) + last maxHistoryMessages messages.
-	// Start from the candidate cut point and scan forward to find a safe boundary.
-	// Safe boundary = a message whose role is "user" or "assistant" without tool_calls.
-	// This ensures we never start with an orphaned tool message or leave
-	// an assistant(tool_calls) without its matching tool responses.
-	candidateStart := len(e.messages) - maxHistoryMessages
-	if candidateStart <= 1 {
-		return
-	}
-
-	safeStart := candidateStart
-	for safeStart < len(e.messages) {
-		msg := e.messages[safeStart]
-		if msg.Role == openai.ChatMessageRoleUser {
-			break // user message is always a safe boundary
-		}
-		if msg.Role == openai.ChatMessageRoleAssistant && len(msg.ToolCalls) == 0 {
-			break // plain assistant reply is safe
-		}
-		// Skip tool messages and assistant(tool_calls) to find the next safe point
-		safeStart++
-	}
-
-	if safeStart >= len(e.messages) {
-		return // no safe cut point found, don't trim
-	}
-
 	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
 	e.historyTrimmedThisSession = true
+}
+
+// rawHistoryCutPoint returns the index of the oldest message to KEEP so that the
+// suffix from it fits budgetRunes, aligned FORWARD to a safe boundary. It returns
+// -1 when nothing needs dropping, or when no safe boundary exists — in which case
+// the caller leaves the list alone rather than risk an API-invalid transcript.
+//
+// Cost is charged with assembledRequestRunes, deliberately the same accounting
+// the request budget uses. A raw list measured one way and a request measured
+// another is how a "source list" quietly becomes the narrower of the two.
+//
+// Both the plain and the compacting trim call this, because they differ in what
+// they do with the kept slice, not in where the cut goes. They used to carry two
+// copies of the boundary walk, and a mutation to one was invisible to a test that
+// drove the other.
+func rawHistoryCutPoint(messages []openai.ChatCompletionMessage, budgetRunes int) int {
+	if budgetRunes <= 0 || len(messages) <= 1 {
+		return -1
+	}
+	spent, candidate := 0, len(messages)
+	for i := len(messages) - 1; i >= 1; i-- {
+		spent += assembledRequestRunes(messages[i : i+1])
+		if spent > budgetRunes {
+			break
+		}
+		candidate = i
+	}
+	// candidate <= 1 means everything after the system prompt already fits.
+	// safeHistoryStart rejects that same case, but checking it here states the
+	// no-op explicitly rather than relying on the boundary walk's edge condition.
+	if candidate <= 1 {
+		return -1
+	}
+	return safeHistoryStart(messages, candidate)
 }
 
 // buildMessagesForLLM returns the message slice to send to the LLM.
@@ -4969,7 +4965,7 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 func (e *Engine) buildMessagesForLLM(toolWindow []openai.Tool) []openai.ChatCompletionMessage {
 	assembled := messagesFromAgentContext(e.messages, e.turnContextViewThisTurn, e.turnContextViewReady)
 	messageBudget := maxAssembledRequestRunes - toolWindowRunes(toolWindow)
-	capped := trimAssembledRequest(assembled, maxAssembledRequestMessages, messageBudget)
+	capped := trimAssembledRequest(assembled, messageBudget)
 	e.recordPromptAssembly(len(e.messages), len(assembled), len(capped))
 	return capped
 }
@@ -5019,32 +5015,15 @@ func toolWindowRunes(tools []openai.Tool) int {
 // rune count does not see, and for the floor being one probe.
 const maxAssembledRequestRunes = 100000
 
-// maxAssembledRequestMessages is a conservative hard ceiling on the number of
-// messages in a single assembled LLM request. The legitimate maximum is now ~93
-// (2 system/card + 40 messages for 20 restored exchanges + a ≤51-message in-turn
-// tool transcript bounded by maxReadExpensiveCallsPerTurn / maxReActRounds).
-// That margin is thin: raising maxAgentContextPairs past ~23 would make this cap
-// shed restored exchanges on ordinary heavy turns rather than only pathological
-// ones. Shedding is graceful (oldest exchanges first, see below) but silent, so
-// treat this constant as coupled to the replay window, not independent of it.
-// Cross-turn history is bounded separately by maxHistoryMessages, and by size
-// via maxReplayedHistoryRunes.
-const maxAssembledRequestMessages = 100
-
-// capAssembledRequestMessages bounds an already-assembled request to at most
-// `cap` messages without ever producing an API-invalid transcript. It sheds the
-// oldest restored history first — plain pairs or projected transcripts, whole
-// exchanges either way; nothing summarises them elsewhere any more, so shedding
-// one drops it — then, only if still over, the oldest complete in-turn tool
-// groups after the current question. An assistant message carrying tool_calls is
-// always dropped together with its tool results, so no tool result is ever
-// orphaned and the current question is always retained.
-// capAssembledRequestMessages is the count-only entry point, kept for the tests
-// that exercise shedding at small message limits.
-func capAssembledRequestMessages(msgs []openai.ChatCompletionMessage, cap int) []openai.ChatCompletionMessage {
-	return trimAssembledRequest(msgs, cap, 0)
-}
-
+// The message-COUNT ceiling that used to sit beside this one — maxAssembledRequestMessages
+// = 100 — is deleted. It was described in its own comment as "conservative" and
+// as "coupled to the replay window, not independent of it": the legitimate
+// maximum was ~93, so raising the replay window past ~23 exchanges would have
+// made a count cap start shedding history on ordinary heavy turns, silently, for
+// a reason that had nothing to do with how large the request was. Deleting the
+// replay window's count made that coupling meaningless, and the size budget
+// above was already doing the work.
+//
 // assembledRequestRunes is the size a request is charged at: message content
 // plus tool-call names and arguments, which are as real to the provider as the
 // content and are what a tool-heavy turn is mostly made of.
@@ -5059,24 +5038,28 @@ func assembledRequestRunes(msgs []openai.ChatCompletionMessage) int {
 	return total
 }
 
-// trimAssembledRequest bounds an already-assembled request by BOTH message count
-// and size, without ever producing an API-invalid transcript. Either limit may be
-// 0 to disable it.
+// trimAssembledRequest bounds an already-assembled request by SIZE, without ever
+// producing an API-invalid transcript. maxRunes may be 0 to disable it.
 //
-// Shedding order is the same for both metrics, and it is an order of preference,
-// not an implementation detail: restored history goes first (oldest exchange
-// first — it is context, and the turn can still be answered without it), and only
-// if that is not enough do the oldest in-turn tool groups go (the model asked for
-// those this turn, so losing them may cost a re-read). The current question and
-// the leading system block are never shed.
+// This is the whole of "fill from the newest history block that fits", expressed
+// as its complement — the assembled list already holds everything, so filling
+// forward from the newest and shedding backward from the oldest reach the same
+// slice, and shedding is the form that can see what the current turn has already
+// spent.
 //
-// Both limits are satisfied jointly rather than in two passes: a count pass
-// followed by a size pass could shed for one metric a group that the other pass
-// then sheds again, dropping more than either limit required.
-func trimAssembledRequest(msgs []openai.ChatCompletionMessage, maxMessages, maxRunes int) []openai.ChatCompletionMessage {
-	overCount := maxMessages > 0 && len(msgs) > maxMessages
-	overRunes := maxRunes > 0 && assembledRequestRunes(msgs) > maxRunes
-	if !overCount && !overRunes {
+// Shedding order is an order of preference, not an implementation detail:
+// restored history goes first (oldest exchange first — it is context, and the
+// turn can still be answered without it), and only if that is not enough do the
+// oldest in-turn tool groups go (the model asked for those this turn, so losing
+// them may cost a re-read). The current question and the leading system block are
+// never shed.
+//
+// It used to take a message-count limit as well and satisfy both jointly. The
+// count is gone; the joint-satisfaction machinery below (assemble/fits) is kept
+// as-is because it is also what keeps a shed from cutting into the middle of an
+// exchange.
+func trimAssembledRequest(msgs []openai.ChatCompletionMessage, maxRunes int) []openai.ChatCompletionMessage {
+	if maxRunes <= 0 || assembledRequestRunes(msgs) <= maxRunes {
 		return msgs
 	}
 	headEnd := 0
@@ -5105,10 +5088,7 @@ func trimAssembledRequest(msgs []openai.ChatCompletionMessage, maxMessages, maxR
 		return out
 	}
 	fits := func(candidate []openai.ChatCompletionMessage) bool {
-		if maxMessages > 0 && len(candidate) > maxMessages {
-			return false
-		}
-		return maxRunes <= 0 || assembledRequestRunes(candidate) <= maxRunes
+		return assembledRequestRunes(candidate) <= maxRunes
 	}
 
 	// Phase 1: drop whole restored exchanges from the oldest end.

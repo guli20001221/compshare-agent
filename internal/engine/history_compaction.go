@@ -58,20 +58,18 @@ func (e *Engine) trimHistoryByCompaction(now time.Time) {
 // They used to: compactEvictedConversation distilled them into ConversationDigest
 // and the context card rendered it. Nothing has read that digest since the card's
 // digest blocks were deleted, and the LLM call that produced it never ran on the
-// shipped path anyway. stripHistoricalToolTranscript above leaves 2 messages per
-// turn, so this trigger needs 61 turns, while agent.http.max_session_turns caps
-// the compatibility path at 20 (config.validateHTTPConfig forbids more than
-// MaxReplayedExchanges). Measured against the replay database: 0 of 127 sessions
+// shipped path anyway — measured against the replay database, 0 of 127 sessions
 // had a single digest excerpt.
 //
-// What the model reads is unaffected either way. maxAgentContextPairs is 20 and
-// the cut leaves maxHistoryMessages/2 = 60 pairs, so the replay window is inside
-// what survives.
+// What the model reads is unaffected by where this cut lands, and that is now an
+// invariant rather than an observation about two constants: it shares
+// rawHistoryCutPoint and maxRawHistoryRunes with the plain trim, and that budget
+// is set above anything maxReplayedHistoryRunes can admit. It used to be an
+// observation — "maxAgentContextPairs is 20 and the cut leaves
+// maxHistoryMessages/2 = 60 pairs" — which held only while both were counts and
+// only for exchanges of an assumed size.
 func (e *Engine) trimHistoryByCompactionContext(ctx context.Context, now time.Time) {
-	if len(e.messages) <= 1+maxHistoryMessages {
-		return
-	}
-	safeStart := safeHistoryStart(e.messages, len(e.messages)-maxHistoryMessages)
+	safeStart := rawHistoryCutPoint(e.messages, maxRawHistoryRunes)
 	if safeStart < 0 {
 		return
 	}

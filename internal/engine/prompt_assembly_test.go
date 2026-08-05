@@ -70,18 +70,21 @@ func TestBuildMessagesForLLM_RecordsAssemblyObservability(t *testing.T) {
 	assert.False(t, eng.PromptMessagesCapApplied(), "a normal turn stays well under the cap")
 }
 
-func TestCapAssembledRequestMessages_UnderCapUnchanged(t *testing.T) {
+func TestTrimAssembledRequest_UnderBudgetUnchanged(t *testing.T) {
 	msgs := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "sys"},
 		{Role: openai.ChatMessageRoleSystem, Content: contextCardMarker},
 		{Role: openai.ChatMessageRoleUser, Content: "q"},
 		{Role: openai.ChatMessageRoleAssistant, Content: "a"},
 	}
-	out := capAssembledRequestMessages(msgs, 100)
+	out := trimAssembledRequest(msgs, maxAssembledRequestRunes)
 	require.Len(t, out, len(msgs))
+
+	// A disabled budget is not the same as a large one, and both must be no-ops.
+	require.Len(t, trimAssembledRequest(msgs, 0), len(msgs))
 }
 
-func TestCapAssembledRequestMessages_DropsOldestRecentPairsFirst(t *testing.T) {
+func TestTrimAssembledRequest_DropsOldestRecentPairsFirst(t *testing.T) {
 	msgs := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "sys"},
 		{Role: openai.ChatMessageRoleSystem, Content: contextCardMarker},
@@ -96,9 +99,13 @@ func TestCapAssembledRequestMessages_DropsOldestRecentPairsFirst(t *testing.T) {
 		{Role: openai.ChatMessageRoleTool, ToolCallID: "t1", Content: `{"RetCode":0}`},
 	}
 
-	out := capAssembledRequestMessages(msgs, 8)
+	// Exactly the two oldest pairs' worth of room removed — computed from the
+	// fixture so that editing a message's text cannot silently change which
+	// exchanges the trim is being asked to shed.
+	budget := assembledRequestRunes(msgs) - assembledRequestRunes(msgs[2:6])
+	out := trimAssembledRequest(msgs, budget)
 
-	require.LessOrEqual(t, len(out), 8)
+	require.LessOrEqual(t, assembledRequestRunes(out), budget)
 	rendered := renderTestMessages(out)
 	assert.NotContains(t, rendered, "p1u", "oldest restored pair is shed first")
 	assert.NotContains(t, rendered, "p2u")
@@ -109,7 +116,7 @@ func TestCapAssembledRequestMessages_DropsOldestRecentPairsFirst(t *testing.T) {
 	assertToolCallPairsValid(t, out)
 }
 
-func TestCapAssembledRequestMessages_DropsOldestToolGroupsPreservingPairs(t *testing.T) {
+func TestTrimAssembledRequest_DropsOldestToolGroupsPreservingPairs(t *testing.T) {
 	group := func(id string) []openai.ChatCompletionMessage {
 		return []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall(id, "DescribeCompShareInstance", `{}`)}},
@@ -126,9 +133,10 @@ func TestCapAssembledRequestMessages_DropsOldestToolGroupsPreservingPairs(t *tes
 	msgs = append(msgs, group("g3")...)
 	msgs = append(msgs, group("g4")...)
 
-	out := capAssembledRequestMessages(msgs, 7)
+	budget := assembledRequestRunes(msgs) - 2*assembledRequestRunes(group("g1"))
+	out := trimAssembledRequest(msgs, budget)
 
-	require.LessOrEqual(t, len(out), 7)
+	require.LessOrEqual(t, assembledRequestRunes(out), budget)
 	rendered := renderTestMessages(out)
 	assert.Contains(t, rendered, "current-question", "the current question is always retained")
 	assert.NotContains(t, rendered, `"id":"g1"`, "oldest in-turn tool group is shed first")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/prompt"
 	"testing"
 	"time"
@@ -13,10 +14,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// deepestProductionSession is the most exchanges a shipped session can reach:
+// agent.http.max_session_turns may not exceed config.MaxSessionTurnsCeiling.
+// These fixtures anchor to that rather than to a replay-window constant, because
+// there is no replay window any more — the whole point below is that a size
+// budget, not a count, decides what survives.
+const deepestProductionSession = config.MaxSessionTurnsCeiling
+
 // The failure this pins: maxReplayedHistoryRunes is applied at turn ENTRY, when
 // the turn has run no tools, and is never re-checked while the turn accumulates
-// up to maxReadExpensiveCallsPerTurn results that are re-sent every round.
-// maxAssembledRequestMessages counted messages, not size, and
+// up to maxReadExpensiveCallsPerTurn results that are re-sent every round. The
+// message-count cap that stood beside it counted messages, not size, and
 // maxTranscriptTotalRunes only bounds what is persisted after the turn — so
 // nothing bounded the live request.
 //
@@ -44,7 +52,6 @@ func TestAssembledRequestStaysUnderBudgetOnHighFanoutTurns(t *testing.T) {
 				"%d reads x %d runes assembled past the request ceiling (messages=%d + tools=%d)",
 				maxReadExpensiveCallsPerTurn, perResult,
 				assembledRequestRunes(out), toolWindowRunes(tools))
-			assert.LessOrEqual(t, len(out), maxAssembledRequestMessages)
 			assertToolCallPairsValid(t, out)
 
 			// The current question always survives, and it is the last user message.
@@ -81,14 +88,14 @@ func TestOrdinaryTurnIsNotTrimmedByTheRequestBudget(t *testing.T) {
 	// old 12,000 budget left.
 	rendered := renderTestMessages(out)
 	survivors := 0
-	for i := 0; i < maxAgentContextPairs; i++ {
+	for i := 0; i < deepestProductionSession; i++ {
 		if strings.Contains(rendered, fmt.Sprintf("问题%d", i)) {
 			survivors++
 		}
 	}
 	assert.GreaterOrEqual(t, survivors, 6,
-		"only %d of %d exchanges reached an ordinary turn's request", survivors, maxAgentContextPairs)
-	assert.Contains(t, rendered, fmt.Sprintf("问题%d", maxAgentContextPairs-1),
+		"only %d of %d exchanges reached an ordinary turn's request", survivors, deepestProductionSession)
+	assert.Contains(t, rendered, fmt.Sprintf("问题%d", deepestProductionSession-1),
 		"and the newest exchange is never the one dropped")
 }
 
@@ -224,7 +231,7 @@ func highFanoutEngine(t *testing.T, reads, perResult int) *Engine {
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())},
 	}
-	for i := 0; i < maxAgentContextPairs; i++ {
+	for i := 0; i < deepestProductionSession; i++ {
 		q, a := fmt.Sprintf("问题%d", i), fmt.Sprintf("回答%d", i)
 		e.messages = append(e.messages,
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: q},

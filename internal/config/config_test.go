@@ -993,11 +993,13 @@ func TestRuntimeGetenv_NilConfigReturnsBase(t *testing.T) {
 	assert.Equal(t, "from-base", getenv("ANYTHING"))
 }
 
-// A session that outlives the model's replay window forgets its own opening with
-// no error and no log line, which reads as a model defect rather than a config
-// one. The repo's own YAML being correct does not protect a deployment's, so the
-// loader has to refuse the combination.
-func TestLoadRejectsSessionTurnCapAboveTheReplayWindow(t *testing.T) {
+// The quota is enforced at load, so a deployment's YAML cannot exceed it even
+// though the repo's own YAML does not. It used to be enforced for a stronger
+// reason — a session outliving the model's replay window forgot its own opening
+// with no error and no log line — and the message said so. The engine has no
+// count window any more, so the message must no longer claim one: a wrong reason
+// in a boot error sends the next operator looking at the engine.
+func TestLoadRejectsSessionTurnCapAboveTheQuota(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
   http:
@@ -1007,10 +1009,12 @@ func TestLoadRejectsSessionTurnCapAboveTheReplayWindow(t *testing.T) {
 	_, err := Load(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "agent.http.max_session_turns=21")
-	assert.Contains(t, err.Error(), "replayed-history window")
+	assert.Contains(t, err.Error(), "session quota")
+	assert.NotContains(t, err.Error(), "replayed-history window",
+		"the engine no longer has a replay window to exceed")
 }
 
-func TestLoadAcceptsSessionTurnCapAtTheReplayWindow(t *testing.T) {
+func TestLoadAcceptsSessionTurnCapAtTheQuota(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
   http:
@@ -1019,11 +1023,11 @@ func TestLoadAcceptsSessionTurnCapAtTheReplayWindow(t *testing.T) {
 
 	cfg, err := Load(path)
 	require.NoError(t, err, "the boundary value itself must remain loadable")
-	assert.Equal(t, MaxReplayedExchanges, cfg.Agent.HTTP.MaxSessionTurns)
+	assert.Equal(t, MaxSessionTurnsCeiling, cfg.Agent.HTTP.MaxSessionTurns)
 }
 
 // The fallback used when max_session_turns is omitted is subject to the same
-// invariant, but never passes through validateHTTPConfig.
-func TestDefaultTurnCapFitsReplayWindow(t *testing.T) {
-	assert.LessOrEqual(t, DefaultMaxSessionTurns, MaxReplayedExchanges)
+// quota, but never passes through validateHTTPConfig.
+func TestDefaultTurnCapFitsSessionQuota(t *testing.T) {
+	assert.LessOrEqual(t, DefaultMaxSessionTurns, MaxSessionTurnsCeiling)
 }
