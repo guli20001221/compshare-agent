@@ -64,7 +64,6 @@ type ReadRuntime struct {
 	// wire it and the freshness check defaults to time.Now().
 	Now                time.Time
 	FallbackInstanceID string
-	FallbackGPUModel   string
 	// SyncRegistry hands a full DescribeCompShareInstance listing back to the
 	// session's live registry. Only the target-resolution warm-up uses it, and
 	// only after that listing already had to be fetched: without it the cold
@@ -128,13 +127,6 @@ func (p ReadPresentation) Valid() bool {
 // result. A new side-effect is a new named type the engine can choose to apply,
 // not a new field on ReadResult.
 type ReadEffect interface{ readEffect() }
-
-// RememberStockReferent records the single GPU model a stock turn resolved to,
-// so a later subject-eliding follow-up ("现在还有吗") resolves to it (RC017)
-// instead of re-expanding to every model.
-type RememberStockReferent struct{ GPUModel string }
-
-func (RememberStockReferent) readEffect() {}
 
 // RememberVerifiedInstances records the exact instance IDs a resource read
 // confirmed THIS turn by the upstream DescribeCompShareInstance response echoing

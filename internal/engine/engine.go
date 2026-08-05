@@ -511,8 +511,14 @@ type Engine struct {
 	promptSectionIDsThisTurn   []string
 	memoryUpdateSourceThisTurn string
 	groundingOutcomeThisTurn   string
-	// sessionFactContextEnabled injects fresh RecentFacts into the system
-	// prompt as advisory same-session context. Default off.
+	// sessionFactContextEnabled INJECTS NOTHING. It reads as a prompt-injection
+	// switch and was documented as one, but the only path that ever put a
+	// RecentFact in front of the model was the context card's 近期可信观测 block,
+	// which this flag did not gate and which was deleted once the canonical
+	// transcript replayed the original tool results instead. What survives is
+	// refreshSystemPrompt's BOOLEAN use of assembleFactContext, deciding whether
+	// the turn's instance binding is traced as ResolutionSourceFactCache. Default
+	// off; the deploy config ships it on, where it changes a trace field.
 	sessionFactContextEnabled bool
 	// reactResultProjectionEnabled shrinks selected bulky tool results before
 	// they are formatted back into the ReAct model-visible history. Default off.
@@ -531,8 +537,9 @@ type Engine struct {
 	//     determined (observability.ResolutionSource* — session_state /
 	//     single_host / fact_cache / unresolved).
 	//   - factCacheOldestAgeSecondsThisTurn: age of the oldest still-fresh fact
-	//     injected this turn, or -1 when none. Bucketed before it leaves the
-	//     recorder.
+	//     the turn HAD, or -1 when none. Nothing is injected — see
+	//     sessionFactContextEnabled; the facts decide a trace label, not the
+	//     prompt. Bucketed before it leaves the recorder.
 	selectedInstanceIDAtTurnStart     string
 	instanceResolutionSourceThisTurn  string
 	factCacheOldestAgeSecondsThisTurn int
@@ -738,7 +745,9 @@ func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
 	e.instanceOps = r
 }
 
-// SetSessionFactContextEnabled toggles advisory RecentFacts prompt injection.
+// SetSessionFactContextEnabled toggles the fact-cache TRACE LABEL. It does not
+// inject RecentFacts into the prompt; see the field for why the name outlived
+// the behaviour.
 func (e *Engine) SetSessionFactContextEnabled(v bool) {
 	e.sessionFactContextEnabled = v
 }
@@ -864,8 +873,10 @@ func (e *Engine) SelectedInstanceIDAtTurnStart() string { return e.selectedInsta
 func (e *Engine) InstanceResolutionSource() string { return e.instanceResolutionSourceThisTurn }
 
 // FactCacheOldestAgeSeconds returns the age in seconds of the oldest still-fresh
-// fact injected into the most recent turn's prompt, or -1 when none was. The
-// recorder buckets it (observability.BucketFactCacheAge) before persisting.
+// fact the most recent turn held, or -1 when there was none. It says "into the
+// prompt" in no version of this comment any more: nothing is injected, the value
+// only labels a trace. The recorder buckets it
+// (observability.BucketFactCacheAge) before persisting.
 func (e *Engine) FactCacheOldestAgeSeconds() int { return e.factCacheOldestAgeSecondsThisTurn }
 
 func (e *Engine) SetTokenUsageObserver(observer func(llm.TokenUsage)) {
@@ -3783,70 +3794,16 @@ func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	e.sessionState.SelectedInstanceFreshness = continuityFreshness(at, selectedInstanceTTLSeconds, now)
 }
 
-// recordLastStockGpuModel tracks the legacy stock referent for paths that do
-// not consume RecentFacts. When session fact context is enabled, stock
-// follow-ups must use the structured StockSnapshot fact instead of writing this
-// scalar carry.
-func (e *Engine) recordLastStockGpuModel(model string) {
-	if model == "" {
-		return
-	}
-	if e.sessionFactContextEnabled {
-		if e.sessionStateHydrated {
-			e.sessionState.LastStockGpuModel = ""
-		}
-		return
-	}
-	e.sessionState.LastStockGpuModel = model
-}
-
-func (e *Engine) recordResolvedStockGpuFact(model string) {
-	model = strings.TrimSpace(model)
-	if model == "" || !e.sessionStateHydrated {
-		return
-	}
-	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
-		Kind:      FactKindStockSnapshot,
-		SubjectID: "stock:" + model,
-		Payload: map[string]any{
-			"model":  model,
-			"action": "stock_availability",
-		},
-		ProducedAtTurn: e.userTurn,
-		ProducedAtUnix: time.Now().Unix(),
-		TTLSeconds:     factTTLSecondsStockSnapshot,
-	})
-}
-
-func stockGpuModelFromRecentFacts(facts []ToolFact, now time.Time) string {
-	nowUnix := now.Unix()
-	var model string
-	var newest int64
-	for _, fact := range facts {
-		if fact.Kind != FactKindStockSnapshot || fact.SubjectID == "" || !factFresh(fact, nowUnix) {
-			continue
-		}
-		candidate := factString(fact.Payload, "model")
-		if candidate == "" || strings.EqualFold(candidate, "all") {
-			continue
-		}
-		if fact.ProducedAtUnix >= newest {
-			model = candidate
-			newest = fact.ProducedAtUnix
-		}
-	}
-	return model
-}
-
-func (e *Engine) fallbackStockGpuModel(now time.Time) string {
-	if e.sessionFactContextEnabled {
-		if model := stockGpuModelFromRecentFacts(e.sessionState.RecentFacts, now); model != "" {
-			return model
-		}
-		return ""
-	}
-	return e.sessionState.LastStockGpuModel
-}
+// The stock referent carry lived here: recordResolvedStockGpuFact wrote a
+// minimal {model, action} StockSnapshot fact whose only reader was
+// stockGpuModelFromRecentFacts, which fallbackStockGpuModel handed to the stock
+// capability as the filter for a turn that did not name a card. Together with
+// recordLastStockGpuModel / SessionState.LastStockGpuModel they are deleted:
+// the server no longer remembers which GPU the user meant, so it can no longer
+// answer a different question from the one the model asked.
+//
+// The richer StockSnapshot fact recorded from an actual capacity/stock tool
+// response is a different producer and stays.
 
 func (e *Engine) markRegistryInvalidated(action string) {
 	if e.registry == nil {

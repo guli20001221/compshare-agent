@@ -19,9 +19,19 @@ import (
 // Normal/SoldOut status, but a matched-model turn runs a multi-call capacity
 // precheck (support zones + a probe image + a per-model /
 // per-zone CheckCompShareResourceCapacity) with graceful partial-failure
-// handling. The typed request carries the GPU name + zone; the RC017 referent
-// (a subject-eliding follow-up resolving to the prior stock turn's model) comes
-// from the runtime's FallbackGPUModel, never a re-read of the user's sentence.
+// handling. The typed request carries the GPU name + zone, and that request is
+// now the ONLY thing the filter comes from.
+//
+// It used to have a second source. When gpu_type was empty the runtime supplied
+// FallbackGPUModel — the model a PRIOR stock turn resolved to, carried across
+// turns in session state — so that 「现在还有吗」 filtered to that card instead of
+// listing everything (RC017). That is the server remembering what the user meant
+// and editing the model's arguments to match, which is a second semantic memory
+// beside the canonical transcript and a tool call whose effective parameters are
+// not the ones the model sent. The transcript replays the earlier stock turn's
+// call and result verbatim, so the model can read the card name out of its own
+// history and pass it; when it does not, an unfiltered listing is the honest
+// answer to an unfiltered request.
 
 const (
 	stockCapabilityLabel = string(intent.IntentStockAvailability)
@@ -62,14 +72,16 @@ type StockAvailabilityRequest struct {
 // MissingFields: none — an unfiltered stock listing is valid.
 func (StockAvailabilityRequest) MissingFields() []platform.MissingField { return nil }
 
-// StockAvailabilityResponse carries the rendered reply, the optional evidence
-// envelope (only the plain-listing path builds one) and the resolved single
-// model (RC017 session memory). The source fan-out lives in the handler, so the
-// renderer is a trivial projection of the response.
+// StockAvailabilityResponse carries the rendered reply and the optional evidence
+// envelope (only the plain-listing path builds one). The source fan-out lives in
+// the handler, so the renderer is a trivial projection of the response.
+//
+// It also carried ResolvedGPUModel, the single model a turn resolved to, whose
+// only purpose was to be written back into session state as the next turn's
+// implicit filter. Nothing reads it now.
 type StockAvailabilityResponse struct {
-	Reply            string
-	Envelope         *envelope.Envelope
-	ResolvedGPUModel string
+	Reply    string
+	Envelope *envelope.Envelope
 }
 
 type stockInstanceTypeEntry struct {
@@ -101,25 +113,21 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 		Description:  "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。",
 		Presentation: ReadPresentationRequired,
 		Params: objectParam(map[string]schemaNode{
+			// Deliberately undescribed. A description telling the model to carry the
+			// card forward when the user elides it would be the natural companion to
+			// deleting the server-side carry — but it costs ~200 bytes on EVERY
+			// request of every turn, and TestCentralAgentStaticPromptAndToolWindowStayWithinBudget
+			// leaves ~23. Buying that needs evidence the model actually omits
+			// gpu_type under the canonical transcript, which replays the earlier
+			// stock call verbatim; RC017's evidence predates the transcript and was
+			// gathered when prior tool calls were deleted from history.
 			"gpu_type":       stringParam(),
 			"zone_mentions":  arrayParam(stringParam()).described("用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。"),
 			"inventory_pool": enumParam(stockInventoryPoolUnspecified, deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时填 Unspecified。"),
 		}),
-		Handle:  stockHandle,
-		Render:  stockRender,
-		Observe: stockObserve,
+		Handle: stockHandle,
+		Render: stockRender,
 	}
-}
-
-// stockObserve declares the RC017 context side-effect: when the turn resolved to
-// a single GPU model, remember it so a later subject-eliding follow-up resolves
-// to that model. The referent is carried as a typed effect, not a field on the
-// shared read result.
-func stockObserve(resp StockAvailabilityResponse) []ReadEffect {
-	if strings.TrimSpace(resp.ResolvedGPUModel) == "" {
-		return nil
-	}
-	return []ReadEffect{RememberStockReferent{GPUModel: resp.ResolvedGPUModel}}
 }
 
 func stockHandle(ctx context.Context, req StockAvailabilityRequest, rt ReadRuntime) (StockAvailabilityResponse, ReadResult) {
@@ -130,22 +138,20 @@ func stockHandle(ctx context.Context, req StockAvailabilityRequest, rt ReadRunti
 	if raw == nil {
 		raw = map[string]any{}
 	}
-	// RC017: resolve a subject-eliding follow-up ("现在还有库存吗") to the GPU model
-	// a prior stock turn resolved to (rt.FallbackGPUModel), so it is not re-expanded
-	// to every model. All three stock renderers filter off the same referent, so
-	// substituting one effective text keeps them consistent.
 	items := mapSliceAt(raw, "AvailableInstanceTypes")
 	if len(items) == 0 {
 		// Query succeeded but no machine-type stock data — a structured Empty read.
 		return StockAvailabilityResponse{}, ReadEmpty(noStockReply)
 	}
-	referent := stockReferentText(req, rt.FallbackGPUModel, items)
-	resolved := singleStockModel(referent, items)
+	// The filter is the request's own gpu_type and nothing else. All three stock
+	// renderers read this one value, so they stay consistent with each other and
+	// with what the model actually asked for.
+	referent := strings.TrimSpace(req.GPUType)
 
 	if reply, ok, terminal := stockCapacityPrecheck(ctx, rt, req, raw); terminal.Status != "" {
 		return StockAvailabilityResponse{}, terminal
 	} else if ok {
-		return StockAvailabilityResponse{Reply: reply, ResolvedGPUModel: resolved}, ReadResult{}
+		return StockAvailabilityResponse{Reply: reply}, ReadResult{}
 	}
 	// A catalog listing that only says 开售 does not answer "有多少". The card
 	// counts live in a different API (DescribeCompShareGpuInventory), which the
@@ -158,9 +164,8 @@ func stockHandle(ctx context.Context, req StockAvailabilityRequest, rt ReadRunti
 		inventory = stockGPUInventorySnapshot(ctx, rt, listingZones)
 	}
 	return StockAvailabilityResponse{
-		Reply:            renderStockReply(raw, referent, inventory, listingZones),
-		Envelope:         populatedEnvelope(buildStockEnvelope(raw, referent)),
-		ResolvedGPUModel: resolved,
+		Reply:    renderStockReply(raw, referent, inventory, listingZones),
+		Envelope: populatedEnvelope(buildStockEnvelope(raw, referent)),
 	}, ReadResult{}
 }
 
@@ -172,34 +177,6 @@ func stockRender(resp StockAvailabilityResponse) ReadResult {
 }
 
 // --- Relocated from intent/routing_registry.go (Slots/handler → typed req/rt) ----
-
-// stockReferentText returns the user text the stock renderers should filter on.
-// When the current turn names a model that text is authoritative; when it elides
-// the subject entirely and a prior stock turn resolved to a model that is STILL
-// offered, that prior model name (fallbackGPUModel, RC017) is the referent.
-func stockReferentText(req StockAvailabilityRequest, fallbackGPUModel string, items []any) string {
-	search := strings.TrimSpace(req.GPUType)
-	if search != "" {
-		return search
-	}
-	if fallbackGPUModel == "" {
-		return ""
-	}
-	if len(matchUserTextToInstanceTypeNames(fallbackGPUModel, items, false)) == 0 {
-		return ""
-	}
-	return fallbackGPUModel
-}
-
-// singleStockModel returns the model name when the text resolves to exactly one
-// available model, else "".
-func singleStockModel(userText string, items []any) string {
-	matched := matchUserTextToInstanceTypeNames(userText, items, false)
-	if len(matched) == 1 {
-		return matched[0]
-	}
-	return ""
-}
 
 // stockModelCardTotals sums a model's card counts across every zone the catalog
 // knows. The per-zone breakdown belongs to a zone-specific question; a "有什么卡"

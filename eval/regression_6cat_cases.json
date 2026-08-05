@@ -42,7 +42,7 @@
   {
     "id": "cat3_stock_ellipsis_referent",
     "category": "3-资源不足与库存解释",
-    "gates": "RC017: stock ellipsis should resolve prior-model referent, not re-expand all models",
+    "gates": "RC017: stock ellipsis should resolve prior-model referent, not re-expand all models. SINCE 2026-08-05 THIS IS A MODEL EXPECTATION, NOT A SERVER GUARANTEE: the runtime used to fill gpu_type from the previous stock turn, and that carry is deleted. The canonical transcript replays turn 1's call and result, so passing now means the model put 4090 into gpu_type itself. This case is the acceptance measurement for that; it is live-eval only and no Go test consumes this file.",
     "baseline": "red",
     "steps": [
       {
