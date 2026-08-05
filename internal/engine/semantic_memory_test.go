@@ -186,41 +186,50 @@ func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSignalsInCard(t *te
 // hand-off are gone.
 //
 // What replaces the assertion is the reason the hand-off was not load-bearing:
-// the model's cross-turn memory is the replay window, and the window is INSIDE
-// what the trim leaves. maxHistoryMessages/2 pairs survive against a
-// maxAgentContextPairs window, so an exchange can only leave the model's view by
-// ageing past the window or by losing the rune budget — never by this trim.
+// the model's cross-turn memory is what maxReplayedHistoryRunes admits, and the
+// raw list is budgeted ABOVE that (maxRawHistoryRunes), so an exchange can only
+// leave the model's view by losing the replay budget — never by this trim.
+//
+// That used to be an argument about two counts ("maxHistoryMessages/2 pairs
+// survive against a maxAgentContextPairs window"), which held only for exchanges
+// of an assumed size. Both counts are gone and the relation is now between two
+// budgets in the same unit, so the assertion below has real content: lowering
+// maxRawHistoryRunes under maxReplayedHistoryRunes fails it.
 //
 // BOTH branches are run. trimHistoryWithContext forks on
 // reactHistoryCompactionEnabled and only one side lives in history_compaction.go;
 // a first version of this test exercised the other one, and a mutation that
-// lowered the compaction ceiling to maxAgentContextPairs — squarely into the
-// replay window — passed it. A trim test that never reaches the trim under test
-// is the same empty gate as no test.
+// lowered the compaction ceiling squarely into the replay window passed it. A
+// trim test that never reaches the trim under test is the same empty gate as no
+// test.
 func TestTrimmingNeverReachesTheReplayWindow(t *testing.T) {
 	for _, compaction := range []bool{false, true} {
 		t.Run(fmt.Sprintf("compaction=%v", compaction), func(t *testing.T) {
 			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 			eng.SetReactHistoryCompactionEnabled(compaction)
 			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-			eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system"}}
-			for i := 0; i < maxHistoryMessages; i++ {
-				eng.messages = append(eng.messages,
-					openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("问题%d", i)},
-					openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("回答%d", i)},
-				)
-			}
-			require.Greater(t, len(eng.messages), 1+maxHistoryMessages, "premise: the input must overflow")
 
-			before := eng.recentCompleteConversationPairs(maxAgentContextPairs)
-			require.Len(t, before, maxAgentContextPairs, "premise: a full replay window before the trim")
+			// Comfortably over the RAW ceiling, so the trim has to cut, and far enough
+			// over the replay budget that the replayed window is a strict subset of
+			// what survives the cut.
+			const padRunes = 400
+			pairs := 2 * overflowingPairs(padRunes)
+			eng.messages = makePaddedHistory(pairs, padRunes)
+			require.Greater(t, assembledRequestRunes(eng.messages[1:]), maxRawHistoryRunes,
+				"premise: the input must overflow the raw ceiling")
+
+			before := eng.recentCompleteConversationPairs()
+			require.Greater(t, len(before), 0, "premise: something is replayed at all")
+			require.Less(t, len(before), pairs,
+				"premise: the replay budget must itself be biting, or this compares two untrimmed lists")
 
 			eng.trimHistory()
 
-			require.LessOrEqual(t, len(eng.messages), 1+maxHistoryMessages,
+			require.Less(t, len(eng.messages), 1+2*pairs,
 				"the trim must actually have fired, or the comparison below is between two identical values")
-			assert.Equal(t, before, eng.recentCompleteConversationPairs(maxAgentContextPairs),
-				"the trim changed what the model reads; the ceiling must stay clear of the replay window")
+			assert.Equal(t, before, eng.recentCompleteConversationPairs(),
+				"the trim changed what the model reads; maxRawHistoryRunes must stay above "+
+					"maxReplayedHistoryRunes so the raw list is never the narrower of the two")
 		})
 	}
 }

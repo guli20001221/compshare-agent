@@ -77,21 +77,21 @@ func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 		"expired observations may retain topic and time, never their old value")
 }
 
-func TestTrimHistoryCompaction_OffKeepsCountTrimBehavior(t *testing.T) {
+func TestTrimHistoryCompaction_OffKeepsPlainTrimBehavior(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	// Derived, not hardcoded: a literal 50 was sized against the old ceiling of 40,
-	// so raising the ceiling would drop this test into trimHistory's no-op branch —
-	// green, and testing nothing.
-	pairs := maxHistoryMessages
-	eng.messages = makePlainHistory(pairs)
-	require.Greater(t, len(eng.messages), 1+maxHistoryMessages, "input must overflow the ceiling")
+	const padRunes = 400
+	pairs := overflowingPairs(padRunes)
+	eng.messages = makePaddedHistory(pairs, padRunes)
+	require.Greater(t, assembledRequestRunes(eng.messages[1:]), maxRawHistoryRunes,
+		"input must overflow the ceiling")
 
 	eng.trimHistory()
 
-	require.Len(t, eng.messages, 1+maxHistoryMessages)
+	require.LessOrEqual(t, assembledRequestRunes(eng.messages[1:]), maxRawHistoryRunes)
+	require.Less(t, len(eng.messages), 1+2*pairs, "the trim must actually have fired")
 	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[0].Role)
 	assert.Equal(t, 1, countSystemMessages(eng.messages), "trim never injects a second system block")
-	assert.Equal(t, fmt.Sprintf("a%d", pairs-1), eng.messages[len(eng.messages)-1].Content)
+	assert.True(t, strings.HasPrefix(eng.messages[len(eng.messages)-1].Content, fmt.Sprintf("a%d", pairs-1)))
 }
 
 func TestTrimHistoryCompaction_TrimsToolPairsAndShrinksOldToolResultsWithoutSummaryBlock(t *testing.T) {
@@ -103,14 +103,17 @@ func TestTrimHistoryCompaction_TrimsToolPairsAndShrinksOldToolResultsWithoutSumm
 	}, 1)
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system"}}
 	// Leading padding whose only job is to push the history over the ceiling so the
-	// compaction path actually runs. Derived from maxHistoryMessages: a hardcoded 10
-	// pairs overflowed the old ceiling of 40 but not a larger one, which would leave
-	// this test asserting compaction behaviour on a history that was never compacted.
-	prePairs := maxHistoryMessages
+	// compaction path actually runs. Derived from the ceiling: a hardcoded 10 pairs
+	// overflowed the old count of 40 but not a larger one, which would leave this
+	// test asserting compaction behaviour on a history that was never compacted.
+	const prePad = 400
+	prePairs := overflowingPairs(prePad)
 	for i := 0; i < prePairs; i++ {
 		eng.messages = append(eng.messages,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("pre-q%d", i)},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("pre-a%d", i)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser,
+				Content: fmt.Sprintf("pre-q%d", i) + strings.Repeat("问", prePad)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant,
+				Content: fmt.Sprintf("pre-a%d", i) + strings.Repeat("答", prePad)},
 		)
 	}
 	for i := 0; i < 6; i++ {
@@ -126,7 +129,8 @@ func TestTrimHistoryCompaction_TrimsToolPairsAndShrinksOldToolResultsWithoutSumm
 		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "tail-q"},
 		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "tail-a"},
 	)
-	require.Greater(t, len(eng.messages), 1+maxHistoryMessages)
+	require.Greater(t, assembledRequestRunes(eng.messages[1:]), maxRawHistoryRunes,
+		"input must overflow the ceiling or the compaction path is a no-op")
 
 	eng.trimHistoryByCompaction(time.Unix(2_000, 0))
 
@@ -181,15 +185,30 @@ func TestCompactOldRetrievableToolResults_KeepsErrorsAndWorkflowResults(t *testi
 }
 
 func makePlainHistory(pairs int) []openai.ChatCompletionMessage {
+	return makePaddedHistory(pairs, 0)
+}
+
+// makePaddedHistory pads each message so a fixture can overflow a SIZE ceiling
+// without needing tens of thousands of messages to do it. The tag stays at the
+// front of the content so assertions can still identify a message by prefix.
+func makePaddedHistory(pairs, padRunes int) []openai.ChatCompletionMessage {
 	msgs := []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system prompt"}}
 	for i := 0; i < pairs; i++ {
 		msgs = append(msgs,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("q%d", i)},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("a%d", i)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser,
+				Content: fmt.Sprintf("q%d", i) + strings.Repeat("问", padRunes)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant,
+				Content: fmt.Sprintf("a%d", i) + strings.Repeat("答", padRunes)},
 		)
 	}
 	return msgs
 }
+
+// overflowingPairs is how many padded pairs it takes to exceed maxRawHistoryRunes
+// — derived so that changing the ceiling re-sizes every fixture instead of
+// dropping it silently into a no-op branch. A literal 50 was once sized against a
+// ceiling of 40 and did exactly that when the ceiling moved.
+func overflowingPairs(padRunes int) int { return maxRawHistoryRunes/(2*padRunes) + 2 }
 
 func countSystemMessages(messages []openai.ChatCompletionMessage) int {
 	count := 0

@@ -603,9 +603,9 @@ type recordedTurn struct {
 	Transcript *TranscriptV1
 }
 
-// recordTurn appends a completed exchange, keeping only the newest
-// maxAgentContextPairs — the same window the replayed conversation uses, so the
-// transcript can never outlive the exchange it belongs to.
+// recordTurn appends a completed exchange, keeping the newest that fit
+// maxRawHistoryRunes — a bound set above what the replay budget can admit, so the
+// transcript can never disappear before the exchange it belongs to.
 // transcriptFromRow decides whether a persisted row's metadata is parsed at all.
 //
 // It exists because recordTurn's own flag check cannot prevent this: Go
@@ -637,9 +637,41 @@ func (e *Engine) recordTurn(turn recordedTurn) {
 		return
 	}
 	e.recentTurns = append(e.recentTurns, turn)
-	if len(e.recentTurns) > maxAgentContextPairs {
-		e.recentTurns = e.recentTurns[len(e.recentTurns)-maxAgentContextPairs:]
+	e.recentTurns = budgetRecordedTurns(e.recentTurns, maxRawHistoryRunes)
+}
+
+// budgetRecordedTurns keeps the newest records that fit budgetRunes, dropping
+// whole records from the oldest end. The newest is kept unconditionally, matching
+// budgetReplayedPairs: this list is a SOURCE for that one, so a record must not
+// disappear before the exchange it belongs to could even be considered.
+//
+// The window was a count (maxAgentContextPairs) chosen to mirror the replay
+// window exactly. With that count deleted there is nothing to mirror, and a count
+// here would be a hidden ceiling on memory again: whichever of the two lists ran
+// out first would decide how far back the model saw. maxRawHistoryRunes is set
+// above what the replay budget can ever admit precisely so this list never is.
+func budgetRecordedTurns(turns []recordedTurn, budgetRunes int) []recordedTurn {
+	if budgetRunes <= 0 || len(turns) == 0 {
+		return turns
 	}
+	spent := 0
+	// len(turns), not len(turns)-1: the "always keep the newest" rule below has to
+	// be the thing that keeps it, exactly as in budgetReplayedPairs. Seeding this
+	// one short makes the rule unreachable, and a version that dropped the newest
+	// record — the current turn's own transcript — would then behave identically.
+	keepFrom := len(turns)
+	for i := len(turns) - 1; i >= 0; i-- {
+		cost := len([]rune(turns[i].User)) + len([]rune(turns[i].Assistant))
+		if turns[i].Transcript != nil {
+			cost += transcriptRunes(turns[i].Transcript.Messages)
+		}
+		if i < len(turns)-1 && spent+cost > budgetRunes {
+			break
+		}
+		spent += cost
+		keepFrom = i
+	}
+	return turns[keepFrom:]
 }
 
 // turnEndpoints returns the user question and final assistant answer of a turn

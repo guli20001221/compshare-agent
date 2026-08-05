@@ -1,11 +1,11 @@
 package engine
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/compshare-agent/internal/capability"
-	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/platform"
 	openai "github.com/sashabaranov/go-openai"
@@ -39,15 +39,7 @@ type AgentContext struct {
 // the owner name. It is not a second representation.
 type TurnContextView = AgentContext
 
-const (
-	// maxAgentContextPairs is the count ceiling on replayed exchanges. It is not a
-	// second number: config owns it, because validateHTTPConfig has to reject a
-	// max_session_turns larger than it (a session outliving the window forgets its
-	// own opening with no error). The real bound on size is maxReplayedHistoryRunes
-	// below; this only caps how far back we look.
-	maxAgentContextPairs        = config.MaxReplayedExchanges
-	maxAgentContextObservations = 8
-)
+const maxAgentContextObservations = 8
 
 // measuredContextWindowFloorTokens is a LOWER BOUND on gpt-5.6-terra's context
 // window, established by probe rather than by a published figure: on 2026-08-05 a
@@ -60,11 +52,17 @@ const (
 // a larger probe may raise, never as the window itself.
 const measuredContextWindowFloorTokens = 130000
 
-// maxReplayedHistoryRunes budgets the restored exchanges by SIZE, which the pair
-// count alone does not. Replaying exchanges verbatim (the fix for the 320-rune
-// truncation) removed the only size bound they had: 8 pairs x 2 sides x 320 runes
-// was a hard 5,120-rune ceiling no matter what the user pasted, and 20 unbounded
-// pairs of the largest messages in the production export would be ~155,000 runes.
+// maxReplayedHistoryRunes budgets the restored exchanges by SIZE. Since
+// 2026-08-05 it is the ONLY thing that decides how far back the model remembers:
+// the count ceiling that used to sit in front of it (maxAgentContextPairs, =
+// config.MaxReplayedExchanges, = 20) is deleted. A count and a size both
+// deciding meant the count won on short turns and the size won on long ones,
+// with neither number able to state what the model would actually see.
+//
+// Replaying exchanges verbatim (the fix for the 320-rune truncation) removed the
+// only size bound they had: 8 pairs x 2 sides x 320 runes was a hard 5,120-rune
+// ceiling no matter what the user pasted, and 20 unbounded pairs of the largest
+// messages in the production export would be ~155,000 runes.
 //
 // IT IS NOT THE BOUND ON A REQUEST, and an earlier version of this comment said
 // it was. It is applied at turn ENTRY by recentCompleteConversationPairs, when
@@ -112,6 +110,28 @@ const measuredContextWindowFloorTokens = 130000
 // this number silently behind.
 const maxReplayedHistoryRunes = 48000
 
+// maxRawHistoryRunes bounds the two lists the replay DRAWS FROM: e.messages (the
+// raw transcript, via trimHistory) and e.recentTurns (the recorded transcripts,
+// via recordTurn). Both used to be bounded by a message or exchange COUNT —
+// maxHistoryMessages = 120 and maxAgentContextPairs = 20 — and both counts are
+// deleted here for the same reason: a source list that runs out first decides the
+// model's memory instead of the budget, and does it invisibly.
+//
+// The invariant, which TestNoSourceListShadowsTheReplayBudget pins: a source list
+// must never be the narrower of the two. It holds by arithmetic rather than by
+// tuning. An exchange costs LESS in either source list than the replay budget
+// charges it (e.messages carries no transcript at all — trimHistory strips tool
+// messages before budgeting; e.recentTurns carries the transcript but not the
+// context card or system block around it), so any set of exchanges that fits
+// maxReplayedHistoryRunes fits the same number of runes in either source. Sizing
+// the sources at twice the budget is margin on top of that, not the reason it
+// holds.
+//
+// Bounding by size rather than by count also tightens the memory ceiling it
+// replaces: 120 messages had no size limit at all, so one session's raw history
+// was bounded only by agent.http.max_input_length x however many turns it ran.
+const maxRawHistoryRunes = 2 * maxReplayedHistoryRunes
+
 // ContextCompiler owns all conversion from persisted/in-memory state to the
 // model-visible semantic view. It is intentionally stateless; BuildAt is
 // injected by the caller so hot, cold and takeover paths can be compared at the
@@ -129,7 +149,7 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		BuiltAtUnix:     buildAt.Unix(),
 	}
 	if e != nil {
-		view.RecentConversation = e.recentCompleteConversationPairs(maxAgentContextPairs)
+		view.RecentConversation = e.recentCompleteConversationPairs()
 		if id, name := e.singleRegistryInstance(); id != "" {
 			view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
 				Kind: "instance", ID: id, Name: name, Source: "account_registry_single", Freshness: ContinuityFreshnessFresh,
@@ -192,12 +212,15 @@ func (e *Engine) contextViewForTurn(userMsg string) TurnContextView {
 // user/assistant pairs. The current unanswered user message and raw tool
 // transcripts are excluded. This is understanding-only context; the renderer's
 // factual validator still receives EvidenceEnvelope alone.
-func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
+// It takes no count limit. The one it used to take (maxAgentContextPairs) was a
+// second decider in front of the rune budget below, and the budget is strictly
+// better informed: it knows what an exchange costs, and a count does not.
+func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
 	if e == nil || len(e.messages) == 0 {
 		return nil
 	}
 	var pendingUser string
-	pairs := make([]ConversationPair, 0, limit)
+	pairs := make([]ConversationPair, 0, len(e.messages)/2)
 	for _, message := range e.messages {
 		switch message.Role {
 		case openai.ChatMessageRoleUser:
@@ -209,9 +232,6 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: safeConversationText(message.Content)})
 			pendingUser = ""
 		}
-	}
-	if limit > 0 && len(pairs) > limit {
-		pairs = pairs[len(pairs)-limit:]
 	}
 	pairs = e.attachRecordedTranscripts(pairs)
 	return budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
@@ -241,28 +261,42 @@ func (e *Engine) recentCompleteConversationPairs(limit int) []ConversationPair {
 // later same-text record slide forward into its place, which is the same
 // misattribution by another route. Match on text, then attach only if there is
 // anything to attach.
+// Matching is indexed rather than nested. The nested scan was O(pairs x records),
+// which was harmless while both lists were capped at 20 exchanges; with the count
+// caps deleted, both are bounded by maxRawHistoryRunes instead, and a long session
+// of short turns can hold hundreds. Indexing preserves the semantics exactly —
+// records for one text are consumed front to back, and both lists are
+// chronological, so first-unused is still the right one.
 func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []ConversationPair {
 	if !canonicalTranscriptEnabled || e == nil || len(e.recentTurns) == 0 {
 		return pairs
 	}
-	consumed := make([]bool, len(e.recentTurns))
+	unconsumed := make(map[string][]int, len(e.recentTurns))
+	for j, record := range e.recentTurns {
+		key := recordedTurnKey(safeConversationText(record.User), safeConversationText(record.Assistant))
+		unconsumed[key] = append(unconsumed[key], j)
+	}
 	for i := range pairs {
-		for j, record := range e.recentTurns {
-			if consumed[j] {
-				continue
-			}
-			if safeConversationText(record.User) != pairs[i].User ||
-				safeConversationText(record.Assistant) != pairs[i].Assistant {
-				continue
-			}
-			consumed[j] = true
-			if record.Transcript != nil {
-				pairs[i].Transcript = ProjectTranscript(record.Transcript)
-			}
-			break
+		key := recordedTurnKey(pairs[i].User, pairs[i].Assistant)
+		queue := unconsumed[key]
+		if len(queue) == 0 {
+			continue
+		}
+		unconsumed[key] = queue[1:]
+		if record := e.recentTurns[queue[0]]; record.Transcript != nil {
+			pairs[i].Transcript = ProjectTranscript(record.Transcript)
 		}
 	}
 	return pairs
+}
+
+// recordedTurnKey identifies an exchange by both its sides. The length prefix is
+// what makes concatenation safe: without it, ("再试", "一次") and ("再", "试一次")
+// would be the same key, and a record would attach to the wrong exchange — the
+// misattribution the consume-once rule above exists to prevent, reintroduced by
+// the index meant to preserve it.
+func recordedTurnKey(user, assistant string) string {
+	return strconv.Itoa(len(user)) + "\x00" + user + assistant
 }
 
 // budgetReplayedPairs keeps the newest exchanges that fit in budget and drops

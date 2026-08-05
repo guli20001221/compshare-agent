@@ -10,8 +10,10 @@ import (
 	"github.com/compshare-agent/internal/store"
 )
 
-// committedTailTurnLimit reads one complete turn beyond the engine's 120
-// non-system-message window.
+// committedTailTurnLimit reads 61 turns, which was one complete turn beyond the
+// engine's 120-non-system-message window. That window no longer exists — the raw
+// history is bounded by size (engine.maxRawHistoryRunes) — so the "+1" no longer
+// has an edge to be one past.
 //
 // ITS ORIGINAL REASON IS GONE, and the number is kept rather than re-derived
 // because changing it is a durable-path behaviour change and durable turns are
@@ -65,7 +67,7 @@ func (p *Pool) buildEngine(ctx context.Context, owner store.Owner, sessionID str
 	})
 
 	// Fetch up to 100 prior messages for the session (sufficient for context
-	// window; engine.RehydrateHistory will trim to maxHistoryMessages anyway).
+	// window; engine.RehydrateHistory will trim to the raw-history budget anyway).
 	// owner is threaded through so that future callers may pass it to an
 	// owner-scoped ListBySession variant without API changes here.
 	msgs, _, err := p.messageStore.ListBySession(ctx, sessionID, 100, "")

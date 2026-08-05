@@ -884,33 +884,67 @@ func TestUnknownAction_Rejected(t *testing.T) {
 func TestTrimHistory(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 
-	// The pair count is DERIVED from maxHistoryMessages, not hardcoded. It used to be
-	// a literal 50 — chosen to overflow the old ceiling of 40 — which meant that
-	// raising the ceiling past 100 silently sailed this test straight down the
-	// no-op branch of trimHistory: no trim, nothing asserted, still green. The input
-	// has to overflow whatever the ceiling currently is, or the test tests nothing.
-	pairs := maxHistoryMessages // => 2*maxHistoryMessages messages, always over
+	// The fixture is DERIVED from the ceiling, not hardcoded. It used to be a
+	// literal 50 — chosen to overflow a ceiling of 40 — which meant raising the
+	// ceiling sailed this test straight down trimHistory's no-op branch: no trim,
+	// nothing asserted, still green. It then derived from maxHistoryMessages, and
+	// now from maxRawHistoryRunes, for the same reason.
+	const perMessage = 500
+	pairs := maxRawHistoryRunes/perMessage + 4 // comfortably over, whatever the budget is
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "system prompt"},
 	}
 	for i := 0; i < pairs; i++ {
 		eng.messages = append(eng.messages,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("q%d", i)},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("a%d", i)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser,
+				Content: fmt.Sprintf("q%d", i) + strings.Repeat("问", perMessage)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant,
+				Content: fmt.Sprintf("a%d", i) + strings.Repeat("答", perMessage)},
 		)
 	}
-	require.Greater(t, len(eng.messages), 1+maxHistoryMessages, "input must overflow the ceiling or trimHistory is a no-op")
+	before := len(eng.messages)
+	require.Greater(t, assembledRequestRunes(eng.messages[1:]), maxRawHistoryRunes,
+		"input must overflow the ceiling or trimHistory is a no-op")
 
 	eng.trimHistory()
 
-	// Should keep system + last maxHistoryMessages
-	assert.Equal(t, 1+maxHistoryMessages, len(eng.messages))
+	assert.Less(t, len(eng.messages), before, "the trim must actually have fired")
+	assert.LessOrEqual(t, assembledRequestRunes(eng.messages[1:]), maxRawHistoryRunes)
 	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[0].Role)
-	assert.Equal(t, "system prompt", eng.messages[0].Content)
+	assert.Equal(t, "system prompt", eng.messages[0].Content,
+		"the system prompt is kept whatever the budget, and is not charged against it")
 
-	// Last message should be the most recent
+	// The cut takes the OLDEST. Keeping the oldest and dropping the newest would
+	// satisfy the size bound and destroy the conversation.
 	lastMsg := eng.messages[len(eng.messages)-1]
-	assert.Equal(t, fmt.Sprintf("a%d", pairs-1), lastMsg.Content)
+	assert.True(t, strings.HasPrefix(lastMsg.Content, fmt.Sprintf("a%d", pairs-1)),
+		"the newest message must survive")
+}
+
+// The ceiling is a SIZE, so a session of many small turns must not be trimmed for
+// having many turns. This is the count deletion stated as behaviour: at the old
+// maxHistoryMessages = 120 this fixture lost everything before turn 141, while
+// costing a twentieth of the budget it now answers to.
+func TestTrimHistoryDoesNotTrimManySmallTurns(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system prompt"},
+	}
+	const pairs = 200
+	for i := 0; i < pairs; i++ {
+		eng.messages = append(eng.messages,
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("好贵%d", i)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("明白%d", i)},
+		)
+	}
+	require.Less(t, assembledRequestRunes(eng.messages[1:]), maxRawHistoryRunes,
+		"premise: %d short turns must genuinely fit the size budget", pairs)
+
+	eng.trimHistory()
+
+	assert.Len(t, eng.messages, 1+2*pairs,
+		"a session was trimmed for its turn COUNT; the ceiling is supposed to be a size")
+	assert.Contains(t, renderTestMessages(eng.messages), "好贵0", "including its opening turn")
 }
 
 func TestTrimHistory_ShortHistory_NoOp(t *testing.T) {
@@ -925,147 +959,80 @@ func TestTrimHistory_ShortHistory_NoOp(t *testing.T) {
 	assert.Len(t, eng.messages, 3) // unchanged
 }
 
-func TestTrimHistory_SkipsToolCallGroup(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-
-	// This test only means anything if the NAIVE cut point (len - maxHistoryMessages)
-	// actually lands inside the assistant(tool_calls)+tool group, forcing the
-	// safe-boundary scan to run. The sizes used to be hardcoded (18+1+2 groups = 45
-	// messages) against a ceiling of 40; once the ceiling moved past 45, trimHistory
-	// returned early and every assertion below was checked against an UNTRIMMED
-	// slice — passing trivially while covering nothing. What it covers is not
-	// cosmetic: an orphaned tool_call/tool pair is a malformed request to the LLM API.
-	//
-	// The cut's offset into the group is (groupLen + 2*trailingPairs - maxHistoryMessages)
-	// and does not depend on the leading pairs at all, so derive trailingPairs from the
-	// ceiling, and then REQUIRE that the cut really did land on a tool message. If the
-	// arithmetic ever drifts, this fails loudly instead of going quiet.
-	const groupLen = 4 // assistant(tool_calls) + 2 tool responses + assistant reply
-	const leadingPairs = 18
-	trailingPairs := (maxHistoryMessages - 2) / 2 // => cut offset lands on the 2nd tool msg
-
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "system"},
-	}
-	for i := 0; i < leadingPairs; i++ {
-		eng.messages = append(eng.messages,
+// The safe-boundary rule: a cut may never leave an orphaned tool response, nor an
+// assistant(tool_calls) without the results answering it. That is a malformed
+// request, which a provider rejects outright rather than degrading.
+//
+// It is driven through rawHistoryCutPoint rather than through trimHistory,
+// because trimHistory CANNOT reach this case. stripHistoricalToolTranscript runs
+// first and deletes every tool message and every assistant(tool_calls) before the
+// cut point is computed, so the boundary walk sees a list that already has no
+// unsafe positions in it. Two tests (SkipsToolCallGroup, CutPointIsOrphanedTool)
+// drove it through trimHistory anyway: they asserted a premise about the naive cut
+// landing on a tool message against the PRE-strip list, then asserted "the first
+// kept message is not a tool" against a list the strip had already emptied of
+// them. Both halves passed without the walk ever running. Testing the unit that
+// owns the rule is the only way to reach it while the strip stands in front.
+//
+// Budgets are swept exhaustively rather than sampled: the interesting cuts are
+// the ones that land mid-group, and which budget does that depends on message
+// sizes the test should not have to predict.
+func TestRawHistoryCutPointNeverLandsInsideAToolGroup(t *testing.T) {
+	msgs := []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "system"}}
+	for i := 0; i < 5; i++ {
+		call := fmt.Sprintf("tc%d", i)
+		msgs = append(msgs,
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("u%d", i)},
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("a%d", i)},
-		)
-	}
-	groupStart := len(eng.messages)
-	eng.messages = append(eng.messages,
-		openai.ChatCompletionMessage{
-			Role:      openai.ChatMessageRoleAssistant,
-			ToolCalls: []openai.ToolCall{{ID: "tc1"}, {ID: "tc2"}},
-		},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, Content: "result1", ToolCallID: "tc1"},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, Content: "result2", ToolCallID: "tc2"},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "summary"},
-	)
-	for i := leadingPairs; i < leadingPairs+trailingPairs; i++ {
-		eng.messages = append(eng.messages,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("u%d", i)},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("a%d", i)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant,
+				ToolCalls: []openai.ToolCall{toolCall(call, "DescribeCompShareInstance", `{}`)}},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: call,
+				Content: strings.Repeat("资", 40)},
+			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("summary%d", i)},
 		)
 	}
 
-	// The premise of the test, asserted rather than assumed.
-	require.Greater(t, len(eng.messages), 1+maxHistoryMessages, "history must overflow the ceiling or trimHistory is a no-op")
-	candidateStart := len(eng.messages) - maxHistoryMessages
-	require.GreaterOrEqual(t, candidateStart, groupStart)
-	require.Less(t, candidateStart, groupStart+groupLen)
-	require.Equal(t, openai.ChatMessageRoleTool, eng.messages[candidateStart].Role,
-		"the naive cut point must land on a tool message, or this test is not exercising the safe-boundary scan")
-
-	eng.trimHistory()
-
-	// The cut must NOT land inside the tool_call group.
-	// Verify: first non-system message must be user or plain assistant, never tool.
-	assert.Greater(t, len(eng.messages), 1)
-	first := eng.messages[1]
-	assert.NotEqual(t, openai.ChatMessageRoleTool, first.Role,
-		"first kept message should not be an orphaned tool response")
-
-	// Verify no assistant(tool_calls) without matching tool responses
-	for i, msg := range eng.messages {
-		if msg.Role == openai.ChatMessageRoleAssistant && len(msg.ToolCalls) > 0 {
-			// Every tool_call ID must have a matching tool response after it
-			for _, tc := range msg.ToolCalls {
-				found := false
-				for j := i + 1; j < len(eng.messages); j++ {
-					if eng.messages[j].Role == openai.ChatMessageRoleTool && eng.messages[j].ToolCallID == tc.ID {
-						found = true
-						break
-					}
-				}
-				assert.True(t, found, "tool_call %s has no matching tool response", tc.ID)
+	// An INDEPENDENT reimplementation of where the cut would go with no boundary
+	// rule at all. Comparing against the function's own internals would agree with
+	// any bug they contained.
+	naive := func(budget int) int {
+		spent, candidate := 0, len(msgs)
+		for i := len(msgs) - 1; i >= 1; i-- {
+			spent += len([]rune(msgs[i].Content))
+			for _, c := range msgs[i].ToolCalls {
+				spent += len([]rune(c.Function.Name)) + len([]rune(c.Function.Arguments))
 			}
+			if spent > budget {
+				break
+			}
+			candidate = i
 		}
+		return candidate
 	}
 
-	// System prompt preserved
-	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[0].Role)
-	// Most recent messages preserved
-	assert.Equal(t, fmt.Sprintf("a%d", leadingPairs+trailingPairs-1), eng.messages[len(eng.messages)-1].Content)
-}
-
-func TestTrimHistory_CutPointIsOrphanedTool(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-
-	// Same trap as TestTrimHistory_SkipsToolCallGroup: the sizes were hardcoded (44
-	// messages) against a ceiling of 40, so raising the ceiling dropped this straight
-	// down trimHistory's no-op branch and the "first kept message is safe" assertion
-	// started passing against a slice that was never cut. Derive from the ceiling, and
-	// REQUIRE the cut lands on the tool message — that premise IS the test.
-	const groupLen = 3 // assistant(tool_calls) + tool response + assistant reply
-	const leadingPairs = 19
-	trailingPairs := (maxHistoryMessages - 2) / 2
-
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "system"},
+	total := assembledRequestRunes(msgs[1:])
+	moved, cuts := 0, 0
+	for budget := 1; budget < total; budget++ {
+		cut := rawHistoryCutPoint(msgs, budget)
+		if cut < 0 {
+			continue
+		}
+		cuts++
+		if cut != naive(budget) {
+			moved++
+		}
+		kept := append([]openai.ChatCompletionMessage{msgs[0]}, msgs[cut:]...)
+		require.NotEqual(t, openai.ChatMessageRoleTool, msgs[cut].Role,
+			"budget=%d cut at %d, an orphaned tool response", budget, cut)
+		assertToolCallPairsValid(t, kept)
+		assert.LessOrEqual(t, assembledRequestRunes(msgs[cut:]), budget,
+			"budget=%d: aligning forward may only ever shrink the kept slice", budget)
 	}
-	for i := 0; i < leadingPairs; i++ {
-		eng.messages = append(eng.messages,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("u%d", i)},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("a%d", i)},
-		)
-	}
-	groupStart := len(eng.messages)
-	eng.messages = append(eng.messages,
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{{ID: "x1"}}},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, Content: "r1", ToolCallID: "x1"},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "done"},
-	)
-	// Filler pairs, then the named final pair the tail assertion looks for.
-	for i := 0; i < trailingPairs-1; i++ {
-		eng.messages = append(eng.messages,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("fill_q%d", i)},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: fmt.Sprintf("fill_a%d", i)},
-		)
-	}
-	eng.messages = append(eng.messages,
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "last_q"},
-		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "last_a"},
-	)
 
-	require.Greater(t, len(eng.messages), 1+maxHistoryMessages, "history must overflow the ceiling or trimHistory is a no-op")
-	candidateStart := len(eng.messages) - maxHistoryMessages
-	require.GreaterOrEqual(t, candidateStart, groupStart)
-	require.Less(t, candidateStart, groupStart+groupLen)
-	require.Equal(t, openai.ChatMessageRoleTool, eng.messages[candidateStart].Role,
-		"the naive cut point must land on the orphaned tool message, or this test proves nothing")
-
-	eng.trimHistory()
-
-	// First non-system must be safe
-	first := eng.messages[1]
-	assert.True(t,
-		first.Role == openai.ChatMessageRoleUser ||
-			(first.Role == openai.ChatMessageRoleAssistant && len(first.ToolCalls) == 0),
-		"first kept message role=%s toolCalls=%d is not safe", first.Role, len(first.ToolCalls))
-
-	assert.Equal(t, "last_a", eng.messages[len(eng.messages)-1].Content)
+	require.Greater(t, cuts, 0, "premise: some budget must actually produce a cut")
+	require.Greater(t, moved, 0,
+		"the boundary walk never moved a cut in %d budgets — every unsafe position was "+
+			"already safe, so this test is not exercising the rule it names", cuts)
 }
 
 func TestChat_LLMError(t *testing.T) {

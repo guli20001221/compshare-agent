@@ -9,69 +9,70 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The history ceiling used to be 40 messages, sized in a comment for "a 32K
-// context window". Two things were wrong with that, and only the second one bites.
+// The raw-history ceiling has been wrong twice in the same way. It was 40
+// MESSAGES, sized in a comment for "a 32K context window" — a model we no longer
+// run — which bought ~20 fast-path turns but only ~8 agent-loop turns, because
+// e.messages carries every tool response. Raising it to 120 moved the number out
+// of the way of real traffic without fixing the unit, and its own comment said so.
 //
-// The unit counts MESSAGES, and e.messages carries every tool response. A fast-path
-// turn costs ~2 messages (user + assistant). An agent-loop turn costs ~4-6 (user +
-// assistant-with-tool_calls + N tool results + final assistant). So the SAME
-// constant buys ~20 fast-path turns but only ~8 agent-loop turns.
-//
-// That matters because the whole direction of travel is to route every intent
-// through the agent loop, to buy back the context the fast path throws away. Doing
-// that at 40 would have re-introduced amnesia at turn 8 — inside real session
-// lengths (the traffic sample reaches 10 turns and is truncated there, so 10 is a
-// floor) — and it would have looked like a model failure, not a config one.
-//
-// These tests encode the requirement, not the number: the ceiling must clear a
-// realistic agent-loop session with room to spare. They fail if someone lowers the
-// constant back toward the old value, and they keep failing for the right reason.
-
-// messagesPerAgentLoopTurn is the observed shape of one agent-loop turn:
-// user, assistant(tool_calls), tool result, final assistant.
-const messagesPerAgentLoopTurn = 4
+// It is now maxRawHistoryRunes, a size. These tests encode the requirement rather
+// than the number, and there are two distinct requirements: it must clear a real
+// session, and it must never be the thing that decides what the model remembers.
 
 // longestObservedSessionTurns is a FLOOR, not a maximum: the real-traffic sample
 // (443 sessions) is truncated at exactly 10 user turns, so sessions at least this
 // long exist and longer ones are invisible to us rather than absent.
 const longestObservedSessionTurns = 10
 
-func TestHistoryCeilingClearsARealAgentLoopSession(t *testing.T) {
-	needed := longestObservedSessionTurns * messagesPerAgentLoopTurn
+// largestObservedSessionHistoryRunes is the biggest whole-session plain-text
+// history in the three 2026-07 production exports. It is the right unit to
+// compare against: what survives into e.messages is exactly plain user/assistant
+// text, because stripHistoricalToolTranscript deletes the tool payloads before
+// the ceiling is ever applied.
+const largestObservedSessionHistoryRunes = 11271
 
-	assert.Greater(t, maxHistoryMessages, needed,
-		"maxHistoryMessages=%d cannot hold the longest session we have actually observed "+
-			"(%d turns x ~%d messages = %d) once that session runs through the agent loop; "+
-			"history would be trimmed mid-session and the user would experience amnesia",
-		maxHistoryMessages, longestObservedSessionTurns, messagesPerAgentLoopTurn, needed)
+func TestHistoryCeilingClearsARealSession(t *testing.T) {
+	assert.Greater(t, maxRawHistoryRunes, largestObservedSessionHistoryRunes,
+		"maxRawHistoryRunes=%d cannot hold the largest session history we have actually "+
+			"observed (%d runes); it would be trimmed mid-session and the user would "+
+			"experience amnesia",
+		maxRawHistoryRunes, largestObservedSessionHistoryRunes)
 
-	// And it must not merely squeak past: sessions longer than the truncated sample
-	// certainly exist. Require 2x headroom over the observed floor.
-	assert.GreaterOrEqual(t, maxHistoryMessages, 2*needed,
-		"maxHistoryMessages=%d leaves no headroom above the observed session floor (%d); "+
-			"the traffic sample is truncated, so longer sessions exist and are simply unseen",
-		maxHistoryMessages, needed)
+	// And it must not merely squeak past: the export is a sample, so larger
+	// sessions exist and are simply unseen.
+	assert.GreaterOrEqual(t, maxRawHistoryRunes, 2*largestObservedSessionHistoryRunes,
+		"maxRawHistoryRunes=%d leaves no headroom above the observed maximum (%d)",
+		maxRawHistoryRunes, largestObservedSessionHistoryRunes)
 }
 
-// The ceiling also has to stay UNDER the real constraint, which is not the model's
-// context window (flash's is enormous) but agent.rate_limit.max_tokens_per_turn.
-// A ceiling that overflows it turns a memory fix into rate-limit rejections.
-func TestHistoryCeilingStaysUnderThePerTurnTokenCap(t *testing.T) {
-	const (
-		approxTokensPerMsg    = 675   // 27K/40, the estimate the old comment itself used
-		approxSystemPromptTok = 7_000 // measured: 14,744 bytes of CJK
-	)
-	// The cap comes from config.ShippedMaxTokensPerTurn, not a literal here. This
-	// test used to carry its own 200_000, which was right until the shipped config
-	// was raised to 400_000 on 2026-07-23 and then quietly was not — it kept passing
-	// because the stale copy was the strict direction, so nothing ever reported it.
-	maxTokensPerTurn := config.ShippedMaxTokensPerTurn
-	worstCase := maxHistoryMessages*approxTokensPerMsg + approxSystemPromptTok
+// The requirement that replaced the count caps, stated exactly. Both lists the
+// replay draws from are budgeted at maxRawHistoryRunes; if that were below
+// maxReplayedHistoryRunes, a source would run out before the budget did and the
+// model's memory would be decided by a number that does not claim to decide it —
+// which is the failure the deleted counts were causing.
+func TestNoSourceListShadowsTheReplayBudget(t *testing.T) {
+	assert.GreaterOrEqual(t, maxRawHistoryRunes, maxReplayedHistoryRunes,
+		"maxRawHistoryRunes=%d is below maxReplayedHistoryRunes=%d: e.messages and "+
+			"e.recentTurns would both run dry before the replay budget did, and the "+
+			"model's cross-turn memory would silently be %d runes, not %d",
+		maxRawHistoryRunes, maxReplayedHistoryRunes, maxRawHistoryRunes, maxReplayedHistoryRunes)
+}
 
-	assert.Less(t, worstCase, maxTokensPerTurn,
-		"a full history at maxHistoryMessages=%d is ~%d tokens, over the %d per-turn cap — "+
+// The ceiling also has to stay UNDER the real constraint, which is not the
+// model's context window but agent.rate_limit.max_tokens_per_turn. A ceiling that
+// overflows it turns a memory fix into rate-limit rejections.
+func TestHistoryCeilingStaysUnderThePerTurnTokenCap(t *testing.T) {
+	// Runes and tokens are interchangeable here: the probe behind
+	// measuredContextWindowFloorTokens billed 130,000 CJK runes as 130,006 prompt
+	// tokens. The old form of this test used 675 tokens per MESSAGE, an estimate
+	// the pre-2026 comment had made up for a 40-message ceiling.
+	const approxSystemPromptTok = 2000 // measured 1,932 via prompt.BuildSystemWithOptions
+	worstCase := maxRawHistoryRunes + approxSystemPromptTok
+
+	assert.Less(t, worstCase, config.ShippedMaxTokensPerTurn,
+		"a full history at maxRawHistoryRunes=%d is ~%d tokens, over the %d per-turn cap — "+
 			"turns would be rejected by the rate limiter instead of remembering more",
-		maxHistoryMessages, worstCase, maxTokensPerTurn)
+		maxRawHistoryRunes, worstCase, config.ShippedMaxTokensPerTurn)
 }
 
 // trimHistory must actually preserve a full agent-loop session rather than just
@@ -82,9 +83,7 @@ func TestTrimHistoryKeepsAFullAgentLoopSessionIntact(t *testing.T) {
 
 	// Replay a 10-turn agent-loop session, tool messages and all. A turn that makes
 	// TWO tool calls (look the instance up, then check its monitor) is ordinary, not
-	// a worst case — using the 4-message minimum here would park the test exactly on
-	// the old 41-message boundary, where trimHistory returns without trimming, and
-	// it would pass at the broken ceiling.
+	// a worst case.
 	for turn := 1; turn <= longestObservedSessionTurns; turn++ {
 		eng.messages = append(eng.messages,
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: firstTurnMarker(turn)},
@@ -116,6 +115,9 @@ func TestTrimHistoryKeepsAFullAgentLoopSessionIntact(t *testing.T) {
 		"the opening user message was trimmed out of a %d-turn agent-loop session; "+
 			"an elliptical follow-up can no longer resolve what the user is talking about",
 		longestObservedSessionTurns)
+	assert.False(t, eng.historyTrimmedThisSession,
+		"a 10-turn session should not reach the ceiling at all; if it does, the numbers "+
+			"above are describing a session shape that no longer exists")
 }
 
 func firstTurnMarker(turn int) string {
