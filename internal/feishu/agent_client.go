@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/config"
 )
 
@@ -31,13 +32,14 @@ func (e *AgentError) Error() string {
 }
 
 type AgentClient struct {
-	wsURL     string
-	httpURL   string
-	companyID uint32
-	orgID     uint32
-	projectID string
-	userEmail string
-	http      *http.Client
+	wsURL          string
+	httpURL        string
+	companyID      uint32
+	orgID          uint32
+	projectID      string
+	userEmail      string
+	consoleHandoff bool
+	http           *http.Client
 }
 
 func NewAgentClient(cfg config.FeishuConfig) (*AgentClient, error) {
@@ -65,7 +67,8 @@ func NewAgentClient(cfg config.FeishuConfig) (*AgentClient, error) {
 		wsURL: wsURL.String(), httpURL: httpURL.String(),
 		companyID: cfg.CompanyID, orgID: cfg.OrganizationID,
 		projectID: cfg.ProjectID, userEmail: cfg.UserEmail,
-		http: &http.Client{Timeout: 15 * time.Second},
+		consoleHandoff: cfg.EnableConsoleHandoff,
+		http:           &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
 
@@ -122,6 +125,10 @@ func (c *AgentClient) Ask(ctx context.Context, sessionID, clientTurnID, question
 	}
 	defer conn.CloseNow()
 
+	features := []string{knowledgeOnlyFeature}
+	if c.consoleHandoff {
+		features = append(features, agentprotocol.FeatureFeishuConsoleHandoff)
+	}
 	frame := map[string]any{
 		"Action":          "SendCSAgentChat",
 		"ProtocolVersion": 2,
@@ -129,7 +136,7 @@ func (c *AgentClient) Ask(ctx context.Context, sessionID, clientTurnID, question
 		"ClientTurnId":    clientTurnID,
 		"request_uuid":    clientTurnID,
 		"Message":         question,
-		"Features":        []string{knowledgeOnlyFeature},
+		"Features":        features,
 	}
 	if c.projectID != "" {
 		frame["ProjectId"] = c.projectID

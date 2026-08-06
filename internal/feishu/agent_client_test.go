@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -39,6 +40,7 @@ func TestAgentClientCreatesSessionAndForcesKnowledgeOnly(t *testing.T) {
 		require.Equal(t, "session-1", frame.Session)
 		require.Equal(t, "data:image/png;base64,aW1hZ2U=", frame.Image)
 		require.Contains(t, frame.Features, knowledgeOnlyFeature)
+		require.Contains(t, frame.Features, agentprotocol.FeatureFeishuConsoleHandoff)
 		observedFeature = true
 		require.NoError(t, conn.Write(r.Context(), websocket.MessageText, []byte(`{"event":"meta","SessionId":"session-1"}`)))
 		require.NoError(t, conn.Write(r.Context(), websocket.MessageText, []byte(`{"event":"done","Content":"知识库答案"}`)))
@@ -48,6 +50,7 @@ func TestAgentClientCreatesSessionAndForcesKnowledgeOnly(t *testing.T) {
 	cfg := config.FeishuConfig{
 		AgentWSURL: strings.Replace(server.URL, "http://", "ws://", 1),
 		CompanyID:  1, OrganizationID: 2,
+		EnableConsoleHandoff: true,
 	}
 	client, err := NewAgentClient(cfg)
 	require.NoError(t, err)

@@ -8,6 +8,11 @@ agent:
   # replies without requiring an @ mention in that allowlisted topic group.
   feishu:
     auto_reply_new_topics: true
+    # The bot always remains knowledge-only. When RAG cannot close a question
+    # that needs an authenticated instance diagnosis, it directs the user here
+    # without forwarding the Feishu conversation, screenshots, or identity.
+    enable_console_handoff: true
+    console_assistant_url: "https://console.compshare.cn/light-gpu/console"
   retrieval:
     mcp_url: "http://compshare-kb.prj-ucompshare-prod.svc.c5.uae/mcp"
   mysql:
