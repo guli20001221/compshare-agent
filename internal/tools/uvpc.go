@@ -48,6 +48,15 @@ func NewUVPCClient(url string) *UVPCClient {
 // pattern-matching that one sample would be a guess; asking the service that owns
 // it is not.
 //
+// The returned address is a FABRIC MAPPING, not an address configured on the guest.
+// Measured 2026-08-06 from inside two running instances (both container-image boxes,
+// entered over their EIP): /proc/net/if_inet6 held only ::1 and a link-local fe80::/64
+// on eth0 — no global IPv6 anywhere. So SSHing in to "check the IPv6" finds nothing and
+// proves nothing; the translation happens in the VPC, which is what "Transform" in the
+// action name means and why only UVPC can produce the value. What the same probe did
+// establish is that sshd accepts it once translated: /proc/net/tcp6 shows LISTEN on the
+// :: wildcard for BOTH 0016 (22) and 0017 (23), and /proc/net/tcp the same on 0.0.0.0.
+//
 // Field names are the wire's, not ours: RegionId and VPCId are PascalCase while
 // the address is lowercase "ip" (uhost-compshare-api internal/service/uvpc/type.go).
 func (c *UVPCClient) TransformIPv4ToIPv6(ctx context.Context, regionID uint32, privateIP, vpcID string) (string, error) {
