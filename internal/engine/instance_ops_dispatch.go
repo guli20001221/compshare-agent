@@ -154,6 +154,23 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
+		// The internal address could not be derived, so the lane refused rather than dialling
+		// the public address it is configured not to use. This is a DEPLOYMENT-side failure —
+		// the internal gateway, its config, or the region lookup — and the user's instance is
+		// not implicated, so the generic 「请稍后重试，或到控制台查看实例状态」 would send them
+		// to look at a console that has nothing wrong on it.
+		//
+		// It gets its own sentence for a second reason: the internal-IPv6 route ships without
+		// ever having run against the real backend (nothing routes to the internal gateway from
+		// a development machine), so the first production run IS the experiment. Three outcomes
+		// have to be told apart from the reply alone, by someone who may not be able to read the
+		// server log: it worked, the address could not be derived (here), or the address was
+		// derived and the dial to it failed (#522's dial text, which now also names the route).
+		if errors.Is(err, ErrInstanceOpsAddressUnavailable) {
+			msg := "无法换算该实例的内网地址，本次没有进入实例。这是运行环境侧的问题（内网网关或其配置），与实例本身无关，请联系部署同学查看服务日志。"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+			return finalReplyPrefix + msg
+		}
 		// Not running: name the state. This used to fall into the generic branch below
 		// and tell the user 「请稍后重试，或到控制台查看实例状态」 — advice to go look up
 		// the one fact we already had in hand. The state comes verbatim from the same

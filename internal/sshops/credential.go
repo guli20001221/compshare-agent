@@ -81,6 +81,17 @@ type Describer interface {
 	Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error)
 }
 
+// ErrInternalAddressUnavailable marks a failed address rewrite: the lane was configured to
+// reach instances at their internal address and could not work out what that address is.
+// The box may be perfectly healthy — the failure is the gateway, its configuration, or the
+// region lookup — so callers say so instead of emitting the generic "please retry, or check
+// the instance in the console", which points the user at something that is not wrong.
+//
+// It also keeps the first production run of the internal route self-diagnosing: "could not
+// derive the address" and "derived it and the dial failed" are different layers, and only
+// the second one is about the network to the instance.
+var ErrInternalAddressUnavailable = errors.New("sshops: internal address unavailable")
+
 // HostResolver rewrites the address an instance is dialled at, given the instance's own
 // describe payload. It exists because SshLoginCommand advertises the public EIP — right
 // for the customer's laptop, unreachable from inside the UCloud private network where the
@@ -221,7 +232,7 @@ func resolveDialHost(ctx context.Context, hr HostResolver, inst map[string]any, 
 		// into the lane's one "couldn't complete" sentence and logs it verbatim
 		// (cmd/instance_ops.go), so the layer is named for the operator without the user
 		// being told to retry against an address that cannot work.
-		return "", fmt.Errorf("sshops: resolve internal address: %w", err)
+		return "", fmt.Errorf("%w: %w", ErrInternalAddressUnavailable, err)
 	}
 	if strings.TrimSpace(resolved) == "" {
 		return advertised, nil

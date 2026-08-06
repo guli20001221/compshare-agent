@@ -105,6 +105,14 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		if errors.Is(err, sshops.ErrInstanceNotFound) {
 			return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsNotFound
 		}
+		// A failed internal-address rewrite is a deployment-side failure, not the instance's.
+		// It is logged verbatim below like every other terminal error; the sentinel exists so
+		// the REPLY can say which layer failed too, which is what makes the first production
+		// run of that route interpretable without server-log access.
+		if errors.Is(err, sshops.ErrInternalAddressUnavailable) {
+			log.Printf("ssh-ops: could not derive the internal address for instance %s: %v", req.InstanceID, err)
+			return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsAddressUnavailable
+		}
 		// Not-running is knowable and worth naming. Carry the raw upstream state
 		// through so the engine can quote it, instead of saying "please retry" about
 		// a box that is, for instance, mid-image-creation.
