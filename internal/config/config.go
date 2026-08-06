@@ -127,6 +127,19 @@ type SSHOpsConfig struct {
 	// is a different PRODUCT: the consent card, the tool description and the audit phase all change
 	// with it, because a write executed under a card that said "只读排查" is consent we did not get.
 	AllowWrites bool `yaml:"allow_writes"`
+	// InternalIPv6 makes the lane dial the instance's internal IPv6 instead of the public
+	// EIP its SshLoginCommand advertises. Set it wherever this process runs inside the
+	// UCloud private network and therefore has no route to customer EIPs — which is the
+	// whole production deployment, and is why the lane could not enter a single box there
+	// while the identical code connected in under 1.2s from a normal network.
+	//
+	// It requires agent.sts.iam_url: the address is derived by asking the internal gateway
+	// (UVPCFEGO.TransformIPv4ToIPv6), the same call uhost-compshare-api makes before
+	// handing a container to compshare-access, which then reaches the box at [IPv6]:22.
+	//
+	// Default off, because on a developer machine the opposite is true: the EIP is the
+	// only reachable address and the internal gateway is not routable at all.
+	InternalIPv6 bool `yaml:"internal_ipv6"`
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).

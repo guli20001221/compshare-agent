@@ -406,10 +406,12 @@ def run_command(command: str) -> dict:
             # asserted a cause we did not observe. State the dial, and carry the exception class so
             # the model reports something the operator can act on instead of a guess.
             port = (_CONN or {}).get("port")
+            route = _dialled_route((_CONN or {}).get("host"))
+            via = f" via the {'internal IPv6' if route == '内网 IPv6 地址' else 'public'} address" if route else ""
             hint = ("the stored instance password may be stale (changed inside the instance); suggest a "
                     "password reset or SSH key auth" if res["error"] == "auth_failed"
-                    else f"the dial to port {port} did not complete — the instance may be down, its SSH "
-                         "port closed, or this host may have no route to it")
+                    else f"the dial to port {port}{via} did not complete — the instance may be down, its "
+                         "SSH port closed, or this host may have no route to it")
             detail = str(res.get("detail") or "").strip()
             label = res["error"] + (f" ({detail})" if detail else "")
             return {"text": f"⚠ SSH {label} — {hint}.", "is_error": True,
@@ -485,7 +487,23 @@ _DIAL_CLASS_REASONS = {
 }
 
 
-def _preflight_reason(res: dict, port=None) -> str:
+def _dialled_route(host) -> str:
+    """Name the ADDRESS FAMILY that was dialled, never the address itself.
+
+    Which of the two routes was taken is the first thing whoever owns the deployment needs, and it
+    is not inferable from anything else in the message: a timeout on the public EIP and a timeout on
+    the instance's internal IPv6 read identically while meaning opposite things (the first says this
+    host has no route out, the second says the address exists but nothing answered on it). The
+    literal address stays out — the user cannot act on an internal IPv6, and the port already
+    carries everything they can check themselves.
+    """
+    text = str(host or "")
+    if not text:
+        return ""
+    return "内网 IPv6 地址" if ":" in text else "公网地址"
+
+
+def _preflight_reason(res: dict, port=None, host=None) -> str:
     """Operator-facing reason for a failed dial, carrying the exception class ssh_transport recorded.
 
     `detail` is `type(e).__name__` — a type name only. It never contains the credential, the host or
@@ -506,6 +524,9 @@ def _preflight_reason(res: dict, port=None) -> str:
         reason = _PREFLIGHT_REASONS.get(err, f"SSH 预检失败（{err}）。")
         if port is not None and err in ("connect_failed", "auth_failed"):
             notes.append(f"本次拨的是 {port} 端口")
+    route = _dialled_route(host)
+    if route and err in ("connect_failed", "auth_failed"):
+        notes.append(f"走的是{route}")
     if detail:
         notes.append(detail)
     return reason + (f"（{'；'.join(notes)}）" if notes else "")
@@ -517,7 +538,7 @@ def preflight_probe(conn):
     res = ssh_transport.run_ssh(conn, "true", secrets=_secrets())
     if not res.get("error"):
         return None
-    return _preflight_reason(res, port=(conn or {}).get("port"))
+    return _preflight_reason(res, port=(conn or {}).get("port"), host=(conn or {}).get("host"))
 
 
 TOOLS_BASE = ["Skill"]                                   # see assert_single_tool

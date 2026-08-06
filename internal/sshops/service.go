@@ -41,9 +41,10 @@ type harnessRunner interface {
 }
 
 type Service struct {
-	sup         harnessRunner
-	audit       AuditWriter
-	allowWrites bool
+	sup          harnessRunner
+	audit        AuditWriter
+	allowWrites  bool
+	hostResolver HostResolver
 }
 
 // ServiceOption configures a Service at construction. Options exist so the write gate cannot be
@@ -56,6 +57,13 @@ type ServiceOption func(*Service)
 // the same config field, and this one makes the audit row say which product ran.
 func WithWrites(allow bool) ServiceOption {
 	return func(s *Service) { s.allowWrites = allow }
+}
+
+// WithHostResolver makes the lane dial the address hr chooses instead of the one
+// SshLoginCommand advertises. Nil (the default) keeps the advertised address, so a
+// deployment that never sets it is byte-identical to before this option existed.
+func WithHostResolver(hr HostResolver) ServiceOption {
+	return func(s *Service) { s.hostResolver = hr }
 }
 
 // NewService wires a Service. sup is normally a sshops.Supervisor value. audit is REQUIRED: Diagnose
@@ -95,7 +103,7 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 	if strings.TrimSpace(task) == "" {
 		task = DefaultDiagnosisTask
 	}
-	cred, err := FetchCredential(ctx, d, instanceID)
+	cred, err := FetchCredentialWithHostResolver(ctx, d, instanceID, s.hostResolver)
 	if err != nil {
 		return Result{}, err // credential-free error (see credential.go)
 	}

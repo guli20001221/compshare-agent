@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -80,6 +81,37 @@ type Describer interface {
 	Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error)
 }
 
+// ErrInternalAddressUnavailable marks a failed address rewrite: the lane was configured to
+// reach instances at their internal address and could not work out what that address is.
+// The box may be perfectly healthy — the failure is the gateway, its configuration, or the
+// region lookup — so callers say so instead of emitting the generic "please retry, or check
+// the instance in the console", which points the user at something that is not wrong.
+//
+// It also keeps the first production run of the internal route self-diagnosing: "could not
+// derive the address" and "derived it and the dial failed" are different layers, and only
+// the second one is about the network to the instance.
+var ErrInternalAddressUnavailable = errors.New("sshops: internal address unavailable")
+
+// HostResolver rewrites the address an instance is dialled at, given the instance's own
+// describe payload. It exists because SshLoginCommand advertises the public EIP — right
+// for the customer's laptop, unreachable from inside the UCloud private network where the
+// server runs — and the platform's own control plane reaches the same boxes over an
+// internal IPv6 instead (see tools.InstanceIPv6Resolver).
+//
+// The contract has three outcomes and they are deliberately distinct:
+//
+//	("", nil)   this instance has nothing to rewrite — keep the advertised address
+//	(addr, nil) dial addr instead
+//	("", err)   the rewrite should have worked and did not — REFUSE, do not fall back
+//
+// The third case is not pedantry. Falling back would dial the exact route the operator
+// configured this resolver because it does not work, and the resulting timeout would be
+// reported as the instance's firewall blocking SSH: the wrong-layer diagnosis this lane
+// has already shipped twice (#516, #522).
+type HostResolver interface {
+	ResolveHost(ctx context.Context, instance map[string]any) (string, error)
+}
+
 // Credential is a resolved SSH target. Password is the decoded plaintext root password — the
 // crown-jewel secret. The type is deliberately NON-SERIALIZABLE: String/GoString/MarshalJSON all
 // return a redacted form, so an accidental log / fmt %v / json.Marshal (a trace field, a DB row,
@@ -117,6 +149,20 @@ func (c Credential) HasSecret() bool { return c.password != "" }
 // describe path is untouched and still redacts these fields; this is a separate caller whose result
 // is piped only into the SSH transport. On any error nothing is partially exposed.
 func FetchCredential(ctx context.Context, d Describer, instanceID string) (Credential, error) {
+	return FetchCredentialWithHostResolver(ctx, d, instanceID, nil)
+}
+
+// FetchCredentialWithHostResolver is FetchCredential with an optional address rewrite:
+// hr decides where the instance is dialled, while everything else — which instance was
+// resolved, its state, its user, its port, its password — is read from the same describe
+// response exactly as before. A nil hr is byte-identical to FetchCredential.
+//
+// Only the HOST moves. The user and port keep coming from SshLoginCommand because they
+// are properties of the image, not of the route: a container image answers on 23 as root
+// over either address (the container runs with --net host, so its sshd is bound on the
+// machine's own stack — the same reason EIP:23 works today), and a plain VM answers on 22
+// as ubuntu over either address.
+func FetchCredentialWithHostResolver(ctx context.Context, d Describer, instanceID string, hr HostResolver) (Credential, error) {
 	if strings.TrimSpace(instanceID) == "" {
 		return Credential{}, fmt.Errorf("sshops: empty instance id")
 	}
@@ -148,6 +194,9 @@ func FetchCredential(ctx context.Context, d Describer, instanceID string) (Crede
 	if err != nil {
 		return Credential{}, err
 	}
+	if host, err = resolveDialHost(ctx, hr, inst, host); err != nil {
+		return Credential{}, err
+	}
 	// Password is base64(plaintext root password) — must be decoded before use.
 	encPw, _ := inst["Password"].(string)
 	dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encPw))
@@ -158,6 +207,37 @@ func FetchCredential(ctx context.Context, d Describer, instanceID string) (Crede
 	// that was asked for. The caller re-checks the two are equal before showing
 	// a consent card, so the box named on the card is the box entered.
 	return Credential{InstanceID: resolvedID, Host: host, User: user, Port: port, password: string(dec)}, nil
+}
+
+// resolveDialHost applies hr to the address SshLoginCommand advertised.
+//
+// The rewrite is attempted ONLY when that address is a bare IPv4 literal. That is the
+// exact shape the two rewritable products use — `ssh ubuntu@<EIP>` for a VM and
+// `ssh -p 23 root@<EIP>` for a container image — and it excludes the one product that
+// must not be rewritten: a Pod advertises `<podId>.podtcp.compshare.cn` with a
+// cluster-side forwarded port, so its port lives on the forwarder rather than on the
+// box, and pointing that port at the box's own address would dial a port nothing serves.
+// Gating on the literal keeps that decision in one readable condition instead of asking
+// the resolver to recognise a product it cannot see.
+func resolveDialHost(ctx context.Context, hr HostResolver, inst map[string]any, advertised string) (string, error) {
+	if hr == nil {
+		return advertised, nil
+	}
+	if ip := net.ParseIP(advertised); ip == nil || ip.To4() == nil {
+		return advertised, nil
+	}
+	resolved, err := hr.ResolveHost(ctx, inst)
+	if err != nil {
+		// Deliberately fatal — see the HostResolver contract. The caller collapses this
+		// into the lane's one "couldn't complete" sentence and logs it verbatim
+		// (cmd/instance_ops.go), so the layer is named for the operator without the user
+		// being told to retry against an address that cannot work.
+		return "", fmt.Errorf("%w: %w", ErrInternalAddressUnavailable, err)
+	}
+	if strings.TrimSpace(resolved) == "" {
+		return advertised, nil
+	}
+	return resolved, nil
 }
 
 // resolveInstance finds the requested instance in a describe response and fails
