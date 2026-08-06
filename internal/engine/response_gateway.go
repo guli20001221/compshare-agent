@@ -4,19 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/security"
 )
-
-// readResponseEvidence is server-produced factual output, not model prose.
-// It is turn-local and is never persisted as a second context representation.
-type readResponseEvidence struct {
-	Capability  string
-	Reply       string
-	Envelope    envelope.Envelope
-	Placeholder string
-	Required    bool
-}
 
 const malformedToolProtocolReply = "本次操作没有进入安全确认流程，请重新提交；系统尚未执行任何修改。"
 
@@ -30,15 +19,15 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	content := e.guardMonitorNoDataFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
 
-	// SearchKnowledge validates only Agent-authored documentary claims.
-	// Deterministic read blocks are composed afterwards, so an unrelated RAG
-	// attempt cannot strip or rewrite exact instance/price/monitor facts.
+	// SearchKnowledge validates only the Agent-authored draft. Ordinary read
+	// facts already reached the Agent as tool evidence, and no second read block
+	// is composed afterwards by this gateway.
 	if e.searchKnowledgeRanThisTurn {
 		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
 	} else {
 		e.groundingOutcomeThisTurn = groundingUnavailable
 	}
-	content = substituteReadObservationBlocks(content, e.readResponseEvidenceThisTurn)
+	content = prependSensitiveReplies(content, e.sensitiveRepliesThisTurn)
 
 	if strings.TrimSpace(content) == "" {
 		// A turn that already handed the user a verbatim block (the billing card,
@@ -55,21 +44,18 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	return content
 }
 
-func substituteReadObservationBlocks(reply string, evidence []readResponseEvidence) string {
-	var missingRequired []string
-	for _, item := range evidence {
-		if item.Placeholder == "" || item.Reply == "" {
-			continue
-		}
-		replaced := strings.ReplaceAll(reply, item.Placeholder, item.Reply)
-		present := replaced != reply
-		reply = replaced
-		if item.Required && !present {
-			missingRequired = append(missingRequired, item.Reply)
+// prependSensitiveReplies is deliberately the only server-side composition for
+// read results. All ordinary facts stay in the model's tool observation and are
+// never appended to the final answer a second time.
+func prependSensitiveReplies(reply string, sensitiveReplies []string) string {
+	var values []string
+	for _, item := range sensitiveReplies {
+		if item = strings.TrimSpace(item); item != "" {
+			values = append(values, item)
 		}
 	}
-	if len(missingRequired) > 0 {
-		prefix := strings.Join(missingRequired, "\n")
+	if len(values) > 0 {
+		prefix := strings.Join(values, "\n\n")
 		if strings.TrimSpace(reply) == "" {
 			return prefix
 		}

@@ -38,10 +38,9 @@ func (unavailableRequest) MissingFields() []platform.MissingField { return nil }
 // a terminal ReadUnavailable result — Render is never reached.
 func NewUnavailableCapability(spec UnavailableCapabilitySpec) RegisteredRead {
 	return NewReadCapability(ReadCapabilitySpec[unavailableRequest, struct{}]{
-		Label:        spec.Name,
-		Description:  spec.Description,
-		Presentation: ReadPresentationGuidance,
-		Params:       objectParam(nil),
+		Label:       spec.Name,
+		Description: spec.Description,
+		Params:      objectParam(nil),
 		Handle: func(context.Context, unavailableRequest, ReadRuntime) (struct{}, ReadResult) {
 			return struct{}{}, ReadUnavailable(spec.Reply, spec.Alternatives)
 		},

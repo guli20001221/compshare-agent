@@ -20,11 +20,10 @@ const (
 )
 
 type ReadDefinition struct {
-	Name         string
-	Intent       intent.Intent
-	Description  string
-	Presentation ReadPresentation
-	Tool         openai.Tool
+	Name        string
+	Intent      intent.Intent
+	Description string
+	Tool        openai.Tool
 	// RequestType is the concrete request struct this capability decodes into.
 	// The catalog consistency test reflects it against the tool schema so a field
 	// added to the struct without the schema (or vice versa) fails loudly.
@@ -87,10 +86,9 @@ func migratedReadDefinition(readIntent intent.Intent, reg RegisteredRead) ReadDe
 	registered := reg
 	return ReadDefinition{
 		Name: reg.Label, Intent: readIntent, Description: reg.Description, Tool: reg.Tool,
-		Presentation: reg.Presentation,
-		RequestType:  reg.RequestType(),
-		decode:       func(args map[string]any) (ReadRequest, error) { return registered.Decode(args) },
-		migrated:     &registered,
+		RequestType: reg.RequestType(),
+		decode:      func(args map[string]any) (ReadRequest, error) { return registered.Decode(args) },
+		migrated:    &registered,
 	}
 }
 

@@ -81,9 +81,11 @@ type ReadRuntime struct {
 type ReadResult struct {
 	Status platform.ReadStatus
 	Reply  string
-	// Presentation declares how the engine carries this server-rendered result
-	// into the final answer. It is a capability contract, not a model hint.
-	Presentation       ReadPresentation
+	// SensitiveReply is deliberately kept out of the model-visible evidence and
+	// delivered by the server once. It is only for credentials such as a Jupyter
+	// Token; ordinary read results always become evidence for the Agent to
+	// summarize in its own words.
+	SensitiveReply     string
 	NeedsClarification bool
 	FailureClass       platform.ReadFailureClass
 	FallbackReason     platform.ReadFallbackReason
@@ -99,28 +101,6 @@ type ReadResult struct {
 	// reaches the engine as a declared typed effect, never as an untyped field
 	// bag growing on this result.
 	Effects []ReadEffect
-}
-
-// ReadPresentation is the explicit output contract for every read capability.
-// Exact results use a server-rendered block so ids, prices, stock and timestamps
-// are not rewritten by the model. Browse results expose structured evidence only
-// so the Agent can curate a natural recommendation instead of dumping a catalog.
-type ReadPresentation string
-
-const (
-	ReadPresentationExact    ReadPresentation = "exact"
-	ReadPresentationRequired ReadPresentation = "required"
-	ReadPresentationBrowse   ReadPresentation = "browse"
-	ReadPresentationGuidance ReadPresentation = "guidance"
-)
-
-func (p ReadPresentation) Valid() bool {
-	switch p {
-	case ReadPresentationExact, ReadPresentationRequired, ReadPresentationBrowse, ReadPresentationGuidance:
-		return true
-	default:
-		return false
-	}
 }
 
 // ReadEffect is a typed context side-effect a read capability declares in its
@@ -225,9 +205,6 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 	Label string
 	// Description is the model-facing tool description.
 	Description string
-	// Presentation is mandatory. It prevents new reads from silently falling
-	// back to model-authored or accidentally duplicated output.
-	Presentation ReadPresentation
 	// Params is the capability's parameter field contract — the single source
 	// for the model-facing JSON schema (Params.jsonSchema()), the runtime
 	// argument validator (Params.validate, which enforces enum and numeric bounds the
@@ -253,15 +230,14 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 // once, here at the registry edge; past decodeInto the flow stays fully typed
 // and never falls back to map[string]any or intent.Slots.
 type RegisteredRead struct {
-	Label        string
-	Description  string
-	Presentation ReadPresentation
-	Tool         openai.Tool
-	schema       map[string]any
-	params       schemaNode
-	requestType  reflect.Type
-	decode       func(map[string]any) (platform.ReadRequest, error)
-	run          func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult
+	Label       string
+	Description string
+	Tool        openai.Tool
+	schema      map[string]any
+	params      schemaNode
+	requestType reflect.Type
+	decode      func(map[string]any) (platform.ReadRequest, error)
+	run         func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult
 }
 
 // Decode parses tool arguments into this capability's concrete request type.
@@ -289,15 +265,11 @@ func (r RegisteredRead) RequestType() reflect.Type { return r.requestType }
 // ties the decoder, the MissingFields validator, the handler and the renderer
 // together: a mismatch is a compile error, not a runtime surprise.
 func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapabilitySpec[Request, Response]) RegisteredRead {
-	if !spec.Presentation.Valid() {
-		panic(fmt.Sprintf("read capability %q has no valid presentation contract", spec.Label))
-	}
 	toolName := ReadToolPrefix + spec.Label
 	schema := spec.Params.jsonSchema()
 	return RegisteredRead{
-		Label:        spec.Label,
-		Description:  spec.Description,
-		Presentation: spec.Presentation,
+		Label:       spec.Label,
+		Description: spec.Description,
 		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
 			Name: toolName, Description: strings.TrimSpace(spec.Description), Parameters: schema,
 		}},
@@ -321,15 +293,9 @@ func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapa
 			}
 			resp, terminal := spec.Handle(ctx, typed, rt)
 			if terminal.Status != "" {
-				if terminal.Status == platform.ReadStatusHandled && !terminal.Presentation.Valid() {
-					terminal.Presentation = spec.Presentation
-				}
 				return terminal
 			}
 			result := spec.Render(resp)
-			if !result.Presentation.Valid() {
-				result.Presentation = spec.Presentation
-			}
 			if spec.Observe != nil {
 				result.Effects = spec.Observe(resp)
 			}

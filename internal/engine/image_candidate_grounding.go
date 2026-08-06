@@ -128,7 +128,7 @@ func (e *Engine) imageIDAppearsInCurrentReadEvidence(imageID string) bool {
 	if e == nil {
 		return false
 	}
-	for _, evidence := range e.readResponseEvidenceThisTurn {
+	for _, evidence := range e.platformReadEvidenceThisTurn {
 		if imageEnvelopeContainsID(evidence.Envelope, imageID) {
 			return true
 		}

@@ -21,8 +21,8 @@ CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,
 - **单一中心 Agent。** 不再按 tier 分三套执行管线。一个 ReAct 风格的循环(`internal/engine/`)接收编译好的 `AgentContext`,每轮要么选一个只读 capability、要么调知识检索工具、要么提出一个写操作,并在同一循环里观察工具结果。
 - **能力是 typed capability,不是 route manifest。** 模型可见的只读能力在 `internal/capability/read_*.go`,每个能力自带 typed 请求结构、字段合同(`field_contract.go` 的 `schemaNode` 是工具 schema、运行时校验、一致性测试的**单一来源**)、handler 和 renderer。没有独立的路由注册表。
 - **read-only 默认,写操作密封。** 变更类操作(创建 / 开关机 / 重启 / 重置密码 / 改名)默认关闭(`COMPSHARE_ENABLE_MUTATING_TOOLS=1` 才开);写操作先经 Action Resolver 确定性定目标,再进 Sealed Workflow,过 resolver / 确认 / 权限 / action-journal 四道门。删除、注销等 L2 破坏性动作无论如何都拒(`internal/tools/safe_executor.go`)。
-- **证据驱动 + fail-open。** 回答基于工具返回的事实或检索到的文档;RAG 不是独立管线,而是中心 Agent 在循环内调用的 `SearchKnowledge` 工具。多轮检索先形成独立的完整问题,再生成最多三条检索词。引用纪律是 **fail-open** 的:能引就引,引不出则保留原答案并去掉引用标记,引用格式不能触发整段答案重写;唯一硬停是**原样泄漏检索原文**(安全)。精确平台事实不走这条路,由只读工具服务端渲染。
-- **确定性渲染。** 精确的标识、数量、价格、库存、规格、状态由代码渲染成 typed observation,Agent 在最终回答里插入 `render_ref` 占位,由 Response Gateway 替换成确定性结果,防止模型改写数字或截断列表。
+- **证据驱动 + fail-open。** 回答基于工具返回的事实或检索到的文档;RAG 不是独立管线,而是中心 Agent 在循环内调用的 `SearchKnowledge` 工具。多轮检索先形成独立的完整问题,再生成最多三条检索词。引用纪律是 **fail-open** 的:能引就引,引不出则保留原答案并去掉引用标记,引用格式不能触发整段答案重写;唯一硬停是**原样泄漏检索原文**(安全)。只读能力把平台事实作为结构化工具证据交给 Agent,由 Agent 自主组织最终 Markdown。
+- **确定性取证,Agent 自主表达。** 标识、数量、价格、库存、规格、状态由代码查询、校验、归一并写入 typed evidence envelope;普通读结果不再由服务端插入固定文案。Agent 负责取舍、归纳与措辞,服务端只保留安全不变量和敏感凭据等需要受控交付的边界。
 - **分层安全。** 输入守卫、工具执行管控、输出脱敏三层独立实施。
 
 ## 3. 整体架构
@@ -36,7 +36,7 @@ CompShare Copilot 是面向优云算力共享(GPU 云)平台用户的 AI 助手,
        ├─ Typed Read Capability  ── 只读取证,返回 Typed Observation
        ├─ SearchKnowledge 工具    ── 循环内 RAG 取证
        └─ 提出写操作 → Action Resolver(定目标/spec)→ Sealed Workflow(确认门)
-  → Response Gateway(把 render_ref 换成确定性渲染)
+  → Response Gateway(安全不变量 / 敏感凭据交付)
   → 输出守卫(sanitizer / policy 引用泄漏)
   → SSE / CLI 输出
 ```
@@ -53,12 +53,12 @@ graph TD
         AG -->|read| CAP[Typed Read Capability<br/>internal/capability]
         AG -->|write| AR[Action Resolver<br/>internal/actionresolver]
         AG -->|knowledge| KB[(SearchKnowledge<br/>internal/knowledge)]
-        CAP --> OBS[Typed Observation<br/>render_ref 占位]
+        CAP --> OBS[Typed Observation<br/>结构化事实证据]
         AR --> WF[Sealed Workflow<br/>internal/workflow + 确认门]
         WF --> OBS
         KB --> OBS
         OBS --> AG
-        AG -->|终答| GW[Response Gateway<br/>render_ref 替换成确定性渲染]
+        AG -->|终答| GW[Response Gateway<br/>安全不变量 / 敏感凭据交付]
         GW --> OG[输出守卫<br/>sanitizer / policy]
     end
 
@@ -68,7 +68,7 @@ graph TD
     RT -. session .-> DB[(PostgreSQL)]
 ```
 
-主链路是确定性的:模型只在 Agent 循环里做判断(选能力、写自然语言),控制流、取证、定目标、渲染都在代码里,不让模型直接决定副作用。
+主链路在控制流、取证、定目标和副作用上是确定性的;模型只在 Agent 循环里做判断并组织自然语言。普通只读回答的取舍与措辞由 Agent 自主完成,但模型不能直接决定副作用。
 
 ## 4. 一次请求怎么走
 
@@ -80,7 +80,7 @@ graph TD
    - 选一个 **read capability** → `executeConcreteReadCapability` → `capability.MigratedRead(action)` → `RegisteredRead.Run` → 返回 Typed Observation(见 §5、§7)。
    - 调 **`SearchKnowledge`** → 在循环内检索平台知识 / 排障资料作为证据(见 §8)。
    - 提出**写操作** → Action Resolver 确定性定目标 → Sealed Workflow 暂停等确认(见 §6)。
-4. **Response Gateway** — 把 Agent 最终回答里的 `render_ref` 占位换成对应 Typed Observation 的确定性渲染;历史监控无数据时整答覆盖为"无法确认"(never-0%/healthy 不变量)。
+4. **Response Gateway** — 不为普通读结果替换或追加第二段文案;执行协议/输出安全边界,在历史监控全无数据时整答覆盖为"无法确认"(never-0%/healthy 不变量),并仅对不进入模型上下文的敏感访问凭据做受控交付。
 5. **输出守卫** — 凭证脱敏(IP / UUID / AK-SK / token)+ PII 过滤 + 引用泄漏检查。
 
 ## 5. Read capabilities — typed 只读能力
@@ -89,10 +89,10 @@ graph TD
 
 - **typed 请求结构** + **字段合同**:`field_contract.go` 的 `schemaNode` 是**单一来源**,同时产出模型看到的工具 schema、运行时 enum/最小值校验、和一致性测试。加字段只改一处,三处不漂移。
 - **handler**:调平台 OpenAPI,做确定性过滤 / 归一。
-- **renderer**:把结果渲染成强约束的 envelope(结构化事实集),逐字段渲染,不经 LLM。
+- **renderer**:把上游结果确定性归一成强约束的 envelope(结构化事实集),逐字段取证,不经 LLM。
 - `ReadDefinitions()`(`read_catalog.go`)是能力目录;引擎经 `executeConcreteReadCapability` 分发,**没有独立路由注册表**。
 
-覆盖:实例列表 / 当前 & 历史监控 / GPU 规格 / 库存 / 价格 / 各类镜像列表 / 计费查询等。让 LLM 参与渲染只会引入不确定性,而这些答案本就是确定的——所以渲染走代码,不走模型。
+覆盖:实例列表 / 当前 & 历史监控 / GPU 规格 / 库存 / 价格 / 各类镜像列表 / 计费查询等。代码负责解析、校验、归一和证据边界;Agent 基于这些事实自主生成自然语言，不再把能力 renderer 的整段文本直接拼进用户回复。
 
 ## 6. 写操作 — Action Resolver + Sealed Workflow
 
@@ -106,11 +106,11 @@ graph TD
 
 工具结果不是自由文本,而是 typed observation:
 
-- read capability 返回 `ReadCapabilityObservation`,`Status=Handled` 且有 envelope 时带一个 `render_ref` 占位(`{{READ_OBSERVATION_N}}`)+ 一段 `RenderContract` 指令,告诉 Agent"要展示精确标识 / 数量 / 价格 / 库存 / 规格 / 状态时,在最终回答里原样插入 render_ref,服务端会替换为确定性结果"。
-- **Response Gateway**(`engine` 的 `finalizeResponse` / `substituteReadObservationBlocks`)在终答里把 Agent 放置的 `render_ref` 替换成对应 observation 的确定性渲染。Agent 可以自然解释,但精确字段由代码渲染。
+- read capability 返回 `ReadCapabilityObservation`;成功的普通读取携带 status 与 envelope 的结构化事实。Agent 读取这些工具证据并自行生成最终回答;服务端不会把能力的 `Reply` 再作为一段用户可见文案插入或追加。
+- **Response Gateway**(`engine` 的 `finalizeResponse`)只执行协议与输出安全边界。它不替换 `render_ref`、不拼接普通读结果;Jupyter Token 等不进入模型上下文的敏感值才由服务器一次性受控交付。
 - **never-0% 不变量**:历史监控若各实例全无数据,整答覆盖为"无法确认",绝不把缺数据说成 0% / 健康(`guardMonitorNoDataFinalReply`)。
 
-> 说明:`render_ref` 由 Agent 自行插入,`RenderContract` 是给模型的指令、不是机器保证。"精确值一定进最终回答"目前尚未机器强制,是 P7 的硬验收项(若 Agent 漏插 / 写错窗口则验收失败,再收紧出口合同)。
+> 说明:普通读结果的数值忠实度有意交给 Agent 基于工具证据表达，而不是恢复逐字插入合同。`cmd/live_monitor_evidence_test.go` 用真实配置模型和固定监控快照比对终答中的 GPU 数值与 envelope facts；写操作、敏感凭据和不可逆结果仍由代码边界保证。
 
 ## 8. Knowledge / RAG — 循环内证据,不是独立管线
 

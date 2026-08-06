@@ -11,11 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAgentSelectsObservationAndServerRendersExactFacts(t *testing.T) {
-	ref := "{{READ_OBSERVATION_1}}"
+func TestAgentAuthorsOrdinaryReadResultWithoutServerInjection(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("read", capability.ReadToolName(intent.IntentResourceInfo), `{}`)}},
-		{Content: "你的实例如下：\n" + ref},
+		{Content: "你有一台正在运行的 4090 实例 train-007（uhost-exact-123）。"},
 	}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"TotalCount": float64(1), "UHostSet": []any{map[string]any{
@@ -26,10 +25,12 @@ func TestAgentSelectsObservationAndServerRendersExactFacts(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "我有哪些实例", noopStep)
 	require.NoError(t, err)
-	require.Contains(t, reply, "你的实例如下")
+	require.Contains(t, reply, "正在运行")
 	require.Contains(t, reply, "uhost-exact-123")
 	require.Contains(t, reply, "train-007")
-	require.NotContains(t, reply, ref)
+	require.Len(t, eng.platformReadEvidenceThisTurn, 1,
+		"ordinary reads keep proof for server-side checks without adding a server-rendered response block")
+	require.Empty(t, eng.sensitiveRepliesThisTurn)
 }
 
 func TestNaturalAssistantMessageEndsTurnWithoutFinishTool(t *testing.T) {

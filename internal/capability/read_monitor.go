@@ -51,12 +51,11 @@ type MonitorResponse struct {
 
 func monitorCurrentReadSpec() ReadCapabilitySpec[MonitorCurrentRequest, MonitorResponse] {
 	return ReadCapabilitySpec[MonitorCurrentRequest, MonitorResponse]{
-		Label:        monitorCurrentCapabilityLabel,
-		Description:  "查询已有实例当前 CPU、内存、GPU 或显存监控数据。用于实时状态；指定历史时间范围时使用历史监控能力。",
-		Presentation: ReadPresentationRequired,
-		Params:       objectParam(map[string]schemaNode{"targets": targetRefsParam(), "metrics": metricsParam()}),
-		Handle:       monitorCurrentHandle,
-		Render:       monitorRender,
+		Label:       monitorCurrentCapabilityLabel,
+		Description: "查询已有实例当前 CPU、内存、GPU 或显存监控数据。用于实时状态；指定历史时间范围时使用历史监控能力。",
+		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam(), "metrics": metricsParam()}),
+		Handle:      monitorCurrentHandle,
+		Render:      monitorRender,
 	}
 }
 
@@ -90,9 +89,8 @@ func (r MonitorHistoryRequest) MissingFields() []platform.MissingField {
 
 func monitorHistoryReadSpec() ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse] {
 	return ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse]{
-		Label:        monitorHistoryCapabilityLabel,
-		Description:  "查询单个已有实例在明确起止时间内的 CPU、内存、GPU 或显存历史监控。时间范围最多 24 小时；当前值查询使用实时监控能力。",
-		Presentation: ReadPresentationRequired,
+		Label:       monitorHistoryCapabilityLabel,
+		Description: "查询单个已有实例在明确起止时间内的 CPU、内存、GPU 或显存历史监控。时间范围最多 24 小时；当前值查询使用实时监控能力。",
 		Params: objectParam(map[string]schemaNode{
 			"targets":     targetRefsParam(),
 			"metrics":     metricsParam(),

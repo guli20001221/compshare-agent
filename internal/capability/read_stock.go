@@ -109,9 +109,8 @@ type capacitySpec struct {
 
 func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse] {
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
-		Label:        stockCapabilityLabel,
-		Description:  "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。",
-		Presentation: ReadPresentationRequired,
+		Label:       stockCapabilityLabel,
+		Description: "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。",
 		Params: objectParam(map[string]schemaNode{
 			// Deliberately undescribed. A description telling the model to carry the
 			// card forward when the user elides it would be the natural companion to

@@ -442,7 +442,8 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"reactResultProjectionEnabled":        true,
 		"reactHistoryCompactionEnabled":       true,
 		"verifiedInstanceEvidenceThisTurn":    true,
-		"readResponseEvidenceThisTurn":        true,
+		"platformReadEvidenceThisTurn":        true,
+		"sensitiveRepliesThisTurn":            true,
 		"toolResultsByCallThisTurn":           true,
 		"actionProposalRanThisTurn":           true,
 		"actionProposalDispositionThisTurn":   true,
@@ -530,12 +531,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// human confirmation outcomes and must never be shared across sessions.
 	// 95 -> 96 / 101 -> 102: searchKnowledgeCapabilitiesThisTurn binds a
 	// remote MCP search_id only to this Engine's active turn.
-	if want, got := 96, len(perSessionFields); want != got {
+	// 96 -> 97 / 102 -> 103: platformReadEvidenceThisTurn and
+	// sensitiveRepliesThisTurn replace the old mixed read-response state. The
+	// first is proof only; the second is the narrow credential-delivery lane.
+	if want, got := 97, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 102, typ.NumField(); want != got {
+	if want, got := 103, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

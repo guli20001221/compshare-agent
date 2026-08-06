@@ -139,7 +139,7 @@ func (e *Engine) knowledgeLedgerForVerification(question string) knowledge.Evide
 // into durable knowledge memory.
 func (e *Engine) currentReadEvidenceLedger(question string) knowledge.EvidenceLedger {
 	out := knowledge.EvidenceLedger{Query: strings.TrimSpace(question), Items: []knowledge.EvidenceItem{}}
-	for index, evidence := range e.readResponseEvidenceThisTurn {
+	for index, evidence := range e.platformReadEvidenceThisTurn {
 		raw, err := json.Marshal(evidence.Envelope)
 		if err != nil {
 			continue

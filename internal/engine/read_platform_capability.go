@@ -31,10 +31,18 @@ type ReadCapabilityObservation struct {
 	ToolAction       string                      `json:"tool_action,omitempty"`
 	Envelope         *envelope.Envelope          `json:"evidence,omitempty"`
 	Guidance         string                      `json:"guidance,omitempty"`
-	RenderRef        string                      `json:"render_ref,omitempty"`
-	RenderContract   string                      `json:"render_contract,omitempty"`
 	CanAssertAbsence bool                        `json:"can_assert_absence"`
 	MissingFields    []capability.MissingField   `json:"missing_fields,omitempty"`
+}
+
+// platformReadEvidence is server-side proof of a read tool's factual result.
+// It is intentionally separate from the text shown to the user: every ordinary
+// read is already given to the Agent as observation evidence, which owns the
+// final Markdown response.
+type platformReadEvidence struct {
+	Capability string
+	Reply      string
+	Envelope   envelope.Envelope
 }
 
 func (e *Engine) executeConcreteReadCapability(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
@@ -134,9 +142,8 @@ type UnavailableCapabilityObservation struct {
 }
 
 // buildUnavailableObservation serialises an Unavailable read outcome. It stays
-// off the read-observation evidence path: there is no envelope and no render_ref
-// (nothing was retrieved), just the deterministic reason the model relays and the
-// alternatives it can offer.
+// off the read-observation evidence path: nothing was retrieved, so the Agent
+// receives only the deterministic reason and the alternatives it can offer.
 func (e *Engine) buildUnavailableObservation(action, capabilityLabel string, r capability.ReadResult, onStep func(StepEvent)) string {
 	observation := UnavailableCapabilityObservation{
 		Capability:   capabilityLabel,
@@ -169,23 +176,17 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 		Envelope:         result.Envelope,
 		CanAssertAbsence: canAssertAbsence,
 	}
-	// A browse result is a menu, not a measurement: it gets no render_ref, so the
-	// server never staples a raw catalog in front of the Agent's curated answer.
-	// The envelope below still carries every exact id/count the Agent needs.
-	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification &&
-		(result.Presentation == capability.ReadPresentationExact ||
-			result.Presentation == capability.ReadPresentationRequired) &&
-		result.Envelope != nil && strings.TrimSpace(result.Reply) != "" {
-		placeholder := fmt.Sprintf("{{READ_OBSERVATION_%d}}", len(e.readResponseEvidenceThisTurn)+1)
-		e.readResponseEvidenceThisTurn = append(e.readResponseEvidenceThisTurn, readResponseEvidence{
-			Capability:  capabilityLabel,
-			Reply:       strings.TrimSpace(result.Reply),
-			Envelope:    *result.Envelope,
-			Placeholder: placeholder,
-			Required:    result.Presentation == capability.ReadPresentationRequired,
+	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification && result.Envelope != nil {
+		e.platformReadEvidenceThisTurn = append(e.platformReadEvidenceThisTurn, platformReadEvidence{
+			Capability: capabilityLabel,
+			Reply:      strings.TrimSpace(result.Reply),
+			Envelope:   *result.Envelope,
 		})
-		observation.RenderRef = placeholder
-		observation.RenderContract = readRenderContract(result.Presentation)
+	}
+	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification &&
+		strings.TrimSpace(result.SensitiveReply) != "" {
+		e.sensitiveRepliesThisTurn = append(e.sensitiveRepliesThisTurn, strings.TrimSpace(result.SensitiveReply))
+		observation.Guidance = "已取得敏感访问凭据，系统会安全展示给用户；不要推测、复述或要求用户再次提供该凭据。"
 	}
 	if result.Status != platform.ReadStatusHandled || result.NeedsClarification {
 		observation.Guidance = result.Reply
@@ -198,13 +199,6 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 	_ = json.Unmarshal(payload, &traceResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
-}
-
-func readRenderContract(presentation capability.ReadPresentation) string {
-	if presentation == capability.ReadPresentationRequired {
-		return "最终回答必须原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料，并自然地补充总结、解释或建议，但不得复述、改写、否定或用推测替代这份事实。"
-	}
-	return "需要展示这次精确查询结果时，原样插入 render_ref；服务端会替换为真实查询结果。可以继续查询资料并自然地解释原因或处理方法，但不得改写、否定或用推测替代这份事实。"
 }
 
 // applyReadEffects applies the typed context side-effects a read capability

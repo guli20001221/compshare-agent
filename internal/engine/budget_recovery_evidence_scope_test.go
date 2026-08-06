@@ -48,7 +48,7 @@ func TestBudgetRecoveryRefusesOnPriorEvidenceAlone(t *testing.T) {
 	require.NotEmpty(t, eng.knowledgeLedgerForVerification("那包月呢").Items,
 		"premise: the verifier can still see it — this test is about the GENERATOR, not the verifier")
 	require.Empty(t, eng.searchKnowledgeHitsThisTurn, "premise: this turn retrieved nothing")
-	require.Empty(t, eng.readResponseEvidenceThisTurn, "premise: this turn read nothing")
+	require.Empty(t, eng.platformReadEvidenceThisTurn, "premise: this turn read nothing")
 
 	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "那包月呢")
 	assert.False(t, ok,

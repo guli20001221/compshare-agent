@@ -74,8 +74,7 @@ type InstanceAccessResponse struct {
 
 func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse] {
 	return ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse]{
-		Label:        instanceAccessCapabilityLabel,
-		Presentation: ReadPresentationExact,
+		Label: instanceAccessCapabilityLabel,
 		Description: "检查已有实例的 SSH、Jupyter 或自定义端口的云侧配置，也可在用户明确要求时获取该实例的 Jupyter Token。" +
 			"它不会连接公网端口、不会进入实例，也不会修改防火墙或端口。需要明确一个实例；自定义端口还要给出协议和端口号。" +
 			"只有用户明确索要 Token 时才使用 jupyter_token；普通 Jupyter 故障检查使用 jupyter。",
@@ -210,9 +209,15 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	reply := fmt.Sprintf("%s 的%s访问预检：%s。%s %s",
 		subject, accessTypeDisplay(resp.AccessType), verdict, strings.TrimSpace(detail),
 		"该结果没有实际连接公网端口，也没有进入实例检查服务进程、系统防火墙或认证日志。")
+	var sensitiveReply string
 	if resp.JupyterToken != "" {
-		reply = fmt.Sprintf("%s 的 Jupyter Token：%s。%s",
+		sensitiveReply = fmt.Sprintf("%s 的 Jupyter Token：%s。%s",
 			subject, resp.JupyterToken, strings.TrimSpace(detail))
+		// The actual token is never put in evidence for the Agent. It is a
+		// server-only delivery value; the Agent merely receives the safe fact that
+		// it was obtained and can continue with natural guidance.
+		reply = fmt.Sprintf("%s 的 Jupyter Token 已安全获取。%s",
+			subject, strings.TrimSpace(detail))
 	}
 
 	facts := []envelope.Fact{
@@ -249,8 +254,8 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	result := ReadHandled(strings.TrimSpace(reply))
 	result.ToolAction = instanceAccessDescribeAction
 	if resp.AccessType == accessTypeJupyterToken {
-		result.Presentation = ReadPresentationRequired
 		result.ToolAction = instanceAccessTokenAction
+		result.SensitiveReply = strings.TrimSpace(sensitiveReply)
 	}
 	result.Envelope = &envelope.Envelope{
 		Kind:          envelope.KindInstanceAccess,

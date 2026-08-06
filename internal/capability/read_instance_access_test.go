@@ -279,9 +279,9 @@ func TestInstanceAccessExplicitJupyterTokenUsesVerifiedInstance(t *testing.T) {
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, instanceAccessTokenAction, result.ToolAction)
-	assert.Contains(t, result.Reply, token)
+	assert.NotContains(t, result.Reply, token)
 	assert.Contains(t, result.Reply, "需启动后")
-	assert.Equal(t, ReadPresentationRequired, result.Presentation)
+	assert.Contains(t, result.SensitiveReply, token)
 	require.Len(t, exec.calls, 2)
 	assert.Equal(t, instanceAccessDescribeAction, exec.calls[0].action)
 	assert.Equal(t, instanceAccessTokenAction, exec.calls[1].action)
