@@ -211,8 +211,40 @@ deploy:
     - |
       POD=$(kubectl -n "$NAMESPACE" get pods -l app="$APP" -o jsonpath='{.items[0].metadata.name}')
       test -n "$POD"
-      kubectl -n "$NAMESPACE" exec "$POD" -c "$APP" -- python3 -c \
-        'import urllib.request; response = urllib.request.urlopen("http://compshare-agent/healthz", timeout=5); assert response.status == 200'
+      # The Pod is already Ready by this point -- rollout status does not return
+      # until the readinessProbe in deploy/k8s/deployment.yaml has had 200 from
+      # /healthz on the Pod IP -- so what this checks is the SERVICE: DNS, the
+      # selector, targetPort, and the round trip back to the only endpoint.
+      #
+      # That path is not ready the instant rollout status returns. EndpointSlice
+      # and kube-proxy lag it by a second or two, and strategy: Recreate has
+      # already removed the old Pod, so the ClusterIP briefly has no endpoint at
+      # all and iptables DROPs the packets -- a connect timeout, not a refusal.
+      # Without a retry the check was red on every deploy that actually replaced
+      # the Pod and green on every no-op re-run of the same image tag, which is
+      # exactly the wrong way round: pipeline 2516809 reported "deploy failed"
+      # for a rollout that had succeeded, and its re-run passed only because
+      # apply was "unchanged" and the Pod had been Ready for hours.
+      #
+      # Retrying rather than switching to 127.0.0.1:7429 is deliberate. The
+      # re-run proves the Service round trip works on this cluster, so localhost
+      # would drop the selector/targetPort coverage to buy nothing.
+      probe() {
+        kubectl -n "$NAMESPACE" exec "$POD" -c "$APP" -- python3 -c \
+          'import urllib.request; response = urllib.request.urlopen("http://compshare-agent/healthz", timeout=5); assert response.status == 200'
+      }
+      attempt=0
+      until probe >/dev/null 2>&1; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 10 ]; then
+          echo "the Service round trip to /healthz did not succeed within ~30s" >&2
+          kubectl -n "$NAMESPACE" get endpoints "$APP" -o wide || true
+          probe || true
+          exit 1
+        fi
+        sleep 3
+      done
+      echo "Service round trip to /healthz ok after $attempt retries"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
