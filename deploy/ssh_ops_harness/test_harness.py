@@ -498,6 +498,27 @@ check("proto-refused-zero-bytes", _pobjs[0]["bytes"] == 0 and _pobjs[1]["bytes"]
 _vbody = _capture(lambda: harness._emit_verdict(f"密码是 {_BOXPW} 请注意"))
 check("proto-verdict-scrubbed", _BOXPW not in _vbody)
 
+# --- @@OUTCOME: the audit must be able to tell a refused dial from a real diagnosis --------------
+# Before this line existed, both ended with exit 0 and a verdict, so ssh_ops_audit recorded 12/12
+# attempts as disposition='ok' — including every one whose dial never landed.
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed",
+                                                        "detail": "TimeoutError"}
+harness._PREFLIGHT_ERR_CLASS = ""
+harness.preflight_probe(harness._CONN)
+check("outcome-records-the-exception-class", harness._PREFLIGHT_ERR_CLASS == "TimeoutError")
+
+# A reachable box must leave the class EMPTY, or "there is a class" stops meaning "the dial failed".
+ssh_transport.run_ssh = _pf_ok
+harness._PREFLIGHT_ERR_CLASS = ""
+harness.preflight_probe(harness._CONN)
+check("outcome-clean-dial-sets-no-class", harness._PREFLIGHT_ERR_CLASS == "")
+
+_oc = _capture(lambda: harness._emit_outcome("preflight_failed", "TimeoutError"))
+check("outcome-line-is-one-json-line", _oc.startswith("@@OUTCOME {") and _oc.count("\n") == 1)
+check("outcome-line-carries-class", '"err_class": "TimeoutError"' in _oc.replace('"err_class":"', '"err_class": "'))
+# INV-6 applies here exactly as it does to @@STEP: metadata only, never the credential or the host.
+check("outcome-line-has-no-secret", _BOXPW not in _oc and "10.0.0.9" not in _oc)
+
 
 def main():
     if FAILS:

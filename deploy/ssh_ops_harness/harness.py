@@ -38,6 +38,10 @@ _ALLOW_WRITES = False
 # for an earlier command must never approve the one currently pending, so the match is explicit
 # rather than "whatever line showed up next".
 _CONFIRM_SEQ = 0
+# Exception class from a FAILED preflight dial (paramiko's type name, e.g. "TimeoutError"). Set only
+# by preflight_probe, read only by the @@OUTCOME emit. Stays "" on every run that reached the box,
+# which is what makes its presence in the audit mean "this dial never landed".
+_PREFLIGHT_ERR_CLASS = ""
 # Longest command that may be put on an approval card. Deliberately generous — the point is not to
 # police length, it is that the card must show the WHOLE string, so anything that cannot fit is
 # refused instead of trimmed. Well clear of the supervisor's 256 KiB per-line ceiling.
@@ -212,12 +216,20 @@ def _secrets():
 
 
 # --- stdout line protocol (parsed by the Go supervisor) ------------------------------------------
-# Two line shapes, and nothing else the supervisor trusts:
+# Three line shapes, and nothing else the supervisor trusts:
 #   @@STEP {json}                       one per command, emitted the instant it settles
+#   @@OUTCOME {json}                    at most one, ONLY when the run never entered the box
 #   <<<VERDICT>>> … <<<END>>>           the single terminal conclusion block
 # Every @@STEP precedes <<<VERDICT>>>, because commands settle inside the agent loop and the verdict
 # is only written after it ends. The supervisor turns each @@STEP into a live activity event and keeps
 # only the VERDICT body as the answer.
+#
+# @@OUTCOME exists because a preflight refusal and a successful diagnosis were INDISTINGUISHABLE to
+# the audit: both ended with a verdict, exit 0 and no error, so ssh_ops_audit recorded a dial that
+# never happened as disposition='ok'. Reading the production table then meant separating the two
+# clusters by output_bytes and duration by hand (measured 2026-08-06: entered = 2958..4074 B over
+# 95..161 s, refused = 205..456 B over 15.6..16.3 s). Absence of the line means the box WAS entered,
+# so an older harness paired with a newer supervisor keeps exactly today's behaviour.
 
 # D2: run_command writes SIX distinct disposition strings; the wire protocol has THREE. This is the
 # only place the mapping is defined, so an unmapped value (e.g. a future SSH error class, or the empty
@@ -308,6 +320,18 @@ def _partial_note(sdk_error: str) -> str:
                 "下列写操作已执行成功，请以此判断当前状态：\n%s）" % (sdk_error, listed))
     return ("\n\n（注：诊断中途结束（%s），期间没有执行任何写操作，"
             "以上为基于已执行只读命令的阶段性结论。）" % sdk_error)
+
+
+def _emit_outcome(outcome: str, err_class: str = "") -> None:
+    """Declare that this run did NOT enter the box, and why.
+
+    Carries a class name only — never the reason prose, the host or the credential — so it is safe in
+    the same places @@STEP is. Emitted before the verdict so a supervisor reading the stream in order
+    knows the disposition before it has the answer body.
+    """
+    sys.stdout.write("@@OUTCOME " + json.dumps(
+        {"outcome": outcome, "err_class": err_class}, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
 
 
 def _emit_verdict(text: str) -> None:
@@ -534,10 +558,19 @@ def _preflight_reason(res: dict, port=None, host=None) -> str:
 
 def preflight_probe(conn):
     """Return None if the box answers a trivial SSH command, else a Chinese operator-facing reason.
-    The credential is used only for the dial and is never logged or returned."""
+    The credential is used only for the dial and is never logged or returned.
+
+    Side effect: records the exception CLASS in _PREFLIGHT_ERR_CLASS for @@OUTCOME. The class is the
+    one thing that separates the failure modes (TimeoutError = packets dropped, NoValidConnections =
+    actively refused, gaierror = DNS) and it exists only here — the Chinese reason is prose the audit
+    cannot key on. A module global rather than a changed return type because the harness runs one
+    diagnosis per process (like _CONN above) and the signature is asserted by test_harness.py.
+    """
+    global _PREFLIGHT_ERR_CLASS
     res = ssh_transport.run_ssh(conn, "true", secrets=_secrets())
     if not res.get("error"):
         return None
+    _PREFLIGHT_ERR_CLASS = str(res.get("detail") or res.get("error") or "").strip()
     return _preflight_reason(res, port=(conn or {}).get("port"), host=(conn or {}).get("host"))
 
 
@@ -719,6 +752,8 @@ async def main():
     # ran, so there is no @@STEP — only the terminal verdict block.
     reason = preflight_probe(_CONN)
     if reason is not None:
+        # The audit has to be able to tell this apart from a diagnosis that ran; see @@OUTCOME.
+        _emit_outcome("preflight_failed", _PREFLIGHT_ERR_CLASS)
         _emit_verdict(f"⚠ {'实例内排查' if _ALLOW_WRITES else '只读诊断'}未能开始：{reason}")
         return
 

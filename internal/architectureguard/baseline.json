@@ -1756,6 +1756,14 @@
       "value": "@@CONFIRM "
     },
     {
+      "id": "481e77de6355be94",
+      "kind": "string_heuristic",
+      "path": "internal/sshops/supervisor.go",
+      "symbol": "parseHarnessStream",
+      "callee": "strings.HasPrefix",
+      "value": "@@OUTCOME "
+    },
+    {
       "id": "f0848cf75b1cb69c",
       "kind": "string_heuristic",
       "path": "internal/sshops/supervisor.go",

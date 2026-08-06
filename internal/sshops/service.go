@@ -147,8 +147,28 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 	done := ev
 	done.ExitCode, done.TimedOut, done.OutputBytes = res.ExitCode, res.TimedOut, len(res.Output)
 	done.Disposition = "ok"
-	if runErr != nil {
+	done.ErrClass = res.ErrClass
+	switch {
+	case runErr != nil:
 		done.Disposition = "error"
+		// The harness only names a class for a failed DIAL. A supervisor-level failure (timeout,
+		// non-zero exit, unparseable stream) has none, so say which it was rather than leaving the
+		// column empty and indistinguishable from a clean run.
+		if done.ErrClass == "" {
+			done.ErrClass = "harness_timeout"
+			if !res.TimedOut {
+				done.ErrClass = "harness_failed"
+			}
+		}
+	case res.PreflightFailed:
+		// The dial never landed: no command ran and Output is a refusal notice, not a diagnosis.
+		// The harness exits 0 on this path (it is an orderly refusal, not a crash), which is why
+		// this used to be recorded as a success — leaving the audit table asserting that we
+		// entered a box we never reached. Byte count and duration were the only tell.
+		done.Disposition = "error"
+		if done.ErrClass == "" {
+			done.ErrClass = "preflight_failed"
+		}
 	}
 	// Best effort: the attempt is already durably recorded by Begin; a failed enrichment must
 	// not discard a valid verdict, but it is surfaced to logs by the SQL writer's error return.
