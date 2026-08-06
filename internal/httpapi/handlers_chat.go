@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/guardrails"
@@ -114,6 +115,11 @@ const featureGuidedCreate = "guided_create_v1"
 // untrusted public chat adapters. It can only remove capabilities.
 const featureKnowledgeOnly = "knowledge_only_v1"
 
+// featureFeishuConsoleHandoff is meaningful only to the Feishu adapter: it
+// allows the model to mark that a RAG-only reply needs an authenticated console
+// diagnosis. It does not enable any extra engine capability.
+const featureFeishuConsoleHandoff = agentprotocol.FeatureFeishuConsoleHandoff
+
 // streamWriter is the transport-agnostic sink for Chat streaming frames. The
 // production ws.Writer satisfies it, as does the test recordingSink, so the
 // streaming core in chatStream is written once and is independent of transport.
@@ -168,6 +174,9 @@ type chatPrep struct {
 	guidedCreateOptIn bool
 	// knowledgeOnlyOptIn removes every non-knowledge capability for this turn.
 	knowledgeOnlyOptIn bool
+	// feishuConsoleHandoffOptIn adds an adapter-private prompt contract for a
+	// console-diagnosis marker. It cannot grant tools or user identity.
+	feishuConsoleHandoffOptIn bool
 }
 
 // prepareChat performs all pre-stream work shared by the SSE and WS paths:
@@ -497,8 +506,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			decision, reason := WaitForConfirmationOutcome(streamCtx, ch, time.Duration(confirmTimeoutSeconds)*time.Second)
 			return engine.ConfirmationResult{Confirmed: decision.Confirmed, TerminalReason: reason}
 		},
-		ConfirmEditsFunc: h.confirmEditsFuncFor(streamCtx, sw, sessionID, base.Owner, prep),
-		KnowledgeOnly:    prep.knowledgeOnlyOptIn,
+		ConfirmEditsFunc:     h.confirmEditsFuncFor(streamCtx, sw, sessionID, base.Owner, prep),
+		KnowledgeOnly:        prep.knowledgeOnlyOptIn,
+		FeishuConsoleHandoff: prep.feishuConsoleHandoffOptIn,
 	})
 
 	// Signal keepalive goroutine to exit.

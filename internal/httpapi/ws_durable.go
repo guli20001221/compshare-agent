@@ -190,12 +190,13 @@ func (h *Handlers) durableSubmitInput(ctx context.Context, base BaseRequest, fra
 	if protocol != 0 && protocol != durableTurnProtocolVersion {
 		return turncoord.SubmitInput{}, ErrInvalidParam.WithMessage("unsupported ProtocolVersion %d", protocol)
 	}
-	var clientConfirmForm, clientGuidedCreate, knowledgeOnly bool
+	var clientConfirmForm, clientGuidedCreate, knowledgeOnly, feishuConsoleHandoff bool
 	if features, err := frame.Get("Features").StringArray(); err == nil {
 		for _, feature := range features {
 			clientConfirmForm = clientConfirmForm || feature == featureConfirmForm
 			clientGuidedCreate = clientGuidedCreate || feature == featureGuidedCreate
 			knowledgeOnly = knowledgeOnly || feature == featureKnowledgeOnly
+			feishuConsoleHandoff = feishuConsoleHandoff || feature == featureFeishuConsoleHandoff
 		}
 	}
 	confirmForm := h.confirmFormEnabled && clientConfirmForm
@@ -259,6 +260,7 @@ func (h *Handlers) durableSubmitInput(ctx context.Context, base BaseRequest, fra
 		Message: message, RequestUUID: &requestID, AssistantModel: &model,
 		ImageContext: imageContext, ImageDigest: imageDigest, UserContext: userContext,
 		ConfirmForm: confirmForm, GuidedCreate: guidedCreate, KnowledgeOnly: knowledgeOnly,
+		FeishuConsoleHandoff: feishuConsoleHandoff,
 	}, nil
 }
 

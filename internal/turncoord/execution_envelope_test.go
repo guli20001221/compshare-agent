@@ -27,6 +27,7 @@ func TestExecutionEnvelope_FreezesOnlyStableSecretFreeInputs(t *testing.T) {
 			ProjectId: "project-1", Region: "cn-bj2", UserEmail: "private@example.com",
 			ClientIP: "203.0.113.9",
 		},
+		FeishuConsoleHandoff: true,
 	}
 	envelope, raw, err := freezeSubmitInput(in)
 	require.NoError(t, err)
@@ -55,6 +56,7 @@ func TestExecutionEnvelope_FreezesOnlyStableSecretFreeInputs(t *testing.T) {
 	assert.Equal(t, "81-82", restored.UserContext.SessionName)
 	assert.Equal(t, "203.0.113.9", restored.UserContext.ClientIP)
 	assert.Equal(t, "private@example.com", restored.UserContext.UserEmail)
+	assert.True(t, restored.FeishuConsoleHandoff)
 }
 
 func TestExecutionEnvelope_RequestIdentityUsesImageDigestNotOCR(t *testing.T) {

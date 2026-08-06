@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/compshare-agent/internal/agentprotocol"
 )
 
 type BuildOptions struct {
@@ -18,6 +20,9 @@ type BuildOptions struct {
 	// 权限，无法替你进实例修复" and handed the user a command list instead. The boundary has to
 	// name the exception or it silently disables the feature it does not know about.
 	InstanceOpsWritesEnabled bool
+	// FeishuConsoleHandoff is a response-only contract for the public Feishu
+	// knowledge adapter. It does not add tools or change user authorization.
+	FeishuConsoleHandoff bool
 }
 
 type PromptSection struct {
@@ -87,6 +92,11 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 		PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy},
 		PromptSection{ID: "reply_style", Text: segmentCentralAgentReplyStyle},
 	)
+	if opts.FeishuConsoleHandoff {
+		sections = append(sections, PromptSection{ID: "feishu_console_handoff", Text: strings.ReplaceAll(
+			segmentFeishuConsoleHandoff, "{{handoff_marker}}", agentprotocol.FeishuConsoleHandoffMarker,
+		)})
+	}
 
 	// Volatile tail is a named section and stays last so the static prefix remains
 	// cacheable. Section IDs make duplicate policy injection a construction error.

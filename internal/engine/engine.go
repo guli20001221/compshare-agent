@@ -253,6 +253,10 @@ type ChatOptions struct {
 	// reads, diagnoses and all mutating proposals are removed from the model's
 	// tool window regardless of the process-wide feature flags.
 	KnowledgeOnly bool
+	// FeishuConsoleHandoff adds a response-only prompt contract used by the
+	// Feishu adapter. It never changes the tool window, authorization, or user
+	// identity; the adapter consumes its private marker before rendering.
+	FeishuConsoleHandoff bool
 }
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
@@ -492,6 +496,10 @@ type Engine struct {
 	// public Q&A transports. The advertised tool window is not trusted as the
 	// only guard because a model can emit an unadvertised tool name.
 	knowledgeOnlyThisTurn bool
+	// feishuConsoleHandoffThisTurn changes only the model's completion contract
+	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
+	// so the regular console agent cannot inherit it from a pooled engine.
+	feishuConsoleHandoffThisTurn bool
 	// sessionState is the JSON-serializable per-session state injected by
 	// SetSessionState before each Chat turn and read back via
 	// SessionStateSnapshot after the turn. See session_state.go.
@@ -774,6 +782,7 @@ func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 		// have to be authorized. Either alone would put a promise in the prompt that the runtime
 		// does not keep.
 		InstanceOpsWritesEnabled: e.instanceOps != nil && tools.InstanceOpsWritesEnabled(),
+		FeishuConsoleHandoff:     e.feishuConsoleHandoffThisTurn,
 	}
 }
 
@@ -1337,6 +1346,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	defer func() { e.currentCtx = nil }()
 	e.knowledgeOnlyThisTurn = opts.KnowledgeOnly
 	defer func() { e.knowledgeOnlyThisTurn = false }()
+	e.feishuConsoleHandoffThisTurn = opts.FeishuConsoleHandoff
+	defer func() { e.feishuConsoleHandoffThisTurn = false }()
 	e.secretInputsThisTurn = opts.SecretInputs
 	defer func() { e.secretInputsThisTurn = nil }()
 	defer e.emitTurnCompletion()

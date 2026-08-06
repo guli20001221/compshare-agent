@@ -279,7 +279,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 6 shared + 96 per-session = 102 fields. Any drift
+// Whitelist totals: 6 shared + 98 per-session = 104 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -416,6 +416,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Public-channel authorization is turn-local and must never remain enabled
 		// or disabled because of another session's prior request.
 		"knowledgeOnlyThisTurn": true,
+		// The Feishu handoff completion contract is likewise per-turn. A pooled
+		// engine must never carry its private marker contract into console chats.
+		"feishuConsoleHandoffThisTurn": true,
 		// One immutable support-zone view per active turn. Sharing it across
 		// sessions would expose one tenant/turn's catalog availability to another.
 		"zoneCatalogThisTurn": true,
@@ -534,12 +537,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	// 96 -> 97 / 102 -> 103: platformReadEvidenceThisTurn and
 	// sensitiveRepliesThisTurn replace the old mixed read-response state. The
 	// first is proof only; the second is the narrow credential-delivery lane.
-	if want, got := 97, len(perSessionFields); want != got {
+	// 97 -> 98 / 103 -> 104: feishuConsoleHandoffThisTurn is the adapter-only
+	// completion contract and is reset with knowledgeOnlyThisTurn after every
+	// ChatWithOptions call.
+	if want, got := 98, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 103, typ.NumField(); want != got {
+	if want, got := 104, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
