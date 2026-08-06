@@ -20,6 +20,13 @@ var ErrInstanceOpsNoSSHTarget = errors.New("engine: instance has no SSH target")
 // instance is running, and the message says so.
 var ErrInstanceOpsNotRunning = errors.New("engine: instance is not running")
 
+// ErrInstanceOpsNotFound is the engine-side mirror of sshops.ErrInstanceNotFound:
+// the id is not in this tenant's account. Retrying it can never succeed, so
+// executeInstanceOps names that instead of the generic retry text. Distinct from
+// ErrInstanceOpsNotRunning (the box exists but is stopped) and from a transient
+// describe failure (which keeps the retry advice).
+var ErrInstanceOpsNotFound = errors.New("engine: instance not found in this account")
+
 // InstanceOpsRunner executes ONE consented, read-only in-instance diagnosis and
 // streams its activity back through onProgress. The engine depends only on this
 // structural interface; the concrete runner (a Python Agent-SDK harness spawned

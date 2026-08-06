@@ -162,6 +162,66 @@ check("preflight-auth-reason", isinstance(_pf_auth, str) and "认证失败" in _
 check("preflight-no-credential", "Pl4inPwd77x" not in (_pf_conn + _pf_auth))
 
 
+# --- The dial names the PORT, and says what the exception class actually establishes. ---
+# WHY the port: this lane dials 22 on a VM, 23 on a container image, and an arbitrary high forward
+# port on a pod. "SSH 端口未放通" without the number sends whoever reads it to test the wrong one —
+# on 2026-08-06 the failing instance had BOTH 22 and 23 open and the dial still timed out, so the
+# port the reader would have checked by default was open and proved nothing.
+# WHY per-class wording: calibrated against real endpoints on paramiko 3.5.1 (the >=3.4,<4 line prod
+# pins). A cloud security group DROPS rather than RSTs, so "port blocked" arrives as TimeoutError,
+# never as a refusal; offering "端口未放通" for a timeout is the same wrong-layer push #516 removed.
+_conn23 = dict(harness._CONN, port=23)
+
+
+def _dial(detail):
+    ssh_transport.run_ssh = lambda c, command, secrets=(): (
+        {"error": "connect_failed"} if detail is None else {"error": "connect_failed", "detail": detail})
+    return harness.preflight_probe(_conn23)
+
+
+_pf_timeout = _dial("TimeoutError")
+check("preflight-names-the-dialed-port", "23 端口" in _pf_timeout)
+check("preflight-timeout-says-no-response", "没有收到任何响应" in _pf_timeout)
+# A timeout is NOT a refusal and NOT a resolution failure; saying so is what stops the reader from
+# testing the port and concluding the caller is at fault.
+check("preflight-timeout-rules-out-refusal", "既不是被拒绝" in _pf_timeout)
+check("preflight-timeout-still-names-this-hosts-route", "运行本服务的主机" in _pf_timeout)
+check("preflight-timeout-carries-class", "TimeoutError" in _pf_timeout)
+
+_pf_refused = _dial("NoValidConnectionsError")
+check("preflight-refused-says-refused", "明确拒绝了连接" in _pf_refused)
+check("preflight-refused-names-the-dialed-port", "23 端口" in _pf_refused)
+# The two dial failures must not read the same: a refusal proves the host WAS reached, a timeout
+# proves nothing came back. Collapsing them is what made connect_failed useless in the first place.
+# Compared with the trailing （ClassName） stripped — otherwise the class suffix alone satisfies
+# this, and the check passes even when both sentences collapse back to one generic paragraph.
+def _body(reason):
+    return reason.rsplit("（", 1)[0]
+
+
+check("preflight-refused-differs-from-timeout", _body(_pf_refused) != _body(_pf_timeout))
+check("preflight-refused-does-not-claim-drop", "没有收到任何响应" not in _pf_refused)
+
+_pf_dns = _dial("gaierror")
+check("preflight-dns-says-resolution", "无法解析" in _pf_dns)
+
+# An UNKNOWN class must keep the generic candidate list (we have not calibrated it) and still name
+# the port and the class — an unrecognised failure is exactly when both are the only evidence.
+_pf_novel = _dial("SSHException")
+check("preflight-unknown-dial-class-keeps-candidates", "运行本服务的主机" in _pf_novel)
+check("preflight-unknown-dial-class-names-port", "23 端口" in _pf_novel)
+check("preflight-unknown-dial-class-carries-class", "SSHException" in _pf_novel)
+check("preflight-no-detail-still-names-port", "23 端口" in _dial(None))
+
+# The per-command path names it too: mid-run failures are read by the model, which relays them.
+harness.set_conn(dict(conn, port=23))
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed",
+                                                        "detail": "TimeoutError"}
+_rc_port = harness.run_command("df -h /")["text"]
+check("connect-fail-names-the-dialed-port", "port 23" in _rc_port)
+harness.set_conn(conn)
+
+
 # --- the REAL ssh_transport.run_ssh genuinely scrubs box output (fake paramiko -> no connection) ---
 _PW = "Pl4in" + "Pwd77x"
 _AWS = "wJalr" + "XUtnFE" + "MIK7MD" + "ENGbPx"

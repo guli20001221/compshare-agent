@@ -405,10 +405,11 @@ def run_command(command: str) -> dict:
             # AuthenticationException arrives as connect_failed, so "the instance was unreachable"
             # asserted a cause we did not observe. State the dial, and carry the exception class so
             # the model reports something the operator can act on instead of a guess.
+            port = (_CONN or {}).get("port")
             hint = ("the stored instance password may be stale (changed inside the instance); suggest a "
                     "password reset or SSH key auth" if res["error"] == "auth_failed"
-                    else "the dial did not complete — the instance may be down, its SSH port closed, or "
-                         "this host may have no route to it")
+                    else f"the dial to port {port} did not complete — the instance may be down, its SSH "
+                         "port closed, or this host may have no route to it")
             detail = str(res.get("detail") or "").strip()
             label = res["error"] + (f" ({detail})" if detail else "")
             return {"text": f"⚠ SSH {label} — {hint}.", "is_error": True,
@@ -456,19 +457,58 @@ _PREFLIGHT_REASONS = {
                       "或运行本服务的主机到该实例的网络不通（后者从您本机 SSH 是看不出来的）。",
 }
 
+# What paramiko's exception CLASS establishes on its own, independent of any guess about the cause.
+# Each entry is definitional rather than inferred, which is why it is safe to state as fact:
+#
+#   TimeoutError             the socket deadline expired with no answer at all. paramiko funnels only
+#                            ECONNREFUSED / EHOSTUNREACH into NoValidConnectionsError and re-raises
+#                            everything else (client.py: `if e.errno not in (...): raise`), so a
+#                            timeout reaches us as itself. Nothing was refused and nothing failed to
+#                            resolve — the packets went out and none came back.
+#   NoValidConnectionsError  the peer answered, negatively: every candidate address was refused or
+#                            unreachable. We got TO the host; that port has no service on it.
+#   gaierror                 getaddrinfo failed. No connection was attempted at all.
+#
+# Calibrated on 2026-08-06 against real endpoints on paramiko 3.5.1 (the >=3.4,<4 line prod pins),
+# because the distinction is not intuitive and the intuitive version is wrong: a cloud security group
+# DROPS rather than RSTs, so "port blocked by a security group" arrives as TimeoutError, NOT as a
+# refusal. A message that offers "SSH 端口未放通" for a timeout sends the operator to test a port that
+# may well be open — which is how 2026-08-05 went.
+_DIAL_CLASS_REASONS = {
+    "TimeoutError": "向实例的 {port} 端口拨号后，在超时时间内没有收到任何响应"
+                    "（既不是被拒绝，也不是解析失败——数据包发出去了，没有回来）。"
+                    "通常是防火墙 / 安全组静默丢弃，或运行本服务的主机到该实例的网络不通"
+                    "（后者从您本机 SSH 是看不出来的）；也可能实例正在重启。",
+    "NoValidConnectionsError": "实例的 {port} 端口明确拒绝了连接——说明网络能到达这台主机，"
+                               "但该端口上没有服务在监听。可能是实例正在重启，或 SSH 服务未启动。",
+    "gaierror": "登录地址的主机名无法解析，连接尚未发起。",
+}
 
-def _preflight_reason(res: dict) -> str:
+
+def _preflight_reason(res: dict, port=None) -> str:
     """Operator-facing reason for a failed dial, carrying the exception class ssh_transport recorded.
 
     `detail` is `type(e).__name__` — a type name only. It never contains the credential, the host or
     any response body, so it is safe in text the user reads (and it is what they can relay to whoever
-    owns the deployment)."""
+    owns the deployment). The PORT is named for the same reason it is named nowhere else and should
+    have been: this lane dials 22 on a VM and 23 on a container image (and an arbitrary high forward
+    port on a pod), so "SSH 端口未放通" without the number sends whoever reads it to test the wrong
+    one. On 2026-08-05 the failing box had BOTH 22 and 23 open and the dial still timed out.
+    """
     err = res.get("error") or ""
-    reason = _PREFLIGHT_REASONS.get(err, f"SSH 预检失败（{err}）。")
     detail = str(res.get("detail") or "").strip()
-    if not detail:
-        return reason
-    return f"{reason}（{detail}）"
+    notes = []
+    if err == "connect_failed" and detail in _DIAL_CLASS_REASONS and port is not None:
+        reason = "无法建立 SSH 连接：" + _DIAL_CLASS_REASONS[detail].format(port=port)
+    else:
+        # Uncalibrated class (or no port): keep the candidate list rather than inventing a meaning
+        # for a class we have not measured, and carry the port as a note instead.
+        reason = _PREFLIGHT_REASONS.get(err, f"SSH 预检失败（{err}）。")
+        if port is not None and err in ("connect_failed", "auth_failed"):
+            notes.append(f"本次拨的是 {port} 端口")
+    if detail:
+        notes.append(detail)
+    return reason + (f"（{'；'.join(notes)}）" if notes else "")
 
 
 def preflight_probe(conn):
@@ -477,7 +517,7 @@ def preflight_probe(conn):
     res = ssh_transport.run_ssh(conn, "true", secrets=_secrets())
     if not res.get("error"):
         return None
-    return _preflight_reason(res)
+    return _preflight_reason(res, port=(conn or {}).get("port"))
 
 
 TOOLS_BASE = ["Skill"]                                   # see assert_single_tool
