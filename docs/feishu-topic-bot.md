@@ -60,7 +60,7 @@ feishu:
 
 `allowed_chat_ids` 是必须配置的群白名单。第一次联调不知道群 ID 时，可以临时写成 `["*"]`。在群里创建一条测试话题后，启动日志会显示 `chat=oc_xxx`；把该值写进白名单并移除 `"*"`。
 
-开启 `auto_reply_new_topics` 后，所有已加入白名单的 `topic_group` 新话题根消息都会被自动回答；这同时适用于内部群和已开通 `im:message.group_msg` 的外部群。话题里的评论、普通群消息仍需 `@机器人`。图片最大值应与 `agent.ocr.max_bytes` 保持一致；当前部署均为 5 MB。富文本内有多张图片时，当前版本读取第一张。回答会以飞书 `post` 消息中的 `md` 元素发送，而不是文本消息，因此 CommonMark/GFM 的常用格式会在飞书中渲染。
+开启 `auto_reply_new_topics` 后，所有已加入白名单的**话题根消息**都会被自动回答；飞书在消息事件中将话题群也标记为 `chat_type=group`，由非空 `thread_id` 且为空的 `root_id`、`parent_id` 识别根消息。这同时适用于内部群和已开通 `im:message.group_msg` 的外部群。话题里的评论、普通群消息仍需 `@机器人`。图片最大值应与 `agent.ocr.max_bytes` 保持一致；当前部署均为 5 MB。富文本内有多张图片时，当前版本读取第一张。回答会以飞书 `post` 消息中的 `md` 元素发送，而不是文本消息，因此 CommonMark/GFM 的常用格式会在飞书中渲染。
 
 生产部署读取 `config.prod.yaml`，该文件会继承 `config.local.yaml` 并将此开关覆盖为 `true`，因此不需要把含有 App Secret 的基础配置文件再次提交到公开仓库。
 
