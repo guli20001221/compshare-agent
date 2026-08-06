@@ -80,7 +80,8 @@ feishu:
    ```
 
    命令会打开飞书授权页；完成后把首次使用的 refresh token 安静地写入 YAML，不会打印到终端。不要让外部群成员执行这一步：飞书只允许本企业成员的 `user_access_token` 用于此回退路径。
-5. 将这份配置和代码发布到生产。第一次启动时，连接器会消费 bootstrap token、取得 user token，并把轮换后的 token 以 AES-GCM 密文保存到 `feishu_oauth_tokens` 表。以后 token 刷新、Pod 重启和正常部署均不需要重新授权；只有授权被撤销、授权成员退出目标群、飞书 App Secret 轮换，或飞书的 refresh token 到期（当前最长授权期为 365 天）后才需重新执行上面的本机授权命令。
+5. 将 YAML 中的 `bootstrap_refresh_token` 保持为空，创建一次 `main` 流水线时仅为该流水线填写变量 `FEISHU_EXTERNAL_IMAGE_OAUTH_BOOTSTRAP_TOKEN`。build 任务会在构建该次镜像时将变量注入空字段；不要将 token 提交到 Git，也不要把它写进部署日志。后续部署会使用数据库中已加密的轮换 token，不需要再次填写该变量。
+6. 发布代码与配置到生产。第一次启动时，连接器会消费 bootstrap token、取得 user token，并把轮换后的 token 以 AES-GCM 密文保存到 `feishu_oauth_tokens` 表。以后 token 刷新、Pod 重启和正常部署均不需要重新授权；只有授权被撤销、授权成员退出目标群、飞书 App Secret 轮换，或飞书的 refresh token 到期（当前最长授权期为 365 天）后才需重新执行上面的本机授权命令。
 
 启用后，连接器会先按原方式读取图片；仅当飞书对外部群返回 `234009` 时，才使用该授权成员的 token 重试同一张图片。它不会用该 token 查询群历史或执行任何平台资源操作。
 

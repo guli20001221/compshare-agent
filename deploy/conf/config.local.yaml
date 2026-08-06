@@ -27,12 +27,18 @@ agent:
     user_email: "feishu-bot@compshare.local"
     # 必填白名单。首次联调可临时写 ["*"]，从日志取得 chat_id 后立即收紧。
     allowed_chat_ids: ["oc_2b31629a0c15e04e41fc53e74c270084"]
-    # 当前目标是外部群。飞书只会推送 @机器人 的外部群消息，
-    # 因此关闭内部话题群的“新话题免 @ 自动回答”能力。
-    auto_reply_new_topics: false
+    # 只对允许群里的新话题根消息免 @ 回答。话题内的后续评论仍必须 @机器人，
+    # 防止把正常的用户讨论当作机器人提问。
+    auto_reply_new_topics: true
     max_concurrent: 4
     max_reply_runes: 3500
     max_image_bytes: 5242880
+    # The bootstrap refresh token is deliberately left empty in Git. GitLab
+    # injects the protected CI/CD variable at image-build time.
+    external_image_oauth:
+      enabled: true
+      redirect_url: "http://127.0.0.1:18765/feishu-oauth/callback"
+      bootstrap_refresh_token: ""
 
   llm:
     base_url: "https://api.modelverse.cn/v1"
