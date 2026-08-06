@@ -275,38 +275,3 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 	log.Printf("ssh-ops enabled: consent-gated in-instance %s (per-tenant STS, fail-closed audit, durable=%t, dialling the %s; on the non-durable transport a client disconnect ends the run and the user retries)", mode, durable, route)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }
-
-// cliInstanceOpsRunner builds the SSH-ops runner for the CLI (single-user, interactive). It uses an
-// in-memory audit (there is no server database on this path) and no cross-turn rate limiter — the
-// interactive confirm gate plus the engine's one-run-per-turn rule (INV-11) bound it. It returns nil
-// (logged) when the lane is off or misconfigured: the CLI is best-effort and must not fail to start
-// over an optional lane.
-func cliInstanceOpsRunner(cfg *config.Config, getenv func(string) string) engine.InstanceOpsRunner {
-	switch value := getenv("COMPSHARE_SSH_OPS"); value {
-	case "1":
-		// enabled — build below
-	case "", "0":
-		return nil
-	default:
-		log.Printf("warning: ignoring unknown COMPSHARE_SSH_OPS value %q", value)
-		return nil
-	}
-	executor := tools.NewExternalExecutor(cfg.Agent)
-	hostResolver, err := instanceOpsHostResolver(cfg, executor)
-	if err != nil {
-		log.Printf("warning: ssh-ops disabled: %v", err)
-		return nil
-	}
-	svc, err := buildSSHOpsService(
-		cfg.Agent.SSHOps,
-		cfg.Agent.LLM.Model,
-		cfg.Agent.LLM.APIKey,
-		&sshops.MemAuditWriter{},
-		sshops.WithHostResolver(hostResolver),
-	)
-	if err != nil {
-		log.Printf("warning: ssh-ops disabled: %v", err)
-		return nil
-	}
-	return newInstanceOpsRunner(svc, executor, nil)
-}
