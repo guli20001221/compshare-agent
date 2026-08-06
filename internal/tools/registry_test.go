@@ -93,12 +93,15 @@ func TestCreateImageIDContractAllowsRecentExactConversationCandidate(t *testing.
 			t.Fatalf("镜像 ID 说明必须包含 %q，实际为 %q", required, idDescription)
 		}
 	}
-	for _, required := range []string{"必须同时填写 ImageName", "不得用与本轮名称无关的历史 ID"} {
+	for _, required := range []string{"复述或简称", "不同镜像"} {
 		if !strings.Contains(idDescription, required) {
 			t.Fatalf("镜像 ID 说明必须包含 %q，实际为 %q", required, idDescription)
 		}
 	}
-	if required := "即使近期对话中已有精确 CompShareImageId"; !strings.Contains(nameDescription, required) {
+	if strings.Contains(idDescription, "必须同时填写 ImageName") {
+		t.Fatalf("精确历史 ID 的复述不应再强迫模型同时填写 ImageName，实际为 %q", idDescription)
+	}
+	if required := "不必同时填写本字段"; !strings.Contains(nameDescription, required) {
 		t.Fatalf("镜像名称说明必须包含 %q，实际为 %q", required, nameDescription)
 	}
 }

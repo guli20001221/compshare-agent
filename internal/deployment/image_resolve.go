@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // ResolutionStatus and Provenance are TWO orthogonal dimensions of an image
@@ -444,10 +445,28 @@ func nameSimilarity(want, name string) int {
 // matches so a picker can offer useful alternatives (for example, FaceFusion may
 // show SVC-Fusion). A near match is not strong enough to let that historical id
 // become the default for the user's newer name, so only exact/contains relations
-// qualify here. DisplayLabel includes a community version, allowing a copied
-// version such as "v3.6" to identify its row without an image-specific alias.
+// qualify here. Formatting-only whitespace is ignored before that strict check:
+// a user can restate "最强 AI 数字人 InfiniteTalk" while the upstream label is
+// "最强AI数字人InfiniteTalk-图片和视频数字人" without losing the exact id
+// already grounded in the conversation. Punctuation, tokens, and word order are
+// deliberately NOT normalized, so this does not turn a fuzzy picker match into
+// identity. DisplayLabel includes a community version, allowing a copied version
+// such as "v3.6" to identify its row without an image-specific alias.
 func DirectImageNameMatch(entry ImageCatalogEntry, name string) bool {
-	return nameSimilarity(strings.ToLower(strings.TrimSpace(name)), entry.DisplayLabel()) >= 150
+	return nameSimilarity(directImageNameKey(name), directImageNameKey(entry.DisplayLabel())) >= 150
+}
+
+// directImageNameKey removes only Unicode whitespace before the strict
+// identity comparison. It intentionally leaves punctuation and every
+// non-whitespace rune intact: this is presentation normalization, not a
+// synonym/keyword matcher.
+func directImageNameKey(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, strings.TrimSpace(value))
 }
 
 // structuredScore rewards catalog rows whose real SoftwareFacts or exact upstream

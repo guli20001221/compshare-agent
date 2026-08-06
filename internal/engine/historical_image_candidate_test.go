@@ -246,6 +246,68 @@ func TestCurrentImageNameKeepsRelatedHistoricalIDAsSuggested(t *testing.T) {
 		"用户只复制名称时，Agent 选择的具体版本仍必须在镜像卡片中确认")
 }
 
+// The current request is the production-shaped regression: the recommendation
+// printed the complete upstream community label, while the user copied only its
+// readable shorthand with spaces. The exact ID is stronger evidence than that
+// presentation difference, so it must stay suggested and skip the redundant
+// source card (the workflow's existing ImageSelectionSuggested contract handles
+// the latter).
+func TestCurrentImageShorthandKeepsHistoricalIDAsSuggested(t *testing.T) {
+	const (
+		imageID   = "compshareImage-1mefk6bv35xn"
+		imageName = "最强AI数字人InfiniteTalk-图片和视频数字人"
+	)
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"},
+			}}, nil
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{
+				map[string]any{"ImageName": imageName, "Data": []any{
+					map[string]any{
+						"CompShareImageId": imageID,
+						"Name":             "v1",
+						"Status":           "Available",
+					},
+				}},
+			}}, nil
+		default:
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "最强 AI 数字人 InfiniteTalk，用这个镜像为我创建机器"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-infinite-talk-shorthand", time.Now(),
+	)
+	eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{
+		User:      "我想做数字人，为我推荐镜像",
+		Assistant: "首选：" + imageName + "，镜像 ID：" + imageID + "。",
+	}}
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id": "turn-infinite-talk-shorthand", "operation": "CreateInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "GpuType", "value": "4090"},
+			map[string]any{"name": "ImageSource", "value": "community"},
+			map[string]any{"name": "ImageName", "value": "最强 AI 数字人 InfiniteTalk"},
+			map[string]any{"name": "CompShareImageId", "value": imageID},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, imageID, resolved.action.Arguments["CompShareImageId"],
+		"格式化简称不能让服务端丢弃模型从完整对话承接的精确 ID")
+	require.Equal(t, "community", resolved.action.Arguments["ImageSource"])
+	require.Equal(t, workflow.ImageSelectionSuggested, resolved.referenceData.ImageSelection,
+		"保留的是待确认推荐，不是跳过镜像确认的用户授权")
+}
+
 func TestCurrentImageNameDropsUnrelatedHistoricalID(t *testing.T) {
 	const (
 		faceFusionID = "compshareImage-facefusion-361"

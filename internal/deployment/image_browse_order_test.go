@@ -87,4 +87,8 @@ func TestDirectImageNameMatchDoesNotPromotePickerNearMatchesToIdentity(t *testin
 		ImageCatalogEntry{Name: "ComfyUI 5.1"},
 		"FaceFusion",
 	))
+	assert.True(t, DirectImageNameMatch(
+		ImageCatalogEntry{Name: "最强AI数字人InfiniteTalk-图片和视频数字人"},
+		"最强 AI 数字人 InfiniteTalk",
+	), "用户对同一推荐的空格化简称不能推翻已验证的精确镜像 ID")
 }
