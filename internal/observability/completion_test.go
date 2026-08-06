@@ -13,7 +13,7 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 			Reason:          CompletionReasonContextClarification,
 			ModelCalls:      2,
 			ContextDecision: "clarify",
-			ReadSet:         []string{"user_text", "active_task"},
+			ReadSet:         []string{"user_text", "live_selection"},
 			StateDelta:      []string{"task:preserve", "reply:clarify"},
 			ToolScope:       "named",
 			ToolNames:       []string{"DescribeCompShareInstance"},

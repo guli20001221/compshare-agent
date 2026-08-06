@@ -23,7 +23,7 @@ import (
 // Context-dependence replay harness.
 //
 // WHAT IT MEASURES. Whether suppressing the semantic-memory layer
-// (ConversationDigest / RecentFacts / VerifiedKnowledge / TaskSnapshot) changes
+// (ConversationDigest / RecentFacts / VerifiedKnowledge) changes
 // the answer to a follow-up that can only be understood in context. That is the
 // question step 4 of the canonical-transcript program has to answer before those
 // structures are deleted.

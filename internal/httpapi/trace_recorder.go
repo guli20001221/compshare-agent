@@ -126,7 +126,6 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	state.ContextDecisionTarget = r.stateTrace.ContextDecisionTarget
 	state.ContextDecisionReason = r.stateTrace.ContextDecisionReason
 	state.ContextDecisionError = r.stateTrace.ContextDecisionError
-	state.ContextDecisionActiveTask = r.stateTrace.ContextDecisionActiveTask
 	state.ContextDecisionReadSet = append([]string(nil), r.stateTrace.ContextDecisionReadSet...)
 	state.ContextDecisionStateDelta = append([]string(nil), r.stateTrace.ContextDecisionStateDelta...)
 	state.ContextDecisionToolScope = r.stateTrace.ContextDecisionToolScope

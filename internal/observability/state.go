@@ -49,11 +49,10 @@ type StateTrace struct {
 	// It deliberately omits the raw user message and concrete API params; this is
 	// for debugging continuation decisions without leaking zone_id / az_group /
 	// tokens / passwords or model-proposed untrusted parameters.
-	ContextDecision           string `json:"context_decision,omitempty"`
-	ContextDecisionTarget     string `json:"context_decision_target,omitempty"`
-	ContextDecisionReason     string `json:"context_decision_reason,omitempty"`
-	ContextDecisionError      string `json:"context_decision_error,omitempty"`
-	ContextDecisionActiveTask string `json:"context_decision_active_task,omitempty"`
+	ContextDecision       string `json:"context_decision,omitempty"`
+	ContextDecisionTarget string `json:"context_decision_target,omitempty"`
+	ContextDecisionReason string `json:"context_decision_reason,omitempty"`
+	ContextDecisionError  string `json:"context_decision_error,omitempty"`
 	// ContextDecisionReadSet and ContextDecisionStateDelta expose whether the
 	// resolver actually consumed the carried state and what it planned to do
 	// with it. ToolScope/ToolNames record the dispatch authority selected from
@@ -113,7 +112,6 @@ func traceStateObserved(t StateTrace) bool {
 		t.ContextDecisionTarget != "" ||
 		t.ContextDecisionReason != "" ||
 		t.ContextDecisionError != "" ||
-		t.ContextDecisionActiveTask != "" ||
 		len(t.ContextDecisionReadSet) > 0 ||
 		len(t.ContextDecisionStateDelta) > 0 ||
 		t.ContextDecisionToolScope != "" ||

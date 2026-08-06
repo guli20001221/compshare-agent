@@ -29,7 +29,6 @@ type AgentContext struct {
 	TurnID             string
 	CurrentQuestion    string
 	RecentConversation []ConversationPair
-	ActiveTask         *TaskSnapshot
 	SelectedEntities   []SemanticEntityHint
 	ContinuityNotices  []string
 	BuiltAtUnix        int64
@@ -168,11 +167,6 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		buildAt,
 		view.ContinuityNotices,
 	)
-	if task := e.sessionState.TaskSnapshot; task.Status != TaskSnapshotStatusResolved && !taskSnapshotEmpty(task) {
-		copy := cloneTaskSnapshot(task)
-		view.ActiveTask = &copy
-		view.SelectedEntities = append(view.SelectedEntities, task.Entities...)
-	}
 	if !isPersistedSelectionExpired(buildAt.Unix(), e.sessionState) {
 		for _, item := range e.sessionState.PendingSelectionItems {
 			view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{

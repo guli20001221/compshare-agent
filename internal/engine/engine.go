@@ -595,8 +595,9 @@ type SharedDeps struct {
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
-	// SessionFactContextEnabled enables the RecentFacts reader for every
-	// session created from these shared deps. Default false.
+	// SessionFactContextEnabled enables only the RecentFacts-derived trace label
+	// for every session created from these shared deps. It never injects facts
+	// into model context. Default false.
 	SessionFactContextEnabled bool
 	// ReactResultProjectionEnabled enables deterministic LLMResult projection
 	// for selected bulky read-only tools. Default false.
@@ -2970,9 +2971,6 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 }
 
 func knowledgeOnlyToolAllowed(action string) bool {
-	if action == tools.UpdateTaskStateName {
-		return true
-	}
 	capability, ok := tools.DefaultCapabilityRegistry().Lookup(action)
 	return ok && capability.Policy.Route == tools.ActionRouteKnowledge
 }
@@ -3059,11 +3057,6 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		})
 		return e.executeActionProposal(ctx, args, onStep)
 	}
-	if action == tools.UpdateTaskStateName {
-		args = e.safeExecutor.FilterArgs(action, args)
-		return e.executeTaskStateDelta(args, onStep)
-	}
-
 	// Workflow meta-tools → delegate to workflow engine.
 	// Security: LLM-provided args are filtered here before entering the workflow.
 	// Workflow steps bypass per-tool L1 checks because step definitions are hardcoded

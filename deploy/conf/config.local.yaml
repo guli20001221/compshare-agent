@@ -100,7 +100,9 @@ agent:
     # ConversationDigest (with its producer and persisted field), RecentFacts and
     # VerifiedKnowledge no longer reach the model in either flag position, and
     # VerifiedKnowledge survives only as evidence the answer verifier checks
-    # against. TaskSnapshot stays — it is transaction state, not model memory.
+    # against. TaskSnapshot is deleted too. The state that remains is only
+    # execution workflow state: the creation form, confirmation, idempotency and
+    # write-side target binding; none of it is a second semantic memory.
     #
     # THIS FLAG IS THEREFORE NO LONGER A ROLLBACK. Setting it false yields a
     # runtime with neither the transcript nor the projections it replaced; it is

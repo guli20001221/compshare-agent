@@ -109,8 +109,11 @@ const (
 	// itself malformed resolves to correct_tool_call, not ask_user — the generic
 	// needs_input rule would otherwise turn the model's own JSON mistake into a
 	// question for a user who supplied nothing wrong.
-	mutatingReActPromptSHA256 = "c928b492e9ff821f90ac73721231e3adc49ebac768a5f686c49aba9d824ff6eb"
-	readOnlyReActPromptSHA256 = "2d040c85552629cb78decb09b933af115a10c533987df12a3d739939edc0bfab"
+	// 2026-08-06: UpdateTaskState and TaskSnapshot were deleted. The central
+	// behavior segment must no longer tell the model to update a semantic-memory
+	// tool that does not exist; the canonical transcript is the semantic history.
+	mutatingReActPromptSHA256 = "5130902ad553d25db4de48f01488ba5a460e287978144561be90bbb337f2cd7d"
+	readOnlyReActPromptSHA256 = "4ae223ec95dcde3c1f157a4ec9f1c8fe552c26201f1adc47efcc499ad54e6554"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
 	// That leaves the rollout shape unpinned: deploy/conf/config.prod.yaml already sets
@@ -119,7 +122,7 @@ const (
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
 	// third SHA pins that combination. It includes the same shared 2026-07-31
 	// catalog-candidate contract as the two snapshots above.
-	mutatingWithRepairLaneReActPromptSHA256 = "038ff01ed69a89f8be64cebea2ef166c1706248ccbc16933b6105470a255def8"
+	mutatingWithRepairLaneReActPromptSHA256 = "f72be0d10cdaec54ca0644388787cc10a9ca679e3fc948817e70ec1defc323a4"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

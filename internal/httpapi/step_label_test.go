@@ -13,9 +13,8 @@ import (
 )
 
 // The console prints one line per step, keyed on the step frame's Action. Those
-// Actions are internal tool names assembled from four different places, and a
-// name with no display label reaches the user as raw English — "UpdateTaskState
-// | 任务状态已归并" — usually on the FIRST line of the turn.
+// Actions are internal tool names assembled from several sources, and a name
+// with no display label reaches the user as raw English.
 //
 // These two tests are the reason the label map lives in Go: they enumerate the
 // sources programmatically, so adding a tool anywhere fails here instead of

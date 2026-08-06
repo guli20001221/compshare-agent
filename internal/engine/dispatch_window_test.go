@@ -111,6 +111,8 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// That is the over-questioning this budget exists to protect against, so
 		// squeezing the exception into ambiguity would defeat its own purpose.
 		require.LessOrEqual(t, len(system), 4900, "central system prompt grew past its reviewed byte budget")
+		require.NotContains(t, system, "更新任务状态",
+			"the retired semantic-memory tool must not remain as a model instruction")
 		// Each Request tool keeps its operation-specific safety boundary and adds
 		// a compact card/failed-result continuation. This is the full mutating
 		// fallback window; no intent-scoping assumption is used to hide its cost.
@@ -213,7 +215,7 @@ func TestKnowledgeOnlyWindowExcludesPlatformAndActionCapabilities(t *testing.T) 
 	names := toolNameSet(centralAgentKnowledgeToolWindow())
 	require.Contains(t, names, "SearchKnowledge")
 	require.Contains(t, names, "ReadChunk")
-	require.Contains(t, names, tools.UpdateTaskStateName)
+	require.NotContains(t, names, "UpdateTaskState")
 
 	for name := range names {
 		require.NotContains(t, name, "Request", "public Q&A must not expose action proposals")
@@ -225,7 +227,7 @@ func TestKnowledgeOnlyWindowExcludesPlatformAndActionCapabilities(t *testing.T) 
 func TestKnowledgeOnlyExecutionAllowlistIsFailClosed(t *testing.T) {
 	require.True(t, knowledgeOnlyToolAllowed("SearchKnowledge"))
 	require.True(t, knowledgeOnlyToolAllowed("ReadChunk"))
-	require.True(t, knowledgeOnlyToolAllowed(tools.UpdateTaskStateName))
+	require.False(t, knowledgeOnlyToolAllowed("UpdateTaskState"))
 	require.False(t, knowledgeOnlyToolAllowed("DescribeCompShareInstance"))
 	require.False(t, knowledgeOnlyToolAllowed("DiagnoseInstanceInternals"))
 	require.False(t, knowledgeOnlyToolAllowed("RequestStopInstance"))

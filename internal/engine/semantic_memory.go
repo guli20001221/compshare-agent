@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"sort"
 	"strings"
 	"time"
 )
@@ -10,10 +9,6 @@ const (
 	ContinuityFreshnessFresh   = "fresh"
 	ContinuityFreshnessStale   = "stale"
 	ContinuityFreshnessExpired = "expired"
-
-	TaskSnapshotStatusActive   = "active"
-	TaskSnapshotStatusExpired  = "expired"
-	TaskSnapshotStatusResolved = "resolved"
 
 	ToolFactSourceTool             = "tool"
 	ToolFactCompletenessProjection = "semantic_projection"
@@ -34,26 +29,6 @@ type SemanticEntityHint struct {
 	Source    string `json:"source,omitempty"`
 	Freshness string `json:"freshness,omitempty"`
 }
-
-// TaskSnapshot is a durable semantic projection, never execution authority.
-type TaskSnapshot struct {
-	Goal          string               `json:"goal,omitempty"`
-	Intent        string               `json:"intent,omitempty"`
-	Workflow      string               `json:"workflow,omitempty"`
-	Stage         string               `json:"stage,omitempty"`
-	Constraints   []string             `json:"constraints,omitempty"`
-	Decisions     []string             `json:"decisions,omitempty"`
-	MissingSlots  []string             `json:"missing_slots,omitempty"`
-	Entities      []SemanticEntityHint `json:"entities,omitempty"`
-	Status        string               `json:"status,omitempty"`
-	Freshness     string               `json:"freshness,omitempty"`
-	EndReason     string               `json:"end_reason,omitempty"`
-	UpdatedAtUnix int64                `json:"updated_at_unix,omitempty"`
-}
-
-
-
-
 
 // ContinuityAdvisories is an ephemeral coordinator-to-engine view. It MUST NOT
 // be embedded in SessionState: durable turn/action truth lives in turn tables.
@@ -87,95 +62,6 @@ func continuityFreshness(at int64, ttl int, now time.Time) string {
 		return ContinuityFreshnessStale
 	}
 	return ContinuityFreshnessFresh
-}
-
-func (e *Engine) syncTaskSnapshotFromFrame(frame ContextFrame, status, endReason string, now time.Time) {
-	if e == nil || !e.sessionStateHydrated || contextFrameEmpty(frame) {
-		return
-	}
-	freshness := frame.Freshness
-	if freshness == "" {
-		freshness = continuityFreshness(frame.ProducedAtUnix, effectiveContextFrameTTL(frame), now)
-	}
-	if status == "" {
-		status = TaskSnapshotStatusActive
-		if freshness == ContinuityFreshnessExpired {
-			status = TaskSnapshotStatusExpired
-		}
-	}
-	snapshot := TaskSnapshot{
-		Goal:          compactSemanticText(frame.OriginalUserMsg),
-		Intent:        compactSemanticText(frame.Intent),
-		Workflow:      compactSemanticText(frame.Workflow),
-		Stage:         compactSemanticText(frame.Stage),
-		Constraints:   contextFrameConstraints(frame),
-		Decisions:     contextFrameDecisions(frame),
-		MissingSlots:  compactSemanticItems(frame.MissingSlots),
-		Entities:      contextFrameEntities(frame, freshness),
-		Status:        status,
-		Freshness:     freshness,
-		EndReason:     compactSemanticText(endReason),
-		UpdatedAtUnix: now.Unix(),
-	}
-	if snapshot.Goal == "" {
-		snapshot.Goal = firstNonEmptySemantic(frame.Workflow, frame.Intent, frame.Kind)
-	}
-	if snapshot.Stage == "" && len(snapshot.MissingSlots) > 0 {
-		snapshot.Stage = "missing_slots"
-	}
-	if snapshot.EndReason == "" && status == TaskSnapshotStatusExpired {
-		snapshot.EndReason = firstNonEmptySemantic(frame.FailureReason, "任务上下文已过期，需要重新确认后继续")
-	}
-	e.sessionState.TaskSnapshot = snapshot
-	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
-	e.markMemoryUpdateSource(memoryUpdateStructured)
-}
-
-func (e *Engine) markTaskSnapshotResolved(frame ContextFrame, reason string, now time.Time) {
-	if contextFrameEmpty(frame) {
-		return
-	}
-	e.syncTaskSnapshotFromFrame(frame, TaskSnapshotStatusResolved, reason, now)
-}
-
-func contextFrameConstraints(frame ContextFrame) []string {
-	return compactSemanticPairs(map[string]string{
-		"gpu":          frame.GPU,
-		"image":        frame.ImagePref,
-		"image_source": frame.ImageSource,
-		"workload":     frame.Workload,
-		"zone":         firstNonEmptySemantic(frame.ZoneLabel, frame.Zone),
-	})
-}
-
-func contextFrameDecisions(frame ContextFrame) []string {
-	return compactSemanticPairs(frame.Slots)
-}
-
-func contextFrameEntities(frame ContextFrame, freshness string) []SemanticEntityHint {
-	if catalog, err := defaultActionCatalog(); err == nil {
-		if spec, ok := catalog.Lookup(frame.Workflow); ok {
-			var out []SemanticEntityHint
-			for name, field := range spec.Fields {
-				if !field.Target {
-					continue
-				}
-				if id := strings.TrimSpace(frame.Slots[name]); id != "" {
-					out = append(out, SemanticEntityHint{Kind: field.TargetKind, ID: compactSemanticText(id), Source: compactSemanticText(frame.SlotSources[name]), Freshness: freshness})
-				}
-			}
-			if len(out) > 0 {
-				return out
-			}
-		}
-	}
-	// Compatibility for frames written before workflow fields became the
-	// canonical task projection.
-	id := strings.TrimSpace(frame.Slots["instance_id"])
-	if id == "" {
-		return nil
-	}
-	return []SemanticEntityHint{{Kind: "instance", ID: compactSemanticText(id), Source: compactSemanticText(frame.SlotSources["instance_id"]), Freshness: freshness}}
 }
 
 func effectiveContextFrameTTL(frame ContextFrame) int {
@@ -237,8 +123,6 @@ func normalizeToolFactForStore(fact ToolFact) ToolFact {
 	return fact
 }
 
-
-
 func normalizedSelectedInstanceFreshness(state SessionState) string {
 	if state.SelectedInstanceFreshness != "" {
 		return state.SelectedInstanceFreshness
@@ -250,22 +134,6 @@ func normalizedSelectedInstanceFreshness(state SessionState) string {
 		return ContinuityFreshnessStale
 	}
 	return ContinuityFreshnessFresh
-}
-
-
-func compactSemanticPairs(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key, value := range values {
-		if compactSemanticText(key) != "" && compactSemanticText(value) != "" {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, compactSemanticText(key)+"="+compactSemanticText(values[key]))
-	}
-	return compactSemanticItems(out)
 }
 
 func compactSemanticText(value string) string {
@@ -285,7 +153,6 @@ func compactSemanticNarrative(value string) string {
 	}
 	return value
 }
-
 
 func compactSemanticItems(values []string) []string {
 	return mergeSemanticItems(nil, values)
@@ -316,21 +183,4 @@ func mergeSemanticItems(existing, incoming []string) []string {
 		out = out[len(out)-maxSemanticItems:]
 	}
 	return out
-}
-
-
-func firstNonEmptySemantic(values ...string) string {
-	for _, value := range values {
-		if value = compactSemanticText(value); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func taskSnapshotEmpty(task TaskSnapshot) bool {
-	return task.Goal == "" && task.Intent == "" && task.Workflow == "" && task.Stage == "" &&
-		len(task.Constraints) == 0 && len(task.Decisions) == 0 && len(task.MissingSlots) == 0 &&
-		len(task.Entities) == 0 && task.Status == "" && task.Freshness == "" && task.EndReason == "" &&
-		task.UpdatedAtUnix == 0
 }
