@@ -39,6 +39,24 @@ var ErrNoSSHTarget = errors.New("sshops: instance has no SSH target")
 // ImageMaking was learned from a live response. Callers show it as-is.
 var ErrInstanceNotRunning = errors.New("sshops: instance is not running")
 
+// ErrInstanceNotFound marks an instance the describe response does not contain,
+// even though the response itself was well-formed and held other instances. The
+// id is not in this tenant's account: released, deleted, or simply mistyped.
+// Retrying the same id can never succeed, so callers say that instead of the
+// generic 「请稍后重试，或到控制台查看实例状态」.
+//
+// This is the third time this lane has had to learn the same lesson (see
+// ErrNoSSHTarget and ErrInstanceNotRunning above), and the case that forced it
+// is the most common one of the three: on 2026-08-06 a test account replaced 7
+// of its 10 instances within an hour, so a diagnosis launched against an id read
+// minutes earlier failed with "please retry" — advice that could not work — and
+// the real cause (the box was gone) took an hour to find because nothing said it.
+//
+// Deliberately NOT used when the response carried no instances at all: an empty
+// response can also mean a partial upstream failure, where retrying is genuinely
+// the right advice.
+var ErrInstanceNotFound = errors.New("sshops: instance not found in this account")
+
 // NotRunningError carries the raw upstream state so a caller can name it without
 // parsing an error string. errors.Is(err, ErrInstanceNotRunning) matches it;
 // errors.As recovers the state itself.
@@ -175,7 +193,8 @@ func resolveInstance(raw map[string]any, instanceID string) (map[string]any, str
 		}
 	}
 	if seen > 0 {
-		return nil, "", fmt.Errorf("sshops: instance %s not present in describe response (%d returned)", instanceID, seen)
+		return nil, "", fmt.Errorf("%w: instance %s not present in describe response (%d returned)",
+			ErrInstanceNotFound, instanceID, seen)
 	}
 	return nil, "", fmt.Errorf("sshops: no instance in describe response")
 }

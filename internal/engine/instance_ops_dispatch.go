@@ -142,6 +142,18 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
+		// Not found: the id is not in this account. Retrying it can never succeed, so the
+		// generic 「请稍后重试」 is advice that cannot work — and this is the most common way
+		// the lane fails in practice, because instance ids go stale fast (a test account
+		// replaced 7 of 10 instances within one hour on 2026-08-06, and a diagnosis aimed at
+		// an id read minutes earlier died here while the message pointed at a transient
+		// problem). A transient describe failure keeps the retry text: only a well-formed
+		// response that did not contain this id lands here.
+		if errors.Is(err, ErrInstanceOpsNotFound) {
+			msg := fmt.Sprintf("在当前账号下找不到实例 %s，可能已被删除 / 释放，或实例 ID 有误。请到控制台核对实例 ID 后再试。", instanceID)
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+			return finalReplyPrefix + msg
+		}
 		// Not running: name the state. This used to fall into the generic branch below
 		// and tell the user 「请稍后重试，或到控制台查看实例状态」 — advice to go look up
 		// the one fact we already had in hand. The state comes verbatim from the same

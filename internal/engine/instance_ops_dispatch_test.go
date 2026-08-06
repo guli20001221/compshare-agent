@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -193,6 +194,33 @@ func TestInstanceOps_NoSSHTargetRefusedHonestly(t *testing.T) {
 	require.True(t, strings.HasPrefix(out, finalReplyPrefix), "an unenterable box is a terminal refusal")
 	require.Contains(t, out, "没有 SSH 登录入口", "the refusal must name the real cause")
 	require.NotContains(t, out, "请稍后重试", "must not imply a transient, retryable failure")
+}
+
+// An id that is not in the account gets the same honest, non-retryable treatment. This is the
+// likeliest failure of all in practice — instance ids go stale fast (a test account replaced 7 of
+// its 10 instances inside one hour on 2026-08-06) — and until it had its own branch the user was
+// told 「请稍后重试，或到控制台查看实例状态」 about a box that no longer existed, which is advice
+// that cannot work and points at the wrong layer. Same lesson as 门 8b above, third occurrence.
+func TestInstanceOps_NotFoundRefusedHonestly(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsNotFound}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+
+	var steps []StepEvent
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
+
+	require.True(t, strings.HasPrefix(out, finalReplyPrefix), "a missing box is a terminal refusal")
+	require.Contains(t, out, "找不到实例", "the refusal must name the real cause")
+	require.Contains(t, out, "uhost-", "and the id the user asked about")
+	require.NotContains(t, out, "请稍后重试", "retrying an id that is not in the account can never succeed")
+
+	// A generic runner error must still keep the retry advice: only a well-formed response that
+	// did not contain the id is non-retryable. Collapsing the two would make the new branch a
+	// catch-all and lose the distinction it exists for.
+	generic := &fakeInstanceOpsRunner{err: errors.New("sshops: audit begin failed")}
+	out2 := newInstanceOpsEngine(generic, alwaysConfirm).
+		executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
+	require.Contains(t, out2, "请稍后重试", "a transient failure keeps the retry advice")
+	require.NotContains(t, out2, "找不到实例")
 }
 
 // 门 8 — at most one in-instance run per turn, even if the model tweaks one word of

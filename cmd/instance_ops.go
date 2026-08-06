@@ -49,6 +49,10 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 	if r.limiter != nil {
 		subject, _ := tools.SubjectKeyFromUser(u)
 		if dec := r.limiter.Allow(governance.Request{SubjectKey: subject, Class: governance.ClassSSHExec, Action: instanceOpsAction}); !dec.Allowed {
+			// Logged for the same reason the terminal failure below is: a denial and a credential
+			// failure and a spawn failure are ONE constant sentence to the user, so without a line
+			// here the operator cannot tell which one happened.
+			log.Printf("ssh-ops: refused instance %s: rate limited (%s)", req.InstanceID, dec.Reason)
 			return engine.InstanceOpsVerdict{}, fmt.Errorf("ssh-ops rate limited (%s)", dec.Reason)
 		}
 	}
@@ -96,6 +100,11 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		if errors.Is(err, sshops.ErrNoSSHTarget) {
 			return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsNoSSHTarget
 		}
+		// Not-found is knowable, non-retryable, and (on a churning account) the single
+		// most likely way this lane fails. Translate it so the engine can say so.
+		if errors.Is(err, sshops.ErrInstanceNotFound) {
+			return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsNotFound
+		}
 		// Not-running is knowable and worth naming. Carry the raw upstream state
 		// through so the engine can quote it, instead of saying "please retry" about
 		// a box that is, for instance, mid-image-creation.
@@ -103,6 +112,16 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		if errors.As(err, &notRunning) {
 			return engine.InstanceOpsVerdict{}, fmt.Errorf("%w: %s", engine.ErrInstanceOpsNotRunning, notRunning.State)
 		}
+		// Everything else collapses into ONE constant user-facing sentence ("实例内排查未能完成，
+		// 请稍后重试"), which is right for the user — the harness reached no conclusion, so the model
+		// must not narrate one — but it left the operator with nothing at all. The distinct causes
+		// behind that sentence (rate-limit denial, describe failure, instance not in the response,
+		// password unavailable, fail-closed audit refusal, harness spawn failure, whole-run timeout)
+		// are indistinguishable from the outside, and the failures that happen BEFORE audit.Begin
+		// write no row either — so on 2026-08-06 a reproducible production failure could not be
+		// placed in a layer at all. These errors are documented credential-free (sshops/service.go),
+		// which is what makes logging them verbatim safe.
+		log.Printf("ssh-ops: diagnosis failed for instance %s: %v", req.InstanceID, err)
 		return engine.InstanceOpsVerdict{}, err
 	}
 	ran, refused := tallySteps(res.Steps)

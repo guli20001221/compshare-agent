@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"log"
+	"os"
 	"testing"
 
 	"github.com/compshare-agent/internal/config"
@@ -175,6 +178,78 @@ func TestInstanceOpsRunner_TranslatesNoSSHTargetSentinel(t *testing.T) {
 
 	require.ErrorIs(t, err, engine.ErrInstanceOpsNoSSHTarget, "no-SSH-target must become the engine sentinel")
 	require.NotErrorIs(t, err, sshops.ErrNoSSHTarget, "the sshops sentinel must not leak past the adapter boundary")
+}
+
+// An id that is not in the account is non-retryable and, on an account whose instances turn over
+// within the hour, the likeliest failure of all. It must reach the engine as its own sentinel so the
+// user is told the box is gone instead of being asked to retry an id that can never resolve.
+func TestInstanceOpsRunner_TranslatesNotFoundSentinel(t *testing.T) {
+	diag := &fakeDiagnoser{err: fmt.Errorf("resolve: %w", sshops.ErrInstanceNotFound)}
+	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+
+	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "t", InstanceID: "uhost-gone", Task: "diag"},
+		func(engine.InstanceOpsProgress) {})
+
+	require.ErrorIs(t, err, engine.ErrInstanceOpsNotFound, "not-found must become the engine sentinel")
+	require.NotErrorIs(t, err, sshops.ErrInstanceNotFound, "the sshops sentinel must not leak past the adapter")
+	require.NotErrorIs(t, err, engine.ErrInstanceOpsNotRunning, "not-found is not the same as stopped")
+}
+
+// Every terminal failure of this lane reaches the user as ONE constant sentence ("实例内排查未能
+// 完成，请稍后重试"), and the failures that happen before audit.Begin write no audit row either. So
+// the server log is the ONLY place the cause survives. On 2026-08-06 a reproducible production
+// failure could not be attributed to a layer at all because this line did not exist: a rate-limit
+// denial, a describe failure, an instance missing from the response, an unavailable password, a
+// fail-closed audit refusal and a harness spawn failure were one indistinguishable sentence.
+//
+// Asserted for BOTH shapes, because they leave by different returns: the pre-flight denial (which
+// never reaches the diagnoser) and the diagnoser's own error.
+func TestInstanceOpsRunner_TerminalFailuresAreLogged(t *testing.T) {
+	capture := func(t *testing.T, run func()) string {
+		t.Helper()
+		var buf bytes.Buffer
+		flags := log.Flags()
+		log.SetOutput(&buf)
+		log.SetFlags(0)
+		t.Cleanup(func() { log.SetOutput(os.Stderr); log.SetFlags(flags) })
+		run()
+		return buf.String()
+	}
+
+	t.Run("rate limit denial", func(t *testing.T) {
+		r := newInstanceOpsRunner(&fakeDiagnoser{}, noopDescriber{}, &fakeLimiter{allow: false})
+		out := capture(t, func() {
+			_, _ = r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "t", InstanceID: "uhost-rl", Task: "d"},
+				func(engine.InstanceOpsProgress) {})
+		})
+		require.Contains(t, out, "uhost-rl", "the log must name the instance the turn was about")
+		require.Contains(t, out, "rate limited", "a denial must be distinguishable from a run failure")
+	})
+
+	t.Run("diagnosis failure", func(t *testing.T) {
+		diag := &fakeDiagnoser{err: fmt.Errorf("sshops: instance uhost-df password unavailable")}
+		r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+		out := capture(t, func() {
+			_, _ = r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "t", InstanceID: "uhost-df", Task: "d"},
+				func(engine.InstanceOpsProgress) {})
+		})
+		require.Contains(t, out, "uhost-df")
+		require.Contains(t, out, "password unavailable",
+			"the underlying cause is what makes the line worth writing; these errors are credential-free")
+	})
+
+	// The two branches that DO have their own honest user-facing text are not failures of this kind,
+	// so they must not be logged as one — otherwise the log fills with Windows instances and stopped
+	// boxes and the real failures stop standing out.
+	t.Run("no-SSH-target is not logged as a failure", func(t *testing.T) {
+		diag := &fakeDiagnoser{err: fmt.Errorf("describe: %w", sshops.ErrNoSSHTarget)}
+		r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+		out := capture(t, func() {
+			_, _ = r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "t", InstanceID: "uhost-win", Task: "d"},
+				func(engine.InstanceOpsProgress) {})
+		})
+		require.Empty(t, out, "a Windows instance is an expected refusal with its own text, not a failure")
+	})
 }
 
 // --- server gate decisions -------------------------------------------------------------------------

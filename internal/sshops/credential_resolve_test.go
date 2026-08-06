@@ -54,6 +54,25 @@ func TestFetchCredentialRefusesWhenRequestedInstanceAbsent(t *testing.T) {
 	require.Contains(t, err.Error(), "uhost-requested")
 	require.False(t, cred.HasSecret(), "no password may survive a failed resolve")
 	require.Empty(t, cred.Host, "no connection target may survive a failed resolve")
+	// The caller has to be able to tell "this id is not in the account" (retrying is pointless)
+	// from a transient describe failure (retrying is the right advice). Without the sentinel both
+	// reached the user as 「请稍后重试」, and on an account whose ids go stale within the hour that
+	// is the single most common way this lane fails.
+	require.ErrorIs(t, err, ErrInstanceNotFound,
+		"an absent instance must be distinguishable from a transient failure")
+}
+
+// An EMPTY response is deliberately NOT ErrInstanceNotFound: nothing came back at all, which a
+// partial upstream failure also looks like, and there retrying genuinely is the right advice.
+// This is the boundary that keeps the new sentinel honest rather than a catch-all.
+func TestFetchCredentialEmptyResponseIsNotTreatedAsNotFound(t *testing.T) {
+	d := &listDescriber{raw: map[string]any{"UHostSet": []any{}}}
+
+	_, err := FetchCredential(context.Background(), d, "uhost-x")
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrInstanceNotFound,
+		"an empty response may be a transient upstream failure, not proof the instance is gone")
 }
 
 func TestFetchCredentialResolvesTheRequestedRowNotTheFirst(t *testing.T) {
