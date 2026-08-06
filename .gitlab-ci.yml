@@ -131,6 +131,19 @@ build:
     - |
       AUTH=$(printf "%s:%s" "$UHUB_USER" "$UHUB_PASS" | base64 | tr -d '\n')
       printf '{"auths":{"uhub.service.ucloud.cn":{"auth":"%s"}}}\n' "$AUTH" > "$DOCKER_CONFIG/config.json"
+    - |
+      if [ -n "${FEISHU_EXTERNAL_IMAGE_OAUTH_BOOTSTRAP_TOKEN:-}" ]; then
+        case "$FEISHU_EXTERNAL_IMAGE_OAUTH_BOOTSTRAP_TOKEN" in
+          *[!A-Za-z0-9._-]*)
+            echo "FEISHU_EXTERNAL_IMAGE_OAUTH_BOOTSTRAP_TOKEN has an unsupported format" >&2
+            exit 1
+            ;;
+        esac
+        sed -i "s|^\\([[:space:]]*bootstrap_refresh_token:[[:space:]]*\\).*|\\1\\\"${FEISHU_EXTERNAL_IMAGE_OAUTH_BOOTSTRAP_TOKEN}\\\"|" deploy/conf/config.local.yaml
+        echo "Feishu external-image OAuth bootstrap token injected for this image build"
+      else
+        echo "No Feishu OAuth bootstrap token supplied; this image expects a previously stored encrypted token"
+      fi
     - >-
       /kaniko/executor
       --context "$CI_PROJECT_DIR"
