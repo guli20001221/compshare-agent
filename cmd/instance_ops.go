@@ -145,7 +145,7 @@ func tallySteps(steps []sshops.Step) (ran, refused int) {
 
 // buildSSHOpsService constructs the sshops.Service (Supervisor + audit) from config. It validates the
 // harness settings so a misconfigured lane fails at boot rather than at first use.
-func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback string, audit sshops.AuditWriter) (*sshops.Service, error) {
+func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback string, audit sshops.AuditWriter, opts ...sshops.ServiceOption) (*sshops.Service, error) {
 	if sc.HarnessPath == "" {
 		return nil, fmt.Errorf("agent.ssh_ops.harness_path is required")
 	}
@@ -182,7 +182,27 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 	// actually authorizes the harness; WithWrites only labels the audit. Wiring them from one source
 	// is what keeps "what the row says we entered under" and "what the harness was allowed to do"
 	// from drifting apart.
-	return sshops.NewService(sup, audit, sshops.WithWrites(sc.AllowWrites)), nil
+	return sshops.NewService(sup, audit, append([]sshops.ServiceOption{sshops.WithWrites(sc.AllowWrites)}, opts...)...), nil
+}
+
+// instanceOpsHostResolver builds the internal-IPv6 address resolver, or nil to keep dialling
+// the public address SshLoginCommand advertises.
+//
+// A misconfiguration here is an error rather than a silent downgrade: agent.ssh_ops.internal_ipv6
+// is set precisely on the deployments where the public address does NOT work, so quietly falling
+// back to it would produce a lane that boots, looks healthy, and times out on every instance —
+// which is exactly the failure this resolver exists to end.
+func instanceOpsHostResolver(cfg *config.Config, describer sshops.Describer) (sshops.HostResolver, error) {
+	if !cfg.Agent.SSHOps.InternalIPv6 {
+		return nil, nil
+	}
+	if cfg.Agent.STS.IAMURL == "" {
+		return nil, fmt.Errorf("agent.ssh_ops.internal_ipv6 needs agent.sts.iam_url (the internal gateway that answers UVPCFEGO.TransformIPv4ToIPv6)")
+	}
+	if describer == nil {
+		return nil, fmt.Errorf("agent.ssh_ops.internal_ipv6 needs an executor to resolve region ids")
+	}
+	return tools.NewInstanceIPv6Resolver(cfg.Agent.STS.IAMURL, describer), nil
 }
 
 // serverInstanceOpsRunner decides whether the HTTP server wires the SSH-ops lane, and builds it if so.
@@ -213,11 +233,16 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 		log.Printf("ssh-ops disabled: no database for the fail-closed audit store")
 		return nil, nil
 	}
+	hostResolver, err := instanceOpsHostResolver(cfg, describer)
+	if err != nil {
+		return nil, fmt.Errorf("ssh-ops: %w", err)
+	}
 	svc, err := buildSSHOpsService(
 		cfg.Agent.SSHOps,
 		cfg.Agent.LLM.Model,
 		cfg.Agent.LLM.APIKey,
 		store.NewSSHOpsAuditStore(db),
+		sshops.WithHostResolver(hostResolver),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("ssh-ops: %w", err)
@@ -232,7 +257,14 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 	if cfg.Agent.SSHOps.AllowWrites {
 		mode = "diagnosis WITH REPAIR (allow_writes=true; destructive commands still refused)"
 	}
-	log.Printf("ssh-ops enabled: consent-gated in-instance %s (per-tenant STS, fail-closed audit, durable=%t; on the non-durable transport a client disconnect ends the run and the user retries)", mode, durable)
+	// The dialled address family belongs on this line for the same reason the mode does:
+	// this is the line an operator greps to confirm what booted, and "which address do we
+	// dial" is the difference between a lane that can enter a box and one that cannot.
+	route := "public address from SshLoginCommand"
+	if hostResolver != nil {
+		route = "internal IPv6 via " + cfg.Agent.STS.IAMURL
+	}
+	log.Printf("ssh-ops enabled: consent-gated in-instance %s (per-tenant STS, fail-closed audit, durable=%t, dialling the %s; on the non-durable transport a client disconnect ends the run and the user retries)", mode, durable, route)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }
 
@@ -251,15 +283,22 @@ func cliInstanceOpsRunner(cfg *config.Config, getenv func(string) string) engine
 		log.Printf("warning: ignoring unknown COMPSHARE_SSH_OPS value %q", value)
 		return nil
 	}
+	executor := tools.NewExternalExecutor(cfg.Agent)
+	hostResolver, err := instanceOpsHostResolver(cfg, executor)
+	if err != nil {
+		log.Printf("warning: ssh-ops disabled: %v", err)
+		return nil
+	}
 	svc, err := buildSSHOpsService(
 		cfg.Agent.SSHOps,
 		cfg.Agent.LLM.Model,
 		cfg.Agent.LLM.APIKey,
 		&sshops.MemAuditWriter{},
+		sshops.WithHostResolver(hostResolver),
 	)
 	if err != nil {
 		log.Printf("warning: ssh-ops disabled: %v", err)
 		return nil
 	}
-	return newInstanceOpsRunner(svc, tools.NewExternalExecutor(cfg.Agent), nil)
+	return newInstanceOpsRunner(svc, executor, nil)
 }

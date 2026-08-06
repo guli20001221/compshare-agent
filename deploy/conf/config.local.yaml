@@ -234,6 +234,29 @@ agent:
     # a decision, which is the gap. A scope boundary was added to the tool description on 2026-07-31
     # and is NOT yet validated (0/5 vs 0/5: the behaviour did not occur in either arm).
     allow_writes: true
+    # Dial the instance's INTERNAL IPv6 instead of the public EIP its SshLoginCommand advertises.
+    #
+    # On because the production process runs inside the UCloud private network and has no route to
+    # customer EIPs. Measured 2026-08-06: 3 instances x 2 ports x 2 regions all timed out from the
+    # deployment, while the identical transport connected in 0.30s and 1.20s from a normal network —
+    # and one of those boxes actively REFUSED the same port from outside, so if the packets were
+    # arriving at all a wrong-port dial would have come back refused rather than silent. They were
+    # not arriving.
+    #
+    # This is the platform's own route, not a workaround: uhost-compshare-api derives the address
+    # with UVPCFEGO.TransformIPv4ToIPv6 before handing a container to compshare-access, which then
+    # reaches the box at [IPv6]:22. The container runs with `--net host`, so its sshd on 23 is bound
+    # on the machine's own stack — the same reason EIP:23 works — and only the HOST is swapped here;
+    # the user and port still come from SshLoginCommand. Pods keep their DNS host untouched: their
+    # port lives on a cluster-side forwarder, not on the box.
+    #
+    # Requires agent.sts.iam_url (the internal gateway that answers the transform). Missing it is a
+    # BOOT ERROR, not a downgrade — falling back would dial the address this setting exists because
+    # it cannot reach, and then report the timeout as the customer's firewall.
+    #
+    # Leave it OFF on a developer machine: there the EIP is the only reachable address and
+    # internal.api.ucloud.cn does not route at all.
+    internal_ipv6: true
 
   # 0 or omitted uses the built-in defaults for llm / mutating /
   # read_expensive. The user_turn_* and max_tokens_per_turn fields are

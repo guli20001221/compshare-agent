@@ -1,12 +1,10 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -98,27 +96,5 @@ func (c *UAccountClient) ICreateServiceLinkedRole(ctx context.Context, companyID
 }
 
 func (c *UAccountClient) post(ctx context.Context, params map[string]any) ([]byte, error) {
-	payload, err := json.Marshal(params)
-	if err != nil {
-		return nil, fmt.Errorf("uaccount marshal: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("uaccount build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("uaccount http: %w", err)
-	}
-	defer resp.Body.Close()
-	const maxResponseSize = 1 << 20
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if err != nil {
-		return nil, fmt.Errorf("uaccount read: %w", err)
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("uaccount status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return body, nil
+	return postInternalGateway(ctx, c.httpClient, c.url, "uaccount", params)
 }

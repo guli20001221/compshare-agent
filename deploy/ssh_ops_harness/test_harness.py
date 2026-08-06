@@ -222,6 +222,50 @@ check("connect-fail-names-the-dialed-port", "port 23" in _rc_port)
 harness.set_conn(conn)
 
 
+# --- The dial also names WHICH ROUTE it took: the instance's internal IPv6, or its public address. ---
+# The two failures are byte-identical without it and mean opposite things. A timeout on the public
+# address says this host has no route out (the 2026-08-06 production failure: 3 instances x 2 ports x
+# 2 regions all timed out from the deployment while the identical code connected in under 1.2s from a
+# normal network). A timeout on the internal IPv6 says the address resolved and nothing answered on
+# it — a different team and a different fix. Whoever reads the message cannot tell them apart from
+# the port, the class, or anything else in the sentence.
+check("route-v6-named", harness._dialled_route("2003:da8:2004:1000::1") == "内网 IPv6 地址")
+check("route-v4-named", harness._dialled_route("203.0.113.10") == "公网地址")
+check("route-absent-is-silent", harness._dialled_route(None) == "" and harness._dialled_route("") == "")
+
+_conn_v6 = dict(harness._CONN, port=23, host="2003:da8:2004:1000:a3c:7623:2712:f9c0")
+_conn_v4 = dict(harness._CONN, port=23, host="203.0.113.10")
+
+
+def _dial_via(host_conn, detail="TimeoutError"):
+    ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed", "detail": detail}
+    return harness.preflight_probe(host_conn)
+
+
+_pf_v6, _pf_v4 = _dial_via(_conn_v6), _dial_via(_conn_v4)
+check("preflight-names-the-internal-route", "内网 IPv6 地址" in _pf_v6)
+check("preflight-names-the-public-route", "公网地址" in _pf_v4)
+check("preflight-routes-differ", _pf_v6 != _pf_v4)
+# The literal address stays OUT of user-facing text: an internal IPv6 is not something the user can
+# act on, and the port already carries everything they can check for themselves.
+check("preflight-does-not-echo-the-address", "2003:da8" not in _pf_v6 and "203.0.113.10" not in _pf_v4)
+# An auth failure is about the credential, not the route, but which address was reached still
+# distinguishes "wrong password" from "wrong box" — so it is named there too.
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "auth_failed"}
+check("preflight-auth-names-the-route", "内网 IPv6 地址" in harness.preflight_probe(_conn_v6))
+
+# The per-command path names it too, in the model-facing English half.
+harness.set_conn(dict(conn, port=23, host="2003:da8:2004:1000:a3c:7623:2712:f9c0"))
+ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed",
+                                                        "detail": "TimeoutError"}
+_rc_v6 = harness.run_command("df -h /")["text"]
+check("connect-fail-names-the-internal-route", "internal IPv6" in _rc_v6)
+harness.set_conn(dict(conn, port=23, host="203.0.113.10"))
+_rc_v4 = harness.run_command("df -h /")["text"]
+check("connect-fail-names-the-public-route", "public address" in _rc_v4)
+harness.set_conn(conn)
+
+
 # --- the REAL ssh_transport.run_ssh genuinely scrubs box output (fake paramiko -> no connection) ---
 _PW = "Pl4in" + "Pwd77x"
 _AWS = "wJalr" + "XUtnFE" + "MIK7MD" + "ENGbPx"
