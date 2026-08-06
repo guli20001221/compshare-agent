@@ -17,7 +17,8 @@ func TestNewTopicIsQueuedWithoutMentionButReplyIsNot(t *testing.T) {
 		queue:   make(chan job, 2),
 		seen:    make(map[string]time.Time),
 	}
-	chatType := "topic_group"
+	// Feishu represents topic-mode group messages as chat_type=group.
+	chatType := "group"
 	chatID := "oc_topic"
 	senderType := "user"
 	messageType := "post"

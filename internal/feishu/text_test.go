@@ -74,7 +74,10 @@ func TestInputFromImageUsesOCRQuestion(t *testing.T) {
 }
 
 func TestNewTopicRootIsDistinctFromTopicReply(t *testing.T) {
-	chatType := "topic_group"
+	require.False(t, isNewTopicRoot(nil))
+
+	// Feishu sends chat_type=group even when this is a topic-mode group.
+	chatType := "group"
 	threadID := "omt_topic"
 	rootID := "om_root"
 	root := &larkim.EventMessage{MessageId: &rootID, ChatType: &chatType, ThreadId: &threadID}

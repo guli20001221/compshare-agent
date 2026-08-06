@@ -115,13 +115,19 @@ func inputFromMessage(message *larkim.EventMessage) (messageInput, bool) {
 }
 
 // isNewTopicRoot accepts only a documented root-message shape from a topic
-// group. Feishu supplies thread_id for topic messages, while replies inside a
-// topic carry root_id and parent_id pointing at the root message. Requiring all
-// three conditions makes an incomplete or unexpected event fail closed instead
-// of turning every message in a topic group into an automatic reply.
+// group. Message-receive events use chat_type=group for both ordinary groups
+// and topic-mode groups; thread_id is what identifies a topic message. Replies
+// inside a topic carry root_id and parent_id pointing at the root message.
+// Requiring all of those conditions makes an incomplete or unexpected event
+// fail closed instead of turning every message in a topic group into an
+// automatic reply. topic_group remains accepted for compatibility with older
+// SDK/event payloads.
 func isNewTopicRoot(message *larkim.EventMessage) bool {
-	return message != nil &&
-		stringValue(message.ChatType) == "topic_group" &&
+	if message == nil {
+		return false
+	}
+	chatType := stringValue(message.ChatType)
+	return (chatType == "group" || chatType == "topic_group") &&
 		stringValue(message.ThreadId) != "" &&
 		stringValue(message.RootId) == "" &&
 		stringValue(message.ParentId) == ""
