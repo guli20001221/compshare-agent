@@ -232,6 +232,20 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"(ss|netstat)(\s+\S+)*",
     r"ip\s+(-\w+\s+)*(addr|a|link|l|route|r|neigh|n)(\s+(show|list|s|l))?",
     r"getconf(\s+\S+)*",
+    # Listing forms of two binaries whose BARE invocation writes, so both sit in
+    # _MUTATING_BINARIES and every form of them was gated — including the ones that only print.
+    #
+    # Measured cost, 2026-08-07: an OOM diagnosis on a live instance put `swapon --show` behind a
+    # human confirmation card with a countdown. Whether a box has swap, and whether it is full, is
+    # the first fork in OOM triage — so the gate was standing in front of the question the run
+    # existed to answer, for a command that opens no file and changes no state.
+    #
+    # Anchored to the LISTING flags only, and at least one is required: `swapon /swapfile` and
+    # `swapon -a` still enable swap, `mount /dev/sda1 /mnt` still mounts, and all three stay
+    # mutating because they cannot fullmatch. Bare `swapon` is deliberately NOT here — modern
+    # util-linux lists, older versions did not, and the difference is not worth guessing at.
+    r"swapon(\s+(-s|--summary|--show(=\S+)?|--noheadings|--raw|--bytes))+",
+    r"mount(\s+(-l|--list))*",
     r"(nvcc|python3?|pip3?|conda|docker|git|gcc|g\+\+|cmake|go|java|node|npm|ruff|jupyter)\s+(--version|-V|version)",
     r"pip3?\s+(list|show|freeze)(\s+\S+)*",
     r"conda\s+(list|info|env\s+list)(\s+\S+)*",
@@ -806,6 +820,23 @@ def _strip_sudo(cmd: str) -> str:
 # in depth, and the destructive tier above is unchanged and still checked first.
 # =============================================================================
 
+# Listing-only forms of binaries that are otherwise writers. Checked BEFORE _MUTATING_BINARIES,
+# the same shape the interpreters / curl / env carve-outs already use — set membership reads the
+# first token only, so without this there is nowhere for "the form that just prints" to be said.
+#
+# Measured cost of not having it, 2026-08-07: a live OOM diagnosis put `swapon --show` behind a
+# human confirmation card with a countdown. Whether a box has swap, and whether it is full, is the
+# first fork in OOM triage — the gate was standing in front of the question the run existed to
+# answer, for a command that opens no file and changes nothing.
+#
+# Anchored to listing flags, and swapon requires at least one: `swapon /swapfile`, `swapon -a` and
+# `mount /dev/sda1 /mnt` cannot fullmatch and stay mutating. Bare `swapon` is deliberately absent —
+# modern util-linux lists, older versions did not, and that difference is not worth guessing at.
+_LISTING_ONLY = {
+    "swapon": re.compile(r"swapon(\s+(-s|--summary|--show(=\S+)?|--noheadings|--raw|--bytes))+"),
+    "mount": re.compile(r"mount(\s+(-l|--list))*"),
+}
+
 # Binaries whose invocation changes the box (or holds the session open forever).
 _MUTATING_BINARIES = {
     # `rm`/`unlink` belong here as of 2026-07-30. They used to be unconditionally destructive, so
@@ -1257,6 +1288,9 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
         return True
     if binary in _WRAPPER_BINARIES:                       # the effect is the INNER command's
         return _wrapper_is_mutating(binary, tokens, _depth)
+    listing = _LISTING_ONLY.get(binary)
+    if listing and listing.fullmatch(seg):
+        return False                                      # the form that only prints — see _LISTING_ONLY
     if binary in _MUTATING_BINARIES or binary in _EXEC_BINARIES or binary in _NET_BINARIES:
         return True
     ofw = _OUTPUT_FLAG_WRITERS.get(binary)                # reader whose write hides in a flag

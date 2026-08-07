@@ -226,6 +226,38 @@ CLASSIFY_CASES = [
     ("cat /proc/partitions | grep vdb", "read_only"),          # piped to safe filter
     ("cat /etc/fstab | grep -v 'swap'", "read_only"),
 
+    # === F12: the LISTING forms of two writer binaries now auto-run ===
+    # WHY: a live OOM diagnosis on 2026-08-07 put `swapon --show` behind a human confirmation card
+    # with a countdown. Whether a box has swap and whether it is full is the FIRST fork in OOM
+    # triage, so the gate stood in front of the question the run existed to answer — for a command
+    # that opens no file and changes nothing. `mount` with no operands is the same shape: it lists.
+    # Both binaries stay in _MUTATING_BINARIES; only these forms are carved out, before the set
+    # test, the way the interpreter / curl / env carve-outs already work.
+    ("swapon --show", "read_only"),
+    ("swapon -s", "read_only"),
+    ("swapon --summary", "read_only"),
+    ("swapon --show=NAME,TYPE,SIZE,USED", "read_only"),
+    ("swapon --noheadings --show", "read_only"),
+    ("mount", "read_only"),
+    ("mount -l", "read_only"),
+    ("free -h; swapon --show; cat /proc/meminfo", "read_only"),   # the real OOM triage chain
+
+    # === F12 bypass attempts that MUST stay refused ===
+    # Every one of these ENABLES swap or mounts something. The carve-out is anchored to listing
+    # flags and cannot fullmatch any of them; if it ever does, a write auto-runs with no card.
+    ("swapon /swapfile", "mutating"),
+    ("swapon -a", "mutating"),
+    ("swapon --all", "mutating"),
+    ("swapon --show /swapfile", "mutating"),          # a listing flag does not launder an operand
+    ("swapon", "mutating"),                           # bare form differs across util-linux versions
+    ("mount /dev/vdb1 /mnt", "mutating"),
+    ("mount -a", "mutating"),
+    ("mount -o remount,rw /", "mutating"),
+    ("mount --bind /var /mnt", "mutating"),
+    ("umount /mnt", "mutating"),
+    ("swapoff -a", "destructive"),
+    ("mkswap /swapfile", "mutating"),
+
     # === F8 bypass attempts that MUST stay refused ===
     ("cat /etc/passwd", "mutating"),                           # /etc NOT opened broadly — exact only
     ("cat /etc/ssh/sshd_config", "mutating"),
