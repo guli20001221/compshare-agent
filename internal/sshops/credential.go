@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -237,7 +238,28 @@ func resolveDialHost(ctx context.Context, hr HostResolver, inst map[string]any, 
 	if strings.TrimSpace(resolved) == "" {
 		return advertised, nil
 	}
+	// Record the address that was actually dialled. It is logged ONLY here, on the success path,
+	// because the failure path already logs (cmd/instance_ops.go) and between them no one could see
+	// the address at all: a rewrite that produced a real-but-unroutable address and one that produced
+	// a wrong address both surfaced as the same silent timeout. Settling which it was then took a
+	// day of indirect evidence, and it is the same line that will show a route fix took effect.
+	//
+	// Safe to log: an internal VPC fabric address is infrastructure, the same class of fact as
+	// mysql.host_override in the shipped production config — not a credential, and it names no
+	// tenant. The advertised host stays out so the pair cannot be used to map EIP -> internal.
+	log.Printf("ssh-ops: dialling internal address %s for instance %s", resolved, instanceIDOf(inst))
 	return resolved, nil
+}
+
+// instanceIDOf reports the instance id for a log line, or "?" when the describe map has none.
+// Kept tiny and total: a missing id must never panic the dial path it is only annotating.
+func instanceIDOf(inst map[string]any) string {
+	for _, k := range []string{"UHostId", "InstanceId", "Id"} {
+		if s, ok := inst[k].(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return "?"
 }
 
 // resolveInstance finds the requested instance in a describe response and fails

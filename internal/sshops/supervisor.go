@@ -61,6 +61,17 @@ type Result struct {
 	Steps    []Step // one per command the harness ran/refused, in order (the activity stream + audit trail)
 	ExitCode int
 	TimedOut bool
+	// PreflightFailed reports that the dial never landed, so NO command ran and the verdict is a
+	// refusal notice rather than a diagnosis. It comes from the harness's @@OUTCOME line, not from
+	// guessing at len(Steps): a run can legitimately execute zero commands, and inferring the
+	// disposition from that would relabel a real diagnosis as a failed dial.
+	//
+	// The zero value means "entered", so a harness that predates @@OUTCOME behaves exactly as before.
+	PreflightFailed bool
+	// ErrClass is the credential-free failure class behind PreflightFailed — paramiko's exception type
+	// name, calibrated in _DIAL_CLASS_REASONS: TimeoutError = packets dropped, NoValidConnectionsError
+	// = actively refused, gaierror = DNS. Empty on a run that entered the box.
+	ErrClass string
 }
 
 // Step is one command the harness ran or refused, parsed from an @@STEP wire line. Metadata ONLY —
@@ -207,11 +218,16 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onSte
 		}
 		_, _ = stdin.Write(append(reply, '\n'))
 	}
-	verdict, steps, parseErr := parseHarnessStream(stdout, onStep, answer)
+	verdict, steps, outcome, parseErr := parseHarnessStream(stdout, onStep, answer)
 	runErr := cmd.Wait()
 	_ = killProcGroup(cmd) // best-effort reap of any strays the SDK left in the group
 
-	res := Result{Output: verdict, Steps: steps}
+	res := Result{
+		Output:          verdict,
+		Steps:           steps,
+		PreflightFailed: outcome.Outcome == outcomePreflightFailed,
+		ErrClass:        outcome.ErrClass,
+	}
 	if cmd.ProcessState != nil {
 		res.ExitCode = cmd.ProcessState.ExitCode()
 	}
@@ -248,7 +264,18 @@ const (
 //
 // onStep, if non-nil, is invoked once per parsed @@STEP as it is read (bounded by the same step cap),
 // so a caller can surface a live activity stream instead of waiting for the whole run to finish.
-func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRequest)) (verdict string, steps []Step, err error) {
+// outcomePreflightFailed is the only @@OUTCOME value the harness emits today. Unknown values are kept
+// verbatim in harnessOutcome.Outcome but map to "entered", so a newer harness inventing a value cannot
+// silently turn a successful diagnosis into a refusal on an older supervisor.
+const outcomePreflightFailed = "preflight_failed"
+
+// harnessOutcome is the parsed @@OUTCOME line. Absent line -> zero value -> the box was entered.
+type harnessOutcome struct {
+	Outcome  string `json:"outcome"`
+	ErrClass string `json:"err_class"`
+}
+
+func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRequest)) (verdict string, steps []Step, outcome harnessOutcome, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxHarnessStepLine)
 	var total int
@@ -258,7 +285,7 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 		line := sc.Text()
 		total += len(line) + 1
 		if total > maxHarnessStdoutBytes {
-			return strings.TrimSpace(vb.String()), steps,
+			return strings.TrimSpace(vb.String()), steps, outcome,
 				fmt.Errorf("harness stdout exceeded %d bytes", maxHarnessStdoutBytes)
 		}
 		switch {
@@ -292,12 +319,20 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 					onStep(st) // live: fire as parsed, bounded by the same step cap above
 				}
 			}
+		case strings.HasPrefix(line, "@@OUTCOME "):
+			// Last one wins, and an unparseable payload leaves the zero value — i.e. "entered".
+			// Failing open here is deliberate: the disposition it feeds is an audit label, and
+			// mislabelling a real diagnosis as a dial that never happened is the worse error.
+			var oc harnessOutcome
+			if json.Unmarshal([]byte(line[len("@@OUTCOME "):]), &oc) == nil {
+				outcome = oc
+			}
 		}
 	}
 	if e := sc.Err(); e != nil {
-		return strings.TrimSpace(vb.String()), steps, e
+		return strings.TrimSpace(vb.String()), steps, outcome, e
 	}
-	return strings.TrimSpace(vb.String()), steps, nil
+	return strings.TrimSpace(vb.String()), steps, outcome, nil
 }
 
 func parseStep(payload string) (Step, bool) {

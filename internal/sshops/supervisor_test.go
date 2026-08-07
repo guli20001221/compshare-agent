@@ -254,7 +254,7 @@ func TestParseHarnessStream(t *testing.T) {
 	}, "\n") + "\n"
 
 	var streamed []Step
-	verdict, steps, err := parseHarnessStream(strings.NewReader(in), func(st Step) { streamed = append(streamed, st) }, nil)
+	verdict, steps, _, err := parseHarnessStream(strings.NewReader(in), func(st Step) { streamed = append(streamed, st) }, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestParseHarnessStream(t *testing.T) {
 	}
 
 	// no verdict markers -> empty Output, chatter ignored, no steps
-	v2, s2, err := parseHarnessStream(strings.NewReader("just chatter\nno protocol here\n"), nil, nil)
+	v2, s2, _, err := parseHarnessStream(strings.NewReader("just chatter\nno protocol here\n"), nil, nil)
 	if err != nil {
 		t.Fatalf("parse2: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestParseHarnessStreamCaps(t *testing.T) {
 		b.WriteString(`@@STEP {"command":"x","tier":"read_only","disposition":"ran","exit":0,"bytes":1}` + "\n")
 	}
 	var streamedCap int
-	_, steps, err := parseHarnessStream(strings.NewReader(b.String()), func(Step) { streamedCap++ }, nil)
+	_, steps, _, err := parseHarnessStream(strings.NewReader(b.String()), func(Step) { streamedCap++ }, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestParseHarnessStreamCaps(t *testing.T) {
 		big.WriteString(filler)
 	}
 	big.WriteString("<<<END>>>\n")
-	if _, _, err := parseHarnessStream(strings.NewReader(big.String()), nil, nil); err == nil {
+	if _, _, _, err := parseHarnessStream(strings.NewReader(big.String()), nil, nil); err == nil {
 		t.Fatalf("expected error when stdout exceeds %d bytes", maxHarnessStdoutBytes)
 	}
 }
