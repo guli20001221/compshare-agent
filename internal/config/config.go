@@ -140,6 +140,25 @@ type SSHOpsConfig struct {
 	// Default off, because on a developer machine the opposite is true: the EIP is the
 	// only reachable address and the internal gateway is not routable at all.
 	InternalIPv6 bool `yaml:"internal_ipv6"`
+	// PublicIPv6Prefix, when set, gives the lane a SECOND address to try when the internal
+	// one does not answer: the instance's public IPv4 expressed under this translation
+	// prefix (both the simple low-32-bit form and the RFC 6052 /48 form are attempted).
+	//
+	// It exists for one measured gap. cn-wlcb-01 is reached over its internal IPv6 and
+	// cn-sh2-02 is not — the deployment runs in the c5 cluster and cn-sh2 sits behind c3,
+	// so the mapping resolves and the dial goes nowhere. A translation prefix, if this
+	// network really runs one, would reach the box without a per-cluster fabric route.
+	//
+	// The prefix itself is an UNVERIFIED claim about the network: it was reported from a
+	// document nobody can now locate, `2002:a40:2e05::` decodes as the 6to4 block of the
+	// private address 10.64.46.5, and that /48 is announced by no AS on the public
+	// internet. So this is deliberately a setting and deliberately empty by default —
+	// wrong prefix means an ops edit, not a code change, and a deployment that never sets
+	// it dials exactly what it dialled before.
+	//
+	// Ordering is the safety property, not this field: the internal address stays the
+	// first candidate and the public IPv4 is never dialled in any position.
+	PublicIPv6Prefix string `yaml:"public_ipv6_prefix"`
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).
