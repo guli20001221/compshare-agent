@@ -69,10 +69,11 @@ const (
 	// withdrawn from the tool list so the model must answer from what it has (or
 	// decline) well within budget.
 	//
-	// Each call executes exactly the query the Agent supplied. The Agent already
-	// has the full transcript and is responsible for resolving follow-up context;
-	// there is no hidden rewrite model call or server-side query fan-out.
+	// This bounds agent decisions to search, rather than the query variants a
+	// single contextualized search fans out into. A separate retrieval budget
+	// prevents one wide rewrite from consuming every later corrective hop.
 	maxSearchKnowledgeCallsPerTurn = 4
+	maxRetrievalQueriesPerTurn     = 8
 )
 
 const actionOutcomeUncertainReply = "上游请求已发出，但本次没有收到可确认的结果。为避免重复操作，系统不会自动重试；请先查询资源当前状态，再决定下一步。"
@@ -304,13 +305,21 @@ type Engine struct {
 	// SearchKnowledge this turn. The ReAct loop withdraws the capability at
 	// maxSearchKnowledgeCallsPerTurn, preventing search thrash.
 	searchKnowledgeCallsThisTurn int
+	// searchKnowledgeQueriesThisTurn counts actual retrievals, including the
+	// bounded query-plan fan-out. It is intentionally separate from the Agent's
+	// call budget so one rewrite cannot hide the availability of later searches.
+	searchKnowledgeQueriesThisTurn int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
 	// evidence ledger (the union of every SearchKnowledge call's items this turn,
 	// #126). The route-independent grounded-answer validator checks the final
 	// synthesis cites only ChunkIDs present here. Reset per turn; populated only
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
-	searchKnowledgeLedgerThisTurn       knowledge.EvidenceLedger
+	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
+	// resolvedKnowledgeQuestionThisTurn is the standalone answer target produced
+	// by the query planner. Retrieval queries may be narrower variants, but answer
+	// verification remains anchored to this one user problem.
+	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
 	// knowledgeQAAgentLoopThisTurn records that SearchKnowledge ran this turn —
@@ -1328,7 +1337,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readChunkIDsThisTurn = nil
 	e.searchKnowledgeCapabilitiesThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
+	e.searchKnowledgeQueriesThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
+	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
@@ -2472,66 +2483,112 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if query == "" {
 		query = hint
 	}
-	resolvedQuestion := e.resolvedKnowledgeQuestion(query)
+	plan := fallbackKnowledgeQueryPlan(query)
+	if e.resolvedKnowledgeQuestionThisTurn == "" {
+		plan = e.planKnowledgeQuery(ctx, query)
+		e.resolvedKnowledgeQuestionThisTurn = plan.AnswerQuestion
+	}
+	resolvedQuestion := e.resolvedKnowledgeQuestionThisTurn
+	if resolvedQuestion == "" {
+		resolvedQuestion = query
+	}
+	if len(plan.SearchQueries) == 0 && query != "" {
+		plan.SearchQueries = []string{query}
+	}
 	knowledgeSource := e.knowledgeToolSource()
 	onStep(StepEvent{
 		Type:   StepToolCall,
 		Action: "SearchKnowledge",
 		Source: knowledgeSource,
-		Args:   map[string]any{"query": query},
+		Args: map[string]any{
+			"answer_question": resolvedQuestion,
+			"queries":         append([]string(nil), plan.SearchQueries...),
+		},
 	})
 	if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "本轮检索次数已达上限"})
 		return `{"EvidenceLedger":{"items":[]},"empty":true,"search_limit_reached":true}`
 	}
 	e.searchKnowledgeCallsThisTurn++
-	if e.knowledgeRetriever == nil || query == "" {
+	if e.knowledgeRetriever == nil || len(plan.SearchQueries) == 0 {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, "", nil)
 	}
 
-	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
-	retrieved := e.knowledgeRetriever.RetrieveContext(ctx, query, hint)
-	e.searchKnowledgeRanThisTurn = true
-	if retrieved.Unavailable {
-		e.recordSearchKnowledgeActivity(observability.RetrievalActivity{ID: activityID, Query: query}, nil)
-		e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, query, retrieved, nil, false, activityID)
-		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "知识库服务暂时不可用", TraceResult: map[string]any{"queries": 1, "items": 0}})
-		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, "", map[string]any{
-			"knowledge_unavailable": true,
-			"error":                 "知识库服务暂时不可用，请稍后重试。",
-		})
+	combined := knowledge.EvidenceLedger{Query: resolvedQuestion}
+	executedQueries := 0
+	droppedQueries := 0
+	unavailableQueries := 0
+	successfulQueries := 0
+	for _, plannedQuery := range plan.SearchQueries {
+		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
+			droppedQueries = len(plan.SearchQueries) - executedQueries
+			break
+		}
+		e.searchKnowledgeQueriesThisTurn++
+		executedQueries++
+		activityID := fmt.Sprintf("search_%d", e.searchKnowledgeQueriesThisTurn)
+		retrieved := e.knowledgeRetriever.RetrieveContext(ctx, plannedQuery, hint)
+		e.searchKnowledgeRanThisTurn = true
+		if retrieved.Unavailable {
+			unavailableQueries++
+			e.recordSearchKnowledgeActivity(observability.RetrievalActivity{ID: activityID, Query: plannedQuery}, nil)
+			e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, plannedQuery, retrieved, nil, false, activityID)
+			continue
+		}
+		successfulQueries++
+		rawHits := retrieved.HitItems
+		hits := rawHits
+		floorDroppedAll := false
+		if isWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") {
+			hits = nil
+			floorDroppedAll = len(rawHits) > 0
+		}
+		ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
+		combined = knowledge.MergeEvidenceLedgers(combined, ledger, maxKnowledgePlanQueries*knowledge.DefaultEvidenceLedgerMaxItems)
+		e.recordSearchKnowledgeCapabilities(retrieved.SearchID, ledger)
+		e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+		e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
+			ID:              activityID,
+			Query:           plannedQuery,
+			Hits:            len(retrieved.Hits),
+			FloorDroppedAll: floorDroppedAll,
+		}, hits)
+		e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
 	}
-
-	rawHits := retrieved.HitItems
-	hits := rawHits
-	floorDroppedAll := false
-	if isWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") {
-		hits = nil
-		floorDroppedAll = len(rawHits) > 0
+	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
+	message := "搜索完成"
+	if successfulQueries == 0 && unavailableQueries > 0 {
+		message = "知识库服务暂时不可用"
 	}
-	ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
-	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
-	e.recordSearchKnowledgeCapabilities(retrieved.SearchID, ledger)
-	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
-	e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
-		ID:              activityID,
-		Query:           query,
-		Hits:            len(retrieved.Hits),
-		FloorDroppedAll: floorDroppedAll,
-	}, hits)
-	e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, query, retrieved, rawHits, floorDroppedAll, activityID)
 	onStep(StepEvent{
 		Type:    StepToolResult,
 		Action:  "SearchKnowledge",
 		Source:  knowledgeSource,
-		Message: "搜索完成",
+		Message: message,
 		TraceResult: map[string]any{
-			"items":   len(ledger.Items),
-			"queries": 1,
+			"items":               len(combined.Items),
+			"queries":             executedQueries,
+			"planned_queries":     len(plan.SearchQueries),
+			"dropped_queries":     droppedQueries,
+			"unavailable_queries": unavailableQueries,
 		},
 	})
-	return searchKnowledgeResultJSON(ledger, "", nil)
+	if successfulQueries == 0 && unavailableQueries > 0 {
+		return searchKnowledgeResultJSON(combined, "", map[string]any{
+			"knowledge_unavailable": true,
+			"error":                 "知识库服务暂时不可用，请稍后重试。",
+		})
+	}
+	if unavailableQueries > 0 {
+		return searchKnowledgeResultJSON(combined, "", map[string]any{
+			"knowledge_unavailable": true,
+			"partial":               true,
+			"unavailable_queries":   unavailableQueries,
+			"error":                 "知识库部分检索暂时不可用，当前证据可能不完整。",
+		})
+	}
+	return searchKnowledgeResultJSON(combined, "", nil)
 }
 
 func (e *Engine) recordSearchKnowledgeCapabilities(searchID string, ledger knowledge.EvidenceLedger) {

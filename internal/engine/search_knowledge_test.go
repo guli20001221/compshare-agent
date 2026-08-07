@@ -66,33 +66,6 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
 }
 
-func TestSearchKnowledgeUsesAgentQueryWithoutAHiddenPlannerCall(t *testing.T) {
-	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{Enabled: true}}}
-	model := &mockLLM{}
-	eng := NewWithDeps(model, &mockExecutor{}, nil)
-	eng.SetKnowledgeRetriever(retriever)
-	eng.lastUserMsg = "那关机以后呢，还会继续收哪些费用？"
-	eng.turnContextViewReady = true
-	eng.turnContextViewThisTurn = AgentContext{
-		CurrentQuestion: eng.lastUserMsg,
-		RecentConversation: []ConversationPair{{
-			User:      "磁盘怎么收费？",
-			Assistant: "系统盘免费额度之外和数据盘按规则计费。",
-		}},
-	}
-
-	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{
-		"query": "关机后数据盘收费",
-	}, noopStep)
-
-	require.Len(t, retriever.calls, 1)
-	assert.Equal(t, "关机后数据盘收费", retriever.calls[0].question)
-	assert.Empty(t, model.calls,
-		"the Agent already has the transcript; SearchKnowledge must not invoke a hidden query-planning model")
-	assert.Equal(t, eng.lastUserMsg, eng.searchKnowledgeLedgerThisTurn.Query,
-		"answer validation stays anchored to the user question, not a rewritten query")
-}
-
 // A remote MCP outage is an operational result, not a corpus-gap result. The
 // model receives a safe retry signal and the trace must not label it
 // no_evidence, which would send operators to edit KB content for a network or
@@ -118,6 +91,23 @@ func TestExecuteSearchKnowledge_RemoteUnavailableIsDistinctFromEmpty(t *testing.
 	assert.True(t, traces[0].Unavailable)
 	assert.Equal(t, "mcp_unavailable", traces[0].FailureReason)
 	assert.Empty(t, traces[0].RefusedReason)
+}
+
+func TestExecuteSearchKnowledge_PartialRemoteUnavailableIsVisible(t *testing.T) {
+	eng, retriever := planningEngineWithConversation(t,
+		`{"answer_question":"实例关机后还会产生哪些费用","search_queries":["关机后计费规则","数据盘关机是否计费"]}`,
+		[]knowledge.RetrievalResult{
+			{Enabled: true, Empty: true, Unavailable: true, FailureReason: "mcp_timeout"},
+			{Enabled: true, Empty: true},
+		},
+	)
+
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
+
+	require.Len(t, retriever.calls, 2)
+	assert.Contains(t, out, `"knowledge_unavailable":true`)
+	assert.Contains(t, out, `"partial":true`)
+	assert.Contains(t, out, `"unavailable_queries":1`)
 }
 
 func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(t *testing.T) {
@@ -147,8 +137,10 @@ func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(
 
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "GPU 能否调整"}, noopStep)
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "更换 GPU 数据会变吗"}, noopStep)
+	assert.Equal(t, "GPU 能否调整", eng.resolvedKnowledgeQuestionThisTurn,
+		"the first history-aware query is the stable question the answer must resolve")
 	assert.Equal(t, "GPU 能否调整", eng.searchKnowledgeLedgerThisTurn.Query,
-		"later searches must not turn the verifier input into a synthetic q1 | q2 question")
+		"later subqueries must not turn the verifier input into a synthetic q1 | q2 question")
 	assert.NotContains(t, eng.searchKnowledgeLedgerThisTurn.Query, " | ")
 	report := knowledge.ValidateGroundedCitations("GPU 调整和数据保留分别见资料 [[chunk-a]] [[chunk-b]]。", eng.searchKnowledgeLedgerThisTurn)
 	require.True(t, report.Grounded())

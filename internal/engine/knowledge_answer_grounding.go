@@ -8,22 +8,25 @@ import (
 	"github.com/compshare-agent/internal/observability"
 )
 
-// Every SearchKnowledge call contributes at most DefaultEvidenceLedgerMaxItems,
-// and the Agent can make at most maxSearchKnowledgeCallsPerTurn calls.
-const searchKnowledgeLedgerTurnMaxItems = maxSearchKnowledgeCallsPerTurn * knowledge.DefaultEvidenceLedgerMaxItems
+// Large enough to preserve every evidence item shown during one bounded turn.
+// One SearchKnowledge call may fan out into several retrieval queries, so the
+// limit must not be derived from the number of Agent tool calls alone.
+const searchKnowledgeLedgerTurnMaxItems = 256
 
-// resolvedKnowledgeQuestion is the user question used after retrieval. The
-// Agent itself resolves follow-up references from canonical transcript before it
-// chooses a search query; the runtime does not rewrite that query or run a second
-// planning model. A missing turn message falls back to the first search query.
+// resolvedKnowledgeQuestion is the single question used after retrieval. The
+// bounded query planner separates that answer target from its retrieval queries;
+// using the short last utterance again (for example "粘贴呢") would split
+// retrieval from synthesis. A missing value is repaired once at the boundary so
+// every later stage reads the same question.
 func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
-	resolved := strings.TrimSpace(e.lastUserMsg)
+	resolved := strings.TrimSpace(e.resolvedKnowledgeQuestionThisTurn)
 	if resolved == "" {
 		resolved = strings.TrimSpace(e.searchKnowledgeLedgerThisTurn.Query)
 	}
 	if resolved == "" {
 		resolved = strings.TrimSpace(fallback)
 	}
+	e.resolvedKnowledgeQuestionThisTurn = resolved
 	e.searchKnowledgeLedgerThisTurn.Query = resolved
 	return resolved
 }
