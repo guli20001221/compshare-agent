@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestContextCompilerPreservesCompleteFollowupContextAndStructuredTask(t *testing.T) {
+func TestContextCompilerPreservesCompleteFollowupContextAndLiveSelection(t *testing.T) {
 	now := time.Unix(1_750_000_000, 0)
 	eng := &Engine{
 		sessionStateHydrated: true,
@@ -22,25 +22,21 @@ func TestContextCompilerPreservesCompleteFollowupContextAndStructuredTask(t *tes
 			{Role: openai.ChatMessageRoleAssistant, Content: "选中文本后按 Ctrl+Shift+C。"},
 		},
 		sessionState: SessionState{
-			TaskSnapshot: TaskSnapshot{
-				Goal: "给训练机扩容", Status: TaskSnapshotStatusActive,
-				MissingSlots: []string{"目标容量"},
-				Entities:     []SemanticEntityHint{{Kind: "instance", ID: "uhost-1", Name: "训练机", Freshness: ContinuityFreshnessFresh}},
-			},
-			SelectedInstanceID: "uhost-1",
+			SelectedInstanceID:     "uhost-1",
+			SelectedInstanceName:   "训练机",
+			SelectedInstanceSource: SelectedInstanceSourceUser,
 		},
 	}
 
 	view := (ContextCompiler{}).Compile(eng, "粘贴呢", now)
 	require.Equal(t, "粘贴呢", view.CurrentQuestion)
 	require.Equal(t, []ConversationPair{{User: "Windows 终端怎么复制？", Assistant: "选中文本后按 Ctrl+Shift+C。"}}, view.RecentConversation)
-	require.NotNil(t, view.ActiveTask)
-	require.Equal(t, []string{"目标容量"}, view.ActiveTask.MissingSlots)
 	require.NotEmpty(t, view.SelectedEntities)
+	require.Equal(t, "训练机", view.SelectedEntities[0].Name)
 
-	eng.sessionState.TaskSnapshot.MissingSlots[0] = "被后续修改"
+	eng.sessionState.SelectedInstanceName = "被后续修改"
 	eng.messages[1].Content = "被后续修改"
-	require.Equal(t, "目标容量", view.ActiveTask.MissingSlots[0], "compiled context must be immutable")
+	require.Equal(t, "训练机", view.SelectedEntities[0].Name, "compiled context must be immutable")
 	require.Equal(t, "Windows 终端怎么复制？", view.RecentConversation[0].User)
 }
 
@@ -148,9 +144,7 @@ func TestMessagesFromAgentContextIncludesCurrentQuestionExactlyOnce(t *testing.T
 func TestChatModelHistoryComesFromAgentContextNotRetainedRawTranscript(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "继续处理"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, TaskSnapshot: TaskSnapshot{
-		Goal: "保留这个结构化任务", Status: TaskSnapshotStatusActive, MissingSlots: []string{"下一步"},
-	}}, 1)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "system"},
 		{Role: openai.ChatMessageRoleUser, Content: "怎么复制"},
@@ -166,6 +160,5 @@ func TestChatModelHistoryComesFromAgentContextNotRetainedRawTranscript(t *testin
 	require.Contains(t, modelInput, "怎么复制")
 	require.Contains(t, modelInput, "复制用 Ctrl+Shift+C")
 	require.Contains(t, modelInput, "粘贴呢")
-	require.Contains(t, modelInput, "保留这个结构化任务")
 	require.NotContains(t, modelInput, "must-not-reach-next-turn")
 }

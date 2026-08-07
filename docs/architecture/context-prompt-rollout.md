@@ -20,7 +20,7 @@ This document records the rollout gates for the console-agent context and planne
 | `PLANNER_STRUCTURED_OUTPUT=json_object` | off | planner | Requests JSON-object response format from providers that support it. Keep off until provider 400 rate is clean in smoke. |
 | `USE_SKILL_EXECUTOR=1` | off | diagnosis agent skills | Enables the body-read skill executor. Must be paired with an allowlist. |
 | `USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS=diagnose_port_firewall,diagnose_gpu_not_detected` | empty | diagnosis agent skills | Limit rollout to audited pilot diagnosis skills. Do not enable all diagnosis skills at once. |
-| `USE_SESSION_FACT_CONTEXT=1` | off | HTTP hydrated sessions | Reads same-session `RecentFacts` into an advisory 30s prompt block. CLI does not hydrate session state, so CLI is not an end-to-end proof for this flag. |
+| `USE_SESSION_FACT_CONTEXT=1` | off | HTTP hydrated sessions | Historical flag name only. The current runtime uses it for a trace label and staleness accounting; it no longer injects `RecentFacts` into model context. |
 | `USE_REACT_RESULT_PROJECTION=1` | off | CLI + HTTP ReAct | Shrinks selected bulky read-only tool results before they enter model-visible history. |
 | `USE_REACT_HISTORY_COMPACTION=1` | off | CLI + HTTP ReAct | Replaces count-only long-history trimming with deterministic summary and old retrievable-tool placeholders. |
 | `RAG_RETRIEVAL_MODE=qwen3_rrf` | default runtime | terminal RAG + diagnosis evidence | Current strong baseline. Adaptive query rewrite remains deferred and must be introduced behind a separate default-off flag if reopened. |

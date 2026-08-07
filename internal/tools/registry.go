@@ -552,13 +552,14 @@ var Registry = []openai.Tool{
 					},
 					"ImageName": map[string]any{
 						"type":        "string",
-						"description": "镜像名称或关键词。用户本轮说出名称、简称或版本时必须原样填写；即使近期对话中已有精确 CompShareImageId，也要同时保留本轮名称，供服务端核对。没有精确 ID 时用于目录搜索。",
+						"description": "镜像名称或关键词。没有精确 ID 时用于目录搜索；用户明确改选另一镜像时原样填写。近期完整对话已有精确 CompShareImageId 且用户只是复述或简称该推荐时，以 ID 为准，不必同时填写本字段。",
 					},
 					// Carry an exact id when one is known because it names one
-					// version without depending on fuzzy-search wording. Keep a
-					// name the user supplied this turn alongside it: the server
-					// checks that the carried version still matches the newer
-					// instruction before offering it as the picker default.
+					// version without depending on fuzzy-search wording. A user
+					// restating or abbreviating that recommendation does not need a
+					// second name field: the exact, transcript-grounded id is the
+					// stronger evidence. A genuinely different user-chosen name
+					// still replaces the historical candidate.
 					//
 					// The value may come from a listing seen this turn OR an exact id
 					// printed in the recent complete conversation. It is only a
@@ -567,7 +568,7 @@ var Registry = []openai.Tool{
 					// rejected, never replaced by a name-matched image.
 					"CompShareImageId": map[string]any{
 						"type":        "string",
-						"description": "镜像 ID，如 compshareImage-xxxx。本轮镜像查询或近期完整对话看到精确 ID 时，原样填写并同时填写 ImageSource。历史 ID 只作待实时核验和用户确认的候选；不得填写对话中从未逐字出现的 ID 或凭空编造。若用户本轮另说名称、简称或版本，必须同时填写 ImageName，不得用与本轮名称无关的历史 ID。",
+						"description": "镜像 ID，如 compshareImage-xxxx。本轮镜像查询或近期完整对话看到精确 ID 时，原样填写并同时填写 ImageSource。历史 ID 只作待实时核验和用户确认的候选；不得填写对话中从未逐字出现的 ID 或凭空编造。用户只是复述或简称该推荐时保留该 ID；若明确改选不同镜像，则不要沿用无关历史 ID，并填写新的 ImageName。",
 					},
 				},
 				"required": []string{"GpuType"},

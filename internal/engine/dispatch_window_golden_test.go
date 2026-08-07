@@ -30,12 +30,12 @@ import (
 //                                 the window because the merge took main's
 //                                 route-based knowledge test (ActionRouteKnowledge)
 //                                 over this branch's `Name == "SearchKnowledge"`.
-// Net 21 -> 22 read-only and 38 -> 39 mutating. DiagnoseInstanceInternals is
+// Net 20 -> 21 read-only and 37 -> 38 mutating after the task-state memory
+// tool was deleted. DiagnoseInstanceInternals is
 // still absent from BOTH goldens: they are captured with instanceOps=false, so
 // the lane-off window stays byte-identical to a build without the tool (INV-10).
 
 var goldenWindowReadOnly = []string{
-	"UpdateTaskState",
 	"ReadCapability_account_finance_status",
 	"ReadCapability_cfs_create_price",
 	"ReadCapability_cfs_list",
@@ -60,7 +60,6 @@ var goldenWindowReadOnly = []string{
 }
 
 var goldenWindowMutating = []string{
-	"UpdateTaskState",
 	"RequestCreateInstance",
 	"RequestStopInstance",
 	"RequestStartInstance",
@@ -113,6 +112,6 @@ func TestCentralAgentToolWindowGolden(t *testing.T) {
 // makes an accidental duplicate visible as a count mismatch rather than as a
 // slice diff buried in 37 lines.
 func TestCentralAgentToolWindowGoldenCounts(t *testing.T) {
-	require.Len(t, centralAgentToolNames(false, false), 22)
-	require.Len(t, centralAgentToolNames(true, false), 39)
+	require.Len(t, centralAgentToolNames(false, false), 21)
+	require.Len(t, centralAgentToolNames(true, false), 38)
 }

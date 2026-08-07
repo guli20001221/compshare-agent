@@ -136,9 +136,6 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 	proposalPolicy := policyForAction(ProposeActionName)
 	proposalPolicy.AllowedParams = []string{"turn_id", "operation", "slots"}
 	policies[ProposeActionName] = proposalPolicy
-	taskStatePolicy := policyForAction(UpdateTaskStateName)
-	taskStatePolicy.AllowedParams = []string{"relation", "task"}
-	policies[UpdateTaskStateName] = taskStatePolicy
 
 	return policies
 }
@@ -321,7 +318,6 @@ func actionAllowsBackendIsPod(action string) bool {
 		return false
 	}
 }
-
 
 func actionAllowsBackendZoneRegion(action string) bool {
 	switch action {

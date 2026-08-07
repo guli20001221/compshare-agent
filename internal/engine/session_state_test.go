@@ -227,8 +227,10 @@ func TestParsePersistedContext_RecognizesKnownSchemaVersion(t *testing.T) {
 	pc, err = ParsePersistedContext(raw)
 	require.NoError(t, err)
 	assert.Equal(t, SessionStateSchemaV5, pc.AgentSessionState.SchemaVersion)
-	assert.Equal(t, "给训练机扩容", pc.AgentSessionState.TaskSnapshot.Goal)
-	assert.Equal(t, []string{"target_size_gb"}, pc.AgentSessionState.TaskSnapshot.MissingSlots)
+	rewritten, err := json.Marshal(pc.AgentSessionState)
+	require.NoError(t, err)
+	assert.NotContains(t, string(rewritten), "task_snapshot",
+		"legacy task summaries decode for compatibility but are not re-persisted")
 
 	raw = json.RawMessage(`{"agent_session_state":{"schema_version":"6.0","verified_knowledge":[{"question":"终端怎么粘贴","answer":"使用 Ctrl+Shift+V","evidence":{"query":"终端怎么粘贴","items":[{"chunk_id":"terminal-paste-001","snippet":"使用 Ctrl+Shift+V 粘贴"}]},"verified_at_unix":1716530100}]}}`)
 	pc, err = ParsePersistedContext(raw)

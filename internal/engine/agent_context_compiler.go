@@ -11,25 +11,8 @@ import (
 func cloneAgentContext(in AgentContext) AgentContext {
 	out := in
 	out.RecentConversation = append([]ConversationPair(nil), in.RecentConversation...)
-	if in.ActiveTask != nil {
-		copy := cloneTaskSnapshot(*in.ActiveTask)
-		out.ActiveTask = &copy
-	}
 	out.SelectedEntities = cloneEntityHints(in.SelectedEntities)
 	out.ContinuityNotices = append([]string(nil), in.ContinuityNotices...)
-	return out
-}
-
-func cloneTaskSnapshot(in TaskSnapshot) TaskSnapshot {
-	out := in
-	out.Goal = safeContextText(in.Goal)
-	out.Intent = safeContextText(in.Intent)
-	out.Workflow = safeContextText(in.Workflow)
-	out.Stage = safeContextText(in.Stage)
-	out.Constraints = safeContextItems(in.Constraints)
-	out.Decisions = safeContextItems(in.Decisions)
-	out.MissingSlots = safeContextItems(in.MissingSlots)
-	out.Entities = cloneEntityHints(in.Entities)
 	return out
 }
 
@@ -55,7 +38,6 @@ func safeContextItems(in []string) []string {
 	}
 	return out
 }
-
 
 // staleObservationNotices is what survives of the RecentFacts projection.
 //
@@ -125,80 +107,42 @@ func safeContextNarrative(value string) string {
 	return compactSemanticNarrative(security.RedactOperationalTokensInText(value))
 }
 
-// isLiveSelectionHint reports whether one SelectedEntities row is live execution
+// isLiveSelectionHint reports whether one SelectedEntities row is live selection
 // state rather than semantic memory about the conversation.
 //
-// CompileForTurn assembles SelectedEntities from five sources and only three are
-// execution state: the account's sole instance, the pending selection card's
-// numbered candidates, and the current SelectedInstanceID with its provenance
-// (user_selected or observed). The other two — TaskSnapshot.Entities and
-// ConversationDigest.EntityHints — are the semantic layer the canonical transcript
-// replaces, and they arrive carrying actionresolver CandidateSource values
-// (user_explicit / verified_context / tool_observation / user_confirmation /
-// agent_inference).
+// CompileForTurn assembles SelectedEntities from the account's sole instance,
+// the pending selection card's numbered candidates, and the current
+// SelectedInstanceID with its provenance (user_selected or observed). They are
+// execution state, not a semantic summary of the conversation. A legacy selected
+// instance may have an empty source; it remains visible for understanding but is
+// not a write-selection proof (selection_binder has its own stricter allowlist).
 //
 // An allowlist rather than a denylist, so a semantic source added later is
 // excluded by default instead of admitted by an out-of-date list.
 func isLiveSelectionHint(hint SemanticEntityHint) bool {
 	switch hint.Source {
 	case selectionSourceAccountSingle, selectionSourcePendingCard,
-		SelectedInstanceSourceUser, SelectedInstanceSourceObserved:
+		SelectedInstanceSourceUser, SelectedInstanceSourceObserved, "":
 		return true
 	}
 	return false
 }
 
-// renderAgentContextCard serializes structured semantic memory. Complete recent
-// exchanges are restored as ordinary user/assistant messages by
-// messagesFromAgentContext, so they are not duplicated here.
+// renderAgentContextCard serializes only the context a transcript cannot carry:
+// live execution state (current selection, pending selection card) and this turn's
+// continuity notices (read-only, recovered operation). Semantic task summaries
+// were deleted; complete prior exchanges are ordinary messages in the canonical
+// transcript instead of a second, lossy card.
 //
-// With the canonical transcript on, that transcript IS the semantic history — the
-// model reads prior turns' messages, tool calls and tool results verbatim — so a
-// card restating a summary of them is a second, lossier memory of the same thing.
-// The semantic blocks are therefore suppressed and what remains is what a
-// transcript cannot carry: live execution state (current selection, pending
-// selection card) and this turn's continuity notices (read-only, recovered
-// operation), under the same no-write header.
-//
-// The suppression is HERE, at the model-facing serialization, and deliberately NOT
-// in CompileForTurn. selection_binder (selection_binder.go:143, which keeps its own
-// two-source allowlist over this same slice) and the write-proposal path read
-// view.SelectedEntities as a struct and never see this string; filtering upstream
-// would silently narrow the write path's target binding instead of only changing
-// what the model reads.
-//
-// Every suppression below is guarded by `semantic`, which is true whenever the flag
-// is off — so with the flag off this function is byte-identical to before.
+// Selection filtering remains at this model-facing serialization point rather
+// than CompileForTurn. selection_binder and the write-proposal path read
+// view.SelectedEntities as a struct; filtering upstream would silently narrow
+// execution-side target binding instead of only changing what the model reads.
 func renderAgentContextCard(view AgentContext) string {
-	semantic := !canonicalTranscriptEnabled
 	var lines []string
 	lines = append(lines, "【本轮统一上下文；仅帮助理解，不授权任何写操作】")
-	if task := view.ActiveTask; semantic && task != nil {
-		parts := []string{"目标=" + safeContextText(task.Goal)}
-		if task.Stage != "" {
-			parts = append(parts, "阶段="+safeContextText(task.Stage))
-		}
-		if len(task.MissingSlots) > 0 {
-			parts = append(parts, "待补充="+strings.Join(compactSemanticItems(task.MissingSlots), "、"))
-		}
-		if task.Freshness != "" {
-			parts = append(parts, "新鲜度="+safeContextText(task.Freshness))
-		}
-		lines = append(lines, "活动任务："+strings.Join(parts, "；"))
-		// Task-level constraints and decisions used to reach the card indirectly:
-		// refreshConversationDigest merged them into the digest and the card
-		// rendered them as 既有约束 / 已作决定. Those digest lines are deleted, so
-		// they no longer surface anywhere the model reads. The merge itself is left
-		// alone — it feeds the compaction accumulator, which is the next step's
-		// problem, not this one's.
-		if task.Status == TaskSnapshotStatusExpired {
-			lines = append(lines, "该任务已过期；仅供理解，不得直接继续执行")
-		}
-	}
 	for _, entity := range view.SelectedEntities {
-		// The live rows stay: dropping them would take away the current selection,
-		// not a memory of the conversation.
-		if !semantic && !isLiveSelectionHint(entity) {
+		if !isLiveSelectionHint(entity) {
 			continue
 		}
 		label := strings.TrimSpace(entity.Name + " " + entity.ID)

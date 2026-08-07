@@ -12,33 +12,18 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// The single context card must carry every structured signal the retired
-// buildReActHistorySummary block surfaced: task-level constraints/decisions, the
-// task-expired notice, the selected instance, and the expired-observation
-// "re-query" caution — all must still reach the model through
-// renderAgentContextCard, and an expired fact's stale value must never leak.
-//
-// DELIBERATELY NARROWED: the block's sixth signal, "上次意图", is no longer
-// promised. SessionState.LastIntent lost its last Go writer when P6 deleted the
-// route stack, so the only values that field could still hold came from rows a
-// pre-P6 binary persisted — a classification nothing refreshes, re-persisted
-// verbatim every turn. That is stale assertion, not memory, so the field and its
-// card line were removed rather than re-wired. This test is the record of that
-// narrowing being a decision; the remaining assertions are unchanged.
-func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
+// The card carries only live execution continuity. Semantic task summaries used
+// to be copied here after raw history was trimmed; canonical replay replaces that
+// duplicate path. An expired observation's freshness warning remains because a
+// replayed result has no TTL of its own.
+func TestContextCardCarriesLiveSelectionAndStalenessWithoutSemanticSummary(t *testing.T) {
 	now := time.Unix(1_000, 0)
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
-		SchemaVersion:        SessionStateSchemaCurrent,
-		SelectedInstanceID:   "uhost-123",
-		SelectedInstanceName: "train-box",
-		TaskSnapshot: TaskSnapshot{
-			Goal:        "把训练机监控看板恢复",
-			Constraints: []string{"只看最近五分钟"},
-			Decisions:   []string{"先重启监控 agent"},
-			Status:      TaskSnapshotStatusExpired,
-			Freshness:   ContinuityFreshnessExpired,
-		},
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-123",
+		SelectedInstanceName:   "train-box",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 		RecentFacts: []ToolFact{{
 			Kind:           FactKindInstanceState,
 			SubjectID:      "uhost-expired",
@@ -50,28 +35,9 @@ func TestContextCard_IsStrictSupersetOfRetiredHistorySummary(t *testing.T) {
 
 	card := renderAgentContextCard((ContextCompiler{}).CompileForTurn(eng, "现在怎么样", "", now))
 
-	assert.NotContains(t, card, "上次意图",
-		"the last-routed-intent line is deliberately gone: nothing refreshes it, so it could only carry a stale pre-P6 value")
 	assert.Contains(t, card, "train-box")
 	assert.Contains(t, card, "uhost-123")
-	assert.Contains(t, card, "把训练机监控看板恢复")
-	// NOTE ON WHAT THIS NO LONGER ASSERTS. Task constraints and decisions used to
-	// reach the card indirectly: refreshConversationDigest merged them into
-	// ConversationDigest.Constraints/Decisions and the card rendered them as
-	// 既有约束 / 已作决定. Both the blocks and the merge are now deleted; the
-	// canonical transcript replays the turns that produced them.
-	//
-	// The cost this was once thought to carry — that turns older than the replay
-	// window had the digest summary as their only survivor — did not materialise
-	// on the shipped path and should not be cited as one. History compaction is
-	// what fed the digest, and it cannot fire inside a session:
-	// stripHistoricalToolTranscript leaves 2 messages per turn, so its trigger
-	// needs 61 turns while agent.http.max_session_turns caps the compatibility
-	// path at 20. Measured against the replay database, 0 of 127 sessions held a
-	// single digest excerpt.
-	assert.NotContains(t, card, "只看最近五分钟")
-	assert.NotContains(t, card, "先重启监控 agent")
-	assert.Contains(t, card, "该任务已过期", "the task-expired notice must survive in the card")
+	assert.NotContains(t, card, "活动任务：")
 	assert.Contains(t, card, "必须重新查询")
 	assert.NotContains(t, card, "Running",
 		"expired observations may retain topic and time, never their old value")

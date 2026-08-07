@@ -28,10 +28,9 @@ const SessionStateSchemaV3 = "3.0"
 // dropping the source and later treating an observed instance as user-selected.
 const SessionStateSchemaV4 = "4.0"
 
-// SessionStateSchemaV5 adds durable semantic memory and explicit freshness.
-// TaskSnapshot is a safe, compact projection; raw tool transcripts are
-// deliberately not part of this schema. It also added ConversationDigest, which
-// this binary no longer has — a V5 row still decodes, and that field is dropped.
+// SessionStateSchemaV5 added legacy semantic-memory fields and explicit
+// freshness. TaskSnapshot and ConversationDigest are deleted; V5 rows still
+// decode and those unknown fields are dropped on the next write.
 const SessionStateSchemaV5 = "5.0"
 
 // SessionStateSchemaV6 persists bounded evidence from answers that passed the
@@ -117,7 +116,6 @@ type SessionState struct {
 	PendingSelectionItems           []PendingSelectionItem  `json:"pending_selection_items,omitempty"`
 	ContextFrame                    ContextFrame            `json:"context_frame,omitempty"`
 	RecentFacts                     []ToolFact              `json:"recent_facts,omitempty"`
-	TaskSnapshot                    TaskSnapshot            `json:"task_snapshot,omitempty"`
 	VerifiedKnowledge               []VerifiedKnowledgeTurn `json:"verified_knowledge,omitempty"`
 }
 
@@ -456,22 +454,9 @@ func (s SessionState) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 		delete(m, "context_frame")
-		if taskSnapshotEmpty(s.TaskSnapshot) {
-			delete(m, "task_snapshot")
-		}
 		return json.Marshal(m)
 	}
-	if !taskSnapshotEmpty(s.TaskSnapshot) {
-		return raw, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, err
-	}
-	if taskSnapshotEmpty(s.TaskSnapshot) {
-		delete(m, "task_snapshot")
-	}
-	return json.Marshal(m)
+	return raw, nil
 }
 
 func contextFrameEmpty(f ContextFrame) bool {

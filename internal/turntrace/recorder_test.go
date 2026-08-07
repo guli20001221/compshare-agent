@@ -89,7 +89,7 @@ func TestRecorderPersistsContinuityContractMetadataAndMarksFailures(t *testing.T
 	writer := &captureWriter{}
 	recorder := New(Config{Writer: writer, TraceID: "turn:e1", TurnID: "turn", TurnIndex: 1, Start: time.Now()})
 	snapshot := engine.TraceSnapshot{
-		ContextSources:     []string{"recent_pairs", "active_task"},
+		ContextSources:     []string{"recent_pairs", "selected_entities"},
 		ResponseContract:   "grounded",
 		PromptSectionIDs:   []string{"identity", "knowledge_turn_policy"},
 		MemoryUpdateSource: "structured_event",

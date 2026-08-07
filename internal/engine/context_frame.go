@@ -36,7 +36,6 @@ func (e *Engine) expireContextFrame(now time.Time) {
 		// previously trusted slot loses execution authority.
 		frame.SlotSources = nil
 		e.sessionState.ContextFrame = frame
-		e.syncTaskSnapshotFromFrame(frame, TaskSnapshotStatusExpired, frame.FailureReason, now)
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
@@ -45,15 +44,12 @@ func (e *Engine) expireContextFrame(now time.Time) {
 		effectiveContextFrameTTL(e.sessionState.ContextFrame),
 		now,
 	)
-	e.syncTaskSnapshotFromFrame(e.sessionState.ContextFrame, TaskSnapshotStatusActive, "", now)
 }
 
 func (e *Engine) clearContextFrame() {
 	if !e.sessionStateHydrated {
 		return
 	}
-	frame := e.sessionState.ContextFrame
-	e.markTaskSnapshotResolved(frame, "任务已结束或由新任务替代", time.Now())
 	e.sessionState.ContextFrame = ContextFrame{}
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
@@ -84,7 +80,6 @@ func (e *Engine) setContextFrame(frame ContextFrame) {
 	}
 	frame.Freshness = ContinuityFreshnessFresh
 	e.sessionState.ContextFrame = frame
-	e.syncTaskSnapshotFromFrame(frame, TaskSnapshotStatusActive, "", time.Unix(frame.ProducedAtUnix, 0))
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 

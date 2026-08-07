@@ -16,18 +16,10 @@ import (
 
 func TestSemanticMemory_V7RoundTripAndAdvisoriesStayEphemeral(t *testing.T) {
 	state := SessionState{
-		SchemaVersion: SessionStateSchemaV7,
-		TaskSnapshot: TaskSnapshot{
-			Goal:          "给训练机扩容",
-			Workflow:      "ResizeDiskWorkflow",
-			Stage:         "missing_slots",
-			Constraints:   []string{"disk=data", "instance=uhost-a"},
-			Decisions:     []string{"target_size_gb=200"},
-			MissingSlots:  []string{"disk_id"},
-			Status:        TaskSnapshotStatusActive,
-			Freshness:     ContinuityFreshnessFresh,
-			UpdatedAtUnix: 1_800_000_000,
-		},
+		SchemaVersion:          SessionStateSchemaV7,
+		SelectedInstanceID:     "uhost-a",
+		SelectedInstanceName:   "训练机",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
 	}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(state, 7)
@@ -50,7 +42,9 @@ func TestSemanticMemory_V7RoundTripAndAdvisoriesStayEphemeral(t *testing.T) {
 	require.NoError(t, err)
 	roundTrip, err := ParsePersistedContext(envelopeRaw)
 	require.NoError(t, err)
-	assert.Equal(t, state.TaskSnapshot, roundTrip.AgentSessionState.TaskSnapshot)
+	assert.Equal(t, state.SelectedInstanceID, roundTrip.AgentSessionState.SelectedInstanceID)
+	assert.NotContains(t, string(raw), "task_snapshot",
+		"task state is deleted rather than carried as an empty legacy field")
 	assert.NotContains(t, string(raw), "conversation_digest",
 		"the digest is deleted, not merely unrendered: it must not reappear on the wire")
 }
@@ -91,11 +85,6 @@ func TestChat_ExpiredFrameKeepsSemanticsButCannotResume(t *testing.T) {
 	assert.Equal(t, ContinuityFreshnessExpired, state.ContextFrame.Freshness)
 	assert.Empty(t, state.ContextFrame.SlotSources,
 		"expired slots must lose write-authorizing provenance")
-	assert.Equal(t, "把训练机的数据盘扩到 200G", state.TaskSnapshot.Goal)
-	assert.Equal(t, "missing_slots", state.TaskSnapshot.Stage)
-	assert.Equal(t, []string{"disk_id"}, state.TaskSnapshot.MissingSlots)
-	assert.Equal(t, TaskSnapshotStatusExpired, state.TaskSnapshot.Status)
-	assert.Contains(t, renderTestMessages(eng.llmClient.(*mockLLM).calls[0].Messages), "新鲜度=expired")
 	_, active := eng.activeContextFrame(time.Now())
 	assert.False(t, active, "semantic retention must never reactivate an expired workflow")
 }
@@ -136,19 +125,9 @@ func TestChat_ExpiredToolFactKeepsTopicAndTimeButDropsValue(t *testing.T) {
 	assert.NotContains(t, modelInput, "SECRET_OLD_99")
 }
 
-func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSignalsInCard(t *testing.T) {
+func TestTrimHistoryRemovesRawToolTranscriptWithoutSemanticReplacement(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaV5,
-		TaskSnapshot: TaskSnapshot{
-			Goal:         "把训练机的数据盘扩到 200G",
-			Constraints:  []string{"instance=uhost-a"},
-			Decisions:    []string{"target_size_gb=200"},
-			MissingSlots: []string{"disk_id"},
-			Status:       TaskSnapshotStatusActive,
-			Freshness:    ContinuityFreshnessFresh,
-		},
-	}, 1)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV5}, 1)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "system"},
 		{Role: openai.ChatMessageRoleUser, Content: "查一下实例"},
@@ -166,18 +145,10 @@ func TestTrimHistory_RemovesRawToolTranscriptAndKeepsSemanticSignalsInCard(t *te
 	}
 	assert.Equal(t, "查到了，接下来要扩盘。", eng.messages[len(eng.messages)-1].Content)
 
-	// The structured task signals cross the turn boundary through the single
-	// context card; raw tool JSON never does.
+	// No semantic card is manufactured to summarize the stripped transcript.
 	now := time.Now()
 	card := renderAgentContextCard((ContextCompiler{}).Compile(eng, "继续扩盘", now))
-	assert.Contains(t, card, "把训练机的数据盘扩到 200G")
-	// instance=uhost-a and target_size_gb=200 reached the card through the digest's
-	// 既有约束 / 已作决定 blocks. Those blocks and the merge that fed them are both
-	// deleted; the transcript replays the turn that produced them instead. The
-	// task's own line is what the card still keeps.
-	assert.NotContains(t, card, "instance=uhost-a")
-	assert.NotContains(t, card, "target_size_gb=200")
-	assert.Contains(t, card, "disk_id")
+	assert.Empty(t, card)
 	assert.NotContains(t, card, "MUST_NOT_SURVIVE")
 }
 

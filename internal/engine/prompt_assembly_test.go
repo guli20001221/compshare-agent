@@ -13,21 +13,14 @@ import (
 
 const contextCardMarker = "【本轮统一上下文"
 
-// The whole point of P2: even with history compaction ON (the production
-// default that used to inject a second "会话摘要" system block), the model now
-// receives exactly ONE structured-memory block — the context card — and the
-// task memory appears once, not duplicated across two overlapping blocks.
-func TestAssembledContext_SingleMemoryBlock_WithCompactionOn(t *testing.T) {
+// With canonical replay, compaction must not reintroduce a semantic summary
+// block. This input has no live execution continuity, so it should carry only
+// the base system prompt.
+func TestAssembledContextHasNoSemanticMemoryBlockWithCompactionOn(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "好的，继续。"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.SetReactHistoryCompactionEnabled(true)
-	eng.SetSessionState(SessionState{
-		SchemaVersion: SessionStateSchemaCurrent,
-		TaskSnapshot: TaskSnapshot{
-			Goal:   "把训练机扩容到 200G",
-			Status: TaskSnapshotStatusActive,
-		},
-	}, 1)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "system"},
 		{Role: openai.ChatMessageRoleUser, Content: "先看看配置"},
@@ -39,20 +32,15 @@ func TestAssembledContext_SingleMemoryBlock_WithCompactionOn(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 
 	sent := mock.calls[0].Messages
-	// Before P2 this turn carried three system blocks (base prompt + the
-	// 会话摘要 compaction summary + the context card); the summary duplicated the
-	// card. Now there are exactly two: the base prompt and the single context
-	// card. (Redundancy *within* the card — task goal echoed by the digest — is a
-	// separate, pre-existing concern, not the summary-vs-card duplication P2 removes.)
-	assert.Equal(t, 2, countSystemMessages(sent),
-		"exactly one memory block (the context card) beyond the base system prompt")
+	assert.Equal(t, 1, countSystemMessages(sent),
+		"compaction must not add a summary when there is no live execution card")
 	cardHits := 0
 	for _, msg := range sent {
 		if msg.Role == openai.ChatMessageRoleSystem && strings.Contains(msg.Content, contextCardMarker) {
 			cardHits++
 		}
 	}
-	assert.Equal(t, 1, cardHits, "the context card must appear exactly once")
+	assert.Equal(t, 0, cardHits, "semantic task state must not manufacture a context card")
 }
 
 // buildMessagesForLLM records the assembler's before/after message counts so the
