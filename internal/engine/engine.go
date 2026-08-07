@@ -1097,18 +1097,77 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
 			pendingUser = msg.Content
 		case openai.ChatMessageRoleAssistant:
-			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
+			transcript := transcriptFromRow(msg.Transcript)
+			assistantContent := msg.Content
+			// A verbatim billing block is deliberately a USER-display projection:
+			// the durable assistant row contains its exact amounts so the UI can
+			// reload the reply, while the live model saw only an amount-free tool
+			// observation. Replaying the display text here would make a restart or
+			// replica hand the model figures it never saw on the hot path. When the
+			// existing canonical transcript proves this was that shape, restore its
+			// model-facing terminal content instead. Ordinary assistant rows retain
+			// their persisted content unchanged.
+			if content, ok := verbatimBillingModelHistoryContent(transcript); ok {
+				assistantContent = content
+			}
+			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: assistantContent})
 			// Rebuild the same recordedTurn the hot engine appended when this
 			// row was written. A row with no stored transcript yields a record
 			// with a nil one, which is exactly what a tool-free turn produced.
 			e.recordTurn(recordedTurn{
 				User:       pendingUser,
-				Assistant:  msg.Content,
-				Transcript: transcriptFromRow(msg.Transcript),
+				Assistant:  assistantContent,
+				Transcript: transcript,
 			})
 			pendingUser = ""
 		}
 	}
+}
+
+// verbatimBillingModelHistoryContent returns the assistant text that belongs in
+// the model's semantic history for a persisted billing-card turn.
+//
+// The messages.content column has two consumers: the conversation UI needs the
+// exact server-rendered card, while the model must not see figures it could
+// restate, extrapolate or treat as current. The canonical transcript already
+// records the latter view. Do not identify cards by their display text: that
+// would make a formatting change alter model semantics. The typed observation
+// is the durable, narrow discriminator.
+//
+// A pure billing turn historically ended at its tool result because the model
+// intentionally returned no user-facing prose. New turns append
+// verbatimBillingHistoryCompletion before capture; for an older row without
+// that terminal assistant message, use the same amount-free completion rather
+// than falling back to the persisted card.
+func verbatimBillingModelHistoryContent(transcript *TranscriptV1) (string, bool) {
+	projected := ProjectTranscript(transcript)
+	if len(projected) == 0 || !containsVerbatimBillingObservation(projected) {
+		return "", false
+	}
+	for i := len(projected) - 1; i >= 0; i-- {
+		message := projected[i]
+		if message.Role == openai.ChatMessageRoleAssistant && len(message.ToolCalls) == 0 && strings.TrimSpace(message.Content) != "" {
+			return message.Content, true
+		}
+	}
+	return verbatimBillingHistoryCompletion, true
+}
+
+func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage) bool {
+	for _, message := range messages {
+		if message.Role != openai.ChatMessageRoleTool {
+			continue
+		}
+		result, ok := tools.ParseAgentToolResult(message.Content)
+		if !ok || !strings.EqualFold(strings.TrimSpace(result.Meta.Action), "DiagnoseBilling") {
+			continue
+		}
+		data, ok := result.Data.(map[string]any)
+		if delivered, _ := data["verbatim_delivered"].(bool); delivered {
+			return true
+		}
+	}
+	return false
 }
 
 // SetSessionState installs the prior persisted SessionState and the
@@ -1683,6 +1742,18 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: content,
+				})
+			} else if len(e.verbatimBlocksThisTurn) > 0 {
+				// The displayed billing card intentionally is not an assistant history
+				// message: its amounts belong to the server-rendered UI, not to the
+				// model. Still finish the MODEL'S exchange with a short amount-free
+				// marker. Without it, a pure billing turn ends on a tool result, cannot
+				// become a complete replay pair, and hot/cold recovery diverges.
+				// This is internal context only; composeWithVerbatimBlocks still returns
+				// exactly the card and no extra user-visible prose.
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: verbatimBillingHistoryCompletion,
 				})
 			}
 			return agentruntime.Final(content, agentruntime.FinishFinalAnswer), nil
@@ -2494,6 +2565,13 @@ func isVerbatimReply(result string) (string, bool) {
 // the pure-billing shape is the property at stake.
 const verbatimBlockObservation = "费用明细已按上游结构化数据逐字呈现给用户，本结果不含金额。" +
 	"不要自行给出金额，也不要复述或补充通用费用说明；若用户没有其他问题需要处理，直接结束本回合、不要再输出文字。"
+
+// verbatimBillingHistoryCompletion closes a pure billing exchange in the
+// model-only transcript. It never reaches the browser or messages.content: the
+// user already has the byte-exact card. Its purpose is to preserve the same
+// amount-free semantic boundary after a restart, where the persisted display
+// reply would otherwise be mistaken for the model's final assistant message.
+const verbatimBillingHistoryCompletion = "费用明细已由系统按上游结构化数据展示给用户；不要复述、计算或推断金额。"
 
 // composeWithVerbatimBlocks puts this turn's verbatim blocks in front of the
 // Agent's own reply. Called from one deferred site at the single turn exit so
