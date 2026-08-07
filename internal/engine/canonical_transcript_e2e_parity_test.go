@@ -237,11 +237,11 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 	}
 }
 
-// Replayed-exchange trimming is a different axis: it is about how many WHOLE
-// exchanges survive the rune budget, not about what happens inside one. A budget
-// that cut mid-exchange would leave the model reading an unanswered question, or
-// worse, a tool result with no call.
-func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
+// Canonical-history compaction is a different axis: it keeps complete dialogue
+// pairs and sheds only old tool detail. A budget must never create a half pair or
+// a tool result whose declaring call is absent, and it must derive the same view
+// before and after a restart.
+func TestEndToEndHotColdParityWhenReplayBudgetCompactsDetail(t *testing.T) {
 	prev := canonicalTranscriptEnabled
 	SetCanonicalTranscriptEnabled(true)
 	defer SetCanonicalTranscriptEnabled(prev)
@@ -318,25 +318,30 @@ func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
 	requireTranscriptWasReplayed(t, hotAssembled)
 	assertToolCallPairsValid(t, hotAssembled)
 
-	// The budget must have bitten — otherwise this test proves nothing.
-	require.NotContains(t, rendered, oldest+" 这台怎么了",
-		"precondition: %d exchanges of %d runes must exceed maxReplayedHistoryRunes=%d — "+
-			"without a trim every assertion below passes vacuously",
+	// The budget must have bitten — otherwise this test proves nothing. The old
+	// dialogue remains, while its re-queryable tool detail is compacted away.
+	require.Contains(t, rendered, oldest+" 这台怎么了",
+		"the earliest plain exchange must remain semantic history")
+	require.NotContains(t, rendered, `"id":"`+oldest+`"`,
+		"precondition: %d exchanges of %d-rune detail must exceed maxReplayedHistoryRunes=%d — "+
+			"without a detail compaction every assertion below passes vacuously",
 		exchangeCount, padRunes, maxReplayedHistoryRunes)
-	// And it must bite the correct end. Dropping the newest would satisfy every
-	// other assertion here while destroying the context a follow-up depends on.
+	// Newest tool evidence wins because it is most likely to resolve a follow-up.
 	assert.Contains(t, rendered, newest+" 这台怎么了",
 		"the newest exchange is the one 「它」/「刚才那个」 refers to; it is never the one dropped")
 	assert.Contains(t, rendered, `"id":"`+newest+`"`, "with its tool evidence intact")
 
-	// Whatever survived, survived whole: question, answer and tool evidence
-	// share one fate per exchange.
+	// Every visible detail must still belong to a complete exchange. The reverse
+	// does not hold by design: old exchanges may be represented by their plain
+	// user/assistant pair after their tool detail is compacted.
 	for _, tag := range tags {
 		question := strings.Contains(rendered, tag+" 这台怎么了")
 		answer := strings.Contains(rendered, tag+" 已确认。")
 		evidence := strings.Contains(rendered, `"id":"`+tag+`"`)
 		assert.Equal(t, question, answer, "%s: half an exchange reads as an unanswered question", tag)
-		assert.Equal(t, question, evidence, "%s: its tool evidence must share that fate", tag)
+		if evidence {
+			assert.True(t, question, "%s: tool detail must never outlive its dialogue pair", tag)
+		}
 	}
 	assert.Contains(t, renderTestMessages(hotAssembled), parityNextQuestion,
 		"the current question is always retained")

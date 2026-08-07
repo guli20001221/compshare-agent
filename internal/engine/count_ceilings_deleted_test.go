@@ -164,7 +164,7 @@ func TestRecordedTurnKeyDoesNotConfuseAmbiguousSplits(t *testing.T) {
 func conversationPairsRunes(pairs []ConversationPair) int {
 	total := 0
 	for _, pair := range pairs {
-		total += len([]rune(pair.User)) + len([]rune(pair.Assistant)) + conversationTranscriptRunes(pair)
+		total += conversationPairRenderedRunes(pair)
 	}
 	return total
 }

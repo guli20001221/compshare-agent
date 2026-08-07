@@ -9,10 +9,11 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	record := TraceRecord{
 		SchemaVersion: SchemaVersion,
 		Completion: TurnCompletionTrace{
-			Class:      CompletionClassStructuredClarify,
-			Reason:     CompletionReasonContextClarification,
-			ModelCalls: 2,
-			ToolNames:  []string{"DescribeCompShareInstance"},
+			Class:               CompletionClassStructuredClarify,
+			Reason:              CompletionReasonContextClarification,
+			RuntimeFinishReason: "budget_recovery",
+			ModelCalls:          2,
+			ToolNames:           []string{"DescribeCompShareInstance"},
 		},
 	}
 	data, err := json.Marshal(record)
@@ -27,6 +28,9 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	}
 	if decoded.Completion.Class != CompletionClassStructuredClarify || decoded.Completion.ModelCalls != 2 {
 		t.Fatalf("completion lost from custom TraceRecord marshal: %#v", decoded.Completion)
+	}
+	if decoded.Completion.RuntimeFinishReason != "budget_recovery" {
+		t.Fatalf("runtime finish reason lost from completion: %#v", decoded.Completion)
 	}
 	if len(decoded.Completion.ToolNames) != 1 {
 		t.Fatalf("tool names lost from completion: %#v", decoded.Completion)

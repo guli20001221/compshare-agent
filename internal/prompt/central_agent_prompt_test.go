@@ -56,7 +56,7 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 		"optional facets must not silently become user choices")
 	require.Equal(t, 1, strings.Count(text, "非写目标的目录对象例外"),
 		"historical catalog ids may be carried only through the narrow non-target exception")
-	require.Contains(t, text, "近期完整对话已逐字展示精确 ID 和来源、当前请求承接它时")
+	require.Contains(t, text, "近期已提供的对话历史逐字展示精确 ID 和来源、当前请求承接它时")
 	require.Contains(t, text, "仍须实时核验和确认",
 		"carrying a historical catalog id must never imply availability or user approval")
 

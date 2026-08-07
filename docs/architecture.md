@@ -76,7 +76,7 @@ graph TD
 
 1. **输入守卫** — 命中拦截规则(越狱 / off-topic / 特定关键词)→ 直接返回固定话术,不进 LLM。
 2. **上下文装配** — 恢复未决的实例选择和完整历史，按 token/rune 预算编译成 `AgentContext`。
-3. **中心 Agent 循环**(`maxReActRounds=16`,原始历史按尺寸而非条数收敛 `maxRawHistoryRunes`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=30`,知识检索预算 `maxSearchKnowledgeCallsPerTurn=4`)，每轮:
+3. **中心 Agent 循环**(`maxReActRounds=20`,原始历史按尺寸而非条数收敛 `maxRawHistoryRunes`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=30`,知识检索预算 `maxSearchKnowledgeCallsPerTurn=4`)，每轮:
    - 选一个 **read capability** → `executeConcreteReadCapability` → `capability.MigratedRead(action)` → `RegisteredRead.Run` → 返回 Typed Observation(见 §5、§7)。
    - 调 **`SearchKnowledge`** → 在循环内检索平台知识 / 排障资料作为证据(见 §8)。
    - 提出**写操作** → Action Resolver 确定性定目标 → Sealed Workflow 暂停等确认(见 §6)。

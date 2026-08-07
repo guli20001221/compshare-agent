@@ -9,7 +9,7 @@ const segmentScopeBoundary = `## 服务范围
 // in the ReAct prompt. Tool descriptions define an interface; turn-local notes
 // describe only state. Neither may restate this policy.
 const segmentKnowledgeTurnPolicy = `## 知识来源与检索规则
-- 完整对话、统一上下文或稳定通用知识足以回答时直接回答；需要平台文档或新的技术证据时再检索。
+- 已提供的对话历史、统一上下文或稳定通用知识足以回答时直接回答；需要平台文档或新的技术证据时再检索。
 - 平台收费、产品规则、功能支持和操作限制属于文档事实，即使看似熟悉也要先检索；通用技术常识不强制检索。
 - 检索结果只是补充观察。无关或空结果不能推翻已有上下文，也不能阻止通用知识回答。
 - 检索返回的是节选。当节选被截断、只给结论而缺少具体参数/步骤/取值，或据此无法确定答案时，先按 chunk_id 读取全文再作答，不要凭节选推测或据此否认。

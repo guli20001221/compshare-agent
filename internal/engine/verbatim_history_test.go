@@ -186,6 +186,63 @@ func TestBudgetDropsWholeOldestExchangesAndNeverTruncates(t *testing.T) {
 	}
 }
 
+func TestBudgetPreservesPlainDialogueBeforeDroppingOlderToolDetail(t *testing.T) {
+	withCanonicalTranscript(t, true)
+	pairs := []ConversationPair{
+		{
+			User: "旧问题", Assistant: "旧回答",
+			Transcript: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: "旧问题"},
+				{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("旧证据", 80)},
+				{Role: openai.ChatMessageRoleAssistant, Content: "旧回答"},
+			},
+		},
+		{
+			User: "中问题", Assistant: "中回答",
+			Transcript: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: "中问题"},
+				{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("中证据", 80)},
+				{Role: openai.ChatMessageRoleAssistant, Content: "中回答"},
+			},
+		},
+		{
+			User: "新问题", Assistant: "新回答",
+			Transcript: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: "新问题"},
+				{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("新证据", 80)},
+				{Role: openai.ChatMessageRoleAssistant, Content: "新回答"},
+			},
+		},
+	}
+	plain := 0
+	for _, item := range pairs {
+		plain += conversationPairPlainRunes(item)
+	}
+	newestDetail := conversationTranscriptDetailRunes(pairs[len(pairs)-1])
+	budget := plain + newestDetail
+	require.Less(t, budget, plain+conversationTranscriptRunes(pairs[1])+newestDetail,
+		"premise: the budget must force at least one older transcript to compact")
+
+	compacted := budgetReplayedPairs(pairs, budget)
+	require.Len(t, compacted, len(pairs), "compact history must retain every complete dialogue pair")
+	require.Empty(t, compacted[0].Transcript)
+	require.Empty(t, compacted[1].Transcript)
+	require.NotEmpty(t, compacted[2].Transcript, "the newest detailed evidence wins")
+	require.NotEmpty(t, pairs[0].Transcript, "the derived compacted view must not mutate source history")
+
+	assembled := messagesFromAgentContext([]openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "sys"},
+		{Role: openai.ChatMessageRoleUser, Content: "当前问题"},
+	}, AgentContext{RecentConversation: compacted}, true)
+	rendered := renderTestMessages(assembled)
+	for _, text := range []string{"旧问题", "旧回答", "中问题", "中回答", "新问题", "新回答"} {
+		require.Contains(t, rendered, text)
+	}
+	require.NotContains(t, rendered, "旧证据")
+	require.NotContains(t, rendered, "中证据")
+	require.Contains(t, rendered, "新证据")
+}
+
 func TestBudgetKeepsTheNewestExchangeEvenWhenItAloneExceeds(t *testing.T) {
 	huge := pair(strings.Repeat("问", 5000), strings.Repeat("答", 5000))
 	kept := budgetReplayedPairs([]ConversationPair{

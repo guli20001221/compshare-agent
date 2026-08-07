@@ -4,10 +4,11 @@ package observability
 // engine turn exits. It records bounded control-flow facts only: no prompt,
 // reply, tool arguments, identifiers, or model-generated error text.
 type TurnCompletionTrace struct {
-	Class      string   `json:"class"`
-	Reason     string   `json:"reason"`
-	ModelCalls int      `json:"model_calls"`
-	ToolNames  []string `json:"tool_names,omitempty"`
+	Class               string   `json:"class"`
+	Reason              string   `json:"reason"`
+	RuntimeFinishReason string   `json:"runtime_finish_reason,omitempty"`
+	ModelCalls          int      `json:"model_calls"`
+	ToolNames           []string `json:"tool_names,omitempty"`
 }
 
 // The confirmation class and its reasons were removed with the premature
@@ -26,6 +27,7 @@ const (
 const (
 	CompletionReasonPolicyBlock               = "policy_block"
 	CompletionReasonRateLimit                 = "rate_limit"
+	CompletionReasonModelOutputTruncated      = "model_output_truncated"
 	CompletionReasonTokenBudget               = "token_budget"
 	CompletionReasonReactRoundCeiling         = "react_round_ceiling"
 	CompletionReasonContextClarification      = "context_clarification"
@@ -47,6 +49,7 @@ const (
 func traceCompletionObserved(trace TurnCompletionTrace) bool {
 	return trace.Class != "" ||
 		trace.Reason != "" ||
+		trace.RuntimeFinishReason != "" ||
 		trace.ModelCalls != 0 ||
 		len(trace.ToolNames) > 0
 }

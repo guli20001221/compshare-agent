@@ -64,6 +64,41 @@ func TestClientChatRetriesTransientStreamOpenError(t *testing.T) {
 	}
 }
 
+func TestChatHTTPClientAlwaysHasAnUpstreamDeadline(t *testing.T) {
+	for _, baseURL := range []string{"https://api.example.test/v1", "http://127.0.0.1:8080/v1"} {
+		client := chatHTTPClient(baseURL)
+		if client.Timeout != defaultChatHTTPTimeout {
+			t.Fatalf("%s timeout = %s, want %s", baseURL, client.Timeout, defaultChatHTTPTimeout)
+		}
+	}
+	localTransport, ok := chatHTTPClient("http://localhost:8080/v1").Transport.(*http.Transport)
+	if !ok || localTransport.Proxy != nil {
+		t.Fatal("localhost client must keep the explicit no-proxy transport")
+	}
+}
+
+func TestChatHTTPClientBypassesProxyOnlyForLoopbackEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		baseURL string
+		direct  bool
+	}{
+		{name: "IPv4 loopback", baseURL: "http://127.0.0.1:8000/v1", direct: true},
+		{name: "IPv6 loopback", baseURL: "http://[::1]:8000/v1", direct: true},
+		{name: "localhost", baseURL: "http://LOCALHOST:8000/v1", direct: true},
+		{name: "remote host containing loopback text", baseURL: "https://127.0.0.1.example.com/v1"},
+		{name: "ordinary remote upstream", baseURL: "https://api.example.com/v1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := chatHTTPClient(tc.baseURL)
+			_, direct := client.Transport.(*http.Transport)
+			if direct != tc.direct {
+				t.Fatalf("direct transport = %v, want %v", direct, tc.direct)
+			}
+		})
+	}
+}
+
 func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,11 +168,13 @@ func TestClientChatRetriesTransientStreamRecvError(t *testing.T) {
 		Model:   "test-model",
 	})
 
+	var delivered []string
 	resp, err := client.Chat(context.Background(), ChatRequest{
 		Messages: []openai.ChatCompletionMessage{{
 			Role:    openai.ChatMessageRoleUser,
 			Content: "hello",
 		}},
+		OnTextDelta: func(delta string) { delivered = append(delivered, delta) },
 	})
 	if err != nil {
 		t.Fatalf("Chat error: %v", err)
@@ -147,6 +184,41 @@ func TestClientChatRetriesTransientStreamRecvError(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&attempts); got != 2 {
 		t.Fatalf("attempts = %d, want 2", got)
+	}
+	if got := strings.Join(delivered, ""); got != "retry recv ok" {
+		t.Fatalf("delivered deltas = %q, want only the successful retry", got)
+	}
+}
+
+func TestClientChatCarriesLengthFinishReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"incomplete\"},\"finish_reason\":\"length\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "test-model"})
+	resp, err := client.Chat(context.Background(), ChatRequest{Messages: []openai.ChatCompletionMessage{{
+		Role: openai.ChatMessageRoleUser, Content: "hello",
+	}}})
+	if err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if got := resp.StopReason; got != "length" {
+		t.Fatalf("StopReason = %q, want length", got)
+	}
+	if !resp.OutputIncomplete() {
+		t.Fatal("length finish_reason must be treated as truncated output")
+	}
+}
+
+func TestChatResponseFailsClosedOnUnknownNonCompleteFinishReason(t *testing.T) {
+	if (ChatResponse{StopReason: "content_filter"}).OutputIncomplete() != true {
+		t.Fatal("content-filtered output must not be accepted as a complete answer")
+	}
+	if (ChatResponse{StopReason: "tool_calls"}).OutputIncomplete() {
+		t.Fatal("a completed tool-calls response is a valid ReAct step")
 	}
 }
 

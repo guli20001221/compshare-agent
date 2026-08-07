@@ -112,8 +112,11 @@ const (
 	// 2026-08-06: UpdateTaskState and TaskSnapshot were deleted. The central
 	// behavior segment must no longer tell the model to update a semantic-memory
 	// tool that does not exist; the canonical transcript is the semantic history.
-	mutatingReActPromptSHA256 = "5130902ad553d25db4de48f01488ba5a460e287978144561be90bbb337f2cd7d"
-	readOnlyReActPromptSHA256 = "4ae223ec95dcde3c1f157a4ec9f1c8fe552c26201f1adc47efcc499ad54e6554"
+	// 2026-08-07: history is size-compacted, so "完整对话" was an untrue
+	// promise. The prompt and relevant catalog schemas now say "已提供的对话
+	// 历史"; this is a truthfulness correction, not a new routing rule.
+	mutatingReActPromptSHA256 = "b65666adccce30ba687a6165b1ec8d1564c5ab92490da2e901babe6ca83cbd2d"
+	readOnlyReActPromptSHA256 = "51d7db6aee38e56bb5f25444071af83f7846a9d160babcb2d5c06422fea388e8"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
 	// That leaves the rollout shape unpinned: deploy/conf/config.prod.yaml already sets
@@ -122,7 +125,7 @@ const (
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
 	// third SHA pins that combination. It includes the same shared 2026-07-31
 	// catalog-candidate contract as the two snapshots above.
-	mutatingWithRepairLaneReActPromptSHA256 = "f72be0d10cdaec54ca0644388787cc10a9ca679e3fc948817e70ec1defc323a4"
+	mutatingWithRepairLaneReActPromptSHA256 = "bc9004e9a461e8ba6c920e726fc77b6d99361a7f4c8b8f5261cd2e548096b997"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
+	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -156,6 +157,53 @@ func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
 	require.Equal(t, platform.ReadStatusNeedsInput, observation.Status)
 	require.Equal(t, []capability.MissingField{{Name: "gpu_type", Reason: "required"}}, observation.MissingFields)
 	require.Empty(t, executor.calls, "缺失字段必须在能力边界返回，不能进入 handler 或上游 API")
+
+	result, ok := tools.ParseAgentToolResult(agentToolObservation(capability.ReadToolName(intent.IntentPricingQuery), out))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolNextAskUser, result.NextStep,
+		"a real missing user field must stay on the user-clarification branch")
+}
+
+func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		lastUser     string
+		action       string
+		arguments    string
+		sourceStatus string
+	}{
+		{
+			name:         "schema validation",
+			lastUser:     "查询 uhost-diag-002 的 SSH 登录方式",
+			action:       capability.ReadToolName(intent.IntentInstanceAccess),
+			arguments:    `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-002","source":"user_text"}],"access_type":"ssh","evil":"injection"}`,
+			sourceStatus: "read_argument_validation",
+		},
+		{
+			name:         "invented grounding filter",
+			lastUser:     "查询昨天的CPU历史监控",
+			action:       capability.ReadToolName(intent.IntentMonitorHistory),
+			arguments:    `{"time_window":{"type":"absolute","start":"2026-07-18 00:00","end":"2026-07-19 00:00","source_span":"昨天"}}`,
+			sourceStatus: "read_argument_grounding",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor := &mockExecutor{}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			eng.lastUserMsg = tc.lastUser
+
+			raw := eng.executeTool(context.Background(), toolCall("read", tc.action, tc.arguments), noopStep)
+			result, ok := tools.ParseAgentToolResult(agentToolObservation(tc.action, raw))
+			require.True(t, ok, raw)
+			require.Equal(t, tools.AgentToolStatusNeedsInput, result.Status)
+			require.Equal(t, tools.AgentToolCodeInvalidArguments, result.Error.Code)
+			require.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep,
+				"the user did not need to add anything; the model owns this repair")
+			require.False(t, result.Retryable)
+			require.Equal(t, tc.sourceStatus, result.Meta.SourceStatus)
+			require.Empty(t, executor.calls, "a rejected call must not reach an upstream read")
+		})
+	}
 }
 
 // TestAccountFinanceUnavailableReturnsStructuredUnavailable: the model-visible
@@ -222,6 +270,9 @@ func TestReadBoundaryRejectsUngroundedMonitorAbsoluteWindow(t *testing.T) {
 	out := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.IntentMonitorHistory),
 		`{"time_window":{"type":"absolute","start":"2026-07-18 00:00","end":"2026-07-19 00:00","source_span":"昨天"}}`), noopStep)
 
-	assert.Contains(t, out, "ungrounded capability request")
+	result, ok := tools.ParseAgentToolResult(agentToolObservation(capability.ReadToolName(intent.IntentMonitorHistory), out))
+	require.True(t, ok, out)
+	assert.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep)
+	assert.Equal(t, tools.AgentToolCodeInvalidArguments, result.Error.Code)
 	require.Empty(t, executor.calls, "an invented absolute date must be rejected before any upstream query")
 }

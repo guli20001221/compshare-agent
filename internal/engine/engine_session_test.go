@@ -374,6 +374,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"turnModelCallsThisTurn":        true,
 		"turnCompletionClassHint":       true,
 		"turnCompletionReasonHint":      true,
+		"runtimeFinishReasonThisTurn":   true,
 		"turnCompletionEmittedThisTurn": true,
 		"hardBlockStandingThisTurn":     true,
 		"hardBlockTraceThisTurn":        true,
@@ -482,12 +483,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 92, len(perSessionFields); want != got {
+	if want, got := 93, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 98, typ.NumField(); want != got {
+	if want, got := 99, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

@@ -152,9 +152,10 @@ func TestTranscriptsAreNotAttachedToTheWrongExchange(t *testing.T) {
 	}
 }
 
-// The replay budget exists to bound history. Once tool traffic is part of
-// history, a budget that ignores it bounds only the part that did not grow.
-func TestReplayBudgetChargesForToolTraffic(t *testing.T) {
+// Tool traffic consumes the detail budget, but not at the cost of forgetting the
+// actual conversation. When detail no longer fits, the old exchange remains as
+// its original user/assistant pair and only the re-queryable evidence is shed.
+func TestReplayBudgetCompactsOldToolTrafficBeforeDroppingDialogue(t *testing.T) {
 	enableCanonicalTranscriptForTest(t)
 	big := make([]rune, maxReplayedHistoryRunes)
 	for i := range big {
@@ -172,19 +173,16 @@ func TestReplayBudgetChargesForToolTraffic(t *testing.T) {
 	}
 
 	kept := budgetReplayedPairs([]ConversationPair{
-		{User: "old q", Assistant: "old a"},
 		heavy,
+		{User: "newer detailed q", Assistant: "newer detailed a", Transcript: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleTool, Content: "fresh evidence"}}},
 		{User: "new q", Assistant: "new a"},
 	}, maxReplayedHistoryRunes)
 
-	// The heavy exchange alone exhausts the budget, so the older one must be
-	// shed. If the transcript were uncharged, all three would survive.
-	if len(kept) == 3 {
-		t.Fatal("tool traffic escaped the replay budget")
-	}
-	if kept[len(kept)-1].User != "new q" {
-		t.Fatalf("newest exchange was shed: %#v", kept)
-	}
+	require.Len(t, kept, 3, "plain user/assistant dialogue must survive detail compaction")
+	require.Empty(t, kept[0].Transcript, "the oversized old tool detail must not escape the budget")
+	require.NotEmpty(t, kept[1].Transcript, "the newest available tool evidence wins")
+	require.Equal(t, "q", kept[0].User)
+	require.Equal(t, "new q", kept[len(kept)-1].User)
 }
 
 // TestFlagOffMeansNoTranscriptPipelineAtAll is the property the single switch
