@@ -14,13 +14,13 @@ import (
 // here would move the address without moving the documentation, and the run would then be
 // testing something nobody described.
 func TestPublicIPv6CandidatesProduceBothEncodings(t *testing.T) {
-	got, err := publicIPv6Candidates("2002:a40:2e05::", "106.75.226.241")
+	got, err := publicIPv6Candidates("2002:a40:2e05::", "203.0.113.9")
 	if err != nil {
 		t.Fatalf("build candidates: %v", err)
 	}
 	want := []dialCandidate{
-		{label: "public-v6-simple", host: "2002:a40:2e05::6a4b:e2f1"},
-		{label: "public-v6-rfc6052", host: "2002:a40:2e05:6a4b:e200:f100::"},
+		{label: "public-v6-simple", host: "2002:a40:2e05::cb00:7109"},
+		{label: "public-v6-rfc6052", host: "2002:a40:2e05:cb00:7100:900::"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d candidates, want %d: %+v", len(got), len(want), got)
@@ -30,9 +30,9 @@ func TestPublicIPv6CandidatesProduceBothEncodings(t *testing.T) {
 			t.Errorf("candidate %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
-	// 2002:a40:2e05::106.75.226.241 is how the address was written down; it must be the same
+	// 2002:a40:2e05::203.0.113.9 is how the address was written down; it must be the same
 	// address the simple encoding produces, or the config comment describes a different dial.
-	if literal := net.ParseIP("2002:a40:2e05::106.75.226.241"); literal == nil || literal.String() != want[0].host {
+	if literal := net.ParseIP("2002:a40:2e05::203.0.113.9"); literal == nil || literal.String() != want[0].host {
 		t.Errorf("the dotted-quad spelling parses to %v, want %s", literal, want[0].host)
 	}
 }
@@ -41,7 +41,7 @@ func TestPublicIPv6CandidatesProduceBothEncodings(t *testing.T) {
 // overwrite prefix bits and dial an address the operator never configured — a worse outcome
 // than not offering the encoding, because the resulting failure would look like the prefix's.
 func TestRFC6052EncodingIsOmittedWhenThePrefixIsLongerThan48(t *testing.T) {
-	got, err := publicIPv6Candidates("2002:a40:2e05:dead::", "106.75.226.241")
+	got, err := publicIPv6Candidates("2002:a40:2e05:dead::", "203.0.113.9")
 	if err != nil {
 		t.Fatalf("build candidates: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestRFC6052EncodingIsOmittedWhenThePrefixIsLongerThan48(t *testing.T) {
 			t.Fatalf("a /64-shaped prefix must not get the /48 encoding, got %+v", got)
 		}
 	}
-	if len(got) != 1 || got[0].host != "2002:a40:2e05:dead::6a4b:e2f1" {
+	if len(got) != 1 || got[0].host != "2002:a40:2e05:dead::cb00:7109" {
 		t.Errorf("got %+v, want only the simple encoding", got)
 	}
 }
@@ -59,7 +59,7 @@ func TestRFC6052EncodingIsOmittedWhenThePrefixIsLongerThan48(t *testing.T) {
 // address today must keep dialling that same address, so the unproven prefix can only ever be
 // reached by a zone the internal route has already failed on.
 func TestInternalAddressIsAlwaysTheFirstCandidate(t *testing.T) {
-	cands, _, err := dialCandidatesFor("106.75.226.241", "2002:a40:2e05::", "2003:da8:2004:1000::5", nil)
+	cands, _, err := dialCandidatesFor("203.0.113.9", "2002:a40:2e05::", "2003:da8:2004:1000::5", nil)
 	if err != nil {
 		t.Fatalf("build candidates: %v", err)
 	}
@@ -82,12 +82,12 @@ func TestAdvertisedPublicIPv4IsNeverACandidate(t *testing.T) {
 		{"internal has no mapping", "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cands, _, err := dialCandidatesFor("106.75.226.241", "2002:a40:2e05::", tc.internal, tc.err)
+			cands, _, err := dialCandidatesFor("203.0.113.9", "2002:a40:2e05::", tc.internal, tc.err)
 			if err != nil {
 				t.Fatalf("build candidates: %v", err)
 			}
 			for _, c := range cands {
-				if c.host == "106.75.226.241" {
+				if c.host == "203.0.113.9" {
 					t.Fatalf("the advertised EIP became a candidate: %+v", cands)
 				}
 			}
@@ -102,7 +102,7 @@ func TestAdvertisedPublicIPv4IsNeverACandidate(t *testing.T) {
 // point of a second scheme is to survive the first being unavailable. The reason still has to
 // reach the log, or a run that fell through says nothing about why.
 func TestResolverFailureStillTriesThePrefixAndRecordsWhy(t *testing.T) {
-	cands, notes, err := dialCandidatesFor("106.75.226.241", "2002:a40:2e05::", "", errors.New("gateway timeout"))
+	cands, notes, err := dialCandidatesFor("203.0.113.9", "2002:a40:2e05::", "", errors.New("gateway timeout"))
 	if err != nil {
 		t.Fatalf("build candidates: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestResolverFailureStillTriesThePrefixAndRecordsWhy(t *testing.T) {
 
 func TestMalformedPrefixIsAnErrorNotASilentDowngrade(t *testing.T) {
 	for _, prefix := range []string{"not-an-address", "10.64.46.5", "2002:a40:2e05::/48"} {
-		if _, _, err := dialCandidatesFor("106.75.226.241", prefix, "2003:da8::5", nil); err == nil {
+		if _, _, err := dialCandidatesFor("203.0.113.9", prefix, "2003:da8::5", nil); err == nil {
 			t.Errorf("prefix %q must be rejected, not ignored", prefix)
 		}
 	}
@@ -130,7 +130,7 @@ func TestEmptyPrefixKeepsTheInternalOnlyContract(t *testing.T) {
 	hr := hostResolverFunc(func(context.Context, map[string]any) (string, error) { return "", boom })
 
 	_, err := resolveDialHost(context.Background(), hr, map[string]any{"UHostId": "uhost-x"},
-		"106.75.226.241", 22, dialPolicy{})
+		"203.0.113.9", 22, dialPolicy{})
 	if !errors.Is(err, ErrInternalAddressUnavailable) || !errors.Is(err, boom) {
 		t.Fatalf("want a refusal wrapping the resolver error, got %v", err)
 	}
@@ -198,7 +198,7 @@ func TestNothingReachableRefusesAndNamesWhatWasTried(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	host, err := pickReachableDialHost(ctx, map[string]any{"UHostId": "uhost-x"},
-		"106.75.226.241", closedLocalPort(t), "::", "::1", nil)
+		"203.0.113.9", closedLocalPort(t), "::", "::1", nil)
 	if err == nil {
 		t.Fatalf("want a refusal, got host %q", host)
 	}

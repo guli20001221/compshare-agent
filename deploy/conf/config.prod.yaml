@@ -56,9 +56,10 @@ agent:
     # (instances carry no global IPv6 at all, yet answer on the mapped address), so a
     # translator for public IPv4 is a coherent thing for this network to have.
     #
-    # Two encodings are tried because "prefix + IPv4" names two addresses:
-    #   simple   2002:a40:2e05::106.75.226.241        (IPv4 in the low 32 bits)
-    #   rfc6052  2002:a40:2e05:6a4b:e200:f100::       (RFC 6052 §2.2 for a /48 prefix)
+    # Two encodings are tried because "prefix + IPv4" names two addresses (shown here with a
+    # documentation address, RFC 5737 — never a real instance EIP, this repo is public):
+    #   simple   2002:a40:2e05::203.0.113.9           (IPv4 in the low 32 bits)
+    #   rfc6052  2002:a40:2e05:cb00:7100:900::        (RFC 6052 §2.2 for a /48 prefix)
     # The one real mapping in this tree (mysql.host_override above) embeds its IPv4 at bits
     # 64-95, which is neither, so guessing a single encoding would make a failed test ambiguous.
     #
