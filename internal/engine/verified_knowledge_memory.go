@@ -10,16 +10,15 @@ import (
 )
 
 const (
-	verifiedKnowledgeMaxTurns       = 4
-	verifiedKnowledgeMaxItems       = 8
-	verifiedKnowledgeAnswerMaxRunes = 1200
+	verifiedKnowledgeMaxTurns = 4
+	verifiedKnowledgeMaxItems = 8
 )
 
-// rememberVerifiedKnowledge stores only answers that have already passed the
-// semantic verifier. The bounded evidence snippets are the durable trust root;
-// arbitrary assistant prose is never promoted merely because it was emitted.
-func (e *Engine) rememberVerifiedKnowledge(question, answer string, ledger knowledge.EvidenceLedger) {
-	if e == nil || len(ledger.Items) == 0 || strings.TrimSpace(answer) == "" {
+// rememberVerifiedKnowledge stores only the evidence that validated an answer.
+// Assistant prose is already in the replayed conversation; persisting it here
+// would create another semantic-memory copy with a different retention policy.
+func (e *Engine) rememberVerifiedKnowledge(question string, ledger knowledge.EvidenceLedger) {
+	if e == nil || len(ledger.Items) == 0 {
 		return
 	}
 	question = strings.TrimSpace(question)
@@ -28,7 +27,6 @@ func (e *Engine) rememberVerifiedKnowledge(question, answer string, ledger knowl
 	}
 	entry := VerifiedKnowledgeTurn{
 		Question:       truncateRunes(question, 600),
-		Answer:         truncateRunes(strings.TrimSpace(answer), verifiedKnowledgeAnswerMaxRunes),
 		Evidence:       boundedVerifiedKnowledgeLedger(ledger),
 		VerifiedAtUnix: time.Now().Unix(),
 	}
@@ -165,7 +163,6 @@ func mergeVerifiedKnowledge(first, second []VerifiedKnowledgeTurn) []VerifiedKno
 			continue
 		}
 		entry.Evidence = boundedVerifiedKnowledgeLedger(entry.Evidence)
-		entry.Answer = truncateRunes(strings.TrimSpace(entry.Answer), verifiedKnowledgeAnswerMaxRunes)
 		if pos, ok := positions[key]; ok {
 			if entry.VerifiedAtUnix >= out[pos].VerifiedAtUnix {
 				out[pos] = entry

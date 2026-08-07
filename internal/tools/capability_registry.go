@@ -150,8 +150,11 @@ func cloneStringsPreservingEmpty(in []string) []string {
 	return append([]string{}, in...)
 }
 
-func (r *CapabilityRegistry) VisibleTools(scope ToolScope, mutatingEnabled bool) []openai.Tool {
-	capabilities := r.CapabilitiesForScope(scope, mutatingEnabled)
+// VisibleTools returns the one agent tool window. The model gets the full
+// read-only or mutating registry and chooses its next call; workflow safety is
+// enforced at dispatch and confirmation, not by an unused intent-to-subset planner.
+func (r *CapabilityRegistry) VisibleTools(mutatingEnabled bool) []openai.Tool {
+	capabilities := r.VisibleCapabilities(mutatingEnabled)
 	visible := make([]openai.Tool, 0, len(capabilities))
 	for _, capability := range capabilities {
 		visible = append(visible, capability.Tool)
@@ -159,37 +162,15 @@ func (r *CapabilityRegistry) VisibleTools(scope ToolScope, mutatingEnabled bool)
 	return visible
 }
 
-func (r *CapabilityRegistry) CapabilitiesForScope(scope ToolScope, mutatingEnabled bool) []Capability {
+func (r *CapabilityRegistry) VisibleCapabilities(mutatingEnabled bool) []Capability {
 	if r == nil {
 		return nil
-	}
-	allowedNames := map[string]struct{}(nil)
-	switch scope.Mode {
-	case ToolScopeNamed:
-		if len(scope.Names) == 0 {
-			return nil
-		}
-		allowedNames = make(map[string]struct{}, len(scope.Names))
-		for _, name := range scope.Names {
-			allowedNames[name] = struct{}{}
-		}
-	case ToolScopeMutableFull:
-		// The process flag below still has the final say.
-	case ToolScopeReadOnlyFull:
-		mutatingEnabled = false
-	default:
-		mutatingEnabled = false
 	}
 
 	visible := make([]Capability, 0, len(r.ordered))
 	for _, capability := range r.ordered {
 		if !capability.ExposedToAgent || capability.Stage != CapabilityStageActive {
 			continue
-		}
-		if allowedNames != nil {
-			if _, ok := allowedNames[capability.Name]; !ok {
-				continue
-			}
 		}
 		if !mutatingEnabled && (capability.Policy.Route == ActionRouteWorkflow || capability.Policy.Class == ActionClassMutating) {
 			continue

@@ -115,9 +115,6 @@ func TestTrimHistoryKeepsAFullAgentLoopSessionIntact(t *testing.T) {
 		"the opening user message was trimmed out of a %d-turn agent-loop session; "+
 			"an elliptical follow-up can no longer resolve what the user is talking about",
 		longestObservedSessionTurns)
-	assert.False(t, eng.historyTrimmedThisSession,
-		"a 10-turn session should not reach the ceiling at all; if it does, the numbers "+
-			"above are describing a session shape that no longer exists")
 }
 
 func firstTurnMarker(turn int) string {

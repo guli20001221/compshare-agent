@@ -17,12 +17,10 @@ func hasTool(tools []openai.Tool, name string) bool {
 	return false
 }
 
-func TestSearchKnowledgeVisibilityFollowsToolScope(t *testing.T) {
+func TestSearchKnowledgeVisibilityFollowsRuntimeMode(t *testing.T) {
 	assert.True(t, hasTool(VisibleRegistry(false), "SearchKnowledge"), "read-only registry includes knowledge search")
 	assert.True(t, hasTool(VisibleRegistry(true), "SearchKnowledge"), "mutating registry includes knowledge search")
 	assert.Equal(t, len(Registry), len(VisibleRegistry(true)), "mutating registry exposes all registered tools")
-	assert.True(t, hasTool(VisibleRegistryForSubset([]string{"SearchKnowledge", "DescribeCompShareInstance"}, false), "SearchKnowledge"), "scope listing SearchKnowledge exposes it")
-	assert.False(t, hasTool(VisibleRegistryForSubset([]string{"DescribeCompShareInstance"}, false), "SearchKnowledge"), "scope omitting SearchKnowledge hides it")
 }
 
 // TestSearchKnowledgePolicyIsLocalReadOnly proves SearchKnowledge is a read-only

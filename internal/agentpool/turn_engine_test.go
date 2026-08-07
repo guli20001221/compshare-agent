@@ -49,10 +49,8 @@ func (s *committedTailStore) ListCommittedTail(
 	return append([]store.Message(nil), s.tail...), nil
 }
 
-// The overlap turn is now only an overlap margin: the ConversationDigest it used
-// to be compacted into no longer exists. This pins the constant so the durable
-// path cannot change what it reads by accident, not the rationale — see
-// committedTailTurnLimit for why the number outlived its reason.
+// This pins the legacy durable read boundary. It is deliberately separate from
+// the live transcript budget because durable turns remain disabled.
 func TestNewTurnEngine_ReadsOneOverlapTurn(t *testing.T) {
 	ms := &committedTailStore{mockMessageStore: &mockMessageStore{}}
 	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{})

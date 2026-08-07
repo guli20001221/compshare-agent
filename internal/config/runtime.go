@@ -22,27 +22,13 @@ import (
 //     the built-in default for that flag (NOT all default off — e.g.
 //     knowledge verification default ON).
 //   - &true / &false → explicit value; it WINS over any env var.
-//
-// SkillExecutorDiagnosisPilots is a list (joined to the CSV the env parser
-// expects) and only overrides when non-empty.
 type FeaturesConfig struct {
-	MutatingTools          *bool `yaml:"mutating_tools"`           // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
-	DurableTurns           *bool `yaml:"durable_turns"`            // COMPSHARE_DURABLE_TURNS (server-only, default off)
-	ConfirmForm            *bool `yaml:"confirm_form"`             // COMPSHARE_CONFIRM_FORM (server-only, default off)
-	GuidedCreate           *bool `yaml:"guided_create"`            // COMPSHARE_GUIDED_CREATE (server-only, default off)
-	DomainMatchGuard       *bool `yaml:"domain_match_guard"`       // COMPSHARE_RAG_DOMAIN_MATCH_GUARD (default off)
-	ForcedKnowledgeHop     *bool `yaml:"forced_knowledge_hop"`     // COMPSHARE_FORCED_KNOWLEDGE_HOP (off everywhere since 2026-08-01; key omitted from the deploy config so the env var can still enable it)
-	CanonicalTranscript    *bool `yaml:"canonical_transcript"`     // COMPSHARE_CANONICAL_TRANSCRIPT (default off everywhere)
-	SessionFactContext     *bool `yaml:"session_fact_context"`     // USE_SESSION_FACT_CONTEXT (Go default off; deploy on)
-	ReactResultProjection  *bool `yaml:"react_result_projection"`  // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
-	ReactHistoryCompaction *bool `yaml:"react_history_compaction"` // USE_REACT_HISTORY_COMPACTION (Go default off; deploy on)
-	// DEPRECATED (convergence plan P5): the body-driven skill executor mechanism
-	// was removed. These two fields are now INERT — nothing consumes the
-	// USE_SKILL_EXECUTOR / USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS overrides they emit.
-	// Kept only so an existing deploy config.yaml carrying these keys still loads
-	// (yaml.Unmarshal is lenient); pending product sign-off to drop the config keys.
-	SkillExecutor                *bool    `yaml:"skill_executor"`                  // USE_SKILL_EXECUTOR (inert)
-	SkillExecutorDiagnosisPilots []string `yaml:"skill_executor_diagnosis_pilots"` // USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS (inert)
+	MutatingTools         *bool `yaml:"mutating_tools"`          // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
+	DurableTurns          *bool `yaml:"durable_turns"`           // COMPSHARE_DURABLE_TURNS (server-only, default off)
+	ConfirmForm           *bool `yaml:"confirm_form"`            // COMPSHARE_CONFIRM_FORM (server-only, default off)
+	GuidedCreate          *bool `yaml:"guided_create"`           // COMPSHARE_GUIDED_CREATE (server-only, default off)
+	CanonicalTranscript   *bool `yaml:"canonical_transcript"`    // COMPSHARE_CANONICAL_TRANSCRIPT (default off everywhere)
+	ReactResultProjection *bool `yaml:"react_result_projection"` // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
 }
 
 // RetrievalConfig holds the remote knowledge retrieval knobs.
@@ -70,9 +56,7 @@ type TraceConfig struct {
 // the wiring, and serverTraceGetenv for the same shim shape used for MYSQL_DSN.
 //
 // Bool fields encode to the canonical on/off string the matching cmd parser
-// accepts WITHOUT logging an "unknown value" warning (on = "1"; off = "0" except
-// the two parsers — mutating_tools, skill_executor — whose clean "off" is the
-// empty string). Strings/ints pass through verbatim and only override when
+// accepts WITHOUT logging an "unknown value" warning. Strings/ints pass through verbatim and only override when
 // non-empty / positive, so an omitted YAML value never masks the env fallback.
 func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	if c == nil {
@@ -81,24 +65,16 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	overrides := map[string]string{}
 
 	f := c.Agent.Features
-	// mutating_tools + skill_executor parsers treat "0" as an unknown value
-	// (warn); their clean "off" is the empty string. Every other bool parser
+	// mutating_tools treats "0" as an unknown value (warn); its clean "off" is
+	// the empty string. Every other bool parser
 	// accepts "0" as off, and the default-ON flags REQUIRE "0" for off ("" =
 	// on for those), so they must not use the empty-string off form.
 	putBoolEnv(overrides, "COMPSHARE_ENABLE_MUTATING_TOOLS", f.MutatingTools, "1", "")
-	putBoolEnv(overrides, "USE_SKILL_EXECUTOR", f.SkillExecutor, "1", "")
 	putBoolEnv(overrides, "COMPSHARE_DURABLE_TURNS", f.DurableTurns, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CONFIRM_FORM", f.ConfirmForm, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_GUIDED_CREATE", f.GuidedCreate, "1", "0")
-	putBoolEnv(overrides, "USE_SESSION_FACT_CONTEXT", f.SessionFactContext, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_RESULT_PROJECTION", f.ReactResultProjection, "1", "0")
-	putBoolEnv(overrides, "USE_REACT_HISTORY_COMPACTION", f.ReactHistoryCompaction, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_RAG_DOMAIN_MATCH_GUARD", f.DomainMatchGuard, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_FORCED_KNOWLEDGE_HOP", f.ForcedKnowledgeHop, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CANONICAL_TRANSCRIPT", f.CanonicalTranscript, "1", "0")
-	if len(f.SkillExecutorDiagnosisPilots) > 0 {
-		overrides["USE_SKILL_EXECUTOR_DIAGNOSIS_SKILLS"] = strings.Join(f.SkillExecutorDiagnosisPilots, ",")
-	}
 
 	r := c.Agent.Retrieval
 	putStrEnv(overrides, "USE_KNOWLEDGE_RETRIEVAL", r.KnowledgeRetrieval)

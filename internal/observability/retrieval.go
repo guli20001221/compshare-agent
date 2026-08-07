@@ -1,24 +1,21 @@
 package observability
 
 // RefusalType* classify a RAG turn's no-grounded-answer outcome into the #5
-// four-state taxonomy (RAG three-state cluster). The distinction drives
+// three-state taxonomy. The distinction drives
 // different remediation: corpus_gap → expand the corpus; all_below_floor → tune
 // the relevance floor; synthesis_refused → the LLM declined good evidence;
-// wrong_domain → the cited chunk's product area mismatched the question (the #5
-// behavior fix, set only when the COMPSHARE_RAG_DOMAIN_MATCH_GUARD arm fires).
 const (
 	RefusalTypeCorpusGap        = "corpus_gap"
 	RefusalTypeAllBelowFloor    = "all_below_floor"
 	RefusalTypeSynthesisRefused = "synthesis_refused"
-	RefusalTypeWrongDomain      = "wrong_domain"
 )
 
 // DeriveRefusalType maps the recorded RefusedReason (+ FloorDroppedAll) onto the
-// four-state taxonomy. Pure; called at Finish on the merged retrieval trace.
+// three-state taxonomy. Pure; called at Finish on the merged retrieval trace.
 //
 // The RefusedReason literals mirror the engine's RAG refusal producers
 // (the knowledge Agent and emitSearchKnowledgeRetrievalTrace):
-// "no_evidence", "weak_evidence", "refusal", "retry_no_cite", "wrong_domain",
+// "no_evidence", "weak_evidence", "refusal", "retry_no_cite",
 // plus the infra failures "token_budget" / "llm_error". The engine-side literals
 // are pinned by its own RefusedReason tests; this mapping is pinned by
 // TestDeriveRefusalType — a drift on either side breaks one of the two.
@@ -44,8 +41,6 @@ func (t RetrievalTrace) DeriveRefusalType() string {
 		return RefusalTypeCorpusGap
 	case "weak_evidence", "refusal", "retry_no_cite":
 		return RefusalTypeSynthesisRefused
-	case "wrong_domain":
-		return RefusalTypeWrongDomain
 	default:
 		// "", "token_budget", "llm_error" — not a knowledge-coverage refusal.
 		return ""

@@ -383,15 +383,11 @@ func monitorSemanticFacts(metrics []Metric, payload map[string]any) ([]monitorSc
 }
 
 // MonitorScalar is a per-metric, per-instance scalar value extracted from
-// a GetCompShareInstanceMonitor result. Exported for use by the engine
-// M2 ToolFact writer (internal/engine/session_state.go) so monitor_sample
-// facts share the renderer's metric vocabulary (cpu_usage, gpu_usage,
-// vram_usage etc.) instead of raw API keys (uhost_cpu_used etc.).
+// a GetCompShareInstanceMonitor result using renderer vocabulary (cpu_usage,
+// gpu_usage, vram_usage etc.) rather than raw API keys.
 //
 // Multi-GPU disambiguation: a host with N GPUs produces N MonitorScalar
-// entries with Key in the form "gpu_usage.GPU 1", "gpu_usage.GPU 2", ...
-// The fact writer collapses them into a single fact's Payload using the
-// dotted-suffix convention.
+// entries with Key in the form "gpu_usage.GPU 1", "gpu_usage.GPU 2", ....
 type MonitorScalar struct {
 	SubjectID string
 	Key       string
@@ -403,13 +399,10 @@ type MonitorScalar struct {
 // returns the per-(host, metric) latest scalar values, using the same
 // display vocabulary that read capabilities emit.
 // Returns nil if the payload is unrecognized or contains no
-// known-metric data; callers should treat nil as "no fact to write" (a
-// successful empty-data probe is not a fact-producing event).
+// known-metric data.
 //
 // metrics may be empty, in which case all known metric keys are accepted.
-// Pass through whatever metric set the caller has for the current turn
-// (engine.go can leave it nil; the renderer-side already filters by what
-// the user asked for, but ToolFact wants all observed metrics).
+// Pass through whatever metric set the caller needs for the current turn.
 func ExtractMonitorScalars(payload map[string]any, metrics []Metric) []MonitorScalar {
 	semantic, ok := monitorSemanticFacts(metrics, payload)
 	if !ok {

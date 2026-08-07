@@ -51,23 +51,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.D
 	if mutating {
 		log.Printf("runtime: HTTP mutating tools enabled (COMPSHARE_ENABLE_MUTATING_TOOLS=1)")
 	}
-	log.Printf("runtime: HTTP agentic SearchKnowledge enabled (single production knowledge path)")
-	domainMatchGuard, unknownDomainMatchGuard := domainMatchGuardEnabledFromEnv(getenv)
-	if unknownDomainMatchGuard != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_RAG_DOMAIN_MATCH_GUARD value %q", unknownDomainMatchGuard)
-	}
-	engine.SetDomainMatchGuardEnabled(domainMatchGuard)
-	if domainMatchGuard {
-		log.Printf("runtime: HTTP wrong-domain refuse arm enabled (COMPSHARE_RAG_DOMAIN_MATCH_GUARD=1; #5 cite-relevance)")
-	}
-	forcedKnowledgeHop, unknownForcedKnowledgeHop := forcedKnowledgeHopEnabledFromEnv(getenv)
-	if unknownForcedKnowledgeHop != "" {
-		log.Printf("warning: ignoring unknown COMPSHARE_FORCED_KNOWLEDGE_HOP value %q", unknownForcedKnowledgeHop)
-	}
-	engine.SetForcedKnowledgeHopEnabled(forcedKnowledgeHop)
-	if forcedKnowledgeHop {
-		log.Printf("runtime: HTTP forced first-hop retrieval enabled (COMPSHARE_FORCED_KNOWLEDGE_HOP=1)")
-	}
+	log.Printf("runtime: HTTP agentic SearchKnowledge enabled (the Agent chooses retrieval in-loop)")
 	canonicalTranscript, unknownCanonicalTranscript := canonicalTranscriptEnabledFromEnv(getenv)
 	if unknownCanonicalTranscript != "" {
 		log.Printf("warning: ignoring unknown COMPSHARE_CANONICAL_TRANSCRIPT value %q", unknownCanonicalTranscript)
@@ -80,14 +64,6 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.D
 }
 
 func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv getenvFunc) error {
-	sessionFactContext, unknownSessionFactContext := sessionFactContextEnabledFromEnv(getenv)
-	if unknownSessionFactContext != "" {
-		log.Printf("warning: ignoring unknown USE_SESSION_FACT_CONTEXT value %q", unknownSessionFactContext)
-	}
-	deps.SessionFactContextEnabled = sessionFactContext
-	if sessionFactContext {
-		log.Printf("runtime: HTTP session fact context enabled (USE_SESSION_FACT_CONTEXT=1)")
-	}
 	reactResultProjection, unknownReactResultProjection := reactResultProjectionEnabledFromEnv(getenv)
 	if unknownReactResultProjection != "" {
 		log.Printf("warning: ignoring unknown USE_REACT_RESULT_PROJECTION value %q", unknownReactResultProjection)
@@ -95,14 +71,6 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	deps.ReactResultProjectionEnabled = reactResultProjection
 	if reactResultProjection {
 		log.Printf("runtime: HTTP ReAct result projection enabled (USE_REACT_RESULT_PROJECTION=1)")
-	}
-	reactHistoryCompaction, unknownReactHistoryCompaction := reactHistoryCompactionEnabledFromEnv(getenv)
-	if unknownReactHistoryCompaction != "" {
-		log.Printf("warning: ignoring unknown USE_REACT_HISTORY_COMPACTION value %q", unknownReactHistoryCompaction)
-	}
-	deps.ReactHistoryCompactionEnabled = reactHistoryCompaction
-	if reactHistoryCompaction {
-		log.Printf("runtime: HTTP ReAct history compaction enabled (USE_REACT_HISTORY_COMPACTION=1)")
 	}
 	knowledgeRetrievalRequested, unknownKnowledge := knowledgeRetrievalModeFromEnv(getenv)
 	if unknownKnowledge != "" {

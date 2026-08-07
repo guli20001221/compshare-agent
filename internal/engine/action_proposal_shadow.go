@@ -838,7 +838,6 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 			ca, _ := newConfirmableAction(resolved)
 			return e.executeResolvedWorkflow(ctx, ca, onStep)
 		}
-		e.rememberPendingResolvedAction(resolved.action)
 		return resolvedActionForModel(resolved.action)
 	}
 	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案已验证，进入统一确认与执行门"})
@@ -864,42 +863,6 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 		e.recordUserSelectedTargets(resolved.action)
 	}
 	return reply
-}
-
-// rememberPendingResolvedAction parks a half-finished write as a task frame so a
-// later turn can complete it. It fires ONLY for a clean "the user has not told us
-// X yet" — never for a DependencyFailure, which means OUR catalog query failed. A
-// frame in that case would persist "waiting for the user to supply GpuType" into
-// the session, blaming the user for our outage and poisoning every later turn's
-// context with a task they cannot resolve.
-func (e *Engine) rememberPendingResolvedAction(resolved actionresolver.ResolvedAction) {
-	if len(resolved.Missing) == 0 || len(resolved.Conflicts) != 0 ||
-		len(resolved.Rejected) != 0 || len(resolved.DependencyFailures) != 0 {
-		return
-	}
-	now := time.Now()
-	frame := ContextFrame{
-		Version:         1,
-		Kind:            ContextFrameKindWorkflowTask,
-		Status:          ContextFrameStatusPending,
-		Intent:          "write_action",
-		Workflow:        resolved.Operation,
-		OriginalUserMsg: e.lastUserMsg,
-		Slots:           map[string]string{},
-		SlotSources:     map[string]string{},
-		MissingSlots:    append([]string(nil), resolved.Missing...),
-		Stage:           "collecting_parameters",
-		ProducedAtUnix:  now.Unix(),
-		TTLSeconds:      ContextFrameTTLSeconds,
-	}
-	for name, slot := range resolved.Provenance {
-		if slot.Codec == actionresolver.CodecSensitiveText {
-			continue
-		}
-		frame.Slots[name] = fmt.Sprint(slot.Value)
-		frame.SlotSources[name] = string(slot.Source)
-	}
-	e.setContextFrame(frame)
 }
 
 func resolvedActionForModel(resolved actionresolver.ResolvedAction) string {

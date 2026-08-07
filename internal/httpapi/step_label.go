@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/workflow"
 )
 
 // stepActionLabels maps a step frame's Action — an internal tool name — to the
@@ -57,28 +58,6 @@ var stepActionLabels = map[string]string{
 	// instead; that is a different string for a different frame, not a drift.
 	"DiagnoseInstanceInternals": "实例内只读排查",
 
-	// --- internal/tools/registry.go: mutating workflows ---------------------
-	// Reachable as steps even in the P6 proposal world: an unaccepted workflow
-	// call is emitted as a StepBlocked with the workflow name (engine.go's
-	// workflow.IsWorkflowTool branch). They also seed the Request* labels below.
-	"CreateInstanceWorkflow":      "创建实例",
-	"StopInstanceWorkflow":        "关闭实例",
-	"StartInstanceWorkflow":       "启动实例",
-	"RebootInstanceWorkflow":      "重启实例",
-	"RenameInstanceWorkflow":      "重命名实例",
-	"ResetPasswordWorkflow":       "重置密码",
-	"ResizeInstanceWorkflow":      "调整配置",
-	"ReinstallInstanceWorkflow":   "重装系统",
-	"SetStopSchedulerWorkflow":    "设置定时关机",
-	"CancelStopSchedulerWorkflow": "取消定时关机",
-	"CreateDiskWorkflow":          "创建数据盘",
-	"ResizeDiskWorkflow":          "扩容数据盘",
-	"CreateCustomImageWorkflow":   "创建自制镜像",
-	"CloneCustomImageWorkflow":    "复制自制镜像",
-	"EnableNetOptimizerWorkflow":  "开启网络加速",
-	"CreateCFSWorkflow":           "创建文件存储",
-	"ResizeCFSWorkflow":           "扩容文件存储",
-
 	// --- internal/capability: the "ReadCapability_"+intent family -----------
 	// Second source. These ARE the model's read surface, so in a typical turn
 	// the very first step is one of them (ReadCapability_resource_info).
@@ -120,6 +99,9 @@ func stepActionLabel(action string) string {
 	if action == "DiagnoseInstanceInternals" && tools.InstanceOpsWritesEnabled() {
 		return "实例内排查与修复"
 	}
+	if label := workflow.StepLabel(action); label != "" {
+		return label
+	}
 	if label, ok := stepActionLabels[action]; ok {
 		return label
 	}
@@ -129,7 +111,7 @@ func stepActionLabel(action string) string {
 	// added. Derive from the workflow's own label instead — a new write op then
 	// gets its proposal label for free.
 	if operation, ok := strings.CutPrefix(action, "Request"); ok && operation != "" {
-		if label, ok := stepActionLabels[operation+"Workflow"]; ok {
+		if label := workflow.StepLabel(operation + "Workflow"); label != "" {
 			return "发起" + label + "请求"
 		}
 	}

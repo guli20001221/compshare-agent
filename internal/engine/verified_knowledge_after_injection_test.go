@@ -35,7 +35,7 @@ func TestVerifierStillSeesPriorEvidenceAfterTheInjectionIsGone(t *testing.T) {
 		}},
 	}
 	eng := &Engine{}
-	eng.rememberVerifiedKnowledge("4090 一小时多少钱", "每小时 2 元。", prior)
+	eng.rememberVerifiedKnowledge("4090 一小时多少钱", prior)
 	require.Len(t, eng.sessionState.VerifiedKnowledge, 1,
 		"premise: the entry must actually be stored, or the assertions below prove nothing")
 
@@ -61,7 +61,6 @@ func TestVerifierStillSeesPriorEvidenceAfterTheInjectionIsGone(t *testing.T) {
 func TestVerifiedKnowledgeNoLongerReachesTheModel(t *testing.T) {
 	stored := []VerifiedKnowledgeTurn{{
 		Question: "4090 一小时多少钱",
-		Answer:   "每小时 2 元。",
 		Evidence: knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "w0-pricing-4090"}}},
 	}}
 

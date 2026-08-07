@@ -26,7 +26,7 @@ func TestDefaultCapabilityRegistryOwnsEveryAgentToolAndPolicy(t *testing.T) {
 	require.Equal(t, len(Registry), exposed)
 	_, ok := registry.Lookup("ReadPlatformCapability")
 	require.False(t, ok, "the generic capability+slots adapter must not remain executable")
-	for _, tool := range registry.VisibleTools(ToolScope{Mode: ToolScopeReadOnlyFull}, true) {
+	for _, tool := range registry.VisibleTools(false) {
 		require.NotEqual(t, "ReadPlatformCapability", tool.Function.Name)
 	}
 
@@ -58,20 +58,18 @@ func TestCapabilityRegistryDerivesResultOwnershipFromExecutionRoute(t *testing.T
 	}
 }
 
-func TestCapabilityRegistryPreservesDenyByDefaultAndReadOnlyWindows(t *testing.T) {
+func TestCapabilityRegistryPreservesReadOnlyWindows(t *testing.T) {
 	registry := DefaultCapabilityRegistry()
-	require.Empty(t, registry.VisibleTools(ToolScope{Mode: ToolScopeNamed}, true))
-	require.Empty(t, registry.VisibleTools(ToolScope{Mode: ToolScopeNamed, Names: []string{"does-not-exist"}}, true))
-
-	for _, tool := range registry.VisibleTools(ToolScope{}, true) {
+	for _, tool := range registry.VisibleTools(false) {
 		capability, ok := registry.Lookup(tool.Function.Name)
 		require.True(t, ok)
 		require.NotEqual(t, ActionClassMutating, capability.Policy.Class)
 		require.NotEqual(t, ActionRouteWorkflow, capability.Policy.Route)
 	}
 
-	named := registry.VisibleTools(ToolScope{Mode: ToolScopeNamed, Names: []string{"SearchKnowledge", "StopInstanceWorkflow"}}, false)
-	require.Equal(t, []string{"SearchKnowledge"}, toolNames(named))
+	all := registry.VisibleTools(true)
+	require.Equal(t, len(Registry), len(all))
+	require.Contains(t, toolNames(all), "StopInstanceWorkflow")
 }
 
 func TestCapabilityRegistryRejectsMissingPolicyAndUnsafeL1(t *testing.T) {

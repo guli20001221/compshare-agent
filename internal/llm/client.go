@@ -62,16 +62,8 @@ type ChatRequest struct {
 	// field off the wire entirely, so every existing caller keeps the provider
 	// default and this addition changes no current behaviour.
 	//
-	// Set it only for calls that are closer to a transform than to a judgement.
-	// The knowledge query planner is the first such caller.
-	//
-	// Do not expect this to buy reproducibility on its own. Measured A/A over 50
-	// real questions (same arm twice, deterministic BM25 retrieval so only the
-	// planner varied): pinning the planner to 0 moved the retrieved-chunk-set
-	// flip rate 56% -> 50% and mean Jaccard 0.708 -> 0.754. Real, small, and
-	// nowhere near enough — whatever dominates that residual is not sampling
-	// temperature, so treat this as removing one confound, not as a determinism
-	// guarantee.
+	// Set it only for a caller whose contract explicitly benefits from a fixed
+	// sampling value. It is not a general reproducibility guarantee.
 	Temperature *float32
 	// OnTextDelta, if non-nil, is invoked synchronously for each non-empty
 	// text delta chunk received from the upstream stream.

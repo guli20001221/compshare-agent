@@ -18,7 +18,6 @@ func TestDeriveRefusalType(t *testing.T) {
 		{"weak_evidence → synthesis_refused", "weak_evidence", false, false, RefusalTypeSynthesisRefused},
 		{"refusal → synthesis_refused", "refusal", false, false, RefusalTypeSynthesisRefused},
 		{"retry_no_cite → synthesis_refused", "retry_no_cite", false, false, RefusalTypeSynthesisRefused},
-		{"wrong_domain → wrong_domain", "wrong_domain", false, false, RefusalTypeWrongDomain},
 		{"remote MCP outage is not a corpus gap", "no_evidence", false, true, ""},
 		// Infra failures are not knowledge-coverage refusals (outcome.terminated_by
 		// owns them), so they stay unclassified even if a floor drop co-occurred.

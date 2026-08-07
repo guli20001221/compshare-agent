@@ -852,49 +852,20 @@
       "value": "|"
     },
     {
-      "id": "a5adf5c70eefbf4b",
+      "id": "957a5806c3c0f5b2",
       "kind": "string_heuristic",
-      "path": "internal/engine/history_compaction.go",
-      "symbol": "compactOldRetrievableToolResults",
-      "callee": "strings.HasPrefix"
-    },
-    {
-      "id": "22a2400012eb1b5f",
-      "kind": "string_heuristic",
-      "path": "internal/engine/history_compaction.go",
+      "path": "internal/engine/history_helpers.go",
       "symbol": "parseFirstJSONObject",
       "callee": "strings.Index",
       "value": "{"
     },
     {
-      "id": "6f3113b5d8378994",
+      "id": "018ff9a9e7fa8115",
       "kind": "string_heuristic",
-      "path": "internal/engine/history_compaction.go",
+      "path": "internal/engine/history_helpers.go",
       "symbol": "parseFirstJSONObject",
       "callee": "strings.LastIndex",
       "value": "}"
-    },
-    {
-      "id": "96adc5f2074d142d",
-      "kind": "string_heuristic",
-      "path": "internal/engine/history_compaction.go",
-      "symbol": "toolResultContentCanBeCompacted",
-      "callee": "strings.HasPrefix"
-    },
-    {
-      "id": "ef50408508ea342f",
-      "kind": "string_heuristic",
-      "path": "internal/engine/history_compaction.go",
-      "symbol": "validateMemoryDelta",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "11717731fb4706ff",
-      "kind": "string_heuristic",
-      "path": "internal/engine/history_compaction.go",
-      "symbol": "validateMemoryDelta",
-      "callee": "strings.Contains",
-      "ordinal": 2
     },
     {
       "id": "dec1534d6bd6e1ec",

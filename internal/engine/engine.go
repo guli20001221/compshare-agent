@@ -58,7 +58,6 @@ const (
 	// messages against ~2 on the fast path. Routing everything through the agent
 	// loop would have re-introduced amnesia at turn 8, silently. A per-turn cost
 	// that varies by 3x is exactly what a message count cannot express.
-	maxKnowledgeHistoryRunes     = 4000
 	maxReadExpensiveCallsPerTurn = 30
 	// maxSearchKnowledgeCallsPerTurn bounds how many times the agent may CALL
 	// SearchKnowledge in a single turn. On a corpus-gap query the retriever
@@ -70,28 +69,14 @@ const (
 	// withdrawn from the tool list so the model must answer from what it has (or
 	// decline) well within budget.
 	//
-	// This counter used to be incremented once per RETRIEVAL, not once per call,
-	// which quietly merged two different budgets into one. The multi-turn query
-	// planner fans a resolved question out into up to maxKnowledgePlanQueries
-	// retrievals *inside a single call*, so whenever it emitted 2+ queries the
-	// very first call exhausted the turn and the agent lost every later hop —
-	// on a live probe over real 2026-06-26..07-09 questions that was 8% of
-	// single-question turns and 14% (1/7) of the real multi-turn replay cases.
-	// Search thrash and retrieval volume are now bounded separately: this counts
-	// agent decisions to search, maxRetrievalQueriesPerTurn counts the retrievals
-	// those decisions cost.
+	// Each call executes exactly the query the Agent supplied. The Agent already
+	// has the full transcript and is responsible for resolving follow-up context;
+	// there is no hidden rewrite model call or server-side query fan-out.
 	maxSearchKnowledgeCallsPerTurn = 4
-	// maxRetrievalQueriesPerTurn bounds total retrievals across every
-	// SearchKnowledge call in one turn, including the planner's per-call fan-out.
-	// It is the cost ceiling the old per-query counter was really enforcing;
-	// keeping it separate lets a follow-up hop stay reachable without letting a
-	// wide plan multiply into unbounded retrieval.
-	maxRetrievalQueriesPerTurn = 8
 )
 
 const actionOutcomeUncertainReply = "上游请求已发出，但本次没有收到可确认的结果。为避免重复操作，系统不会自动重试；请先查询资源当前状态，再决定下一步。"
 
-const knowledgeHistoryClipMarker = "\n\n[knowledge answer clipped from conversation history]"
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
 
 // monitor_history refusal text moved to internal/refusal/templates.go in the
@@ -281,7 +266,6 @@ type Engine struct {
 	agentRuntimeEventsThisTurn       []agentruntime.Event
 	agentRuntimeObserver             func(agentruntime.Event)
 	rendererTraceObserver            func(observability.RendererTrace)
-	historyTrimmedThisSession        bool
 	retrievalTraceObserver           func(observability.RetrievalTrace)
 	freshnessTraceObserver           func(observability.FreshnessTrace)
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
@@ -295,11 +279,9 @@ type Engine struct {
 	rateLimitObserver                func(governance.Decision)
 	readExpensiveCallsThisTurn       int
 	lastConfirmationAcceptedThisCall bool
-	deferTaskCarryThisTurn           bool
 	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the agentic
 	// SearchKnowledge tool (P3) so the final-answer citation check runs against
-	// exactly the evidence the agent was shown. Reset per turn. ToolScope controls
-	// whether the tool is available for the active intent.
+	// exactly the evidence the agent was shown. Reset per turn.
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
 	// answerEchoedChunkIDThisTurn names the chunk whose body the final answer
@@ -318,44 +300,22 @@ type Engine struct {
 	// engine-local: sharing it through the process-wide retriever would let one
 	// user's capability authorize another user's evidence read.
 	searchKnowledgeCapabilitiesThisTurn map[string]string
-	// searchKnowledgeCallsThisTurn counts how many times the agent CHOSE to call
-	// SearchKnowledge this turn — one increment per tool call, regardless of how
-	// many query variants the multi-turn planner fans that call out into. The
-	// ReAct loop withdraws the capability at maxSearchKnowledgeCallsPerTurn, so
-	// this is the anti-thrash budget.
+	// searchKnowledgeCallsThisTurn counts how many times the agent chose to call
+	// SearchKnowledge this turn. The ReAct loop withdraws the capability at
+	// maxSearchKnowledgeCallsPerTurn, preventing search thrash.
 	searchKnowledgeCallsThisTurn int
-	// searchKnowledgeQueriesThisTurn counts actual retrievals, including the
-	// planner's per-call fan-out. This is the cost budget, bounded by
-	// maxRetrievalQueriesPerTurn. It was previously merged into
-	// searchKnowledgeCallsThisTurn, which made a wide first plan silently
-	// consume every later hop.
-	searchKnowledgeQueriesThisTurn int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
 	// evidence ledger (the union of every SearchKnowledge call's items this turn,
 	// #126). The route-independent grounded-answer validator checks the final
 	// synthesis cites only ChunkIDs present here. Reset per turn; populated only
 	// when the agentic tool runs AND the grounded validator is on — empty (inert)
 	// otherwise, keeping flag-off byte-identical.
-	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
-	// resolvedKnowledgeQuestionThisTurn is the standalone answer target produced
-	// by the bounded conversation-aware query planner (or the Agent query when
-	// planning is unnecessary/unavailable). Later searches may use narrower
-	// subqueries, but answer verification keeps this one stable question.
-	resolvedKnowledgeQuestionThisTurn   string
+	searchKnowledgeLedgerThisTurn       knowledge.EvidenceLedger
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
-	// forcedHopSearchInFlight marks the one retrieval the engine performs on the
-	// user's own words before the Agent's first model call, so the query planner
-	// can expand that query instead of merely de-referencing it. It is set only
-	// around runForcedKnowledgeHop's own call and is false for every search the
-	// Agent issues — the Agent writes its own retrieval queries, and measurement
-	// says it writes better ones than either the raw user words or the planner's
-	// restatement of them, so expansion must not be applied to those.
-	forcedHopSearchInFlight bool
 	// knowledgeQAAgentLoopThisTurn records that SearchKnowledge ran this turn —
-	// normally because the Agent chose it, and under the forced-hop arm also when
-	// the engine searched on the Agent's behalf before its first model call. It is
-	// set where SearchKnowledge actually executes, so it is a
+	// because the Agent chose it. It is set where SearchKnowledge actually
+	// executes, so it is a
 	// post-hoc marker, NOT a routing decision — P6 deleted the intent router and
 	// nothing classifies a turn as "knowledge" before the Agent acts (see the
 	// deliberate no-router note in cmd/shared_deps.go). Anything that wants to
@@ -500,12 +460,9 @@ type Engine struct {
 	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
 	// so the regular console agent cannot inherit it from a pooled engine.
 	feishuConsoleHandoffThisTurn bool
-	// sessionState is the JSON-serializable per-session state injected by
-	// SetSessionState before each Chat turn and read back via
-	// SessionStateSnapshot after the turn. See session_state.go.
-	// M1 contract: this field is only mutated by SetSessionState /
-	// ClearSessionState; M2 will wire ToolFactExtractor to also update
-	// it from inside the turn.
+	// sessionState is the JSON-serializable per-session execution state injected
+	// before each Chat turn and read back through SessionStateSnapshot afterward.
+	// See session_state.go.
 	sessionState         SessionState
 	sessionStateVersion  int
 	sessionStateHydrated bool
@@ -523,22 +480,9 @@ type Engine struct {
 	promptSectionIDsThisTurn   []string
 	memoryUpdateSourceThisTurn string
 	groundingOutcomeThisTurn   string
-	// sessionFactContextEnabled INJECTS NOTHING. It reads as a prompt-injection
-	// switch and was documented as one, but the only path that ever put a
-	// RecentFact in front of the model was the context card's 近期可信观测 block,
-	// which this flag did not gate and which was deleted once the canonical
-	// transcript replayed the original tool results instead. What survives is
-	// refreshSystemPrompt's BOOLEAN use of assembleFactContext, deciding whether
-	// the turn's instance binding is traced as ResolutionSourceFactCache. Default
-	// off; the deploy config ships it on, where it changes a trace field.
-	sessionFactContextEnabled bool
 	// reactResultProjectionEnabled shrinks selected bulky tool results before
 	// they are formatted back into the ReAct model-visible history. Default off.
 	reactResultProjectionEnabled bool
-	// reactHistoryCompactionEnabled replaces count-only history trimming with
-	// deterministic compact summaries and old retrievable-tool placeholders.
-	// Default off.
-	reactHistoryCompactionEnabled bool
 	// Per-turn instance-binding observability (#3 StateTrace). Captured at turn
 	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
 	// by design (reset every turn) — a shared value would attribute one tenant's
@@ -547,14 +491,9 @@ type Engine struct {
 	//     entry, before any mid-turn re-binding.
 	//   - instanceResolutionSourceThisTurn: how the turn-start binding was
 	//     determined (observability.ResolutionSource* — session_state /
-	//     single_host / fact_cache / unresolved).
-	//   - factCacheOldestAgeSecondsThisTurn: age of the oldest still-fresh fact
-	//     the turn HAD, or -1 when none. Nothing is injected — see
-	//     sessionFactContextEnabled; the facts decide a trace label, not the
-	//     prompt. Bucketed before it leaves the recorder.
-	selectedInstanceIDAtTurnStart     string
-	instanceResolutionSourceThisTurn  string
-	factCacheOldestAgeSecondsThisTurn int
+	//     single_host / unresolved).
+	selectedInstanceIDAtTurnStart    string
+	instanceResolutionSourceThisTurn string
 	// instanceOps runs the read-only in-instance SSH diagnosis lane. nil = lane
 	// off, and the tool is then absent from the model window
 	// (centralAgentToolWindow). Copied from SharedDeps.InstanceOps in NewSession
@@ -595,16 +534,9 @@ type SharedDeps struct {
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
-	// SessionFactContextEnabled enables only the RecentFacts-derived trace label
-	// for every session created from these shared deps. It never injects facts
-	// into model context. Default false.
-	SessionFactContextEnabled bool
 	// ReactResultProjectionEnabled enables deterministic LLMResult projection
 	// for selected bulky read-only tools. Default false.
 	ReactResultProjectionEnabled bool
-	// ReactHistoryCompactionEnabled enables deterministic ReAct history
-	// compaction for long sessions. Default false.
-	ReactHistoryCompactionEnabled bool
 	// ExternalExecutor is the underlying tool executor shared across sessions
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
@@ -680,16 +612,14 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		maxTokensPerTurn:   deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
-		confirmFn:                     opts.ConfirmFn,
-		registry:                      entity.NewRegistry(),
-		rateLimitSubject:              opts.Subject,
-		mutatingToolsEnabled:          opts.MutatingToolsEnabled,
-		userTurn:                      max(opts.InitialCommittedTurns, 0),
-		sessionFactContextEnabled:     deps.SessionFactContextEnabled,
-		reactResultProjectionEnabled:  deps.ReactResultProjectionEnabled,
-		reactHistoryCompactionEnabled: deps.ReactHistoryCompactionEnabled,
-		lastInstanceQueryTurn:         -1,
-		lastMonitorTurn:               -1,
+		confirmFn:                    opts.ConfirmFn,
+		registry:                     entity.NewRegistry(),
+		rateLimitSubject:             opts.Subject,
+		mutatingToolsEnabled:         opts.MutatingToolsEnabled,
+		userTurn:                     max(opts.InitialCommittedTurns, 0),
+		reactResultProjectionEnabled: deps.ReactResultProjectionEnabled,
+		lastInstanceQueryTurn:        -1,
+		lastMonitorTurn:              -1,
 		// messages, userTurn, lastUserMsg, currentMonitor*, pendingResourceSelection,
 		// readExpensiveCallsThisTurn,
 		// *Observer fields all start at zero values which is correct.
@@ -758,21 +688,9 @@ func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
 	e.instanceOps = r
 }
 
-// SetSessionFactContextEnabled toggles the fact-cache TRACE LABEL. It does not
-// inject RecentFacts into the prompt; see the field for why the name outlived
-// the behaviour.
-func (e *Engine) SetSessionFactContextEnabled(v bool) {
-	e.sessionFactContextEnabled = v
-}
-
 // SetReactResultProjectionEnabled toggles deterministic ReAct LLMResult projection.
 func (e *Engine) SetReactResultProjectionEnabled(v bool) {
 	e.reactResultProjectionEnabled = v
-}
-
-// SetReactHistoryCompactionEnabled toggles deterministic long-history compaction.
-func (e *Engine) SetReactHistoryCompactionEnabled(v bool) {
-	e.reactHistoryCompactionEnabled = v
 }
 
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
@@ -885,13 +803,6 @@ func (e *Engine) SelectedInstanceIDAtTurnStart() string { return e.selectedInsta
 // binding was determined at turn start (an observability.ResolutionSource*
 // value). Empty only on the degenerate uninitialized-prompt path.
 func (e *Engine) InstanceResolutionSource() string { return e.instanceResolutionSourceThisTurn }
-
-// FactCacheOldestAgeSeconds returns the age in seconds of the oldest still-fresh
-// fact the most recent turn held, or -1 when there was none. It says "into the
-// prompt" in no version of this comment any more: nothing is injected, the value
-// only labels a trace. The recorder buckets it
-// (observability.BucketFactCacheAge) before persisting.
-func (e *Engine) FactCacheOldestAgeSeconds() int { return e.factCacheOldestAgeSecondsThisTurn }
 
 func (e *Engine) SetTokenUsageObserver(observer func(llm.TokenUsage)) {
 	e.tokenUsageObserver = observer
@@ -1184,20 +1095,16 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 // The state is treated as immutable input for the current turn; mutations
 // during the turn produce a new state visible via SessionStateSnapshot.
 //
-// M2 (2026-05-24) added version-aware merge: when this engine already
-// has hydrated state with a higher-or-equal version, the incoming state
-// is treated as STALE — its RecentFacts are merged in via
-// mergeFactsByProducedAt, but the scalar fields (SelectedInstance{ID,Name},
-// PendingSelection*) keep the in-memory values. This implements the
-// forward-note M1 left for it.
+// When this engine already has hydrated state with a higher-or-equal version,
+// the incoming state is treated as stale. Locally accumulated verification
+// provenance is merged, while selection and pending-card fields keep the
+// in-memory values.
 //
 // When does the merge path fire?
 //
-//   - Cross-replica race (future multi-replica deploy): replica A wrote
-//     facts at v=N, then replica B's next-turn hydrate sees v=N from a
-//     stale read, but B's in-memory state already advanced past v=N.
-//     Without the guard, B would clobber its own newer state with the
-//     stale read.
+//   - Cross-replica race: replica A wrote at v=N, then replica B's
+//     next-turn hydrate sees v=N from a stale read while B has newer
+//     in-memory verification provenance.
 //   - Defense-in-depth: handlers_chat.go always calls ClearSessionState
 //     before SetSessionState, so the merge path is rarely triggered in
 //     single-replica today. But a future buggy caller skipping the clear
@@ -1209,7 +1116,6 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 // fully overwrites — exactly the M1 contract.
 func (e *Engine) SetSessionState(state SessionState, version int) {
 	if e.sessionStateHydrated && version <= e.sessionStateVersion {
-		e.sessionState.RecentFacts = mergeFactsByProducedAt(e.sessionState.RecentFacts, state.RecentFacts)
 		e.sessionState.VerifiedKnowledge = mergeVerifiedKnowledge(e.sessionState.VerifiedKnowledge, state.VerifiedKnowledge)
 		// SelectedInstance{ID,Name} / PendingSelection* /
 		// SchemaVersion: keep the in-memory value. The local engine has not
@@ -1270,23 +1176,14 @@ func (e *Engine) refreshSystemPrompt() {
 	}
 	hasSessionBinding := e.sessionStateHydrated && e.sessionState.SelectedInstanceID != ""
 	singleID, _ := e.singleRegistryInstance()
-	hasFactContext := e.sessionFactContextEnabled && e.sessionStateHydrated &&
-		assembleFactContext(e.sessionState.RecentFacts, time.Now()) != ""
-	if hasFactContext {
-		e.factCacheOldestAgeSecondsThisTurn = oldestFreshFactAgeSeconds(e.sessionState.RecentFacts, time.Now())
-	}
 	// #3 StateTrace: record how the turn-start instance binding was determined.
-	// Priority mirrors the injection order above — an explicit prior selection is
-	// the strongest binding, the single-host shortcut next, the fact cache
-	// weakest, "unresolved" when none is present. (Trace-only; the prompt built
-	// below is byte-identical to before.)
+	// An explicit prior selection is strongest, then the single-host shortcut;
+	// otherwise it is unresolved. This is trace-only.
 	switch {
 	case hasSessionBinding:
 		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceSessionState
 	case singleID != "":
 		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceSingleHost
-	case hasFactContext:
-		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceFactCache
 	default:
 		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceUnresolved
 	}
@@ -1421,7 +1318,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.agentRuntimeEventsThisTurn = nil
 	e.hardBlockStandingThisTurn = false
 	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
-	e.deferTaskCarryThisTurn = false
 	e.promptSectionIDsThisTurn = nil
 	e.memoryUpdateSourceThisTurn = "none"
 	e.groundingOutcomeThisTurn = "unavailable"
@@ -1432,12 +1328,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readChunkIDsThisTurn = nil
 	e.searchKnowledgeCapabilitiesThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
-	e.searchKnowledgeQueriesThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
-	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
-	e.forcedHopSearchInFlight = false
 	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
 	e.platformReadEvidenceThisTurn = nil
 	e.sensitiveRepliesThisTurn = nil
@@ -1459,9 +1352,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 	}()
 	continuityNow := time.Now()
-	e.expireContextFrame(continuityNow)
 	e.expireStaleSelectedInstance(continuityNow)
-	e.expireStaleToolFacts(continuityNow)
 	// Every turn must carry a non-empty server-side turn identity. The durable
 	// transport supplies one (client turn id / request uuid, see ws_durable.go);
 	// the legacy WS/HTTP and CLI paths pass none. Without one,
@@ -1485,11 +1376,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// refreshSystemPrompt fills next.
 	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
 	e.instanceResolutionSourceThisTurn = ""
-	e.factCacheOldestAgeSecondsThisTurn = -1
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
-	e.trimHistoryWithContext(ctx)
+	e.trimHistory()
 
 	// Pre-LLM hard-block chain — runs on raw userMsg only, BEFORE OCR
 	// image context is prepended. This prevents screenshot UI labels
@@ -1534,15 +1424,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorEnd = 0
 	e.currentMonitorWindow = false
 	e.displayedResourceSelectionThisTurn = nil
-
-	// Experiment arm: retrieve once on the user's own words BEFORE the Agent's
-	// first model call, because "should I search" is the measured failure (a
-	// complaint retrieves 0/5 where the same question retrieves 5/5) and there is
-	// no ex-ante signal left to condition a prompt rule on. Placed here, after the
-	// hard-block chain and after the user message is in history, so a turn that
-	// never reaches the loop never pays for a retrieval. No-op unless the flag was
-	// frozen on at boot.
-	e.runForcedKnowledgeHop(ctx, userMsg, onStep)
 
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
@@ -2204,14 +2085,6 @@ func rankingAmbiguousSpreadFor(hybridMode string) float64 {
 	}
 }
 
-func clipKnowledgeHistoryContent(content string) string {
-	runes := []rune(content)
-	if len(runes) <= maxKnowledgeHistoryRunes {
-		return content
-	}
-	return string(runes[:maxKnowledgeHistoryRunes]) + knowledgeHistoryClipMarker
-}
-
 const (
 	diagnosisMissingTargetClarificationReply = "请问是哪台实例出了问题？请提供实例 ID 或实例名称后我再继续排查。"
 	diagnosisVagueFailureClarificationReply  = "请问是哪台实例出了问题？也请描述一下具体是什么现象，例如 SSH 断了、GPU 报错、服务崩了或初始化卡住。"
@@ -2411,26 +2284,9 @@ func (e friendlyEngineError) UserMessage() string {
 	return e.message
 }
 
-var friendlyActionNames = map[string]string{
-	"CreateInstanceWorkflow":      "创建实例",
-	"StopInstanceWorkflow":        "关机",
-	"StartInstanceWorkflow":       "开机",
-	"RebootInstanceWorkflow":      "重启",
-	"RenameInstanceWorkflow":      "重命名",
-	"ResetPasswordWorkflow":       "重置密码",
-	"SetStopSchedulerWorkflow":    "设置定时关机",
-	"CancelStopSchedulerWorkflow": "取消定时关机",
-	"ResizeInstanceWorkflow":      "变配",
-	"ResizeDiskWorkflow":          "扩已有盘",
-	"ReinstallInstanceWorkflow":   "重装系统",
-	"CreateDiskWorkflow":          "创建数据盘",
-	"CreateCustomImageWorkflow":   "创建自制镜像",
-	"CloneCustomImageWorkflow":    "克隆自制镜像",
-}
-
 func friendlyActionName(action string) string {
-	if name, ok := friendlyActionNames[action]; ok {
-		return name
+	if label := workflow.ReplyLabel(action); label != "" {
+		return label
 	}
 	return action
 }
@@ -2616,127 +2472,66 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if query == "" {
 		query = hint
 	}
-	plan := fallbackKnowledgeQueryPlan(query)
-	if e.resolvedKnowledgeQuestionThisTurn == "" {
-		plan = e.planKnowledgeQuery(ctx, query)
-		e.resolvedKnowledgeQuestionThisTurn = plan.AnswerQuestion
-	}
-	resolvedQuestion := e.resolvedKnowledgeQuestionThisTurn
-	if resolvedQuestion == "" {
-		resolvedQuestion = query
-	}
-	if len(plan.SearchQueries) == 0 && query != "" {
-		plan.SearchQueries = []string{query}
-	}
-	// Experiment arm: withhold the up-front fan-out so the budget is spent on
-	// follow-ups formed from evidence the agent has actually seen. No-op unless
-	// the flag was frozen on at boot.
-	plan = narrowPlanForGapDrivenRetrieval(plan)
+	resolvedQuestion := e.resolvedKnowledgeQuestion(query)
 	knowledgeSource := e.knowledgeToolSource()
 	onStep(StepEvent{
 		Type:   StepToolCall,
 		Action: "SearchKnowledge",
 		Source: knowledgeSource,
-		Args: map[string]any{
-			"answer_question": resolvedQuestion,
-			"queries":         append([]string(nil), plan.SearchQueries...),
-		},
+		Args:   map[string]any{"query": query},
 	})
 	if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "本轮检索次数已达上限"})
 		return `{"EvidenceLedger":{"items":[]},"empty":true,"search_limit_reached":true}`
 	}
-	// One agent decision to search costs exactly one unit of the call budget,
-	// however many query variants the planner fanned it out into. The retrievals
-	// themselves are charged to maxRetrievalQueriesPerTurn below.
 	e.searchKnowledgeCallsThisTurn++
-	if e.knowledgeRetriever == nil || len(plan.SearchQueries) == 0 {
+	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, "", nil)
 	}
 
-	combined := knowledge.EvidenceLedger{Query: resolvedQuestion}
-	executedQueries := 0
-	droppedQueries := 0
-	unavailableQueries := 0
-	successfulQueries := 0
-	for _, plannedQuery := range plan.SearchQueries {
-		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
-			// Never drop a planned query silently: the trace must show that the
-			// plan and the execution disagreed, or a truncated search looks
-			// identical to a narrow one.
-			droppedQueries = len(plan.SearchQueries) - executedQueries
-			break
-		}
-		e.searchKnowledgeQueriesThisTurn++
-		executedQueries++
-		activityID := fmt.Sprintf("search_%d", e.searchKnowledgeQueriesThisTurn)
-		retrieved := e.knowledgeRetriever.RetrieveContext(ctx, plannedQuery, hint)
-		e.searchKnowledgeRanThisTurn = true
-		if retrieved.Unavailable {
-			unavailableQueries++
-			e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
-				ID:    activityID,
-				Query: plannedQuery,
-				Hits:  0,
-			}, nil)
-			e.emitSearchKnowledgeRetrievalTrace(plannedQuery, retrieved, nil, false, activityID)
-			continue
-		}
-		successfulQueries++
-		rawHits := retrieved.HitItems
-		hits := rawHits
-		floorDroppedAll := false
-		if isWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") {
-			hits = nil
-			floorDroppedAll = len(rawHits) > 0
-		}
-		ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
-		combined = knowledge.MergeEvidenceLedgers(combined, ledger, maxKnowledgePlanQueries*knowledge.DefaultEvidenceLedgerMaxItems)
-		e.recordSearchKnowledgeCapabilities(retrieved.SearchID, ledger)
-		e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
-		e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
-			ID:              activityID,
-			Query:           plannedQuery,
-			Hits:            len(retrieved.Hits),
-			FloorDroppedAll: floorDroppedAll,
-		}, hits)
-		e.emitSearchKnowledgeRetrievalTrace(plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
-	}
-	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
-	affordance := e.followUpAffordance(len(combined.Items))
-	message := "搜索完成"
-	if successfulQueries == 0 && unavailableQueries > 0 {
-		message = "知识库服务暂时不可用"
-	}
-	onStep(StepEvent{
-		Type:    StepToolResult,
-		Action:  "SearchKnowledge",
-		Source:  knowledgeSource,
-		Message: message,
-		TraceResult: map[string]any{
-			"items":               len(combined.Items),
-			"queries":             executedQueries,
-			"planned_queries":     len(plan.SearchQueries),
-			"dropped_queries":     droppedQueries,
-			"unavailable_queries": unavailableQueries,
-		},
-	})
-	if successfulQueries == 0 && unavailableQueries > 0 {
-		return searchKnowledgeResultJSON(combined, affordance, map[string]any{
+	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeCallsThisTurn)
+	retrieved := e.knowledgeRetriever.RetrieveContext(ctx, query, hint)
+	e.searchKnowledgeRanThisTurn = true
+	if retrieved.Unavailable {
+		e.recordSearchKnowledgeActivity(observability.RetrievalActivity{ID: activityID, Query: query}, nil)
+		e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, query, retrieved, nil, false, activityID)
+		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "知识库服务暂时不可用", TraceResult: map[string]any{"queries": 1, "items": 0}})
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, "", map[string]any{
 			"knowledge_unavailable": true,
 			"error":                 "知识库服务暂时不可用，请稍后重试。",
 		})
 	}
-	if unavailableQueries > 0 {
-		return searchKnowledgeResultJSON(combined, affordance, map[string]any{
-			"knowledge_unavailable": true,
-			"partial":               true,
-			"unavailable_queries":   unavailableQueries,
-			"error":                 "知识库部分检索暂时不可用，当前证据可能不完整。",
-		})
+
+	rawHits := retrieved.HitItems
+	hits := rawHits
+	floorDroppedAll := false
+	if isWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") {
+		hits = nil
+		floorDroppedAll = len(rawHits) > 0
 	}
-	return searchKnowledgeResultJSON(combined, affordance, nil)
+	ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
+	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
+	e.recordSearchKnowledgeCapabilities(retrieved.SearchID, ledger)
+	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+	e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
+		ID:              activityID,
+		Query:           query,
+		Hits:            len(retrieved.Hits),
+		FloorDroppedAll: floorDroppedAll,
+	}, hits)
+	e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, query, retrieved, rawHits, floorDroppedAll, activityID)
+	onStep(StepEvent{
+		Type:    StepToolResult,
+		Action:  "SearchKnowledge",
+		Source:  knowledgeSource,
+		Message: "搜索完成",
+		TraceResult: map[string]any{
+			"items":   len(ledger.Items),
+			"queries": 1,
+		},
+	})
+	return searchKnowledgeResultJSON(ledger, "", nil)
 }
 
 func (e *Engine) recordSearchKnowledgeCapabilities(searchID string, ledger knowledge.EvidenceLedger) {
@@ -2763,7 +2558,7 @@ func (e *Engine) recordSearchKnowledgeCapabilities(searchID string, ledger knowl
 // retrieval honestly records refused_reason=no_evidence (so a corpus-gap query
 // is visible, not silently presented as grounded). This is the RETRIEVED set,
 // not the cited set.
-func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit, floorDroppedAll bool, activityID string) {
+func (e *Engine) emitSearchKnowledgeRetrievalTrace(answerQuestion, query string, retrieved knowledge.RetrievalResult, hitItems []knowledge.RetrievalHit, floorDroppedAll bool, activityID string) {
 	if len(hitItems) == 0 && len(retrieved.Hits) > 0 {
 		hitItems = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
 		for _, chunk := range retrieved.Hits {
@@ -2780,7 +2575,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		Unavailable:            retrieved.Unavailable,
 		FailureReason:          retrieved.FailureReason,
 		KBVersion:              retrieved.KBVersion,
-		AnswerQuestion:         e.resolvedKnowledgeQuestionThisTurn,
+		AnswerQuestion:         answerQuestion,
 		QueryRaw:               query,
 		QueryNormalized:        retrieved.QueryNormalized,
 		QueryExpansions:        []string{},
@@ -2820,20 +2615,6 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(query string, retrieved knowl
 		}
 		if isRankingAmbiguous(hitItems, retrieved.HybridMode) {
 			trace.RankingErrorCandidate = true
-		}
-	}
-	// #5 domain guard (agent-loop). DomainInferenceEmpty is recorded whenever the
-	// question area can't be inferred. AllCitedOffDomain is judged only over the
-	// evidence the agent actually received — skip when the floor dropped it all,
-	// since the agent grounded on nothing. The COMPSHARE_RAG_DOMAIN_MATCH_GUARD
-	// refuse arm (default-off) additionally stamps refusal_type=wrong_domain here;
-	// the unified semantic exit enforces the matching refusal.
-	allOff, inferEmpty := allCitedOffDomain("", hitProductAreas(hitItems))
-	trace.DomainInferenceEmpty = inferEmpty
-	if !floorDroppedAll {
-		trace.AllCitedOffDomain = allOff
-		if domainMatchGuardOn && allOff && trace.RefusedReason == "" {
-			trace.RefusedReason = "wrong_domain"
 		}
 	}
 	e.emitRetrievalTrace(trace)
@@ -3244,176 +3025,9 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 	}
 	if err == nil && req.Origin == tools.OriginDirectLLM {
 		e.markRegistryInvalidated(req.Action)
-		e.recordToolFacts(req.Action, req.Args, result)
+		e.recordObservedInstanceFromTool(req.Action, result)
 	}
 	return result, err
-}
-
-// recordToolFacts is the M2 ToolFact writer entry point. Called only on
-// successful OriginDirectLLM tool calls — workflow-internal probing
-// (OriginWorkflowInternal) and diagnosis-internal calls
-// (OriginDiagnosisInternal) are filtered out by the caller, because
-// those are not user-driven and would pollute "刚才那台" follow-up
-// memory with intermediate state the user never asked about.
-//
-// Skip-without-effect cases (no fact written, no log noise):
-//   - Engine not hydrated (no SetSessionState called this turn — e.g. CLI path).
-//   - result is nil or RawResult is nil.
-//   - Action is not in the v1 supported set.
-//
-// v1 supported actions:
-//   - DescribeCompShareInstance → instance_state per UHostId
-//   - GetCompShareInstanceMonitor → monitor_sample per UHostId
-func (e *Engine) recordToolFacts(action string, args map[string]any, result *tools.SafeToolResult) {
-	if !e.sessionStateHydrated {
-		return
-	}
-	if result == nil || result.RawResult == nil {
-		return
-	}
-	switch action {
-	case "DescribeCompShareInstance":
-		e.recordInstanceStateFacts(result.RawResult)
-	case "GetCompShareInstanceMonitor":
-		e.recordMonitorSampleFacts(result.RawResult)
-	case "DescribeAvailableCompShareInstanceTypes", "DescribeCompShareGpuInventory", "CheckCompShareResourceCapacity":
-		e.recordStockSnapshotFact(action, args, result.RawResult)
-	case "GetCompShareInstancePrice", "GetCompShareInstanceUserPrice", "GetCompShareInstanceUpgradePrice", "GetCompShareAttachedDiskUpgradePrice", "GetCompShareCFSPrice", "GetCompShareCFSUpgradePrice":
-		e.recordPriceQuoteFact(action, args, result.RawResult)
-	case "GetCompShareRefundPrice", "GetCompShareCFSRefundPrice", "DiagnoseBilling":
-		e.recordBillingQuoteFact(action, args, result.RawResult)
-	}
-}
-
-func (e *Engine) recordStockSnapshotFact(action string, args map[string]any, raw map[string]any) {
-	nowUnix := time.Now().Unix()
-	model := firstStringAny(args, "GpuType", "GPUType", "Name")
-	zone := firstStringAny(args, "Zone")
-	status := firstStringAny(raw, "Status")
-	if model == "" {
-		if items := mapAnySlice(raw, "AvailableInstanceTypes"); len(items) == 1 {
-			model = firstStringAny(items[0], "Name", "GpuType")
-			if zone == "" {
-				zone = firstStringAny(items[0], "Zone")
-			}
-			if status == "" {
-				status = firstStringAny(items[0], "Status")
-			}
-		}
-	}
-	if model == "" {
-		model = "all"
-	}
-	payload := map[string]any{
-		"model":  model,
-		"action": action,
-	}
-	if status != "" {
-		payload["status"] = status
-	}
-	if zone != "" {
-		payload["zone"] = zone
-	}
-	if count, ok := firstNumberAny(raw, "Count", "TotalCount", "Gpu", "GPU"); ok {
-		payload["count"] = toFactNumeric(count)
-	}
-	if enough, ok := raw["ResourceEnough"].(bool); ok {
-		payload["enough"] = enough
-	}
-	if !isAllAcceptedKeys(FactKindStockSnapshot, payload) {
-		return
-	}
-	subject := "stock:" + model
-	if zone != "" {
-		subject += ":" + zone
-	}
-	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
-		Kind:           FactKindStockSnapshot,
-		SubjectID:      subject,
-		Payload:        payload,
-		ProducedAtTurn: e.userTurn,
-		ProducedAtUnix: nowUnix,
-		TTLSeconds:     factTTLSecondsStockSnapshot,
-	})
-}
-
-func (e *Engine) recordPriceQuoteFact(action string, args map[string]any, raw map[string]any) {
-	payload := map[string]any{"action": action}
-	if gpu := firstStringAny(args, "GpuType", "GPUType"); gpu != "" {
-		payload["gpu_type"] = gpu
-	}
-	if zone := firstStringAny(args, "Zone"); zone != "" {
-		payload["zone"] = zone
-	}
-	if charge := firstStringAny(args, "ChargeType"); charge != "" {
-		payload["charge_type"] = charge
-	}
-	if target := firstStringAny(args, "UHostId", "CfsId", "CFSId", "DiskId", "UDiskId"); target != "" {
-		payload["target"] = target
-	}
-	if price, ok := firstPriceNumberAny(raw, "Price", "TotalPrice", "DeltaPrice"); ok {
-		payload["price"] = toFactNumeric(price)
-	}
-	if original, ok := firstPriceNumberAny(raw, "OriginalPrice", "ListPrice", "OriginalTotalPrice"); ok {
-		payload["original_price"] = toFactNumeric(original)
-	}
-	if !isAllAcceptedKeys(FactKindPriceQuote, payload) {
-		return
-	}
-	subject := "price:" + action
-	if target, _ := payload["target"].(string); target != "" {
-		subject += ":" + target
-	} else if gpu, _ := payload["gpu_type"].(string); gpu != "" {
-		subject += ":" + gpu
-	}
-	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
-		Kind:           FactKindPriceQuote,
-		SubjectID:      subject,
-		Payload:        payload,
-		ProducedAtTurn: e.userTurn,
-		ProducedAtUnix: time.Now().Unix(),
-		TTLSeconds:     factTTLSecondsPriceQuote,
-	})
-}
-
-func (e *Engine) recordBillingQuoteFact(action string, args map[string]any, raw map[string]any) {
-	payload := map[string]any{"action": action}
-	if id := firstStringAny(args, "UHostId", "CfsId", "CFSId", "ResourceId"); id != "" {
-		payload["resource_id"] = id
-	}
-	if amount, ok := firstPriceNumberAny(raw, "RefundPrice", "RefundAmount", "Price", "TotalPrice"); ok {
-		payload["amount"] = toFactNumeric(amount)
-	}
-	if target := firstStringAny(args, "Target", "Action"); target != "" {
-		payload["target"] = target
-	}
-	if !isAllAcceptedKeys(FactKindBillingQuote, payload) {
-		return
-	}
-	subject := "billing:" + action
-	if id, _ := payload["resource_id"].(string); id != "" {
-		subject += ":" + id
-	}
-	e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
-		Kind:           FactKindBillingQuote,
-		SubjectID:      subject,
-		Payload:        payload,
-		ProducedAtTurn: e.userTurn,
-		ProducedAtUnix: time.Now().Unix(),
-		TTLSeconds:     factTTLSecondsBillingQuote,
-	})
-}
-
-func firstStringAny(m map[string]any, keys ...string) string {
-	if m == nil {
-		return ""
-	}
-	for _, key := range keys {
-		if v, ok := m[key].(string); ok && strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
 }
 
 func firstNumberAny(m map[string]any, keys ...string) (float64, bool) {
@@ -3423,21 +3037,6 @@ func firstNumberAny(m map[string]any, keys ...string) (float64, bool) {
 	for _, key := range keys {
 		if n, ok := numberAny(m[key]); ok {
 			return n, true
-		}
-	}
-	return 0, false
-}
-
-func firstPriceNumberAny(m map[string]any, keys ...string) (float64, bool) {
-	if n, ok := firstNumberAny(m, keys...); ok {
-		return n, true
-	}
-	for _, listKey := range []string{"PriceDetails", "ListPriceDetails", "OriginalPriceDetails"} {
-		rows := mapAnySlice(m, listKey)
-		for _, row := range rows {
-			if n, ok := firstNumberAny(row, append(keys, "Price", "TotalPrice", "Disks", "Instance")...); ok {
-				return n, true
-			}
 		}
 	}
 	return 0, false
@@ -3477,27 +3076,25 @@ func numberAny(v any) (float64, bool) {
 	}
 }
 
-func mapAnySlice(m map[string]any, key string) []map[string]any {
-	if m == nil {
-		return nil
+// recordObservedInstanceFromTool keeps the one piece of read-side state that is
+// not semantic memory: the current live instance reference used by the target
+// binder. It never grants write authority; confirmation and live revalidation
+// still decide whether an operation may execute.
+func (e *Engine) recordObservedInstanceFromTool(action string, result *tools.SafeToolResult) {
+	if !e.sessionStateHydrated || result == nil || result.RawResult == nil {
+		return
 	}
-	raw, _ := m[key].([]any)
-	out := make([]map[string]any, 0, len(raw))
-	for _, item := range raw {
-		if row, ok := item.(map[string]any); ok {
-			out = append(out, row)
-		}
+	switch action {
+	case "DescribeCompShareInstance":
+		e.recordObservedInstanceFromDescribe(result.RawResult)
+	case "GetCompShareInstanceMonitor":
+		e.recordObservedInstanceFromMonitor(result.RawResult)
 	}
-	return out
 }
 
-// recordInstanceStateFacts extracts one instance_state fact per UHostId
-// in the DescribeCompShareInstance result. Numeric fields (cpu, gpu,
-// memory) are coerced to float64 via toFactNumeric to keep the payload
-// round-trip stable per the contract on ToolFact.
-func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
+func (e *Engine) recordObservedInstanceFromDescribe(raw map[string]any) {
 	hosts, _ := raw["UHostSet"].([]any)
-	if len(hosts) == 0 {
+	if len(hosts) != 1 {
 		return
 	}
 	// Exactly one host in the result = the turn unambiguously concerns that
@@ -3505,42 +3102,10 @@ func (e *Engine) recordInstanceStateFacts(raw map[string]any) {
 	// is ambiguous and must NOT set it. Tool-observed selections are not trusted
 	// as write targets; the write-target dual-proof verifier only accepts a
 	// genuine user selection (observed != chosen).
-	if len(hosts) == 1 {
-		if row, ok := hosts[0].(map[string]any); ok {
-			if snap := entity.InstanceFromMap(row); snap.UHostId != "" {
-				e.recordObservedInstanceID(snap.UHostId, snap.Name)
-			}
+	if row, ok := hosts[0].(map[string]any); ok {
+		if snap := entity.InstanceFromMap(row); snap.UHostId != "" {
+			e.recordObservedInstanceID(snap.UHostId, snap.Name)
 		}
-	}
-	nowUnix := time.Now().Unix()
-	instanceSnapshots := make([]entity.InstanceSnapshot, 0, len(hosts))
-	for _, item := range hosts {
-		row, _ := item.(map[string]any)
-		if row == nil {
-			continue
-		}
-		snap := entity.InstanceFromMap(row)
-		if snap.UHostId == "" {
-			continue
-		}
-		instanceSnapshots = append(instanceSnapshots, snap)
-		payload := map[string]any{
-			"name":     snap.Name,
-			"state":    snap.State,
-			"gpu":      toFactNumeric(snap.GPU),
-			"gpu_type": snap.GpuType,
-			"cpu":      toFactNumeric(snap.CPU),
-			"memory":   toFactNumeric(snap.Memory),
-			"zone":     snap.Zone,
-		}
-		e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
-			Kind:           FactKindInstanceState,
-			SubjectID:      snap.UHostId,
-			Payload:        payload,
-			ProducedAtTurn: e.userTurn,
-			ProducedAtUnix: nowUnix,
-			TTLSeconds:     factTTLSecondsInstanceState,
-		})
 	}
 }
 
@@ -3566,32 +3131,9 @@ func (e *Engine) recordPendingSelectionFromDisplayedDescribeResult(raw map[strin
 	if len(instanceSnapshots) <= 1 {
 		return
 	}
-	total := len(instanceSnapshots)
-	switch v := raw["TotalCount"].(type) {
-	case int:
-		if v > 0 {
-			total = v
-		}
-	case float64:
-		if v > 0 {
-			total = int(v)
-		}
-	case json.Number:
-		if i, err := v.Int64(); err == nil && i > 0 {
-			total = int(i)
-		}
-	}
-	truncated, _ := raw["Truncated"].(bool)
 	e.displayedResourceSelectionThisTurn = &pendingResourceSelection{
-		originalUserMsg: e.lastUserMsg,
-		plan: intent.IntentRoute{
-			SchemaVersion: intent.SchemaVersion,
-			Intent:        intent.IntentResourceInfo,
-		},
-		snapshot:    snapshotFromPendingSelectionCandidates(instanceSnapshots),
-		candidates:  instanceSnapshots,
-		truncated:   truncated || total > len(instanceSnapshots),
-		createdTurn: e.userTurn,
+		snapshot:   snapshotFromPendingSelectionCandidates(instanceSnapshots),
+		candidates: instanceSnapshots,
 	}
 }
 
@@ -3603,7 +3145,7 @@ func (e *Engine) commitDisplayedResourceSelectionIfVisible(reply string) {
 	if !resourceSelectionCandidatesVisibleInReply(reply, pending.candidates) {
 		return
 	}
-	e.recordPendingInstanceSelection(pending.candidates, intent.IntentResourceInfo, pending.originalUserMsg, len(pending.candidates), pending.truncated)
+	e.recordPendingInstanceSelection(pending.candidates)
 }
 
 func resourceSelectionCandidatesVisibleInReply(reply string, candidates []entity.InstanceSnapshot) bool {
@@ -3662,44 +3204,17 @@ func resourceSelectionNameVisibleInNumberedLine(line, name string) bool {
 	return s == name || strings.HasPrefix(s, name+" ") || strings.HasPrefix(s, name+"(") || strings.HasPrefix(s, name+"（")
 }
 
-// recordMonitorSampleFacts groups all per-metric scalars from a
-// GetCompShareInstanceMonitor result by UHostId and writes one
-// monitor_sample fact per host. Multi-GPU disambiguation suffixes
-// (gpu_usage.GPU 1 / .GPU 2) are preserved as separate Payload keys
-// inside the same per-host fact (M3 ContextAssembler reads them all).
-//
-// The empty-metrics filter in ExtractMonitorScalars defaults to "all
-// known metric keys", so a fact captures whatever the host reported,
-// not just what the user requested. This matters for follow-up Qs
-// like "GPU 怎么样" after a CPU-only monitor query.
-func (e *Engine) recordMonitorSampleFacts(raw map[string]any) {
+func (e *Engine) recordObservedInstanceFromMonitor(raw map[string]any) {
 	scalars := readprojection.ExtractMonitorScalars(raw, nil)
 	if len(scalars) == 0 {
 		return
 	}
-	nowUnix := time.Now().Unix()
-	bySubject := make(map[string]map[string]any, len(scalars))
+	bySubject := make(map[string]struct{}, len(scalars))
 	for _, s := range scalars {
-		if s.SubjectID == "" || s.Key == "" {
+		if s.SubjectID == "" {
 			continue
 		}
-		if _, ok := bySubject[s.SubjectID]; !ok {
-			bySubject[s.SubjectID] = make(map[string]any)
-		}
-		bySubject[s.SubjectID][s.Key] = s.Value
-	}
-	for subjectID, payload := range bySubject {
-		if !isAllAcceptedKeys(FactKindMonitorSample, payload) {
-			continue
-		}
-		e.sessionState.RecentFacts = appendFactToSlice(e.sessionState.RecentFacts, ToolFact{
-			Kind:           FactKindMonitorSample,
-			SubjectID:      subjectID,
-			Payload:        payload,
-			ProducedAtTurn: e.userTurn,
-			ProducedAtUnix: nowUnix,
-			TTLSeconds:     factTTLSecondsMonitorSample,
-		})
+		bySubject[s.SubjectID] = struct{}{}
 	}
 	// A monitor query scoped to exactly one instance = that instance is the
 	// one under discussion → track it for cross-turn reference resolution.
@@ -3708,23 +3223,6 @@ func (e *Engine) recordMonitorSampleFacts(raw map[string]any) {
 			e.recordObservedInstanceID(subjectID, "")
 		}
 	}
-}
-
-// isAllAcceptedKeys verifies every key in payload is accepted for the
-// given fact kind via isAcceptedPayloadKey. Used as a guard before
-// storing a monitor_sample fact: if the renderer ever emits a key not
-// in expectedPayloadKeysForKind (e.g. a new metric added to
-// monitorMetricDefinitions but not yet to the contract), the fact is
-// dropped instead of polluting the contract. M3 will see the gap and
-// the test TestToolFact_PayloadKeysEnforced will catch it on the
-// renderer-side first.
-func isAllAcceptedKeys(kind string, payload map[string]any) bool {
-	for k := range payload {
-		if !isAcceptedPayloadKey(kind, k) {
-			return false
-		}
-	}
-	return true
 }
 
 // recordObservedInstanceID records one instance as read-only conversational
@@ -3802,17 +3300,6 @@ func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	}
 	e.sessionState.SelectedInstanceFreshness = continuityFreshness(at, selectedInstanceTTLSeconds, now)
 }
-
-// The stock referent carry lived here: recordResolvedStockGpuFact wrote a
-// minimal {model, action} StockSnapshot fact whose only reader was
-// stockGpuModelFromRecentFacts, which fallbackStockGpuModel handed to the stock
-// capability as the filter for a turn that did not name a card. Together with
-// recordLastStockGpuModel / SessionState.LastStockGpuModel they are deleted:
-// the server no longer remembers which GPU the user meant, so it can no longer
-// answer a different question from the one the model asked.
-//
-// The richer StockSnapshot fact recorded from an actual capacity/stock tool
-// response is a different producer and stays.
 
 func (e *Engine) markRegistryInvalidated(action string) {
 	if e.registry == nil {
@@ -4869,22 +4356,13 @@ type StepEvent struct {
 // point is aligned to a safe message boundary to avoid orphaned tool_calls or
 // tool responses (which would make the history malformed for the LLM).
 func (e *Engine) trimHistory() {
-	e.trimHistoryWithContext(context.Background())
-}
-
-func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 	e.messages = stripHistoricalToolTranscript(e.messages)
-	if e.reactHistoryCompactionEnabled {
-		e.trimHistoryByCompactionContext(ctx, time.Now())
-		return
-	}
 	safeStart := rawHistoryCutPoint(e.messages, maxRawHistoryRunes)
 	if safeStart < 0 {
 		return
 	}
 	keep := e.messages[safeStart:]
 	e.messages = append([]openai.ChatCompletionMessage{e.messages[0]}, keep...)
-	e.historyTrimmedThisSession = true
 }
 
 // rawHistoryCutPoint returns the index of the oldest message to KEEP so that the
@@ -4896,10 +4374,9 @@ func (e *Engine) trimHistoryWithContext(ctx context.Context) {
 // the request budget uses. A raw list measured one way and a request measured
 // another is how a "source list" quietly becomes the narrower of the two.
 //
-// Both the plain and the compacting trim call this, because they differ in what
-// they do with the kept slice, not in where the cut goes. They used to carry two
-// copies of the boundary walk, and a mutation to one was invisible to a test that
-// drove the other.
+// This is the sole history cut-point calculation. Keeping it separate from
+// assembly lets both paths account in the same units without another historical
+// compaction mode.
 func rawHistoryCutPoint(messages []openai.ChatCompletionMessage, budgetRunes int) int {
 	if budgetRunes <= 0 || len(messages) <= 1 {
 		return -1
@@ -5114,8 +4591,8 @@ func (e *Engine) recordPromptAssembly(raw, assembled, final int) {
 }
 
 // messagesFromAgentContext is the sole history entrance for the main model.
-// It restores bounded complete exchanges and structured memory from the
-// compiled view, then appends only this turn's live assistant/tool transcript.
+// It restores bounded complete exchanges and execution-continuity state from
+// the compiled view, then appends only this turn's live assistant/tool transcript.
 // Previous raw tool payloads can therefore never survive a hot cache merely
 // because e.messages happened to retain them.
 func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view AgentContext, ready bool) []openai.ChatCompletionMessage {

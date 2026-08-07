@@ -105,7 +105,6 @@ type proAnswer struct {
 	Query     string `json:"query"`
 	AuditNote string `json:"audit_note"`
 	Searches  int    `json:"searches"`
-	Queries   int    `json:"queries"`
 	Answer    string `json:"answer"`
 	Err       string `json:"err,omitempty"`
 }
@@ -151,15 +150,14 @@ func TestLiveProAnswersSourceGaps(t *testing.T) {
 			Query:     g.Query,
 			AuditNote: g.AuditNote,
 			Searches:  eng.searchKnowledgeCallsThisTurn,
-			Queries:   eng.searchKnowledgeQueriesThisTurn,
 			Answer:    strings.TrimSpace(reply),
 		}
 		if cerr != nil {
 			r.Err = cerr.Error()
 		}
 		results[i] = r
-		t.Logf("\n================ %s [%s] ================\n问：%s\n检索：calls=%d queries=%d\n答：\n%s",
-			g.CaseID, g.Category, g.Query, r.Searches, r.Queries, truncateRunes(r.Answer, 1200))
+		t.Logf("\n================ %s [%s] ================\n问：%s\n检索：calls=%d\n答：\n%s",
+			g.CaseID, g.Category, g.Query, r.Searches, truncateRunes(r.Answer, 1200))
 		if r.Err != "" {
 			t.Logf("  ERR: %s", r.Err)
 		}

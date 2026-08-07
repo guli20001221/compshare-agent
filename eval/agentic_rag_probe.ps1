@@ -13,7 +13,6 @@ param(
     [string]$ReportPath = "",
     [string]$External = "1",            # COMPSHARE_EXTERNAL_KNOWLEDGE
     [string]$AgenticSearch = "",        # COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE ("" = unset/off)
-    [string]$SkillExec = "",            # USE_SKILL_EXECUTOR ("" = off)
     [string]$KnowledgeQAAgentLoop = "", # COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP ("" = off=terminal RAG; "1" = agent-loop route)
     [string]$GroundedValidator = "",    # COMPSHARE_RAG_GROUNDED_VALIDATOR ("" = off)
     [string]$DisciplinedSynthesis = "" # COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS ("" = off; "1" = terminal-style synthesis recovery on agent-loop refusal)
@@ -56,7 +55,6 @@ $env:MYSQL_DSN = ""
 $env:COMPSHARE_TRACE_ENABLED = "1"
 $env:COMPSHARE_EXTERNAL_KNOWLEDGE = $External
 $env:COMPSHARE_AGENTIC_SEARCH_KNOWLEDGE = $AgenticSearch
-$env:USE_SKILL_EXECUTOR = $SkillExec
 $env:COMPSHARE_KNOWLEDGE_QA_AGENT_LOOP = $KnowledgeQAAgentLoop
 $env:COMPSHARE_RAG_GROUNDED_VALIDATOR = $GroundedValidator
 $env:COMPSHARE_KNOWLEDGE_QA_DISCIPLINED_SYNTHESIS = $DisciplinedSynthesis

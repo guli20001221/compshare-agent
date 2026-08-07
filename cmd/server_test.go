@@ -304,27 +304,6 @@ func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
 	require.Nil(t, eng.KnowledgeRetrieverPointer(), "disabled retrieval must stay disabled in pooled sessions")
 }
 
-func TestApplySharedDepsSessionFactContextFromEnv(t *testing.T) {
-	cfg := &config.Config{Agent: config.AgentConfig{
-		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
-	}}
-	deps := &engine.SharedDeps{}
-
-	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
-		switch key {
-		case "USE_SESSION_FACT_CONTEXT":
-			return "1"
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "off"
-		default:
-			return ""
-		}
-	})
-
-	require.NoError(t, err)
-	require.True(t, deps.SessionFactContextEnabled)
-}
-
 func TestApplySharedDepsReactResultProjectionFromEnv(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
@@ -344,27 +323,6 @@ func TestApplySharedDepsReactResultProjectionFromEnv(t *testing.T) {
 
 	require.NoError(t, err)
 	require.True(t, deps.ReactResultProjectionEnabled)
-}
-
-func TestApplySharedDepsReactHistoryCompactionFromEnv(t *testing.T) {
-	cfg := &config.Config{Agent: config.AgentConfig{
-		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
-	}}
-	deps := &engine.SharedDeps{}
-
-	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
-		switch key {
-		case "USE_REACT_HISTORY_COMPACTION":
-			return "1"
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "off"
-		default:
-			return ""
-		}
-	})
-
-	require.NoError(t, err)
-	require.True(t, deps.ReactHistoryCompactionEnabled)
 }
 
 func TestApplySharedDepsDefaultsToKnowledgeMCP(t *testing.T) {

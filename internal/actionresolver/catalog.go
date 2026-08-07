@@ -36,7 +36,7 @@ func BuildCatalog() (*Catalog, error) {
 		}
 		catalog.ordered = append(catalog.ordered, operation)
 		catalog.specs[operation] = OperationSpec{
-			Operation: operation, AgentDescription: tools.WorkflowAgentDescription(operation, strings.TrimSpace(capability.AgentInstruction), definition.GuidedIntake), Fields: fields,
+			Operation: operation, AgentDescription: tools.WorkflowAgentDescription(strings.TrimSpace(capability.AgentInstruction)), Fields: fields,
 			ImageCatalogSource: definition.ImageCatalogSource,
 			NeedsConfirm:       capability.Policy.NeedsConfirm,
 			Risk:               capability.Policy.SecurityLevel,

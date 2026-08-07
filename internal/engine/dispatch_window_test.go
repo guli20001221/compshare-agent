@@ -48,11 +48,10 @@ func TestRequestToolDescriptionUsesCapabilityBoundaryAndP2Template(t *testing.T)
 	require.NotEmpty(t, desc, "RequestCreateInstance must be advertised when mutating is enabled")
 	capability, ok := tools.DefaultCapabilityRegistry().Lookup("CreateInstanceWorkflow")
 	require.True(t, ok)
-	require.Equal(t, tools.WorkflowAgentDescription("CreateInstanceWorkflow", capability.AgentInstruction, true), desc)
-	for _, section := range []string{"调用/边界：", "接续：", "失败："} {
-		require.Contains(t, desc, section)
-	}
-	require.Contains(t, desc, "输入示例")
+	require.Equal(t, tools.WorkflowAgentDescription(capability.AgentInstruction), desc)
+	require.Contains(t, desc, "调用/边界：")
+	require.NotContains(t, desc, "接续：")
+	require.NotContains(t, desc, "输入示例")
 	for _, internalAPI := range []string{"DescribeCompShare", "GetCompShare", "CreateCompShare", "SyncCompShare"} {
 		require.NotContains(t, desc, internalAPI)
 	}
@@ -65,9 +64,10 @@ func TestRequestToolDescriptionsDoNotRepeatSharedPromptOrExecutionChains(t *test
 		}
 		desc := tool.Function.Description
 		require.NotEmpty(t, desc, tool.Function.Name)
-		for _, section := range []string{"调用/边界：", "接续：", "失败："} {
-			require.Contains(t, desc, section, tool.Function.Name)
-		}
+		require.Contains(t, desc, "调用/边界：", tool.Function.Name)
+		require.NotContains(t, desc, "接续：", tool.Function.Name)
+		require.NotContains(t, desc, "失败：", tool.Function.Name)
+		require.NotContains(t, desc, "输入示例", tool.Function.Name)
 		require.NotContains(t, desc, "服务端负责缺失字段", tool.Function.Name)
 		require.NotContains(t, desc, "->", tool.Function.Name)
 		require.NotContains(t, desc, "自动执行", tool.Function.Name)

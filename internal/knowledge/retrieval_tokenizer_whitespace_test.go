@@ -11,10 +11,8 @@ import (
 // TestTokenizerIsInvariantToWhitespace states the contract directly: how a
 // question is spaced must not change what it retrieves.
 //
-// This is not only eval hygiene. The live query planner rewrites the same
-// question with different spacing run to run, and real users type both forms —
-// so before this invariant held, two people asking the same thing could be
-// handed different evidence.
+// This is not only eval hygiene: real users type both forms, so equivalent
+// requests must retrieve equivalent evidence.
 func TestTokenizerIsInvariantToWhitespace(t *testing.T) {
 	equivalent := [][]string{
 		{"监听 端口", "监听端口", "监听  端口", " 监听端口 "},

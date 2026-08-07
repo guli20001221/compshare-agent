@@ -28,8 +28,6 @@ func TestChatEmitsExactlyOneCompletionForPreLLMBlock(t *testing.T) {
 	assert.Equal(t, observability.CompletionClassSafetyBlock, got.Class)
 	assert.Equal(t, observability.CompletionReasonPolicyBlock, got.Reason)
 	assert.Zero(t, got.ModelCalls)
-	assert.Equal(t, observability.CompletionDecisionNotInvoked, got.ContextDecision)
-	assert.Equal(t, "named", got.ToolScope)
 	assert.Equal(t, centralAgentToolNames(true, false), got.ToolNames)
 }
 
@@ -54,7 +52,6 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	require.Len(t, completions, 1)
 	assert.Equal(t, observability.CompletionClassAgent, completions[0].Class)
 	assert.Equal(t, 1, completions[0].ModelCalls, "count must come from the real outbound boundary")
-	assert.Equal(t, "named", completions[0].ToolScope)
 	assert.Equal(t, centralAgentToolNames(true, false), completions[0].ToolNames)
 }
 

@@ -122,14 +122,6 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	if r == nil {
 		return
 	}
-	state.ContextDecision = r.stateTrace.ContextDecision
-	state.ContextDecisionTarget = r.stateTrace.ContextDecisionTarget
-	state.ContextDecisionReason = r.stateTrace.ContextDecisionReason
-	state.ContextDecisionError = r.stateTrace.ContextDecisionError
-	state.ContextDecisionReadSet = append([]string(nil), r.stateTrace.ContextDecisionReadSet...)
-	state.ContextDecisionStateDelta = append([]string(nil), r.stateTrace.ContextDecisionStateDelta...)
-	state.ContextDecisionToolScope = r.stateTrace.ContextDecisionToolScope
-	state.ContextDecisionToolNames = append([]string(nil), r.stateTrace.ContextDecisionToolNames...)
 	r.stateTrace = state
 }
 

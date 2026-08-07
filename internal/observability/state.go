@@ -29,7 +29,7 @@ type StateTrace struct {
 	// at turn start. Set on every engine turn (refreshSystemPrompt), so its
 	// non-empty value is what makes the State block observed. Values are the
 	// ResolutionSource* consts; the turn-start derivation emits session_state /
-	// single_host / fact_cache / unresolved. explicit_id / planner are RESERVED
+	// single_host / unresolved. explicit_id / planner are RESERVED
 	// (a mid-turn binding-source stamp is a follow-up — see the const block).
 	ResolutionSource string `json:"resolution_source,omitempty"`
 	// SelectedInstanceID is the bound instance at turn END (final), and
@@ -37,40 +37,14 @@ type StateTrace struct {
 	// divergence between the two means the turn re-bound the instance mid-flow.
 	SelectedInstanceID            string `json:"selected_instance_id,omitempty"`
 	SelectedInstanceIDAtTurnStart string `json:"selected_instance_id_at_turn_start,omitempty"`
-	// FactCacheOldestAgeBucket buckets the age of the oldest still-fresh fact in
-	// the near-term cache (TTL 300s) — the only stale-cache observable. Bucketed
-	// at the source (not raw seconds) per the redaction closure, so promotion to
-	// a metric label never carries unbounded cardinality. Empty when no fresh
-	// fact was injected this turn.
-	FactCacheOldestAgeBucket string `json:"fact_cache_oldest_age_bucket,omitempty"`
-	// ContextDecision* recorded the pre-P6 global context-decision layer's safe summary. That layer
-	// was deleted in P6; these are LEGACY trace-compat fields, retained for
-	// trace-schema continuity.
-	// It deliberately omits the raw user message and concrete API params; this is
-	// for debugging continuation decisions without leaking zone_id / az_group /
-	// tokens / passwords or model-proposed untrusted parameters.
-	ContextDecision       string `json:"context_decision,omitempty"`
-	ContextDecisionTarget string `json:"context_decision_target,omitempty"`
-	ContextDecisionReason string `json:"context_decision_reason,omitempty"`
-	ContextDecisionError  string `json:"context_decision_error,omitempty"`
-	// ContextDecisionReadSet and ContextDecisionStateDelta expose whether the
-	// resolver actually consumed the carried state and what it planned to do
-	// with it. ToolScope/ToolNames record the dispatch authority selected from
-	// the same route signal. All values are bounded enum/field names, never raw
-	// user text or tool arguments.
-	ContextDecisionReadSet    []string `json:"context_decision_read_set,omitempty"`
-	ContextDecisionStateDelta []string `json:"context_decision_state_delta,omitempty"`
-	ContextDecisionToolScope  string   `json:"context_decision_tool_scope,omitempty"`
-	ContextDecisionToolNames  []string `json:"context_decision_tool_names,omitempty"`
 }
 
 // ResolutionSource* are the StateTrace.ResolutionSource values — how the turn's
 // "current instance" binding was determined at turn start.
 //
 // The turn-start derivation (refreshSystemPrompt) emits the first four; the
-// priority is session_state > single_host > fact_cache > unresolved (an explicit
-// prior selection is the strongest binding, the single-host shortcut next, the
-// near-term cache weakest). explicit_id and planner are RESERVED schema values:
+// priority is session_state > single_host > unresolved. explicit_id and planner
+// are RESERVED schema values:
 // distinguishing "user named an id this turn" / "planner resolved a ref mid-turn"
 // from the carried turn-start binding is genuinely ambiguous without a deeper
 // signal (the same tool that acts on a session-bound instance also fires the
@@ -80,41 +54,14 @@ type StateTrace struct {
 const (
 	ResolutionSourceSessionState = "session_state"
 	ResolutionSourceSingleHost   = "single_host"
-	ResolutionSourceFactCache    = "fact_cache"
 	ResolutionSourceExplicitID   = "explicit_id"
 	ResolutionSourcePlanner      = "planner"
 	ResolutionSourceUnresolved   = "unresolved"
 )
 
-// BucketFactCacheAge maps the oldest-fresh-fact age (seconds, bounded by the
-// 300s fact TTL) to a bounded staleness bucket. A negative age (no fresh fact)
-// → "" so the field is omitted. Boundaries gradient toward the TTL because the
-// stale-answer risk grows as a fact approaches expiry.
-func BucketFactCacheAge(seconds int) string {
-	switch {
-	case seconds < 0:
-		return ""
-	case seconds <= 60:
-		return "le_60s"
-	case seconds <= 180:
-		return "le_180s"
-	default:
-		return "le_300s"
-	}
-}
-
 func traceStateObserved(t StateTrace) bool {
 	return t.ResolutionSource != "" ||
 		t.SelectedInstanceID != "" ||
 		t.SelectedInstanceIDAtTurnStart != "" ||
-		t.FactCacheOldestAgeBucket != "" ||
-		t.ContextDecision != "" ||
-		t.ContextDecisionTarget != "" ||
-		t.ContextDecisionReason != "" ||
-		t.ContextDecisionError != "" ||
-		len(t.ContextDecisionReadSet) > 0 ||
-		len(t.ContextDecisionStateDelta) > 0 ||
-		t.ContextDecisionToolScope != "" ||
-		len(t.ContextDecisionToolNames) > 0 ||
 		t.SessionStateHydrated
 }

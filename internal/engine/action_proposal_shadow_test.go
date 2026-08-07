@@ -63,29 +63,6 @@ func TestProposalImageCatalogSourceUsesCapabilityDefaultWithoutModelConstant(t *
 	}, spec))
 }
 
-// TestProposeActionCatalogOutageParksNoPendingTask is the engine half of the
-// "our failure is not the user's fault" contract. The resolver reporting a
-// DependencyFailure is not enough on its own: the engine must also refuse to
-// persist a task frame from it. A frame here would survive into later turns as
-// "waiting for the user to supply GpuType" — a task they cannot possibly resolve,
-// because the value was never the problem.
-func TestProposeActionCatalogOutageParksNoPendingTask(t *testing.T) {
-	// mockExecutor has no result for DescribeAvailableCompShareInstanceTypes, so
-	// querySafeRead returns nil and the snapshot reports Available=false — the
-	// same shape a real upstream outage produces.
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.sessionStateHydrated = true
-	eng.lastUserMsg = "给我开一台 4090"
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-outage", time.Now())
-	eng.turnContextViewReady = true
-
-	_ = eng.executeActionProposal(context.Background(), createProposalArgs("turn-outage", "4090"), noopStep)
-
-	require.Empty(t, eng.sessionState.ContextFrame.Workflow,
-		"a catalog outage must not park a task frame asking the user to re-supply GpuType")
-	require.Empty(t, eng.sessionState.ContextFrame.MissingSlots)
-}
-
 // TestProposeActionResolvesGpuTypeAgainstLiveCatalog is the engine-level wiring
 // gate: the proposal path must actually query the upstream catalog and carry the
 // canonical name through. The resolver unit tests cannot see this — they are

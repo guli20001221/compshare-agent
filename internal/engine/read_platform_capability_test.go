@@ -179,17 +179,9 @@ func TestAccountFinanceUnavailableReturnsStructuredUnavailable(t *testing.T) {
 	require.Empty(t, executor.calls, "an unavailable capability must not call any upstream API")
 }
 
-// This replaces TestStockReadAppliesRememberStockReferentEffect, which asserted
-// the carry it is now the point to NOT have: a stock read used to write the model
-// it resolved to into session state (RememberStockReferent -> a StockSnapshot
-// fact / LastStockGpuModel), and the next stock read used it as the filter when
-// the model sent no gpu_type. That is a second semantic memory beside the
-// canonical transcript, and it made a tool call answer a question other than the
-// one its arguments asked.
-//
-// The follow-up 「现在还有吗」 is still meant to work — through the transcript,
-// which replays the earlier call and its result, so the model can put the card
-// name in gpu_type itself. What must not happen is the SERVER doing it silently.
+// The model may carry a prior card into the next tool call through canonical
+// transcript. The server must never rewrite an omitted GPU argument from prior
+// state.
 func TestStockReadLeavesNoCrossTurnReferent(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
@@ -219,11 +211,8 @@ func TestStockReadLeavesNoCrossTurnReferent(t *testing.T) {
 			"remembering what the user meant and editing the model's arguments to match")
 	assert.Contains(t, followUp, "4090", "an unfiltered listing includes everything")
 
-	// And nothing was written down to do it with next time either.
-	for _, fact := range eng.sessionState.RecentFacts {
-		assert.NotEqual(t, "stock_availability", fact.Payload["action"],
-			"the referent-carry fact is still being produced, with nothing left to read it")
-	}
+	// A minimal freshness record may exist, but it has no model argument to
+	// substitute. The unfiltered response above is the observable contract.
 }
 
 func TestReadBoundaryRejectsUngroundedMonitorAbsoluteWindow(t *testing.T) {
