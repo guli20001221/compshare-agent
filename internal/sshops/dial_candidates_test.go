@@ -296,6 +296,83 @@ func TestChoosingAnAddressStillProbesTheRest(t *testing.T) {
 	waitForAccepts(t, accepted, 2)
 }
 
+// "This deployment has no route to customer EIPs" is the premise the whole design rests on, and
+// it was last measured on 2026-08-06 against instances that no longer exist. Probing it as a
+// control on every run makes a network change that opened that route visible immediately, rather
+// than leaving us routing around a problem that had already been fixed.
+//
+// The pairing that matters: it appears in the DIAGNOSTIC list and is absent from the DIAL list,
+// for the same inputs. Asserting only one half would let a refactor move it across.
+func TestTheAdvertisedEIPIsMeasuredButNeverDialled(t *testing.T) {
+	const eip = "203.0.113.9"
+	cands, _, err := dialCandidatesFor(eip, "2002:a40:2e05::", "2003:da8:2004:1000::5", nil)
+	if err != nil {
+		t.Fatalf("build candidates: %v", err)
+	}
+	for _, c := range cands {
+		if c.host == eip {
+			t.Fatalf("the EIP must never be dialled, found it in %+v", cands)
+		}
+	}
+
+	diag := diagnosticProbes(cands, 0, eip)
+	var found bool
+	for _, c := range diag {
+		if c.host == eip {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the EIP must be probed as a control, got %+v", diag)
+	}
+}
+
+// The diagnostic list must not re-probe the winner, or the log would claim an address was "not
+// dialled" while it is the one the harness got — and every trailing candidate has to be there,
+// or the prefix silently stops being measured on the zone that can judge it.
+func TestDiagnosticProbesCoverExactlyTheUntriedCandidatesPlusTheControl(t *testing.T) {
+	cands := []dialCandidate{
+		{label: "internal-ipv6", host: "2003:da8::5"},
+		{label: "public-v6-simple", host: "2002:a40:2e05::cb00:7109"},
+		{label: "public-v6-rfc6052", host: "2002:a40:2e05:cb00:7100:900::"},
+	}
+	got := diagnosticProbes(cands, 0, "203.0.113.9")
+	want := []string{cands[1].host, cands[2].host, "203.0.113.9"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d probes, want %d: %+v", len(got), len(want), got)
+	}
+	for i, h := range want {
+		if got[i].host != h {
+			t.Errorf("probe %d = %s, want %s", i, got[i].host, h)
+		}
+	}
+	// Winner last: only the control is left.
+	if last := diagnosticProbes(cands, len(cands)-1, "203.0.113.9"); len(last) != 1 || last[0].host != "203.0.113.9" {
+		t.Errorf("with the last candidate winning, only the control remains; got %+v", last)
+	}
+}
+
+// Building the diagnostic list must not scribble on the dial list's backing array: append() on a
+// re-sliced slice writes in place when there is spare capacity, and the corrupted entry would be
+// a dial candidate for the NEXT instance.
+func TestDiagnosticProbesDoNotMutateTheCandidateSlice(t *testing.T) {
+	cands := make([]dialCandidate, 2, 8)
+	cands[0] = dialCandidate{label: "internal-ipv6", host: "2003:da8::5"}
+	cands[1] = dialCandidate{label: "public-v6-simple", host: "2002:a40:2e05::cb00:7109"}
+	before := append([]dialCandidate(nil), cands...)
+
+	_ = diagnosticProbes(cands, 0, "203.0.113.9")
+
+	for i := range before {
+		if cands[i] != before[i] {
+			t.Fatalf("candidate %d was mutated: %+v -> %+v", i, before[i], cands[i])
+		}
+	}
+	if grown := cands[:cap(cands)]; grown[2].host == "203.0.113.9" {
+		t.Fatal("the control was written into the dial slice's spare capacity")
+	}
+}
+
 // listenLoopbackV6 accepts connections on IPv6 loopback and signals each one, so a test can
 // count probes instead of parsing the log.
 func listenLoopbackV6(t *testing.T, accepted chan<- struct{}) net.Listener {

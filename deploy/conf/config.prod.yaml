@@ -74,4 +74,10 @@ agent:
     # judge it: the box is known reachable from here, so a prefix failure there is the prefix's,
     # whereas a failure on cn-sh2-02 cannot separate "no translator" from "translator that also
     # cannot reach c3". Costs the run nothing; the credential is already resolved when they fire.
+    #
+    # That same diagnostic list carries the advertised EIP as a CONTROL — probed, never dialled.
+    # "This deployment has no route to customer EIPs" is the premise everything here rests on, and
+    # it was last measured 2026-08-06 against instances that no longer exist. Re-measuring it on
+    # every run costs nothing, and means a network change that opened that route shows up as a log
+    # line rather than leaving us routing around a problem that had already been fixed.
     public_ipv6_prefix: "2002:a40:2e05::"
