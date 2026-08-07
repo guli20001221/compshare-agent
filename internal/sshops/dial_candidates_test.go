@@ -156,7 +156,7 @@ func TestPodHostIsStillNeverRewrittenWithAPrefixConfigured(t *testing.T) {
 // already cost this investigation three rounds.
 func TestProbeReportsTheAddressAndFailureClass(t *testing.T) {
 	port := closedLocalPort(t)
-	_, trace, ok := firstReachable(context.Background(),
+	_, _, trace, ok := firstReachable(context.Background(),
 		[]dialCandidate{{label: "internal-ipv6", host: "::1"}}, port)
 	if ok {
 		t.Fatal("nothing is listening; the probe must not report success")
@@ -176,10 +176,13 @@ func TestProbePicksTheFirstCandidateThatListens(t *testing.T) {
 
 	// Prefix "::" over 0.0.0.1 is exactly ::1, so the listener stands in for a reachable
 	// translated address without needing a real translator.
-	got, _, ok := firstReachable(context.Background(), []dialCandidate{
+	got, idx, _, ok := firstReachable(context.Background(), []dialCandidate{
 		{label: "internal-ipv6", host: "100::1"}, // RFC 6666 discard prefix — never answers
 		{label: "public-v6-simple", host: "::1"},
 	}, port)
+	if ok && idx != 1 {
+		t.Fatalf("winner index %d does not point at the candidate returned (%+v)", idx, got)
+	}
 	if !ok {
 		t.Skip("the discard-prefix candidate did not fail fast on this host")
 	}
@@ -205,6 +208,117 @@ func TestNothingReachableRefusesAndNamesWhatWasTried(t *testing.T) {
 	if !strings.Contains(err.Error(), "::1") {
 		t.Errorf("the refusal must name an address that was tried, got %v", err)
 	}
+}
+
+// On a zone the internal route already reaches, the prefix candidates are never dialled — so
+// without this the experiment cannot be run where it gives a clean answer. 华北二A is reachable
+// from the deployment, which makes a prefix failure THERE attributable to the prefix; a failure
+// on a zone with no route at all is ambiguous between "no translator" and "translator that also
+// cannot reach that cluster".
+func TestCandidatesAfterTheWinnerAreStillProbed(t *testing.T) {
+	accepted := make(chan struct{}, 8)
+	ln := listenLoopbackV6(t, accepted)
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	<-probeRemaining(context.Background(), []dialCandidate{
+		{label: "public-v6-simple", host: "::1"},
+		{label: "public-v6-rfc6052", host: "::1"},
+	}, port, "uhost-x")
+
+	// Wait for the accepts rather than reading a length: the probe returns when its DIAL
+	// completes, which is before the listener's goroutine has recorded the connection. Counting
+	// at that moment passes or fails on scheduling, which is how this assertion was written the
+	// first time and why it failed under -run and passed for the whole package.
+	waitForAccepts(t, accepted, 2)
+}
+
+// The diagnosis moves on the moment the address is chosen, so the request context is normally
+// already cancelled by the time these run. Inheriting that cancellation would make the probe
+// silently never happen — and "the log line was missing" would read as "the prefix failed".
+func TestTrailingProbesSurviveRequestCancellation(t *testing.T) {
+	accepted := make(chan struct{}, 8)
+	ln := listenLoopbackV6(t, accepted)
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	<-probeRemaining(ctx, []dialCandidate{{label: "public-v6-simple", host: "::1"}}, port, "uhost-x")
+
+	waitForAccepts(t, accepted, 1)
+}
+
+// waitForAccepts blocks for exactly n connections and then checks no extra one arrives, so both
+// "probed too few" and "probed something it should not have" are caught.
+func waitForAccepts(t *testing.T, accepted <-chan struct{}, n int) {
+	t.Helper()
+	for i := range n {
+		select {
+		case <-accepted:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d candidates were probed", i, n)
+		}
+	}
+	select {
+	case <-accepted:
+		t.Fatalf("more than %d connections were made", n)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// Nothing left to probe must not leave a goroutine or a channel that never closes: the winner is
+// frequently the last candidate, so this is the common case, not an edge one.
+func TestNoTrailingCandidatesClosesImmediately(t *testing.T) {
+	select {
+	case <-probeRemaining(context.Background(), nil, 22, "uhost-x"):
+	case <-time.After(2 * time.Second):
+		t.Fatal("probeRemaining(nil) never completed")
+	}
+}
+
+// The wiring, not just the helper: choosing an address must ALSO leave the untried candidates
+// probed. Without this assertion the trailing probe could be dropped from pickReachableDialHost
+// and every test above would still pass, while the prefix silently stopped being exercised on
+// exactly the zones that can judge it.
+func TestChoosingAnAddressStillProbesTheRest(t *testing.T) {
+	accepted := make(chan struct{}, 8)
+	ln := listenLoopbackV6(t, accepted)
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	// Prefix "::" over 0.0.0.1 is ::1, so the same listener stands in for both the internal
+	// address and the translated one; the /48 form (::100:0:0) is the candidate that never answers.
+	host, err := pickReachableDialHost(context.Background(), map[string]any{"UHostId": "uhost-x"},
+		"0.0.0.1", port, "::", "::1", nil)
+	if err != nil || host != "::1" {
+		t.Fatalf("got (%q, %v), want the internal address to win", host, err)
+	}
+	// One accept for the winner, one more for the trailing simple form.
+	waitForAccepts(t, accepted, 2)
+}
+
+// listenLoopbackV6 accepts connections on IPv6 loopback and signals each one, so a test can
+// count probes instead of parsing the log.
+func listenLoopbackV6(t *testing.T, accepted chan<- struct{}) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback here: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			select {
+			case accepted <- struct{}{}:
+			default:
+			}
+			_ = conn.Close()
+		}
+	}()
+	return ln
 }
 
 // closedLocalPort returns a port on loopback with nothing listening, so a connect fails

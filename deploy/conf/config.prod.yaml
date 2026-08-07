@@ -66,4 +66,11 @@ agent:
     # dialling the same address; the public EIP is never a candidate in any position. If none
     # of the candidates accepts a TCP connection the run REFUSES and the log names each address
     # tried with its failure class — clearing this key restores the previous behaviour exactly.
+    #
+    # Candidates after the winner are still probed, detached and after the address is chosen, and
+    # only logged (「candidates NOT dialled」). Otherwise the prefix would never be exercised on
+    # cn-wlcb-01, where the internal route answers first — and that is the zone that can actually
+    # judge it: the box is known reachable from here, so a prefix failure there is the prefix's,
+    # whereas a failure on cn-sh2-02 cannot separate "no translator" from "translator that also
+    # cannot reach c3". Costs the run nothing; the credential is already resolved when they fire.
     public_ipv6_prefix: "2002:a40:2e05::"

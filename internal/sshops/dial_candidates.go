@@ -95,25 +95,77 @@ func allZero(b []byte) bool {
 //
 // The connection is closed immediately and nothing is written to it: this reads reachability,
 // it does not authenticate and it does not touch the instance.
-func firstReachable(ctx context.Context, cands []dialCandidate, port int) (dialCandidate, []string, bool) {
+func firstReachable(ctx context.Context, cands []dialCandidate, port int) (dialCandidate, int, []string, bool) {
 	trace := make([]string, 0, len(cands))
-	for _, c := range cands {
-		start := time.Now()
-		d := net.Dialer{Timeout: perCandidateDialTimeout}
-		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(c.host, strconv.Itoa(port)))
-		took := time.Since(start).Round(time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			trace = append(trace, fmt.Sprintf("%s=[%s]:%d open in %s", c.label, c.host, port, took))
-			return c, trace, true
+	for i, c := range cands {
+		line, ok := probeCandidate(ctx, c, port)
+		trace = append(trace, line)
+		if ok {
+			return c, i, trace, true
 		}
-		trace = append(trace, fmt.Sprintf("%s=[%s]:%d %s after %s (%v)",
-			c.label, c.host, port, dialFailureClass(err), took, err))
 		if ctx.Err() != nil {
 			break
 		}
 	}
-	return dialCandidate{}, trace, false
+	return dialCandidate{}, -1, trace, false
+}
+
+// probeCandidate is one TCP connect, rendered as the trace line the operator reads.
+func probeCandidate(ctx context.Context, c dialCandidate, port int) (string, bool) {
+	start := time.Now()
+	d := net.Dialer{Timeout: perCandidateDialTimeout}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(c.host, strconv.Itoa(port)))
+	took := time.Since(start).Round(time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		return fmt.Sprintf("%s=[%s]:%d open in %s", c.label, c.host, port, took), true
+	}
+	return fmt.Sprintf("%s=[%s]:%d %s after %s (%v)",
+		c.label, c.host, port, dialFailureClass(err), took, err), false
+}
+
+// probeRemaining reports how the candidates AFTER the winner would have fared, without
+// affecting which address is dialled.
+//
+// Without it the experiment cannot be run where it gives a clean answer. On a zone the internal
+// route already reaches, the prefix candidates are never dialled — first-reachable-wins stops at
+// the first one — so a run there says nothing about the prefix. And that zone is precisely where
+// the prefix CAN be judged: the box is known reachable from here, so a prefix failure there is
+// the prefix's, whereas a failure on a zone with no route at all is ambiguous between "no
+// translator" and "translator that also cannot reach that cluster".
+//
+// It runs detached and after the decision, so it costs the user nothing: the credential is
+// already resolved by the time these fire, and the request's own cancellation must not kill them
+// (the diagnosis moves on immediately). Bounded by its own deadline, read-only, and it only ever
+// logs — nothing here can change which address the harness receives.
+//
+// The returned channel closes when the probes are done. Production ignores it; tests wait on it
+// instead of sleeping.
+func probeRemaining(ctx context.Context, cands []dialCandidate, port int, instanceID string) <-chan struct{} {
+	done := make(chan struct{})
+	if len(cands) == 0 {
+		close(done)
+		return done
+	}
+	// Detached from the request on purpose — see above. The budget is the same per-candidate
+	// timeout the foreground uses, so a hung probe cannot outlive the run by an unbounded margin.
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
+		time.Duration(len(cands))*perCandidateDialTimeout+time.Second)
+	go func() {
+		defer close(done)
+		defer cancel()
+		lines := make([]string, 0, len(cands))
+		for _, c := range cands {
+			line, _ := probeCandidate(probeCtx, c, port)
+			lines = append(lines, line)
+			if probeCtx.Err() != nil {
+				break
+			}
+		}
+		log.Printf("ssh-ops: candidates NOT dialled for instance %s port %d (diagnostic only): %s",
+			instanceID, port, strings.Join(lines, "; "))
+	}()
+	return done
 }
 
 // dialCandidatesFor builds the ordered candidate list, plus notes explaining any candidate that
@@ -164,13 +216,16 @@ func pickReachableDialHost(ctx context.Context, inst map[string]any, advertised 
 		return "", fmt.Errorf("%w: %w", ErrInternalAddressUnavailable, err)
 	}
 
-	winner, trace, ok := firstReachable(ctx, cands, port)
+	winner, idx, trace, ok := firstReachable(ctx, cands, port)
 	report := strings.Join(append(notes, trace...), "; ")
 	log.Printf("ssh-ops: dial candidates for instance %s port %d: %s", id, port, report)
 	if !ok {
 		return "", fmt.Errorf("%w: no candidate address accepted a connection on port %d: %s",
 			ErrInternalAddressUnavailable, port, report)
 	}
+	// Everything after the winner is still worth knowing — on a zone the internal route reaches,
+	// this is the ONLY way the prefix ever gets exercised. Detached, so it costs this run nothing.
+	probeRemaining(ctx, cands[idx+1:], port, id)
 	// Safe to log: these are infrastructure addresses, the same class of fact as
 	// mysql.host_override in the shipped production config. No tenant is named beyond the
 	// instance id the audit row already carries, and the advertised EIP is not printed, so the
