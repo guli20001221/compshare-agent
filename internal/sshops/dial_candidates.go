@@ -35,7 +35,7 @@ type dialCandidate struct {
 //
 // "把前缀加在 IPv4 前面" names two different addresses, and they are not interchangeable:
 //
-//	simple   <prefix> | v4 in the low 32 bits            e.g. 2002:a40:2e05::106.75.226.241
+//	simple   <prefix> | v4 in the low 32 bits            e.g. 2002:a40:2e05::203.0.113.9
 //	rfc6052  <prefix/48> | v4[0:3] | u=0 | v4[3] | zero  RFC 6052 §2.2, the standard /48 form
 //
 // Both are generated so that a failed probe means "no translator" rather than the ambiguous
