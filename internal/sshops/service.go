@@ -41,10 +41,11 @@ type harnessRunner interface {
 }
 
 type Service struct {
-	sup          harnessRunner
-	audit        AuditWriter
-	allowWrites  bool
-	hostResolver HostResolver
+	sup              harnessRunner
+	audit            AuditWriter
+	allowWrites      bool
+	hostResolver     HostResolver
+	publicIPv6Prefix string
 }
 
 // ServiceOption configures a Service at construction. Options exist so the write gate cannot be
@@ -64,6 +65,20 @@ func WithWrites(allow bool) ServiceOption {
 // deployment that never sets it is byte-identical to before this option existed.
 func WithHostResolver(hr HostResolver) ServiceOption {
 	return func(s *Service) { s.hostResolver = hr }
+}
+
+// WithPublicIPv6Prefix adds a second addressing scheme for the lane to TRY when the internal
+// address does not answer: the instance's public IPv4 expressed under a translation prefix.
+//
+// It does not replace the internal address, it is tried after it, and the public IPv4 itself is
+// still never dialled. Empty (the default) disables the whole candidate path — no extra probe,
+// no extra log line, and the dial is byte-identical to WithHostResolver alone.
+//
+// It is a setting rather than a constant because the prefix is an unverified claim about the
+// deployment's network: if it turns out to be the wrong one, ops changes YAML instead of us
+// shipping code to change a string.
+func WithPublicIPv6Prefix(prefix string) ServiceOption {
+	return func(s *Service) { s.publicIPv6Prefix = strings.TrimSpace(prefix) }
 }
 
 // NewService wires a Service. sup is normally a sshops.Supervisor value. audit is REQUIRED: Diagnose
@@ -103,7 +118,8 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 	if strings.TrimSpace(task) == "" {
 		task = DefaultDiagnosisTask
 	}
-	cred, err := FetchCredentialWithHostResolver(ctx, d, instanceID, s.hostResolver)
+	cred, err := FetchCredentialWithDialPolicy(ctx, d, instanceID, s.hostResolver,
+		dialPolicy{PublicIPv6Prefix: s.publicIPv6Prefix})
 	if err != nil {
 		return Result{}, err // credential-free error (see credential.go)
 	}

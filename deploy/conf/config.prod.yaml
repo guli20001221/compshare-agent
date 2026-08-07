@@ -37,3 +37,40 @@ agent:
     # never rewritten. Requires agent.sts.iam_url, and a failed rewrite REFUSES the run rather
     # than falling back to the address this setting exists because it cannot reach.
     internal_ipv6: true
+    # SECOND candidate, tried only when the internal address above does not answer.
+    #
+    # Why a second one at all: internal_ipv6 reaches cn-wlcb-01 and does NOT reach cn-sh2-02.
+    # The mapping resolves fine for both — the dial is what goes nowhere, because this process
+    # runs in the c5 cluster and cn-sh2 sits behind c3, and there is no fabric route between
+    # them. A translation prefix, if this network runs one, reaches the box without needing a
+    # per-cluster route, so it would close cn-sh2-02 and every future self-owned zone at once.
+    #
+    # This prefix is UNVERIFIED and is here to be tested, not because it is known to work:
+    #   - it was reported from a document that can no longer be located
+    #   - 2002:a40:2e05:: decodes as the 6to4 block (RFC 3056) of 10.64.46.5, a PRIVATE address
+    #     in the same 10.64/16 as the internal gateway
+    #   - RIPEstat: that /48 has origins=[] and is seen by 0 of 320 RIS peers, i.e. no AS on
+    #     the public internet announces it
+    #   - neither this repo nor uhost-compshare-api mentions 6to4 / NAT64 / SIIT anywhere
+    # What is on its side: the fabric demonstrably already translates IPv6 to a guest's IPv4
+    # (instances carry no global IPv6 at all, yet answer on the mapped address), so a
+    # translator for public IPv4 is a coherent thing for this network to have.
+    #
+    # Two encodings are tried because "prefix + IPv4" names two addresses:
+    #   simple   2002:a40:2e05::106.75.226.241        (IPv4 in the low 32 bits)
+    #   rfc6052  2002:a40:2e05:6a4b:e200:f100::       (RFC 6052 §2.2 for a /48 prefix)
+    # The one real mapping in this tree (mysql.host_override above) embeds its IPv4 at bits
+    # 64-95, which is neither, so guessing a single encoding would make a failed test ambiguous.
+    #
+    # Ordering is the safety property: internal first, so every zone that works today keeps
+    # dialling the same address; the public EIP is never a candidate in any position. If none
+    # of the candidates accepts a TCP connection the run REFUSES and the log names each address
+    # tried with its failure class — clearing this key restores the previous behaviour exactly.
+    #
+    # Candidates after the winner are still probed, detached and after the address is chosen, and
+    # only logged (「candidates NOT dialled」). Otherwise the prefix would never be exercised on
+    # cn-wlcb-01, where the internal route answers first — and that is the zone that can actually
+    # judge it: the box is known reachable from here, so a prefix failure there is the prefix's,
+    # whereas a failure on cn-sh2-02 cannot separate "no translator" from "translator that also
+    # cannot reach c3". Costs the run nothing; the credential is already resolved when they fire.
+    public_ipv6_prefix: "2002:a40:2e05::"

@@ -164,6 +164,24 @@ func FetchCredential(ctx context.Context, d Describer, instanceID string) (Crede
 // machine's own stack — the same reason EIP:23 works today), and a plain VM answers on 22
 // as ubuntu over either address.
 func FetchCredentialWithHostResolver(ctx context.Context, d Describer, instanceID string, hr HostResolver) (Credential, error) {
+	return FetchCredentialWithDialPolicy(ctx, d, instanceID, hr, dialPolicy{})
+}
+
+// dialPolicy carries the settings that decide WHICH address is dialled, beyond the resolver
+// itself. Its zero value is "internal rewrite only" — byte-identical to the behaviour before
+// public-IPv6 candidates existed, which is what every existing caller and test gets.
+type dialPolicy struct {
+	// PublicIPv6Prefix, when set, adds translation-prefix candidates derived from the
+	// instance's PUBLIC IPv4 after the internal address. Empty (the default) means the
+	// candidate machinery does not run at all — no extra probe, no extra log line.
+	PublicIPv6Prefix string
+}
+
+// FetchCredentialWithDialPolicy is FetchCredentialWithHostResolver with an explicit address
+// policy. It exists so a deployment can ask the lane to TRY a second addressing scheme without
+// giving up the first one: the internal address stays the leading candidate, so a zone that
+// works today picks the same address it picks today.
+func FetchCredentialWithDialPolicy(ctx context.Context, d Describer, instanceID string, hr HostResolver, pol dialPolicy) (Credential, error) {
 	if strings.TrimSpace(instanceID) == "" {
 		return Credential{}, fmt.Errorf("sshops: empty instance id")
 	}
@@ -195,7 +213,7 @@ func FetchCredentialWithHostResolver(ctx context.Context, d Describer, instanceI
 	if err != nil {
 		return Credential{}, err
 	}
-	if host, err = resolveDialHost(ctx, hr, inst, host); err != nil {
+	if host, err = resolveDialHost(ctx, hr, inst, host, port, pol); err != nil {
 		return Credential{}, err
 	}
 	// Password is base64(plaintext root password) — must be decoded before use.
@@ -220,7 +238,7 @@ func FetchCredentialWithHostResolver(ctx context.Context, d Describer, instanceI
 // box, and pointing that port at the box's own address would dial a port nothing serves.
 // Gating on the literal keeps that decision in one readable condition instead of asking
 // the resolver to recognise a product it cannot see.
-func resolveDialHost(ctx context.Context, hr HostResolver, inst map[string]any, advertised string) (string, error) {
+func resolveDialHost(ctx context.Context, hr HostResolver, inst map[string]any, advertised string, port int, pol dialPolicy) (string, error) {
 	if hr == nil {
 		return advertised, nil
 	}
@@ -228,6 +246,9 @@ func resolveDialHost(ctx context.Context, hr HostResolver, inst map[string]any, 
 		return advertised, nil
 	}
 	resolved, err := hr.ResolveHost(ctx, inst)
+	if strings.TrimSpace(pol.PublicIPv6Prefix) != "" {
+		return pickReachableDialHost(ctx, inst, advertised, port, pol.PublicIPv6Prefix, resolved, err)
+	}
 	if err != nil {
 		// Deliberately fatal — see the HostResolver contract. The caller collapses this
 		// into the lane's one "couldn't complete" sentence and logs it verbatim

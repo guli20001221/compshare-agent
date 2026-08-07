@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"path/filepath"
 	"testing"
 )
@@ -47,5 +48,35 @@ func TestBaselineLeavesTheInternalIPv6RouteOff(t *testing.T) {
 	if base.Agent.SSHOps.InternalIPv6 {
 		t.Error("agent.ssh_ops.internal_ipv6 must stay off in the shared baseline; " +
 			"turning it on there breaks every local run of the lane")
+	}
+	// Same reasoning for the translation prefix: a developer machine reaches instances at their
+	// EIP and has no route to any translator, so a prefix here would add two dead candidates and
+	// then REFUSE the run, turning the lane off locally.
+	if base.Agent.SSHOps.PublicIPv6Prefix != "" {
+		t.Errorf("agent.ssh_ops.public_ipv6_prefix must stay unset in the shared baseline, got %q",
+			base.Agent.SSHOps.PublicIPv6Prefix)
+	}
+}
+
+// The prefix is an experiment, so this does NOT require it to be present — clearing it once the
+// question is settled must not fail the build. What it does require is that a prefix which IS
+// present is coherent: an unparseable one, or one set without internal_ipv6, produces a lane that
+// boots and then refuses every instance, and the run would read as "the prefix does not work"
+// when nothing was ever dialled.
+func TestProdOverlayPublicIPv6PrefixIsCoherentWhenSet(t *testing.T) {
+	prod, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
+	if err != nil {
+		t.Fatalf("load production overlay: %v", err)
+	}
+	prefix := prod.Agent.SSHOps.PublicIPv6Prefix
+	if prefix == "" {
+		t.Skip("no translation prefix configured — nothing to check")
+	}
+	if ip := net.ParseIP(prefix); ip == nil || ip.To4() != nil {
+		t.Errorf("agent.ssh_ops.public_ipv6_prefix %q is not an IPv6 address", prefix)
+	}
+	if !prod.Agent.SSHOps.InternalIPv6 {
+		t.Error("public_ipv6_prefix without internal_ipv6 does nothing: the candidate list only " +
+			"replaces a bare-IPv4 advertised host, which is what internal_ipv6 turns on")
 	}
 }

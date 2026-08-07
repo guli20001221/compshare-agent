@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"strings"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
@@ -171,6 +173,18 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 	if apiKey == "" {
 		return nil, fmt.Errorf("agent.ssh_ops.api_key is required when agent.llm.api_key is empty")
 	}
+	// Both checks fail the boot instead of warning, because either way the setting would be
+	// present in the config and doing nothing — and the whole reason it exists is to answer a
+	// question by running. A prefix that never got used, or a typo that only surfaces as a
+	// refusal on the first real diagnosis, would look like "the prefix does not work".
+	if prefix := strings.TrimSpace(sc.PublicIPv6Prefix); prefix != "" {
+		if !sc.InternalIPv6 {
+			return nil, fmt.Errorf("agent.ssh_ops.public_ipv6_prefix needs agent.ssh_ops.internal_ipv6: the candidate list only replaces a bare-IPv4 advertised host, which is exactly what internal_ipv6 turns on")
+		}
+		if ip := net.ParseIP(prefix); ip == nil || ip.To4() != nil {
+			return nil, fmt.Errorf("agent.ssh_ops.public_ipv6_prefix %q is not an IPv6 address", prefix)
+		}
+	}
 	// Freeze the wording gate here rather than at each call site: this function is the one place
 	// that has both the config and the knowledge that the lane is actually being built, and it runs
 	// once per process before any session exists. Setting it unconditionally (not only when true)
@@ -190,7 +204,15 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 	// actually authorizes the harness; WithWrites only labels the audit. Wiring them from one source
 	// is what keeps "what the row says we entered under" and "what the harness was allowed to do"
 	// from drifting apart.
-	return sshops.NewService(sup, audit, append([]sshops.ServiceOption{sshops.WithWrites(sc.AllowWrites)}, opts...)...), nil
+	// PublicIPv6Prefix rides along here rather than at the call sites for the same reason: it is
+	// an addressing decision that belongs to the deployment, and threading it separately would let
+	// one entrypoint wire the resolver while another forgot the prefix, producing two lanes that
+	// dial differently on the same host.
+	base := []sshops.ServiceOption{
+		sshops.WithWrites(sc.AllowWrites),
+		sshops.WithPublicIPv6Prefix(sc.PublicIPv6Prefix),
+	}
+	return sshops.NewService(sup, audit, append(base, opts...)...), nil
 }
 
 // instanceOpsHostResolver builds the internal-IPv6 address resolver, or nil to keep dialling
