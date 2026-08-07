@@ -148,12 +148,12 @@ func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
 	for _, message := range e.messages {
 		switch message.Role {
 		case openai.ChatMessageRoleUser:
-			pendingUser = safeConversationText(message.Content)
+			pendingUser = historyConversationText(message.Role, message.Content)
 		case openai.ChatMessageRoleAssistant:
 			if pendingUser == "" || strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
 				continue
 			}
-			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: safeConversationText(message.Content)})
+			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: historyConversationText(message.Role, message.Content)})
 			pendingUser = ""
 		}
 	}
@@ -197,7 +197,10 @@ func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []Conversat
 	}
 	unconsumed := make(map[string][]int, len(e.recentTurns))
 	for j, record := range e.recentTurns {
-		key := recordedTurnKey(safeConversationText(record.User), safeConversationText(record.Assistant))
+		key := recordedTurnKey(
+			historyConversationText(openai.ChatMessageRoleUser, record.User),
+			historyConversationText(openai.ChatMessageRoleAssistant, record.Assistant),
+		)
 		unconsumed[key] = append(unconsumed[key], j)
 	}
 	for i := range pairs {

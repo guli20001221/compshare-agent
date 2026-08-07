@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/prompt"
+	"github.com/compshare-agent/internal/security"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,7 +64,10 @@ func runHotTurn(turn []openai.ChatCompletionMessage) (*Engine, json.RawMessage, 
 	return e, payload, stats
 }
 
-// rebuildCold is the restart: nothing but the persisted rows.
+// rebuildCold is a raw-row restart harness for transcript transforms. It uses
+// exactly the endpoint strings passed by its caller; persistence-redaction
+// parity belongs to TestHotAndColdReplayAcrossPersistenceRedactions below,
+// which supplies the same role-specific form the HTTP handler stores.
 func rebuildCold(question, answer string, metadata json.RawMessage) *Engine {
 	e := &Engine{}
 	e.RehydrateHistory([]HistoryMessage{
@@ -235,6 +239,119 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 				"and it must appear exactly once — not also inside the replayed region")
 		})
 	}
+}
+
+// HTTP persists user and assistant rows through different redaction boundaries.
+// The canonical transcript is the model's history, so a cold reconstruction must
+// still attach it when either display row changed at that boundary. Otherwise the
+// session silently degrades from tool-backed history to a plain text pair after a
+// restart even though the transcript itself is present and valid.
+func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
+	prev := canonicalTranscriptEnabled
+	SetCanonicalTranscriptEnabled(true)
+	defer SetCanonicalTranscriptEnabled(prev)
+
+	cases := []struct {
+		name        string
+		question    string
+		answer      string
+		changedRole string
+	}{
+		{
+			name:        "user PII",
+			question:    "请查 alice@example.com 和 13800138000 对应的实例",
+			answer:      "已查到实例状态正常。",
+			changedRole: openai.ChatMessageRoleUser,
+		},
+		{
+			name:        "user operational token",
+			question:    "请查 http://10.0.0.4:8888/lab?token=AKIAIOSFODNN7EXAMPLEbCDEF 对应的实例",
+			answer:      "已查到实例状态正常。",
+			changedRole: openai.ChatMessageRoleUser,
+		},
+		{
+			name:        "assistant UUID",
+			question:    "项目状态怎么样？",
+			answer:      "关联项目 12345678-1234-1234-1234-1234567890ab 当前正常。",
+			changedRole: openai.ChatMessageRoleAssistant,
+		},
+		{
+			name:        "assistant credential placeholder",
+			question:    "Jupyter 为什么无法登录？",
+			answer:      "请使用 token=AKIAIOSFODNN7EXAMPLEbCDEF 重新登录。",
+			changedRole: openai.ChatMessageRoleAssistant,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			turn := []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: tc.question},
+				{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+					toolCall("c1", "DescribeCompShareInstance", `{}`),
+				}},
+				{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: `{"UHostId":"uhost-1","State":"Running"}`},
+				{Role: openai.ChatMessageRoleAssistant, Content: tc.answer},
+			}
+			hot, metadata, stats := runHotTurn(turn)
+			require.True(t, stats.Attempted, "precondition: the turn must have a canonical transcript")
+			require.NotNil(t, metadata, "precondition: the transcript must persist")
+
+			persistedQuestion := security.RedactUserConversationText(tc.question)
+			persistedAnswer := security.RedactAssistantConversationText(tc.answer)
+			if tc.changedRole == openai.ChatMessageRoleUser {
+				require.NotEqual(t, tc.question, persistedQuestion, "precondition: the HTTP user persistence boundary changed this endpoint")
+			} else {
+				require.NotEqual(t, tc.answer, persistedAnswer, "precondition: the HTTP assistant persistence boundary changed this endpoint")
+			}
+
+			cold := &Engine{}
+			cold.RehydrateHistory([]HistoryMessage{
+				{Role: openai.ChatMessageRoleUser, Content: persistedQuestion},
+				{Role: openai.ChatMessageRoleAssistant, Content: persistedAnswer, Transcript: metadata},
+			})
+
+			hotAssembled := assembleNextTurn(hot, parityNextQuestion)
+			coldAssembled := assembleNextTurn(cold, parityNextQuestion)
+			require.Equal(t, hotAssembled, coldAssembled,
+				"the persistence redaction boundary must not make a restart change model history")
+			requireTranscriptWasReplayed(t, coldAssembled)
+			replayed := renderReplayedRegion(t, hotAssembled)
+			if tc.changedRole == openai.ChatMessageRoleUser {
+				require.Contains(t, replayed, persistedQuestion,
+					"the hot transcript must use the same persisted-safe user form")
+				require.NotContains(t, replayed, tc.question)
+			} else {
+				require.Contains(t, replayed, persistedAnswer,
+					"the hot transcript must use the same persisted-safe assistant form")
+				require.NotContains(t, replayed, tc.answer)
+			}
+		})
+	}
+}
+
+func TestPersistenceAlignedEndpointTextIsCanonicalTranscriptScoped(t *testing.T) {
+	const (
+		question = "请查 alice@example.com 对应的实例"
+		answer   = "关联项目 12345678-1234-1234-1234-1234567890ab 当前正常。"
+	)
+	eng := &Engine{messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: question},
+		{Role: openai.ChatMessageRoleAssistant, Content: answer},
+	}}
+
+	prev := canonicalTranscriptEnabled
+	SetCanonicalTranscriptEnabled(false)
+	off := eng.recentCompleteConversationPairs()
+	SetCanonicalTranscriptEnabled(true)
+	on := eng.recentCompleteConversationPairs()
+	SetCanonicalTranscriptEnabled(prev)
+
+	require.Equal(t, []ConversationPair{{User: question, Assistant: answer}}, off,
+		"the feature gate preserves the pre-canonical history form")
+	require.Equal(t, []ConversationPair{{
+		User: security.RedactUserConversationText(question), Assistant: security.RedactAssistantConversationText(answer),
+	}}, on, "canonical history uses the same endpoint forms that cold rehydration reads")
 }
 
 // Canonical-history compaction is a different axis: it keeps complete dialogue

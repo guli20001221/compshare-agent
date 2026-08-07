@@ -277,6 +277,22 @@ func RedactOperationalTokensInText(s string) string {
 	return redactOperationalTokens(s)
 }
 
+// RedactUserConversationText returns the durable form of a user conversation
+// endpoint. Persisted user rows and canonical history must use the same form:
+// otherwise a restart can no longer associate a valid tool transcript with the
+// conversation pair that produced it.
+func RedactUserConversationText(s string) string {
+	return RedactOperationalTokensInText(guardrails.RedactPII(s))
+}
+
+// RedactAssistantConversationText returns the durable form of an assistant
+// conversation endpoint. Keep this paired with RedactUserConversationText so
+// persistence and canonical history share one exact boundary rather than
+// attempting to fuzzy-match redacted text during cold reconstruction.
+func RedactAssistantConversationText(s string) string {
+	return RedactOperationalTokensInText(guardrails.RedactOutputLeak(s))
+}
+
 // ContainsToolProtocolMarkup detects provider/tool transport syntax that must
 // never be rendered as assistant prose. It does not infer user intent or parse
 // a tool call; malformed transport is failed closed at the response boundary.
