@@ -250,23 +250,28 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 	}
 
 	compacted := append([]ConversationPair(nil), pairs...)
+	for i := range compacted {
+		// The transcript is an augmentation of the complete conversation, not a
+		// lossy substitute for it. A persisted message may have been bounded to
+		// protect storage; when that means it no longer replays this pair's exact
+		// user question and final answer, fall back to the complete plain pair.
+		if !transcriptReplaysCompletePair(compacted[i]) {
+			compacted[i].Transcript = nil
+		}
+	}
 	remainingDetailRunes := budgetRunes - plainRunes
-	keptNewestDetail := false
 	for i := len(compacted) - 1; i >= 0; i-- {
 		detailRunes := conversationTranscriptDetailRunes(compacted[i])
 		if detailRunes == 0 {
 			continue
 		}
-		// Keep the newest evidence even when it alone exceeds the remaining
-		// detail budget. It is the immediate antecedent for a follow-up, and the
-		// whole assembled-request cap still protects the provider request.
-		if detailRunes <= remainingDetailRunes || !keptNewestDetail {
-			keptNewestDetail = true
-			if detailRunes >= remainingDetailRunes {
-				remainingDetailRunes = 0
-			} else {
-				remainingDetailRunes -= detailRunes
-			}
+		// A transcript is optional evidence, never permission to overrun the
+		// history budget. Preserve the newest upgrades that actually fit; when a
+		// single recent tool result is too large, keep its complete plain dialogue
+		// instead of relying on the later whole-request trim to make an unrelated
+		// decision for us.
+		if detailRunes <= remainingDetailRunes {
+			remainingDetailRunes -= detailRunes
 			continue
 		}
 		compacted[i].Transcript = nil
@@ -295,27 +300,42 @@ func conversationPairPlainRunes(pair ConversationPair) int {
 	return len([]rune(pair.User)) + len([]rune(pair.Assistant))
 }
 
-// conversationTranscriptDetailRunes is the additional cost of upgrading a
-// plain pair to its canonical transcript. A projected transcript already
-// contains the user question and final assistant answer, so charging both forms
-// would double-count exactly the conversation we are trying to preserve.
+// transcriptReplaysCompletePair reports whether Transcript can replace the
+// plain pair without losing semantic dialogue. Tool results can be abbreviated
+// with an explicit marker, but the user question and final assistant answer are
+// the continuous conversation and must survive byte-for-byte.
+func transcriptReplaysCompletePair(pair ConversationPair) bool {
+	if len(pair.Transcript) < 2 {
+		return false
+	}
+	first, last := pair.Transcript[0], pair.Transcript[len(pair.Transcript)-1]
+	return first.Role == openai.ChatMessageRoleUser && first.Content == pair.User &&
+		last.Role == openai.ChatMessageRoleAssistant && last.Content == pair.Assistant &&
+		len(last.ToolCalls) == 0
+}
+
+// conversationTranscriptDetailRunes is the positive additional cost of
+// upgrading a plain pair to its canonical transcript. A projected transcript
+// already contains the user question and final assistant answer, so charging
+// both forms would double-count exactly the conversation we are trying to
+// preserve. A transcript that cannot replay the complete pair is not an
+// upgrade at all; the caller falls back to the complete plain dialogue.
 func conversationTranscriptDetailRunes(pair ConversationPair) int {
+	if !transcriptReplaysCompletePair(pair) {
+		return 0
+	}
 	transcriptRunes := conversationTranscriptRunes(pair)
 	if transcriptRunes == 0 {
 		return 0
 	}
-	if extra := transcriptRunes - conversationPairPlainRunes(pair); extra > 0 {
-		return extra
-	}
-	// A malformed/foreign transcript can omit the ordinary pair. Treat all of
-	// its content as detail rather than returning a negative cost and letting it
-	// evade the budget. Valid local transcripts take the branch above.
-	return transcriptRunes
+	return max(0, transcriptRunes-conversationPairPlainRunes(pair))
 }
 
 func conversationPairRenderedRunes(pair ConversationPair) int {
-	if transcriptRunes := conversationTranscriptRunes(pair); transcriptRunes > 0 {
-		return transcriptRunes
+	if transcriptReplaysCompletePair(pair) {
+		if transcriptRunes := conversationTranscriptRunes(pair); transcriptRunes > 0 {
+			return transcriptRunes
+		}
 	}
 	return conversationPairPlainRunes(pair)
 }

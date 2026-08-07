@@ -64,11 +64,11 @@ func TestClientChatRetriesTransientStreamOpenError(t *testing.T) {
 	}
 }
 
-func TestChatHTTPClientAlwaysHasAnUpstreamDeadline(t *testing.T) {
+func TestChatHTTPClientLeavesStreamLifetimeToCallerContext(t *testing.T) {
 	for _, baseURL := range []string{"https://api.example.test/v1", "http://127.0.0.1:8080/v1"} {
 		client := chatHTTPClient(baseURL)
-		if client.Timeout != defaultChatHTTPTimeout {
-			t.Fatalf("%s timeout = %s, want %s", baseURL, client.Timeout, defaultChatHTTPTimeout)
+		if client.Timeout != 0 {
+			t.Fatalf("%s total timeout = %s, want 0 so the caller context owns stream lifetime", baseURL, client.Timeout)
 		}
 	}
 	localTransport, ok := chatHTTPClient("http://localhost:8080/v1").Transport.(*http.Transport)

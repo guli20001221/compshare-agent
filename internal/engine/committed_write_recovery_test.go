@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	openai "github.com/sashabaranov/go-openai"
 
 	"github.com/compshare-agent/internal/llm"
 )
@@ -123,4 +123,49 @@ func TestChatReportsTheCommittedWriteWhenTheNarrationCallFails(t *testing.T) {
 	require.NotEmpty(t, eng.messages)
 	assert.Equal(t, reply, eng.messages[len(eng.messages)-1].Content,
 		"history must keep the reply, so a follow-up turn knows the instance exists")
+}
+
+// committedThenTruncatedLLM is the same durable-write shape as the provider
+// outage above, except the narration call reaches EOF with finish_reason=length.
+// The third response exists only to make a regression observable: the recovery
+// must finish after two calls, rather than spending a retry after the write has
+// already committed.
+type committedThenTruncatedLLM struct {
+	eng   *Engine
+	calls int
+}
+
+func (m *committedThenTruncatedLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		m.eng.committedWriteRepliesThisTurn = append(m.eng.committedWriteRepliesThisTurn, "✅ 已创建实例 uhost-good1。")
+		return &llm.ChatResponse{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+		}}, nil
+	}
+	if m.calls == 2 {
+		return &llm.ChatResponse{Content: "这段截断的说明不能作为最终回复", StopReason: "length"}, nil
+	}
+	return &llm.ChatResponse{Content: "不应执行这次重试"}, nil
+}
+
+func TestChatReportsCommittedWriteWhenNarrationIsLengthStopped(t *testing.T) {
+	mock := &committedThenTruncatedLLM{}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	mock.eng = eng
+	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
+
+	var streamed string
+	reply, err := eng.ChatWithOptions(context.Background(), "为我开一台抢占式的4090", noopStep, ChatOptions{
+		OnTextDelta: func(s string) { streamed += s },
+	})
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "uhost-good1")
+	require.Contains(t, reply, "请勿重复提交")
+	require.NotContains(t, reply, "这段截断的说明")
+	require.Equal(t, 2, mock.calls,
+		"an already-committed write must be reported before spending a truncation retry")
+	require.Equal(t, reply, streamed, "the client must receive exactly the persisted recovery reply")
+	require.Equal(t, reply, eng.messages[len(eng.messages)-1].Content)
 }

@@ -1578,9 +1578,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), nil
 			}
-			// The per-call LLM error — including the http.Client timeout
-			// (internal/llm/client.go) behind the long-running 超时 cases — would
-			// otherwise discard the turn. If a prior round already gathered groundable
+			// A per-call LLM error would otherwise discard the turn. If a prior round
+			// already gathered groundable
 			// evidence AND the outer ctx is still live, deliver a cited answer from it
 			// (same recovery as the budget/ceiling exits) instead of a bare error. The
 			// ctx.Err()==nil gate never spends a recovery LLM call on an already
@@ -1616,6 +1615,21 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// partial object as a normal next step would make the Agent act on a
 			// response it knows is incomplete.
 			runtimeRound.ModelStep(0, false)
+			// A write may have completed in an earlier tool round and this response is
+			// only its narration. That durable result outranks a generic retry or
+			// refusal: telling the user an already-created instance failed invites a
+			// duplicate billable request. This path uses only the committed record, not
+			// the partial model output.
+			if reply, ok := e.committedWriteRecoveryReply(); ok {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				if opts.OnTextDelta != nil {
+					opts.OnTextDelta(reply)
+				}
+				return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), nil
+			}
 			truncatedOutputRecoveries++
 			if truncatedOutputRecoveries <= maxTruncatedOutputRecoveriesPerTurn {
 				recoverTruncatedOutput = true
@@ -4707,10 +4721,11 @@ func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view Agen
 		if pair.User == "" || pair.Assistant == "" {
 			continue
 		}
-		// The transcript, when present, already opens with the user question and
-		// closes with the final answer — it IS the exchange, recorded verbatim.
-		// Emitting the plain pair as well would send the question twice.
-		if len(pair.Transcript) > 0 {
+		// A usable transcript opens with the exact user question and closes with
+		// the exact final answer — it IS the exchange, recorded verbatim.
+		// A bounded/foreign transcript that cannot make that promise falls back to
+		// the complete plain pair rather than replacing history with a prefix.
+		if transcriptReplaysCompletePair(pair) {
 			out = append(out, pair.Transcript...)
 			continue
 		}

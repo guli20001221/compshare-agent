@@ -157,7 +157,11 @@ func TestTranscriptsAreNotAttachedToTheWrongExchange(t *testing.T) {
 // its original user/assistant pair and only the re-queryable evidence is shed.
 func TestReplayBudgetCompactsOldToolTrafficBeforeDroppingDialogue(t *testing.T) {
 	enableCanonicalTranscriptForTest(t)
-	big := make([]rune, maxReplayedHistoryRunes)
+	// Keep the fixture shaped like a real replayed exchange: the transcript must
+	// contain the exact user and final assistant messages plus a valid tool round.
+	// A tool-only slice is not a representation messagesFromAgentContext may use.
+	call := toolCall("c1", "Read", `{}`)
+	big := make([]rune, maxReplayedHistoryRunes-len([]rune("q"))-len([]rune("a"))-len([]rune(call.Function.Name))-len([]rune(call.Function.Arguments)))
 	for i := range big {
 		big[i] = '据'
 	}
@@ -165,7 +169,10 @@ func TestReplayBudgetCompactsOldToolTrafficBeforeDroppingDialogue(t *testing.T) 
 		User:      "q",
 		Assistant: "a",
 		Transcript: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "q"},
+			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{call}},
 			{Role: openai.ChatMessageRoleTool, Content: string(big), ToolCallID: "c1"},
+			{Role: openai.ChatMessageRoleAssistant, Content: "a"},
 		},
 	}
 	if got := conversationTranscriptRunes(heavy); got != maxReplayedHistoryRunes {
@@ -174,7 +181,12 @@ func TestReplayBudgetCompactsOldToolTrafficBeforeDroppingDialogue(t *testing.T) 
 
 	kept := budgetReplayedPairs([]ConversationPair{
 		heavy,
-		{User: "newer detailed q", Assistant: "newer detailed a", Transcript: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleTool, Content: "fresh evidence"}}},
+		{User: "newer detailed q", Assistant: "newer detailed a", Transcript: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "newer detailed q"},
+			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall("c2", "Read", `{}`)}},
+			{Role: openai.ChatMessageRoleTool, ToolCallID: "c2", Content: "fresh evidence"},
+			{Role: openai.ChatMessageRoleAssistant, Content: "newer detailed a"},
+		}},
 		{User: "new q", Assistant: "new a"},
 	}, maxReplayedHistoryRunes)
 

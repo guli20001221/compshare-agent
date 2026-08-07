@@ -26,15 +26,15 @@ type Client struct {
 
 const maxChatAttempts = 2
 
-const defaultChatHTTPTimeout = 120 * time.Second
-
 func NewClient(cfg config.LLMConfig) *Client {
 	ocfg := openai.DefaultConfig(cfg.APIKey)
 	ocfg.BaseURL = cfg.BaseURL
 
-	// Every production upstream gets a transport deadline. Previously only local
-	// proxy URLs installed this client, so a remote provider that accepted a
-	// connection and then stayed silent could consume the whole WS lifetime.
+	// A streaming response may legitimately run for minutes. http.Client.Timeout
+	// covers reading the entire response body, so putting a fixed timeout here
+	// turns a healthy long answer into a synthetic stream failure. The request
+	// context supplied by the HTTP/WS owner remains the authoritative lifecycle
+	// bound. The only special transport behavior here is the local proxy bypass.
 	ocfg.HTTPClient = chatHTTPClient(cfg.BaseURL)
 
 	return &Client{
@@ -44,7 +44,12 @@ func NewClient(cfg config.LLMConfig) *Client {
 }
 
 func chatHTTPClient(baseURL string) *http.Client {
-	client := &http.Client{Timeout: defaultChatHTTPTimeout}
+	// Leave Timeout at zero deliberately. Unlike a response-header or idle
+	// timeout, Client.Timeout is a total deadline for opening *and reading* the
+	// stream, which is the wrong policy for an agent that may reason or emit a
+	// long answer. A future idle watchdog must be implemented as an explicit
+	// stream-progress policy, not by reusing this total-duration field.
+	client := &http.Client{}
 	// Bypass HTTP proxy only for an actual loopback endpoint (the local LLM
 	// proxy), never for a remote URL which merely happens to contain that text.
 	if isLoopbackLLMEndpoint(baseURL) {
