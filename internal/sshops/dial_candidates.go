@@ -193,6 +193,28 @@ func dialCandidatesFor(advertised, prefix, internal string, internalErr error) (
 	return append(cands, public...), notes, nil
 }
 
+// diagnosticProbes lists the addresses probed for INFORMATION only, after the dial is decided.
+//
+// Two things go in, for two different reasons:
+//
+//   - the candidates the winner cut short. On a zone the internal route reaches, this is the only
+//     way the prefix is ever exercised — and that is the zone that can judge it.
+//   - the advertised public EIP. It is never a dial candidate and must never become one, but
+//     "this deployment has no route to customer EIPs" is the single most load-bearing premise in
+//     the whole design, and it was last measured on 2026-08-06 against instances that no longer
+//     exist. Re-measuring it on every run costs nothing and means a network change that opened
+//     that route would show up as a line in the log, instead of us going on routing around a
+//     problem that had already been fixed.
+//
+// The separation is structural, not a convention: this list is built AFTER the address is chosen
+// and its only consumer is probeRemaining, which logs. dialCandidatesFor — the function that
+// decides what gets dialled — never sees it, and has its own test that the EIP is absent.
+func diagnosticProbes(cands []dialCandidate, winnerIdx int, advertised string) []dialCandidate {
+	out := make([]dialCandidate, 0, len(cands)-winnerIdx)
+	out = append(out, cands[winnerIdx+1:]...)
+	return append(out, dialCandidate{label: "advertised-eip-CONTROL-never-dialled", host: advertised})
+}
+
 // pickReachableDialHost chooses among the addresses an instance could be dialled at, once a
 // public-IPv6 translation prefix has been configured.
 //
@@ -223,13 +245,12 @@ func pickReachableDialHost(ctx context.Context, inst map[string]any, advertised 
 		return "", fmt.Errorf("%w: no candidate address accepted a connection on port %d: %s",
 			ErrInternalAddressUnavailable, port, report)
 	}
-	// Everything after the winner is still worth knowing — on a zone the internal route reaches,
-	// this is the ONLY way the prefix ever gets exercised. Detached, so it costs this run nothing.
-	probeRemaining(ctx, cands[idx+1:], port, id)
+	probeRemaining(ctx, diagnosticProbes(cands, idx, advertised), port, id)
 	// Safe to log: these are infrastructure addresses, the same class of fact as
-	// mysql.host_override in the shipped production config. No tenant is named beyond the
-	// instance id the audit row already carries, and the advertised EIP is not printed, so the
-	// pair cannot be used to map EIP -> internal.
+	// mysql.host_override in the shipped production config, and no tenant is named beyond the
+	// instance id the audit row already carries. The diagnostic line above now also prints the
+	// advertised EIP, so the two together do pair EIP with internal address — acceptable because
+	// anyone who can read these logs has the instance id and can get both from one Describe.
 	log.Printf("ssh-ops: dialling %s address %s for instance %s", winner.label, winner.host, id)
 	return winner.host, nil
 }
