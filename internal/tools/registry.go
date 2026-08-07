@@ -562,7 +562,7 @@ var Registry = []openai.Tool{
 					// still replaces the historical candidate.
 					//
 					// The value may come from a listing seen this turn OR an exact id
-					// printed in the recent complete conversation. It is only a
+					// printed in a recent replayed exchange. It is only a
 					// candidate: CodecImage re-verifies it against the live catalog
 					// before any card or workflow can use it. An invented/stale id is
 					// rejected, never replaced by a name-matched image.

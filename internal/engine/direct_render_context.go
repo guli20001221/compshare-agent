@@ -254,9 +254,9 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 
 	compacted := append([]ConversationPair(nil), pairs...)
 	for i := range compacted {
-		// The transcript is an augmentation of the complete conversation, not a
-		// lossy substitute for it. A persisted message may have been bounded to
-		// protect storage; when that means it no longer replays this pair's exact
+		// The transcript augments a retained replayed exchange; it is not a
+		// lossy substitute for that exchange. A persisted message may have been
+		// bounded to protect storage; when that means it no longer replays this pair's exact
 		// user question and final answer, fall back to the complete plain pair.
 		if !transcriptReplaysCompletePair(compacted[i]) {
 			compacted[i].Transcript = nil

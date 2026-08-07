@@ -8,9 +8,9 @@
 > `ExecutionPathMismatch` still classify **historical and cutover-era** trace
 > records correctly, so trace storage / dashboards / the eval harness keep working
 > across the schema migration. Do **not** read this package as a description of how
-> the system routes today — see `docs/architecture.md`. P7 acceptance must judge a
-> turn by its real tools / steps / observations / final answer, not by a derived
-> form label.
+> the system routes today — see [CLAUDE.md](../../CLAUDE.md#architecture). P7
+> acceptance must judge a turn by its real tools / steps / observations / final
+> answer, not by a derived form label.
 
 This package pins the derivation of the retired runtime-form labels:
 

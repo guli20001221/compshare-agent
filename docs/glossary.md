@@ -12,8 +12,8 @@ are being migrated (see [Migration policy](#migration-policy)).
 > Section 1 (industry vocabulary) and Section 3 (migration policy) stay current; in
 > Section 2, the rows that describe the intent router / `Saga` orchestrator /
 > `internal/router` as code to rename are **historical naming-debt records**, not
-> live migration targets (the code is gone). Current architecture:
-> [`architecture.md`](architecture.md).
+> live migration targets (the code is gone). Current runtime guidance:
+> [`CLAUDE.md`](../CLAUDE.md#architecture).
 
 Primary sources:
 - OpenAI Agents SDK — Agent / Tool / Guardrail / Handoff / Run: https://developers.openai.com/api/docs/guides/agents

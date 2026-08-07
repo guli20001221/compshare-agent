@@ -302,7 +302,7 @@ func TestCurrentImageShorthandKeepsHistoricalIDAsSuggested(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, imageID, resolved.action.Arguments["CompShareImageId"],
-		"格式化简称不能让服务端丢弃模型从完整对话承接的精确 ID")
+		"格式化简称不能让服务端丢弃模型从近期已提供的历史承接的精确 ID")
 	require.Equal(t, "community", resolved.action.Arguments["ImageSource"])
 	require.Equal(t, workflow.ImageSelectionSuggested, resolved.referenceData.ImageSelection,
 		"保留的是待确认推荐，不是跳过镜像确认的用户授权")
