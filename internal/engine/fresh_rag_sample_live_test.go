@@ -39,7 +39,6 @@ type queryListAnswer struct {
 	CaseID   string `json:"case_id"`
 	Query    string `json:"query"`
 	Searches int    `json:"searches"`
-	Queries  int    `json:"queries"`
 	Answer   string `json:"answer"`
 	Err      string `json:"err,omitempty"`
 }
@@ -98,15 +97,14 @@ func TestLiveAnswerQueryList(t *testing.T) {
 			CaseID:   c.CaseID,
 			Query:    c.Query,
 			Searches: eng.searchKnowledgeCallsThisTurn,
-			Queries:  eng.searchKnowledgeQueriesThisTurn,
 			Answer:   strings.TrimSpace(reply),
 		}
 		if cerr != nil {
 			r.Err = cerr.Error()
 		}
 		results[i] = r
-		t.Logf("\n======== %s ========\n问：%s\n检索：calls=%d queries=%d\n答：\n%s",
-			c.CaseID, c.Query, r.Searches, r.Queries, truncateRunes(r.Answer, 900))
+		t.Logf("\n======== %s ========\n问：%s\n检索：calls=%d\n答：\n%s",
+			c.CaseID, c.Query, r.Searches, truncateRunes(r.Answer, 900))
 		if r.Err != "" {
 			t.Logf("  ERR: %s", r.Err)
 		}

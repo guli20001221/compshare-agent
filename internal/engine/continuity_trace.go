@@ -42,17 +42,10 @@ func (e *Engine) effectiveResponseContract() ResponseContract {
 }
 
 func (e *Engine) markMemoryUpdateSource(source string) {
-	if e == nil {
+	if e == nil || source != memoryUpdateStructured {
 		return
 	}
-	// Two tiers, not four: the "excerpt" and "compactor" tiers were produced only
-	// by the ConversationDigest writers, which are gone. The highest-wins shape is
-	// kept because that is the contract — a turn reports its strongest memory
-	// write, not its last one.
-	priority := map[string]int{memoryUpdateNone: 0, memoryUpdateStructured: 1}
-	if priority[source] > priority[e.memoryUpdateSourceThisTurn] {
-		e.memoryUpdateSourceThisTurn = source
-	}
+	e.memoryUpdateSourceThisTurn = memoryUpdateStructured
 }
 
 func normalizedMemoryUpdateSource(source string) string {

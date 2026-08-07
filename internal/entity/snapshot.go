@@ -27,12 +27,7 @@ type InstanceSnapshot struct {
 }
 
 // InstanceFromMap parses a single DescribeCompShareInstance UHostSet[i]
-// row into a typed InstanceSnapshot. Exported for use by engine M2
-// ToolFact writer (internal/engine/session_state.go), which extracts
-// instance_state facts from raw tool results without going through the
-// EntityRegistry's full Sync (LLM-driven calls only mark the registry
-// invalidated; the registry is not necessarily fresh by the time the
-// fact is recorded).
+// row into a typed InstanceSnapshot for selection and workflow validation.
 func InstanceFromMap(row map[string]any) InstanceSnapshot {
 	return instanceFromMap(row)
 }

@@ -16,8 +16,8 @@ import (
 // TestDispatchChat_EmitsStepEvents verifies that tool calls during the ReAct
 // loop produce event:step SSE frames with the projected stepEvent fields.
 func TestDispatchChat_EmitsStepEvents(t *testing.T) {
-	llmFake := &factWritingLLM{}
-	eng := engine.NewWithDeps(llmFake, factWritingExecutor{}, denyConfirm)
+	llmFake := &toolTurnLLM{}
+	eng := engine.NewWithDeps(llmFake, toolTurnExecutor{}, denyConfirm)
 	eng.RehydrateHistory(nil)
 
 	sess := store.Session{
@@ -87,8 +87,8 @@ func TestStepTypeString(t *testing.T) {
 // TestDispatchChat_StepEventsAppearBeforeDone verifies ordering: all step
 // events must precede the done event in the SSE stream.
 func TestDispatchChat_StepEventsAppearBeforeDone(t *testing.T) {
-	llmFake := &factWritingLLM{}
-	eng := engine.NewWithDeps(llmFake, factWritingExecutor{}, denyConfirm)
+	llmFake := &toolTurnLLM{}
+	eng := engine.NewWithDeps(llmFake, toolTurnExecutor{}, denyConfirm)
 	eng.RehydrateHistory(nil)
 
 	sess := store.Session{
@@ -111,8 +111,8 @@ func TestDispatchChat_StepEventsAppearBeforeDone(t *testing.T) {
 }
 
 func TestDispatchChatTraceRecordsAgentExecutionPathForToolCall(t *testing.T) {
-	llmFake := &factWritingLLM{}
-	eng := engine.NewWithDeps(llmFake, factWritingExecutor{}, denyConfirm)
+	llmFake := &toolTurnLLM{}
+	eng := engine.NewWithDeps(llmFake, toolTurnExecutor{}, denyConfirm)
 	eng.RehydrateHistory(nil)
 
 	sess := store.Session{

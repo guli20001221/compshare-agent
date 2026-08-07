@@ -231,10 +231,8 @@ func TestFinalizeOutcome_IntermediateRateLimitDoesNotOverrideSuccessfulCompletio
 	rec := TraceRecord{
 		RateLimit: RateLimitTrace{Checked: true, Allowed: false, Action: "grounded_renderer"},
 		Completion: TurnCompletionTrace{
-			Class:           CompletionClassDeterministicAnswer,
-			Reason:          CompletionReasonDirectDispatch,
-			ContextDecision: CompletionDecisionNotInvoked,
-			ToolScope:       "named",
+			Class:  CompletionClassDeterministicAnswer,
+			Reason: CompletionReasonDirectDispatch,
 		},
 	}
 	rec.FinalizeOutcome(FinishSignals{})
@@ -247,10 +245,8 @@ func TestFinalizeOutcome_TerminalRateLimitUsesCompletion(t *testing.T) {
 	rec := TraceRecord{
 		RateLimit: RateLimitTrace{Checked: true, Allowed: false, Action: "main_react_chat"},
 		Completion: TurnCompletionTrace{
-			Class:           CompletionClassSafetyBlock,
-			Reason:          CompletionReasonRateLimit,
-			ContextDecision: CompletionDecisionNotInvoked,
-			ToolScope:       "read_only_full",
+			Class:  CompletionClassSafetyBlock,
+			Reason: CompletionReasonRateLimit,
 		},
 	}
 	rec.FinalizeOutcome(FinishSignals{})

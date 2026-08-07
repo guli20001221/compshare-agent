@@ -315,7 +315,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"pendingResourceSelection":         true,
 		"readExpensiveCallsThisTurn":       true,
 		"lastConfirmationAcceptedThisCall": true,
-		"deferTaskCarryThisTurn":           true,
 		// Per-turn agentic SearchKnowledge state (P3): whether the tool ran this
 		// turn and the hits it returned, used by the final-answer citation check.
 		// Per-session by design — sharing would check one tenant's answer against
@@ -336,33 +335,25 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// current Engine turn. Sharing this map would authorize a cross-tenant
 		// ReadChunk against another user's search result.
 		"searchKnowledgeCapabilitiesThisTurn": true,
-		// Per-turn SearchKnowledge budgets: calls counts the agent's decisions to
-		// search (feeds the agent-loop search cap that withdraws the tool);
-		// queries counts the retrievals those calls cost, including the planner's
-		// per-call fan-out. Both per-session/per-turn by design — a shared counter
-		// would let one tenant's searches withdraw the tool from another's turn.
-		// Reset every turn.
+		// Per-turn SearchKnowledge budget. A shared counter would let one
+		// tenant's searches withdraw the tool from another tenant's turn.
 		"searchKnowledgeCallsThisTurn":   true,
 		"searchKnowledgeQueriesThisTurn": true,
+		// The planner's standalone answer target is turn-local. Sharing it would
+		// let one tenant's follow-up retrieval change another tenant's grounding
+		// question even if their evidence sets were distinct.
+		"resolvedKnowledgeQuestionThisTurn": true,
 		// Per-turn ChunkID-keyed evidence ledger (#126), the union of this turn's
 		// SearchKnowledge items, consumed by the grounded-answer cite validator.
 		// Per-session by design — same cross-tenant-leak reasoning as the hits
 		// above. Reset every turn.
 		"searchKnowledgeLedgerThisTurn": true,
-		// Stable standalone question formulated from the full conversation. It is
-		// turn-local and must never cross tenants or turns.
-		"resolvedKnowledgeQuestionThisTurn": true,
 		// Per-turn reference-ledger observability state: tracks SearchKnowledge
 		// activity ids and which chunks came from each activity. Sharing would
 		// cross-link one tenant's citations to another tenant's retrieval trace.
 		// Reset every turn.
 		"searchKnowledgeActivitiesThisTurn":   true,
 		"searchKnowledgeActivityIDsByChunkID": true,
-		// Scoped to the forced hop's own retrieval so the query planner expands
-		// that query instead of de-referencing it. Left set across sessions it
-		// would apply the expander to another tenant's Agent-issued search.
-		// Cleared immediately after the call, and reset every turn.
-		"forcedHopSearchInFlight": true,
 		// Per-turn knowledge_qa route marker.
 		// Per-session by design — it carries the turn-scoped cite-or-refuse coupling and
 		// the runtime-form projection; sharing it would cross one tenant's route decision
@@ -388,19 +379,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"hardBlockTraceThisTurn":        true,
 		// Per-turn instance-binding observables (#3 StateTrace). Per-session/
 		// per-turn by design — sharing would attribute one tenant's bound
-		// instance / fact-cache age to another's turn. Reset every turn.
-		"selectedInstanceIDAtTurnStart":     true,
-		"instanceResolutionSourceThisTurn":  true,
-		"factCacheOldestAgeSecondsThisTurn": true,
-		"rendererTraceObserver":             true,
-		// Per-session: whether this session's history was ever trimmed/compacted.
-		// Leaking it across sessions would report a fresh session as already-trimmed.
-		"historyTrimmedThisSession":  true,
-		"retrievalTraceObserver":     true,
-		"freshnessTraceObserver":     true,
-		"diagnosisTraceObserver":     true,
-		"outcomeTraceObserver":       true,
-		"authorizationTraceObserver": true,
+		// instance to another's turn. Reset every turn.
+		"selectedInstanceIDAtTurnStart":    true,
+		"instanceResolutionSourceThisTurn": true,
+		"rendererTraceObserver":            true,
+		"retrievalTraceObserver":           true,
+		"freshnessTraceObserver":           true,
+		"diagnosisTraceObserver":           true,
+		"outcomeTraceObserver":             true,
+		"authorizationTraceObserver":       true,
 		// Confirmation outcomes are turn-scoped transport facts. Sharing this
 		// observer would append one tenant's card result to another's trace.
 		"confirmationTraceObserver": true,
@@ -441,9 +428,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"promptMessagesRawPeakThisTurn":       true,
 		"promptMessagesAssembledPeakThisTurn": true,
 		"promptMessagesCapAppliedThisTurn":    true,
-		"sessionFactContextEnabled":           true,
 		"reactResultProjectionEnabled":        true,
-		"reactHistoryCompactionEnabled":       true,
 		"verifiedInstanceEvidenceThisTurn":    true,
 		"platformReadEvidenceThisTurn":        true,
 		"sensitiveRepliesThisTurn":            true,
@@ -492,60 +477,17 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"recentTurns": true,
 	}
 
-	// 7 -> 6: supportsObjectToolChoice, deleted with the static llm.Capability
-	// table. It was shared because it described the MODEL, not the session.
+	// The fixed counts make an unclassified Engine field fail even when it is
+	// accidentally omitted from both maps.
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	// 80 -> 81 / 87 -> 88: searchKnowledgeQueriesThisTurn was added when the
-	// SearchKnowledge budget was split into calls (anti-thrash) and retrievals
-	// (cost). It is per-turn, per-session, and reset alongside its sibling.
-	// 81 -> 82 / 88 -> 89: answerEchoedChunkIDThisTurn, the telemetry left behind
-	// when the verbatim-dump guard was retired.
-	// 82 -> 84 / 89 -> 91: readChunkCallsThisTurn + readChunkIDsThisTurn, the
-	// ReadChunk full-body budget and its already-read set.
-	// 84 -> 87 / 91 -> 94: the in-instance SSH-ops lane — instanceOps (the runner),
-	// instanceOpsRanThisTurn (per-turn self-selection latch) and currentTurnID
-	// (evidence-binding id).
-	// 87 -> 88 / 94 -> 95: verbatimBlocksThisTurn, added on main by #471 when the
-	// billing exit stopped terminating the turn (verbatimReplyPrefix) and its
-	// rendered text had to be carried to the turn's single composition site.
-	// 88 -> 89 / 95 -> 96: forcedHopSearchInFlight, the scope marker that routes
-	// the forced hop's own query through the expanding planner.
-	// Three lanes grew the struct independently off the same 84/91 base (SSH-ops
-	// +3, #471 +1, forced-hop expansion +1), so the merged counts are the SUM of
-	// every delta — not any single side's number. Taking one side's figure is how
-	// this test goes green while silently dropping another side's field from the
-	// leak whitelist.
-	// 89 -> 90 / 96 -> 97: committedWriteRepliesThisTurn, the model-free record of
-	// writes that already landed, added so an LLM outage after a commit stops
-	// being reported to the user as "未创建成功".
-	// 90 -> 91 / 97 -> 98: knowledgeOnlyThisTurn is the execution-time
-	// authorization reduction for public chat adapters.
-	// 91 -> 93 / 98 -> 100: lastTurnTranscript + lastTurnTranscriptStats, the
-	// canonical agent_transcript_v1 record produced at every turn exit for the
-	// shadow write. Two fields, one lane — the payload and the outcome that says
-	// whether it was written, kept together so a rollout cannot read one without
-	// the other.
-	// 93 -> 94 / 100 -> 101: recentTurns, the recorded exchanges the canonical
-	// transcript is replayed from. Appended by the hot engine at turn exit and by
-	// a cold rebuild from the persisted rows, so both agree by construction.
-	// 94 -> 95 / 100 -> 101: confirmationTraceObserver records this turn's
-	// human confirmation outcomes and must never be shared across sessions.
-	// 95 -> 96 / 101 -> 102: searchKnowledgeCapabilitiesThisTurn binds a
-	// remote MCP search_id only to this Engine's active turn.
-	// 96 -> 97 / 102 -> 103: platformReadEvidenceThisTurn and
-	// sensitiveRepliesThisTurn replace the old mixed read-response state. The
-	// first is proof only; the second is the narrow credential-delivery lane.
-	// 97 -> 98 / 103 -> 104: feishuConsoleHandoffThisTurn is the adapter-only
-	// completion contract and is reset with knowledgeOnlyThisTurn after every
-	// ChatWithOptions call.
-	if want, got := 98, len(perSessionFields); want != got {
+	if want, got := 92, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 104, typ.NumField(); want != got {
+	if want, got := 98, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

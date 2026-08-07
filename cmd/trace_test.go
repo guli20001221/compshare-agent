@@ -86,49 +86,6 @@ func TestTraceWriterFromEnvEnabled(t *testing.T) {
 	}
 }
 
-func TestDomainMatchGuardEnabledFromEnv_DefaultOff(t *testing.T) {
-	// COMPSHARE_RAG_DOMAIN_MATCH_GUARD is DEFAULT-OFF (#5): the wrong-domain verdict
-	// is always traced, but the refuse arm stays off until a flag-on eval proves
-	// 0 over-refusal. unset/empty/explicit-negative => off; affirmative => on;
-	// unknown => off + non-empty warn string per CLAUDE.md (never silently coerce).
-	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := domainMatchGuardEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off (default-off)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := domainMatchGuardEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := domainMatchGuardEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
-func TestForcedKnowledgeHopEnabledFromEnv(t *testing.T) {
-	// COMPSHARE_FORCED_KNOWLEDGE_HOP is OFF everywhere since 2026-08-01: Go-default
-	// off, and the deploy config omits the key so this env var is what decides. unset/empty/explicit-negative => off; affirmative => on; unknown => off +
-	// non-empty warn string per CLAUDE.md (never silently coerce).
-	off := []string{"", "  ", "0", "off", "OFF", "false", "no", "disabled", "none"}
-	for _, v := range off {
-		got, unknown := forcedKnowledgeHopEnabledFromEnv(func(string) string { return v })
-		require.Falsef(t, got, "value %q should be off (default-off)", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	on := []string{"1", "on", "ON", "true", "TRUE", "yes", " On "}
-	for _, v := range on {
-		got, unknown := forcedKnowledgeHopEnabledFromEnv(func(string) string { return v })
-		require.Truef(t, got, "value %q should enable", v)
-		require.Emptyf(t, unknown, "value %q should not warn", v)
-	}
-	got, unknown := forcedKnowledgeHopEnabledFromEnv(func(string) string { return "maybe" })
-	require.False(t, got, "unknown value treated as off")
-	require.Equal(t, "maybe", unknown, "unknown value surfaced for caller warning")
-}
-
 func TestMultiTraceWriterEnqueuePreservesTenantForMySQLLikeSink(t *testing.T) {
 	fileSink := &captureAppendWriter{}
 	mysqlSink := &captureEnqueueWriter{}
@@ -187,39 +144,6 @@ func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
 	require.Equal(t, "yes", unknown)
 }
 
-func TestSessionFactContextEnabledFromEnv(t *testing.T) {
-	enabled, unknown := sessionFactContextEnabledFromEnv(func(string) string { return "" })
-	require.False(t, enabled)
-	require.Empty(t, unknown)
-
-	enabled, unknown = sessionFactContextEnabledFromEnv(func(key string) string {
-		if key == "USE_SESSION_FACT_CONTEXT" {
-			return "0"
-		}
-		return ""
-	})
-	require.False(t, enabled)
-	require.Empty(t, unknown)
-
-	enabled, unknown = sessionFactContextEnabledFromEnv(func(key string) string {
-		if key == "USE_SESSION_FACT_CONTEXT" {
-			return "1"
-		}
-		return ""
-	})
-	require.True(t, enabled)
-	require.Empty(t, unknown)
-
-	enabled, unknown = sessionFactContextEnabledFromEnv(func(key string) string {
-		if key == "USE_SESSION_FACT_CONTEXT" {
-			return "yes"
-		}
-		return ""
-	})
-	require.False(t, enabled)
-	require.Equal(t, "yes", unknown)
-}
-
 func TestReactResultProjectionEnabledFromEnv(t *testing.T) {
 	enabled, unknown := reactResultProjectionEnabledFromEnv(func(string) string { return "" })
 	require.False(t, enabled)
@@ -245,39 +169,6 @@ func TestReactResultProjectionEnabledFromEnv(t *testing.T) {
 
 	enabled, unknown = reactResultProjectionEnabledFromEnv(func(key string) string {
 		if key == "USE_REACT_RESULT_PROJECTION" {
-			return "yes"
-		}
-		return ""
-	})
-	require.False(t, enabled)
-	require.Equal(t, "yes", unknown)
-}
-
-func TestReactHistoryCompactionEnabledFromEnv(t *testing.T) {
-	enabled, unknown := reactHistoryCompactionEnabledFromEnv(func(string) string { return "" })
-	require.False(t, enabled)
-	require.Empty(t, unknown)
-
-	enabled, unknown = reactHistoryCompactionEnabledFromEnv(func(key string) string {
-		if key == "USE_REACT_HISTORY_COMPACTION" {
-			return "0"
-		}
-		return ""
-	})
-	require.False(t, enabled)
-	require.Empty(t, unknown)
-
-	enabled, unknown = reactHistoryCompactionEnabledFromEnv(func(key string) string {
-		if key == "USE_REACT_HISTORY_COMPACTION" {
-			return "1"
-		}
-		return ""
-	})
-	require.True(t, enabled)
-	require.Empty(t, unknown)
-
-	enabled, unknown = reactHistoryCompactionEnabledFromEnv(func(key string) string {
-		if key == "USE_REACT_HISTORY_COMPACTION" {
 			return "yes"
 		}
 		return ""

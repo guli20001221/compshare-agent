@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/compshare-agent/internal/security"
 )
@@ -37,42 +36,6 @@ func safeContextItems(in []string) []string {
 		}
 	}
 	return out
-}
-
-// staleObservationNotices is what survives of the RecentFacts projection.
-//
-// The per-fact SUMMARY it used to build (rendered as 近期可信观测) restated a tool
-// result the canonical transcript now replays verbatim, so it was a second and
-// lossier copy and it is gone. The staleness notice is the opposite case: the
-// transcript carries the ORIGINAL tool output, and that output has no expiry in
-// it. Only the fact's TTL knows the value has since gone stale, so with the
-// transcript on this notice is needed MORE than before, not less — it is the
-// only thing standing between a replayed stock or price number and the model
-// quoting it as current.
-func staleObservationNotices(facts []ToolFact, now time.Time, notices []string) []string {
-	if len(facts) == 0 {
-		return notices
-	}
-	limit := len(facts)
-	if limit > maxAgentContextObservations {
-		limit = maxAgentContextObservations
-	}
-	for _, fact := range facts[:limit] {
-		freshness := fact.Freshness
-		if freshness == "" {
-			freshness = continuityFreshness(fact.ProducedAtUnix, fact.TTLSeconds, now)
-		}
-		if freshness == ContinuityFreshnessFresh {
-			continue
-		}
-		kind := safeContextText(fact.Kind)
-		subject := safeContextText(fact.SubjectID)
-		if kind == "" && subject == "" {
-			continue
-		}
-		notices = append(notices, fmt.Sprintf("历史观测 %s %s 已过期或不再新鲜，当前值必须重新查询", subject, kind))
-	}
-	return compactSemanticItems(notices)
 }
 
 func safeContextText(value string) string {

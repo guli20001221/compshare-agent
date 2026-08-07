@@ -83,10 +83,10 @@ agent:
     guided_create: true
     # Agentic knowledge answering is a fixed runtime capability: retrieval is
     # chosen in-loop and every released knowledge answer uses the shared proof.
-    # Context-engineering optimizations.
-    session_fact_context: true          # trace label only — decides whether the turn's binding is traced as fact_cache; injects nothing
-    react_result_projection: true       # compress large read tool results before re-feeding ReAct
-    react_history_compaction: true      # deterministic history trim past maxRawHistoryRunes (a SIZE since 2026-08-05, not the old 120-message count); no longer summarizes — the digest producer is deleted
+    # Keep large read results concise before returning them to the Agent. History
+    # itself is bounded by the runtime's token budgets, not by a second feature
+    # flag or semantic summary layer.
+    react_result_projection: true
     # ON since 2026-08-04. One switch owns the whole transcript pipeline: the
     # turn's messages, tool calls and tool results are captured, persisted to
     # messages.metadata (agent_transcript_v1) and replayed to the model, instead
@@ -97,10 +97,11 @@ agent:
     # the pending selection card, and this turn's continuity notices.
     #
     # The semantic layer it replaced is now DELETED, not suppressed:
-    # ConversationDigest (with its producer and persisted field), RecentFacts and
-    # VerifiedKnowledge no longer reach the model in either flag position, and
-    # VerifiedKnowledge survives only as evidence the answer verifier checks
-    # against. TaskSnapshot is deleted too. The state that remains is only
+    # ConversationDigest (with its producer and persisted field), RecentFacts,
+    # and VerifiedKnowledge no longer reach the model in either flag position.
+    # RecentFacts is deleted entirely; VerifiedKnowledge survives only as
+    # evidence the answer verifier checks against. TaskSnapshot is deleted too.
+    # The state that remains is only
     # execution workflow state: the creation form, confirmation, idempotency and
     # write-side target binding; none of it is a second semantic memory.
     #
@@ -123,47 +124,10 @@ agent:
     # (100000) is what keeps one assembled request inside the context window on a
     # high-fanout tool turn.
     #
-    # FLIPPING IT (a migration switch, not a rollback — see above; false does NOT
-    # restore the deleted semantic layer): set this to false and RESTART. NOT via
-    # the environment — see the forced_knowledge_hop note below: an explicit value
-    # here out-ranks os.Getenv (internal/config/runtime.go), so
-    # COMPSHARE_CANONICAL_TRANSCRIPT=0 would silently do nothing while this key is
-    # present. Boot-only either way; engine.SetCanonicalTranscriptEnabled freezes
-    # it once at startup.
+    # This is boot-only. An explicit YAML value wins over the environment, so
+    # change this field and restart; setting only the environment has no effect
+    # while the field is present.
     canonical_transcript: true
-    # Eval-gated / pilot flags. Keep unvalidated guards OFF; explicitly enable
-    # guards only when their flag-on path is the validated production path.
-    domain_match_guard: false           # wrong-domain REFUSE arm (#5 cite-relevance)
-    # OFF since 2026-08-01. It fired on 100% of turns to serve a narrow slice:
-    # in 4348 real questions, statement-form-needing-knowledge — the shape it was
-    # built for — is 3.4% of traffic, while 43.7% are questions that retrieve on
-    # their own anyway. Measured cost is unconditional: a 6-shape x N=5 live A/B
-    # (terra) ran 4.7x the SearchKnowledge calls and +39.6% wall clock for the
-    # same work. The benefit is real but small and the instrument is not
-    # targetable — there is no pre-model classifier to narrow it to that 3.4%
-    # (P6 removed the intent router), and adding one would rebuild the semantic
-    # pre-decision layer this program is dismantling. The model calls
-    # SearchKnowledge itself; let it.
-    #
-    # ROLLBACK: set COMPSHARE_FORCED_KNOWLEDGE_HOP=1 and RESTART. This is a
-    # boot-only flag — engine.SetForcedKnowledgeHopEnabled freezes it once at
-    # startup, so a running process will not pick the change up. It avoids
-    # editing YAML or shipping code, not a restart.
-    #
-    # Deliberately COMMENTED OUT rather than set to false. putBoolEnv records a
-    # non-nil *bool unconditionally, and RuntimeGetenv consults that overlay
-    # BEFORE os.Getenv (internal/config/runtime.go:155,167) — so an explicit
-    # `false` here out-ranks the environment and COMPSHARE_FORCED_KNOWLEDGE_HOP=1
-    # would silently do nothing, which is what cmd/runtime_overlay_test.go:54
-    # pins. Omitting the key leaves the pointer nil, no override is written, and
-    # the env var decides. Unset still parses to off, so shipped behaviour is
-    # identical; the only difference is that the documented rollback works.
-    # forced_knowledge_hop: false
-    # INERT — parsed and forwarded, but nothing reads the overrides they emit;
-    # the body-driven skill executor these gated no longer exists. Kept so an
-    # older config file still loads. Setting either changes no behavior.
-    skill_executor: false
-    skill_executor_diagnosis_pilots: []
 
   # Knowledge retrieval. Query evidence now comes from the separately deployed
   # compshare-kb service; this agent image no longer carries corpus JSONL,

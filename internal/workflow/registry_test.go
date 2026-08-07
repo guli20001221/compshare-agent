@@ -33,9 +33,11 @@ func TestRegisteredWorkflowActionsMatchRegistry(t *testing.T) {
 		assert.False(t, seen[action], "duplicate workflow action %s", action)
 		seen[action] = true
 	}
-	assert.Len(t, actions, len(workflowRegistry), "registered workflow action list must match registry size")
-	for action := range workflowRegistry {
-		assert.True(t, seen[action], "workflow action %s missing from stable list", action)
+	assert.Len(t, actions, len(workflowRegistrations), "registered workflow action list must match registry size")
+	for _, item := range workflowRegistrations {
+		assert.True(t, seen[item.action], "workflow action %s missing from stable list", item.action)
+		assert.NotEmpty(t, StepLabel(item.action), "workflow %s needs a stream label", item.action)
+		assert.NotEmpty(t, ReplyLabel(item.action), "workflow %s needs a reply label", item.action)
 	}
 }
 

@@ -911,12 +911,7 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     mutating_tools: true
     confirm_form: true
     guided_create: true
-    session_fact_context: true
     react_result_projection: true
-    react_history_compaction: true
-    skill_executor_diagnosis_pilots:
-      - diagnose-ssh
-      - diagnose-billing
   retrieval:
     knowledge_retrieval: curated
     mcp_url: http://compshare-kb.example/mcp
@@ -933,8 +928,6 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	f := cfg.Agent.Features
 	require.NotNil(t, f.MutatingTools)
 	assert.True(t, *f.MutatingTools)
-	assert.Nil(t, f.DomainMatchGuard, "omitted bool stays nil (env/default fallback)")
-	assert.Equal(t, []string{"diagnose-ssh", "diagnose-billing"}, f.SkillExecutorDiagnosisPilots)
 
 	assert.Equal(t, "http://compshare-kb.example/mcp", cfg.Agent.Retrieval.MCPURL)
 	assert.Equal(t, "read-only-test-token", cfg.Agent.Retrieval.MCPBearerToken)
@@ -950,7 +943,6 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 		Features: FeaturesConfig{
 			MutatingTools: boolPtr(true), // YAML true → "1"
 			DurableTurns:  boolPtr(true),
-			// SessionFactContext omitted (nil) → falls through to base env
 		},
 		Retrieval: RetrievalConfig{
 			MCPURL:         "http://kb.example/mcp",
@@ -963,8 +955,6 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 
 	base := func(key string) string {
 		switch key {
-		case "USE_SESSION_FACT_CONTEXT":
-			return "1" // env fallback (YAML omitted this field)
 		case "USE_KNOWLEDGE_RETRIEVAL":
 			return "off"
 		case "SOME_UNMAPPED_VAR":
@@ -976,7 +966,6 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
 	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
-	assert.Equal(t, "1", getenv("USE_SESSION_FACT_CONTEXT"), "omitted bool → env fallback")
 	assert.Equal(t, "http://kb.example/mcp", getenv("COMPSHARE_KB_MCP_URL"), "remote knowledge endpoint comes from YAML")
 	assert.Equal(t, "read-only-test-token", getenv("COMPSHARE_KB_MCP_BEARER_TOKEN"), "read-only MCP token comes from YAML")
 	assert.Equal(t, "9000", getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"), "remote knowledge timeout comes from YAML")

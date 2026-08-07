@@ -13,8 +13,8 @@ func boolPtr(b bool) *bool { return &b }
 func emptyBase(string) string { return "" }
 
 // TestRuntimeOverlayFeedsParsersWithoutWarnings verifies the encoding chosen by
-// config.RuntimeGetenv (on="1"; off="0" except mutating_tools/skill_executor
-// whose off=="") is consumed cleanly by the cmd/ *FromEnv parsers — i.e. an
+// config.RuntimeGetenv (on="1"; off="0" except mutating_tools, whose off=="")
+// is consumed cleanly by the cmd/ *FromEnv parsers — i.e. an
 // explicit YAML value resolves to the right bool AND never produces the
 // non-empty "unknown value" warning string. This is the contract that lets the
 // whole flag layer keep reading through a single getenv after the YAML migration.
@@ -41,25 +41,5 @@ func TestRuntimeOverlayFeedsParsersWithoutWarnings(t *testing.T) {
 		}
 		enabled, _ := mutatingToolsEnabledFromEnv(cfg.RuntimeGetenv(base))
 		assert.True(t, enabled, "YAML omitted → env fallback applies")
-	})
-	// forced_knowledge_hop is the flag the deploy config flips on: prove the YAML
-	// field reaches the boot parser through RuntimeGetenv (true encodes to "1", read
-	// cleanly), and that an explicit YAML false wins over a set env var.
-	t.Run("forced_knowledge_hop on reaches parser", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{ForcedKnowledgeHop: boolPtr(true)}}}
-		enabled, unknown := forcedKnowledgeHopEnabledFromEnv(cfg.RuntimeGetenv(emptyBase))
-		assert.True(t, enabled, "YAML forced_knowledge_hop: true must reach the boot parser")
-		assert.Empty(t, unknown)
-	})
-	t.Run("forced_knowledge_hop explicit false wins over env", func(t *testing.T) {
-		cfg := &config.Config{Agent: config.AgentConfig{Features: config.FeaturesConfig{ForcedKnowledgeHop: boolPtr(false)}}}
-		base := func(key string) string {
-			if key == "COMPSHARE_FORCED_KNOWLEDGE_HOP" {
-				return "1"
-			}
-			return ""
-		}
-		enabled, _ := forcedKnowledgeHopEnabledFromEnv(cfg.RuntimeGetenv(base))
-		assert.False(t, enabled, "explicit YAML false must override the env var")
 	})
 }

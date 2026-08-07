@@ -75,8 +75,8 @@ graph TD
 一轮请求走同一外层骨架,这是一条 short-circuit 链,前一层命中就直接返回:
 
 1. **输入守卫** — 命中拦截规则(越狱 / off-topic / 特定关键词)→ 直接返回固定话术,不进 LLM。
-2. **上下文装配** — 恢复未决的实例选择、注入近端事实缓存与压缩历史,编译成 `AgentContext`。
-3. **中心 Agent 循环**(`maxReActRounds=16`,原始历史按尺寸而非条数收敛 `maxRawHistoryRunes`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=30`;检索另有两层预算:`maxSearchKnowledgeCallsPerTurn=4` 管"决定检索几次",`maxRetrievalQueriesPerTurn=8` 管"实际发出几条 query"——一次决策会扇出多条),每轮:
+2. **上下文装配** — 恢复未决的实例选择和完整历史，按 token/rune 预算编译成 `AgentContext`。
+3. **中心 Agent 循环**(`maxReActRounds=16`,原始历史按尺寸而非条数收敛 `maxRawHistoryRunes`,每轮读类工具预算 `maxReadExpensiveCallsPerTurn=30`,知识检索预算 `maxSearchKnowledgeCallsPerTurn=4`)，每轮:
    - 选一个 **read capability** → `executeConcreteReadCapability` → `capability.MigratedRead(action)` → `RegisteredRead.Run` → 返回 Typed Observation(见 §5、§7)。
    - 调 **`SearchKnowledge`** → 在循环内检索平台知识 / 排障资料作为证据(见 §8)。
    - 提出**写操作** → Action Resolver 确定性定目标 → Sealed Workflow 暂停等确认(见 §6)。
@@ -119,8 +119,8 @@ RAG 是中心 Agent 在循环内调用的**只读工具** `SearchKnowledge`,不�
 **检索管线**(`internal/knowledge/`,默认 `qwen3_rrf`):
 
 ```
-用户问题 + 必要的对话历史
-  → 结构化问题整理(answer_question + 1~3 条 search_queries;首轮无历史时跳过)
+Agent 依据完整对话历史选择并给出 `SearchKnowledge.query`
+  → 单次检索请求
   → BM25 关键词 top-50  ⊕  qwen3-embedding-8b 向量 top-50   (hybrid 召回)
   → Reciprocal Rank Fusion 融合 (k=60)
   → qwen3-reranker-8b cross-encoder 精排 top-3

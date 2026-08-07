@@ -2,8 +2,6 @@ param(
     [string]$CasesPath = "",
     [string]$Tag = "context-prompt",
     [switch]$EnableProjection,
-    [switch]$EnableHistoryCompaction,
-    [switch]$EnableSessionFactContext,
     [switch]$SkipBuild,
     [ValidateSet("0", "1")][string]$Mutating = "1",
     [string]$ReportPath = ""
@@ -113,8 +111,6 @@ $env:COMPSHARE_TRACE_ENABLED = "1"
 $env:MYSQL_DSN = ""
 $env:COMPSHARE_ENABLE_MUTATING_TOOLS = $Mutating
 $env:USE_REACT_RESULT_PROJECTION = $(if ($EnableProjection) { "1" } else { "" })
-$env:USE_REACT_HISTORY_COMPACTION = $(if ($EnableHistoryCompaction) { "1" } else { "" })
-$env:USE_SESSION_FACT_CONTEXT = $(if ($EnableSessionFactContext) { "1" } else { "" })
 if (-not $env:COMPSHARE_PROJECT_ID) {
     $env:COMPSHARE_PROJECT_ID = "org-cwy2qk"
 }
@@ -224,8 +220,6 @@ $summary = [PSCustomObject]@{
     trace_dir = $baseDir
     flags = [PSCustomObject]@{
         use_react_result_projection = [bool]$EnableProjection
-        use_react_history_compaction = [bool]$EnableHistoryCompaction
-        use_session_fact_context = [bool]$EnableSessionFactContext
         compshare_enable_mutating_tools = $Mutating
     }
     token_totals = [PSCustomObject]@{

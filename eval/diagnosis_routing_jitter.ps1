@@ -37,7 +37,6 @@ if (-not (Test-Path $agentExe)) {
 $env:COMPSHARE_PROJECT_ID = "org-cwy2qk"
 $env:COMPSHARE_ENABLE_MUTATING_TOOLS = ""
 $env:USE_INTENT_PLANNER_FOR = ""
-$env:USE_SKILL_EXECUTOR = ""
 $env:MYSQL_DSN = ""
 $env:COMPSHARE_TRACE_ENABLED = "1"
 

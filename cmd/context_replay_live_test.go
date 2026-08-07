@@ -22,11 +22,10 @@ import (
 
 // Context-dependence replay harness.
 //
-// WHAT IT MEASURES. Whether suppressing the semantic-memory layer
-// (ConversationDigest / RecentFacts / VerifiedKnowledge) changes
-// the answer to a follow-up that can only be understood in context. That is the
-// question step 4 of the canonical-transcript program has to answer before those
-// structures are deleted.
+// WHAT IT MEASURES. Whether replaying canonical tool transcript history changes
+// the answer to a follow-up that can only be understood in context. The former
+// semantic-memory layer has been deleted; this harness remains useful for
+// checking a transcript rollout against the plain-history baseline.
 //
 // WHY IT REPLAYS ONLY USER TURNS. The July corpus predates agent_transcript_v1,
 // so the stored assistant/tool rows carry no transcript. Rehydrating them and
@@ -101,8 +100,8 @@ type replayTurn struct {
 	// ConfirmAsked records write proposals the agent made. The replay always
 	// denies them, but whether it ASKED is a trajectory difference worth seeing.
 	ConfirmAsked []string `json:"confirm_asked,omitempty"`
-	Err       string   `json:"err,omitempty"`
-	Millis    int64    `json:"millis"`
+	Err          string   `json:"err,omitempty"`
+	Millis       int64    `json:"millis"`
 }
 
 // accountStateTool marks a tool whose result depends on live account state that

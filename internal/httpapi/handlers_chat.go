@@ -411,7 +411,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			ResolutionSource:              agent.InstanceResolutionSource(),
 			SelectedInstanceID:            sessState.SelectedInstanceID,
 			SelectedInstanceIDAtTurnStart: agent.SelectedInstanceIDAtTurnStart(),
-			FactCacheOldestAgeBucket:      observability.BucketFactCacheAge(agent.FactCacheOldestAgeSeconds()),
 		})
 		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
 			log.Printf("warning: HTTP trace write failed: %v", traceErr)

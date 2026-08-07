@@ -2,7 +2,6 @@ package engine
 
 import (
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 )
 
 // SetTurnCompletionObserver wires the one-per-turn final control-flow record.
@@ -45,10 +44,8 @@ func (e *Engine) emitTurnCompletion() {
 	e.turnCompletionEmittedThisTurn = true
 
 	trace := observability.TurnCompletionTrace{
-		ModelCalls:      e.turnModelCallsThisTurn,
-		ContextDecision: observability.CompletionDecisionNotInvoked,
-		ToolScope:       string(tools.ToolScopeNamed),
-		ToolNames:       centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
+		ModelCalls: e.turnModelCallsThisTurn,
+		ToolNames:  centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
 	}
 
 	trace.Class, trace.Reason = e.classifyTurnCompletion()

@@ -19,19 +19,9 @@ import (
 // Normal/SoldOut status, but a matched-model turn runs a multi-call capacity
 // precheck (support zones + a probe image + a per-model /
 // per-zone CheckCompShareResourceCapacity) with graceful partial-failure
-// handling. The typed request carries the GPU name + zone, and that request is
-// now the ONLY thing the filter comes from.
-//
-// It used to have a second source. When gpu_type was empty the runtime supplied
-// FallbackGPUModel — the model a PRIOR stock turn resolved to, carried across
-// turns in session state — so that 「现在还有吗」 filtered to that card instead of
-// listing everything (RC017). That is the server remembering what the user meant
-// and editing the model's arguments to match, which is a second semantic memory
-// beside the canonical transcript and a tool call whose effective parameters are
-// not the ones the model sent. The transcript replays the earlier stock turn's
-// call and result verbatim, so the model can read the card name out of its own
-// history and pass it; when it does not, an unfiltered listing is the honest
-// answer to an unfiltered request.
+// handling. The typed request is the only filter source. Follow-up context is
+// handled by the model from canonical transcript, never by server-side argument
+// rewriting.
 
 const (
 	stockCapabilityLabel = string(intent.IntentStockAvailability)
@@ -75,10 +65,6 @@ func (StockAvailabilityRequest) MissingFields() []platform.MissingField { return
 // StockAvailabilityResponse carries the rendered reply and the optional evidence
 // envelope (only the plain-listing path builds one). The source fan-out lives in
 // the handler, so the renderer is a trivial projection of the response.
-//
-// It also carried ResolvedGPUModel, the single model a turn resolved to, whose
-// only purpose was to be written back into session state as the next turn's
-// implicit filter. Nothing reads it now.
 type StockAvailabilityResponse struct {
 	Reply    string
 	Envelope *envelope.Envelope

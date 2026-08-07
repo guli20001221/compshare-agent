@@ -110,9 +110,8 @@ func TestRenderMonitorSummaryEmptyIsNoValues(t *testing.T) {
 	assert.Equal(t, "未返回监控数据。", RenderMonitorSummary(nil, map[string]any{}))
 }
 
-// TestExtractMonitorScalarsSharesRendererVocabulary pins that the engine
-// ToolFact writer's scalar keys match the renderer vocabulary (cpu_usage,
-// gpu_usage, …) — the single-source guarantee behind re-pointing the writer.
+// TestExtractMonitorScalarsSharesRendererVocabulary pins the scalar keys used
+// by monitor rendering and read-side instance reference tracking.
 func TestExtractMonitorScalarsSharesRendererVocabulary(t *testing.T) {
 	scalars := ExtractMonitorScalars(monitorAPIResult(), nil)
 

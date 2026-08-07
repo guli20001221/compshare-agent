@@ -24,10 +24,8 @@ import (
 // while a read is one chunk the agent asked for.
 const (
 	// maxReadChunkCallsPerTurn bounds how many times the agent may read this turn.
-	// A read is not a retrieval, so it is NOT charged to maxRetrievalQueriesPerTurn:
-	// that budget prices search/rerank round-trips, while a read is a separately
-	// bounded evidence-body fetch (remote MCP in production) with its own context
-	// cap. Mixing them would let reading starve the multi-hop search it serves.
+	// It is separate from the SearchKnowledge call budget because a body fetch has
+	// its own context cost and must not withdraw search from the tool window.
 	maxReadChunkCallsPerTurn = 2
 	maxReadChunkIDsPerCall   = 3
 	// maxReadChunkRunesPerCall bounds the total body text one call returns. The

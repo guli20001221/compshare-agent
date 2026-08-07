@@ -38,8 +38,6 @@ type AgentContext struct {
 // the owner name. It is not a second representation.
 type TurnContextView = AgentContext
 
-const maxAgentContextObservations = 8
-
 // measuredContextWindowFloorTokens is a LOWER BOUND on gpt-5.6-terra's context
 // window, established by probe rather than by a published figure: on 2026-08-05 a
 // 130,000-rune CJK prompt was accepted and billed 130,006 prompt tokens. That
@@ -162,11 +160,6 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	if e.continuityAdvisories.ReadOnly {
 		view.ContinuityNotices = compactSemanticItems(append(view.ContinuityNotices, "本轮上下文只读，不得执行写操作"))
 	}
-	view.ContinuityNotices = staleObservationNotices(
-		e.sessionState.RecentFacts,
-		buildAt,
-		view.ContinuityNotices,
-	)
 	if !isPersistedSelectionExpired(buildAt.Unix(), e.sessionState) {
 		for _, item := range e.sessionState.PendingSelectionItems {
 			view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{

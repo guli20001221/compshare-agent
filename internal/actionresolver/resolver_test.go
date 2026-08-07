@@ -1,7 +1,6 @@
 package actionresolver
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/workflow"
@@ -25,20 +24,16 @@ func TestCatalogDeclaresEveryWorkflowFromAuthoritativeRegistries(t *testing.T) {
 	}
 }
 
-func TestCatalogDescriptionReflectsWorkflowGuidedIntake(t *testing.T) {
+func TestCatalogDescriptionContainsOnlyItsCapabilityBoundary(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
 	for _, operation := range catalog.Operations() {
-		definition, ok := workflow.GetWorkflow(operation)
-		require.True(t, ok, operation)
 		spec, ok := catalog.Lookup(operation)
 		require.True(t, ok, operation)
-		if definition.GuidedIntake {
-			require.Contains(t, spec.AgentDescription, "缺项→引导卡", operation)
-			continue
+		require.Contains(t, spec.AgentDescription, "调用/边界：", operation)
+		for _, repeated := range []string{"接续：", "失败：", "输入示例"} {
+			require.NotContains(t, spec.AgentDescription, repeated, operation)
 		}
-		require.Contains(t, spec.AgentDescription, "missing_fields", operation)
-		require.False(t, strings.Contains(spec.AgentDescription, "缺项→引导卡"), operation)
 	}
 }
 

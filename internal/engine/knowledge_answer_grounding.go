@@ -9,6 +9,8 @@ import (
 )
 
 // Large enough to preserve every evidence item shown during one bounded turn.
+// One SearchKnowledge call may fan out into several retrieval queries, so the
+// limit must not be derived from the number of Agent tool calls alone.
 const searchKnowledgeLedgerTurnMaxItems = 256
 
 // resolvedKnowledgeQuestion is the single question used after retrieval. The
@@ -91,7 +93,7 @@ func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report k
 		// verifiedKnowledgeMaxTurns window. An answer grounded purely on prior
 		// evidence therefore stores nothing new — which is the intended outcome:
 		// that evidence already has an entry, and it should age out on its own.
-		e.rememberVerifiedKnowledge(resolved, display, e.currentTurnEvidenceLedger(resolved))
+		e.rememberVerifiedKnowledge(resolved, e.currentTurnEvidenceLedger(resolved))
 	}
 	e.groundingOutcomeThisTurn = outcome
 	return display

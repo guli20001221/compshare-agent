@@ -41,7 +41,7 @@ func TestBudgetRecoveryRefusesOnPriorEvidenceAlone(t *testing.T) {
 		{Content: `{"answer":"RTX 4090 按量计费每小时 2.00 元[1]。"}`},
 	}}, &mockExecutor{}, nil)
 	eng.maxTokensPerTurn = 50000
-	eng.rememberVerifiedKnowledge("4090 一小时多少钱", "每小时 2 元。", priorPricingLedger())
+	eng.rememberVerifiedKnowledge("4090 一小时多少钱", priorPricingLedger())
 
 	require.Len(t, eng.sessionState.VerifiedKnowledge, 1,
 		"premise: the prior entry must exist, or this test proves nothing")
@@ -67,7 +67,7 @@ func TestBudgetRecoveryStillDeliversFromThisTurnsEvidence(t *testing.T) {
 		{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。"}`},
 	}}, &mockExecutor{}, nil)
 	eng.maxTokensPerTurn = 50000
-	eng.rememberVerifiedKnowledge("4090 一小时多少钱", "每小时 2 元。", priorPricingLedger())
+	eng.rememberVerifiedKnowledge("4090 一小时多少钱", priorPricingLedger())
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{keptVLLMHit()}
 
 	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "vllm 显存不足怎么办")
@@ -80,7 +80,7 @@ func TestBudgetRecoveryStillDeliversFromThisTurnsEvidence(t *testing.T) {
 // grounded turn, making them permanent.
 func TestStoredEvidenceIsThisTurnsOnly(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.rememberVerifiedKnowledge("4090 一小时多少钱", "每小时 2 元。", priorPricingLedger())
+	eng.rememberVerifiedKnowledge("4090 一小时多少钱", priorPricingLedger())
 	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{
 		Query: "包月怎么算",
 		Items: []knowledge.EvidenceItem{{

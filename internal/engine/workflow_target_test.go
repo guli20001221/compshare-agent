@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/entity"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -138,7 +137,7 @@ func primeOrdinalSelection(t *testing.T, eng *Engine, userMsg, turnID string) {
 	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
 		testInstance("uhost-a", "alpha", "Running"),
 		testInstance("uhost-b", "beta", "Running"),
-	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	})
 	syncTwoInstances(t, eng)
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, userMsg, turnID, time.Now())
 	eng.turnContextViewReady = true
@@ -201,7 +200,7 @@ func TestIdAndOrdinalConflictRefusedOnColdRegistry(t *testing.T) {
 	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
 		testInstance("uhost-a", "alpha", "Running"),
 		testInstance("uhost-b", "beta", "Running"),
-	}, intent.IntentResourceInfo, "我有哪些实例", 2, false)
+	})
 	// Registry deliberately NOT synced -> cold, so id resolution can only come from
 	// the pending candidates' snapshot.
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cold-conflict", time.Now())

@@ -34,8 +34,7 @@ func crossTurnDiskInstance() map[string]any {
 // FirstDecision used to hook), over ONE engine and TWO turns:
 //
 //	Turn 1  "给 uhost-test 加一个数据盘"  → the Agent proposes CreateDisk with no Size;
-//	        the resolver reports Size missing and the engine PARKS a CreateDiskWorkflow
-//	        task frame (only Size outstanding). No mutating call happens.
+//	        the resolver reports Size missing. No mutating call happens.
 //	Turn 2  "200G"                      → the Agent re-proposes CreateDisk now carrying
 //	        Size; the resolver readies it, the workflow prices the disk and reaches the
 //	        confirmation card, the user REJECTS, and NOTHING is written.
@@ -66,24 +65,15 @@ func TestCreateDiskCrossTurnResumeRejectMakesZeroWrites(t *testing.T) {
 	}}
 
 	eng := NewWithDeps(mock, executor, rejectConfirm)
-	// Hydrate the session: setContextFrame is a no-op on an unhydrated engine, so a
-	// cross-turn task only parks once the session state exists (as it always does on
-	// the server path after RehydrateHistory).
+	// Hydrate the session as the server path does after RehydrateHistory.
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
 
-	// --- Turn 1: the incomplete proposal parks a task, writes nothing. ---
+	// --- Turn 1: the incomplete proposal writes nothing. ---
 	_, err := eng.Chat(context.Background(), "给 uhost-test 加一个数据盘", noopStep)
 	require.NoError(t, err)
 	assert.NotContains(t, executor.calls, "CreateAndAttachCompshareDisk",
 		"an incomplete create-disk proposal must never reach the mutating call")
-
-	frame := eng.sessionState.ContextFrame
-	assert.Equal(t, ContextFrameKindWorkflowTask, frame.Kind,
-		"a missing-Size create-disk proposal must park a workflow task to resume next turn")
-	assert.Equal(t, "CreateDiskWorkflow", frame.Workflow)
-	assert.Contains(t, frame.MissingSlots, "Size",
-		"the parked task must record that Size is the outstanding slot")
 
 	// --- Turn 2: supplying the size resumes to the card; the reject writes nothing. ---
 	reply, err := eng.Chat(context.Background(), "200G", noopStep)

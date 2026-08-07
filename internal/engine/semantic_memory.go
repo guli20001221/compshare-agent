@@ -10,9 +10,6 @@ const (
 	ContinuityFreshnessStale   = "stale"
 	ContinuityFreshnessExpired = "expired"
 
-	ToolFactSourceTool             = "tool"
-	ToolFactCompletenessProjection = "semantic_projection"
-
 	maxSemanticItems  = 12
 	maxSemanticRunes  = 320
 	maxNarrativeRunes = 1200
@@ -62,65 +59,6 @@ func continuityFreshness(at int64, ttl int, now time.Time) string {
 		return ContinuityFreshnessStale
 	}
 	return ContinuityFreshnessFresh
-}
-
-func effectiveContextFrameTTL(frame ContextFrame) int {
-	if frame.TTLSeconds > 0 {
-		return frame.TTLSeconds
-	}
-	return ContextFrameTTLSeconds
-}
-
-func (e *Engine) expireStaleToolFacts(now time.Time) {
-	if e == nil || !e.sessionStateHydrated {
-		return
-	}
-	changed := false
-	for i := range e.sessionState.RecentFacts {
-		fact := &e.sessionState.RecentFacts[i]
-		if fact.Source == "" {
-			fact.Source = ToolFactSourceTool
-			changed = true
-		}
-		if fact.Completeness == "" {
-			fact.Completeness = ToolFactCompletenessProjection
-			changed = true
-		}
-		freshness := continuityFreshness(fact.ProducedAtUnix, fact.TTLSeconds, now)
-		if fact.Freshness != freshness {
-			fact.Freshness = freshness
-			changed = true
-		}
-		mustRefresh := freshness == ContinuityFreshnessExpired
-		if fact.RefreshRequired != mustRefresh {
-			fact.RefreshRequired = mustRefresh
-			changed = true
-		}
-		if mustRefresh && len(fact.Payload) > 0 {
-			// Expired observations keep only topic and observation time.
-			fact.Payload = nil
-			changed = true
-		}
-	}
-	if changed {
-		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
-	}
-}
-
-func normalizeToolFactForStore(fact ToolFact) ToolFact {
-	if fact.Source == "" {
-		fact.Source = ToolFactSourceTool
-	}
-	if fact.Completeness == "" {
-		fact.Completeness = ToolFactCompletenessProjection
-	}
-	if fact.Freshness == "" {
-		fact.Freshness = ContinuityFreshnessFresh
-	}
-	if fact.Freshness != ContinuityFreshnessExpired {
-		fact.RefreshRequired = false
-	}
-	return fact
 }
 
 func normalizedSelectedInstanceFreshness(state SessionState) string {

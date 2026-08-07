@@ -157,18 +157,6 @@ func mutatingToolsRuntimeLine(enabled bool) string {
 	return "mutating=disabled (read-only mode)"
 }
 
-func sessionFactContextEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	value := strings.TrimSpace(getenv("USE_SESSION_FACT_CONTEXT"))
-	switch value {
-	case "", "0":
-		return false, ""
-	case "1":
-		return true, ""
-	default:
-		return false, value
-	}
-}
-
 func reactResultProjectionEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	value := strings.TrimSpace(getenv("USE_REACT_RESULT_PROJECTION"))
 	switch value {
@@ -181,51 +169,6 @@ func reactResultProjectionEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-func reactHistoryCompactionEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	value := strings.TrimSpace(getenv("USE_REACT_HISTORY_COMPACTION"))
-	switch value {
-	case "", "0":
-		return false, ""
-	case "1":
-		return true, ""
-	default:
-		return false, value
-	}
-}
-
-// domainMatchGuardEnabledFromEnv gates the #5 wrong-domain REFUSE arm
-// (COMPSHARE_RAG_DOMAIN_MATCH_GUARD). DEFAULT OFF — the domain verdict is always
-// recorded in the trace (all_cited_off_domain / domain_inference_empty), but the
-// synthesis is replaced with a refusal only when this is on. Kept off until a
-// flag-on eval proves 0 over-refusal (an over-eager domain refusal would suppress
-// legitimate answers whenever inferKnowledgeProductArea and the chunk product_area
-// tags disagree on a true match). ""/0/off/... => off; 1/true/yes/on => on;
-// unknown => off + non-empty warn string (CLAUDE.md: never silently coerce).
-// Boot-only; the Go-package default (engine.domainMatchGuardOn) stays false so
-// engine/knowledge unit tests are unaffected.
-func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_RAG_DOMAIN_MATCH_GUARD"))
-	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
-		return true, ""
-	default:
-		return false, raw
-	}
-}
-
-// forcedKnowledgeHopEnabledFromEnv gates the forced first-hop retrieval arm
-// (COMPSHARE_FORCED_KNOWLEDGE_HOP): before the Agent's first model call the engine
-// retrieves once on the user's own words and injects the result, because "should I
-// search" is the measured failure (a complaint retrieves where the same question
-// worded as a question retrieves, and there is no ex-ante turn classifier to gate a
-// prompt rule on). Two real-machine A/Bs cleared it (target statements 4→14 search /
-// 2→8 cite with correctness fixes, no fabrication introduced, control bucket net-zero
-// live-tool displacement, action confirmations preserved). ""/0/off/... => off;
-// 1/true/yes/on => on; unknown => off + non-empty warn string (never silently
-// coerce). Boot-only; the Go-package default (engine.forcedKnowledgeHopEnabled) stays
-// false so engine unit tests are unaffected.
 // canonicalTranscriptEnabledFromEnv parses COMPSHARE_CANONICAL_TRANSCRIPT, the
 // single gate over the whole transcript pipeline: capture, persistence, and
 // whether a prior turn's tool calls and tool results reach the model instead of
@@ -234,18 +177,6 @@ func domainMatchGuardEnabledFromEnv(getenv getenvFunc) (bool, string) {
 // moment it is flipped on, rather than finding it already there.
 func canonicalTranscriptEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.TrimSpace(getenv("COMPSHARE_CANONICAL_TRANSCRIPT"))
-	switch strings.ToLower(raw) {
-	case "", "0", "off", "no", "false", "disabled", "none":
-		return false, ""
-	case "1", "true", "yes", "on":
-		return true, ""
-	default:
-		return false, raw
-	}
-}
-
-func forcedKnowledgeHopEnabledFromEnv(getenv getenvFunc) (bool, string) {
-	raw := strings.TrimSpace(getenv("COMPSHARE_FORCED_KNOWLEDGE_HOP"))
 	switch strings.ToLower(raw) {
 	case "", "0", "off", "no", "false", "disabled", "none":
 		return false, ""

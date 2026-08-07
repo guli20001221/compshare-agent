@@ -16,10 +16,10 @@
 //
 // Faithfulness / caveats, stated so the replies are not over-read:
 //   - Model is deepseek-v4-pro (agent tier), overridable via COMPSHARE_PRO_MODEL.
-//     It is NOT in the capability matrix, so it runs on safe-default caps: no
-//     forced first hop, no json_object planner. The agent therefore reaches
-//     SearchKnowledge via ordinary auto tool choice; searchKnowledgeCallsThisTurn
-//     is recorded per case, and a 0 there means the agent chose not to retrieve,
+//     It is NOT in the capability matrix, so it runs without a forced first
+//     hop. Once the agent chooses SearchKnowledge on a follow-up turn, the
+//     bounded JSON query planner may rewrite and fan out that retrieval. A zero
+//     searchKnowledgeCallsThisTurn still means the agent chose not to retrieve,
 //     which is itself worth seeing.
 //   - Retrieval is production qwen3_rrf over the merged platform+external index,
 //     WITH the qwen3-reranker-8b stage (rerankedProductionRetriever). The reranker
@@ -105,9 +105,17 @@ type proAnswer struct {
 	Query     string `json:"query"`
 	AuditNote string `json:"audit_note"`
 	Searches  int    `json:"searches"`
-	Queries   int    `json:"queries"`
 	Answer    string `json:"answer"`
 	Err       string `json:"err,omitempty"`
+}
+
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func TestLiveProAnswersSourceGaps(t *testing.T) {
@@ -151,15 +159,14 @@ func TestLiveProAnswersSourceGaps(t *testing.T) {
 			Query:     g.Query,
 			AuditNote: g.AuditNote,
 			Searches:  eng.searchKnowledgeCallsThisTurn,
-			Queries:   eng.searchKnowledgeQueriesThisTurn,
 			Answer:    strings.TrimSpace(reply),
 		}
 		if cerr != nil {
 			r.Err = cerr.Error()
 		}
 		results[i] = r
-		t.Logf("\n================ %s [%s] ================\n问：%s\n检索：calls=%d queries=%d\n答：\n%s",
-			g.CaseID, g.Category, g.Query, r.Searches, r.Queries, truncateRunes(r.Answer, 1200))
+		t.Logf("\n================ %s [%s] ================\n问：%s\n检索：calls=%d\n答：\n%s",
+			g.CaseID, g.Category, g.Query, r.Searches, truncateRunes(r.Answer, 1200))
 		if r.Err != "" {
 			t.Logf("  ERR: %s", r.Err)
 		}

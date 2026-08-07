@@ -627,7 +627,7 @@ func TestCoordinator_UnknownSchemaPreservesBytesAndCorruptKnownSchemaSelfHeals(t
 	require.Len(t, unknownMessages, 2)
 	assert.Contains(t, unknownMessages[1].Content, UnknownSchemaWarning)
 
-	corruptRaw := json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","recent_facts":"not-an-array"},"client_context":{"page":"/gpu","filters":["running"]}}`)
+	corruptRaw := json.RawMessage(`{"agent_session_state":{"schema_version":"4.0","selected_instance_id":7},"client_context":{"page":"/gpu","filters":["running"]}}`)
 	corrupt, err := sessions.Create(ctx, owner, nil, corruptRaw)
 	require.NoError(t, err)
 	corruptFactory := &coordinatorFactory{}

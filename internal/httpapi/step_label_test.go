@@ -102,8 +102,8 @@ func TestStepActionLabelIsEmptyForUnknownActions(t *testing.T) {
 // SSE dispatch path and asserts the wire actually gains Label next to Action —
 // the console reads Label, so a correct map plus an unwired frame is invisible.
 func TestDispatchChatStepFrameCarriesTheActionLabel(t *testing.T) {
-	llmFake := &factWritingLLM{}
-	eng := engine.NewWithDeps(llmFake, factWritingExecutor{}, denyConfirm)
+	llmFake := &toolTurnLLM{}
+	eng := engine.NewWithDeps(llmFake, toolTurnExecutor{}, denyConfirm)
 	eng.RehydrateHistory(nil)
 
 	sess := store.Session{

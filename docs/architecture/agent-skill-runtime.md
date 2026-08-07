@@ -91,10 +91,11 @@ the reply's wording or layout.
 ### RAG Evidence
 
 RAG is retrieval used **inside** the Agent loop, via the `SearchKnowledge` tool —
-not a terminal answer form. A multi-turn search first produces one standalone
-answer question and one to three retrieval queries; a first-turn search skips that
-extra planning call. Retrieval (`internal/knowledge/`, qwen3 RRF) returns cited
-chunks the Agent grounds its answer in. Citation discipline is **fail-open**:
+not a terminal answer form. The Agent uses its complete transcript to resolve a
+follow-up and supplies one query directly; the runtime does not run a separate
+query-planning model or fan one call out into hidden retrieval variants.
+Retrieval (`internal/knowledge/`, qwen3 RRF) returns cited chunks the Agent
+grounds its answer in. Citation discipline is **fail-open**:
 if the Agent cannot cite, the original answer ships with citation markers stripped
 — citation formatting never regenerates user-facing prose. The only hard stop is
 a raw-evidence leak (security). Citation-marker leakage into the final text is
@@ -116,9 +117,11 @@ public port or inspect the guest OS. Symptoms without a dedicated chain
 
 ### Memory
 
-Memory is durable context preserving decisions, facts, and prior verification
-results. It can guide future changes, but it is not a guardrail and must not
-replace current-state verification.
+Semantic memory is the ordered conversation and canonical tool transcript.
+Persisted session state holds only execution continuity (selection provenance,
+pending selection, form/confirmation state) plus verifier-only evidence; it
+does not preserve a second summary of decisions or tool facts. Current-state
+verification remains mandatory before a write.
 
 ### Guardrail
 

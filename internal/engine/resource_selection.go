@@ -1,41 +1,29 @@
 package engine
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/compshare-agent/internal/entity"
-	"github.com/compshare-agent/internal/intent"
-	"github.com/compshare-agent/internal/readprojection"
 )
 
 const maxResourceSelectionCandidates = 20
 const pendingSelectionTTLSeconds = 300
 const pendingSelectionKindInstance = "instance"
 
+// pendingResourceSelection is the execution-side proof for a numbered instance
+// list. It intentionally contains only the candidates needed to resolve an
+// explicit ordinal, ID, or exact name on the next turn.
 type pendingResourceSelection struct {
-	originalUserMsg string
-	plan            intent.IntentRoute
-	snapshot        entity.RegistrySnapshot
-	candidates      []entity.InstanceSnapshot
-	truncated       bool
-	createdTurn     int
-	invalidAttempts int
-	// notFoundRef, when non-empty, is a uhost-ID the user typed that did NOT
-	// resolve to any of their instances. The prompt then leads with "未找到实例
-	// X" so a wrong/typo'd ID is distinguished from "no instance specified".
-	notFoundRef string
+	snapshot   entity.RegistrySnapshot
+	candidates []entity.InstanceSnapshot
 }
 
-// findExplicitInstanceRef scans a raw user message for an explicit instance ID and
-// resolves it against the snapshot. This is the deterministic backstop for the
-// central Agent intermittently NOT surfacing a literal ID as a resolved target
-// (Rule 5: a regex-matchable literal is resolved by code, not the LLM). Returns
-// the matched instance when an ID resolves; otherwise returns the first
-// unresolved ID-shaped token so the caller can say "未找到 X".
+// findExplicitInstanceRef scans a raw user message for an explicit instance ID
+// and resolves it against the snapshot. It is a deterministic backstop for a
+// literal ID that the model did not surface.
 func findExplicitInstanceRef(msg string, snapshot entity.RegistrySnapshot) (*entity.InstanceSnapshot, string) {
 	hits, unresolved := snapshot.ResolveInstanceRefsInText(msg)
 	if len(hits) > 0 {
@@ -53,46 +41,11 @@ type resourceSelectionMatch struct {
 	ambiguous bool
 }
 
-func renderResourceSelectionPrompt(p pendingResourceSelection) string {
-	var b strings.Builder
-	if p.notFoundRef != "" {
-		fmt.Fprintf(&b, "\u672a\u627e\u5230\u5b9e\u4f8b %s\uff0c\u8bf7\u786e\u8ba4\u5b9e\u4f8b ID \u662f\u5426\u6b63\u786e\u3002\u4ee5\u4e0b\u662f\u60a8\u540d\u4e0b\u7684\u5b9e\u4f8b\uff0c\u8bf7\u9009\u62e9\u4e00\u4e2a\uff1a\n\n", sanitizeResourceSelectionPromptField(p.notFoundRef))
-	} else {
-		b.WriteString("\u6211\u9700\u8981\u5148\u786e\u8ba4\u4f60\u8981\u67e5\u770b\u54ea\u53f0\u5b9e\u4f8b\u3002\u8bf7\u9009\u62e9\u4e00\u4e2a\uff1a\n\n")
-	}
-	for i, inst := range p.candidates {
-		fmt.Fprintf(
-			&b,
-			"%d. %s (%s) - %s, GPU=%s x%d, CPU=%d, \u5185\u5b58=%d MB, %s, charge=%s\n",
-			i+1,
-			sanitizeResourceSelectionPromptField(inst.Name),
-			sanitizeResourceSelectionPromptField(inst.UHostId),
-			sanitizeResourceSelectionPromptField(inst.State),
-			sanitizeResourceSelectionPromptField(inst.GpuType),
-			inst.GPU,
-			inst.CPU,
-			inst.Memory,
-			sanitizeResourceSelectionPromptField(inst.Zone),
-			sanitizeResourceSelectionPromptField(inst.ChargeType),
-		)
-	}
-	if p.truncated {
-		b.WriteString("\n这里只显示按实例 ID 排序后的前 20 个候选。你可以回复更具体的实例名称或实例 ID 来缩小范围。\n")
-	}
-	if len(p.candidates) == 1 {
-		b.WriteString("\n你可以回复 1、实例 ID 或完整实例名称。")
-	} else {
-		fmt.Fprintf(&b, "\n你可以回复序号（1-%d）、实例 ID 或完整实例名称。", len(p.candidates))
-	}
-	return b.String()
-}
-
 func matchResourceSelection(input string, p pendingResourceSelection) resourceSelectionMatch {
 	query := strings.TrimSpace(input)
 	if query == "" {
 		return resourceSelectionMatch{}
 	}
-
 	for _, inst := range p.candidates {
 		if query == inst.UHostId {
 			return resourceSelectionMatch{instance: inst, ok: true}
@@ -143,75 +96,6 @@ func matchResourceSelectionReference(input string, p pendingResourceSelection) (
 	return resourceSelectionMatch{}, false
 }
 
-func resourceSelectionLooksLikeReply(input string, p pendingResourceSelection) bool {
-	query := strings.TrimSpace(input)
-	if query == "" {
-		return true
-	}
-	match := matchResourceSelection(query, p)
-	if match.ok || match.ambiguous {
-		return true
-	}
-	if _, ok := extractResourceSelectionOrdinal(query); ok {
-		return true
-	}
-	if tokens := p.snapshot.InstanceIDTokensInText(query); len(tokens) == 1 && tokens[0] == query {
-		return true
-	}
-	return false
-}
-
-func removeResourceSelectionOrdinalTokens(input string, ordinal int) string {
-	if ordinal <= 0 {
-		return input
-	}
-	chinese := ""
-	numerals := chineseResourceSelectionNumerals()
-	if ordinal <= len(numerals) {
-		chinese = numerals[ordinal-1]
-	}
-	arabic := strconv.Itoa(ordinal)
-	tokens := []string{
-		"第" + arabic + "台实例",
-		"第" + arabic + "实例",
-		"第" + arabic + "台",
-		"第" + arabic + "机器",
-		"第" + arabic + "主机",
-		"第" + arabic,
-	}
-	if chinese != "" {
-		tokens = append(tokens,
-			"第"+chinese+"台实例",
-			"第"+chinese+"实例",
-			"第"+chinese+"台",
-			"第"+chinese+"机器",
-			"第"+chinese+"主机",
-			"第"+chinese,
-		)
-	}
-	for _, token := range tokens {
-		input = strings.ReplaceAll(input, token, "")
-	}
-	return input
-}
-
-func renderResourceSelectionSelectedReply(inst entity.InstanceSnapshot) string {
-	reply := fmt.Sprintf("已选中 %s（%s）。你接下来想查看监控、重启，还是执行其他操作？",
-		sanitizeResourceSelectionPromptField(inst.Name),
-		sanitizeResourceSelectionPromptField(inst.UHostId),
-	)
-	if inst.Name == "" {
-		reply = fmt.Sprintf("已选中 %s。你接下来想查看监控、重启，还是执行其他操作？",
-			sanitizeResourceSelectionPromptField(inst.UHostId),
-		)
-	}
-	return reply
-}
-
-func isResourceSelectionExpired(currentTurn int, p pendingResourceSelection) bool {
-	return currentTurn > p.createdTurn+2
-}
-
 func isPersistedSelectionExpired(nowUnix int64, state SessionState) bool {
 	if state.PendingSelectionKind == "" || len(state.PendingSelectionItems) == 0 {
 		return true
@@ -226,41 +110,26 @@ func isPersistedSelectionExpired(nowUnix int64, state SessionState) bool {
 	return nowUnix > state.PendingSelectionProducedAtUnix+int64(ttl)
 }
 
-func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnapshot, sourceIntent intent.Intent, originalUserMsg string, total int, truncated bool) {
+func (e *Engine) recordPendingInstanceSelection(instances []entity.InstanceSnapshot) {
 	if e == nil || !e.sessionStateHydrated || len(instances) == 0 {
 		return
 	}
 	candidates := append([]entity.InstanceSnapshot(nil), instances...)
-	if sourceIntent == intent.IntentResourceInfo && len(candidates) > readprojection.DefaultMaxInstancesPerDisplay {
-		candidates = candidates[:readprojection.DefaultMaxInstancesPerDisplay]
-		truncated = true
-	}
-	limited := false
 	if len(candidates) > maxResourceSelectionCandidates {
 		candidates = candidates[:maxResourceSelectionCandidates]
-		limited = true
-	}
-	if total <= 0 {
-		total = len(instances)
 	}
 	items := make([]PendingSelectionItem, 0, len(candidates))
 	for i, inst := range candidates {
-		if inst.UHostId == "" {
-			continue
+		if inst.UHostId != "" {
+			items = append(items, pendingSelectionItemFromInstance(i+1, inst))
 		}
-		items = append(items, pendingSelectionItemFromInstance(i+1, inst))
 	}
 	if len(items) == 0 {
 		return
 	}
 	e.sessionState.PendingSelectionKind = pendingSelectionKindInstance
-	e.sessionState.PendingSelectionIntent = string(sourceIntent)
-	e.sessionState.PendingSelectionOriginalUserMsg = strings.TrimSpace(originalUserMsg)
-	e.sessionState.PendingSelectionCreatedTurn = e.userTurn
 	e.sessionState.PendingSelectionProducedAtUnix = time.Now().Unix()
 	e.sessionState.PendingSelectionTTLSeconds = pendingSelectionTTLSeconds
-	e.sessionState.PendingSelectionTruncated = truncated || limited || total > len(items)
-	e.sessionState.PendingSelectionTotalCount = total
 	e.sessionState.PendingSelectionItems = items
 }
 
@@ -300,13 +169,8 @@ func (e *Engine) clearPendingSelection() {
 		return
 	}
 	e.sessionState.PendingSelectionKind = ""
-	e.sessionState.PendingSelectionIntent = ""
-	e.sessionState.PendingSelectionOriginalUserMsg = ""
-	e.sessionState.PendingSelectionCreatedTurn = 0
 	e.sessionState.PendingSelectionProducedAtUnix = 0
 	e.sessionState.PendingSelectionTTLSeconds = 0
-	e.sessionState.PendingSelectionTruncated = false
-	e.sessionState.PendingSelectionTotalCount = 0
 	e.sessionState.PendingSelectionItems = nil
 }
 
@@ -323,36 +187,17 @@ func (e *Engine) pendingResourceSelectionFromSession() (*pendingResourceSelectio
 	}
 	candidates := make([]entity.InstanceSnapshot, 0, len(e.sessionState.PendingSelectionItems))
 	for _, item := range e.sessionState.PendingSelectionItems {
-		inst := instanceFromPendingSelectionItem(item)
-		if inst.UHostId == "" {
-			continue
+		if inst := instanceFromPendingSelectionItem(item); inst.UHostId != "" {
+			candidates = append(candidates, inst)
 		}
-		candidates = append(candidates, inst)
 	}
 	if len(candidates) == 0 {
 		e.clearPendingSelection()
 		return nil, false
 	}
-	truncated := e.sessionState.PendingSelectionTruncated
-	if len(candidates) > readprojection.DefaultMaxInstancesPerDisplay {
-		candidates = candidates[:readprojection.DefaultMaxInstancesPerDisplay]
-		truncated = true
-	}
-	planIntent := intent.Intent(e.sessionState.PendingSelectionIntent)
-	if planIntent == "" {
-		planIntent = intent.IntentResourceInfo
-	}
-	snapshot := snapshotFromPendingSelectionCandidates(candidates)
 	return &pendingResourceSelection{
-		originalUserMsg: e.sessionState.PendingSelectionOriginalUserMsg,
-		plan: intent.IntentRoute{
-			SchemaVersion: intent.SchemaVersion,
-			Intent:        planIntent,
-		},
-		snapshot:    snapshot,
-		candidates:  candidates,
-		truncated:   truncated,
-		createdTurn: e.userTurn,
+		snapshot:   snapshotFromPendingSelectionCandidates(candidates),
+		candidates: candidates,
 	}, true
 }
 
@@ -365,7 +210,8 @@ func snapshotFromPendingSelectionCandidates(candidates []entity.InstanceSnapshot
 		}
 		instances[inst.UHostId] = inst
 		if inst.Name != "" {
-			nameIndex[strings.ToLower(strings.TrimSpace(inst.Name))] = append(nameIndex[strings.ToLower(strings.TrimSpace(inst.Name))], inst.UHostId)
+			key := strings.ToLower(strings.TrimSpace(inst.Name))
+			nameIndex[key] = append(nameIndex[key], inst.UHostId)
 		}
 	}
 	return entity.RegistrySnapshot{
@@ -374,34 +220,6 @@ func snapshotFromPendingSelectionCandidates(candidates []entity.InstanceSnapshot
 		LastFullSync: time.Now(),
 		TotalCount:   len(candidates),
 	}
-}
-
-
-func planWithSelectedResource(plan intent.IntentRoute, uhostID string) intent.IntentRoute {
-	plan.Slots.TargetRefs = []intent.TargetRef{{
-		Type:       intent.TargetRefUHostIDUserInput,
-		Value:      uhostID,
-		Source:     intent.SourcePriorTurn,
-		SourceSpan: uhostID,
-	}}
-	return plan
-}
-
-func sanitizeResourceSelectionPromptField(value string) string {
-	var b strings.Builder
-	lastWasSpace := false
-	for _, r := range value {
-		if r == '\r' || r == '\n' || r == '\t' || unicode.IsControl(r) {
-			if !lastWasSpace {
-				b.WriteByte(' ')
-				lastWasSpace = true
-			}
-			continue
-		}
-		b.WriteRune(r)
-		lastWasSpace = unicode.IsSpace(r)
-	}
-	return strings.TrimSpace(b.String())
 }
 
 func resourceSelectionOrdinalMatch(input string, p pendingResourceSelection) (entity.InstanceSnapshot, bool) {
@@ -420,7 +238,6 @@ func parseResourceSelectionOrdinal(input string) (int, bool) {
 	if n, err := strconv.Atoi(input); err == nil {
 		return n, true
 	}
-
 	for i, numeral := range chineseResourceSelectionNumerals() {
 		n := i + 1
 		if _, ok := ordinalPhraseSet(n, numeral)[input]; ok {
@@ -467,10 +284,9 @@ func extractResourceSelectionOrdinal(input string) (int, bool) {
 func compactResourceSelectionText(input string) string {
 	var b strings.Builder
 	for _, r := range input {
-		if unicode.IsSpace(r) {
-			continue
+		if !unicode.IsSpace(r) {
+			b.WriteRune(r)
 		}
-		b.WriteRune(r)
 	}
 	return b.String()
 }
@@ -496,25 +312,8 @@ func ordinalPhraseSet(n int, chinese string) map[string]struct{} {
 
 func chineseResourceSelectionNumerals() []string {
 	return []string{
-		"\u4e00",
-		"\u4e8c",
-		"\u4e09",
-		"\u56db",
-		"\u4e94",
-		"\u516d",
-		"\u4e03",
-		"\u516b",
-		"\u4e5d",
-		"\u5341",
-		"\u5341\u4e00",
-		"\u5341\u4e8c",
-		"\u5341\u4e09",
-		"\u5341\u56db",
-		"\u5341\u4e94",
-		"\u5341\u516d",
-		"\u5341\u4e03",
-		"\u5341\u516b",
-		"\u5341\u4e5d",
-		"\u4e8c\u5341",
+		"\u4e00", "\u4e8c", "\u4e09", "\u56db", "\u4e94", "\u516d", "\u4e03", "\u516b", "\u4e5d", "\u5341",
+		"\u5341\u4e00", "\u5341\u4e8c", "\u5341\u4e09", "\u5341\u56db", "\u5341\u4e94", "\u5341\u516d", "\u5341\u4e03",
+		"\u5341\u516b", "\u5341\u4e5d", "\u4e8c\u5341",
 	}
 }

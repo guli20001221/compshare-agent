@@ -359,7 +359,6 @@ func (r *Recorder) Finish(chatErr, attemptErr error, reply string, snapshot engi
 	r.stateTrace.ResolutionSource = snapshot.ResolutionSource
 	r.stateTrace.SelectedInstanceID = snapshot.SessionState.SelectedInstanceID
 	r.stateTrace.SelectedInstanceIDAtTurnStart = snapshot.SelectedInstanceIDAtStart
-	r.stateTrace.FactCacheOldestAgeBucket = observability.BucketFactCacheAge(snapshot.FactCacheOldestAgeSeconds)
 	r.record.State = r.stateTrace
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()

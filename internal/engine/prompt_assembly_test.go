@@ -13,13 +13,11 @@ import (
 
 const contextCardMarker = "【本轮统一上下文"
 
-// With canonical replay, compaction must not reintroduce a semantic summary
-// block. This input has no live execution continuity, so it should carry only
-// the base system prompt.
-func TestAssembledContextHasNoSemanticMemoryBlockWithCompactionOn(t *testing.T) {
+// Canonical replay must not reintroduce a semantic summary block. This input has
+// no live execution continuity, so it should carry only the base system prompt.
+func TestAssembledContextHasNoSemanticMemoryBlock(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "好的，继续。"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.SetReactHistoryCompactionEnabled(true)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "system"},
@@ -33,7 +31,7 @@ func TestAssembledContextHasNoSemanticMemoryBlockWithCompactionOn(t *testing.T) 
 
 	sent := mock.calls[0].Messages
 	assert.Equal(t, 1, countSystemMessages(sent),
-		"compaction must not add a summary when there is no live execution card")
+		"history assembly must not add a summary when there is no live execution card")
 	cardHits := 0
 	for _, msg := range sent {
 		if msg.Role == openai.ChatMessageRoleSystem && strings.Contains(msg.Content, contextCardMarker) {
