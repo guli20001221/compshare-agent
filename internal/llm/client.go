@@ -20,8 +20,9 @@ import (
 
 // Client wraps go-openai to talk to ModelVerse (OpenAI-compatible).
 type Client struct {
-	client *openai.Client
-	model  string
+	client   *openai.Client
+	model    string
+	provider string
 }
 
 const maxChatAttempts = 2
@@ -38,8 +39,9 @@ func NewClient(cfg config.LLMConfig) *Client {
 	ocfg.HTTPClient = chatHTTPClient(cfg.BaseURL)
 
 	return &Client{
-		client: openai.NewClientWithConfig(ocfg),
-		model:  cfg.Model,
+		client:   openai.NewClientWithConfig(ocfg),
+		model:    cfg.Model,
+		provider: ProviderOpenAICompatible,
 	}
 }
 
@@ -278,7 +280,8 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 	// Count at the last boundary before the SDK attempts the upstream request.
 	// Putting this in Chat or chat would miss internal retries or count logical
 	// calls that never became requests.
-	observeOutboundCall(ctx, OutboundCall{Model: c.model})
+	call := OutboundCall{Provider: c.provider, Model: c.model}
+	observeOutboundCall(ctx, call)
 	stream, err := c.client.CreateChatCompletionStream(ctx, ccReq)
 	if err != nil {
 		return nil, fmt.Errorf("llm stream: %w", err)
@@ -361,12 +364,14 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 		}
 	}
 
-	return &ChatResponse{
+	response := &ChatResponse{
 		Content:    contentBuf.String(),
 		ToolCalls:  toolCalls,
 		Usage:      usage,
 		StopReason: stopReason,
-	}, nil
+	}
+	observeOutboundCallResult(ctx, OutboundCallResult{Call: call, StopReason: TraceFinishReason(response.StopReason)})
+	return response, nil
 }
 
 func isUsageUnsupportedChatError(err error) bool {

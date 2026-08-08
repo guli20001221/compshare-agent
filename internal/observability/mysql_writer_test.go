@@ -1,10 +1,12 @@
 package observability
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +256,43 @@ func TestMySQLWriter_AppendBeforeWorkerDoesNotBlock(t *testing.T) {
 		// Expected: returned promptly.
 	case <-time.After(100 * time.Millisecond):
 		t.Fatalf("second Append blocked despite full queue; non-blocking contract broken")
+	}
+}
+
+func TestMySQLWriterStatsExposeQueueDrops(t *testing.T) {
+	w := &MySQLWriter{
+		queue:  make(chan persistedTrace, 1),
+		logger: silentLogger(t),
+	}
+	if err := w.Append(TraceRecord{TraceID: "first"}); err != nil {
+		t.Fatalf("first Append: %v", err)
+	}
+	if err := w.Append(TraceRecord{TraceID: "dropped"}); err != nil {
+		t.Fatalf("dropped Append: %v", err)
+	}
+
+	stats := w.Stats()
+	if stats.EnqueueAttempts != 2 || stats.QueueAccepted != 1 || stats.QueueDropped != 1 ||
+		stats.MalformedDropped != 0 || stats.BatchFailedRecords != 0 {
+		t.Fatalf("writer stats = %#v, want attempts=2 accepted=1 dropped=1 and no other losses", stats)
+	}
+}
+
+func TestMySQLWriterLogsContentFreeHealthAtMilestone(t *testing.T) {
+	var output bytes.Buffer
+	w := &MySQLWriter{
+		queue:  make(chan persistedTrace, traceWriterHealthLogEvery),
+		logger: log.New(&output, "", 0),
+	}
+	for i := 0; i < traceWriterHealthLogEvery; i++ {
+		if err := w.Append(TraceRecord{TraceID: strconv.Itoa(i)}); err != nil {
+			t.Fatalf("Append(%d): %v", i, err)
+		}
+	}
+	line := output.String()
+	if !strings.Contains(line, "agent_trace writer health: event=periodic attempted=100") ||
+		strings.Contains(line, "trace_id") {
+		t.Fatalf("health log = %q, want content-free periodic counters", line)
 	}
 }
 

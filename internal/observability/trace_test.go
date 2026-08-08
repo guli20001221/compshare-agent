@@ -133,11 +133,11 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV08(t *testing.T) {
-	// v0.8 adds content-free confirmation terminal observations. Empty records
-	// remain byte-compatible because the new field is omitted.
-	if SchemaVersion != "trace.v0.8" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.8", SchemaVersion)
+func TestSchemaVersionIsV09(t *testing.T) {
+	// v0.9 adds content-free model/provider attribution and tool timing. Empty
+	// records remain byte-compatible because the new fields are omitted.
+	if SchemaVersion != "trace.v0.9" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.9", SchemaVersion)
 	}
 }
 

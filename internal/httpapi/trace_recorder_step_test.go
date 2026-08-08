@@ -59,6 +59,39 @@ func TestChatTraceRecorder_PersistsToolProjection(t *testing.T) {
 		"the HTTP trace must retain that the model saw a projected result")
 }
 
+func TestChatTraceRecorderNormalizesToolErrorsAndMeasuresPairedLatency(t *testing.T) {
+	w := &captureTraceWriter{}
+	start := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	base := BaseRequest{RequestUUID: "req-tool-error", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}
+	rec := newChatTraceRecorder(w, base, "sess-1", 1, "msg", start)
+	rec.now = func() time.Time { return start }
+
+	rec.OnStep(engine.StepEvent{
+		Type: engine.StepToolCall, Action: "DescribeSucceeded",
+		Args: map[string]any{"UHostId": "uhost-demo"},
+	})
+	start = start.Add(850 * time.Millisecond)
+	rec.OnStep(engine.StepEvent{Type: engine.StepToolResult, Action: "DescribeSucceeded"})
+	rec.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "DescribeFailed"})
+	start = start.Add(1350 * time.Millisecond)
+	rec.OnStep(engine.StepEvent{
+		Type: engine.StepError, Action: "DescribeFailed",
+		Message: "upstream credential password=hunter2 timed out",
+	})
+	require.NoError(t, rec.Finish(nil, start))
+
+	require.Len(t, w.records, 1)
+	require.Len(t, w.records[0].ToolCalls, 2)
+	success := w.records[0].ToolCalls[0]
+	assert.Equal(t, observability.ToolStatusSuccess, success.Status)
+	assert.Equal(t, int64(850), success.LatencyMS)
+	call := w.records[0].ToolCalls[1]
+	assert.Equal(t, observability.ToolStatusError, call.Status)
+	assert.Equal(t, "tool_error", call.ErrorClass)
+	assert.Equal(t, int64(1350), call.LatencyMS)
+	assert.NotContains(t, call.ErrorClass, "hunter2")
+}
+
 func TestChatTraceRecorderPersistsConfirmationWithoutCardPayload(t *testing.T) {
 	w := &captureTraceWriter{}
 	base := BaseRequest{RequestUUID: "req-confirm", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}

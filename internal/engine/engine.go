@@ -373,6 +373,9 @@ type Engine struct {
 	promptMessagesAssembledPeakThisTurn int
 	promptMessagesCapAppliedThisTurn    bool
 	turnModelCallsThisTurn              int
+	turnModelProviderThisTurn           string
+	turnModelIDsThisTurn                []string
+	turnProviderFinishReasonsThisTurn   []string
 	turnCompletionClassHint             string
 	turnCompletionReasonHint            string
 	runtimeFinishReasonThisTurn         agentruntime.FinishReason
@@ -1320,8 +1323,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// tool messages at the start of the next turn.
 	defer e.captureTurnTranscript()
 	e.resetTurnCompletion()
-	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
+	ctx = llm.WithOutboundCallObserver(ctx, func(call llm.OutboundCall) {
 		e.turnModelCallsThisTurn++
+		e.recordTurnModel(call)
+	})
+	ctx = llm.WithOutboundCallResultObserver(ctx, func(result llm.OutboundCallResult) {
+		e.recordTurnProviderFinishReason(result.StopReason)
 	})
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()

@@ -46,10 +46,16 @@ type Recorder struct {
 	totalTokens      int
 	promptTokens     int
 	completionTokens int
-	pendingByID      map[string][]int
+	pendingByID      map[string][]pendingToolCall
+	now              func() time.Time
 	terminalSignals  observability.FinishSignals
 	stateTrace       observability.StateTrace
 	finished         bool
+}
+
+type pendingToolCall struct {
+	index     int
+	startedAt time.Time
 }
 
 func New(cfg Config) *Recorder {
@@ -77,7 +83,8 @@ func New(cfg Config) *Recorder {
 			Continuity:    continuity,
 		},
 		start:       cfg.Start,
-		pendingByID: make(map[string][]int),
+		pendingByID: make(map[string][]pendingToolCall),
+		now:         time.Now,
 	}
 }
 
@@ -266,12 +273,16 @@ func (r *Recorder) OnStep(ev engine.StepEvent) {
 			Action: ev.Action, Source: source, ArgsHash: argsHash,
 			RequestedTargets: requested, WindowSeconds: window,
 		})
-		r.pendingByID[key] = append(r.pendingByID[key], len(r.record.ToolCalls)-1)
+		r.pendingByID[key] = append(r.pendingByID[key], pendingToolCall{
+			index:     len(r.record.ToolCalls) - 1,
+			startedAt: r.clockNow(),
+		})
 	case engine.StepToolResult:
-		idx := r.matchPending(key, ev.Action, source)
+		idx, startedAt := r.matchPending(key, ev.Action, source)
 		resultHash, _ := observability.HashTracePayload(ev.TraceResult)
 		call := &r.record.ToolCalls[idx]
 		call.Status, call.ResultHash, call.Attempts = observability.ToolStatusSuccess, resultHash, ev.Attempts
+		r.applyLatency(call, startedAt)
 		call.Projected = ev.Projected
 		if call.RequestedTargets > 0 && call.ExecutedTargets == 0 {
 			call.ExecutedTargets = call.RequestedTargets
@@ -280,9 +291,10 @@ func (r *Recorder) OnStep(ev engine.StepEvent) {
 			r.record.Renderer.InputToolArgHashes = append(r.record.Renderer.InputToolArgHashes, ev.RendererInputToolArgHashes...)
 		}
 	case engine.StepError, engine.StepBlocked:
-		idx := r.matchPending(key, ev.Action, source)
+		idx, startedAt := r.matchPending(key, ev.Action, source)
 		call := &r.record.ToolCalls[idx]
 		call.Status = observability.ToolStatusError
+		r.applyLatency(call, startedAt)
 		if ev.Type == engine.StepBlocked {
 			call.ErrorClass = "blocked"
 		} else {
@@ -384,21 +396,39 @@ func (r *Recorder) Finish(chatErr, attemptErr error, reply string, snapshot engi
 	return writer.Append(record)
 }
 
-func (r *Recorder) matchPending(key, action, source string) int {
+func (r *Recorder) matchPending(key, action, source string) (int, time.Time) {
 	if queue := r.pendingByID[key]; len(queue) > 0 {
-		idx := queue[0]
+		pending := queue[0]
 		if len(queue) == 1 {
 			delete(r.pendingByID, key)
 		} else {
 			r.pendingByID[key] = queue[1:]
 		}
-		return idx
+		return pending.index, pending.startedAt
 	}
 	r.record.ToolCalls = append(r.record.ToolCalls, observability.ToolCallTrace{
 		ID: fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1), TurnIndex: r.record.TurnIndex,
 		Action: action, Source: source,
 	})
-	return len(r.record.ToolCalls) - 1
+	return len(r.record.ToolCalls) - 1, time.Time{}
+}
+
+func (r *Recorder) clockNow() time.Time {
+	if r != nil && r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+func (r *Recorder) applyLatency(call *observability.ToolCallTrace, startedAt time.Time) {
+	if r == nil || call == nil || startedAt.IsZero() {
+		return
+	}
+	elapsed := r.clockNow().Sub(startedAt)
+	if elapsed < 0 {
+		return
+	}
+	call.LatencyMS = elapsed.Milliseconds()
 }
 
 func requestedTargets(args map[string]any) int {

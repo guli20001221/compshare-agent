@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"strings"
+
+	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 )
 
@@ -17,6 +20,9 @@ func (e *Engine) resetTurnCompletion() {
 		return
 	}
 	e.turnModelCallsThisTurn = 0
+	e.turnModelProviderThisTurn = ""
+	e.turnModelIDsThisTurn = nil
+	e.turnProviderFinishReasonsThisTurn = nil
 	e.turnCompletionClassHint = ""
 	e.turnCompletionReasonHint = ""
 	e.runtimeFinishReasonThisTurn = ""
@@ -45,15 +51,57 @@ func (e *Engine) emitTurnCompletion() {
 	e.turnCompletionEmittedThisTurn = true
 
 	trace := observability.TurnCompletionTrace{
-		RuntimeFinishReason: string(e.runtimeFinishReasonThisTurn),
-		ModelCalls:          e.turnModelCallsThisTurn,
-		ToolNames:           centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
+		RuntimeFinishReason:   string(e.runtimeFinishReasonThisTurn),
+		ModelCalls:            e.turnModelCallsThisTurn,
+		ModelProvider:         e.turnModelProviderThisTurn,
+		ModelIDs:              append([]string(nil), e.turnModelIDsThisTurn...),
+		ProviderFinishReasons: append([]string(nil), e.turnProviderFinishReasonsThisTurn...),
+		ToolNames:             centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
 	}
 
 	trace.Class, trace.Reason = e.classifyTurnCompletion()
 	if e.turnCompletionObserver != nil {
 		e.turnCompletionObserver(trace)
 	}
+}
+
+// recordTurnModel receives only the client-boundary metadata, never a prompt
+// or response. The engine uses one configured client today; retaining unique
+// ids still makes an accidental future fallback visible instead of silently
+// attributing a mixed turn to whichever model happened to run first.
+func (e *Engine) recordTurnModel(call llm.OutboundCall) {
+	if e == nil {
+		return
+	}
+	provider := strings.TrimSpace(call.Provider)
+	if provider != "" {
+		if e.turnModelProviderThisTurn == "" {
+			e.turnModelProviderThisTurn = provider
+		} else if e.turnModelProviderThisTurn != provider {
+			e.turnModelProviderThisTurn = "mixed"
+		}
+	}
+	model := strings.TrimSpace(call.Model)
+	if model == "" {
+		return
+	}
+	for _, existing := range e.turnModelIDsThisTurn {
+		if existing == model {
+			return
+		}
+	}
+	e.turnModelIDsThisTurn = append(e.turnModelIDsThisTurn, model)
+}
+
+func (e *Engine) recordTurnProviderFinishReason(reason string) {
+	if e == nil {
+		return
+	}
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return
+	}
+	e.turnProviderFinishReasonsThisTurn = append(e.turnProviderFinishReasonsThisTurn, reason)
 }
 
 func (e *Engine) classifyTurnCompletion() (string, string) {

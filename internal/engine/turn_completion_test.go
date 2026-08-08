@@ -34,7 +34,7 @@ func TestChatEmitsExactlyOneCompletionForPreLLMBlock(t *testing.T) {
 func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"正常回答\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"正常回答\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -54,6 +54,9 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	assert.Equal(t, "final_answer", completions[0].RuntimeFinishReason,
 		"the trace must retain the runtime's exact terminal reason, not just a hand-mapped class")
 	assert.Equal(t, 1, completions[0].ModelCalls, "count must come from the real outbound boundary")
+	assert.Equal(t, "openai_compatible", completions[0].ModelProvider)
+	assert.Equal(t, []string{"test-model"}, completions[0].ModelIDs)
+	assert.Equal(t, []string{"stop"}, completions[0].ProviderFinishReasons)
 	assert.Equal(t, centralAgentToolNames(true, false), completions[0].ToolNames)
 }
 

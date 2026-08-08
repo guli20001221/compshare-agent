@@ -84,6 +84,27 @@ func TestRecorderDoesNotPersistFreeTextErrorsOrContinuityReasons(t *testing.T) {
 	assert.NotContains(t, got.Continuity.CommitReason, "hunter2")
 }
 
+func TestRecorderMeasuresLatencyForPairedToolResultsAndErrors(t *testing.T) {
+	writer := &captureWriter{}
+	start := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	recorder := New(Config{Writer: writer, TraceID: "turn:e1", TurnID: "turn", TurnIndex: 1, Start: start})
+	recorder.now = func() time.Time { return start }
+	recorder.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "ReadSucceeded"})
+	start = start.Add(1200 * time.Millisecond)
+	recorder.OnStep(engine.StepEvent{Type: engine.StepToolResult, Action: "ReadSucceeded"})
+	recorder.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "ReadFailed"})
+	start = start.Add(2400 * time.Millisecond)
+	recorder.OnStep(engine.StepEvent{Type: engine.StepError, Action: "ReadFailed", Message: "raw upstream detail"})
+	require.NoError(t, recorder.Finish(nil, nil, "", engine.TraceSnapshot{}, start))
+
+	require.Len(t, writer.records, 1)
+	require.Len(t, writer.records[0].ToolCalls, 2)
+	assert.Equal(t, int64(1200), writer.records[0].ToolCalls[0].LatencyMS)
+	assert.Equal(t, observability.ToolStatusSuccess, writer.records[0].ToolCalls[0].Status)
+	assert.Equal(t, int64(2400), writer.records[0].ToolCalls[1].LatencyMS)
+	assert.Equal(t, "tool_error", writer.records[0].ToolCalls[1].ErrorClass)
+}
+
 func TestRecorderPersistsContinuityContractMetadataAndMarksFailures(t *testing.T) {
 	writer := &captureWriter{}
 	recorder := New(Config{Writer: writer, TraceID: "turn:e1", TurnID: "turn", TurnIndex: 1, Start: time.Now()})
