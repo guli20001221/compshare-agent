@@ -107,6 +107,23 @@ func TestRecorderMeasuresLatencyForPairedToolResultsAndErrors(t *testing.T) {
 	assert.Equal(t, "tool_error", writer.records[0].ToolCalls[1].ErrorClass)
 }
 
+// Durable recovery can receive an outcome without its original call event.
+// Preserve that lack of observation as nil rather than corrupting latency
+// percentiles with a synthetic 0ms duration.
+func TestRecorderLeavesLatencyUnsetForUnpairedEvents(t *testing.T) {
+	writer := &captureWriter{}
+	start := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	recorder := New(Config{Writer: writer, TraceID: "turn:orphan", TurnID: "turn", TurnIndex: 1, Start: start})
+	recorder.OnStep(engine.StepEvent{Type: engine.StepToolResult, Action: "OrphanSuccess"})
+	recorder.OnStep(engine.StepEvent{Type: engine.StepError, Action: "OrphanFailure", Message: "upstream failed"})
+	require.NoError(t, recorder.Finish(nil, nil, "", engine.TraceSnapshot{}, start))
+
+	require.Len(t, writer.records, 1)
+	require.Len(t, writer.records[0].ToolCalls, 2)
+	assert.Nil(t, writer.records[0].ToolCalls[0].LatencyMS, "unpaired success must not be reported as 0ms")
+	assert.Nil(t, writer.records[0].ToolCalls[1].LatencyMS, "unpaired error must not be reported as 0ms")
+}
+
 func TestRecorderPersistsContinuityContractMetadataAndMarksFailures(t *testing.T) {
 	writer := &captureWriter{}
 	recorder := New(Config{Writer: writer, TraceID: "turn:e1", TurnID: "turn", TurnIndex: 1, Start: time.Now()})

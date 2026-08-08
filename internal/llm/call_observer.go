@@ -48,10 +48,11 @@ type OutboundCallResultObserver func(OutboundCallResult)
 // from a transport failure, which produces no OutboundCallResult at all.
 func TraceFinishReason(reason string) string {
 	switch normalized := strings.ToLower(strings.TrimSpace(reason)); normalized {
-	// go-openai represents a JSON null finish_reason as the literal string
-	// "null". At the trace boundary both spellings mean that the successful
-	// response did not supply a native terminal reason.
-	case "", "null":
+	// A standard JSON null decodes to the zero value of the SDK's string alias,
+	// so an empty value means this successful response supplied no terminal
+	// reason. A literal "null" is instead a non-standard, non-empty provider
+	// spelling and intentionally falls through to "other" below.
+	case "":
 		return "unspecified"
 	case "stop", "tool_calls", "function_call", "length", "max_tokens", "content_filter":
 		return normalized

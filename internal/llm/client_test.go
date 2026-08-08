@@ -239,8 +239,8 @@ func TestTraceFinishReasonUsesClosedSet(t *testing.T) {
 	if got := TraceFinishReason(""); got != "unspecified" {
 		t.Fatalf("TraceFinishReason(empty) = %q, want unspecified", got)
 	}
-	if got := TraceFinishReason("null"); got != "unspecified" {
-		t.Fatalf("TraceFinishReason(null) = %q, want unspecified", got)
+	if got := TraceFinishReason("null"); got != "other" {
+		t.Fatalf("TraceFinishReason(literal null) = %q, want other", got)
 	}
 	if got := TraceFinishReason("TOOL_CALLS"); got != "tool_calls" {
 		t.Fatalf("TraceFinishReason(tool_calls) = %q, want tool_calls", got)

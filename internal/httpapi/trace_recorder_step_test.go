@@ -94,6 +94,23 @@ func TestChatTraceRecorderNormalizesToolErrorsAndMeasuresPairedLatency(t *testin
 	assert.NotContains(t, call.ErrorClass, "hunter2")
 }
 
+// A result/error without an observed call exists in compatibility and recovery
+// paths. It must remain visibly unpaired, not look like a real 0ms tool call.
+func TestChatTraceRecorderLeavesLatencyUnsetForUnpairedEvents(t *testing.T) {
+	w := &captureTraceWriter{}
+	start := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	base := BaseRequest{RequestUUID: "req-orphan-tool", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}
+	rec := newChatTraceRecorder(w, base, "sess-1", 1, "msg", start)
+	rec.OnStep(engine.StepEvent{Type: engine.StepToolResult, Action: "OrphanSuccess"})
+	rec.OnStep(engine.StepEvent{Type: engine.StepError, Action: "OrphanFailure", Message: "upstream failed"})
+	require.NoError(t, rec.Finish(nil, start))
+
+	require.Len(t, w.records, 1)
+	require.Len(t, w.records[0].ToolCalls, 2)
+	assert.Nil(t, w.records[0].ToolCalls[0].LatencyMS, "unpaired success must not be reported as 0ms")
+	assert.Nil(t, w.records[0].ToolCalls[1].LatencyMS, "unpaired error must not be reported as 0ms")
+}
+
 func TestChatTraceRecorderPersistsConfirmationWithoutCardPayload(t *testing.T) {
 	w := &captureTraceWriter{}
 	base := BaseRequest{RequestUUID: "req-confirm", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}
