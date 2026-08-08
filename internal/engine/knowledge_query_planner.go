@@ -95,6 +95,15 @@ func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowle
 		return fallback
 	}
 	e.emitTokenUsage(resp.Usage)
+	if resp.OutputIncomplete() {
+		// A length-stopped (or otherwise non-normal) response can still parse as
+		// valid JSON — a truncated generation is not reliably invalid JSON, it can
+		// be cut off right after the closing brace — so this cannot rely on
+		// parseFirstJSONObject failing below. Fall back to the Agent's own query
+		// rather than risk a rewrite built on a cut-off answer_question. Usage is
+		// still emitted above: the call was paid for either way.
+		return fallback
+	}
 
 	var planned knowledgeQueryPlan
 	if !parseFirstJSONObject(resp.Content, &planned) {

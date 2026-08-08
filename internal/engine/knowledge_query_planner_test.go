@@ -71,6 +71,31 @@ func TestKnowledgeQueryPlannerFailureFallsBackToAgentQuery(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 }
 
+// The JSON here is deliberately WELL-FORMED and parses cleanly — a truncated
+// generation does not reliably produce invalid JSON (the model can be cut off
+// right after closing the object), so this must be caught by the finish_reason
+// check itself, not incidentally by a parse failure. It also proposes DIFFERENT
+// queries than the fallback, so the assertion distinguishes "used the plan" from
+// "fell back" rather than passing either way.
+func TestKnowledgeQueryPlannerLengthStoppedResponseFallsBackToAgentQuery(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{
+		Content:    `{"answer_question":"按量实例关机后收费规则","search_queries":["按量实例关机后收费规则"]}`,
+		StopReason: "length",
+	}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.turnContextViewReady = true
+	eng.turnContextViewThisTurn = AgentContext{
+		CurrentQuestion:    "浏览器里呢？",
+		RecentConversation: []ConversationPair{{User: "远程桌面怎么配置音频？", Assistant: "使用 mstsc 配置。"}},
+	}
+
+	got := eng.planKnowledgeQuery(context.Background(), "浏览器 Windows 音频")
+
+	assert.Equal(t, fallbackKnowledgeQueryPlan("浏览器 Windows 音频"), got,
+		"a length-stopped planner response must not replace the Agent's own query")
+	require.Len(t, mock.calls, 1)
+}
+
 func TestSearchKnowledgeUsesPlannedQueriesButKeepsOneAnswerQuestion(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{
 		"answer_question":"浏览器通过 noVNC 打开 Windows 实例时是否支持音频？",
