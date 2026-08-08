@@ -414,6 +414,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			SelectedInstanceID:            sessState.SelectedInstanceID,
 			SelectedInstanceIDAtTurnStart: agent.SelectedInstanceIDAtTurnStart(),
 		})
+		traceRecorder.SetEngineSnapshot(agent.TraceSnapshot(time.Now()))
 		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
 			log.Printf("warning: HTTP trace write failed: %v", traceErr)
 		}

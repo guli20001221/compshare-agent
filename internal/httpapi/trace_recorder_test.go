@@ -55,6 +55,7 @@ func TestChatTraceRecorderMarksChatError(t *testing.T) {
 		"hi",
 		time.Now(),
 	)
+	recorder.SetEngineSnapshot(engine.TraceSnapshot{ResponseContract: "agent"})
 
 	err := recorder.Finish(errors.New("boom"), time.Now())
 	require.NoError(t, err)
@@ -63,4 +64,39 @@ func TestChatTraceRecorderMarksChatError(t *testing.T) {
 		Hit:      true,
 		Category: "chat_error",
 	}, writer.records[0].EngineHardBlock)
+	assert.Equal(t, "failure", writer.records[0].Outcome.ResponseContract)
+}
+
+func TestChatTraceRecorderPersistsEngineSnapshotMetadata(t *testing.T) {
+	writer := &captureTraceWriter{}
+	recorder := newChatTraceRecorder(
+		writer,
+		BaseRequest{RequestUUID: "req-snapshot", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}},
+		"sess-snapshot",
+		1,
+		"hi",
+		time.Now(),
+	)
+	recorder.SetEngineSnapshot(engine.TraceSnapshot{
+		ContextSources:              []string{"recent_pairs", "selected_entities"},
+		ResponseContract:            "agent",
+		PromptSectionIDs:            []string{"identity", "tool_use"},
+		MemoryUpdateSource:          "none",
+		GroundingOutcome:            "supported",
+		PromptMessagesRawPeak:       19,
+		PromptMessagesAssembledPeak: 15,
+		PromptMessagesCapApplied:    true,
+	})
+
+	require.NoError(t, recorder.Finish(nil, time.Now()))
+	require.Len(t, writer.records, 1)
+	got := writer.records[0].Outcome
+	assert.Equal(t, []string{"recent_pairs", "selected_entities"}, got.ContextSources)
+	assert.Equal(t, "agent", got.ResponseContract)
+	assert.Equal(t, []string{"identity", "tool_use"}, got.PromptSectionIDs)
+	assert.Equal(t, "none", got.MemoryUpdateSource)
+	assert.Equal(t, "supported", got.GroundingOutcome)
+	assert.Equal(t, 19, got.PromptMessagesRawPeak)
+	assert.Equal(t, 15, got.PromptMessagesAssembledPeak)
+	assert.True(t, got.PromptMessagesCapApplied)
 }

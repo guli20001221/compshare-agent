@@ -24,7 +24,7 @@ func planningEngineWithConversation(t *testing.T, planJSON string, results []kno
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: planJSON}}}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
 	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.turnContextViewThisTurn = TurnContextView{
+	eng.turnContextViewThisTurn = AgentContext{
 		CurrentQuestion:    "关机后还收什么费用",
 		RecentConversation: []ConversationPair{{User: "4090 一个月多少钱", Assistant: "按量计费约 ..."}},
 	}

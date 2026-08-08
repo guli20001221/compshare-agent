@@ -300,12 +300,6 @@ func RedactOutputLeak(s string) string {
 	return out
 }
 
-// redactBearerKeepMarker preserves the "Bearer"/"token" prefix and
-// replaces only the credential body.
-func redactBearerKeepMarker(match string) string {
-	return redactBearerKeepMarkerNormalized(match, TokenRedactedOutput)
-}
-
 func redactBearerKeepMarkerNormalized(match, replacement string) string {
 	groups := bearerRegex.FindStringSubmatch(match)
 	if len(groups) < 3 {
@@ -320,10 +314,6 @@ func redactBearerKeepMarkerWith(match, replacement string) string {
 		return match
 	}
 	return match[:indices[4]] + replacement + match[indices[5]:]
-}
-
-func redactAuthorizationKeepMarker(match string) string {
-	return redactAuthorizationKeepMarkerNormalized(match, TokenRedactedOutput)
 }
 
 func redactAuthorizationKeepMarkerNormalized(match, replacement string) string {
@@ -348,10 +338,6 @@ func redactAuthorizationKeepMarkerWith(match, replacement string) string {
 		return match
 	}
 	return match[:indices[6]] + replacement + match[indices[7]:]
-}
-
-func redactAssignmentKeepMarker(match string) string {
-	return redactAssignmentKeepMarkerWith(match, CredentialRedactedOutput)
 }
 
 func redactAssignmentKeepMarkerWith(match, replacement string) string {

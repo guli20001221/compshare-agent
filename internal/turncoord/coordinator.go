@@ -1374,10 +1374,6 @@ func eventFromStore(event store.TurnEvent) Event {
 	return Event{TurnID: event.TurnID, Seq: event.Seq, LeaseEpoch: event.LeaseEpoch, Type: event.Type, Payload: event.Payload, Provisional: event.Provisional, CreatedAt: event.CreatedAt}
 }
 
-func (c *Coordinator) fail(owner store.Owner, lease store.ConversationLease, reason string) store.Turn {
-	return c.failAs(owner, lease, store.TurnStatusFailedRetryable, reason)
-}
-
 // failAs keeps reconciling while the coordinator is alive. A transient DB
 // failure must not leave a running/awaiting turn permanently at the queue
 // head. If the old lease expires, this worker reacquires the same turn under a

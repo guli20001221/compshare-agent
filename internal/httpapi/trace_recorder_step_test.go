@@ -12,9 +12,9 @@ import (
 	"github.com/compshare-agent/internal/store"
 )
 
-// TestChatTraceRecorder_EmitStepAccumulatesSingleEnqueue mirrors the CLI-side
-// guard for the HTTP path: orchestrator saga StepTraces fold into THIS turn's
-// record.Steps[] and persist with the SINGLE Enqueue at Finish — never a
+// TestChatTraceRecorder_EmitStepAccumulatesSingleEnqueue locks the HTTP path's
+// per-turn contract: workflow steps fold into this turn's record.Steps[] and
+// persist with the single Enqueue at Finish — never a
 // per-step INSERT (which would collide uk_request_uuid, one agent_traces row
 // per turn). *chatTraceRecorder thus satisfies orchestrator.StepSink, and the
 // tenant context is carried on the single Enqueue.

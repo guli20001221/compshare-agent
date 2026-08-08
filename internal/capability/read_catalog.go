@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 
 	"github.com/compshare-agent/internal/intent"
 	openai "github.com/sashabaranov/go-openai"
@@ -65,18 +64,6 @@ func ReadDefinitions() []ReadDefinition {
 	}
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	return definitions
-}
-
-func newReadDefinition[T ReadRequest](name string, readIntent intent.Intent, description string, parameters map[string]any) ReadDefinition {
-	toolName := namedReadToolName(name)
-	return ReadDefinition{
-		Name: name, Intent: readIntent, Description: description,
-		Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
-			Name: toolName, Description: strings.TrimSpace(description), Parameters: parameters,
-		}},
-		RequestType: reflect.TypeOf(*new(T)),
-		decode:      func(args map[string]any) (ReadRequest, error) { return decodeStrictRead[T](args) },
-	}
 }
 
 // migratedReadDefinition wraps a typed ReadCapabilitySpec as a catalog entry.

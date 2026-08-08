@@ -346,6 +346,9 @@ func (r *Recorder) Finish(chatErr, attemptErr error, reply string, snapshot engi
 	r.record.Outcome.PromptSectionIDs = append([]string(nil), snapshot.PromptSectionIDs...)
 	r.record.Outcome.MemoryUpdateSource = snapshot.MemoryUpdateSource
 	r.record.Outcome.GroundingOutcome = snapshot.GroundingOutcome
+	r.record.Outcome.PromptMessagesRawPeak = snapshot.PromptMessagesRawPeak
+	r.record.Outcome.PromptMessagesAssembledPeak = snapshot.PromptMessagesAssembledPeak
+	r.record.Outcome.PromptMessagesCapApplied = snapshot.PromptMessagesCapApplied
 	if chatErr != nil || attemptErr != nil {
 		r.record.Outcome.ResponseContract = "failure"
 	}

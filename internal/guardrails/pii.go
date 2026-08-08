@@ -22,8 +22,6 @@
 //     intent handler input) — agent must see the raw routing signal so
 //     "4090 多少钱" routes to pricing; redacting upstream would break
 //     routing. Redaction is a persistence boundary concern.
-//   - CLI file-trace sink (cmd/agent.go) — file traces live in the user's
-//     own workspace, not in shared MySQL; out of scope per ticket.
 //
 // Known false-positive surface (acceptable per ticket):
 //   - 17-digit Luhn-valid sequences redact as bank-card (ISO/IEC 7812

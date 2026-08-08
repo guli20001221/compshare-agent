@@ -81,20 +81,6 @@ func (m *mockLLMWithError) Chat(_ context.Context, _ llm.ChatRequest) (*llm.Chat
 	return nil, m.err
 }
 
-type streamingMockLLM struct {
-	response llm.ChatResponse
-	calls    []llm.ChatRequest
-}
-
-func (m *streamingMockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	m.calls = append(m.calls, req)
-	if req.OnTextDelta != nil && m.response.Content != "" {
-		req.OnTextDelta(m.response.Content)
-	}
-	resp := m.response
-	return &resp, nil
-}
-
 type scriptedRateLimiter struct {
 	decisions []governance.Decision
 	requests  []governance.Request
@@ -2245,114 +2231,6 @@ func TestRegistrySnapshotAccessorReturnsImmutableSnapshot(t *testing.T) {
 
 	fresh := eng.RegistrySnapshot()
 	assert.Equal(t, "trace-host", fresh.Instances["uhost-trace"].Name)
-}
-
-func phase1KnownInstanceDescribeResult() map[string]any {
-	return map[string]any{
-		"TotalCount": 1,
-		"UHostSet": []any{
-			map[string]any{
-				"UHostId":   "uhost-phase1-001",
-				"Name":      "phase1-demo",
-				"State":     "Running",
-				"GPU":       float64(1),
-				"GpuType":   "4090",
-				"CPU":       float64(8),
-				"Memory":    float64(32),
-				"ImageType": "Ubuntu",
-			},
-		},
-	}
-}
-
-func phase1MultipleInstanceDescribeResult() map[string]any {
-	return map[string]any{
-		"TotalCount": 2,
-		"UHostSet": []any{
-			map[string]any{
-				"UHostId":    "uhost-select-002",
-				"Name":       "select-b",
-				"State":      "Running",
-				"GPU":        float64(1),
-				"GpuType":    "4090",
-				"CPU":        float64(16),
-				"Memory":     float64(65536),
-				"Zone":       "cn-wlcb-01",
-				"ChargeType": "Postpay",
-			},
-			map[string]any{
-				"UHostId":    "uhost-select-001",
-				"Name":       "select-a",
-				"State":      "Running",
-				"GPU":        float64(1),
-				"GpuType":    "4090",
-				"CPU":        float64(8),
-				"Memory":     float64(32768),
-				"Zone":       "cn-wlcb-01",
-				"ChargeType": "Postpay",
-			},
-		},
-	}
-}
-
-func phase1ManyInstanceDescribeResult(count int) map[string]any {
-	hosts := make([]any, 0, count)
-	for i := 1; i <= count; i++ {
-		hosts = append(hosts, map[string]any{
-			"UHostId":    fmt.Sprintf("uhost-select-%03d", i),
-			"Name":       fmt.Sprintf("select-%03d", i),
-			"State":      "Running",
-			"GPU":        float64(1),
-			"GpuType":    "4090",
-			"CPU":        float64(8),
-			"Memory":     float64(32768),
-			"Zone":       "cn-wlcb-01",
-			"ChargeType": "Postpay",
-		})
-	}
-	return map[string]any{
-		"TotalCount": count,
-		"UHostSet":   hosts,
-	}
-}
-
-func phase1AmbiguousInstanceDescribeResult() map[string]any {
-	return map[string]any{
-		"TotalCount": 2,
-		"UHostSet": []any{
-			map[string]any{
-				"UHostId":    "uhost-dup-002",
-				"Name":       "dup",
-				"State":      "Running",
-				"GPU":        float64(1),
-				"GpuType":    "4090",
-				"CPU":        float64(16),
-				"Memory":     float64(65536),
-				"Zone":       "cn-wlcb-01",
-				"ChargeType": "Postpay",
-			},
-			map[string]any{
-				"UHostId":    "uhost-dup-001",
-				"Name":       "dup",
-				"State":      "Running",
-				"GPU":        float64(1),
-				"GpuType":    "4090",
-				"CPU":        float64(8),
-				"Memory":     float64(32768),
-				"Zone":       "cn-wlcb-01",
-				"ChargeType": "Postpay",
-			},
-		},
-	}
-}
-
-func requestContent(req llm.ChatRequest) string {
-	var b strings.Builder
-	for _, msg := range req.Messages {
-		b.WriteString(msg.Content)
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
 
 func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {

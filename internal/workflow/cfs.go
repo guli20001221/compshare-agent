@@ -136,7 +136,7 @@ func stepConfirmCreateCFS() Step {
 			}
 			priceText := cfsCreatePriceText(priceResult)
 			if priceText == "" {
-				return nil, fmt.Errorf(missingWorkflowPriceMessage)
+				return nil, fmt.Errorf("%s", missingWorkflowPriceMessage)
 			}
 			args["price"] = priceText
 			return args, nil

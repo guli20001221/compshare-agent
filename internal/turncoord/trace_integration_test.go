@@ -37,9 +37,8 @@ func (w *captureDurableTraceWriter) Enqueue(tenant observability.TenantContext, 
 	return nil
 }
 
-func (*captureDurableTraceWriter) EmitStep(observability.StepTrace) error { return nil }
-func (*captureDurableTraceWriter) Dir() string                            { return "" }
-func (*captureDurableTraceWriter) Close(context.Context) error            { return nil }
+func (*captureDurableTraceWriter) Dir() string                 { return "" }
+func (*captureDurableTraceWriter) Close(context.Context) error { return nil }
 
 func (w *captureDurableTraceWriter) snapshot() []observability.TraceRecord {
 	w.mu.Lock()

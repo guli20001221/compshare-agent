@@ -91,11 +91,13 @@ the reply's wording or layout.
 ### RAG Evidence
 
 RAG is retrieval used **inside** the Agent loop, via the `SearchKnowledge` tool —
-not a terminal answer form. The Agent uses its complete transcript to resolve a
-follow-up and supplies one query directly; the runtime does not run a separate
-query-planning model or fan one call out into hidden retrieval variants.
-Retrieval (`internal/knowledge/`, qwen3 RRF) returns cited chunks the Agent
-grounds its answer in. Citation discipline is **fail-open**:
+not a terminal answer form. The Agent chooses when to search and supplies the
+user-facing retrieval intent. When a turn has prior conversation,
+`planKnowledgeQuery` may resolve references and produce 1–3 contextualized
+retrieval queries; planning failure, an empty plan, or a first-turn question
+falls back to the Agent-supplied query unchanged. Retrieval
+(`internal/knowledge/`, qwen3 RRF) returns cited chunks the Agent grounds its
+answer in. Citation discipline is **fail-open**:
 if the Agent cannot cite, the original answer ships with citation markers stripped
 — citation formatting never regenerates user-facing prose. The only hard stop is
 a raw-evidence leak (security). Citation-marker leakage into the final text is

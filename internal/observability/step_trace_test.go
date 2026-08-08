@@ -92,12 +92,6 @@ func TestRedactStepDerivedFields(t *testing.T) {
 	}
 }
 
-// Compile-time guard: *FileWriter still satisfies the widened Writer interface
-// (which now requires EmitStep). The no-op EmitStep returns nil in B6.1.
+// Compile-time guard: *FileWriter still satisfies the completed-turn Writer
+// interface.
 var _ Writer = (*FileWriter)(nil)
-
-func TestFileWriter_EmitStepNoop(t *testing.T) {
-	if err := (&FileWriter{}).EmitStep(StepTrace{}); err != nil {
-		t.Fatalf("FileWriter.EmitStep returned err=%v, want nil", err)
-	}
-}

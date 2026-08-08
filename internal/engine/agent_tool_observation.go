@@ -90,7 +90,7 @@ func agentToolObservation(action, raw string) string {
 		return tools.MarshalAgentToolResult(tools.AgentToolRetryLater(
 			action, toolObservationData(object), "DEPENDENCY_UNAVAILABLE", "服务端暂时无法校验所需资源，请稍后重试。", meta))
 	}
-	if _, hasError := object["error"]; hasError || boolField(object, "success") == false && hasField(object, "success") {
+	if _, hasError := object["error"]; hasError || (!boolField(object, "success") && hasField(object, "success")) {
 		return tools.MarshalAgentToolResult(tools.AgentToolFailure(
 			action, toolObservationData(object), "TOOL_REQUEST_FAILED", "工具未能完成本次请求。", meta))
 	}

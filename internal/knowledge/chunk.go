@@ -6,9 +6,9 @@ package knowledge
 //   - SurfaceURL is the public URL intended for a future user-facing citation
 //     path. Current production chunks emit this JSON field as null; Go now
 //     recognizes it but rendering still uses the legacy SourceURL branch.
-//   - SourceURL is legacy. Production W0 chunks do not carry it, and new chunks
-//     should leave it empty. A later renderer PR can switch user-facing links to
-//     SurfaceURL.
+//   - SourceURL is the legacy citation field. The deployed curated corpus still
+//     uses it, so readers retain it until that corpus has migrated to SurfaceURL;
+//     new chunks should use SurfaceURL instead.
 type KBChunk struct {
 	ChunkID          string   `json:"chunk_id"`
 	KBVersion        string   `json:"kb_version"`
@@ -27,8 +27,8 @@ type KBChunk struct {
 	// limit before the agent's local context limit runs. It is intentionally not
 	// persisted with the corpus: source chunks are always the canonical bodies.
 	ContentTruncated bool `json:"-"`
-	// Deprecated: SourceURL is legacy and must be empty in new chunks.
-	// Use SurfaceURL for user-facing public URLs.
+	// SourceURL is retained only for existing curated-corpus citations. New
+	// chunks should use SurfaceURL for user-facing public URLs.
 	SourceURL  string  `json:"source_url,omitempty"`
 	SurfaceURL *string `json:"surface_url,omitempty"`
 }

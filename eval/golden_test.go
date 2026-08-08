@@ -106,11 +106,6 @@ func billingExecutor() *goldenExecutor {
 
 type goldenScope string
 
-const (
-	goldenScopeEngine  goldenScope = "engine"
-	goldenScopeRealCLI goldenScope = "real_cli"
-)
-
 // multiInstanceExecutor returns a mock with three instances to exercise
 // disambiguation and explicit-ID routing in a way that is closer to the
 // real account state used in manual CLI validation.

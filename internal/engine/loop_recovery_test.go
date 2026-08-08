@@ -60,20 +60,6 @@ func (m *mockLLMSteps) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResp
 	return s.resp, nil
 }
 
-type deltaScriptLLM struct {
-	content string
-	deltas  []string
-}
-
-func (m deltaScriptLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	for _, delta := range m.deltas {
-		if req.OnTextDelta != nil {
-			req.OnTextDelta(delta)
-		}
-	}
-	return &llm.ChatResponse{Content: m.content}, nil
-}
-
 // keptVLLMHit is the kept (above-floor) SearchKnowledge hit the scripted
 // retriever returns; KBVersion is required by NewEvidence for synthesis.
 func keptVLLMHit() knowledge.RetrievalHit {

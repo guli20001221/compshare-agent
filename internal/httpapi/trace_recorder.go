@@ -125,6 +125,29 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	r.stateTrace = state
 }
 
+// SetEngineSnapshot records the content-free context and grounding facts the
+// Engine exposes after a turn. The durable recorder has always persisted this
+// snapshot at Finish; the ordinary HTTP path is the production path today, so
+// it must carry the same facts rather than leaving its trace rows structurally
+// less useful.
+//
+// The snapshot deliberately contains identifiers and closed-set outcomes only;
+// it does not add a prompt, reply, tool arguments, or transcript to trace
+// storage.
+func (r *chatTraceRecorder) SetEngineSnapshot(snapshot engine.TraceSnapshot) {
+	if r == nil {
+		return
+	}
+	r.record.Outcome.ContextSources = append([]string(nil), snapshot.ContextSources...)
+	r.record.Outcome.ResponseContract = snapshot.ResponseContract
+	r.record.Outcome.PromptSectionIDs = append([]string(nil), snapshot.PromptSectionIDs...)
+	r.record.Outcome.MemoryUpdateSource = snapshot.MemoryUpdateSource
+	r.record.Outcome.GroundingOutcome = snapshot.GroundingOutcome
+	r.record.Outcome.PromptMessagesRawPeak = snapshot.PromptMessagesRawPeak
+	r.record.Outcome.PromptMessagesAssembledPeak = snapshot.PromptMessagesAssembledPeak
+	r.record.Outcome.PromptMessagesCapApplied = snapshot.PromptMessagesCapApplied
+}
+
 func (r *chatTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
 	if r == nil {
 		return
@@ -321,6 +344,12 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	r.record.Outcome.TotalTokens = r.totalTokens
 	r.record.Outcome.PromptTokens = r.promptTokens
 	r.record.Outcome.CompletionTokens = r.completionTokens
+	if chatErr != nil {
+		// Keep HTTP trace semantics aligned with the durable recorder: a snapshot
+		// may describe the normal Agent contract that began the turn, but a failed
+		// turn did not deliver that contract.
+		r.record.Outcome.ResponseContract = "failure"
+	}
 	for _, call := range r.record.ToolCalls {
 		if call.TurnIndex == r.record.TurnIndex && call.Action == "GetCompShareInstanceMonitor" {
 			r.record.Freshness.MonitorCallInCurrentTurn = true

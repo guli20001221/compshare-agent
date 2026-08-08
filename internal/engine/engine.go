@@ -498,7 +498,7 @@ type Engine struct {
 	// turnContextViewThisTurn is the immutable understanding projection shared by
 	// routing fallbacks and the agent context card. It is rebuilt exactly once after
 	// turn-entry expiry/refresh and before the current user message is appended.
-	turnContextViewThisTurn TurnContextView
+	turnContextViewThisTurn AgentContext
 	turnContextViewReady    bool
 	// Bounded, content-free continuity metadata for the durable turn trace.
 	promptSectionIDsThisTurn   []string
@@ -1162,7 +1162,7 @@ func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage)
 		if !ok || !strings.EqualFold(strings.TrimSpace(result.Meta.Action), "DiagnoseBilling") {
 			continue
 		}
-		data, ok := result.Data.(map[string]any)
+		data, _ := result.Data.(map[string]any)
 		if delivered, _ := data["verbatim_delivered"].(bool); delivered {
 			return true
 		}
@@ -1899,21 +1899,6 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 	return agentruntime.Continue(), nil
 }
 
-// lastAssistantContent returns the most recent assistant message's text from
-// the in-memory Agent history, or "" if none.
-func (e *Engine) lastAssistantContent() string {
-	if e == nil {
-		return ""
-	}
-	for i := len(e.messages) - 1; i >= 0; i-- {
-		msg := e.messages[i]
-		if msg.Role == openai.ChatMessageRoleAssistant && msg.Content != "" {
-			return msg.Content
-		}
-	}
-	return ""
-}
-
 func evidencesFromRetrievalHits(items []knowledge.RetrievalHit, queryNormalized string) ([]envelope.Evidence, error) {
 	evidences := make([]envelope.Evidence, 0, len(items))
 	producedAt := time.Now().UTC()
@@ -1993,10 +1978,6 @@ func retrievalReferencesFromHits(items []knowledge.RetrievalHit, activityID stri
 		refs = append(refs, ref)
 	}
 	return refs
-}
-
-func retrievalReferencesFromLedger(ledger knowledge.EvidenceLedger, hits []knowledge.RetrievalHit, activityID string) []observability.RetrievalReference {
-	return retrievalReferencesFromLedgerActivities(ledger, hits, nil, activityID)
 }
 
 func retrievalReferencesFromLedgerActivities(ledger knowledge.EvidenceLedger, hits []knowledge.RetrievalHit, activityIDsByChunkID map[string][]string, fallbackActivityID string) []observability.RetrievalReference {
@@ -2218,43 +2199,11 @@ func rankingAmbiguousSpreadFor(hybridMode string) float64 {
 	}
 }
 
-const (
-	diagnosisMissingTargetClarificationReply = "请问是哪台实例出了问题？请提供实例 ID 或实例名称后我再继续排查。"
-	diagnosisVagueFailureClarificationReply  = "请问是哪台实例出了问题？也请描述一下具体是什么现象，例如 SSH 断了、GPU 报错、服务崩了或初始化卡住。"
-)
-
 func (e *Engine) emitRetrievalTrace(trace observability.RetrievalTrace) {
 	if e.retrievalTraceObserver == nil {
 		return
 	}
 	e.retrievalTraceObserver(trace)
-}
-
-func (e *Engine) emitFreshnessTrace(trace observability.FreshnessTrace) {
-	if e.freshnessTraceObserver == nil {
-		return
-	}
-	e.freshnessTraceObserver(trace)
-}
-
-func (e *Engine) emitDiagnosisTrace(trace observability.DiagnosisTrace) {
-	if e.diagnosisTraceObserver == nil {
-		return
-	}
-	e.diagnosisTraceObserver(trace)
-}
-
-func (e *Engine) emitOutcomeTrace(trace observability.OutcomeTrace) {
-	if e.outcomeTraceObserver == nil || !traceOutcomeObserved(trace) {
-		return
-	}
-	e.outcomeTraceObserver(trace)
-}
-
-func traceOutcomeObserved(trace observability.OutcomeTrace) bool {
-	return trace.AttemptedHallucinatedCount != 0 ||
-		trace.EscapedHallucinatedCount != 0 ||
-		trace.KBConflictCount != 0
 }
 
 func (e *Engine) emitTokenUsage(usage llm.TokenUsage) {
@@ -2297,13 +2246,6 @@ func tokenUsageTotal(usage llm.TokenUsage) int {
 		return usage.TotalTokens
 	}
 	return usage.PromptTokens + usage.CompletionTokens
-}
-
-func (e *Engine) emitRendererTrace(trace observability.RendererTrace) {
-	if e.rendererTraceObserver == nil {
-		return
-	}
-	e.rendererTraceObserver(trace)
 }
 
 type capabilityHandlerExecutor struct {
@@ -3579,9 +3521,6 @@ func formatHistoricalMonitorNoDataReply(start, end int64, targets []string) stri
 	return fmt.Sprintf("北京时间 %s ~ %s，%s 没有返回有效监控数据。不能判断该时间窗内的 CPU、内存、GPU 或显存占用，也不会用其他时间的数据替代。", startText, endText, targetText)
 }
 
-const monitorHistoryNeedTimeWindowMessage = "请补充要查询的历史监控时间范围，例如“昨天 8 点到 10 点”或“2026-05-08 01:00 到 02:00”。历史监控目前一次只支持查询一台实例，时间范围最长 24 小时。"
-const monitorHistoryNeedSingleInstanceMessage = "历史监控目前一次只支持查询一台实例，请指定一台实例后再查询。"
-
 func hasMonitorTimeRangeArgs(args map[string]any) bool {
 	if args == nil {
 		return false
@@ -4635,9 +4574,8 @@ func toolWindowRunes(tools []openai.Tool) int {
 //
 // Measured, with history at budget and a full replay window of transcript-
 // bearing turns: at the p90 tool-result size of 4142 runes, 20 expensive reads
-// assemble 142,856 runes and 30 assemble 184,696 — both past
-// measuredContextWindowFloorTokens, which is itself a floor rather than a known
-// window.
+// assemble 142,856 runes and 30 assemble 184,696 — both past the 130,000-token
+// lower-bound probe rather than a documented provider window.
 //
 // 100000 leaves 30,000 of that floor for the completion (terra is a reasoning
 // model and bills reasoning tokens), for the per-message wrapper overhead that a
@@ -4834,8 +4772,6 @@ func withEphemeralSystemBeforeLastUser(messages []openai.ChatCompletionMessage, 
 	out = append(out, messages[insertAt:]...)
 	return out
 }
-
-func traceBoolPtr(v bool) *bool { return &v }
 
 // PR9 removed ensureProjectId / externalExecutor / pickProjectId. The
 // auto-discovery path called ExternalExecutor.SetProjectId, which mutated

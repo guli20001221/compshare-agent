@@ -41,7 +41,7 @@ func TestCredentialNeverSerializes(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	renders := []string{
-		fmt.Sprintf("%v", c), fmt.Sprintf("%+v", c), fmt.Sprintf("%s", c), fmt.Sprintf("%#v", c),
+		fmt.Sprintf("%v", c), fmt.Sprintf("%+v", c), c.String(), fmt.Sprintf("%#v", c),
 		string(jsonBytes),
 		// nested in a struct / slice / map — the redaction must survive composition
 		fmt.Sprintf("%v", struct{ C Credential }{c}),

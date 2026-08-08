@@ -30,15 +30,3 @@ func toolListWithoutFunction(toolDefs []openai.Tool, name string) []openai.Tool 
 	}
 	return out
 }
-
-// toolCallsContain reports whether the model's response carried a tool call for the
-// named function. It detects a mandatory first-hop misfire and distinguishes a
-// context-aware direct answer from an actual retrieval.
-func toolCallsContain(calls []openai.ToolCall, name string) bool {
-	for _, tc := range calls {
-		if tc.Function.Name == name {
-			return true
-		}
-	}
-	return false
-}

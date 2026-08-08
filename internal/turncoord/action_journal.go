@@ -328,8 +328,7 @@ func (j *ActionJournal) recordDefiniteFailure(ctx context.Context, started store
 func actionContextHint(args, result map[string]any) json.RawMessage {
 	hint := store.ActionContextHint{}
 	seen := make(map[string]struct{})
-	collect := func(values map[string]any) {}
-	collect = func(values map[string]any) {
+	collect := func(values map[string]any) {
 		for key, value := range values {
 			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
 			switch normalized {

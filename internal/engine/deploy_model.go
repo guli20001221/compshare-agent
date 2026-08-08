@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"regexp"
 	"strings"
 
 	"github.com/compshare-agent/internal/actionresolver"
@@ -193,18 +192,6 @@ func (e *Engine) querySafeReadResult(ctx context.Context, action string, args ma
 
 // ── small pure helpers ──
 
-// extractJSONObject returns the first {...} block in s, stripping markdown code
-// fences and surrounding prose the model may add around the JSON decision.
-func extractJSONObject(s string) string {
-	s = strings.TrimSpace(s)
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start >= 0 && end > start {
-		return s[start : end+1]
-	}
-	return s
-}
-
 func truncateRunes(s string, n int) string {
 	r := []rune(strings.TrimSpace(s))
 	if len(r) <= n {
@@ -212,30 +199,3 @@ func truncateRunes(s string, n int) string {
 	}
 	return string(r[:n]) + "…"
 }
-
-// ── post-create usage guidance (B8.5: tell the user HOW to use the instance) ──
-
-// imageUsage is the chosen image's usage guidance, fetched read-only AFTER a
-// successful create. ports = app→port (the access endpoints); firewall = extra
-// open TCP ports; autoStart = services come up on their own; readme = the
-// community author's rich-text guide (platform Readme is always empty — verified
-// 2026-05-31, so only community populates it).
-type imageUsage struct {
-	ports     []softwarePort
-	firewall  []int
-	autoStart bool
-	readme    string
-}
-
-// softwarePort is one app↔port mapping from an image's SoftwarePorts.
-type softwarePort struct {
-	name string
-	port int
-}
-
-var (
-	mdImageRe      = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`) // markdown image: ![alt](url)
-	htmlTagRe      = regexp.MustCompile(`(?s)<[^>]+>`)          // any HTML tag incl. <iframe ...>
-	multiNewlineRe = regexp.MustCompile(`\n{3,}`)
-	multiSpaceRe   = regexp.MustCompile(` {2,}`)
-)

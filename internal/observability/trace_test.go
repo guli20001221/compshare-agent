@@ -279,7 +279,6 @@ func TestRetrievalTraceEmbeddingLatencyZeroIsNotOmitted(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
-func boolPtr(v bool) *bool    { return &v }
 
 // HybridMode alone must be enough to mark the retrieval block as observed —
 // otherwise a bm25_only retriever's trace would be silently dropped from the

@@ -792,24 +792,6 @@ func addSealedSecretCandidates(proposal actionresolver.ActionProposal, spec acti
 	return proposal
 }
 
-func (e *Engine) executeActionProposalShadow(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
-	resolved, err := e.resolveActionProposalShadow(ctx, args)
-	if err != nil {
-		onStep(StepEvent{Type: StepError, Action: tools.ProposeActionName, Source: observability.ToolSourceShadowOnly, Message: err.Error()})
-		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "ready_for_confirmation": false})
-		return string(payload)
-	}
-	raw, _ := json.Marshal(resolved.action)
-	var wire map[string]any
-	_ = json.Unmarshal(raw, &wire)
-	payload, _ := json.Marshal(security.RedactForLLM(wire))
-	var trace map[string]any
-	tracePayload, _ := json.Marshal(security.RedactForTrace(wire))
-	_ = json.Unmarshal(tracePayload, &trace)
-	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceShadowOnly, Message: "影子解析完成，未执行操作", TraceResult: trace})
-	return string(payload)
-}
-
 func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
 	if e.actionProposalRanThisTurn {
 		e.actionProposalDispositionThisTurn = "duplicate_write_proposal"

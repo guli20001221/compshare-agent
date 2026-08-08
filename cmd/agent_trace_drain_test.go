@@ -35,6 +35,5 @@ func TestObservabilityWriterInterface_HasCloseMethod(t *testing.T) {
 type noopWriter struct{}
 
 func (*noopWriter) Append(observability.TraceRecord) error { return nil }
-func (*noopWriter) EmitStep(observability.StepTrace) error { return nil }
 func (*noopWriter) Dir() string                            { return "" }
 func (*noopWriter) Close(context.Context) error            { return nil }

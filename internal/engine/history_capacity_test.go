@@ -62,10 +62,10 @@ func TestNoSourceListShadowsTheReplayBudget(t *testing.T) {
 // model's context window but agent.rate_limit.max_tokens_per_turn. A ceiling that
 // overflows it turns a memory fix into rate-limit rejections.
 func TestHistoryCeilingStaysUnderThePerTurnTokenCap(t *testing.T) {
-	// Runes and tokens are interchangeable here: the probe behind
-	// measuredContextWindowFloorTokens billed 130,000 CJK runes as 130,006 prompt
-	// tokens. The old form of this test used 675 tokens per MESSAGE, an estimate
-	// the pre-2026 comment had made up for a 40-message ceiling.
+	// Runes and tokens are interchangeable here: a 2026-08 probe billed 130,000
+	// CJK runes as 130,006 prompt tokens. The old form of this test used 675
+	// tokens per MESSAGE, an estimate the pre-2026 comment had made up for a
+	// 40-message ceiling.
 	const approxSystemPromptTok = 2000 // measured 1,932 via prompt.BuildSystemWithOptions
 	worstCase := maxRawHistoryRunes + approxSystemPromptTok
 

@@ -56,7 +56,6 @@ var (
 	contextReplaySet    = flag.String("context-replay-set", "", "path to replay_set_context_dependence.jsonl (never committed: real user text)")
 	contextReplayOut    = flag.String("context-replay-out", "", "path to write per-turn results (never under the repo)")
 	contextReplayLimit  = flag.Int("context-replay-limit", 30, "max sessions to replay")
-	contextReplayStrat  = flag.String("context-replay-stratum", "both", "knowledge | account | both")
 	contextReplayArmB   = flag.Bool("context-replay-arm-b", false, "flip the canonical transcript in arm B (A/B). Default off = A/A noise floor")
 	contextReplayConfig = flag.String("context-replay-config", "", "deploy baseline to run against")
 	contextReplayTopOrg = flag.Uint64("context-replay-top-org", 0, "TEST account top_organization_id (required)")
@@ -104,10 +103,6 @@ type replayTurn struct {
 	Millis       int64    `json:"millis"`
 }
 
-// accountStateTool marks a tool whose result depends on live account state that
-// a replay cannot reproduce. Derived from the production trace survey, not
-// guessed: these are the actions that dominated the 35.7% account-dependent
-// turns.
 // transportFailure reports whether an error is the network failing rather than
 // the product answering.
 //
@@ -140,15 +135,6 @@ func transportFailure(err error) bool {
 // dropped whole. A half-failed session is worse than a missing one: it looks
 // like data.
 var errSessionUnusable = errors.New("session unusable: transport failed after retries")
-
-func accountStateTool(action string) bool {
-	for _, marker := range []string{"Instance", "Disk", "Monitor", "Snapshot", "Image", "Order", "Price", "Balance", "Bill"} {
-		if strings.Contains(action, marker) {
-			return true
-		}
-	}
-	return false
-}
 
 func loadReplaySet(t *testing.T, path string) []replayCase {
 	t.Helper()
