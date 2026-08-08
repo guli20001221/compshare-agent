@@ -19,9 +19,8 @@ func (w *captureWriter) Append(record observability.TraceRecord) error {
 	w.records = append(w.records, record)
 	return nil
 }
-func (*captureWriter) EmitStep(observability.StepTrace) error { return nil }
-func (*captureWriter) Dir() string                            { return "" }
-func (*captureWriter) Close(context.Context) error            { return nil }
+func (*captureWriter) Dir() string                 { return "" }
+func (*captureWriter) Close(context.Context) error { return nil }
 
 func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	writer := &captureWriter{}

@@ -176,9 +176,8 @@ func (w *durableWSTraceWriter) Append(record observability.TraceRecord) error {
 func (w *durableWSTraceWriter) Enqueue(_ observability.TenantContext, record observability.TraceRecord) error {
 	return w.Append(record)
 }
-func (*durableWSTraceWriter) EmitStep(observability.StepTrace) error { return nil }
-func (*durableWSTraceWriter) Dir() string                            { return "" }
-func (*durableWSTraceWriter) Close(context.Context) error            { return nil }
+func (*durableWSTraceWriter) Dir() string                 { return "" }
+func (*durableWSTraceWriter) Close(context.Context) error { return nil }
 func (w *durableWSTraceWriter) snapshot() []observability.TraceRecord {
 	w.mu.Lock()
 	defer w.mu.Unlock()

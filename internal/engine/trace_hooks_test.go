@@ -34,19 +34,25 @@ func TestAttachTraceHooksWiresEveryEngineObserver(t *testing.T) {
 
 func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 	eng := &Engine{
-		turnContextViewThisTurn: TurnContextView{
+		turnContextViewThisTurn: AgentContext{
 			CurrentQuestion:    "secret question",
 			RecentConversation: []ConversationPair{{User: "secret user", Assistant: "secret answer"}},
 			ContinuityNotices:  []string{"secret notice"},
 		},
-		promptSectionIDsThisTurn:   []string{"identity", "knowledge_turn_policy", "user_state"},
-		memoryUpdateSourceThisTurn: memoryUpdateStructured,
-		groundingOutcomeThisTurn:   groundingSupported,
+		promptSectionIDsThisTurn:            []string{"identity", "knowledge_turn_policy", "user_state"},
+		memoryUpdateSourceThisTurn:          memoryUpdateStructured,
+		groundingOutcomeThisTurn:            groundingSupported,
+		promptMessagesRawPeakThisTurn:       12,
+		promptMessagesAssembledPeakThisTurn: 9,
+		promptMessagesCapAppliedThisTurn:    true,
 	}
 	snapshot := eng.TraceSnapshot(time.Now())
 	require.Equal(t, []string{"recent_pairs", "notices"}, snapshot.ContextSources)
 	require.Equal(t, string(ResponseAgent), snapshot.ResponseContract)
 	require.Equal(t, []string{"identity", "knowledge_turn_policy", "user_state"}, snapshot.PromptSectionIDs)
+	require.Equal(t, 12, snapshot.PromptMessagesRawPeak)
+	require.Equal(t, 9, snapshot.PromptMessagesAssembledPeak)
+	require.True(t, snapshot.PromptMessagesCapApplied)
 	require.Equal(t, memoryUpdateStructured, snapshot.MemoryUpdateSource)
 	require.Equal(t, groundingSupported, snapshot.GroundingOutcome)
 	for _, value := range append(append([]string{}, snapshot.ContextSources...), snapshot.PromptSectionIDs...) {

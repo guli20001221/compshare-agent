@@ -165,8 +165,6 @@ func (w *captureTraceWriter) Enqueue(tenant observability.TenantContext, record 
 	return nil
 }
 
-func (w *captureTraceWriter) EmitStep(observability.StepTrace) error { return nil }
-
 func (w *captureTraceWriter) Dir() string { return "" }
 
 func (w *captureTraceWriter) Close(context.Context) error { return nil }
@@ -347,6 +345,12 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	assert.Equal(t, 3, trace.Outcome.TotalTokens)
 	assert.Equal(t, 1, trace.Outcome.PromptTokens)
 	assert.Equal(t, 2, trace.Outcome.CompletionTokens)
+	// This is the production HTTP wiring check for the content-free engine
+	// snapshot. Recorder-only tests cannot detect a future omission of
+	// SetEngineSnapshot from chatStream's finish path.
+	assert.Equal(t, "agent", trace.Outcome.ResponseContract)
+	assert.Greater(t, trace.Outcome.PromptMessagesRawPeak, 0)
+	assert.Greater(t, trace.Outcome.PromptMessagesAssembledPeak, 0)
 	assert.GreaterOrEqual(t, trace.Outcome.TotalLatencyMS, int64(0))
 	assert.Equal(t, int64(7), tenant.TopOrgID)
 	assert.Equal(t, int64(8), tenant.OrgID)

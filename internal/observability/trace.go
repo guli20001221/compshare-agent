@@ -56,33 +56,19 @@ type WriterOptions struct {
 	Now func() time.Time
 }
 
-// Writer is the trace sink abstraction. Implementations:
-//   - FileWriter: append JSONL files under <dir>/<date>.jsonl (CLI default,
-//     unchanged behavior).
-//   - MySQLWriter: insert rows into agent_traces (server default, A4).
-//
-// The method name "Append" (not "Write") is deliberate: it matches the
-// pre-A4 *FileWriter.Append signature so existing cmd/trace.go call sites
-// (e.g. cliTraceRecorder.writer.Append at cmd/trace.go) work unchanged
-// after the type-of-variable swap from *FileWriter to Writer.
+// Writer is the trace sink abstraction. Implementations append one completed
+// turn record: FileWriter writes JSONL under <dir>/<date>.jsonl and MySQLWriter
+// inserts into agent_traces. Workflow steps are accumulated by the per-turn
+// recorder before that single write; sinks do not receive independent step
+// events.
 //
 // Dir() returns the on-disk root for file-backed implementations. Backends
 // without an on-disk dir (MySQLWriter) return "" so the existing trace-dir
-// cleanup logic can skip them.
-//
-// Close is invoked at process shutdown so MySQLWriter can drain its buffered
-// queue. FileWriter has no long-lived resources and returns nil immediately.
+// cleanup logic can skip them. Close is invoked at process shutdown so
+// MySQLWriter can drain its buffered queue; FileWriter has no long-lived
+// resources and returns nil immediately.
 type Writer interface {
 	Append(record TraceRecord) error
-	// EmitStep is a reserved no-op hook on the sink. Workflow step
-	// step accumulation in the per-turn RECORDER (cmd/trace.go
-	// cliTraceRecorder.EmitStep, internal/httpapi/trace_recorder.go
-	// chatTraceRecorder.EmitStep), NOT here: both sinks write the turn row
-	// ONCE at Append/Enqueue, so steps are folded into TraceRecord.Steps[] in
-	// memory and persisted with that single write (never a per-step INSERT —
-	// that would collide uk_request_uuid, one agent_traces row per turn). This
-	// method stays for a future streaming sink that wants per-step delivery.
-	EmitStep(step StepTrace) error
 	Dir() string
 	Close(ctx context.Context) error
 }
@@ -1026,6 +1012,12 @@ type OutcomeTrace struct {
 	PromptSectionIDs   []string `json:"prompt_section_ids,omitempty"`
 	MemoryUpdateSource string   `json:"memory_update_source,omitempty"`
 	GroundingOutcome   string   `json:"grounding_outcome,omitempty"`
+	// PromptMessages* are content-free context-assembly telemetry. They show
+	// whether the final request had to shed prior messages, without storing the
+	// prompt or transcript itself. Prompt token usage remains in PromptTokens.
+	PromptMessagesRawPeak       int  `json:"prompt_messages_raw_peak,omitempty"`
+	PromptMessagesAssembledPeak int  `json:"prompt_messages_assembled_peak,omitempty"`
+	PromptMessagesCapApplied    bool `json:"prompt_messages_cap_applied,omitempty"`
 	// TerminatedBy / AbortCause / ErrorClass / Resolution are the four
 	// outcome-attribution axes derived at Finish (see outcome.go). They close the
 	// "no attribution on ~25% of turns" dark hole. TerminatedBy is always set for a
@@ -1089,11 +1081,6 @@ func (w *FileWriter) Dir() string {
 // no buffered state to drain. Provided so FileWriter satisfies the Writer
 // interface alongside MySQLWriter.
 func (w *FileWriter) Close(_ context.Context) error { return nil }
-
-// EmitStep is a no-op on the file sink. Agent-tier saga steps are accumulated
-// in the per-turn recorder (cliTraceRecorder.EmitStep) and persisted with the
-// single Append at turn Finish — see the Writer.EmitStep interface doc.
-func (w *FileWriter) EmitStep(StepTrace) error { return nil }
 
 func (w *FileWriter) Append(record TraceRecord) error {
 	now := w.now()
@@ -1321,6 +1308,9 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		len(trace.PromptSectionIDs) > 0 ||
 		trace.MemoryUpdateSource != "" ||
 		trace.GroundingOutcome != "" ||
+		trace.PromptMessagesRawPeak != 0 ||
+		trace.PromptMessagesAssembledPeak != 0 ||
+		trace.PromptMessagesCapApplied ||
 		trace.ActionProposalDisposition != ""
 }
 

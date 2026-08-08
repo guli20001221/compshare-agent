@@ -79,16 +79,6 @@ func (m multiTraceWriter) Append(rec observability.TraceRecord) error {
 	return nil
 }
 
-func (m multiTraceWriter) EmitStep(step observability.StepTrace) error {
-	var firstErr error
-	for _, w := range m {
-		if err := w.EmitStep(step); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
 func (m multiTraceWriter) Enqueue(tenant observability.TenantContext, rec observability.TraceRecord) error {
 	for _, w := range m {
 		if enqueuer, ok := w.(interface {

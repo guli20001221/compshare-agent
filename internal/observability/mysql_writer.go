@@ -171,13 +171,6 @@ func (w *MySQLWriter) Enqueue(tenant TenantContext, record TraceRecord) error {
 	}
 }
 
-// EmitStep is a no-op on the MySQL sink. Agent-tier saga steps are accumulated
-// in the per-turn recorder (chatTraceRecorder.EmitStep) and persisted inside
-// trace_json with the single Enqueue at turn Finish — never a per-step INSERT
-// (that would collide uk_request_uuid: one agent_traces row per turn). See the
-// Writer.EmitStep interface doc.
-func (w *MySQLWriter) EmitStep(StepTrace) error { return nil }
-
 // Dir satisfies the Writer interface. MySQLWriter has no on-disk dir so the
 // trace-dir cleanup logic in cmd/trace.go can skip it cleanly.
 func (w *MySQLWriter) Dir() string { return "" }
