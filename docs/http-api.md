@@ -53,7 +53,7 @@ HTTP 状态码与 `Code` 一一对应：
 | 401 | `Unauthorized` | 未登录 / token 失效 |
 | 403 | `Forbidden` | 无权访问该会话 / 资源 |
 | 404 | `NotFound` | 资源不存在（会话、消息、反馈） |
-| 409 | `SessionTurnLimitExceeded` | 仅兼容模式：本会话轮数已达上限（默认 10 问答对），需新开 session |
+| 409 | `SessionTurnLimitExceeded` | 仅兼容模式：本会话轮数已达上限（默认 20 问答对），需新开 session |
 | 429 | `RateLimited` | 触发限流（按 `(top_organization_id, organization_id)` 计） |
 | 500 | `InternalError` | 后端未预期错误 |
 | 502 | `ModelError` | LLM 上游错误 |

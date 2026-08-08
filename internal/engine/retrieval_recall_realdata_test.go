@@ -64,16 +64,6 @@ func realCorpusRecallNow() time.Time {
 	return time.Date(2026, 7, 16, 12, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
 }
 
-func requireRecallChunkID(t *testing.T, result knowledge.RetrievalResult, chunkID string) {
-	t.Helper()
-	for _, hit := range result.HitItems {
-		if hit.Chunk.ChunkID == chunkID {
-			return
-		}
-	}
-	t.Fatalf("expected retrieved chunk %q in top hits, got %s", chunkID, recallChunkIDs(result))
-}
-
 func requireRecallText(t *testing.T, result knowledge.RetrievalResult, needle string) {
 	t.Helper()
 	for _, hit := range result.HitItems {

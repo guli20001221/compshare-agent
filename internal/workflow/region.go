@@ -163,7 +163,7 @@ const missingWorkflowPriceMessage = "未获取到价格，无法安全确认，�
 
 func requiredPriceField(result map[string]any, key string) (float64, error) {
 	if result == nil {
-		return 0, fmt.Errorf(missingWorkflowPriceMessage)
+		return 0, fmt.Errorf("%s", missingWorkflowPriceMessage)
 	}
 	raw, exists := result[key]
 	if exists {
@@ -186,5 +186,5 @@ func requiredPriceField(result map[string]any, key string) (float64, error) {
 			}
 		}
 	}
-	return 0, fmt.Errorf(missingWorkflowPriceMessage)
+	return 0, fmt.Errorf("%s", missingWorkflowPriceMessage)
 }

@@ -40,7 +40,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.D
 		return nil, false, fmt.Errorf("apply shared deps from env: %w", err)
 	}
 	// Wire the consent-gated SSH-ops runner (server path). Off by default; the gate returns nil with a
-	// logged reason unless SSH_OPS + durable + per-tenant STS + a DB all hold (see serverInstanceOpsRunner).
+	// logged reason unless SSH_OPS + per-tenant STS + a DB all hold (see serverInstanceOpsRunner).
 	// deps.ExternalExecutor (a tools.ToolExecutor) satisfies sshops.Describer for the credential fetch.
 	instanceOps, err := serverInstanceOpsRunner(cfg, getenv, deps.ExternalExecutor, db)
 	if err != nil {

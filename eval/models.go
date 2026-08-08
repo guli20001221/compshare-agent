@@ -54,10 +54,6 @@ func Models() []ModelConfig {
 	}
 }
 
-func localProxyKey(envKey string) string {
-	return envKey
-}
-
 // FindModel returns the ModelConfig matching the given model ID or name, or nil.
 func FindModel(nameOrID string) *ModelConfig {
 	for _, m := range Models() {

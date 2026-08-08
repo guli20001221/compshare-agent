@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository
 
-Go 1.22 assistant service ("优云算力共享 AI 助手") for the CompShare GPU platform. Single binary built from `cmd/`, with Python scripts under `scripts/rag_w0/` used only to build/eval the RAG corpus.
+Go 1.25 assistant service ("优云算力共享 AI 助手") for the CompShare GPU platform. Single binary built from `cmd/`, with Python scripts under `scripts/rag_w0/` used only to build/eval the RAG corpus.
 
 ## Build & run
 
@@ -18,7 +18,7 @@ go build -o agent.exe ./cmd            # Windows / cross-build via GOOS
 
 There is **no interactive `cli` subcommand**. It was a pre-production demo and was deleted once it
 had been established that nothing in production used it: every symbol it defined was referenced only
-by itself and its own tests, and its `cliTraceRecorder` was a duplicate of the server's
+by itself and its own tests, including a duplicate of the server's
 `internal/httpapi/trace_recorder.go`. It had also been silently broken — `cliUserContextFromConfig`
 installed no `tools.UserContext` unless `agent.sts.default_role_urn` or `COMPSHARE_USER_EMAIL` was
 set, and the shipped config sets neither while `public_key`/`private_key` are empty, so every
@@ -162,7 +162,7 @@ Boundary rule baked into prompts: read-only self-check commands may be suggested
 - Current upstream initialization state is `Initializing`; legacy `Install` is accepted only for response compatibility. CPU/memory/system-disk monitoring values are risk signals, not causal proof. Missing monitoring data must surface as "无法确认", never as 0%/healthy.
 
 ### Observability (`internal/observability/`)
-`observability.Writer` writes one JSONL line per turn. `chatTraceRecorder` in `internal/httpapi/trace_recorder.go` is the bridge that wires retrieval, renderer, tool, workflow and token-usage observations into the writer; `cmd/trace.go` only builds the writer (`traceWriterFromEnv`, `multiTraceWriter`) and parses the runtime flags. A second, CLI-only recorder used to live in `cmd/trace.go` and was deleted with the CLI — note its ~20 tests went with it, so the surviving server recorder is thinly covered (2 tests) relative to the behaviour it carries. Retention: `DefaultTraceRetentionDays`, cleaned on each run. Historical router fields remain readable for old trace records but are no longer produced by the current runtime.
+`observability.Writer` writes one completed-turn record (JSONL or PostgreSQL). `chatTraceRecorder` in `internal/httpapi/trace_recorder.go` wires retrieval, renderer, tool, workflow, token-usage and the Engine's content-free context snapshot into that record; `cmd/trace.go` only builds the writer (`traceWriterFromEnv`, `multiTraceWriter`) and parses runtime flags. Workflow steps remain on the per-turn recorder and are folded into the same completed-turn record — trace sinks never receive independent step events. Trace intentionally does not persist raw prompts, replies, tool payloads, or canonical transcripts; use the authorized message/transcript records for a semantic incident investigation. It does retain context-source IDs, prompt-section IDs, message-assembly peaks and trim status so request-shape failures can be diagnosed without making trace a second conversation database. Retention: `DefaultTraceRetentionDays`, cleaned on each run. Historical router fields remain readable for old trace records but are no longer produced by the current runtime.
 
 ### Other notable boundaries
 - `internal/security/secret_boundary.go` + `internal/sanitizer/` — keep redaction logic centralized; do not inline new redaction in tools.

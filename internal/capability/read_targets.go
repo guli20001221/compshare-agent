@@ -119,7 +119,6 @@ func warmedResolver(ctx context.Context, rt ReadRuntime) (EntityResolver, bool) 
 // resolveTargetsAgainst is the pure matching pass: one specific resolver, no
 // upstream calls, no retry.
 func resolveTargetsAgainst(refs []platform.TargetRef, resolver EntityResolver, now time.Time) ([]entity.InstanceSnapshot, []string, *platform.ReadFallbackReason) {
-	ids := make([]string, 0, len(refs))
 	instances := make([]entity.InstanceSnapshot, 0, len(refs))
 	for _, ref := range refs {
 		switch ref.Type {
@@ -129,13 +128,11 @@ func resolveTargetsAgainst(refs []platform.TargetRef, resolver EntityResolver, n
 				if !resolver.CanAssertAbsenceAt(now) {
 					// Unverifiable locally, not absent: pass the exact id through so
 					// the caller's DescribeCompShareInstance point-query decides.
-					ids = append(ids, ref.Value)
 					instances = append(instances, entity.InstanceSnapshot{UHostId: ref.Value})
 					continue
 				}
 				return nil, nil, fallbackReason(platform.ReadFallbackUnresolvedTarget)
 			}
-			ids = append(ids, inst.UHostId)
 			instances = append(instances, *inst)
 		case platform.TargetRefName:
 			matches, res := resolver.ResolveByName(ref.Value)
@@ -145,14 +142,13 @@ func resolveTargetsAgainst(refs []platform.TargetRef, resolver EntityResolver, n
 			if res.Status != entity.ResolveHit || len(matches) == 0 || matches[0] == nil {
 				return nil, nil, fallbackReason(platform.ReadFallbackUnresolvedTarget)
 			}
-			ids = append(ids, matches[0].UHostId)
 			instances = append(instances, *matches[0])
 		default:
 			return nil, nil, fallbackReason(platform.ReadFallbackValidation)
 		}
 	}
 	instances = dedupeInstanceSnapshots(instances)
-	ids = make([]string, 0, len(instances))
+	ids := make([]string, 0, len(instances))
 	for _, inst := range instances {
 		ids = append(ids, inst.UHostId)
 	}

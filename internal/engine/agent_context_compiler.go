@@ -29,16 +29,6 @@ func cloneEntityHints(in []SemanticEntityHint) []SemanticEntityHint {
 	return out
 }
 
-func safeContextItems(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, value := range in {
-		if value = safeContextText(value); value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
 func safeContextText(value string) string {
 	return compactSemanticText(security.RedactOperationalTokensInText(value))
 }

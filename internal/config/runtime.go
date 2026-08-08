@@ -27,7 +27,7 @@ type FeaturesConfig struct {
 	DurableTurns          *bool `yaml:"durable_turns"`           // COMPSHARE_DURABLE_TURNS (server-only, default off)
 	ConfirmForm           *bool `yaml:"confirm_form"`            // COMPSHARE_CONFIRM_FORM (server-only, default off)
 	GuidedCreate          *bool `yaml:"guided_create"`           // COMPSHARE_GUIDED_CREATE (server-only, default off)
-	CanonicalTranscript   *bool `yaml:"canonical_transcript"`    // COMPSHARE_CANONICAL_TRANSCRIPT (default off everywhere)
+	CanonicalTranscript   *bool `yaml:"canonical_transcript"`    // COMPSHARE_CANONICAL_TRANSCRIPT (Go default off; deploy config enables it)
 	ReactResultProjection *bool `yaml:"react_result_projection"` // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
 }
 

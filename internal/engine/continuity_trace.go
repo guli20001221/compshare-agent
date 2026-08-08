@@ -17,7 +17,7 @@ const (
 	groundingUnavailable = "unavailable"
 )
 
-func contextSourceIDs(view TurnContextView) []string {
+func contextSourceIDs(view AgentContext) []string {
 	ids := make([]string, 0, 5)
 	if len(view.RecentConversation) > 0 {
 		ids = append(ids, "recent_pairs")

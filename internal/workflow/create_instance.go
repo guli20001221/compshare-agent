@@ -2520,7 +2520,7 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	// a live capture — the reason this is a no-op on all four charge types the form
 	// offers rather than a new failure mode for three of them).
 	if snapshot.EstimatedPrice == nil {
-		return nil, fmt.Errorf(missingWorkflowPriceMessage)
+		return nil, fmt.Errorf("%s", missingWorkflowPriceMessage)
 	}
 	// The price the card shows is the snapshot's, verbatim — the same string that
 	// gets sealed. It already carries 预估, because upstream cannot hold a price and

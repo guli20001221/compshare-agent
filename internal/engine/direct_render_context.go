@@ -34,21 +34,6 @@ type AgentContext struct {
 	BuiltAtUnix        int64
 }
 
-// TurnContextView remains as a source-compatible name while callers migrate to
-// the owner name. It is not a second representation.
-type TurnContextView = AgentContext
-
-// measuredContextWindowFloorTokens is a LOWER BOUND on gpt-5.6-terra's context
-// window, established by probe rather than by a published figure: on 2026-08-05 a
-// 130,000-rune CJK prompt was accepted and billed 130,006 prompt tokens. That
-// second number is the more useful half — 1 CJK rune is 1 token exactly, so runes
-// and tokens are interchangeable in the derivation below, and the older note
-// calling 1:1 "deliberately conservative" was describing a measurement it had not
-// taken. Nothing in the codebase reads a model's real window (there is no such
-// field anywhere), so this is the only bound available; treat it as a floor that
-// a larger probe may raise, never as the window itself.
-const measuredContextWindowFloorTokens = 130000
-
 // maxReplayedHistoryRunes is the canonical history-detail budget. All complete
 // user/assistant exchanges remain in the derived history while their plain text
 // fits this budget; only older tool-call/tool-result detail is compacted first.
@@ -119,17 +104,6 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	}
 	view.SelectedEntities = cloneEntityHints(view.SelectedEntities)
 	return cloneAgentContext(view)
-}
-
-func (e *Engine) buildTurnContextView(userMsg string) TurnContextView {
-	return (ContextCompiler{}).Compile(e, userMsg, time.Now())
-}
-
-func (e *Engine) contextViewForTurn(userMsg string) TurnContextView {
-	if e != nil && e.turnContextViewReady && e.turnContextViewThisTurn.CurrentQuestion == safeContextText(userMsg) {
-		return e.turnContextViewThisTurn
-	}
-	return e.buildTurnContextView(userMsg)
 }
 
 // recentCompleteConversationForTaskSpec projects only complete plain-text

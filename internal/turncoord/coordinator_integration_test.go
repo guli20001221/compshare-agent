@@ -14,7 +14,6 @@ import (
 
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/guardrails"
-	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
@@ -1601,16 +1600,6 @@ type coordinatorNoopExecutor struct{}
 
 func (coordinatorNoopExecutor) Execute(context.Context, string, map[string]any) (map[string]any, error) {
 	return map[string]any{}, nil
-}
-
-type coordinatorLLM struct{ calls atomic.Int32 }
-
-func (l *coordinatorLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	l.calls.Add(1)
-	if req.OnTextDelta != nil {
-		req.OnTextDelta("answer")
-	}
-	return &llm.ChatResponse{Content: "answer"}, nil
 }
 
 // describeTurnForWaitFailure renders what the turn was actually doing when a
