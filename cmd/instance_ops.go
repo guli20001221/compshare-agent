@@ -80,6 +80,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 			Kind:        engine.InstanceOpsProgressCommand,
 			Command:     st.Command,
 			Disposition: st.Disposition,
+			Reason:      st.Reason,
 			ExitCode:    st.ExitCode,
 			Bytes:       st.Bytes,
 		})

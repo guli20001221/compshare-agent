@@ -221,7 +221,7 @@ func instanceOpsCommandStep(action string, p InstanceOpsProgress) StepEvent {
 		}
 	case "refused":
 		stepType = StepBlocked
-		msg = fmt.Sprintf("`%s` → 已拒绝：%s", cmd, instanceOpsRefusalReason())
+		msg = fmt.Sprintf("`%s` → 已拒绝：%s", cmd, instanceOpsRefusalReason(p.Reason))
 	default: // "failed" and any unexpected value → honest failure on the constant sink
 		stepType = StepBlocked
 		msg = fmt.Sprintf("`%s` → 执行失败", cmd)
@@ -270,7 +270,30 @@ func instanceOpsPhaseNoun() string {
 // A refusal in write mode is NOT "只读模式" — that wording sent the operator looking for a switch
 // that was already on. In write mode the only refusals left are the destructive tier and the shape
 // gate, so the reason has to name those instead.
-func instanceOpsRefusalReason() string {
+//
+// And "those" is plural, which is the whole problem the `reason` argument fixes. The harness writes
+// six distinct dispositions and the wire carried three, so this function had nothing to read and
+// answered every write-mode refusal with one sentence covering the destructive tier, the shape gate,
+// an over-long command and a card the operator declined. 「属于高危操作或命令形式不被接受」 is not a
+// fact anyone can act on: the operator cannot tell a policy refusal from their own click, and the
+// model cannot tell "never going to work" from "resend it split in two" — measured in #516's class,
+// where an unactionable refusal made the run delete half its own probe chain and retry.
+//
+// An unknown or empty reason keeps exactly the previous wording, so a server ahead of the harness
+// (or behind it) degrades instead of printing a blank.
+func instanceOpsRefusalReason(reason string) string {
+	switch reason {
+	case "refused_destructive":
+		return "属于高危操作，已硬性拒绝"
+	case "refused_form":
+		return "命令形式不被接受（含命令替换或多行），需拆成单条命令重发"
+	case "refused_not_approved":
+		return "你未批准这条命令"
+	case "refused_unconfirmable":
+		return "命令过长，无法完整展示在确认卡上"
+	case "refused_mutating_phase1":
+		return "会修改实例环境（只读模式）"
+	}
 	if tools.InstanceOpsWritesEnabled() {
 		return "属于高危操作或命令形式不被接受"
 	}

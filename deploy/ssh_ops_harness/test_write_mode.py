@@ -174,18 +174,32 @@ check("write-tool-desc-drops-false-shape-clause",
 check("write-tool-desc-teaches-detach", "> /path/to/log 2>&1 &" in harness.tool_description(True))
 check("write-tool-desc-says-nohup-insufficient", "`nohup` alone does not" in harness.tool_description(True))
 
-# --- the second skill: write mode gets a repair playbook, read-only mode must not -----------------
-# instance-triage is read-only THROUGHOUT (H1, opening job definition, and its section-4 verdict
-# template), so one OVERRIDE clause in the system prompt does not settle it — the observed failure
-# was 「请授权我执行安全修复」, i.e. that template executed faithfully AFTER repair was authorized.
+# --- instance-repair is GONE (2026-08-08) --------------------------------------------------------
+# It existed to arbitrate one contradiction: instance-triage is read-only THROUGHOUT (H1, opening job
+# definition, section-4 verdict template), so a write-authorized run following it faithfully produced
+# 「请授权我执行安全修复」 after repair was already authorized. That arbitration then moved OUT of the
+# skills entirely — SYSTEM_PROMPT_WRITE names no skill at all (`write-prompt-names-no-skill` above).
+# What was left was a 6.9 KB playbook that nothing told the model to open and that the only
+# write-mode prompt could not refer to: unreachable by construction, not merely unloaded.
+#
+# The earlier "keeping the files costs nothing" note was true about COST and wrong about the question
+# it was preserving. The unresolved A/B it wanted to protect was about instance-TRIAGE (files removed
+# and the prompt mention removed in the same change, so the cause was ambiguous). That skill is still
+# here and still staged. Deleting the repair one moves no variable in that experiment.
 check("readonly-skills-unchanged", harness.skills_for(False) == ["instance-triage"])
-check("write-skills-add-repair", harness.skills_for(True) == ["instance-triage", "instance-repair"])
+check("write-skills-no-longer-add-repair", harness.skills_for(True) == ["instance-triage"])
 check("readonly-prompt-has-no-repair-skill", "instance-repair" not in harness.system_prompt(False))
-# The skills are still STAGED for both modes (asserted just above) even though the prompts no longer
-# mention the repair one. That is deliberate: the census proves the model does not load them, but the
-# two A/Bs that removed the files ALSO removed the read-only prompt's one-line mention, so which of
-# the two caused the measured regression is unresolved. Keeping the files costs nothing and changes
-# no observed behaviour; deleting them would be a second variable moved on no evidence.
+check("repair-skill-file-is-gone",
+      not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(harness.__file__)),
+                                      "skills", "instance-repair")))
+# The read-only prompt no longer tells the model to load a skill either. That sentence instructed an
+# action the census shows never happens (89 tool calls over 11 runs, 0 Skill), and a prompt that
+# asserts a playbook was consulted invites answering as though one had been.
+check("readonly-prompt-does-not-claim-skill-load",
+      "skill" not in harness.system_prompt(False).lower())
+# ...but the skill is still AVAILABLE. Not claiming it loads is different from removing the tool that
+# could load it, and the difference is what keeps the never-run injection experiment cheap.
+check("skill-tool-still-offered", harness.TOOLS_BASE == ["Skill"])
 
 # --- the lane repairs what it was asked about, and recommends the rest (2026-07-31) --------------
 # Two live frontend runs went past the request. On one the lane moved /workspace/ComfyUI aside and
@@ -236,17 +250,14 @@ check("prompt-does-not-delegate-verdict-to-skill",
 check("prompt-within-verified-length-band", len(_wp) < 6000)
 check("readonly-prompt-untouched-by-repair-rules", "start it the way the image starts it" not in harness.tool_description(False))
 
-_repair = os.path.join(os.path.dirname(os.path.abspath(harness.__file__)),
-                       "skills", "instance-repair", "SKILL.md")
-_repair_text = open(_repair, encoding="utf-8").read()
-# The three things this skill exists to fix. Asserted on content, not on the file existing: an empty
-# skill would load fine and change nothing.
-check("repair-skill-replaces-section-4", "replaces `instance-triage` section 4" in _repair_text)
-check("repair-skill-has-executed-section", "已执行的修复" in _repair_text)
-check("repair-skill-teaches-redirect", "> /path/to/some.log 2>&1 &" in _repair_text)
-check("repair-skill-says-nohup-insufficient", "`nohup` on its own is **not enough**" in _repair_text)
-check("repair-skill-owns-failed-attempts",
-      "report it as your own failed attempt" in _repair_text)
+# The four rules the deleted instance-repair skill carried now have to live where the model actually
+# reads them, or deleting it lost something. Each is asserted against the live prompt/description
+# rather than against a file, which is the whole point of the move.
+check("repair-rule-executed-section-survives", "已执行的修复" in _wp)
+check("repair-rule-redirect-survives", "> /path/to/log 2>&1 &" in _td)
+check("repair-rule-nohup-insufficient-survives", "`nohup` alone does not" in _td)
+check("repair-rule-own-failed-attempts-survives",
+      "INCLUDING any that failed" in _wp and "labelled as your own attempt" in _wp)
 
 # Staging is the real boundary, not the `skills=` list: the CLI discovers skills by walking up from
 # cwd, so a repair playbook left on disk is reachable by a read-only run — a card that says 只读排查
@@ -254,7 +265,7 @@ check("repair-skill-owns-failed-attempts",
 _cwd = os.getcwd()
 try:
     for allow, want in ((False, ["instance-triage"]),
-                        (True, ["instance-repair", "instance-triage"])):
+                        (True, ["instance-triage"])):
         root = harness.stage_skills(allow)
         staged = sorted(os.listdir(os.path.join(root, ".claude", "skills")))
         check(f"staged-skills-match-mode::allow={allow}", staged == want)

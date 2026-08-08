@@ -411,7 +411,12 @@ CLASSIFY_CASES = [
     ("frobnicate --all", "mutating"),
 
     # --- destructive -> hard refuse, checked FIRST ---
-    ("rm -rf /tmp/x", "destructive"),
+    # `rm -rf /tmp/x` was pinned destructive here and is DELIBERATELY re-baselined to mutating on
+    # 2026-08-08: /tmp is scratch by definition, so the operator can judge the card without
+    # enumerating the directory. It is the same reasoning that already exempted `rm /tmp/scratch`
+    # from the unconditional-rm rule in 2026-07-30. The narrowing is scoped to regenerable trees
+    # (see _REGENERABLE_TREE) and is pinned in both directions under F13 below.
+    ("rm -rf /tmp/x", "mutating"),
     ("dd if=/dev/zero of=/dev/sda", "destructive"),
     ("mkfs.ext4 /dev/vdb", "destructive"),
     ("sgdisk -Z /dev/sda", "destructive"),
@@ -480,6 +485,81 @@ CLASSIFY_CASES = [
     #     satisfied by a DIFFERENT command in the same string.
     ("truncate -s 10G /workspace/big; echo -s 0", "destructive"),     # `-s 0` exemption borrowed
     ("cp /tmp/x /var/lib/mysql/ibdata1; ls /tmp", "destructive"),      # `$` destination anchor evaded
+
+    # --- F13 (2026-08-08): the kill that hid in a flag ------------------------------------------
+    # `fuser` was in NO set in this module and in none of the cases above, so every kill form
+    # classified read_only — executing with no consent card, and executing in READ-ONLY mode, under
+    # a card that says 只读排查. Measured 10/10 across wrappers and chains. `kill 6934` and
+    # `pkill -f x` were mutating the whole time, so the gate stood in front of the small kill and
+    # waved through `fuser -km /workspace`, which SIGKILLs every process on the filesystem.
+    ("fuser -k 8188/tcp", "mutating"),
+    ("fuser -k /dev/nvidia0", "mutating"),
+    ("fuser -k -9 /workspace", "mutating"),
+    ("fuser --kill /var/log/app.log", "mutating"),
+    ("fuser -km /workspace", "mutating"),                  # clustered short flags
+    ("fuser -mk /workspace", "mutating"),                  # ...in either order
+    ("fuser -ki 8188/tcp", "mutating"),
+    ("fuser -k -TERM 8188/tcp", "mutating"),
+    ("/usr/bin/fuser -k 8188/tcp", "mutating"),            # path-qualified (basename lookup)
+    ("sudo fuser -k 8188/tcp", "mutating"),
+    ("nice fuser -k 8188/tcp", "mutating"),                # wrapper-unwrapped
+    ("ss -lntp; fuser -k 8188/tcp", "mutating"),           # second segment of a chain
+    # ...and the diagnostic forms that MUST stay read_only, or the fix has just banned the binary.
+    ("fuser 8188/tcp", "read_only"),
+    ("fuser -v /workspace", "read_only"),
+    ("fuser -n tcp 8188", "read_only"),
+    ("fuser -a /var/log/app.log", "read_only"),
+    ("fuser -s 8188/tcp", "read_only"),
+    ("fuser -m /workspace", "read_only"),
+
+    # --- F13b: cache deletion that read as a read ----------------------------------------------
+    # All four ran with no consent card because neither package-manager verb list named the verb.
+    # They delete the package/wheel caches — a genuine disk-full repair, and a genuine write.
+    ("apt-get clean", "mutating"),
+    ("apt-get autoclean", "mutating"),
+    ("yum clean all", "mutating"),
+    ("dnf clean packages", "mutating"),
+    ("pip cache purge", "mutating"),
+    ("pip3 cache purge", "mutating"),
+    ("npm cache clean --force", "mutating"),
+    ("systemd-tmpfiles --clean", "mutating"),
+    # The reads next door must not move: these only PRINT cache state.
+    ("pip cache dir", "read_only"),
+    ("du -sh /root/.cache", "read_only"),
+
+    # --- F13c: recursive delete of a regenerable tree ------------------------------------------
+    # The one narrowing. Clearing a cache is the most common real disk-full repair and was
+    # impossible: `rm -rf` was refused in every form, so the agent could only delete files one at a
+    # time, each behind its own card. Now the regenerable trees fall to `mutating` — still a card,
+    # per delete, naming the exact directory.
+    ("rm -rf /root/.cache/pip", "mutating"),
+    ("rm -rf /root/.cache/huggingface", "mutating"),
+    ("rm -rf /root/.cache", "mutating"),
+    ("rm -rf /home/ubuntu/.cache/torch", "mutating"),
+    ("rm -r /workspace/app/__pycache__", "mutating"),
+    ("rm -rf /tmp/build", "mutating"),
+    ("rm -rf /var/tmp/pip-build-abc", "mutating"),
+    ("rm -rf /var/cache/apt/archives", "mutating"),
+    ("rm -rf -- /root/.cache/uv", "mutating"),             # `--` is not a flag we reject on
+    ("sudo rm -rf /root/.cache/pip", "mutating"),
+    # ...and everything the narrowing must NOT reach. Each of these is one edit away from the cases
+    # above, which is the point: the exemption is a whitelist of tree SHAPES, not of the word cache.
+    ("rm -rf /workspace/cache", "destructive"),            # a user dir merely NAMED cache
+    ("rm -rf /workspace", "destructive"),
+    ("rm -rf /data/models", "destructive"),
+    ("rm -rf /tmp", "destructive"),                        # /tmp itself, not a tree under it
+    ("rm -rf /var/tmp", "destructive"),
+    ("rm -rf /var/cache", "destructive"),
+    ("rm -rf /usr/.cache", "destructive"),                 # system-path rule still applies
+    ("rm -rf /var/lib/.cache", "destructive"),             # ...and so does the /var/lib rule
+    ("rm -rf /root/.cache/*", "destructive"),              # glob: radius unknown
+    ("rm -rf /root/.cache/{pip,uv}", "destructive"),       # brace expansion
+    ("rm -rf /root/.cache/pi[pq]", "destructive"),         # bracket expansion
+    ("rm -rf /root/.cache/../..", "destructive"),          # `..` escapes the tree
+    ("rm -rf /root/.cache/pip /workspace", "destructive"),  # two targets, only one reviewable
+    ("rm -rf --no-preserve-root /root/.cache", "destructive"),  # unrecognized flag -> fails closed
+    ("rm -rf /root/.cachexyz", "destructive"),             # `.cache` must be a whole component
+    ("rm -rf /root/notcache", "destructive"),
 ]
 
 

@@ -80,8 +80,13 @@ type Step struct {
 	Command     string
 	Tier        string
 	Disposition string // "ran" | "refused" | "failed"
-	ExitCode    *int   // nil for refused/failed commands that never produced an exit status
-	Bytes       int
+	// Reason is the harness's own six-valued disposition ("refused_destructive",
+	// "refused_form", "refused_not_approved", …) — the fact Disposition throws away. Empty when
+	// the harness predates the field, which is why every consumer must degrade rather than switch
+	// exhaustively on it.
+	Reason   string
+	ExitCode *int // nil for refused/failed commands that never produced an exit status
+	Bytes    int
 }
 
 // envAllowlist: non-secret system vars the interpreter / claude CLI need to function. Deliberately
@@ -340,13 +345,15 @@ func parseStep(payload string) (Step, bool) {
 		Command     string `json:"command"`
 		Tier        string `json:"tier"`
 		Disposition string `json:"disposition"`
+		Reason      string `json:"reason"`
 		Exit        *int   `json:"exit"`
 		Bytes       int    `json:"bytes"`
 	}
 	if json.Unmarshal([]byte(payload), &raw) != nil {
 		return Step{}, false
 	}
-	return Step{Command: raw.Command, Tier: raw.Tier, Disposition: raw.Disposition, ExitCode: raw.Exit, Bytes: raw.Bytes}, true
+	return Step{Command: raw.Command, Tier: raw.Tier, Disposition: raw.Disposition,
+		Reason: raw.Reason, ExitCode: raw.Exit, Bytes: raw.Bytes}, true
 }
 
 // tailString returns the last n bytes of s (rune-safe-ish: trims to a valid UTF-8 boundary).
