@@ -182,6 +182,79 @@ _DESTRUCTIVE_SRC = [
 ]
 _DESTRUCTIVE = [re.compile(p, re.IGNORECASE) for p in _DESTRUCTIVE_SRC]
 
+# --- the ONE narrowing of the destructive tier, 2026-08-08 -----------------------------------
+# `rm -rf <dir>` was refused in every form, which made the single most common real disk-full repair
+# — clearing a package/model cache — impossible: the agent could only delete files ONE AT A TIME,
+# each behind its own consent card. But a blanket narrowing is not available either, because what
+# makes a recursive delete unreviewable is that the operator reading the card cannot enumerate what
+# is inside the directory.
+#
+# The exemption is therefore scoped to trees whose contents are regenerable BY CONSTRUCTION, so
+# "what is inside" does not have to be known to judge the command: dot-caches, __pycache__, /tmp,
+# /var/tmp, /var/cache. `/workspace/cache` and friends are deliberately NOT here — a directory a
+# user happened to name "cache" may hold a dataset, and convention is not a guarantee.
+#
+# It suppresses ONLY the recursion rules. Every other destructive pattern still applies to the same
+# segment. That layering was MEASURED rather than asserted, over the 20 must-refuse cases pinned in
+# test_guardrails F13c:
+#   * 17/20 never reach the layering at all — _is_regenerable_recursive_delete rejects them itself
+#     (glob/brace/bracket, `..`, two targets, an unrecognized flag, a tree that is not regenerable).
+#   * 3/20 DO get the exemption — `/usr/.cache`, `/var/lib/.cache`, `/etc/.cache` — and are refused
+#     by the pre-existing system-path rule, which the exemption never touches.
+#   * On today's rule set the two overlap enough that killing either the metachar check or the
+#     both-spellings check below flips no final verdict; each changes only WHETHER the exemption
+#     fires. They are kept as defence in depth and are documented here as exactly that, not claimed
+#     as the thing holding the line — the F13c verdicts are what hold it.
+# The residual, named rather than left implicit: a dot-cache under a system path NOT in that rule
+# (`/opt/.cache`, `/srv/.cache`) gets a consent card rather than a refusal, and a `.cache` that is a
+# SYMLINK elsewhere cannot be seen from the literal string — the same limit every path rule in this
+# file has, and the reason the card shows the exact string the operator approves.
+_RM_RECURSION_RULES = {
+    r"\brm\b[^\n]*\s-{1,2}[a-zA-Z-]*[rR]",
+}
+_DESTRUCTIVE_NO_RM_RECURSION = [re.compile(p, re.IGNORECASE)
+                                for p in _DESTRUCTIVE_SRC if p not in _RM_RECURSION_RULES]
+if len(_DESTRUCTIVE_NO_RM_RECURSION) != len(_DESTRUCTIVE_SRC) - len(_RM_RECURSION_RULES):
+    # A renamed or reworded pattern would silently stop being suppressed (harmless) or silently
+    # suppress the wrong rule (not harmless). Fail at import rather than at classification time.
+    raise RuntimeError("_RM_RECURSION_RULES no longer matches _DESTRUCTIVE_SRC verbatim")
+
+_REGENERABLE_TREE = re.compile(
+    r"(?:"
+    r"/(?:var/)?tmp/[^/]+(?:/[^/]+)*"          # /tmp/<x>…, /var/tmp/<x>… (never /tmp itself)
+    r"|/var/cache/[^/]+(?:/[^/]+)*"            # /var/cache/apt, /var/cache/yum, …
+    r"|(?:/[^/]+)*/\.cache(?:/[^/]+)*"         # …/.cache[/…] — pip, huggingface, torch, uv
+    r"|(?:/[^/]+)*/__pycache__"
+    r")/?"
+)
+# Only flags whose meaning is exhausted by "recursive" and "force". An unrecognized flag means the
+# command does something this function did not reason about, so it keeps the destructive verdict.
+_RM_KNOWN_FLAGS = re.compile(
+    r"-{1,2}(?:[rRfdv]+|recursive|force|dir|verbose|one-file-system|preserve-root)")
+
+
+def _is_regenerable_recursive_delete(seg: str) -> bool:
+    """True only for `rm -rf <one absolute path under a regenerable tree>`. Fails closed."""
+    toks = _strip_sudo(seg).split()
+    if not toks or _basename(_unquote(toks[0])) != "rm":
+        return False
+    paths, end_of_flags = [], False
+    for t in toks[1:]:
+        if t == "--" and not end_of_flags:
+            end_of_flags = True                           # POSIX end-of-options; the rest are paths
+            continue
+        if t.startswith("-") and not end_of_flags:
+            if not _RM_KNOWN_FLAGS.fullmatch(t):
+                return False
+            continue
+        paths.append(_unquote(t))
+    if len(paths) != 1:
+        return False                                      # the card must name exactly what dies
+    target = paths[0]
+    if _DANGEROUS_META.search(target):
+        return False                                      # glob/brace/quote/`..` — radius unknown
+    return bool(_REGENERABLE_TREE.fullmatch(target))
+
 # Auto-run disqualifiers: shell control/expansion/redirection/glob/quote/parent-dir/newline.
 _DANGEROUS_META = re.compile(r"""[;|&`$(){}\[\]<>*?~'"]|\.\.|\n""")
 
@@ -902,6 +975,25 @@ _OUTPUT_FLAG_WRITERS = {
     "xxd": re.compile(r"(?:^|\s)-(?:r|revert)(?:\s|$)"),
 }
 
+# The same shape as _OUTPUT_FLAG_WRITERS, one layer over: a binary that READS by default and whose
+# SIDE EFFECT — here, killing processes — hides in a flag rather than in its name.
+#
+# `fuser` appeared NOWHERE in this module until 2026-08-08, and none of the 353 classification cases
+# covered it, so every kill form classified read_only — which means it executed with no consent card
+# AND in read-only mode, under a card that says 只读排查. Measured: 10/10 kill spellings, including
+# `sudo`/`nice`-wrapped and chained ones, came back read_only, while the plain `kill 6934` and
+# `pkill -f x` beside them correctly landed in mutating. The gate was standing in front of the small
+# kill and waving through the large one: `fuser -km /workspace` SIGKILLs every process touching that
+# filesystem, and `fuser -k /dev/nvidia0` kills the customer's training job.
+#
+# Anchored to the kill flag itself, so the diagnostic forms this lane genuinely needs — `fuser
+# 8188/tcp`, `fuser -v /workspace`, `fuser -n tcp 8188` — stay read_only. Short flags cluster
+# (`-km`, `-ki`, `-k -9`), hence the character-class spelling rather than a bare `-k`. `fuser` has
+# exactly one lowercase-k option, so this cannot catch a read flag by accident.
+_KILL_FLAG_BINARIES = {
+    "fuser": re.compile(r"(?:^|\s)(?:--kill\b|-[a-zA-Z]*k[a-zA-Z]*(?=\s|$))"),
+}
+
 # Running arbitrary code is an unbounded write primitive, so these stay refused even
 # though they can look read-only.
 _EXEC_BINARIES = {
@@ -934,8 +1026,16 @@ _NET_BINARIES = {"nc", "ncat", "netcat", "socat", "telnet", "ftp", "tftp", "sftp
 # the START of the segment so a PATH that merely contains the word (e.g.
 # `cat /var/log/cuda-installer.log`) cannot trip it.
 _MUTATING_FORMS = [re.compile(p, re.I) for p in [
-    r"^(apt|apt-get|aptitude|yum|dnf|apk|pacman|zypper)\b.*\b(install|remove|purge|upgrade|update|autoremove)\b",
-    r"^(pip|pip3|conda|mamba|npm|yarn|pnpm|cargo|gem|poetry|uv)\b.*\b(install|uninstall|remove|update|upgrade|add|sync|clean)\b",
+    # `clean`/`autoclean`/`purge` join the verb lists as of 2026-08-08. They DELETE the package and
+    # wheel caches, which is a real disk-full repair and therefore a real write — but neither list
+    # named the verb, so `apt-get clean`, `yum clean all` and `pip cache purge` classified read_only
+    # and ran with no consent card, including under a 只读排查 card. Measured alongside the `fuser`
+    # hole in the same sweep. Low blast radius (caches regenerate) but it is still the box changing
+    # while the record says a read happened, which is the failure mode the tier exists to prevent.
+    r"^(apt|apt-get|aptitude|yum|dnf|apk|pacman|zypper)\b.*\b(install|remove|purge|upgrade|update|autoremove|autoclean|clean)\b",
+    r"^(pip|pip3|conda|mamba|npm|yarn|pnpm|cargo|gem|poetry|uv)\b.*\b(install|uninstall|remove|update|upgrade|add|sync|clean|purge)\b",
+    # Deletes files per its tmpfiles.d configuration — the name reads like a dry-run and is not one.
+    r"^systemd-tmpfiles\b.*--(clean|remove)\b",
     r"^go\b\s+(get|install|mod|build|run|clean)\b",
     r"^systemctl\b.*\b(start|stop|restart|reload|enable|disable|mask|unmask|daemon-reload|set-property|edit|kill)\b",
     r"^service\b\s+\S+\s+(start|stop|restart|reload)\b",
@@ -1296,6 +1396,9 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     ofw = _OUTPUT_FLAG_WRITERS.get(binary)                # reader whose write hides in a flag
     if ofw and ofw.search(seg):
         return True
+    kfb = _KILL_FLAG_BINARIES.get(binary)                 # reader whose KILL hides in a flag
+    if kfb and kfb.search(seg):
+        return True
     if binary in _INTERPRETERS:
         if len(tokens) == 1:
             return True                                   # bare `python` is a REPL — blocks forever
@@ -1445,10 +1548,17 @@ def _scan_destructive(cmd: str) -> bool:
     """
     for line in cmd.split("\n"):
         for seg in _split_chain(line):
-            if any(p.search(seg) for p in _DESTRUCTIVE):
-                return True
             norm = _normalize_paths(seg)
-            if norm != seg and any(p.search(norm) for p in _DESTRUCTIVE):
+            # The regenerable-tree exemption is decided on BOTH spellings and only suppresses the
+            # recursion rules when both agree, so a path that normalizes into or out of an exempt
+            # tree cannot pick up the exemption on one spelling and dodge the rules on the other.
+            pats = _DESTRUCTIVE
+            if (_is_regenerable_recursive_delete(seg)
+                    and (norm == seg or _is_regenerable_recursive_delete(norm))):
+                pats = _DESTRUCTIVE_NO_RM_RECURSION
+            if any(p.search(seg) for p in pats):
+                return True
+            if norm != seg and any(p.search(norm) for p in pats):
                 return True
     return False
 

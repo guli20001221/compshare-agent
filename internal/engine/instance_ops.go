@@ -86,8 +86,12 @@ type InstanceOpsProgress struct {
 	Kind        string // InstanceOpsProgressConnected | InstanceOpsProgressCommand
 	Command     string // the command (Kind==command only)
 	Disposition string // "ran" | "refused" | "failed" (Kind==command only)
-	ExitCode    *int   // nil for refused/failed commands that never produced an exit status
-	Bytes       int    // output byte count (metadata only; the output itself never crosses here)
+	// Reason names WHICH gate refused, when the runner knows: the destructive tier, the shape gate,
+	// a card the operator declined, a command too long to put on a card. Empty means unknown, and
+	// every consumer must degrade to the old generic wording rather than assume a value.
+	Reason   string
+	ExitCode *int // nil for refused/failed commands that never produced an exit status
+	Bytes    int  // output byte count (metadata only; the output itself never crosses here)
 }
 
 // InstanceOpsVerdict is the terminal root-cause conclusion. Text is the harness's
