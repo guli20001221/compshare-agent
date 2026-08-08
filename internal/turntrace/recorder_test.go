@@ -99,9 +99,11 @@ func TestRecorderMeasuresLatencyForPairedToolResultsAndErrors(t *testing.T) {
 
 	require.Len(t, writer.records, 1)
 	require.Len(t, writer.records[0].ToolCalls, 2)
-	assert.Equal(t, int64(1200), writer.records[0].ToolCalls[0].LatencyMS)
+	require.NotNil(t, writer.records[0].ToolCalls[0].LatencyMS, "a paired success must carry observed latency")
+	assert.Equal(t, int64(1200), *writer.records[0].ToolCalls[0].LatencyMS)
 	assert.Equal(t, observability.ToolStatusSuccess, writer.records[0].ToolCalls[0].Status)
-	assert.Equal(t, int64(2400), writer.records[0].ToolCalls[1].LatencyMS)
+	require.NotNil(t, writer.records[0].ToolCalls[1].LatencyMS, "a paired failure must carry observed latency")
+	assert.Equal(t, int64(2400), *writer.records[0].ToolCalls[1].LatencyMS)
 	assert.Equal(t, "tool_error", writer.records[0].ToolCalls[1].ErrorClass)
 }
 

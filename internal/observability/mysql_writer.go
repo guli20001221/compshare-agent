@@ -26,9 +26,9 @@ import (
 //
 // Buffering & back-pressure:
 //   - Append is non-blocking: it pushes to a buffered queue and returns nil.
-//   - When the queue is full, the record is DROPPED and a warning is logged.
-//     This is the documented behavior per plan §7.8 (MySQL must never block
-//     Engine.Chat). Production should alert on the warning rate.
+//   - When the queue is full, the record is DROPPED. The first drop is logged
+//     immediately, then content-free counters are logged at milestones. This
+//     keeps an overloaded telemetry sink from creating its own log storm.
 //   - A worker goroutine drains the queue and inserts in batches sized by
 //     batchSize OR flushed by flushPeriod, whichever comes first.
 //
@@ -59,6 +59,10 @@ type MySQLWriter struct {
 	malformedDropped   atomic.Uint64
 	batchFailedRecords atomic.Uint64
 	insertSucceeded    atomic.Uint64
+	// queueDropWarningLogged suppresses repeated queue-full warnings for this
+	// writer lifetime. Periodic and shutdown health records still expose the
+	// exact cumulative loss count.
+	queueDropWarningLogged atomic.Bool
 }
 
 // TraceWriterStats is a content-free snapshot of the asynchronous SQL sink.
@@ -196,7 +200,9 @@ func (w *MySQLWriter) Enqueue(tenant TenantContext, record TraceRecord) error {
 		return nil
 	default:
 		w.queueDropped.Add(1)
-		w.logHealth("queue full; dropping trace")
+		if w.queueDropWarningLogged.CompareAndSwap(false, true) {
+			w.logHealth("queue full; dropping trace")
+		}
 		w.maybeLogHealth(attempt)
 		return nil
 	}
@@ -250,6 +256,10 @@ func (w *MySQLWriter) Dir() string { return "" }
 // the underlying database handle. The caller's context bounds the drain
 // time; on timeout, in-flight records are abandoned.
 func (w *MySQLWriter) Close(ctx context.Context) error {
+	// Log after the worker has drained (or the caller's drain deadline has
+	// elapsed), so short-lived processes still leave one final, content-free
+	// accounting record even if they never reached a periodic milestone.
+	defer w.logHealth("shutdown")
 	close(w.queue)
 	select {
 	case <-w.workerDone:

@@ -449,7 +449,8 @@ func (r *chatTraceRecorder) applyLatency(idx int, startedAt time.Time) {
 	if elapsed < 0 {
 		return
 	}
-	r.record.ToolCalls[idx].LatencyMS = elapsed.Milliseconds()
+	latencyMS := elapsed.Milliseconds()
+	r.record.ToolCalls[idx].LatencyMS = &latencyMS
 }
 
 func traceRequestedTargets(args map[string]any) int {

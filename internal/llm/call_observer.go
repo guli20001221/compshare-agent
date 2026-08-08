@@ -43,10 +43,17 @@ type OutboundCallResultObserver func(OutboundCallResult)
 // protocol values this client recognizes. Trace is an aggregation boundary,
 // not a place to preserve a provider's arbitrary diagnostic string; new
 // non-empty spellings remain visible as "other" and still fail closed in
-// ChatResponse.OutputIncomplete.
+// ChatResponse.OutputIncomplete. A successful response that omitted a native
+// finish_reason is recorded as "unspecified"; it is deliberately distinct
+// from a transport failure, which produces no OutboundCallResult at all.
 func TraceFinishReason(reason string) string {
 	switch normalized := strings.ToLower(strings.TrimSpace(reason)); normalized {
-	case "", "stop", "tool_calls", "function_call", "length", "max_tokens", "content_filter":
+	// go-openai represents a JSON null finish_reason as the literal string
+	// "null". At the trace boundary both spellings mean that the successful
+	// response did not supply a native terminal reason.
+	case "", "null":
+		return "unspecified"
+	case "stop", "tool_calls", "function_call", "length", "max_tokens", "content_filter":
 		return normalized
 	default:
 		return "other"

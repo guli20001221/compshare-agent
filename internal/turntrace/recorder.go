@@ -428,7 +428,8 @@ func (r *Recorder) applyLatency(call *observability.ToolCallTrace, startedAt tim
 	if elapsed < 0 {
 		return
 	}
-	call.LatencyMS = elapsed.Milliseconds()
+	latencyMS := elapsed.Milliseconds()
+	call.LatencyMS = &latencyMS
 }
 
 func requestedTargets(args map[string]any) int {

@@ -97,10 +97,10 @@ func (e *Engine) recordTurnProviderFinishReason(reason string) {
 	if e == nil {
 		return
 	}
-	reason = strings.ToLower(strings.TrimSpace(reason))
-	if reason == "" {
-		return
-	}
+	// OutboundCallResult is only emitted after a successful provider response.
+	// Its producer already applies llm.TraceFinishReason, so preserve that
+	// closed-set value verbatim. In particular, "unspecified" must remain
+	// distinguishable from an attempt that never completed.
 	e.turnProviderFinishReasonsThisTurn = append(e.turnProviderFinishReasonsThisTurn, reason)
 }
 

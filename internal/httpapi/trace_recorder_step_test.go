@@ -84,11 +84,13 @@ func TestChatTraceRecorderNormalizesToolErrorsAndMeasuresPairedLatency(t *testin
 	require.Len(t, w.records[0].ToolCalls, 2)
 	success := w.records[0].ToolCalls[0]
 	assert.Equal(t, observability.ToolStatusSuccess, success.Status)
-	assert.Equal(t, int64(850), success.LatencyMS)
+	require.NotNil(t, success.LatencyMS, "a paired success must carry observed latency")
+	assert.Equal(t, int64(850), *success.LatencyMS)
 	call := w.records[0].ToolCalls[1]
 	assert.Equal(t, observability.ToolStatusError, call.Status)
 	assert.Equal(t, "tool_error", call.ErrorClass)
-	assert.Equal(t, int64(1350), call.LatencyMS)
+	require.NotNil(t, call.LatencyMS, "a paired failure must carry observed latency")
+	assert.Equal(t, int64(1350), *call.LatencyMS)
 	assert.NotContains(t, call.ErrorClass, "hunter2")
 }
 
