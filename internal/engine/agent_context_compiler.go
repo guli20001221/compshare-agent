@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/security"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 func cloneAgentContext(in AgentContext) AgentContext {
@@ -59,11 +60,37 @@ func safeContextText(value string) string {
 // that ceiling is cumulative over every model call in the turn and history is
 // re-sent on each one.
 //
-// Redaction is NOT part of that trade and stays: the hot engine holds the raw text
-// (only the persisted copy is redacted at write time), so this call is the sole
-// thing between an operational credential in an earlier turn and the model.
+// Redaction is NOT part of that trade and stays. With canonical transcript off,
+// the hot engine holds raw text and this is the sole operational-token boundary.
+// With it on, historyConversationText below intentionally uses the same
+// role-aware boundaries as persistence so hot and cold history agree.
 func safeConversationText(value string) string {
 	return security.RedactOperationalTokensInText(value)
+}
+
+// canonicalConversationText is the persistence-aligned form of a conversation
+// endpoint when canonical transcript is enabled. HTTP persists user and
+// assistant rows through different redaction boundaries; using those same
+// boundaries before the hot transcript is captured keeps hot and cold endpoints
+// byte-identical without any fuzzy transcript matching.
+//
+// This applies only to historical conversation. The current user turn remains
+// raw for routing and tool selection, as required by the input boundary.
+func canonicalConversationText(role, value string) string {
+	switch role {
+	case openai.ChatMessageRoleUser:
+		return security.RedactUserConversationText(value)
+	case openai.ChatMessageRoleAssistant:
+		return security.RedactAssistantConversationText(value)
+	}
+	return safeConversationText(value)
+}
+
+func historyConversationText(role, value string) string {
+	if !canonicalTranscriptEnabled {
+		return safeConversationText(value)
+	}
+	return canonicalConversationText(role, value)
 }
 
 func safeContextNarrative(value string) string {

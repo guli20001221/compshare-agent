@@ -106,7 +106,7 @@ func TestBuildSystem_ContainsCentralAgentContract(t *testing.T) {
 	prompt := BuildSystemWithOptions("test context", BuildOptions{MutatingToolsEnabled: true})
 	for _, text := range []string{
 		"本轮唯一的业务判断者",
-		"先阅读完整对话",
+		"先阅读已提供的对话历史",
 		// B4 write-authorization guard (2026-07-21 rephrase of "只有用户明确要求实际
 		// 改变资源", same intent): the do-vs-ask distinction — act on do-requests,
 		// ANSWER how-to/rules/fee/feasibility questions rather than executing them.
@@ -174,7 +174,7 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 				}
 			}
 			for _, text := range []string{
-				"完整对话、统一上下文或稳定通用知识足以回答时直接回答",
+			"已提供的对话历史、统一上下文或稳定通用知识足以回答时直接回答",
 				"无关或空结果不能推翻已有上下文",
 			} {
 				if !strings.Contains(system, text) {

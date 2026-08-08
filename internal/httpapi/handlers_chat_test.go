@@ -16,6 +16,7 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
+	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
@@ -352,7 +353,7 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	assert.Equal(t, "sess-trace", tenant.ConnectionID)
 }
 
-func TestDispatchChatRedactsUserPIIOnlyWhenPersisting(t *testing.T) {
+func TestDispatchChatRedactsUserConversationBeforePersisting(t *testing.T) {
 	llmClient := &scriptedChatLLM{content: "ok"}
 	eng := engine.NewWithDeps(llmClient, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	eng.RehydrateHistory(nil)
@@ -380,15 +381,18 @@ func TestDispatchChatRedactsUserPIIOnlyWhenPersisting(t *testing.T) {
 		nil,
 	)
 
-	const userMessage = "phone 13800138000 email user@example.com instance uhost-abc123 wants 4090 price"
+	const userMessage = "phone 13800138000 email user@example.com token=AKIAIOSFODNN7EXAMPLEbCDEF instance uhost-abc123 wants 4090 price"
 	runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-pii","Message":"`+userMessage+`","request_uuid":"req-pii","top_organization_id":1,"organization_id":2}`)
 
 	require.Len(t, messages.appended, 2)
 	persisted := messages.appended[0].Content
+	assert.Equal(t, security.RedactUserConversationText(userMessage), persisted,
+		"HTTP persistence and canonical history must share the exact user boundary")
 	assert.Contains(t, persisted, guardrails.PhoneRedacted)
 	assert.Contains(t, persisted, guardrails.EmailRedacted)
 	assert.NotContains(t, persisted, "13800138000")
 	assert.NotContains(t, persisted, "user@example.com")
+	assert.NotContains(t, persisted, "AKIAIOSFODNN7EXAMPLEbCDEF")
 	assert.Contains(t, persisted, "uhost-abc123")
 	assert.Contains(t, persisted, "4090")
 
@@ -449,6 +453,8 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	)
 
 	persisted := messages.patch.Content
+	assert.Equal(t, security.RedactAssistantConversationText(security.RedactOperationalTokensInText(reply)), persisted,
+		"HTTP persistence and canonical history must share the exact assistant boundary")
 	// The stored copy must match what was streamed, for IPs specifically: only
 	// the persisted side used to be IP-redacted, so an answer containing an SSH
 	// login line read fine live and came back as "root@[已脱敏:IP]" after the

@@ -51,6 +51,8 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	assert.Equal(t, "正常回答", reply)
 	require.Len(t, completions, 1)
 	assert.Equal(t, observability.CompletionClassAgent, completions[0].Class)
+	assert.Equal(t, "final_answer", completions[0].RuntimeFinishReason,
+		"the trace must retain the runtime's exact terminal reason, not just a hand-mapped class")
 	assert.Equal(t, 1, completions[0].ModelCalls, "count must come from the real outbound boundary")
 	assert.Equal(t, centralAgentToolNames(true, false), completions[0].ToolNames)
 }
@@ -72,5 +74,7 @@ func TestChatCompletionMarksTerminalRateLimit(t *testing.T) {
 	require.Len(t, completions, 1)
 	assert.Equal(t, observability.CompletionClassSafetyBlock, completions[0].Class)
 	assert.Equal(t, observability.CompletionReasonRateLimit, completions[0].Reason)
+	assert.Equal(t, "rate_limit", completions[0].RuntimeFinishReason,
+		"the limiter runs inside the runtime driver, so its exact loop exit is retained")
 	assert.Zero(t, completions[0].ModelCalls)
 }

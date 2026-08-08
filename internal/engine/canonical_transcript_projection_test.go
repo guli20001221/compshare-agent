@@ -152,11 +152,16 @@ func TestTranscriptsAreNotAttachedToTheWrongExchange(t *testing.T) {
 	}
 }
 
-// The replay budget exists to bound history. Once tool traffic is part of
-// history, a budget that ignores it bounds only the part that did not grow.
-func TestReplayBudgetChargesForToolTraffic(t *testing.T) {
+// Tool traffic consumes the detail budget, but not at the cost of forgetting the
+// actual conversation. When detail no longer fits, the old exchange remains as
+// its original user/assistant pair and only the re-queryable evidence is shed.
+func TestReplayBudgetCompactsOldToolTrafficBeforeDroppingDialogue(t *testing.T) {
 	enableCanonicalTranscriptForTest(t)
-	big := make([]rune, maxReplayedHistoryRunes)
+	// Keep the fixture shaped like a real replayed exchange: the transcript must
+	// contain the exact user and final assistant messages plus a valid tool round.
+	// A tool-only slice is not a representation messagesFromAgentContext may use.
+	call := toolCall("c1", "Read", `{}`)
+	big := make([]rune, maxReplayedHistoryRunes-len([]rune("q"))-len([]rune("a"))-len([]rune(call.Function.Name))-len([]rune(call.Function.Arguments)))
 	for i := range big {
 		big[i] = '据'
 	}
@@ -164,7 +169,10 @@ func TestReplayBudgetChargesForToolTraffic(t *testing.T) {
 		User:      "q",
 		Assistant: "a",
 		Transcript: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "q"},
+			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{call}},
 			{Role: openai.ChatMessageRoleTool, Content: string(big), ToolCallID: "c1"},
+			{Role: openai.ChatMessageRoleAssistant, Content: "a"},
 		},
 	}
 	if got := conversationTranscriptRunes(heavy); got != maxReplayedHistoryRunes {
@@ -172,19 +180,21 @@ func TestReplayBudgetChargesForToolTraffic(t *testing.T) {
 	}
 
 	kept := budgetReplayedPairs([]ConversationPair{
-		{User: "old q", Assistant: "old a"},
 		heavy,
+		{User: "newer detailed q", Assistant: "newer detailed a", Transcript: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "newer detailed q"},
+			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall("c2", "Read", `{}`)}},
+			{Role: openai.ChatMessageRoleTool, ToolCallID: "c2", Content: "fresh evidence"},
+			{Role: openai.ChatMessageRoleAssistant, Content: "newer detailed a"},
+		}},
 		{User: "new q", Assistant: "new a"},
 	}, maxReplayedHistoryRunes)
 
-	// The heavy exchange alone exhausts the budget, so the older one must be
-	// shed. If the transcript were uncharged, all three would survive.
-	if len(kept) == 3 {
-		t.Fatal("tool traffic escaped the replay budget")
-	}
-	if kept[len(kept)-1].User != "new q" {
-		t.Fatalf("newest exchange was shed: %#v", kept)
-	}
+	require.Len(t, kept, 3, "plain user/assistant dialogue must survive detail compaction")
+	require.Empty(t, kept[0].Transcript, "the oversized old tool detail must not escape the budget")
+	require.NotEmpty(t, kept[1].Transcript, "the newest available tool evidence wins")
+	require.Equal(t, "q", kept[0].User)
+	require.Equal(t, "new q", kept[len(kept)-1].User)
 }
 
 // TestFlagOffMeansNoTranscriptPipelineAtAll is the property the single switch

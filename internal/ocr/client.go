@@ -2,6 +2,7 @@ package ocr
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/compshare-agent/internal/config"
@@ -73,6 +74,13 @@ func (c *Client) Recognize(ctx context.Context, imageDataURL string) (string, er
 	})
 	if err != nil {
 		return "", err
+	}
+	// A length-stopped vision response is not a trustworthy screenshot fact. Its
+	// tail may contain the error code, resource id, or qualifier that the main
+	// agent needs to diagnose correctly, so fail closed and let the normal
+	// screenshot fallback continue without OCR context.
+	if resp.OutputIncomplete() {
+		return "", fmt.Errorf("ocr model output incomplete (finish_reason=%q)", resp.StopReason)
 	}
 	return strings.TrimSpace(resp.Content), nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/prompt"
+	"github.com/compshare-agent/internal/security"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,7 +64,10 @@ func runHotTurn(turn []openai.ChatCompletionMessage) (*Engine, json.RawMessage, 
 	return e, payload, stats
 }
 
-// rebuildCold is the restart: nothing but the persisted rows.
+// rebuildCold is a raw-row restart harness for transcript transforms. It uses
+// exactly the endpoint strings passed by its caller; persistence-redaction
+// parity belongs to TestHotAndColdReplayAcrossPersistenceRedactions below,
+// which supplies the same role-specific form the HTTP handler stores.
 func rebuildCold(question, answer string, metadata json.RawMessage) *Engine {
 	e := &Engine{}
 	e.RehydrateHistory([]HistoryMessage{
@@ -237,11 +241,124 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 	}
 }
 
-// Replayed-exchange trimming is a different axis: it is about how many WHOLE
-// exchanges survive the rune budget, not about what happens inside one. A budget
-// that cut mid-exchange would leave the model reading an unanswered question, or
-// worse, a tool result with no call.
-func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
+// HTTP persists user and assistant rows through different redaction boundaries.
+// The canonical transcript is the model's history, so a cold reconstruction must
+// still attach it when either display row changed at that boundary. Otherwise the
+// session silently degrades from tool-backed history to a plain text pair after a
+// restart even though the transcript itself is present and valid.
+func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
+	prev := canonicalTranscriptEnabled
+	SetCanonicalTranscriptEnabled(true)
+	defer SetCanonicalTranscriptEnabled(prev)
+
+	cases := []struct {
+		name        string
+		question    string
+		answer      string
+		changedRole string
+	}{
+		{
+			name:        "user PII",
+			question:    "请查 alice@example.com 和 13800138000 对应的实例",
+			answer:      "已查到实例状态正常。",
+			changedRole: openai.ChatMessageRoleUser,
+		},
+		{
+			name:        "user operational token",
+			question:    "请查 http://10.0.0.4:8888/lab?token=AKIAIOSFODNN7EXAMPLEbCDEF 对应的实例",
+			answer:      "已查到实例状态正常。",
+			changedRole: openai.ChatMessageRoleUser,
+		},
+		{
+			name:        "assistant UUID",
+			question:    "项目状态怎么样？",
+			answer:      "关联项目 12345678-1234-1234-1234-1234567890ab 当前正常。",
+			changedRole: openai.ChatMessageRoleAssistant,
+		},
+		{
+			name:        "assistant credential placeholder",
+			question:    "Jupyter 为什么无法登录？",
+			answer:      "请使用 token=AKIAIOSFODNN7EXAMPLEbCDEF 重新登录。",
+			changedRole: openai.ChatMessageRoleAssistant,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			turn := []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: tc.question},
+				{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+					toolCall("c1", "DescribeCompShareInstance", `{}`),
+				}},
+				{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: `{"UHostId":"uhost-1","State":"Running"}`},
+				{Role: openai.ChatMessageRoleAssistant, Content: tc.answer},
+			}
+			hot, metadata, stats := runHotTurn(turn)
+			require.True(t, stats.Attempted, "precondition: the turn must have a canonical transcript")
+			require.NotNil(t, metadata, "precondition: the transcript must persist")
+
+			persistedQuestion := security.RedactUserConversationText(tc.question)
+			persistedAnswer := security.RedactAssistantConversationText(tc.answer)
+			if tc.changedRole == openai.ChatMessageRoleUser {
+				require.NotEqual(t, tc.question, persistedQuestion, "precondition: the HTTP user persistence boundary changed this endpoint")
+			} else {
+				require.NotEqual(t, tc.answer, persistedAnswer, "precondition: the HTTP assistant persistence boundary changed this endpoint")
+			}
+
+			cold := &Engine{}
+			cold.RehydrateHistory([]HistoryMessage{
+				{Role: openai.ChatMessageRoleUser, Content: persistedQuestion},
+				{Role: openai.ChatMessageRoleAssistant, Content: persistedAnswer, Transcript: metadata},
+			})
+
+			hotAssembled := assembleNextTurn(hot, parityNextQuestion)
+			coldAssembled := assembleNextTurn(cold, parityNextQuestion)
+			require.Equal(t, hotAssembled, coldAssembled,
+				"the persistence redaction boundary must not make a restart change model history")
+			requireTranscriptWasReplayed(t, coldAssembled)
+			replayed := renderReplayedRegion(t, hotAssembled)
+			if tc.changedRole == openai.ChatMessageRoleUser {
+				require.Contains(t, replayed, persistedQuestion,
+					"the hot transcript must use the same persisted-safe user form")
+				require.NotContains(t, replayed, tc.question)
+			} else {
+				require.Contains(t, replayed, persistedAnswer,
+					"the hot transcript must use the same persisted-safe assistant form")
+				require.NotContains(t, replayed, tc.answer)
+			}
+		})
+	}
+}
+
+func TestPersistenceAlignedEndpointTextIsCanonicalTranscriptScoped(t *testing.T) {
+	const (
+		question = "请查 alice@example.com 对应的实例"
+		answer   = "关联项目 12345678-1234-1234-1234-1234567890ab 当前正常。"
+	)
+	eng := &Engine{messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: question},
+		{Role: openai.ChatMessageRoleAssistant, Content: answer},
+	}}
+
+	prev := canonicalTranscriptEnabled
+	SetCanonicalTranscriptEnabled(false)
+	off := eng.recentCompleteConversationPairs()
+	SetCanonicalTranscriptEnabled(true)
+	on := eng.recentCompleteConversationPairs()
+	SetCanonicalTranscriptEnabled(prev)
+
+	require.Equal(t, []ConversationPair{{User: question, Assistant: answer}}, off,
+		"the feature gate preserves the pre-canonical history form")
+	require.Equal(t, []ConversationPair{{
+		User: security.RedactUserConversationText(question), Assistant: security.RedactAssistantConversationText(answer),
+	}}, on, "canonical history uses the same endpoint forms that cold rehydration reads")
+}
+
+// Canonical-history compaction is a different axis: it keeps complete dialogue
+// pairs and sheds only old tool detail. A budget must never create a half pair or
+// a tool result whose declaring call is absent, and it must derive the same view
+// before and after a restart.
+func TestEndToEndHotColdParityWhenReplayBudgetCompactsDetail(t *testing.T) {
 	prev := canonicalTranscriptEnabled
 	SetCanonicalTranscriptEnabled(true)
 	defer SetCanonicalTranscriptEnabled(prev)
@@ -318,25 +435,30 @@ func TestEndToEndHotColdParityWhenReplayBudgetTrims(t *testing.T) {
 	requireTranscriptWasReplayed(t, hotAssembled)
 	assertToolCallPairsValid(t, hotAssembled)
 
-	// The budget must have bitten — otherwise this test proves nothing.
-	require.NotContains(t, rendered, oldest+" 这台怎么了",
-		"precondition: %d exchanges of %d runes must exceed maxReplayedHistoryRunes=%d — "+
-			"without a trim every assertion below passes vacuously",
+	// The budget must have bitten — otherwise this test proves nothing. The old
+	// dialogue remains, while its re-queryable tool detail is compacted away.
+	require.Contains(t, rendered, oldest+" 这台怎么了",
+		"the earliest plain exchange must remain semantic history")
+	require.NotContains(t, rendered, `"id":"`+oldest+`"`,
+		"precondition: %d exchanges of %d-rune detail must exceed maxReplayedHistoryRunes=%d — "+
+			"without a detail compaction every assertion below passes vacuously",
 		exchangeCount, padRunes, maxReplayedHistoryRunes)
-	// And it must bite the correct end. Dropping the newest would satisfy every
-	// other assertion here while destroying the context a follow-up depends on.
+	// Newest tool evidence wins because it is most likely to resolve a follow-up.
 	assert.Contains(t, rendered, newest+" 这台怎么了",
 		"the newest exchange is the one 「它」/「刚才那个」 refers to; it is never the one dropped")
 	assert.Contains(t, rendered, `"id":"`+newest+`"`, "with its tool evidence intact")
 
-	// Whatever survived, survived whole: question, answer and tool evidence
-	// share one fate per exchange.
+	// Every visible detail must still belong to a complete exchange. The reverse
+	// does not hold by design: old exchanges may be represented by their plain
+	// user/assistant pair after their tool detail is compacted.
 	for _, tag := range tags {
 		question := strings.Contains(rendered, tag+" 这台怎么了")
 		answer := strings.Contains(rendered, tag+" 已确认。")
 		evidence := strings.Contains(rendered, `"id":"`+tag+`"`)
 		assert.Equal(t, question, answer, "%s: half an exchange reads as an unanswered question", tag)
-		assert.Equal(t, question, evidence, "%s: its tool evidence must share that fate", tag)
+		if evidence {
+			assert.True(t, question, "%s: tool detail must never outlive its dialogue pair", tag)
+		}
 	}
 	assert.Contains(t, renderTestMessages(hotAssembled), parityNextQuestion,
 		"the current question is always retained")

@@ -81,11 +81,9 @@ func TestOrdinaryTurnIsNotTrimmedByTheRequestBudget(t *testing.T) {
 	assert.LessOrEqual(t, assembledRequestRunes(out)+toolWindowRunes(productionToolWindow()),
 		maxAssembledRequestRunes)
 
-	// How much history survives here is decided by maxReplayedHistoryRunes at turn
-	// entry, NOT by the request budget — 20 transcript-bearing turns at the median
-	// 5,486 runes exceed 48,000, so the oldest are already gone before assembly.
-	// The number that matters is that it is several turns rather than the two the
-	// old 12,000 budget left.
+	// The detail budget is applied before assembly, but it compacts old tool
+	// details rather than throwing away their user/assistant exchanges. A normal
+	// 20-turn session must therefore retain its complete conversational thread.
 	rendered := renderTestMessages(out)
 	survivors := 0
 	for i := 0; i < deepestProductionSession; i++ {
@@ -93,7 +91,7 @@ func TestOrdinaryTurnIsNotTrimmedByTheRequestBudget(t *testing.T) {
 			survivors++
 		}
 	}
-	assert.GreaterOrEqual(t, survivors, 6,
+	assert.Equal(t, deepestProductionSession, survivors,
 		"only %d of %d exchanges reached an ordinary turn's request", survivors, deepestProductionSession)
 	assert.Contains(t, rendered, fmt.Sprintf("问题%d", deepestProductionSession-1),
 		"and the newest exchange is never the one dropped")

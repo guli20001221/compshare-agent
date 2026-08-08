@@ -88,7 +88,7 @@ func TestCreateImageIDContractAllowsRecentExactConversationCandidate(t *testing.
 	if strings.Contains(idDescription, "只能填本轮") {
 		t.Fatal("镜像 ID 不能再被限制为本轮查询结果")
 	}
-	for _, required := range []string{"近期完整对话", "实时核验", "ImageSource"} {
+	for _, required := range []string{"近期已提供的对话历史", "实时核验", "ImageSource"} {
 		if !strings.Contains(idDescription, required) {
 			t.Fatalf("镜像 ID 说明必须包含 %q，实际为 %q", required, idDescription)
 		}

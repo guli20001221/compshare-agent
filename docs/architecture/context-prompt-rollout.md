@@ -15,6 +15,6 @@ The current design is deliberately smaller:
 - persisted state is limited to execution workflow state, selection authority,
   and evidence used by the knowledge verifier.
 
-Current operating guidance lives in [architecture.md](../architecture.md) and
-the runtime flag table in `CLAUDE.md`. The original rollout evidence remains in
-Git history rather than as runnable instructions for removed flags.
+Current operating guidance and the runtime flag table live in
+[`CLAUDE.md`](../../CLAUDE.md#architecture). The original rollout evidence
+remains in Git history rather than as runnable instructions for removed flags.

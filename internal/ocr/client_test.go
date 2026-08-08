@@ -96,6 +96,25 @@ func TestNewClient_PromptSelection(t *testing.T) {
 	}
 }
 
+func TestRecognizeRejectsLengthStoppedModelOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"场景：训练报错；关键\"},\"finish_reason\":\"length\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(config.OCRConfig{Model: "qwen3-vl-flash", BaseURL: srv.URL, APIKey: "test-key"})
+	text, err := c.Recognize(context.Background(), tinyPNGDataURL)
+
+	if err == nil {
+		t.Fatalf("Recognize error = nil, text = %q; a partial screenshot interpretation must not reach the agent", text)
+	}
+	if !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("Recognize error = %q, want incomplete-output diagnostic", err)
+	}
+}
+
 // TestDefaultPrompt_KeepsXPIAGuard pins that the built-in prompt retains the
 // in-prompt instruction-injection guard (the first XPIA line). Removing it would
 // silently weaken the defense for the default deployment.

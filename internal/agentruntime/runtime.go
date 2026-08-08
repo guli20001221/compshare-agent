@@ -20,6 +20,7 @@ const (
 	FinishBudgetRecovery     FinishReason = "budget_recovery"
 	FinishBudgetRefusal      FinishReason = "budget_refusal"
 	FinishRateLimit          FinishReason = "rate_limit"
+	FinishOutputTruncated    FinishReason = "output_truncated"
 	FinishRoundLimit         FinishReason = "round_limit"
 )
 

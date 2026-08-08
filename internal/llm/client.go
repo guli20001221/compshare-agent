@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -29,24 +30,50 @@ func NewClient(cfg config.LLMConfig) *Client {
 	ocfg := openai.DefaultConfig(cfg.APIKey)
 	ocfg.BaseURL = cfg.BaseURL
 
-	// Bypass HTTP proxy for localhost connections (local LLM proxy).
-	if strings.Contains(cfg.BaseURL, "127.0.0.1") || strings.Contains(cfg.BaseURL, "localhost") {
-		ocfg.HTTPClient = &http.Client{
-			Timeout: 120 * time.Second,
-			Transport: &http.Transport{
-				Proxy: nil, // no proxy for localhost
-				DialContext: (&net.Dialer{
-					Timeout:   30 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-			},
-		}
-	}
+	// A streaming response may legitimately run for minutes. http.Client.Timeout
+	// covers reading the entire response body, so putting a fixed timeout here
+	// turns a healthy long answer into a synthetic stream failure. The request
+	// context supplied by the HTTP/WS owner remains the authoritative lifecycle
+	// bound. The only special transport behavior here is the local proxy bypass.
+	ocfg.HTTPClient = chatHTTPClient(cfg.BaseURL)
 
 	return &Client{
 		client: openai.NewClientWithConfig(ocfg),
 		model:  cfg.Model,
 	}
+}
+
+func chatHTTPClient(baseURL string) *http.Client {
+	// Leave Timeout at zero deliberately. Unlike a response-header or idle
+	// timeout, Client.Timeout is a total deadline for opening *and reading* the
+	// stream, which is the wrong policy for an agent that may reason or emit a
+	// long answer. A future idle watchdog must be implemented as an explicit
+	// stream-progress policy, not by reusing this total-duration field.
+	client := &http.Client{}
+	// Bypass HTTP proxy only for an actual loopback endpoint (the local LLM
+	// proxy), never for a remote URL which merely happens to contain that text.
+	if isLoopbackLLMEndpoint(baseURL) {
+		client.Transport = &http.Transport{
+			Proxy: nil, // no proxy for localhost
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		}
+	}
+	return client
+}
+
+func isLoopbackLLMEndpoint(baseURL string) bool {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
 }
 
 // ChatRequest holds everything needed for one LLM call.
@@ -75,6 +102,11 @@ type ChatResponse struct {
 	Content   string
 	ToolCalls []openai.ToolCall
 	Usage     TokenUsage
+	// StopReason is the provider's terminal finish_reason for the selected
+	// choice. It is intentionally carried to the engine instead of being
+	// inferred from an empty final chunk: a length-stopped response is not a
+	// complete answer and must not be committed or allowed to execute a tool.
+	StopReason string
 	// ForcedToolChoiceDegraded is true when the request carried a forced
 	// tool_choice ("required" or an object) that the provider rejected in
 	// thinking mode, so Chat silently retried with auto (see Chat). The tool
@@ -83,6 +115,19 @@ type ChatResponse struct {
 	// degrade, never score it as a structural guarantee. Callers that only used
 	// forcing as an advisory optimization (SearchKnowledge / monitor) can ignore it.
 	ForcedToolChoiceDegraded bool
+}
+
+// OutputIncomplete reports whether the provider says this choice failed to
+// finish normally. Unknown non-empty reasons are deliberately fail-closed: an
+// incomplete answer is unsafe to persist or execute as a tool plan, whereas a
+// new provider spelling can always be added after observing it.
+func (r ChatResponse) OutputIncomplete() bool {
+	switch strings.ToLower(strings.TrimSpace(r.StopReason)) {
+	case "", "stop", "tool_calls", "function_call":
+		return false
+	default:
+		return true
+	}
 }
 
 type TokenUsage struct {
@@ -153,8 +198,25 @@ func isForcedToolChoiceUnsupportedError(err error) bool {
 func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool) (*ChatResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxChatAttempts; attempt++ {
-		resp, err := c.chatOnce(ctx, req, includeUsage)
+		// A retry is one logical model response. Do not let a failed stream leak
+		// a partial prefix to the caller and then append a successful retry behind
+		// it: the engine persists only the retry's response, while the browser
+		// would have displayed two incompatible answers. Buffer deltas per attempt
+		// and publish them only after that attempt reaches EOF successfully.
+		attemptReq := req
+		var attemptDeltas []string
+		if req.OnTextDelta != nil {
+			attemptReq.OnTextDelta = func(delta string) {
+				attemptDeltas = append(attemptDeltas, delta)
+			}
+		}
+		resp, err := c.chatOnce(ctx, attemptReq, includeUsage)
 		if err == nil {
+			if req.OnTextDelta != nil {
+				for _, delta := range attemptDeltas {
+					req.OnTextDelta(delta)
+				}
+			}
 			return resp, nil
 		}
 		lastErr = err
@@ -225,6 +287,7 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 
 	var contentBuf strings.Builder
 	var usage TokenUsage
+	var stopReason string
 	toolCallMap := make(map[int]*openai.ToolCall) // index → accumulated tool call
 
 	for {
@@ -247,7 +310,11 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		delta := chunk.Choices[0].Delta
+		choice := chunk.Choices[0]
+		if choice.FinishReason != "" {
+			stopReason = string(choice.FinishReason)
+		}
+		delta := choice.Delta
 
 		// Accumulate text content
 		if delta.Content != "" {
@@ -295,9 +362,10 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 	}
 
 	return &ChatResponse{
-		Content:   contentBuf.String(),
-		ToolCalls: toolCalls,
-		Usage:     usage,
+		Content:    contentBuf.String(),
+		ToolCalls:  toolCalls,
+		Usage:      usage,
+		StopReason: stopReason,
 	}, nil
 }
 

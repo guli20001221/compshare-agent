@@ -547,12 +547,12 @@ var Registry = []openai.Tool{
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",
-						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）。填写 CompShareImageId 时同时填写该 ID 实际所属的来源；若 ID 来自近期完整对话中的镜像推荐，原样沿用当时展示的来源。",
+						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）。填写 CompShareImageId 时同时填写该 ID 实际所属的来源；若 ID 来自近期已提供的对话历史中的镜像推荐，原样沿用当时展示的来源。",
 						"enum":        []string{"platform", "community"},
 					},
 					"ImageName": map[string]any{
 						"type":        "string",
-						"description": "镜像名称或关键词。没有精确 ID 时用于目录搜索；用户明确改选另一镜像时原样填写。近期完整对话已有精确 CompShareImageId 且用户只是复述或简称该推荐时，以 ID 为准，不必同时填写本字段。",
+						"description": "镜像名称或关键词。没有精确 ID 时用于目录搜索；用户明确改选另一镜像时原样填写。近期已提供的对话历史已有精确 CompShareImageId 且用户只是复述或简称该推荐时，以 ID 为准，不必同时填写本字段。",
 					},
 					// Carry an exact id when one is known because it names one
 					// version without depending on fuzzy-search wording. A user
@@ -562,13 +562,13 @@ var Registry = []openai.Tool{
 					// still replaces the historical candidate.
 					//
 					// The value may come from a listing seen this turn OR an exact id
-					// printed in the recent complete conversation. It is only a
+					// printed in a recent replayed exchange. It is only a
 					// candidate: CodecImage re-verifies it against the live catalog
 					// before any card or workflow can use it. An invented/stale id is
 					// rejected, never replaced by a name-matched image.
 					"CompShareImageId": map[string]any{
 						"type":        "string",
-						"description": "镜像 ID，如 compshareImage-xxxx。本轮镜像查询或近期完整对话看到精确 ID 时，原样填写并同时填写 ImageSource。历史 ID 只作待实时核验和用户确认的候选；不得填写对话中从未逐字出现的 ID 或凭空编造。用户只是复述或简称该推荐时保留该 ID；若明确改选不同镜像，则不要沿用无关历史 ID，并填写新的 ImageName。",
+						"description": "镜像 ID，如 compshareImage-xxxx。本轮镜像查询或近期已提供的对话历史看到精确 ID 时，原样填写并同时填写 ImageSource。历史 ID 只作待实时核验和用户确认的候选；不得填写对话中从未逐字出现的 ID 或凭空编造。用户只是复述或简称该推荐时保留该 ID；若明确改选不同镜像，则不要沿用无关历史 ID，并填写新的 ImageName。",
 					},
 				},
 				"required": []string{"GpuType"},

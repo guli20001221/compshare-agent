@@ -49,84 +49,21 @@ type TurnContextView = AgentContext
 // a larger probe may raise, never as the window itself.
 const measuredContextWindowFloorTokens = 130000
 
-// maxReplayedHistoryRunes budgets the restored exchanges by SIZE. Since
-// 2026-08-05 it is the ONLY thing that decides how far back the model remembers:
-// the count ceiling that used to sit in front of it (maxAgentContextPairs, =
-// config.MaxReplayedExchanges, = 20) is deleted. A count and a size both
-// deciding meant the count won on short turns and the size won on long ones,
-// with neither number able to state what the model would actually see.
+// maxReplayedHistoryRunes is the canonical history-detail budget. All complete
+// user/assistant exchanges remain in the derived history while their plain text
+// fits this budget; only older tool-call/tool-result detail is compacted first.
+// This keeps the actual conversation continuous without introducing an LLM
+// summary, a second memory store, or a hot/cold-only state.
 //
-// Replaying exchanges verbatim (the fix for the 320-rune truncation) removed the
-// only size bound they had: 8 pairs x 2 sides x 320 runes was a hard 5,120-rune
-// ceiling no matter what the user pasted, and 20 unbounded pairs of the largest
-// messages in the production export would be ~155,000 runes.
-//
-// IT IS NOT THE BOUND ON A REQUEST, and an earlier version of this comment said
-// it was. It is applied at turn ENTRY by recentCompleteConversationPairs, when
-// the turn has issued no tools yet, and is never re-checked as the turn
-// accumulates tool results. The derivation it carried —
-//
-//	130,000 window floor − 40,000 "this turn's own transcript" − 15,000 system = 75,000
-//
-// — was wrong in its middle term: maxTranscriptTotalRunes = 40000 bounds what
-// captureTurnTranscript PERSISTS at the end of a turn, not what is sent during
-// one. Nothing bounded the live side at all, so with history at this budget and a
-// full replay window, 20 expensive reads at the p90 result size assembled 142,856
-// runes. maxAssembledRequestRunes now owns that, at assembly, where the whole
-// request is visible.
-//
-// WHAT THIS NUMBER STILL DOES: it caps how much history is worth ASSEMBLING. On
-// an ordinary turn — p90 is 2 tool calls — nothing is shed later, so this is what
-// the model actually gets, and it wants to be generous. On a tool-heavy turn the
-// assembly bound takes it back down. 48,000 sits well inside what a request can
-// hold once system prompt and completion are reserved (130,000 − 15,000 − 16,000
-// ≈ 99,000), so history alone can never be the thing that overflows a request.
-//
-// WHY NOT THE PREVIOUS DERIVATION, which produced 12,000. It divided half of
-// config.ShippedMaxTokensPerTurn by maxReActRounds, on the reasoning that history
-// is re-sent on every round so its real cost is 16x its per-request size. Two
-// things are wrong with that. It double-counts a guard that already exists: the
-// per-turn cap is enforced at runtime by tokenBudgetExceeded, which has its own
-// recovery exit, so the history bound does not have to pre-guarantee it. And 16
-// is the ceiling, not the shape of traffic — across 648 replayed production turns
-// the p90 is 2 tool calls and 0.3% of turns reach 16 rounds, so every ordinary
-// turn was sized for the deepest one.
-//
-// WHAT IT COST, once the canonical transcript began sharing this budget on
-// 2026-08-04. 24 real replayed turns carry a median 5,486 runes of transcript
-// (p90 7,659; max 17,686 — one turn alone exceeding the entire old budget). At
-// the median, budgetReplayedPairs left the model 2 of 20 exchanges; at the p90,
-// 1. The 20-exchange window was nominal and actual cross-turn memory was two
-// turns, which is the state TestTranscriptSizedHistoryStillReplaysASession pins
-// against. The plain-text cross-check that used to justify 12,000 (largest
-// full-history replay in the three 2026-07 exports = 11,271 runes; p90 1,801)
-// was taken before transcripts existed and measured the wrong payload.
-//
-// TestReplayBudgetStillMatchesItsDerivation re-runs the arithmetic above against
-// the constants, so a raised producer bound or a re-probed window cannot leave
-// this number silently behind.
+// The newest detailed exchanges win the remaining budget because they are the
+// likeliest antecedent of “它/刚才那个”. If the plain conversation alone exceeds
+// the budget, the fallback remains a newest-first whole-exchange suffix. The
+// assembled-request ceiling below is still the final request safety boundary.
 const maxReplayedHistoryRunes = 48000
 
-// maxRawHistoryRunes bounds the two lists the replay DRAWS FROM: e.messages (the
-// raw transcript, via trimHistory) and e.recentTurns (the recorded transcripts,
-// via recordTurn). Both used to be bounded by a message or exchange COUNT —
-// maxHistoryMessages = 120 and maxAgentContextPairs = 20 — and both counts are
-// deleted here for the same reason: a source list that runs out first decides the
-// model's memory instead of the budget, and does it invisibly.
-//
-// The invariant, which TestNoSourceListShadowsTheReplayBudget pins: a source list
-// must never be the narrower of the two. It holds by arithmetic rather than by
-// tuning. An exchange costs LESS in either source list than the replay budget
-// charges it (e.messages carries no transcript at all — trimHistory strips tool
-// messages before budgeting; e.recentTurns carries the transcript but not the
-// context card or system block around it), so any set of exchanges that fits
-// maxReplayedHistoryRunes fits the same number of runes in either source. Sizing
-// the sources at twice the budget is margin on top of that, not the reason it
-// holds.
-//
-// Bounding by size rather than by count also tightens the memory ceiling it
-// replaces: 120 messages had no size limit at all, so one session's raw history
-// was bounded only by agent.http.max_input_length x however many turns it ran.
+// maxRawHistoryRunes bounds the raw sources from which the canonical view is
+// derived: plain e.messages and recorded tool turns. It deliberately exceeds the
+// detail budget, so a source ceiling cannot silently become the memory policy.
 const maxRawHistoryRunes = 2 * maxReplayedHistoryRunes
 
 // ContextCompiler owns all conversion from persisted/in-memory state to the
@@ -211,12 +148,12 @@ func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
 	for _, message := range e.messages {
 		switch message.Role {
 		case openai.ChatMessageRoleUser:
-			pendingUser = safeConversationText(message.Content)
+			pendingUser = historyConversationText(message.Role, message.Content)
 		case openai.ChatMessageRoleAssistant:
 			if pendingUser == "" || strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
 				continue
 			}
-			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: safeConversationText(message.Content)})
+			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: historyConversationText(message.Role, message.Content)})
 			pendingUser = ""
 		}
 	}
@@ -260,7 +197,10 @@ func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []Conversat
 	}
 	unconsumed := make(map[string][]int, len(e.recentTurns))
 	for j, record := range e.recentTurns {
-		key := recordedTurnKey(safeConversationText(record.User), safeConversationText(record.Assistant))
+		key := recordedTurnKey(
+			historyConversationText(openai.ChatMessageRoleUser, record.User),
+			historyConversationText(openai.ChatMessageRoleAssistant, record.Assistant),
+		)
 		unconsumed[key] = append(unconsumed[key], j)
 	}
 	for i := range pairs {
@@ -286,27 +226,70 @@ func recordedTurnKey(user, assistant string) string {
 	return strconv.Itoa(len(user)) + "\x00" + user + assistant
 }
 
-// budgetReplayedPairs keeps the newest exchanges that fit in budget and drops
-// whole older ones. It never truncates a message: a half-exchange is the defect
-// this whole change removed, and a reply cut mid-table is worse than an absent
-// one because the model cannot tell it is reading a fragment.
+// budgetReplayedPairs compacts one canonical history view in two tiers:
 //
-// The newest exchange is always kept, even alone over budget. It is the turn the
-// user is most likely referring to ("它"/"第一台"/"刚才那个"), so dropping it to
-// respect a budget would reintroduce the amnesia at the one place it hurts most.
-// That single exchange is itself bounded: agent.http.max_input_length caps the
-// user side at 4000 runes.
+//   - retain complete plain user/assistant exchanges whenever they fit;
+//   - retain projected tool detail from the newest exchanges with the remaining
+//     budget, and downgrade older exchanges to their original plain pair.
+//
+// Plain dialogue is lossless and is the better semantic history than a newly
+// invented summary. Tool detail is factual evidence, but old detail can be
+// queried again; dropping it before dropping the dialogue keeps short sessions
+// coherent without a parallel memory system. The returned pairs are a copy, so
+// compaction never mutates hot state and cold rebuild derives the same view.
+//
+// If plain dialogue alone is too large, tailReplayedPairs falls back to the
+// existing whole-exchange policy. It never truncates one side of an exchange.
 func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []ConversationPair {
 	if budgetRunes <= 0 || len(pairs) == 0 {
 		return pairs
 	}
+	plainRunes := 0
+	for _, pair := range pairs {
+		plainRunes += conversationPairPlainRunes(pair)
+	}
+	if plainRunes > budgetRunes {
+		return tailReplayedPairs(pairs, budgetRunes)
+	}
+
+	compacted := append([]ConversationPair(nil), pairs...)
+	for i := range compacted {
+		// The transcript augments a retained replayed exchange; it is not a
+		// lossy substitute for that exchange. A persisted message may have been
+		// bounded to protect storage; when that means it no longer replays this pair's exact
+		// user question and final answer, fall back to the complete plain pair.
+		if !transcriptReplaysCompletePair(compacted[i]) {
+			compacted[i].Transcript = nil
+		}
+	}
+	remainingDetailRunes := budgetRunes - plainRunes
+	for i := len(compacted) - 1; i >= 0; i-- {
+		detailRunes := conversationTranscriptDetailRunes(compacted[i])
+		if detailRunes == 0 {
+			continue
+		}
+		// A transcript is optional evidence, never permission to overrun the
+		// history budget. Preserve the newest upgrades that actually fit; when a
+		// single recent tool result is too large, keep its complete plain dialogue
+		// instead of relying on the later whole-request trim to make an unrelated
+		// decision for us.
+		if detailRunes <= remainingDetailRunes {
+			remainingDetailRunes -= detailRunes
+			continue
+		}
+		compacted[i].Transcript = nil
+	}
+	return compacted
+}
+
+// tailReplayedPairs is the only fallback when plain dialogue itself exceeds the
+// budget. It keeps newest complete exchanges, never a cut message or orphaned
+// tool result. The newest exchange remains even when it alone exceeds budget.
+func tailReplayedPairs(pairs []ConversationPair, budgetRunes int) []ConversationPair {
 	spent := 0
 	keepFrom := len(pairs)
 	for i := len(pairs) - 1; i >= 0; i-- {
-		// The transcript is costed with the exchange it belongs to. Leaving it
-		// out would let the one part of history that actually grew escape the
-		// budget meant to bound history.
-		cost := len([]rune(pairs[i].User)) + len([]rune(pairs[i].Assistant)) + conversationTranscriptRunes(pairs[i])
+		cost := conversationPairRenderedRunes(pairs[i])
 		if i < len(pairs)-1 && spent+cost > budgetRunes {
 			break
 		}
@@ -314,6 +297,50 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 		keepFrom = i
 	}
 	return pairs[keepFrom:]
+}
+
+func conversationPairPlainRunes(pair ConversationPair) int {
+	return len([]rune(pair.User)) + len([]rune(pair.Assistant))
+}
+
+// transcriptReplaysCompletePair reports whether Transcript can replace the
+// plain pair without losing semantic dialogue. Tool results can be abbreviated
+// with an explicit marker, but the user question and final assistant answer are
+// the continuous conversation and must survive byte-for-byte.
+func transcriptReplaysCompletePair(pair ConversationPair) bool {
+	if len(pair.Transcript) < 2 {
+		return false
+	}
+	first, last := pair.Transcript[0], pair.Transcript[len(pair.Transcript)-1]
+	return first.Role == openai.ChatMessageRoleUser && first.Content == pair.User &&
+		last.Role == openai.ChatMessageRoleAssistant && last.Content == pair.Assistant &&
+		len(last.ToolCalls) == 0
+}
+
+// conversationTranscriptDetailRunes is the positive additional cost of
+// upgrading a plain pair to its canonical transcript. A projected transcript
+// already contains the user question and final assistant answer, so charging
+// both forms would double-count exactly the conversation we are trying to
+// preserve. A transcript that cannot replay the complete pair is not an
+// upgrade at all; the caller falls back to the complete plain dialogue.
+func conversationTranscriptDetailRunes(pair ConversationPair) int {
+	if !transcriptReplaysCompletePair(pair) {
+		return 0
+	}
+	transcriptRunes := conversationTranscriptRunes(pair)
+	if transcriptRunes == 0 {
+		return 0
+	}
+	return max(0, transcriptRunes-conversationPairPlainRunes(pair))
+}
+
+func conversationPairRenderedRunes(pair ConversationPair) int {
+	if transcriptReplaysCompletePair(pair) {
+		if transcriptRunes := conversationTranscriptRunes(pair); transcriptRunes > 0 {
+			return transcriptRunes
+		}
+	}
+	return conversationPairPlainRunes(pair)
 }
 
 // conversationTranscriptRunes is the replay cost of a pair's tool work.

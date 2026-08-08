@@ -237,7 +237,7 @@ agent:
     # it only refuses when no evidence is in hand. Observe
     # trace.outcome.total_tokens and tighten once steady-state is known.
     # 200000 -> 400000 (2026-07-23): raised together with the per-turn agent
-    # budgets (ReAct rounds 10->16, SearchKnowledge calls 2->4, retrievals ->8,
+    # budgets (ReAct rounds 10->20, SearchKnowledge calls 2->4, retrievals ->8,
     # read-expensive 20->30). Those budgets are the ones the agent spends
     # deliberately; this is the backstop that stops a pathological turn, and at
     # 200000 it would have become the binding constraint on exactly the

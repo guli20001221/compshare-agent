@@ -151,13 +151,13 @@ func buildTranscriptV1(messages []openai.ChatCompletionMessage) *TranscriptV1 {
 		}
 		// Redact before bounding, and before anything is persisted.
 		//
-		// Ordinary replayed history reaches the model through
-		// safeConversationText. The transcript is a second road to the same
-		// place, so it clears the same boundary — otherwise a Jupyter token or
-		// password stripped from the assistant line would survive verbatim in
-		// metadata and be handed back on the next turn, with the redacted and
-		// unredacted forms of the same turn sitting in one row.
-		converted.Content, converted.Truncated, converted.OrigRunes = boundContent(safeConversationText(msg.Content))
+		// Ordinary replayed history reaches the model through the same
+		// role-specific canonicalConversationText boundary. The transcript is a
+		// second road to the same place, so it must use that exact form — otherwise
+		// a Jupyter token or password stripped from the assistant line would
+		// survive verbatim in metadata and be handed back on the next turn, with
+		// different forms of the same turn sitting in one row.
+		converted.Content, converted.Truncated, converted.OrigRunes = boundContent(canonicalConversationText(msg.Role, msg.Content))
 		if msg.Role == openai.ChatMessageRoleTool {
 			converted.Name = nameByCallID[msg.ToolCallID]
 		}

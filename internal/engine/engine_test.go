@@ -737,7 +737,7 @@ func TestInit_InjectsContextAndKnowledgeBoundary(t *testing.T) {
 	systemMsg := eng.messages[0]
 	assert.Equal(t, openai.ChatMessageRoleSystem, systemMsg.Role)
 	assert.Contains(t, systemMsg.Content, "uhost-abc")
-	assert.Contains(t, systemMsg.Content, "完整对话、统一上下文或稳定通用知识足以回答时直接回答")
+	assert.Contains(t, systemMsg.Content, "已提供的对话历史、统一上下文或稳定通用知识足以回答时直接回答")
 	assert.Contains(t, systemMsg.Content, "无关或空结果不能推翻已有上下文")
 	assert.NotContains(t, systemMsg.Content, "平台常见问题")
 	assert.NotContains(t, systemMsg.Content, "计费/回收规则")
@@ -752,7 +752,7 @@ func TestInit_FailedContextInjection(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, suggestions)
 	// Should still have system prompt with knowledge-source boundaries.
-	assert.Contains(t, eng.messages[0].Content, "完整对话、统一上下文或稳定通用知识足以回答时直接回答")
+	assert.Contains(t, eng.messages[0].Content, "已提供的对话历史、统一上下文或稳定通用知识足以回答时直接回答")
 	assert.NotContains(t, eng.messages[0].Content, "平台常见问题")
 }
 

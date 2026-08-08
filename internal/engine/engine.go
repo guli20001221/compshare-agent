@@ -37,13 +37,13 @@ import (
 )
 
 const (
-	// maxReActRounds bounds the agent loop. Raised 10 -> 16 together with the
+	// maxReActRounds bounds the agent loop. Raised 10 -> 20 together with the
 	// retrieval budgets below: a genuine multi-hop knowledge turn now costs
 	// several rounds (search -> read the gap -> search again -> answer), and at
 	// 10 the ceiling was close enough to that path to truncate it. The real cost
 	// ceiling stays agent.rate_limit.max_tokens_per_turn, which is enforced
-	// per turn and trips long before 16 rounds of tool traffic.
-	maxReActRounds = 16
+	// per turn and trips before an unproductive loop can spend without bound.
+	maxReActRounds = 20
 	// The raw-history ceiling used to live here as maxHistoryMessages = 120. It is
 	// now maxRawHistoryRunes (direct_render_context.go), a size, and the comment
 	// that stood here is preserved as the reason: it said in as many words that
@@ -109,12 +109,24 @@ const (
 	// from. Named rather than inlined so the history-parity test can pin the
 	// exact text the user is told.
 	reactCeilingRefusal = "抱歉，处理轮次超限，请重新描述您的需求。"
+	// outputTruncatedRefusal is distinct from an empty reply: the provider
+	// confirmed that it stopped generation at its output limit, so the partial
+	// text and any partial tool calls are deliberately discarded rather than
+	// committed as if the Agent had reached a conclusion.
+	outputTruncatedRefusal = "抱歉，模型输出未正常完成，无法安全给出完整结果。请将问题拆分后重试。"
+	// truncatedOutputRecoveryInstruction is ephemeral: it belongs only to the
+	// next model attempt and is never stored as conversation memory.
+	truncatedOutputRecoveryInstruction = "上一条模型输出被上游长度限制截断，未被采纳。请基于现有上下文直接给出完整、简洁的下一步；如需调用工具，只输出一个完整且合法的工具调用。"
 )
 
 const (
 	toolCapExceededMessage         = "本次最多支持查询 20 台实例，请缩小范围后重试。"
 	historyWindowExceededMessage   = "历史监控时间窗最多支持 24 小时，请缩短时间范围后重试。"
 	readExpensiveTurnBudgetMessage = "本轮读取类查询次数已达上限，请缩小问题范围后重试。"
+	// One recovery is enough to turn a transient short output into a complete,
+	// smaller answer. Repeating it indefinitely burns the same turn budget while
+	// retaining no new evidence, so the second truncation terminates honestly.
+	maxTruncatedOutputRecoveriesPerTurn = 1
 )
 
 // Deterministic preblocks are limited to non-routing safety and support
@@ -200,8 +212,10 @@ type ChatOptions struct {
 	// provide one, ChatWithOptions creates an engine-local identity for this
 	// turn. It is trace/context metadata only and grants no execution authority.
 	TurnID string
-	// OnTextDelta, if non-nil, is called once per text token in order, but
-	// only for the final LLM reply (not for intermediate ReAct tool-call rounds).
+	// OnTextDelta, if non-nil, receives the final validated LLM reply in its
+	// original chunk order, never intermediate ReAct/tool-call text. It is
+	// intentionally emitted after the response gateway rather than speculatively
+	// token-by-token, so the rendered stream cannot disagree with persisted text.
 	// Canned-reply branches (monitor_history, etc.) skip the LLM entirely and
 	// therefore never call this.
 	OnTextDelta func(string)
@@ -361,6 +375,7 @@ type Engine struct {
 	turnModelCallsThisTurn              int
 	turnCompletionClassHint             string
 	turnCompletionReasonHint            string
+	runtimeFinishReasonThisTurn         agentruntime.FinishReason
 	turnCompletionEmittedThisTurn       bool
 	// A post-LLM or token-budget block can be recovered later in the same turn.
 	// Keep the standing bit so a successfully validated answer can overwrite the
@@ -1082,18 +1097,77 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
 			pendingUser = msg.Content
 		case openai.ChatMessageRoleAssistant:
-			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
+			transcript := transcriptFromRow(msg.Transcript)
+			assistantContent := msg.Content
+			// A verbatim billing block is deliberately a USER-display projection:
+			// the durable assistant row contains its exact amounts so the UI can
+			// reload the reply, while the live model saw only an amount-free tool
+			// observation. Replaying the display text here would make a restart or
+			// replica hand the model figures it never saw on the hot path. When the
+			// existing canonical transcript proves this was that shape, restore its
+			// model-facing terminal content instead. Ordinary assistant rows retain
+			// their persisted content unchanged.
+			if content, ok := verbatimBillingModelHistoryContent(transcript); ok {
+				assistantContent = content
+			}
+			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: assistantContent})
 			// Rebuild the same recordedTurn the hot engine appended when this
 			// row was written. A row with no stored transcript yields a record
 			// with a nil one, which is exactly what a tool-free turn produced.
 			e.recordTurn(recordedTurn{
 				User:       pendingUser,
-				Assistant:  msg.Content,
-				Transcript: transcriptFromRow(msg.Transcript),
+				Assistant:  assistantContent,
+				Transcript: transcript,
 			})
 			pendingUser = ""
 		}
 	}
+}
+
+// verbatimBillingModelHistoryContent returns the assistant text that belongs in
+// the model's semantic history for a persisted billing-card turn.
+//
+// The messages.content column has two consumers: the conversation UI needs the
+// exact server-rendered card, while the model must not see figures it could
+// restate, extrapolate or treat as current. The canonical transcript already
+// records the latter view. Do not identify cards by their display text: that
+// would make a formatting change alter model semantics. The typed observation
+// is the durable, narrow discriminator.
+//
+// A pure billing turn historically ended at its tool result because the model
+// intentionally returned no user-facing prose. New turns append
+// verbatimBillingHistoryCompletion before capture; for an older row without
+// that terminal assistant message, use the same amount-free completion rather
+// than falling back to the persisted card.
+func verbatimBillingModelHistoryContent(transcript *TranscriptV1) (string, bool) {
+	projected := ProjectTranscript(transcript)
+	if len(projected) == 0 || !containsVerbatimBillingObservation(projected) {
+		return "", false
+	}
+	for i := len(projected) - 1; i >= 0; i-- {
+		message := projected[i]
+		if message.Role == openai.ChatMessageRoleAssistant && len(message.ToolCalls) == 0 && strings.TrimSpace(message.Content) != "" {
+			return message.Content, true
+		}
+	}
+	return verbatimBillingHistoryCompletion, true
+}
+
+func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage) bool {
+	for _, message := range messages {
+		if message.Role != openai.ChatMessageRoleTool {
+			continue
+		}
+		result, ok := tools.ParseAgentToolResult(message.Content)
+		if !ok || !strings.EqualFold(strings.TrimSpace(result.Meta.Action), "DiagnoseBilling") {
+			continue
+		}
+		data, ok := result.Data.(map[string]any)
+		if delivered, _ := data["verbatim_delivered"].(bool); delivered {
+			return true
+		}
+	}
+	return false
 }
 
 // SetSessionState installs the prior persisted SessionState and the
@@ -1436,6 +1510,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.currentMonitorWindow = false
 	e.displayedResourceSelectionThisTurn = nil
 
+	// A length-stopped provider response is not part of semantic history. Keep
+	// only this tiny local recovery state; it is neither persisted nor a second
+	// memory representation.
+	truncatedOutputRecoveries := 0
+	recoverTruncatedOutput := false
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
 		round := runtimeRound.Index()
@@ -1515,6 +1594,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			Messages: e.buildMessagesForLLM(toolWindow),
 			Tools:    toolWindow,
 		}
+		if recoverTruncatedOutput {
+			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, truncatedOutputRecoveryInstruction)
+			recoverTruncatedOutput = false
+		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
 			content := rateLimitMessage(decision.Reason)
@@ -1524,16 +1607,14 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			})
 			return agentruntime.Final(content, agentruntime.FinishRateLimit), nil
 		}
-		// A no-tool model response is an internal AgentStep JSON object, never
-		// user-facing text. Buffer every round so the browser only receives its
-		// validated content and deterministic observation blocks. Tool-call rounds
-		// normally contain no text, so this does not delay observations.
-		guardMayRewrite := true
-		liveStream := opts.OnTextDelta != nil && !guardMayRewrite
+		// A no-tool model response is not yet user-facing text: the final gateway
+		// may strip citations, redact an operational token, prepend a protected
+		// value, or reject leaked tool protocol markup. Buffer this one response
+		// so the browser and persisted history receive the same validated answer.
+		// This deliberately is not speculative token streaming; doing that safely
+		// needs a replaceable client-side draft protocol, not a dead boolean branch.
 		var streamedDeltas []string
-		if liveStream {
-			req.OnTextDelta = opts.OnTextDelta
-		} else if opts.OnTextDelta != nil {
+		if opts.OnTextDelta != nil {
 			req.OnTextDelta = func(s string) {
 				streamedDeltas = append(streamedDeltas, s)
 			}
@@ -1556,9 +1637,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 				return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), nil
 			}
-			// The per-call LLM error — including the http.Client timeout
-			// (internal/llm/client.go) behind the long-running 超时 cases — would
-			// otherwise discard the turn. If a prior round already gathered groundable
+			// A per-call LLM error would otherwise discard the turn. If a prior round
+			// already gathered groundable
 			// evidence AND the outer ctx is still live, deliver a cited answer from it
 			// (same recovery as the budget/ceiling exits) instead of a bare error. The
 			// ctx.Err()==nil gate never spends a recovery LLM call on an already
@@ -1588,6 +1668,42 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// The call has already been paid for. A budget can prevent another model
 		// call, but it must not erase a complete answer that is already in hand.
 		// The next loop iteration still enforces the cap before any further call.
+		if resp.OutputIncomplete() {
+			// Never append a length-stopped assistant message or execute a tool call
+			// from it. A provider can stop in the middle of arguments; treating the
+			// partial object as a normal next step would make the Agent act on a
+			// response it knows is incomplete.
+			runtimeRound.ModelStep(0, false)
+			// A write may have completed in an earlier tool round and this response is
+			// only its narration. That durable result outranks a generic retry or
+			// refusal: telling the user an already-created instance failed invites a
+			// duplicate billable request. This path uses only the committed record, not
+			// the partial model output.
+			if reply, ok := e.committedWriteRecoveryReply(); ok {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: reply,
+				})
+				if opts.OnTextDelta != nil {
+					opts.OnTextDelta(reply)
+				}
+				return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), nil
+			}
+			truncatedOutputRecoveries++
+			if truncatedOutputRecoveries <= maxTruncatedOutputRecoveriesPerTurn {
+				recoverTruncatedOutput = true
+				return agentruntime.Continue(), nil
+			}
+			e.markTurnCompletion(observability.CompletionClassAgent, observability.CompletionReasonModelOutputTruncated)
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: outputTruncatedRefusal,
+			})
+			if opts.OnTextDelta != nil {
+				opts.OnTextDelta(outputTruncatedRefusal)
+			}
+			return agentruntime.Final(outputTruncatedRefusal, agentruntime.FinishOutputTruncated), nil
+		}
 		runtimeRound.ModelStep(len(resp.ToolCalls), len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "")
 
 		// No tool calls → final text reply
@@ -1600,9 +1716,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
 			// final reply — do not replay stale raw deltas in that case.
-			// liveStream rounds have already streamed deltas as they arrived;
-			// nothing to replay.
-			if opts.OnTextDelta != nil && !liveStream {
+			if opts.OnTextDelta != nil {
 				// A verbatim block was already streamed; composeWithVerbatimBlocks will
 				// put a paragraph break between it and this text, so the stream must
 				// carry that break too. Emitted only when the Agent actually adds text —
@@ -1618,13 +1732,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				} else {
 					opts.OnTextDelta(content)
 				}
-			} else if opts.OnTextDelta != nil && liveStream && content != rawContent {
-				// Live mode reached a guard rewrite (state changed mid-round,
-				// e.g. currentMonitorWindow flipped). Emit a final corrective
-				// chunk with the rewritten tail. Rare in practice; the
-				// guardMayRewrite predicate is meant to keep us out of this
-				// branch entirely.
-				opts.OnTextDelta(content)
 			}
 			// An empty content here means the Agent deliberately added nothing after a
 			// verbatim block (finalizeResponse only returns "" in that case). Recording
@@ -1636,6 +1743,18 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: content,
 				})
+			} else if len(e.verbatimBlocksThisTurn) > 0 {
+				// The displayed billing card intentionally is not an assistant history
+				// message: its amounts belong to the server-rendered UI, not to the
+				// model. Still finish the MODEL'S exchange with a short amount-free
+				// marker. Without it, a pure billing turn ends on a tool result, cannot
+				// become a complete replay pair, and hot/cold recovery diverges.
+				// This is internal context only; composeWithVerbatimBlocks still returns
+				// exactly the card and no extra user-visible prose.
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: verbatimBillingHistoryCompletion,
+				})
 			}
 			return agentruntime.Final(content, agentruntime.FinishFinalAnswer), nil
 		}
@@ -1643,6 +1762,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// Has tool calls → execute each and feed results back.
 		return e.runToolCallsRound(ctx, resp, runtimeRound, onStep, opts.OnTextDelta)
 	})
+	// Runtime owns the loop's terminal reason; retain it verbatim for the final
+	// trace instead of forcing a separate hand-maintained completion taxonomy to
+	// guess which of the six loop exits occurred.
+	e.runtimeFinishReasonThisTurn = runtimeResult.Reason
 	if runtimeErr == nil {
 		return runtimeResult.Reply, nil
 	}
@@ -1662,9 +1785,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// top of this loop. synthesizeOnBudgetExceeded returns ("",false) on an empty
 	// ledger, so a no-evidence thrash (plain reads only, or a corpus-gap query the
 	// relevance floor emptied) keeps the canned message byte-identical and never
-	// fabricates. Streaming invariant: any turn that ran SearchKnowledge has
-	// guardMayRewrite=true (searchKnowledgeRanThisTurn), so its deltas were buffered
-	// not streamed — opts.OnTextDelta(synth) is the sole emission.
+	// fabricates. Final text is always buffered through the response gateway, so
+	// opts.OnTextDelta(synth) is the sole emission for this recovery as well.
 	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
@@ -2443,6 +2565,13 @@ func isVerbatimReply(result string) (string, bool) {
 // the pure-billing shape is the property at stake.
 const verbatimBlockObservation = "费用明细已按上游结构化数据逐字呈现给用户，本结果不含金额。" +
 	"不要自行给出金额，也不要复述或补充通用费用说明；若用户没有其他问题需要处理，直接结束本回合、不要再输出文字。"
+
+// verbatimBillingHistoryCompletion closes a pure billing exchange in the
+// model-only transcript. It never reaches the browser or messages.content: the
+// user already has the byte-exact card. Its purpose is to preserve the same
+// amount-free semantic boundary after a restart, where the persisted display
+// reply would otherwise be mistaken for the model's final assistant message.
+const verbatimBillingHistoryCompletion = "费用明细已由系统按上游结构化数据展示给用户；不要复述、计算或推断金额。"
 
 // composeWithVerbatimBlocks puts this turn's verbatim blocks in front of the
 // Agent's own reply. Called from one deferred site at the single turn exit so
@@ -4670,10 +4799,11 @@ func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view Agen
 		if pair.User == "" || pair.Assistant == "" {
 			continue
 		}
-		// The transcript, when present, already opens with the user question and
-		// closes with the final answer — it IS the exchange, recorded verbatim.
-		// Emitting the plain pair as well would send the question twice.
-		if len(pair.Transcript) > 0 {
+		// A usable transcript opens with the exact user question and closes with
+		// the exact final answer — it IS the exchange, recorded verbatim.
+		// A bounded/foreign transcript that cannot make that promise falls back to
+		// the complete plain pair rather than replacing history with a prefix.
+		if transcriptReplaysCompletePair(pair) {
 			out = append(out, pair.Transcript...)
 			continue
 		}

@@ -77,6 +77,15 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 		return "", false
 	}
 	e.emitTokenUsage(resp.Usage)
+	if resp.OutputIncomplete() {
+		// A length-stopped (or otherwise non-normal) response is not a complete
+		// answer. This recovery path exists precisely because the ordinary exit
+		// already refuses that same shape (engine.go's OutputIncomplete check) —
+		// accepting a truncated synthesis here would smuggle back the exact
+		// partial-output risk that check exists to close. Usage is still emitted
+		// above: the call was paid for either way, same as the primary exit.
+		return "", false
+	}
 	var output knowledgeSynthesisOutput
 	if !parseFirstJSONObject(resp.Content, &output) {
 		return "", false

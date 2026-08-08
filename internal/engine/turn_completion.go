@@ -19,6 +19,7 @@ func (e *Engine) resetTurnCompletion() {
 	e.turnModelCallsThisTurn = 0
 	e.turnCompletionClassHint = ""
 	e.turnCompletionReasonHint = ""
+	e.runtimeFinishReasonThisTurn = ""
 	e.turnCompletionEmittedThisTurn = false
 	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
 }
@@ -44,8 +45,9 @@ func (e *Engine) emitTurnCompletion() {
 	e.turnCompletionEmittedThisTurn = true
 
 	trace := observability.TurnCompletionTrace{
-		ModelCalls: e.turnModelCallsThisTurn,
-		ToolNames:  centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
+		RuntimeFinishReason: string(e.runtimeFinishReasonThisTurn),
+		ModelCalls:          e.turnModelCallsThisTurn,
+		ToolNames:           centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
 	}
 
 	trace.Class, trace.Reason = e.classifyTurnCompletion()

@@ -186,6 +186,152 @@ func TestBudgetDropsWholeOldestExchangesAndNeverTruncates(t *testing.T) {
 	}
 }
 
+func TestBudgetPreservesPlainDialogueBeforeDroppingOlderToolDetail(t *testing.T) {
+	withCanonicalTranscript(t, true)
+	pairs := []ConversationPair{
+		{
+			User: "旧问题", Assistant: "旧回答",
+			Transcript: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: "旧问题"},
+				{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("旧证据", 80)},
+				{Role: openai.ChatMessageRoleAssistant, Content: "旧回答"},
+			},
+		},
+		{
+			User: "中问题", Assistant: "中回答",
+			Transcript: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: "中问题"},
+				{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("中证据", 80)},
+				{Role: openai.ChatMessageRoleAssistant, Content: "中回答"},
+			},
+		},
+		{
+			User: "新问题", Assistant: "新回答",
+			Transcript: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: "新问题"},
+				{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("新证据", 80)},
+				{Role: openai.ChatMessageRoleAssistant, Content: "新回答"},
+			},
+		},
+	}
+	plain := 0
+	for _, item := range pairs {
+		plain += conversationPairPlainRunes(item)
+	}
+	newestDetail := conversationTranscriptDetailRunes(pairs[len(pairs)-1])
+	budget := plain + newestDetail
+	require.Less(t, budget, plain+conversationTranscriptRunes(pairs[1])+newestDetail,
+		"premise: the budget must force at least one older transcript to compact")
+
+	compacted := budgetReplayedPairs(pairs, budget)
+	require.Len(t, compacted, len(pairs), "compact history must retain every complete dialogue pair")
+	require.Empty(t, compacted[0].Transcript)
+	require.Empty(t, compacted[1].Transcript)
+	require.NotEmpty(t, compacted[2].Transcript, "the newest detailed evidence wins")
+	require.NotEmpty(t, pairs[0].Transcript, "the derived compacted view must not mutate source history")
+
+	assembled := messagesFromAgentContext([]openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "sys"},
+		{Role: openai.ChatMessageRoleUser, Content: "当前问题"},
+	}, AgentContext{RecentConversation: compacted}, true)
+	rendered := renderTestMessages(assembled)
+	for _, text := range []string{"旧问题", "旧回答", "中问题", "中回答", "新问题", "新回答"} {
+		require.Contains(t, rendered, text)
+	}
+	require.NotContains(t, rendered, "旧证据")
+	require.NotContains(t, rendered, "中证据")
+	require.Contains(t, rendered, "新证据")
+}
+
+func TestBudgetDoesNotLetNewestToolDetailEscapeItsDeclaredLimit(t *testing.T) {
+	pairs := []ConversationPair{
+		{
+			User: "旧问题", Assistant: "旧回答",
+			Transcript: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: "旧问题"},
+				{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("旧证据", 8)},
+				{Role: openai.ChatMessageRoleAssistant, Content: "旧回答"},
+			},
+		},
+		{
+			User: "新问题", Assistant: "新回答",
+			Transcript: []openai.ChatCompletionMessage{
+				{Role: openai.ChatMessageRoleUser, Content: "新问题"},
+				{Role: openai.ChatMessageRoleTool, Content: strings.Repeat("新证据", 80)},
+				{Role: openai.ChatMessageRoleAssistant, Content: "新回答"},
+			},
+		},
+	}
+	plain := conversationPairPlainRunes(pairs[0]) + conversationPairPlainRunes(pairs[1])
+	newestDetail := conversationTranscriptDetailRunes(pairs[1])
+	require.Greater(t, newestDetail, 1, "premise: newest transcript must need detail budget")
+	budget := plain + newestDetail - 1
+
+	compacted := budgetReplayedPairs(pairs, budget)
+
+	require.Empty(t, compacted[1].Transcript,
+		"the newest tool result must not bypass the history budget")
+	require.LessOrEqual(t, conversationPairRenderedRunes(compacted[0])+conversationPairRenderedRunes(compacted[1]), budget,
+		"when plain dialogue fits, optional transcript detail may never make the rendered history exceed the budget")
+}
+
+func TestBudgetChargesOnlyTheTranscriptUpgrade(t *testing.T) {
+	pair := ConversationPair{
+		User:      "查实例",
+		Assistant: "已找到。",
+		Transcript: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "查实例"},
+			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall("c1", "DescribeCompShareInstance", `{}`)}},
+			{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: strings.Repeat("实例证据", 20)},
+			{Role: openai.ChatMessageRoleAssistant, Content: "已找到。"},
+		},
+	}
+	transcriptRunes := conversationTranscriptRunes(pair)
+	require.Greater(t, transcriptRunes, conversationPairPlainRunes(pair),
+		"premise: a real tool transcript must cost more than its plain dialogue")
+
+	compacted := budgetReplayedPairs([]ConversationPair{pair}, transcriptRunes)
+
+	require.NotEmpty(t, compacted[0].Transcript,
+		"a transcript that exactly fits the budget must not be double-charged for its user/assistant endpoints")
+	require.LessOrEqual(t, conversationPairRenderedRunes(compacted[0]), transcriptRunes)
+}
+
+func TestBudgetFallsBackToCompletePlainDialogueWhenTranscriptWasBounded(t *testing.T) {
+	fullAnswer := strings.Repeat("完整回答", 40) + "\n不可丢失的结尾：实例 uhost-tail 已创建。"
+	pair := ConversationPair{
+		User:      "刚才创建结果是什么？",
+		Assistant: fullAnswer,
+		Transcript: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "刚才创建结果是什么？"},
+			{Role: openai.ChatMessageRoleAssistant, Content: strings.Repeat("完整回答", 10) + "…[内容已截断]"},
+		},
+	}
+	require.Less(t, conversationTranscriptRunes(pair), conversationPairPlainRunes(pair),
+		"premise: this is the persisted-message-cap shape where transcript storage is shorter than the complete dialogue")
+	direct := messagesFromAgentContext(
+		[]openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: "sys"},
+			{Role: openai.ChatMessageRoleUser, Content: "下一步呢？"},
+		},
+		AgentContext{RecentConversation: []ConversationPair{pair}}, true)
+	require.Contains(t, strings.Join(restoredHistory(direct), "\n"), fullAnswer,
+		"the assembler itself must reject a bounded transcript rather than replaying a prior-answer prefix")
+
+	compacted := budgetReplayedPairs([]ConversationPair{pair}, conversationPairPlainRunes(pair))
+
+	require.Empty(t, compacted[0].Transcript,
+		"a bounded transcript is not an equivalent exchange and must not replace complete dialogue")
+	assembled := messagesFromAgentContext(
+		[]openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: "sys"},
+			{Role: openai.ChatMessageRoleUser, Content: "下一步呢？"},
+		},
+		AgentContext{RecentConversation: compacted}, true)
+	require.Contains(t, strings.Join(restoredHistory(assembled), "\n"), fullAnswer,
+		"the replayed conversation must retain the complete prior answer, not the stored prefix")
+}
+
 func TestBudgetKeepsTheNewestExchangeEvenWhenItAloneExceeds(t *testing.T) {
 	huge := pair(strings.Repeat("问", 5000), strings.Repeat("答", 5000))
 	kept := budgetReplayedPairs([]ConversationPair{

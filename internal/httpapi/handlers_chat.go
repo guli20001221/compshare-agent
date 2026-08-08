@@ -16,6 +16,7 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/ocr"
+	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
@@ -302,13 +303,14 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	reqUUID := base.RequestUUID
 
 	// Persist user message with OCR context included (so the DB record
-	// shows what the engine saw). PII filter covers both OCR text and
-	// the user's original message.
+	// shows what the engine saw). The shared durable redaction covers both OCR
+	// text and the user's original message.
 	persistContent := message
 	if ocrText != "" {
 		// Same wrapper the engine uses for the live turn, so the rehydrated
 		// copy re-fed to the LLM on later turns matches the live-turn framing
-		// (the RedactPII below additionally scrubs the user-message portion).
+		// (the durable conversation boundary below additionally scrubs the
+		// user-message portion).
 		persistContent = engine.WrapScreenshotContext(ocrText, message)
 	}
 	if err := h.messages.Append(ctx, store.Message{
@@ -316,7 +318,7 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		SessionID:   sessionID,
 		RequestUUID: &reqUUID,
 		Role:        "user",
-		Content:     guardrails.RedactPII(persistContent),
+		Content:     security.RedactUserConversationText(persistContent),
 		Status:      "ok",
 	}); err != nil {
 		clearChatTraceObservers(agent)
@@ -560,7 +562,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	outputTokens := usage.CompletionTokens
 	replyPersistErr := h.persistAssistant(base.Owner, assistantMsgID,
 		store.AssistantPatch{
-			Content:      guardrails.RedactOutputLeak(reply),
+			Content:      security.RedactAssistantConversationText(reply),
 			Status:       "ok",
 			InputTokens:  &inputTokens,
 			OutputTokens: &outputTokens,
