@@ -26,10 +26,19 @@ type chatTraceRecorder struct {
 	totalTokens           int
 	promptTokens          int
 	completionTokens      int
-	pendingByID           map[string][]int
+	pendingByID           map[string][]pendingToolCall
+	now                   func() time.Time
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	terminalSignals       observability.FinishSignals
 	stateTrace            observability.StateTrace
+}
+
+// pendingToolCall ties an observed completion to the exact call that began it.
+// A source/action pair can repeat in one turn, so this remains a FIFO queue
+// rather than a map directly to one tool index.
+type pendingToolCall struct {
+	index     int
+	startedAt time.Time
 }
 
 func newChatTraceRecorder(
@@ -59,7 +68,8 @@ func newChatTraceRecorder(
 			UserMsgHash:   userMsgHash,
 		},
 		start:       start,
-		pendingByID: map[string][]int{},
+		pendingByID: map[string][]pendingToolCall{},
+		now:         time.Now,
 	}
 }
 
@@ -284,11 +294,15 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 			RequestedTargets: requestedTargets,
 			WindowSeconds:    windowSeconds,
 		})
-		r.pendingByID[key] = append(r.pendingByID[key], len(r.record.ToolCalls)-1)
+		r.pendingByID[key] = append(r.pendingByID[key], pendingToolCall{
+			index:     len(r.record.ToolCalls) - 1,
+			startedAt: r.clockNow(),
+		})
 	case engine.StepToolResult:
-		idx := r.matchPending(key, ev.Action, source)
+		idx, startedAt := r.matchPending(key, ev.Action, source)
 		resultHash, _ := observability.HashTracePayload(ev.TraceResult)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusSuccess
+		r.applyLatency(idx, startedAt)
 		r.record.ToolCalls[idx].ResultHash = resultHash
 		r.record.ToolCalls[idx].Attempts = ev.Attempts
 		r.record.ToolCalls[idx].Projected = ev.Projected
@@ -299,13 +313,18 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 			r.record.Renderer.InputToolArgHashes = append(r.record.Renderer.InputToolArgHashes, ev.RendererInputToolArgHashes...)
 		}
 	case engine.StepError:
-		idx := r.matchPending(key, ev.Action, source)
+		idx, startedAt := r.matchPending(key, ev.Action, source)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
-		r.record.ToolCalls[idx].ErrorClass = ev.Message
+		// Step messages are user-facing diagnostics and may contain upstream
+		// detail. Trace keeps the closed-set error class, matching durable turns.
+		r.record.ToolCalls[idx].ErrorClass = "tool_error"
+		r.applyLatency(idx, startedAt)
+		r.applyCapFields(idx, ev)
 	case engine.StepBlocked:
-		idx := r.matchPending(key, ev.Action, source)
+		idx, startedAt := r.matchPending(key, ev.Action, source)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
 		r.record.ToolCalls[idx].ErrorClass = "blocked"
+		r.applyLatency(idx, startedAt)
 		r.applyCapFields(idx, ev)
 	}
 }
@@ -396,15 +415,15 @@ func (r *chatTraceRecorder) applyCapFields(idx int, ev engine.StepEvent) {
 	}
 }
 
-func (r *chatTraceRecorder) matchPending(key, action, source string) int {
+func (r *chatTraceRecorder) matchPending(key, action, source string) (int, time.Time) {
 	if queue := r.pendingByID[key]; len(queue) > 0 {
-		idx := queue[0]
+		pending := queue[0]
 		if len(queue) == 1 {
 			delete(r.pendingByID, key)
 		} else {
 			r.pendingByID[key] = queue[1:]
 		}
-		return idx
+		return pending.index, pending.startedAt
 	}
 	r.record.ToolCalls = append(r.record.ToolCalls, observability.ToolCallTrace{
 		ID:        fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1),
@@ -412,7 +431,26 @@ func (r *chatTraceRecorder) matchPending(key, action, source string) int {
 		Action:    action,
 		Source:    source,
 	})
-	return len(r.record.ToolCalls) - 1
+	return len(r.record.ToolCalls) - 1, time.Time{}
+}
+
+func (r *chatTraceRecorder) clockNow() time.Time {
+	if r != nil && r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+func (r *chatTraceRecorder) applyLatency(idx int, startedAt time.Time) {
+	if r == nil || startedAt.IsZero() || idx < 0 || idx >= len(r.record.ToolCalls) {
+		return
+	}
+	elapsed := r.clockNow().Sub(startedAt)
+	if elapsed < 0 {
+		return
+	}
+	latencyMS := elapsed.Milliseconds()
+	r.record.ToolCalls[idx].LatencyMS = &latencyMS
 }
 
 func traceRequestedTargets(args map[string]any) int {

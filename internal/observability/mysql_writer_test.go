@@ -1,10 +1,14 @@
 package observability
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +258,107 @@ func TestMySQLWriter_AppendBeforeWorkerDoesNotBlock(t *testing.T) {
 		// Expected: returned promptly.
 	case <-time.After(100 * time.Millisecond):
 		t.Fatalf("second Append blocked despite full queue; non-blocking contract broken")
+	}
+}
+
+func TestMySQLWriterStatsExposeQueueDrops(t *testing.T) {
+	w := &MySQLWriter{
+		queue:  make(chan persistedTrace, 1),
+		logger: silentLogger(t),
+	}
+	if err := w.Append(TraceRecord{TraceID: "first"}); err != nil {
+		t.Fatalf("first Append: %v", err)
+	}
+	if err := w.Append(TraceRecord{TraceID: "dropped"}); err != nil {
+		t.Fatalf("dropped Append: %v", err)
+	}
+
+	stats := w.Stats()
+	if stats.EnqueueAttempts != 2 || stats.QueueAccepted != 1 || stats.QueueDropped != 1 ||
+		stats.MalformedDropped != 0 || stats.BatchFailedRecords != 0 {
+		t.Fatalf("writer stats = %#v, want attempts=2 accepted=1 dropped=1 and no other losses", stats)
+	}
+}
+
+func TestMySQLWriterLogsContentFreeHealthAtMilestone(t *testing.T) {
+	var output bytes.Buffer
+	w := &MySQLWriter{
+		queue:  make(chan persistedTrace, traceWriterHealthLogEvery),
+		logger: log.New(&output, "", 0),
+	}
+	for i := 0; i < traceWriterHealthLogEvery; i++ {
+		if err := w.Append(TraceRecord{TraceID: strconv.Itoa(i)}); err != nil {
+			t.Fatalf("Append(%d): %v", i, err)
+		}
+	}
+	line := output.String()
+	if !strings.Contains(line, "agent_trace writer health: event=periodic attempted=100") ||
+		strings.Contains(line, "trace_id") {
+		t.Fatalf("health log = %q, want content-free periodic counters", line)
+	}
+}
+
+// Queue-full logging must make the first loss visible without turning an
+// overloaded telemetry sink into a second source of unbounded load. Periodic
+// health records retain the cumulative count after this one warning.
+func TestMySQLWriterLogsFirstQueueDropOnlyOnce(t *testing.T) {
+	var output bytes.Buffer
+	w := &MySQLWriter{
+		queue:  make(chan persistedTrace, 1),
+		logger: log.New(&output, "", 0),
+	}
+	requireAppend(t, w, TraceRecord{TraceID: "accepted"})
+	for i := 0; i < 3; i++ {
+		requireAppend(t, w, TraceRecord{TraceID: "dropped-" + strconv.Itoa(i)})
+	}
+
+	const queueDropEvent = "event=queue full; dropping trace"
+	if got := strings.Count(output.String(), queueDropEvent); got != 1 {
+		t.Fatalf("queue-full warning count = %d, want 1; logs=%q", got, output.String())
+	}
+	if strings.Contains(output.String(), "trace_id") {
+		t.Fatalf("queue-drop health log must remain content-free: %q", output.String())
+	}
+	if got := w.Stats().QueueDropped; got != 3 {
+		t.Fatalf("queue drop counter = %d, want 3", got)
+	}
+}
+
+// Close is normally called before a short-lived server exits, well before the
+// every-100-enqueues milestone. It must still leave one final accounting line
+// after the worker drain decision, including when there was no SQL connection
+// to flush because the queue was empty.
+func TestMySQLWriterLogsHealthOnShutdown(t *testing.T) {
+	db, err := sql.Open("postgres", "postgres://trace:test@127.0.0.1:1/trace?sslmode=disable")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	workerDone := make(chan struct{})
+	close(workerDone)
+	var output bytes.Buffer
+	w := &MySQLWriter{
+		db:         db,
+		queue:      make(chan persistedTrace),
+		workerDone: workerDone,
+		logger:     log.New(&output, "", 0),
+	}
+	w.enqueueAttempts.Store(7)
+	w.queueDropped.Store(2)
+
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	line := output.String()
+	if !strings.Contains(line, "event=shutdown attempted=7") ||
+		!strings.Contains(line, "queue_dropped=2") {
+		t.Fatalf("shutdown health log = %q, want final counters", line)
+	}
+}
+
+func requireAppend(t *testing.T, w *MySQLWriter, record TraceRecord) {
+	t.Helper()
+	if err := w.Append(record); err != nil {
+		t.Fatalf("Append(%q): %v", record.TraceID, err)
 	}
 }
 

@@ -9,11 +9,14 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	record := TraceRecord{
 		SchemaVersion: SchemaVersion,
 		Completion: TurnCompletionTrace{
-			Class:               CompletionClassStructuredClarify,
-			Reason:              CompletionReasonContextClarification,
-			RuntimeFinishReason: "budget_recovery",
-			ModelCalls:          2,
-			ToolNames:           []string{"DescribeCompShareInstance"},
+			Class:                 CompletionClassStructuredClarify,
+			Reason:                CompletionReasonContextClarification,
+			RuntimeFinishReason:   "budget_recovery",
+			ModelCalls:            2,
+			ModelProvider:         "modelverse",
+			ModelIDs:              []string{"gpt-5.6-terra"},
+			ProviderFinishReasons: []string{"tool_calls", "stop"},
+			ToolNames:             []string{"DescribeCompShareInstance"},
 		},
 	}
 	data, err := json.Marshal(record)
@@ -34,6 +37,9 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	}
 	if len(decoded.Completion.ToolNames) != 1 {
 		t.Fatalf("tool names lost from completion: %#v", decoded.Completion)
+	}
+	if decoded.Completion.ModelProvider != "modelverse" || len(decoded.Completion.ModelIDs) != 1 || len(decoded.Completion.ProviderFinishReasons) != 2 {
+		t.Fatalf("model attribution lost from completion: %#v", decoded.Completion)
 	}
 }
 

@@ -18,9 +18,10 @@ import (
 //  1. The tool result FED BACK to the agent is a P2 needs_input observation with
 //     an explicit valid-JSON hint, so the next ReAct round can recover instead
 //     of stalling on a bare parser error.
-//  2. The RECORDED StepError message (which becomes the trace error_class) stays
-//     the concise parse error WITHOUT the hint — so error_class grouping in
-//     production telemetry is byte-identical to before this change.
+//  2. The RECORDED StepError message stays concise and omits the corrective
+//     hint. Trace records intentionally reduce that user-facing message to the
+//     closed-set "tool_error" class, so telemetry does not retain raw upstream
+//     detail.
 //
 // The two inputs mirror the two observed production failure modes: a `<`-prefixed
 // leaked tag (78/90 errors) and a bare CJK query string (`æ/å/è`, 12/90).
@@ -57,14 +58,14 @@ func TestExecuteTool_MalformedArgsReturnsCorrectiveHint(t *testing.T) {
 			assert.False(t, result.Retryable,
 				"retryable means the SAME call may succeed later; this one must be corrected first")
 
-			// (2) Recorded telemetry (error_class): concise error, NOT the hint.
+			// (2) UI step message: concise error, NOT the hint.
 			require.Len(t, steps, 1)
 			assert.Equal(t, StepError, steps[0].Type)
 			assert.Equal(t, "SearchKnowledge", steps[0].Action)
 			assert.Contains(t, steps[0].Message, "parameter parse error:",
 				"recorded message must be the concise parse error, got %q", steps[0].Message)
 			assert.NotContains(t, steps[0].Message, "重新调用",
-				"recorded error_class must NOT carry the corrective hint (telemetry stability)")
+				"the UI message must NOT carry the corrective hint")
 		})
 	}
 }

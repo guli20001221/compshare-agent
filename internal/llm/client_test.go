@@ -116,7 +116,7 @@ func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -125,6 +125,10 @@ func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 	var observed []OutboundCall
 	ctx := WithOutboundCallObserver(context.Background(), func(call OutboundCall) {
 		observed = append(observed, call)
+	})
+	var completed []OutboundCallResult
+	ctx = WithOutboundCallResultObserver(ctx, func(result OutboundCallResult) {
+		completed = append(completed, result)
 	})
 
 	resp, err := client.Chat(ctx, ChatRequest{Messages: []openai.ChatCompletionMessage{{
@@ -143,6 +147,15 @@ func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 		if call.Model != "test-model" {
 			t.Fatalf("observer call %d model = %q, want test-model", i, call.Model)
 		}
+		if call.Provider != ProviderOpenAICompatible {
+			t.Fatalf("observer call %d provider = %q, want %s", i, call.Provider, ProviderOpenAICompatible)
+		}
+	}
+	if got := len(completed); got != 1 {
+		t.Fatalf("completed observer calls = %d, want one successful attempt", got)
+	}
+	if completed[0].StopReason != "stop" {
+		t.Fatalf("completed stop_reason = %q, want stop", completed[0].StopReason)
 	}
 }
 
@@ -219,6 +232,21 @@ func TestChatResponseFailsClosedOnUnknownNonCompleteFinishReason(t *testing.T) {
 	}
 	if (ChatResponse{StopReason: "tool_calls"}).OutputIncomplete() {
 		t.Fatal("a completed tool-calls response is a valid ReAct step")
+	}
+}
+
+func TestTraceFinishReasonUsesClosedSet(t *testing.T) {
+	if got := TraceFinishReason(""); got != "unspecified" {
+		t.Fatalf("TraceFinishReason(empty) = %q, want unspecified", got)
+	}
+	if got := TraceFinishReason("null"); got != "other" {
+		t.Fatalf("TraceFinishReason(literal null) = %q, want other", got)
+	}
+	if got := TraceFinishReason("TOOL_CALLS"); got != "tool_calls" {
+		t.Fatalf("TraceFinishReason(tool_calls) = %q, want tool_calls", got)
+	}
+	if got := TraceFinishReason("provider diagnostic: token cap 123"); got != "other" {
+		t.Fatalf("TraceFinishReason(unknown) = %q, want other", got)
 	}
 }
 

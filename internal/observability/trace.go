@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.8"
+const SchemaVersion = "trace.v0.10"
 
 const (
 	ToolSourceMainReAct         = "main_react"
@@ -558,12 +558,16 @@ type EntityRegistryTrace struct {
 }
 
 type ToolCallTrace struct {
-	ID               string `json:"id"`
-	TurnIndex        int    `json:"turn_index"`
-	Action           string `json:"action"`
-	Source           string `json:"source"`
-	ArgsHash         string `json:"args_hash"`
-	LatencyMS        int64  `json:"latency_ms"`
+	ID        string `json:"id"`
+	TurnIndex int    `json:"turn_index"`
+	Action    string `json:"action"`
+	Source    string `json:"source"`
+	ArgsHash  string `json:"args_hash"`
+	// LatencyMS is nil when this recorder did not observe both endpoints of a
+	// tool call. A pointer to 0 is a real measured duration below one
+	// millisecond. Keeping those states distinct prevents unmatched events from
+	// biasing latency analysis toward zero.
+	LatencyMS        *int64 `json:"latency_ms,omitempty"`
 	Attempts         int    `json:"attempts"`
 	Status           string `json:"status"`
 	ErrorClass       string `json:"error_class"`

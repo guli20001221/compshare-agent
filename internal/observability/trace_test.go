@@ -133,11 +133,11 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV08(t *testing.T) {
-	// v0.8 adds content-free confirmation terminal observations. Empty records
-	// remain byte-compatible because the new field is omitted.
-	if SchemaVersion != "trace.v0.8" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.8", SchemaVersion)
+func TestSchemaVersionIsV010(t *testing.T) {
+	// v0.10 distinguishes unobserved tool latency from a measured 0ms duration
+	// and preserves an absent native provider finish reason as "unspecified".
+	if SchemaVersion != "trace.v0.10" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.10", SchemaVersion)
 	}
 }
 
@@ -275,6 +275,31 @@ func TestRetrievalTraceEmbeddingLatencyZeroIsNotOmitted(t *testing.T) {
 	text := string(data)
 	if !strings.Contains(text, `"embedding_latency_ms":0`) {
 		t.Fatalf("*0 EmbeddingLatencyMS must serialize as 0, got: %s", text)
+	}
+}
+
+// Tool latency has the same three-state contract as retrieval latency: nil
+// means the recorder could not pair the call and outcome, while *0 is a real
+// sub-millisecond observation. Treating both as integer zero makes latency
+// percentiles lie whenever an external or legacy transcript is incomplete.
+func TestToolCallTraceLatencyHasThreeStates(t *testing.T) {
+	nilLatency, err := json.Marshal(ToolCallTrace{Action: "DescribeCompShareInstance"})
+	if err != nil {
+		t.Fatalf("marshal nil latency: %v", err)
+	}
+	if strings.Contains(string(nilLatency), "latency_ms") {
+		t.Fatalf("nil tool latency must omit from JSON: %s", nilLatency)
+	}
+
+	zeroLatency, err := json.Marshal(ToolCallTrace{
+		Action:    "DescribeCompShareInstance",
+		LatencyMS: int64Ptr(0),
+	})
+	if err != nil {
+		t.Fatalf("marshal zero latency: %v", err)
+	}
+	if !strings.Contains(string(zeroLatency), `"latency_ms":0`) {
+		t.Fatalf("*0 tool latency must serialize as 0: %s", zeroLatency)
 	}
 }
 

@@ -204,10 +204,10 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 }
 
 // instanceOpsCommandStep maps one command-progress event to its StepEvent. The
-// "failed" disposition rides StepBlocked, NOT StepError: both trace recorders write
-// a constant ErrorClass on StepBlocked but copy ev.Message verbatim on StepError
-// (F22), and the message carries the command text — so StepBlocked keeps the trace
-// sink a groupable constant while the user still sees the command in the stream.
+// "failed" disposition rides StepBlocked, NOT StepError: both trace recorders
+// retain only a closed-set error class, while the UI still receives the
+// user-facing message. StepBlocked additionally states that the operation did
+// not execute.
 func instanceOpsCommandStep(action string, p InstanceOpsProgress) StepEvent {
 	cmd := truncateCommandForStep(p.Command)
 	var msg string

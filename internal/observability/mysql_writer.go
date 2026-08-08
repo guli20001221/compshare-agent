@@ -9,6 +9,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	// PostgreSQL driver registered via blank import. The Server bootstrap (A3) is
@@ -25,9 +26,9 @@ import (
 //
 // Buffering & back-pressure:
 //   - Append is non-blocking: it pushes to a buffered queue and returns nil.
-//   - When the queue is full, the record is DROPPED and a warning is logged.
-//     This is the documented behavior per plan §7.8 (MySQL must never block
-//     Engine.Chat). Production should alert on the warning rate.
+//   - When the queue is full, the record is DROPPED. The first drop is logged
+//     immediately, then content-free counters are logged at milestones. This
+//     keeps an overloaded telemetry sink from creating its own log storm.
 //   - A worker goroutine drains the queue and inserts in batches sized by
 //     batchSize OR flushed by flushPeriod, whichever comes first.
 //
@@ -47,7 +48,37 @@ type MySQLWriter struct {
 	// that has 0002 but not 0004 still ingests trace_json instead of failing
 	// every batch on an unknown-column error (the deploy-order must-fix).
 	promotedColumns bool
+
+	// Writer health is intentionally metadata-only. Trace delivery is best
+	// effort so it never delays an Agent reply; these counters make a degraded
+	// sink visible instead of silently turning an optimization dataset into a
+	// biased sample.
+	enqueueAttempts    atomic.Uint64
+	queueAccepted      atomic.Uint64
+	queueDropped       atomic.Uint64
+	malformedDropped   atomic.Uint64
+	batchFailedRecords atomic.Uint64
+	insertSucceeded    atomic.Uint64
+	// queueDropWarningLogged suppresses repeated queue-full warnings for this
+	// writer lifetime. Periodic and shutdown health records still expose the
+	// exact cumulative loss count.
+	queueDropWarningLogged atomic.Bool
 }
+
+// TraceWriterStats is a content-free snapshot of the asynchronous SQL sink.
+// QueueAccepted means accepted into this process's queue, not committed to the
+// database; InsertSucceeded counts records in batches whose INSERT completed
+// without an error (an ON CONFLICT duplicate may still make no new row).
+type TraceWriterStats struct {
+	EnqueueAttempts    uint64
+	QueueAccepted      uint64
+	QueueDropped       uint64
+	MalformedDropped   uint64
+	BatchFailedRecords uint64
+	InsertSucceeded    uint64
+}
+
+const traceWriterHealthLogEvery = 100
 
 // persistedTrace bundles tenant context with the trace record. TraceRecord
 // itself has no tenant field — callers add tenant identifiers via Enqueue
@@ -161,14 +192,60 @@ func (w *MySQLWriter) Enqueue(tenant TenantContext, record TraceRecord) error {
 	// raw user queries. Pre-fix this was absent → the MySQL sink persisted real
 	// PII (staff names) unredacted with an empty schema_version.
 	record = prepareForPersist(record, time.Now())
+	attempt := w.enqueueAttempts.Add(1)
 	select {
 	case w.queue <- persistedTrace{tenant: tenant, record: record}:
+		w.queueAccepted.Add(1)
+		w.maybeLogHealth(attempt)
 		return nil
 	default:
-		w.logger.Printf("mysql_writer: queue full, dropping trace_id=%s tenant=%d/%d",
-			record.TraceID, tenant.TopOrgID, tenant.OrgID)
+		w.queueDropped.Add(1)
+		if w.queueDropWarningLogged.CompareAndSwap(false, true) {
+			w.logHealth("queue full; dropping trace")
+		}
+		w.maybeLogHealth(attempt)
 		return nil
 	}
+}
+
+// Stats exposes delivery health to diagnostics and tests without exposing a
+// TraceRecord, prompt, reply, identifier or tenant. It is safe to call while
+// the worker is flushing.
+func (w *MySQLWriter) Stats() TraceWriterStats {
+	if w == nil {
+		return TraceWriterStats{}
+	}
+	return TraceWriterStats{
+		EnqueueAttempts:    w.enqueueAttempts.Load(),
+		QueueAccepted:      w.queueAccepted.Load(),
+		QueueDropped:       w.queueDropped.Load(),
+		MalformedDropped:   w.malformedDropped.Load(),
+		BatchFailedRecords: w.batchFailedRecords.Load(),
+		InsertSucceeded:    w.insertSucceeded.Load(),
+	}
+}
+
+func (w *MySQLWriter) maybeLogHealth(attempt uint64) {
+	if attempt == 0 || attempt%traceWriterHealthLogEvery != 0 {
+		return
+	}
+	w.logHealth("periodic")
+}
+
+func (w *MySQLWriter) logHealth(event string) {
+	if w == nil || w.logger == nil {
+		return
+	}
+	stats := w.Stats()
+	w.logger.Printf("agent_trace writer health: event=%s attempted=%d queue_accepted=%d queue_dropped=%d malformed_dropped=%d batch_failed_records=%d insert_succeeded=%d",
+		event,
+		stats.EnqueueAttempts,
+		stats.QueueAccepted,
+		stats.QueueDropped,
+		stats.MalformedDropped,
+		stats.BatchFailedRecords,
+		stats.InsertSucceeded,
+	)
 }
 
 // Dir satisfies the Writer interface. MySQLWriter has no on-disk dir so the
@@ -179,6 +256,10 @@ func (w *MySQLWriter) Dir() string { return "" }
 // the underlying database handle. The caller's context bounds the drain
 // time; on timeout, in-flight records are abandoned.
 func (w *MySQLWriter) Close(ctx context.Context) error {
+	// Log after the worker has drained (or the caller's drain deadline has
+	// elapsed), so short-lived processes still leave one final, content-free
+	// accounting record even if they never reached a periodic milestone.
+	defer w.logHealth("shutdown")
 	close(w.queue)
 	select {
 	case <-w.workerDone:
@@ -198,9 +279,14 @@ func (w *MySQLWriter) run() {
 		if len(batch) == 0 {
 			return
 		}
-		if err := w.insertBatch(batch); err != nil {
+		candidateCount, err := w.insertBatch(batch)
+		if err != nil {
+			w.batchFailedRecords.Add(uint64(candidateCount))
 			w.logger.Printf("mysql_writer: batch insert failed (%d records): %v",
-				len(batch), err)
+				candidateCount, err)
+			w.logHealth("batch insert failed")
+		} else {
+			w.insertSucceeded.Add(uint64(candidateCount))
 		}
 		batch = batch[:0]
 	}
@@ -283,9 +369,9 @@ const (
 	promotedColCount = 19
 )
 
-func (w *MySQLWriter) insertBatch(batch []persistedTrace) error {
+func (w *MySQLWriter) insertBatch(batch []persistedTrace) (int, error) {
 	if len(batch) == 0 {
-		return nil
+		return 0, nil
 	}
 	cols := legacyInsertCols
 	if w.promotedColumns {
@@ -294,13 +380,16 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) error {
 	var placeholders strings.Builder
 	args := make([]any, 0, len(batch)*promotedColCount)
 	n := 0 // running $N counter across the whole multi-row VALUES list
+	candidateCount := 0
 	for _, p := range batch {
 		row, err := rowFromTrace(p)
 		if err != nil {
+			w.malformedDropped.Add(1)
 			w.logger.Printf("mysql_writer: skipping malformed trace_id=%s: %v",
 				p.record.TraceID, err)
 			continue
 		}
+		candidateCount++
 		if w.promotedColumns {
 			row = append(row, promotedColumnValues(p.record)...)
 		}
@@ -332,7 +421,7 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) error {
 		}
 	}
 	if len(args) == 0 {
-		return nil
+		return 0, nil
 	}
 	// ON CONFLICT DO NOTHING mirrors MySQL's INSERT IGNORE on the request_uuid
 	// unique key so retried enqueues don't fail loudly.
@@ -342,7 +431,7 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := w.db.ExecContext(ctx, query, args...)
-	return err
+	return candidateCount, err
 }
 
 // promotedColumnValues projects the 0004 outcome columns from a finalized
