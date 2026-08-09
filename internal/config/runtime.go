@@ -29,6 +29,7 @@ type FeaturesConfig struct {
 	GuidedCreate          *bool `yaml:"guided_create"`           // COMPSHARE_GUIDED_CREATE (server-only, default off)
 	CanonicalTranscript   *bool `yaml:"canonical_transcript"`    // COMPSHARE_CANONICAL_TRANSCRIPT (Go default off; deploy config enables it)
 	ReactResultProjection *bool `yaml:"react_result_projection"` // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
+	AnswerCitations       *bool `yaml:"answer_citations"`        // USE_ANSWER_CITATIONS (Go default off; deploy on)
 }
 
 // RetrievalConfig holds the remote knowledge retrieval knobs.
@@ -75,6 +76,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_GUIDED_CREATE", f.GuidedCreate, "1", "0")
 	putBoolEnv(overrides, "USE_REACT_RESULT_PROJECTION", f.ReactResultProjection, "1", "0")
 	putBoolEnv(overrides, "COMPSHARE_CANONICAL_TRANSCRIPT", f.CanonicalTranscript, "1", "0")
+	putBoolEnv(overrides, "USE_ANSWER_CITATIONS", f.AnswerCitations, "1", "0")
 
 	r := c.Agent.Retrieval
 	putStrEnv(overrides, "USE_KNOWLEDGE_RETRIEVAL", r.KnowledgeRetrieval)

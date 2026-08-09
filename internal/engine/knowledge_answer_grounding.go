@@ -85,6 +85,13 @@ func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report k
 	e.emitSearchKnowledgeCitationTrace(report)
 	e.retractKnowledgeHardBlock()
 	display := knowledge.StripCiteMarkers(answer)
+	// Only this arm may carry sources. Here the markers RESOLVED against the
+	// per-turn ledger, so every link is tied to a chunk the answer actually used.
+	// The fail-open arm strips markers it could NOT resolve, and a link there
+	// would be a guess about which evidence the prose came from. RECORDED, not
+	// appended: the final-text branch composes it for the user and keeps this
+	// return value — the text that becomes history — free of rendered URLs.
+	e.recordAnswerCitations(report.CitedChunkIDs)
 	if len(e.platformReadEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
 		// What is stored is what THIS turn retrieved, not the merged ledger the
 		// verifier judged against. Storing the merge would copy prior chunks into

@@ -132,6 +132,29 @@ agent:
     # change this field and restart; setting only the environment has no effect
     # while the field is present.
     canonical_transcript: true
+    # A grounded knowledge answer ends with a 参考来源 list linking the doc pages
+    # it cited. The runtime already validated those citations against the turn's
+    # evidence ledger and recorded them on the citation trace; this stops
+    # deleting the result before the user sees it.
+    #
+    # Links are the corpus's own surface_url, filtered twice: the surface-URL
+    # safety policy (https, allowlisted host, no internal path, no signed URL)
+    # and a liveness rule for the docs paths measured to 404 on 2026-08-09.
+    #
+    # Coverage is bounded by the corpus, but corpus share is not traffic share:
+    # only 450 of 1744 chunks carry a URL, yet across 1000 real questions from
+    # the production chat exports 55.6% of delivered chunks are citable and
+    # 80.8% of questions have at least one, because retrieval on platform
+    # questions concentrates on the documented half. An answer whose evidence
+    # carries no URL still ships with no block, exactly as before.
+    #
+    # DISPLAY ONLY: the block is composed onto what the user reads and kept out
+    # of the assistant history message, so the model never meets a rendered doc
+    # URL in its own past turns and cannot learn to write one from memory — a
+    # URL in prose would bypass both filters above.
+    #
+    # Boot-only; an explicit value here wins over the environment.
+    answer_citations: true
 
   # Knowledge retrieval. Query evidence now comes from the separately deployed
   # compshare-kb service; this agent image no longer carries corpus JSONL,

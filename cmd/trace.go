@@ -177,6 +177,22 @@ func canonicalTranscriptEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
+// answerCitationsEnabledFromEnv parses USE_ANSWER_CITATIONS, which decides
+// whether a grounded knowledge answer carries a visible 参考来源 block. Default
+// off: the runtime already validated and traced its citations before this
+// existed, so off leaves the user-visible answer byte-identical to that.
+func answerCitationsEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.TrimSpace(getenv("USE_ANSWER_CITATIONS"))
+	switch strings.ToLower(raw) {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
 func knowledgeRetrievalModeFromEnv(getenv getenvFunc) (bool, string) {
 	raw := strings.ToLower(strings.TrimSpace(getenv("USE_KNOWLEDGE_RETRIEVAL")))
 	switch raw {

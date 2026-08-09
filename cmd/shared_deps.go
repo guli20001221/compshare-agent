@@ -60,6 +60,14 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.D
 	if canonicalTranscript {
 		log.Printf("runtime: canonical tool transcript replayed to the model (COMPSHARE_CANONICAL_TRANSCRIPT=1)")
 	}
+	answerCitations, unknownAnswerCitations := answerCitationsEnabledFromEnv(getenv)
+	if unknownAnswerCitations != "" {
+		log.Printf("warning: ignoring unknown USE_ANSWER_CITATIONS value %q", unknownAnswerCitations)
+	}
+	engine.SetAnswerCitationsEnabled(answerCitations)
+	if answerCitations {
+		log.Printf("runtime: grounded knowledge answers carry a visible 参考来源 block (USE_ANSWER_CITATIONS=1)")
+	}
 	return deps, mutating, nil
 }
 
