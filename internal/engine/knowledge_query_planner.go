@@ -70,11 +70,27 @@ func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowle
 	if e == nil || e.llmClient == nil || strings.TrimSpace(proposed) == "" || !e.turnContextViewReady {
 		return fallback
 	}
-	// A first turn has no reference to resolve. Avoid spending a second model
-	// call unless the Agent supplied a follow-up whose history changes the query.
-	if len(e.turnContextViewThisTurn.RecentConversation) == 0 {
-		return fallback
-	}
+	// This used to return early on a first turn, on the reasoning that a first
+	// turn has no reference to resolve and so the call could not earn its cost.
+	// That reasoning covered de-referencing, which was the planner's only job at
+	// the time. Writing the query in the form the reranker can score is a second
+	// job, and it does not depend on there being any history.
+	//
+	// Measured over 422 real sessions / 858 user turns: 39% of the turns whose
+	// evidence falls under the floor are first turns, so skipping here would leave
+	// two fifths of the failing population untouched. The floor-drop rate is in
+	// fact HIGHER mid-conversation (36% vs 20%) — ellipsis needs context to be
+	// possible — but 60% of sessions never get a second turn at all.
+	//
+	// The arms in eval/reports/rag_retrieval_probe_2026-08-09.md §9-10 were run
+	// with an empty conversation, so they measured exactly this configuration: the
+	// 5/12 rescue and the 33/37 non-regression are first-turn evidence. Keeping
+	// the early return would have shipped a change validated in a state the code
+	// then excluded.
+	//
+	// Cost is one bounded planner call per SearchKnowledge that would otherwise
+	// have skipped it. Retrieval fan-out is unchanged — the plan is still capped
+	// at maxKnowledgePlanQueries.
 
 	input := knowledgeQueryPlanInput{
 		Conversation:  append([]ConversationPair(nil), e.turnContextViewThisTurn.RecentConversation...),

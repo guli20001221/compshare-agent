@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
@@ -11,17 +12,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestKnowledgeQueryPlannerSkipsExtraCallWithoutConversation(t *testing.T) {
-	mock := &mockLLM{}
+// A first turn used to skip the planner entirely, because de-referencing had
+// nothing to resolve there. Writing the query in a form the reranker can score is
+// a separate job that does not need history, and 39% of the turns whose evidence
+// falls under the floor are first turns (422 real sessions, 858 user turns), so
+// skipping would leave two fifths of the failing population untouched.
+func TestKnowledgeQueryPlannerRunsOnAFirstTurn(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{
+		"answer_question":"GPU 实例关机后是否继续计费？",
+		"search_queries":["GPU 云平台实例关机后是否继续计费"]
+	}`}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.turnContextViewReady = true
 	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: "关机后还收费吗"}
 
 	got := eng.planKnowledgeQuery(context.Background(), "关机后还收费吗")
 
-	assert.Equal(t, "关机后还收费吗", got.AnswerQuestion)
-	assert.Equal(t, []string{"关机后还收费吗"}, got.SearchQueries)
-	assert.Empty(t, mock.calls, "a standalone first-turn question must not pay for a rewrite call")
+	require.Len(t, mock.calls, 1, "a first turn now pays for the rewrite call")
+	assert.Equal(t, "GPU 实例关机后是否继续计费？", got.AnswerQuestion)
+	assert.Equal(t, []string{"GPU 云平台实例关机后是否继续计费", "关机后还收费吗"}, got.SearchQueries,
+		"the written form leads, the user's own wording is still retrieved")
+}
+
+// The cost of running on first turns must never become a cost to availability:
+// a planner that errors, returns nothing usable, or is absent leaves the Agent's
+// query retrieved exactly as before the planner existed.
+func TestKnowledgeQueryPlannerFirstTurnFailureRetrievesTheAgentQuery(t *testing.T) {
+	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "not json"}}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.turnContextViewReady = true
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: "关机后还收费吗"}
+
+	got := eng.planKnowledgeQuery(context.Background(), "关机后还收费吗")
+
+	assert.Equal(t, fallbackKnowledgeQueryPlan("关机后还收费吗"), got)
+	require.Len(t, mock.calls, 1)
 }
 
 func TestKnowledgeQueryPlannerSeparatesAnswerQuestionFromSearchQueries(t *testing.T) {
@@ -252,4 +277,18 @@ func TestPlannerFallbackStillRetrievesTheAgentQuery(t *testing.T) {
 	assert.Equal(t, []string{"改写后的完整问句"},
 		withAgentQueryAnchor(knowledgeQueryPlan{SearchQueries: []string{"改写后的完整问句"}}, "").SearchQueries,
 		"an empty Agent query must not append an empty retrieval")
+}
+
+// plannerEcho is a planner reply that hands the Agent's query straight back.
+// Every knowledge search now pays a planner call, including on a first turn, so
+// tests whose subject is something else need a scripted reply for it. Echoing
+// keeps their retrieval byte-identical to what they scripted: the plan holds one
+// query, withAgentQueryAnchor dedupes the anchor against it, and exactly one
+// retrieval runs, as before this call existed.
+func plannerEcho(query string) llm.ChatResponse {
+	payload, err := json.Marshal(knowledgeQueryPlan{AnswerQuestion: query, SearchQueries: []string{query}})
+	if err != nil {
+		panic(err)
+	}
+	return llm.ChatResponse{Content: string(payload)}
 }
