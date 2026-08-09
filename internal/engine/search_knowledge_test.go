@@ -99,12 +99,16 @@ func TestExecuteSearchKnowledge_PartialRemoteUnavailableIsVisible(t *testing.T) 
 		[]knowledge.RetrievalResult{
 			{Enabled: true, Empty: true, Unavailable: true, FailureReason: "mcp_timeout"},
 			{Enabled: true, Empty: true},
+			// Third result is for the anchored Agent query. It stays available so
+			// the partial-outage shape under test is still one unavailable query
+			// out of the fan-out, not two.
+			{Enabled: true, Empty: true},
 		},
 	)
 
 	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
 
-	require.Len(t, retriever.calls, 2)
+	require.Len(t, retriever.calls, 3)
 	assert.Contains(t, out, `"knowledge_unavailable":true`)
 	assert.Contains(t, out, `"partial":true`)
 	assert.Contains(t, out, `"unavailable_queries":1`)

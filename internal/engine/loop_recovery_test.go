@@ -96,18 +96,21 @@ func prepareKnowledgeRecoveryLane(t *testing.T, eng *Engine) {
 // never produce a final text reply, so the loop hits the round ceiling with a
 // non-empty ledger → recovery synthesizes the cited answer instead of refusing.
 func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
-	responses := make([]llm.ChatResponse, maxReActRounds+1)
+	// One extra slot: the SearchKnowledge in round 0 now also pays a planner call,
+	// which sits between round 0 and round 1 in the response sequence.
+	responses := make([]llm.ChatResponse, maxReActRounds+2)
 	responses[0] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
 		toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`),
 	}}
-	for i := 1; i < maxReActRounds; i++ {
+	responses[1] = plannerEcho("vllm 显存不足")
+	for i := 2; i <= maxReActRounds; i++ {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
 			toolCall("tc", "DescribeCompShareInstance", `{}`),
 		}}
 	}
 	// Index maxReActRounds is consumed by the one-call grounded recovery, NOT
 	// the loop. It returns the answer together with an evidence proof.
-	responses[maxReActRounds] = vllmGroundedRepairResponse()
+	responses[maxReActRounds+1] = vllmGroundedRepairResponse()
 
 	mock := &mockLLM{responses: responses}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -266,6 +269,7 @@ func TestChat_LLMError_CtxCancelledSkipsRecovery(t *testing.T) {
 		{resp: &llm.ChatResponse{ToolCalls: []openai.ToolCall{
 			toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`),
 		}}},
+		{resp: func() *llm.ChatResponse { r := plannerEcho("vllm 显存不足"); return &r }()},
 		{err: fmt.Errorf("context canceled"), onErr: cancel}, // cancel as the error surfaces
 		{resp: &llm.ChatResponse{Content: "这条不应被消费 [1]。"}},   // synthesis step — must NOT run
 	}}
@@ -279,5 +283,5 @@ func TestChat_LLMError_CtxCancelledSkipsRecovery(t *testing.T) {
 	_, err := eng.Chat(ctx, "vllm 显存不足怎么办", noopStep)
 	require.Error(t, err, "a cancelled ctx must not be masked by recovery")
 	assert.Contains(t, err.Error(), "LLM 调用失败")
-	assert.Equal(t, 2, mock.idx, "recovery synthesis must be skipped — only round0 + the erroring round1 ran")
+	assert.Equal(t, 3, mock.idx, "recovery synthesis must be skipped — only round0, its planner call, and the erroring round1 ran")
 }
