@@ -804,11 +804,6 @@ func (r *Retriever) rerankByReranker(question string, cosinePool []scoredChunk) 
 	}
 	docs := make([]string, len(cosinePool))
 	for i, c := range cosinePool {
-		// Mirror scripts/rag_w0/build_corpus_embeddings.py chunk_repr:
-		// title + question_patterns + truncated content. The reranker
-		// scores (query, doc-text) pairs, so passing the same chunk
-		// representation the embedder saw keeps the two ranking signals
-		// comparable.
 		docs[i] = chunkReprForRerank(c.chunk)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.rerankerTimeout)
@@ -850,19 +845,38 @@ func (r *Retriever) rerankByReranker(question string, cosinePool []scoredChunk) 
 	return reranked, "", latencyMs
 }
 
-// chunkReprForRerank produces the text the reranker sees per chunk. Must
-// stay byte-equivalent to scripts/rag_w0/build_corpus_embeddings.py
-// chunk_repr (no TrimSpace on title, no strip elsewhere) — both ranking
-// signals (cosine + cross-encoder) score the same chunk representation
-// so their scores remain comparable.
+// rerankerDocMaxRunes caps the body in the text handed to the cross-encoder.
+//
+// It is deliberately NOT build_corpus_embeddings.py:MAX_CONTENT_RUNES_FOR_EMB
+// (1800), which this used to inherit on the reasoning that both ranking signals
+// should score the same representation so their scores stay comparable. That
+// reasoning does not survive contact with what the two models are: the
+// bi-encoder compares two independently produced vectors, so its corpus side is
+// frozen at index build time and the cap is part of the index contract; the
+// cross-encoder reads (query, document) together at request time and is bound
+// by nothing but latency. Inheriting the cap meant the highest-value ranking
+// stage scored a truncated document, and 52% of the corpus is longer than 1800
+// runes while the answer can be anywhere in the body.
+//
+// Production made this split first, in compshare-kb
+// (retrieval.defaultRerankerDocRunes, same value); that constant carries the
+// measurement. This offline path mirrors it so evaluations rank the text
+// production actually ranks — left at 1800, an offline run cannot reproduce a
+// production gain that comes from the tail of a long chunk.
+const rerankerDocMaxRunes = 4000
+
+// chunkReprForRerank produces the text the reranker sees per chunk. It renders
+// the same 标题/常见问法/正文 shape as
+// scripts/rag_w0/build_corpus_embeddings.py chunk_repr (no TrimSpace on title,
+// no strip elsewhere) and stays byte-equivalent to it for any chunk at or under
+// the embedding cap; past that it keeps more body, by rerankerDocMaxRunes.
 func chunkReprForRerank(c KBChunk) string {
 	title := c.Title
 	patterns := strings.Join(c.QuestionPatterns, " | ")
 	content := c.Content
-	const maxContentRunes = 1800 // mirror build_corpus_embeddings.py:MAX_CONTENT_RUNES_FOR_EMB
 	runes := []rune(content)
-	if len(runes) > maxContentRunes {
-		content = string(runes[:maxContentRunes])
+	if len(runes) > rerankerDocMaxRunes {
+		content = string(runes[:rerankerDocMaxRunes])
 	}
 	return "标题: " + title + "\n常见问法: " + patterns + "\n正文: " + content
 }

@@ -40,7 +40,13 @@ from typing import Any
 DEFAULT_BASE_URL = "https://api.modelverse.cn/v1"
 DEFAULT_EMBED_MODEL = "text-embedding-3-large"
 BATCH_SIZE = 32
-MAX_CONTENT_RUNES_FOR_EMB = 1800  # mirror run_hybrid_eval.py chunk_repr cap
+# This is the index contract: chunk_repr below is what gets embedded, so every
+# stored vector is bound to this cap and raising it invalidates all of them —
+# it may only move together with a full re-embed and a new corpus digest.
+# The reranker cap is a separate number (evaluate_retrieval.py
+# RERANKER_MAX_CONTENT_RUNES / compshare-kb defaultRerankerDocRunes); do not
+# re-couple them. (Formerly cited run_hybrid_eval.py, which no longer exists.)
+MAX_CONTENT_RUNES_FOR_EMB = 1800
 
 
 def compute_lf_sha256(path: Path) -> str:
