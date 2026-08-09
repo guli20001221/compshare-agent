@@ -71,8 +71,10 @@ func TestSearchKnowledgeBudgetCountsCallsNotPlannedQueries(t *testing.T) {
 
 	first := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
 
-	// The fan-out itself is desired: both planned angles were retrieved.
-	require.Len(t, retriever.calls, 2, "both planned queries must be retrieved inside the one call")
+	// The fan-out itself is desired: both planned angles were retrieved, plus the
+	// Agent's own query, which the planner refines but never replaces.
+	require.Len(t, retriever.calls, 3, "both planned queries and the Agent's own must be retrieved inside the one call")
+	assert.Equal(t, "关机后还收什么", retriever.calls[2].question)
 	assert.NotContains(t, first, `"search_limit_reached":true`)
 
 	// ...but it is ONE SearchKnowledge call, so it must cost ONE unit of the
