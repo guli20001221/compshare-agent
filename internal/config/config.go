@@ -81,17 +81,23 @@ type FeishuConfig struct {
 	// AutoReplyNewTopics answers a topic_group root message without requiring
 	// an @ mention. Replies inside the topic still require an @ mention.
 	AutoReplyNewTopics bool `yaml:"auto_reply_new_topics"`
-	// EnableConsoleHandoff lets the knowledge-only Feishu adapter direct a user
-	// to the authenticated console assistant when the answer needs live instance
+	// EnableConsoleHandoff lets the knowledge-only Feishu adapter show approved
+	// authenticated diagnosis entry points when the answer needs live instance
 	// state, logs, processes, ports, or another per-account diagnostic. It does
-	// not carry any Feishu conversation content or identity into the console.
+	// not carry any Feishu conversation content or identity into either entry
+	// point.
 	EnableConsoleHandoff bool `yaml:"enable_console_handoff"`
 	// ConsoleAssistantURL is the user-facing console entry point shown for the
 	// handoff. Keep it configurable because console routes may differ by deploy.
 	ConsoleAssistantURL string `yaml:"console_assistant_url"`
-	MaxConcurrent       int    `yaml:"max_concurrent"`
-	MaxReplyRunes       int    `yaml:"max_reply_runes"`
-	MaxImageBytes       int    `yaml:"max_image_bytes"`
+	// ClientDownloadURL is the optional official desktop-client download page
+	// shown beside the web console. After the user installs and logs into that
+	// client, its own Agent may use the user's local CLI and SSH session; the
+	// Feishu adapter never forwards a conversation or credential to it.
+	ClientDownloadURL string `yaml:"client_download_url"`
+	MaxConcurrent     int    `yaml:"max_concurrent"`
+	MaxReplyRunes     int    `yaml:"max_reply_runes"`
+	MaxImageBytes     int    `yaml:"max_image_bytes"`
 	// ExternalImageOAuth lets the Feishu adapter use a consenting internal
 	// group member's user_access_token to read an image uploaded in an external
 	// group. It is intentionally off unless configured explicitly.

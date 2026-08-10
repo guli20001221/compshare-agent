@@ -15,13 +15,27 @@ import (
 // application. The URL is deployment configuration, never taken from a Feishu
 // message.
 func validateConsoleAssistantURL(raw string) (string, error) {
+	return validateHandoffHTTPSURL("agent.feishu.console_assistant_url", raw, true)
+}
+
+// validateClientDownloadURL accepts an optional official desktop-client
+// download page. Unlike the console URL, it is optional so existing
+// deployments can continue to offer the web-only handoff.
+func validateClientDownloadURL(raw string) (string, error) {
+	return validateHandoffHTTPSURL("agent.feishu.client_download_url", raw, false)
+}
+
+func validateHandoffHTTPSURL(field, raw string, required bool) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return "", fmt.Errorf("agent.feishu.console_assistant_url is required when enable_console_handoff is true")
+		if required {
+			return "", fmt.Errorf("%s is required when enable_console_handoff is true", field)
+		}
+		return "", nil
 	}
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
-		return "", fmt.Errorf("agent.feishu.console_assistant_url must be an absolute HTTPS URL without user credentials")
+		return "", fmt.Errorf("%s must be an absolute HTTPS URL without user credentials", field)
 	}
 	return parsed.String(), nil
 }
@@ -38,14 +52,19 @@ func consumeConsoleHandoffMarker(answer string) (string, bool) {
 	return strings.TrimSpace(withoutMarker), withoutMarker != answer
 }
 
-func consoleHandoffReply(consoleURL string) string {
-	return "## 需要在控制台继续排查\n\n" +
-		"这个问题需要结合您账号下实例的实时状态、日志或进程信息判断；飞书群里的知识问答无法读取这些信息。\n\n" +
-		"请打开[优云智算控制台智能助手](" + consoleURL + ")，重新描述问题；如需实例内诊断，请在对话中提供对应实例 ID（或实例名称），也可以重新上传截图。"
+func consoleHandoffReply(consoleURL, clientURL string) string {
+	reply := "## 需要在已登录环境中继续排查\n\n" +
+		"这个问题需要结合您账号下实例的实时状态、日志或进程信息判断；飞书群里的知识问答无法读取或操作这些信息。\n\n" +
+		"你可以任选一种方式继续：\n\n" +
+		"1. **网页控制台**：打开[优云智算控制台智能助手](" + consoleURL + ")，重新描述问题；如需实例内诊断，请提供对应实例 ID（或实例名称），也可以重新上传截图。"
+	if strings.TrimSpace(clientURL) != "" {
+		reply += "\n\n2. **桌面客户端（适合直接处理实例问题）**：下载并登录[优云智算客户端](" + clientURL + ")。客户端中的 Agent 可在您的已登录账号下使用 CLI 和 SSH 读取实例状态、排查并执行修复；涉及释放实例、删除数据等敏感操作仍需您确认。"
+	}
+	return reply
 }
 
-func appendConsoleHandoff(answer, consoleURL string) string {
-	notice := consoleHandoffReply(consoleURL)
+func appendConsoleHandoff(answer, consoleURL, clientURL string) string {
+	notice := consoleHandoffReply(consoleURL, clientURL)
 	if strings.TrimSpace(answer) == "" {
 		return notice
 	}
