@@ -120,6 +120,9 @@ func ValidateConfig(cfg config.FeishuConfig) error {
 		if _, err := validateConsoleAssistantURL(cfg.ConsoleAssistantURL); err != nil {
 			return err
 		}
+		if _, err := validateClientDownloadURL(cfg.ClientDownloadURL); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -146,7 +149,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.AppSecret,
 		larkws.WithEventHandler(eventHandler),
 	)
-	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, knowledge_only=true, auto_reply_new_topics=%t, console_handoff=%t", len(s.allowed), workers, s.cfg.AutoReplyNewTopics, consoleHandoffEnabled(s.cfg))
+	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, knowledge_only=true, auto_reply_new_topics=%t, console_handoff=%t, client_handoff=%t", len(s.allowed), workers, s.cfg.AutoReplyNewTopics, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "")
 	started := make(chan error, 1)
 	go func() {
 		started <- client.Start(ctx)
@@ -267,7 +270,7 @@ func (s *Service) handleJob(ctx context.Context, item job) {
 			if needsConsoleHandoff {
 				log.Printf("Feishu console handoff requested by knowledge-only Agent message=%s", item.messageID)
 				if consoleHandoffEnabled(s.cfg) {
-					answer = appendConsoleHandoff(answer, s.cfg.ConsoleAssistantURL)
+					answer = appendConsoleHandoff(answer, s.cfg.ConsoleAssistantURL, s.cfg.ClientDownloadURL)
 				} else if answer == "" {
 					answer = "抱歉，这次没有成功拿到答案，请稍后再试。"
 				}
@@ -279,7 +282,7 @@ func (s *Service) handleJob(ctx context.Context, item job) {
 		}
 		if isKnowledgeBoundaryViolation(err) && consoleHandoffEnabled(s.cfg) {
 			log.Printf("Feishu console handoff requested at knowledge boundary message=%s", item.messageID)
-			if replyErr := s.reply(ctx, item.messageID, appendConsoleHandoff("", s.cfg.ConsoleAssistantURL)); replyErr != nil {
+			if replyErr := s.reply(ctx, item.messageID, appendConsoleHandoff("", s.cfg.ConsoleAssistantURL, s.cfg.ClientDownloadURL)); replyErr != nil {
 				log.Printf("warning: Feishu console handoff reply failed message=%s: %v", item.messageID, replyErr)
 			}
 			return
