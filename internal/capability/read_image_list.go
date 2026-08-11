@@ -71,14 +71,14 @@ type ImageListResponse struct {
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的当前目录及结构化属性。用于浏览、筛选、核实或推荐镜像；不用于模型仓库或镜像标签分类目录。具体查询与语义扩展规则以参数说明为准。",
+		Description: "查询平台、自制、社区或共享镜像的当前目录及结构化属性。用于浏览、筛选、核实或推荐镜像；具名模型的部署、运行、快速安装或 ComfyUI 使用，先查社区镜像目录：有可用的精确兼容候选时优先据此推荐或承接创建。仅在社区目录无匹配、用户明确要求源码安装，或询问 adapter/权重路径时，再用模型仓库或知识检索补充。没有精确兼容候选时，如实说明，不把相近模型或通用运行时说成已支持。具体查询与语义扩展规则以参数说明为准。",
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
 				"用户原话中的目录查询词；复制最短且有意义的用途、约束或用户明确点名的镜像，可取用户表达中的子串，不要先猜候选镜像名。无查询条件时留空。",
 			),
 			"semantic_queries": arrayParam(stringParam()).described(
-				"社区或平台镜像可用，最多 3 个。Agent 根据用户用途提炼的技术或类别查询词，例如用途的常见项目类别或运行时名称；不得替代 query，结果会与 query 的结果合并。原话查询无结果或候选不合适时，可保留同一个 query 后重试并补充这里。推荐类问题应同时查平台与社区两个来源后再作答，平台镜像按运行时命名，只有配合语义扩展才能被用途词命中。",
+				"社区或平台镜像可用，最多 3 个。Agent 根据用户用途提炼的技术或类别查询词，例如用途的常见项目类别或运行时名称；不得替代 query，结果会与 query 的结果合并。原话查询无结果或候选不合适时，可保留同一个 query 后重试并补充这里。具名模型的部署、运行、快速安装或 ComfyUI 使用，先用 source=community 查询；有精确兼容候选时可直接推荐或承接创建，不需要先查平台目录。社区未命中，或用户要求基础环境时，再查 platform。",
 			),
 			"mode": enumParam(platform.ListModeValues()...),
 		}),

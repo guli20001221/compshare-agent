@@ -57,6 +57,19 @@ func TestModelRepositoryHandle_Empty(t *testing.T) {
 	assert.Contains(t, result.Reply, "未获取到模型仓库数据")
 }
 
+func TestModelRepositoryDescriptionDoesNotClaimDeployability(t *testing.T) {
+	description := NewReadCapability(modelRepositoryReadSpec()).Tool.Function.Description
+	for _, want := range []string{
+		"不要用于一般的部署、运行、快速安装或 ComfyUI 使用问题",
+		"社区镜像目录已返回该具名模型的可用精确兼容候选时，不要调用本工具",
+		"仅在用户明确询问预置权重、下载、源码安装或 adapter/权重路径时使用",
+		"不是镜像目录",
+		"不能证明当前可直接创建或已支持该模型",
+	} {
+		require.Contains(t, description, want)
+	}
+}
+
 func TestModelRepositoryArgs_MatchesTag(t *testing.T) {
 	args := modelRepositoryArgs("LLM", platform.ListModeFiltered, map[string]any{"Tags": []any{"LLM", "图像生成"}})
 	require.Equal(t, "LLM", args["tags"])
