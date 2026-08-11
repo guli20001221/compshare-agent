@@ -23,6 +23,33 @@ func TestImageListRequestHasNoRequiredFields(t *testing.T) {
 	require.Nil(t, ImageListRequest{}.MissingFields())
 }
 
+func TestImageListDescriptionUsesTheLiveCatalogForNamedModelDeployment(t *testing.T) {
+	description := NewReadCapability(imageListReadSpec()).Tool.Function.Description
+	for _, want := range []string{
+		"具名模型的部署、运行、快速安装或 ComfyUI 使用",
+		"先查社区镜像目录",
+		"有可用的精确兼容候选时优先据此推荐或承接创建",
+		"用户明确要求源码安装，或询问 adapter/权重路径时",
+		"不把相近模型或通用运行时说成已支持",
+	} {
+		require.Contains(t, description, want)
+	}
+}
+
+func TestImageListSemanticQueriesPreferCommunityForNamedModelDeployment(t *testing.T) {
+	schema, ok := NewReadCapability(imageListReadSpec()).Tool.Function.Parameters.(map[string]any)
+	require.True(t, ok)
+	properties, ok := schema["properties"].(map[string]any)
+	require.True(t, ok)
+	semanticQueries, ok := properties["semantic_queries"].(map[string]any)
+	require.True(t, ok)
+	description, ok := semanticQueries["description"].(string)
+	require.True(t, ok)
+	require.Contains(t, description, "先用 source=community 查询")
+	require.Contains(t, description, "不需要先查平台目录")
+	require.Contains(t, description, "社区未命中，或用户要求基础环境时，再查 platform")
+}
+
 type communityQueryExec struct {
 	results map[string]map[string]any
 	calls   []string
