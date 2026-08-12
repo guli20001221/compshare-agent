@@ -11,6 +11,7 @@ import (
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
@@ -430,4 +431,71 @@ func TestInstanceOps_DeclineStillConsumesTurnSlot(t *testing.T) {
 	require.Equal(t, 0, runner.calls)
 	require.Contains(t, out1, "已取消")
 	require.Contains(t, out2, "已经执行过", "the declined slot is spent — the second call is not a fresh card")
+}
+
+// A card that was not approved has four different causes and they mean four
+// different things to the person reading the reply. Until 2026-08-12 all of them
+// produced 「好的，已取消」, which told a user whose card had expired that they had
+// cancelled it — the most common case in production, not the rarest: over 30 days
+// the entry card timed out 9 times against 2 genuine declines.
+//
+// Driven through Chat (not executeInstanceOps directly) so the whole chain is
+// exercised: ConfirmResultFunc -> the per-turn confirmation wrapper -> the field
+// the refusal reads. A test that set the field by hand would keep passing if the
+// wrapper stopped writing it.
+func TestInstanceOps_UnauthorizedReplyNamesTheActualCause(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		reason      string
+		wantContain string
+		wantAbsent  string
+	}{
+		{"declined", observability.ConfirmationReasonUserDeclined, "好的，已取消", "超时"},
+		{"timeout", observability.ConfirmationReasonTimeout, "授权卡片已超时", "好的，已取消"},
+		{"disconnect", observability.ConfirmationReasonClientDisconnect, "连接已断开", "好的，已取消"},
+		{"undeliverable", observability.ConfirmationReasonDeliveryFailed, "未能送达", "好的，已取消"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
+			model := &mockLLM{responses: []llm.ChatResponse{
+				{ToolCalls: []openai.ToolCall{toolCall("t1", "DiagnoseInstanceInternals",
+					`{"UHostId":"uhost-1","Task":"排查掉卡"}`)}},
+				{Content: "done"},
+			}}
+			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+			eng.SetInstanceOps(runner)
+
+			var steps []StepEvent
+			_, err := eng.ChatWithOptions(context.Background(), "请排查 uhost-1", captureSteps(&steps), ChatOptions{
+				ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
+					return ConfirmationResult{TerminalReason: tc.reason}
+				},
+			})
+			require.NoError(t, err)
+			require.Zero(t, runner.calls, "an unapproved card must never enter the instance")
+
+			var blocked string
+			for _, s := range steps {
+				if s.Type == StepBlocked && s.Action == "DiagnoseInstanceInternals" {
+					blocked = s.Message
+				}
+			}
+			require.NotEmpty(t, blocked, "the lane must report why it did not run")
+			require.Contains(t, blocked, tc.wantContain)
+			require.NotContains(t, blocked, tc.wantAbsent)
+			// Every branch has to say the box was untouched: that is the fact the
+			// user needs and the reason a wrong cause is worth fixing at all.
+			if tc.reason != observability.ConfirmationReasonUserDeclined {
+				require.Contains(t, blocked, "没有执行任何命令")
+			}
+		})
+	}
+}
+
+// The timeout sentence quotes a number. It must be the window the transport
+// actually enforces, not a hardcoded 60 left behind by the old budget.
+func TestInstanceOpsTimeoutReplyQuotesTheRealWindow(t *testing.T) {
+	msg := instanceOpsUnauthorizedMessage("uhost-1", observability.ConfirmationReasonTimeout)
+	require.Contains(t, msg, "等待 120 秒")
+	require.Equal(t, 120*time.Second, InstanceOpsConfirmWindow)
 }

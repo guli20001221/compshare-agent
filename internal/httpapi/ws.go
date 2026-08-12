@@ -15,51 +15,86 @@ import (
 )
 
 const (
-	// minWSConnLifetime is the FLOOR for a single chat WebSocket. The gateway opens one connection
-	// per chat turn (see frame/src/Frame/AIAssistant/service.js: a new WebSocket per chatStream
-	// call, closed on done/error/abort), so this bounds a turn, not a session. It backstops a
-	// wedged connection that the gateway never closes.
+	// minWSMachineLifetime is the FLOOR for the MACHINE half of a single chat WebSocket. The
+	// gateway opens one connection per chat turn (see frame/src/Frame/AIAssistant/service.js: a
+	// new WebSocket per chatStream call, closed on done/error/abort), so this bounds a turn, not
+	// a session. It backstops a wedged connection that the gateway never closes.
 	//
 	// It was a flat ceiling named maxWSConnLifetime until 2026-07-30, chosen before the
 	// write-enabled SSH-ops lane existed. A live frontend run showed the contradiction that
 	// created: agent.ssh_ops.timeout was 12m, this was 10m, and an in-instance repair died at
 	// exactly 10:00.0 — the user got "[NetworkError] 连接已关闭" and nothing else, after the lane
 	// had already replaced an application directory on the box. Two independent numbers governing
-	// one turn will drift; see wsConnLifetime, which now derives the deadline from the lane budget
-	// so the socket always outlives the work it carries.
-	minWSConnLifetime = 10 * time.Minute
+	// one turn will drift; see wsConnLifetime, which derives the deadline from the lane budget so
+	// the socket always outlives the work it carries.
+	minWSMachineLifetime = 10 * time.Minute
 
-	// wsLaneSlack is what the turn needs BEYOND the lane's own budget: agent.ssh_ops.timeout bounds
-	// only the harness subprocess, while the same turn also retrieves knowledge, waits on the
-	// operator's consent cards, and writes the verdict after the harness returns.
-	wsLaneSlack = 2 * time.Minute
+	// wsMachineSlack is the MACHINE work a turn does outside the harness subprocess:
+	// agent.ssh_ops.timeout bounds only the subprocess, while the same turn also retrieves
+	// knowledge and writes the verdict after the harness returns.
+	//
+	// Until 2026-08-12 this was named wsLaneSlack and its comment also charged "waits on the
+	// operator's consent cards" to these two minutes. That was the bug below: it made a person
+	// reading an authorization card share a budget sized for machine work, and 2 minutes cannot
+	// hold even one card at the current timeout. Human time is now wsInteractionAllowance.
+	wsMachineSlack = 2 * time.Minute
+
+	// wsMaxConfirmationsPerTurn is how many authorization cards one turn may legitimately show.
+	// Measured 2026-08-12 over 30 days of agent_traces: the largest real turns carried five cards
+	// (a create flow with five form steps; an in-instance repair with one entry card plus four
+	// per-write cards), so this keeps one card of headroom over anything observed. It is only an
+	// input to the transport deadline — nothing rejects the sixth card, because a transport
+	// number must never become a hidden product limit.
+	wsMaxConfirmationsPerTurn = 6
+
+	// wsInteractionAllowance is the socket headroom reserved for HUMAN time, kept deliberately
+	// separate from every machine budget above.
+	//
+	// agent.ssh_ops.timeout states how long the MACHINE may work inside an instance. It says
+	// nothing about how long a PERSON may take to read a card that authorizes writing to their
+	// box, and deriving one from the other would make a careful reader look like a slow harness.
+	// The socket has to cover the sum, so the sum is what it is built from — machine budget first,
+	// then this, never one folded into the other.
+	wsInteractionAllowance = wsMaxConfirmationsPerTurn * confirmWaitTimeout
 
 	// maxWSMessageBytes must fit screenshot uploads. OCR accepts up to 10 MiB raw
 	// image bytes; base64 plus JSON framing needs extra room on the WebSocket.
 	maxWSMessageBytes int64 = 20 * 1024 * 1024
 )
 
-// wsConnLifetime is the deadline for one chat socket: the wedged-connection floor, or the
-// configured in-instance lane budget plus slack when that is longer.
+// wsConnLifetime is the deadline for one chat socket: the machine budget for the turn, PLUS the
+// human time its authorization cards may take.
 //
-// Deriving it is the point. agent.ssh_ops.timeout is an operator's statement of how long a single
-// turn may legitimately spend inside an instance, so a transport deadline shorter than that does
-// not protect anything — it just kills the longest, most consequential turns, which under
-// allow_writes are the ones that have already changed the box. Deliberately NOT clamped to a
+// Deriving the machine half is the point. agent.ssh_ops.timeout is an operator's statement of how
+// long a single turn may legitimately spend inside an instance, so a transport deadline shorter
+// than that does not protect anything — it just kills the longest, most consequential turns, which
+// under allow_writes are the ones that have already changed the box. Deliberately NOT clamped to a
 // second ceiling: a cap that silently cut a longer configured lane short would be this same bug
 // with a bigger number.
+//
+// Adding the interaction allowance separately is the 2026-08-12 fix. Production traces showed 36
+// of 292 confirmation cards (12.3%) ending at exactly the confirm timeout, with real confirmations
+// landing 168ms before the wall — a live distribution being clipped, not users walking away.
+// Raising that timeout without giving the socket its own room for human time would just move the
+// wall onto the transport.
 func (h *Handlers) wsConnLifetime() time.Duration {
+	return h.wsMachineLifetime() + wsInteractionAllowance
+}
+
+// wsMachineLifetime is the machine half: the wedged-connection floor, or the configured
+// in-instance lane budget plus non-harness machine slack when that is longer.
+func (h *Handlers) wsMachineLifetime() time.Duration {
 	if h == nil || h.cfg == nil {
-		return minWSConnLifetime
+		return minWSMachineLifetime
 	}
 	// Keyed off the configured budget rather than the enabled flag: the lane can also be switched
 	// on by env (COMPSHARE_SSH_OPS) with no YAML `enabled`, and an operator who wrote a timeout has
 	// declared the length of a turn either way. When the lane is off the field is unset, so this
 	// reads the floor.
-	if lane := h.cfg.Agent.SSHOps.Timeout; lane > 0 && lane+wsLaneSlack > minWSConnLifetime {
-		return lane + wsLaneSlack
+	if lane := h.cfg.Agent.SSHOps.Timeout; lane > 0 && lane+wsMachineSlack > minWSMachineLifetime {
+		return lane + wsMachineSlack
 	}
-	return minWSConnLifetime
+	return minWSMachineLifetime
 }
 
 // HandleWS upgrades a gateway-initiated request to a WebSocket and serves the
@@ -252,7 +287,20 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 					// may fix and resend within the timeout window).
 					code = "InvalidParam"
 				}
-				_ = writer.WriteEvent("error", streamErrorEvent{Code: code, Message: rErr.Error()})
+				// Name the card. The error frame used to carry only a code and a
+				// sentence, so a client could not tell which of several cards it
+				// rejected — and an expired card therefore stayed rendered as
+				// accepted while the turn went red somewhere else.
+				_ = writer.WriteEvent("error", confirmationErrorEvent{
+					Code: code, Message: rErr.Error(), ConfirmationID: confirmationID,
+				})
+			} else {
+				// The acknowledgement the socket never had. A client may now wait
+				// for THIS before showing the card as handled, instead of treating
+				// its own ws.send() as proof the server agreed.
+				_ = writer.WriteEvent("confirmation_ack", confirmationAckEvent{
+					ConfirmationID: confirmationID, Accepted: confirmed,
+				})
 			}
 
 		default:

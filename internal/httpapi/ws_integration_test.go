@@ -299,3 +299,75 @@ func TestWS_Confirm_SessionDriftResolves(t *testing.T) {
 		t.Fatal("session-drift confirmation frame did not resolve the broker waiter")
 	}
 }
+
+// A resolved confirmation has to say so on the socket.
+//
+// Until 2026-08-12 only FAILURES wrote a frame here, which left a client no way
+// to distinguish "the server accepted this" from "the bytes left my machine".
+// The console resolved that ambiguity the only way it could and marked cards
+// 已处理 on ws.send(), so an expired card rendered as handled while a [NotFound]
+// arrived beside it saying the opposite. The POST transport has always returned
+// this acknowledgement (confirmResponse); this is the same fact on the socket
+// the console actually uses.
+func TestWS_Confirm_SuccessIsAcknowledgedWithItsConfirmationID(t *testing.T) {
+	srv, _, h := wsTestHandlers(t, chatLLM{}, denyConfirm)
+	conn := dialWS(t, srv, gatewayHeaders())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	confirmID, ch := h.confirmBroker.Register("sess-1", gatewayOwner)
+	go func() { WaitForConfirmation(context.Background(), ch, 5*time.Second) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","ConfirmationId":"`+confirmID+`","Confirmed":true}`)))
+
+	frame := readOneFrame(t, ctx, conn)
+	assert.Equal(t, "confirmation_ack", frame["event"])
+	assert.Equal(t, confirmID, frame["ConfirmationId"],
+		"the ack must name the card, or a client with two cards open cannot apply it")
+	assert.Equal(t, true, frame["Accepted"])
+}
+
+// A decline is still a successful resolution: the server accepted the answer.
+// Acknowledging only approvals would leave the console unable to settle the card
+// a user deliberately refused.
+func TestWS_Confirm_DeclineIsAlsoAcknowledged(t *testing.T) {
+	srv, _, h := wsTestHandlers(t, chatLLM{}, denyConfirm)
+	conn := dialWS(t, srv, gatewayHeaders())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	confirmID, ch := h.confirmBroker.Register("sess-1", gatewayOwner)
+	go func() { WaitForConfirmation(context.Background(), ch, 5*time.Second) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","ConfirmationId":"`+confirmID+`","Confirmed":false}`)))
+
+	frame := readOneFrame(t, ctx, conn)
+	assert.Equal(t, "confirmation_ack", frame["event"])
+	assert.Equal(t, confirmID, frame["ConfirmationId"])
+	assert.Equal(t, false, frame["Accepted"])
+}
+
+// An expired card's rejection must name the card too. Without the id the client
+// can only fail the whole turn — which is exactly what the console did, showing
+// a red [NotFound] beside a card still rendered as handled.
+func TestWS_Confirm_ExpiredCardRejectionNamesTheCard(t *testing.T) {
+	srv, _, _ := wsTestHandlers(t, chatLLM{}, denyConfirm)
+	conn := dialWS(t, srv, gatewayHeaders())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","ConfirmationId":"already-gone","Confirmed":true}`)))
+
+	frame := readOneFrame(t, ctx, conn)
+	assert.Equal(t, "error", frame["event"])
+	assert.Equal(t, "NotFound", frame["Code"])
+	assert.Equal(t, "already-gone", frame["ConfirmationId"])
+	// The two fields a legacy client reads must be unchanged in name and meaning.
+	assert.NotEmpty(t, frame["Message"])
+}

@@ -542,6 +542,17 @@ type Engine struct {
 	// still spends the slot. Reset per turn. Per-session/per-turn — sharing would
 	// let one tenant's run withdraw the lane from another's turn.
 	instanceOpsRanThisTurn bool
+	// lastConfirmationTerminalReason is why the most recent authorization card in
+	// this turn ended, in observability's closed-set spelling. It exists because
+	// ConfirmFunc answers a bool, so every non-approval — the user declining, the
+	// card timing out, the client going away — arrives at the call site as the
+	// same false, and the reply then told a user who ran out of time that they had
+	// cancelled. The reason is already computed for trace; this carries the same
+	// value to the sentence the user reads. Written by the per-turn confirmation
+	// wrapper immediately before it returns, read by the call site that is about
+	// to phrase the refusal. Per-turn, single-goroutine: the wrapper and the
+	// ReAct loop that consumes it are the same goroutine.
+	lastConfirmationTerminalReason string
 	// currentTurnID is the server-side turn identity for THIS turn, the audit dedup
 	// key the in-instance lane uses so a durable replay cannot re-enter the box
 	// (INV-9). Set at ChatWithOptions entry from the resolved turnID, cleared on
@@ -1373,6 +1384,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				result.Confirmed = confirm(action, args)
 			}
 			e.recordConfirmationResult(action, result, started)
+			// Same value trace records, kept for the user-facing sentence. Set on
+			// the approval path too, so a later refusal can never inherit an
+			// earlier card's reason.
+			e.lastConfirmationTerminalReason = observability.NormalizeConfirmationTerminalReason(result.Confirmed, result.TerminalReason)
 			return result.Confirmed
 		})
 		e.confirmFn = wrappedConfirm
@@ -1443,6 +1458,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.actionProposalDispositionThisTurn = ""
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.instanceOpsRanThisTurn = false
+	e.lastConfirmationTerminalReason = ""
 	e.verbatimBlocksThisTurn = nil
 	// Single composition site for verbatim blocks: every success path — normal
 	// answer, deterministic reply, token-budget recovery, round-ceiling recovery —

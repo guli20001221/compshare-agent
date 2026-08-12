@@ -96,12 +96,57 @@ type confirmationEvent struct {
 	Form           *workflow.ConfirmForm `json:"Form,omitempty"`
 }
 
-const confirmTimeoutSeconds = 60
+// confirmationAckEvent is the POSITIVE outcome of a ConfirmCSAgentAction frame,
+// carrying back the id it resolved so a client can tell WHICH card it applies to.
+//
+// It exists because the WS transport had no success reply at all: only failures
+// wrote a frame, so a client's only honest option was to treat "the bytes left
+// the socket" as "the server accepted it". The console did exactly that and
+// marked cards 已处理 on ws.send(), which is how an expired card could sit next
+// to a [NotFound] error saying the opposite. The POST transport has always
+// returned this (confirmResponse); this is the same acknowledgement on the
+// socket the console actually uses.
+//
+// Additive: a client that ignores unknown events is unaffected, and no existing
+// frame changes shape.
+type confirmationAckEvent struct {
+	ConfirmationID string `json:"ConfirmationId"`
+	Accepted       bool   `json:"Accepted"`
+}
 
-// confirmFormTimeoutSeconds is the wait for form-bearing confirmations: the
-// user may be editing selects, so the window is wider than the plain y/N 60s.
-// Only the new opt-in path uses it; legacy confirmations keep 60s.
-const confirmFormTimeoutSeconds = 120
+// confirmationErrorEvent is streamErrorEvent plus the card the failure belongs
+// to. Same "error" event name and same two fields, so a client reading only
+// Code/Message sees exactly what it saw before; ConfirmationId lets a newer one
+// put the message on the card that was rejected rather than failing the turn.
+type confirmationErrorEvent struct {
+	Code           string `json:"Code"`
+	Message        string `json:"Message"`
+	ConfirmationID string `json:"ConfirmationId"`
+}
+
+// confirmWaitTimeout is how long the server waits for a person to answer ONE
+// authorization card. It is a single number on purpose: a plain y/N card and a
+// form-bearing card are both "a human is reading something before authorizing
+// it", and the split (60s plain / 120s form) had no reader-side justification —
+// it only meant the cards that authorize writing to a customer's box got the
+// SHORTER window.
+//
+// 60 -> 120 on 2026-08-12, from production traces rather than taste: over 30
+// days, 36 of 292 cards (12.3%) ended at exactly 60000ms, while real answers
+// landed at 59832ms and 59760ms — 168ms and 240ms before the wall — and one
+// user actively DECLINED at 59292ms. A distribution that is still dense right
+// up against a boundary is being clipped by it, not abandoned before it. The
+// per-write cards inside the in-instance lane were worst hit (24 of 140 =
+// 17.1%), which is the wrong place to lose a turn: the box has usually already
+// been changed by then.
+//
+// Raising this cost the transport nothing only because wsInteractionAllowance
+// now buys the socket its own room for human time; the two must move together.
+const confirmWaitTimeout = 120 * time.Second
+
+// confirmTimeoutSeconds is the same budget as it appears on the wire, so the
+// countdown the user watches and the deadline the server enforces cannot drift.
+const confirmTimeoutSeconds = int(confirmWaitTimeout / time.Second)
 
 // featureConfirmForm is the SendCSAgentChat Features value a client sends to
 // opt in to form-bearing confirmations (and Overrides on resolve).
@@ -513,7 +558,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			}); err != nil {
 				return engine.ConfirmationResult{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 			}
-			decision, reason := WaitForConfirmationOutcome(streamCtx, ch, time.Duration(confirmTimeoutSeconds)*time.Second)
+			decision, reason := WaitForConfirmationOutcome(streamCtx, ch, confirmWaitTimeout)
 			return engine.ConfirmationResult{Confirmed: decision.Confirmed, TerminalReason: reason}
 		},
 		ConfirmEditsFunc:       h.confirmEditsFuncFor(streamCtx, sw, sessionID, base.Owner, prep),
@@ -727,12 +772,12 @@ func (h *Handlers) confirmEditsFuncFor(streamCtx context.Context, sw streamWrite
 			ConfirmationID: confirmID,
 			Action:         action,
 			Summary:        sanitizeConfirmArgs(args),
-			TimeoutSeconds: confirmFormTimeoutSeconds,
+			TimeoutSeconds: confirmTimeoutSeconds,
 			Form:           form,
 		}); err != nil {
 			return workflow.ConfirmResolution{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 		}
-		d, reason := WaitForConfirmationOutcome(streamCtx, ch, time.Duration(confirmFormTimeoutSeconds)*time.Second)
+		d, reason := WaitForConfirmationOutcome(streamCtx, ch, confirmWaitTimeout)
 		return workflow.ConfirmResolution{Confirmed: d.Confirmed, Overrides: d.Overrides, TerminalReason: reason}
 	}
 }
