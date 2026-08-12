@@ -11,6 +11,8 @@ import (
 	"github.com/bitly/go-simplejson"
 	"github.com/coder/websocket"
 	wsx "github.com/compshare-agent/internal/httpapi/ws"
+	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/gin-gonic/gin"
 )
 
@@ -39,13 +41,16 @@ const (
 	// hold even one card at the current timeout. Human time is now wsInteractionAllowance.
 	wsMachineSlack = 2 * time.Minute
 
-	// wsMaxConfirmationsPerTurn is how many authorization cards one turn may legitimately show.
-	// Measured 2026-08-12 over 30 days of agent_traces: the largest real turns carried five cards
-	// (a create flow with five form steps; an in-instance repair with one entry card plus four
-	// per-write cards), so this keeps one card of headroom over anything observed. It is only an
-	// input to the transport deadline — nothing rejects the sixth card, because a transport
-	// number must never become a hidden product limit.
-	wsMaxConfirmationsPerTurn = 6
+	// wsMaxConfirmationsPerTurn is the card count the human-time budget is sized from. It is
+	// workflow.MaxConfirmationsPerWorkflowTurn — DERIVED from the wizard's own step order plus its
+	// edit cap — and not a number chosen here.
+	//
+	// It was 6 for one commit, taken from the largest run seen in 30 days of agent_traces, with a
+	// comment claiming it covered every card a turn may legitimately show. That was false when it
+	// was written: guided create has eleven steps and allows three re-asks, so the code has always
+	// permitted fourteen. Sizing a bound from what users happened to do, and then describing it as
+	// what the system permits, is how a budget silently becomes the thing that fails.
+	wsMaxConfirmationsPerTurn = workflow.MaxConfirmationsPerWorkflowTurn
 
 	// wsInteractionAllowance is the socket headroom reserved for HUMAN time, kept deliberately
 	// separate from every machine budget above.
@@ -55,6 +60,14 @@ const (
 	// box, and deriving one from the other would make a careful reader look like a slow harness.
 	// The socket has to cover the sum, so the sum is what it is built from — machine budget first,
 	// then this, never one folded into the other.
+	//
+	// What this is NOT: a guarantee that every legal turn fits. It covers the bounded flow
+	// (workflows, above) with certainty. The in-instance ops lane asks once per mutating command
+	// and has NO ceiling on how many that is — the harness's own 50-step cap is the only limit, so
+	// a repair that stopped for fifty separate approvals could still outlive the socket. That is a
+	// deliberate backstop, not an oversight: a turn parked on its fifteenth human approval is a
+	// wedged connection by any useful definition, and the connection deadline exists to end those.
+	// Stated here rather than left for someone to discover from a closed socket.
 	wsInteractionAllowance = wsMaxConfirmationsPerTurn * confirmWaitTimeout
 
 	// maxWSMessageBytes must fit screenshot uploads. OCR accepts up to 10 MiB raw
@@ -274,34 +287,17 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 			// confirming the unedited card.
 			overrides, ovErr := overridesFromFrame(frame)
 			if ovErr != nil {
-				_ = writer.WriteEvent("error", streamErrorEvent{Code: "InvalidParam", Message: ovErr.Error()})
+				// Name the card here too. This frame is scoped to one card by
+				// construction, and without the id a client can only fail the whole
+				// turn — which would let a single malformed form field end a
+				// diagnosis, the same shape as the expired-card bug below.
+				_ = writer.WriteEvent("error", confirmationErrorEvent{
+					Code: "InvalidParam", Message: ovErr.Error(), ConfirmationID: confirmationID,
+				})
 				continue
 			}
-			if rErr := h.confirmBroker.Resolve(confirmationID, sessionID, frameBase.Owner, ConfirmDecision{Confirmed: confirmed, Overrides: overrides}); rErr != nil {
-				code := "NotFound"
-				switch {
-				case errors.Is(rErr, ErrConfirmationOwner):
-					code = "Forbidden"
-				case !errors.Is(rErr, ErrConfirmationNotFound):
-					// Override validation failure: pending is kept (the client
-					// may fix and resend within the timeout window).
-					code = "InvalidParam"
-				}
-				// Name the card. The error frame used to carry only a code and a
-				// sentence, so a client could not tell which of several cards it
-				// rejected — and an expired card therefore stayed rendered as
-				// accepted while the turn went red somewhere else.
-				_ = writer.WriteEvent("error", confirmationErrorEvent{
-					Code: code, Message: rErr.Error(), ConfirmationID: confirmationID,
-				})
-			} else {
-				// The acknowledgement the socket never had. A client may now wait
-				// for THIS before showing the card as handled, instead of treating
-				// its own ws.send() as proof the server agreed.
-				_ = writer.WriteEvent("confirmation_ack", confirmationAckEvent{
-					ConfirmationID: confirmationID, Accepted: confirmed,
-				})
-			}
+			h.resolveConfirmFrame(writer, confirmationID, sessionID, frameBase.Owner,
+				ConfirmDecision{Confirmed: confirmed, Overrides: overrides})
 
 		default:
 			_ = writer.WriteEvent("error", streamErrorEvent{
@@ -342,4 +338,43 @@ func stringMapFromFrame(m map[string]any) (map[string]string, error) {
 		out[k] = s
 	}
 	return out, nil
+}
+
+// resolveConfirmFrame answers one ConfirmCSAgentAction: it claims the decision,
+// writes the outcome frame, and only then wakes the turn.
+//
+// The ORDER is the contract. Waking first is a race this goroutine cannot win —
+// the decision unblocks the chat goroutine, which may finish the turn, write
+// `done` and cancel the connection context before the acknowledgement reaches
+// the socket. The client would then be told that an accepted, already-executed
+// action had failed. It is a separate function so that order is testable at all:
+// driven through the real WebSocket, both orders look identical from outside.
+func (h *Handlers) resolveConfirmFrame(w streamWriter, confirmationID, sessionID string, owner store.Owner, decision ConfirmDecision) {
+	deliver, err := h.confirmBroker.ClaimResolution(confirmationID, sessionID, owner, decision)
+	if err != nil {
+		code := "NotFound"
+		switch {
+		case errors.Is(err, ErrConfirmationOwner):
+			code = "Forbidden"
+		case !errors.Is(err, ErrConfirmationNotFound):
+			// Override validation failure: pending is kept (the client may fix and
+			// resend within the timeout window).
+			code = "InvalidParam"
+		}
+		// Name the card. The error frame used to carry only a code and a sentence,
+		// so a client could not tell which of several cards it rejected — and an
+		// expired card therefore stayed rendered as accepted while the turn went
+		// red somewhere else.
+		_ = w.WriteEvent("error", confirmationErrorEvent{
+			Code: code, Message: err.Error(), ConfirmationID: confirmationID,
+		})
+		return
+	}
+	// The acknowledgement the socket never had. A client may now wait for THIS
+	// before showing the card as handled, instead of treating its own ws.send()
+	// as proof the server agreed.
+	_ = w.WriteEvent("confirmation_ack", confirmationAckEvent{
+		ConfirmationID: confirmationID, Accepted: decision.Confirmed,
+	})
+	deliver()
 }

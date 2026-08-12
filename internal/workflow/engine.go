@@ -34,6 +34,23 @@ func (e *Engine) SetConfirmEditsFn(fn ConfirmEditsFunc) {
 // client resending overrides cannot spin the workflow indefinitely.
 const maxConfirmEdits = 3
 
+// MaxConfirmationsPerWorkflowTurn is the largest number of authorization cards
+// one workflow turn can put in front of a user, derived rather than guessed:
+// every guided-create step is one card (guidedStepFinal is the last of the
+// wizard's iota order, so its value IS the card count), and the final card may
+// additionally be re-asked maxConfirmEdits times after edits.
+//
+// Exported because a transport has to size a human-time budget against it. The
+// alternative — a hand-picked constant in the transport — was wrong the day it
+// was written: it said 6, taken from the largest run seen in production, while
+// the code has always supported 14. A number sampled from traffic describes
+// what users happened to do; this describes what the code permits.
+//
+// It bounds WORKFLOW turns only. The in-instance ops lane asks per mutating
+// command and has no such ceiling, which is stated where the budget is used
+// rather than papered over here.
+const MaxConfirmationsPerWorkflowTurn = guidedStepFinal + maxConfirmEdits
+
 // RunOption configures a workflow run before its first step. Options set
 // non-business context (reference data) that must not travel through Params —
 // the engine builds it, the run consumes it, and it never enters the seal.

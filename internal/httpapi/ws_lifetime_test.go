@@ -6,6 +6,7 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/workflow"
 )
 
 // The socket must outlive the work it carries. These two budgets were independent constants until
@@ -100,18 +101,29 @@ func TestInteractionAllowanceDoesNotMoveWithTheLaneBudget(t *testing.T) {
 	}
 }
 
-// The allowance has to hold every card a turn can actually show, or it is the old 2-minute slack
-// with a bigger number. Sized from measured production turns (five cards was the largest observed
-// over 30 days of agent_traces on 2026-08-12), with one card of headroom.
-func TestInteractionAllowanceHoldsTheLargestObservedCardRun(t *testing.T) {
+// The allowance has to be sized from what the CODE permits, not from what users happened to do.
+//
+// This started as "holds the largest observed card run", asserting headroom over the five cards
+// seen in 30 days of production traffic. That was measuring the wrong thing: guided create has
+// eleven wizard steps and allows three re-asks after edits, so fourteen cards has always been
+// reachable. A budget justified by traffic and described as a system bound is how the budget
+// quietly becomes the thing that fails.
+//
+// Deriving it also keeps it honest as the wizard changes: adding a step moves the bound.
+func TestInteractionAllowanceIsSizedFromTheCodeBound(t *testing.T) {
+	if wsMaxConfirmationsPerTurn != workflow.MaxConfirmationsPerWorkflowTurn {
+		t.Fatalf("transport card count %d must be the workflow's own bound %d, not a local guess",
+			wsMaxConfirmationsPerTurn, workflow.MaxConfirmationsPerWorkflowTurn)
+	}
+	// The number production actually produced, kept only to state the gap the old constant hid.
 	const largestObservedCardsPerTurn = 5
 	if wsMaxConfirmationsPerTurn <= largestObservedCardsPerTurn {
-		t.Fatalf("wsMaxConfirmationsPerTurn = %d leaves no headroom over the %d cards seen in production",
+		t.Fatalf("the code bound (%d) is not above the largest observed run (%d) — one of the two is wrong",
 			wsMaxConfirmationsPerTurn, largestObservedCardsPerTurn)
 	}
-	if want := largestObservedCardsPerTurn * confirmWaitTimeout; wsInteractionAllowance <= want {
-		t.Fatalf("wsInteractionAllowance = %v cannot hold %d cards at %v each (%v)",
-			wsInteractionAllowance, largestObservedCardsPerTurn, confirmWaitTimeout, want)
+	if want := time.Duration(wsMaxConfirmationsPerTurn) * confirmWaitTimeout; wsInteractionAllowance != want {
+		t.Fatalf("wsInteractionAllowance = %v, want %d cards x %v = %v",
+			wsInteractionAllowance, wsMaxConfirmationsPerTurn, confirmWaitTimeout, want)
 	}
 }
 

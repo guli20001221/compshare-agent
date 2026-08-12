@@ -95,24 +95,48 @@ func (b *ConfirmBroker) register(sessionID string, owner store.Owner, form *work
 // and resend; the waiter's timeout still applies) and the error is returned
 // for an error frame. A deny ignores Overrides — denial needs no validation.
 func (b *ConfirmBroker) Resolve(confirmationID, sessionID string, owner store.Owner, decision ConfirmDecision) error {
+	deliver, err := b.ClaimResolution(confirmationID, sessionID, owner, decision)
+	if err != nil {
+		return err
+	}
+	deliver()
+	return nil
+}
+
+// ClaimResolution is Resolve split in two: it performs the whole validated,
+// locked claim — id lookup, owner check, override validation, removal from the
+// pending map — and returns the func that actually hands the decision to the
+// waiting turn. Nothing is delivered until the caller calls it.
+//
+// The split exists so a transport can ACKNOWLEDGE a resolution before waking the
+// turn it resolves. Delivering first is a race the transport cannot win: the
+// decision unblocks the chat goroutine, which may finish the turn, write `done`
+// and cancel the connection context before this goroutine gets to write its
+// acknowledgement — and the client would then be told its accepted (already
+// executed) action had failed. Claiming is the part that must be atomic;
+// delivery is the part that must come last.
+//
+// The returned deliver is single-use and safe to call exactly once: the entry is
+// already out of the map, so no second Resolve can reach the same channel.
+func (b *ConfirmBroker) ClaimResolution(confirmationID, sessionID string, owner store.Owner, decision ConfirmDecision) (func(), error) {
 	b.mu.Lock()
 	p, ok := b.pending[confirmationID]
 	if !ok {
 		b.mu.Unlock()
-		return ErrConfirmationNotFound
+		return nil, ErrConfirmationNotFound
 	}
 	if p.owner != owner {
 		b.mu.Unlock()
-		return ErrConfirmationOwner
+		return nil, ErrConfirmationOwner
 	}
 	if decision.Confirmed && len(decision.Overrides) > 0 {
 		if p.form == nil {
 			b.mu.Unlock()
-			return ErrOverridesNotAllowed
+			return nil, ErrOverridesNotAllowed
 		}
 		if err := p.form.ValidateOverrides(decision.Overrides); err != nil {
 			b.mu.Unlock()
-			return err
+			return nil, err
 		}
 	}
 	if !decision.Confirmed {
@@ -128,9 +152,10 @@ func (b *ConfirmBroker) Resolve(confirmationID, sessionID string, owner store.Ow
 		log.Printf("confirm %s: session drift (registered %q, resolved %q) — resolving by id+owner",
 			confirmationID, registeredSession, sessionID)
 	}
-	p.ch <- decision
-	close(p.ch)
-	return nil
+	return func() {
+		p.ch <- decision
+		close(p.ch)
+	}, nil
 }
 
 // Cancel removes a pending confirmation without sending a value. Called when
