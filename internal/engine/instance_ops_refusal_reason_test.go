@@ -18,6 +18,7 @@ func TestEachRefusalReasonIsDistinguishable(t *testing.T) {
 		"refused_form",
 		"refused_not_approved",
 		"refused_unconfirmable",
+		"refused_unmanaged_platform_service",
 		"refused_mutating_phase1",
 	}
 	seen := map[string]string{}
@@ -47,6 +48,10 @@ func TestShapeRefusalIsNotWordedAsAPolicyRefusal(t *testing.T) {
 	declined := instanceOpsRefusalReason("refused_not_approved")
 	if strings.Contains(declined, "高危") || strings.Contains(declined, "命令形式") {
 		t.Fatalf("the operator's own decline must not be reported as a policy refusal, got %q", declined)
+	}
+	platform := instanceOpsRefusalReason("refused_unmanaged_platform_service")
+	if !strings.Contains(platform, "平台入口") || !strings.Contains(platform, "FileBrowser") {
+		t.Fatalf("an unverified platform-service refusal must explain the actual boundary, got %q", platform)
 	}
 }
 

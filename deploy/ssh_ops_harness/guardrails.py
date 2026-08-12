@@ -1483,6 +1483,98 @@ def _split_chain(cmd: str):
     return [s for s in (x.strip() for x in parts) if s]
 
 
+def _effective_launch_tokens(seg: str):
+    """Return the executable argv after benign launch wrappers.
+
+    This is intentionally a tiny, purpose-specific parser, not a second shell policy. It only
+    peels the same wrappers classify() already understands so the FileBrowser boundary cannot be
+    bypassed by quoting its path, `env`, `nohup`, or `bash -c`. Image-owned managers remain ordinary
+    commands and are not treated as direct binary launches.
+    """
+    seg = _strip_shell_keywords((seg or "").strip()).strip()
+    try:
+        tokens = shlex.split(seg)
+    except ValueError:
+        return []                                      # malformed shell does not get a guessed parse
+    for _ in range(8):                                 # bounded even for pathological nested wrappers
+        if not tokens:
+            return []
+        binary = _basename(tokens[0]).lower()
+        if binary == "sudo":
+            i = 1
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok in ("-u", "-g", "-U"):
+                    i += 2
+                    continue
+                if tok in ("-i", "-s", "-e"):
+                    return tokens                       # a sudo shell is not a transparent wrapper
+                if tok.startswith("-"):
+                    i += 1
+                    continue
+                break
+            tokens = tokens[i:]
+            continue
+        # `command -v filebrowser` only asks the shell to resolve a pathname. It must remain a
+        # diagnostic, not be mistaken for the launch whose executable happens to be its operand.
+        if binary == "command" and _COMMAND_LOOKUP.search(" ".join(tokens)):
+            return tokens
+        if binary in _WRAPPER_BINARIES:
+            i = 1
+            while i < len(tokens) and tokens[i].startswith("-"):
+                i += 2 if tokens[i] in _WRAPPER_VALUE_FLAGS else 1
+            tokens = tokens[i + _WRAPPER_BINARIES[binary]:]
+            continue
+        if binary == "env":
+            i = 1
+            while i < len(tokens) and (tokens[i].startswith("-") or "=" in tokens[i]):
+                i += 1
+            tokens = tokens[i:]
+            continue
+        # `exec filebrowser …` changes only process replacement, not the service contract. Treat it
+        # as another transparent spelling of the direct launch rather than allowing a confirm-card
+        # bypass of this narrow platform boundary.
+        if binary == "exec":
+            tokens = tokens[1:]
+            continue
+        return tokens
+    return []
+
+
+def is_unmanaged_platform_service_launch(command: str, _depth: int = 0) -> bool:
+    """Whether a command directly launches the unverified FileBrowser binary.
+
+    The console File Browser is a platform entrypoint. Its external route, port mapping,
+    authentication and root are not established by finding an arbitrary guest binary or seeing a
+    loopback HTTP 200. The incident this protects launched a standalone FileBrowser with a guessed
+    port/root/--noauth and then reported success.
+
+    Mentions in ps/find/log reads and existing supervisorctl operations remain diagnostics or
+    image-owned repairs. Only a direct executable invocation is refused.
+    """
+    for seg in _split_chain((command or "").strip()):
+        tokens = _effective_launch_tokens(seg)
+        if not tokens:
+            continue
+        binary = _basename(tokens[0]).lower()
+        # Shell `-c` is a direct launch spelling, not a service manager. Re-enter the same narrow
+        # check on its payload; depth is bounded so deliberately pathological nesting cannot loop.
+        if binary in {"sh", "bash", "zsh", "ksh", "dash", "fish", "csh", "tcsh"}:
+            if _depth < 3:
+                for i, token in enumerate(tokens[:-1]):
+                    if token == "-c" and is_unmanaged_platform_service_launch(tokens[i + 1], _depth + 1):
+                        return True
+            continue
+        if binary != "filebrowser":
+            continue
+        # Introspection is harmless. Any other direct invocation can create a listener whose
+        # console route, root and auth policy have not been proven.
+        if len(tokens) > 1 and all(t in ("--help", "-h", "--version", "-v") for t in tokens[1:]):
+            continue
+        return True
+    return False
+
+
 def is_form_violation(command: str) -> bool:
     """Refused for SHAPE rather than effect. Now only command substitution, since
     chaining and pipes are accepted. Used solely to word the refusal message."""

@@ -134,7 +134,10 @@ SYSTEM_PROMPT_WRITE = (
     "concise verdict in Chinese with these sections, in this order: 结论 / 证据 / 确证vs推测 / "
     "已执行的修复 / 验证 / 未处理. Under 已执行的修复 list every command you actually ran that changed "
     "the box, verbatim, INCLUDING any that failed and labelled as your own attempt — never fold a "
-    "command of yours into the machine's own history."
+    "command of yours into the machine's own history. A platform-facing web entry (for example the "
+    "console File Browser) is not repaired by finding a guest binary and inventing a listener, port, "
+    "root or authentication: first inspect an existing image launcher or service manager. If none "
+    "proves the platform service contract, diagnose and report that boundary; do not create a replacement."
 )
 
 
@@ -175,6 +178,10 @@ TOOL_DESC_WRITE = (
     "yourself. Such a launcher usually starts SEVERAL services, so calling the inner one restores the "
     "port you were asked about and silently leaves the others dead. Once it is up, read that launcher "
     "definition and confirm EVERY port it starts is listening — not only the one you were asked about. "
+    "A localhost response does NOT prove a console route, external mapping, root or authentication. "
+    "For a platform-facing entry such as File Browser, never directly launch a standalone `filebrowser` "
+    "binary or invent its port/root/authentication; first find an existing image supervisor/launcher. "
+    "If none establishes it, stop with that diagnosis instead of creating a replacement. "
     "Each call is its own SSH session "
     "that ENDS when the command returns, so anything meant to outlive it must be backgrounded AND "
     "have its output redirected to a file: `... > /path/to/log 2>&1 &`. `nohup` alone does not do "
@@ -246,7 +253,7 @@ def _secrets():
 # 95..161 s, refused = 205..456 B over 15.6..16.3 s). Absence of the line means the box WAS entered,
 # so an older harness paired with a newer supervisor keeps exactly today's behaviour.
 
-# D2: run_command writes SIX distinct disposition strings; the wire protocol has THREE. This is the
+# D2: run_command writes several distinct disposition strings; the wire protocol has THREE. This is the
 # only place the mapping is defined, so an unmapped value (e.g. a future SSH error class, or the empty
 # string left by an exception before any branch set it) is a FAILURE, never silently a success.
 _DISPOSITION_MAP = {
@@ -257,6 +264,7 @@ _DISPOSITION_MAP = {
     "refused_form": "refused",
     "refused_not_approved": "refused",
     "refused_unconfirmable": "refused",
+    "refused_unmanaged_platform_service": "refused",
     "no_connection": "failed",
 }
 
@@ -379,6 +387,18 @@ def run_command(command: str) -> dict:
         if tier == "destructive":
             entry["disposition"] = "refused_destructive"
             return {"text": f"⛔ REFUSED — destructive command, never executed: {command}",
+                    "is_error": True, "tier": tier, "executed": False}
+        # A direct FileBrowser binary is not proof of the console File Browser's service contract.
+        # The production incident had valid user approval and a loopback 200, but it guessed a new
+        # port, root and no-auth policy. A real image-owned service remains repairable through its
+        # existing supervisor/launcher after the normal per-command confirmation.
+        if guardrails.is_unmanaged_platform_service_launch(command):
+            entry["disposition"] = "refused_unmanaged_platform_service"
+            return {"text": ("⛔ NOT EXECUTED — do not directly launch FileBrowser from a guest binary. "
+                             "A local HTTP response does not establish the console File Browser's "
+                             "external route, port, root or authentication. Inspect the image's "
+                             "existing supervisor/launcher; if none is verified, report that the "
+                             "platform entrypoint needs confirmation rather than choosing a port or --noauth."),
                     "is_error": True, "tier": tier, "executed": False}
         if tier == "mutating":
             # The SHAPE gate is NOT part of the read-only policy — it is the prompt-injection

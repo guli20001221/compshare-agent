@@ -107,6 +107,40 @@ res, _ = dispatch("cat $(which python3)", allow_writes=True)
 check("write-shape-refusal-explains-form", "FORM rejected" in res["text"])
 check("write-shape-refusal-not-readonly-wording", "read-only" not in res["text"])
 
+# --- platform-facing FileBrowser is not a guest-binary repair -----------------------------------
+# The production failure found a standalone binary, guessed 8080 + /workspace + --noauth, and used
+# loopback HTTP 200 as proof that the CONSOLE File Browser was fixed. It was not: the platform route,
+# authenticated entrypoint and real root had never been established. Direct launch must be refused
+# even after the user approves it, while an image-owned supervisor remains repairable.
+unsafe_filebrowser = (
+    "nohup /model/other/filebrowser/filebrowser --address 0.0.0.0 --port 8080 "
+    "--root /workspace --noauth --database /tmp/filebrowser.db > /tmp/filebrowser.log 2>&1 &"
+)
+res, entry = dispatch(unsafe_filebrowser, allow_writes=True)
+check("filebrowser-direct-launch-is-refused",
+      res["executed"] is False and entry["disposition"] == "refused_unmanaged_platform_service")
+check("filebrowser-refusal-explains-platform-contract",
+      "console File Browser" in res["text"] and "local HTTP" in res["text"])
+check("filebrowser-refusal-keeps-wire-shape",
+      harness._wire_disposition(entry["disposition"]) == "refused")
+check("filebrowser-guard-recognizes-nohup-wrapper",
+      guardrails.is_unmanaged_platform_service_launch(unsafe_filebrowser) is True)
+check("filebrowser-guard-recognizes-shell-c-wrapper",
+      guardrails.is_unmanaged_platform_service_launch(
+          "bash -c 'nohup /model/other/filebrowser/filebrowser --port 8080 --noauth &'") is True)
+check("filebrowser-guard-recognizes-quoted-executable",
+      guardrails.is_unmanaged_platform_service_launch(
+          "exec '/model/other/filebrowser/filebrowser' --port 8080") is True)
+check("filebrowser-help-remains-diagnostic",
+      guardrails.is_unmanaged_platform_service_launch("/model/other/filebrowser/filebrowser --help") is False)
+check("filebrowser-command-v-remains-diagnostic",
+      guardrails.is_unmanaged_platform_service_launch("command -v filebrowser") is False)
+check("filebrowser-image-supervisor-through-shell-remains-repairable",
+      guardrails.is_unmanaged_platform_service_launch("bash -c 'supervisorctl start filebrowser'") is False)
+res, entry = dispatch("supervisorctl start filebrowser", allow_writes=True)
+check("filebrowser-image-supervisor-remains-repairable",
+      res["executed"] is True and entry["disposition"] == "ran_mutating")
+
 # --- reads are untouched in both modes -----------------------------------------------------------
 for allow in (False, True):
     res, entry = dispatch("nvidia-smi", allow_writes=allow)
@@ -145,6 +179,8 @@ check("write-tool-desc-says-send-not-describe",
 # Hard limits stay stated so the agent does not plan around commands the executor will reject.
 check("write-tool-desc-keeps-hard-limits",
       "refused outright" in harness.tool_description(True))
+check("write-tool-desc-forbids-invented-platform-entrypoints",
+      "never directly launch a standalone `filebrowser` binary" in harness.tool_description(True))
 # Read-only mode must be BYTE-IDENTICAL to what was measured — this is the description that was in
 # the decorator literal before it became mode-dependent.
 check("readonly-tool-desc-byte-identical",
