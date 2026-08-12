@@ -204,6 +204,9 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 					if f == featureKnowledgeOnly {
 						prep.knowledgeOnlyOptIn = true
 					}
+					if f == featureFeishuPublicPlatformReadOnly {
+						prep.publicPlatformReadOnlyOptIn = true
+					}
 					if f == featureFeishuConsoleHandoff {
 						prep.feishuConsoleHandoffOptIn = true
 					}

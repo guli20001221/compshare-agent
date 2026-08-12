@@ -149,7 +149,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.AppSecret,
 		larkws.WithEventHandler(eventHandler),
 	)
-	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, knowledge_only=true, auto_reply_new_topics=%t, console_handoff=%t, client_handoff=%t", len(s.allowed), workers, s.cfg.AutoReplyNewTopics, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "")
+	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, platform_readonly=%t, auto_reply_new_topics=%t, console_handoff=%t, client_handoff=%t", len(s.allowed), workers, s.cfg.EnablePlatformReadOnlyQueries, s.cfg.AutoReplyNewTopics, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "")
 	started := make(chan error, 1)
 	go func() {
 		started <- client.Start(ctx)

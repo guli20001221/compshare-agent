@@ -253,6 +253,10 @@ type ChatOptions struct {
 	// reads, diagnoses and all mutating proposals are removed from the model's
 	// tool window regardless of the process-wide feature flags.
 	KnowledgeOnly bool
+	// PublicPlatformReadOnly exposes the fail-closed public platform catalog
+	// window for untrusted chat transports. KnowledgeOnly takes precedence when
+	// both are set.
+	PublicPlatformReadOnly bool
 	// FeishuConsoleHandoff adds a response-only prompt contract used by the
 	// Feishu adapter. It never changes the tool window, authorization, or user
 	// identity; the adapter consumes its private marker before rendering.
@@ -483,6 +487,10 @@ type Engine struct {
 	// public Q&A transports. The advertised tool window is not trusted as the
 	// only guard because a model can emit an unadvertised tool name.
 	knowledgeOnlyThisTurn bool
+	// publicPlatformReadOnlyThisTurn is the slightly broader public-channel
+	// authorization boundary. It remains narrower than the console's ordinary
+	// read surface: only public catalog/inventory reads are allowed.
+	publicPlatformReadOnlyThisTurn bool
 	// feishuConsoleHandoffThisTurn changes only the model's completion contract
 	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
 	// so the regular console agent cannot inherit it from a pooled engine.
@@ -727,8 +735,9 @@ func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 		// window uses, so the prompt can never advertise a tool the model cannot see) AND writes
 		// have to be authorized. Either alone would put a promise in the prompt that the runtime
 		// does not keep.
-		InstanceOpsWritesEnabled: e.instanceOps != nil && tools.InstanceOpsWritesEnabled(),
-		FeishuConsoleHandoff:     e.feishuConsoleHandoffThisTurn,
+		InstanceOpsWritesEnabled:     e.instanceOps != nil && tools.InstanceOpsWritesEnabled(),
+		FeishuConsoleHandoff:         e.feishuConsoleHandoffThisTurn,
+		FeishuPublicPlatformReadOnly: e.publicPlatformReadOnlyThisTurn,
 	}
 }
 
@@ -1334,6 +1343,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	defer func() { e.currentCtx = nil }()
 	e.knowledgeOnlyThisTurn = opts.KnowledgeOnly
 	defer func() { e.knowledgeOnlyThisTurn = false }()
+	e.publicPlatformReadOnlyThisTurn = opts.PublicPlatformReadOnly && !opts.KnowledgeOnly
+	defer func() { e.publicPlatformReadOnlyThisTurn = false }()
 	e.feishuConsoleHandoffThisTurn = opts.FeishuConsoleHandoff
 	defer func() { e.feishuConsoleHandoffThisTurn = false }()
 	e.secretInputsThisTurn = opts.SecretInputs
@@ -1574,6 +1585,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
 		if opts.KnowledgeOnly {
 			toolWindow = centralAgentKnowledgeToolWindow()
+		} else if opts.PublicPlatformReadOnly {
+			toolWindow = centralAgentPublicPlatformReadOnlyToolWindow()
 		}
 		// Once the bounded search budget is exhausted, remove the capability. The
 		// observations already in the conversation are sufficient for the Agent's
@@ -2859,6 +2872,14 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 		})
 		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
 	}
+	if e.publicPlatformReadOnlyThisTurn && !publicPlatformReadOnlyToolAllowed(action) {
+		const message = "当前外部群仅允许查询公开平台目录，不能查询账号或实例数据、执行诊断或发起操作"
+		onStep(StepEvent{
+			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
+			Message: message,
+		})
+		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
+	}
 	if repeatableAgentTool(action) {
 		if e.toolResultsByCallThisTurn == nil {
 			e.toolResultsByCallThisTurn = map[string]string{}
@@ -2912,6 +2933,11 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			"工具参数必须是合法的 JSON 对象，请按该工具的参数结构重新调用。",
 			tools.AgentToolMeta{SourceStatus: "argument_parse_error"},
 		))
+	}
+	if e.publicPlatformReadOnlyThisTurn && !publicPlatformReadOnlyArgsAllowed(action, args) {
+		const message = "当前外部群只能查询公开平台目录：镜像仅限平台/社区目录，价格仅限目录价"
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: message})
+		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
 	}
 
 	// The local GPU knowledge tools (GetGPUSpecs / GetGPURecommendation /

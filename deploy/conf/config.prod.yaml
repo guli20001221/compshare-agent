@@ -8,9 +8,12 @@ agent:
   # replies without requiring an @ mention in that allowlisted topic group.
   feishu:
     auto_reply_new_topics: true
-    # The bot always remains knowledge-only. When RAG cannot close a question
-    # that needs an authenticated instance diagnosis, it directs the user here
-    # without forwarding the Feishu conversation, screenshots, or identity.
+    # Keep the external group limited to reviewed public catalog/inventory
+    # reads. Account/instance reads, diagnoses and every write remain absent.
+    enable_platform_readonly_queries: true
+    # When RAG plus public platform data cannot close a question that needs an
+    # authenticated instance diagnosis, direct the user here without forwarding
+    # the Feishu conversation, screenshots, or identity.
     enable_console_handoff: true
     console_assistant_url: "https://console.compshare.cn/light-gpu/console"
     # Optional second handoff route. It is only a download/login link; the

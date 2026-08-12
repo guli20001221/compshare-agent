@@ -333,12 +333,13 @@ func TestDurableSubmitInput_PropagatesFeatureFlags(t *testing.T) {
 	h := newTestHandlers()
 	h.SetConfirmFormEnabled(true)
 	h.SetGuidedCreateEnabled(true)
-	frame, err := simplejson.NewJson([]byte(`{"ProtocolVersion":2,"SessionId":"sess-1","ClientTurnId":"feature-turn","Message":"create","Features":["confirm_form_v1","guided_create_v1","feishu_console_handoff_v1"]}`))
+	frame, err := simplejson.NewJson([]byte(`{"ProtocolVersion":2,"SessionId":"sess-1","ClientTurnId":"feature-turn","Message":"create","Features":["confirm_form_v1","guided_create_v1","feishu_public_platform_readonly_v1","feishu_console_handoff_v1"]}`))
 	require.NoError(t, err)
 	in, apiErr := h.durableSubmitInput(context.Background(), BaseRequest{Owner: gatewayOwner, RequestUUID: "request-feature"}, frame)
 	require.Nil(t, apiErr)
 	assert.True(t, in.ConfirmForm)
 	assert.True(t, in.GuidedCreate)
+	assert.True(t, in.PublicPlatformReadOnly)
 	assert.True(t, in.FeishuConsoleHandoff)
 }
 

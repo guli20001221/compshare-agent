@@ -30,6 +30,8 @@ agent:
     # 只对允许群里的新话题根消息免 @ 回答。话题内的后续评论仍必须 @机器人，
     # 防止把正常的用户讨论当作机器人提问。
     auto_reply_new_topics: true
+    # 外部群可查询公共平台目录与实时库存；账号、实例、诊断和写操作仍不会开放。
+    enable_platform_readonly_queries: true
     max_concurrent: 4
     max_reply_runes: 3500
     max_image_bytes: 5242880
