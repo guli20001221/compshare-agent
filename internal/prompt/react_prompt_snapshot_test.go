@@ -115,8 +115,12 @@ const (
 	// 2026-08-07: history is size-compacted, so "完整对话" was an untrue
 	// promise. The prompt and relevant catalog schemas now say "已提供的对话
 	// 历史"; this is a truthfulness correction, not a new routing rule.
-	mutatingReActPromptSHA256 = "9c690c921562569cf358e137ee1bce3b4b8a5c1cbe9b2cdb919d05282f278fd0"
-	readOnlyReActPromptSHA256 = "74230db1a57d8fce2cd07dde12e5769bcde0b3e30e49bac479719f9a17deab2a"
+	// 2026-08-12: the platform-fact boundary now also says that an adjacent
+	// product outside the available tools is unconfirmed. The compact wording
+	// deliberately retains "即使熟悉也先检索": it prevents a familiar-looking
+	// product question from becoming an unsupported platform assertion.
+	mutatingReActPromptSHA256 = "1dd0ab0c493578e5661ea12a83e80cc91d4ea485331dc6f0955d8ae45a472bc1"
+	readOnlyReActPromptSHA256 = "124da5863a3eabf20e29a143054d94fbf43b1c92318c2040e62b3b2097811a18"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
 	// That leaves the rollout shape unpinned: deploy/conf/config.prod.yaml already sets
@@ -125,7 +129,7 @@ const (
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
 	// third SHA pins that combination. It includes the same shared 2026-07-31
 	// catalog-candidate contract as the two snapshots above.
-	mutatingWithRepairLaneReActPromptSHA256 = "63038130d557a9f0d8c72408c866594a1502da1d82b0b37636bae07a12c92297"
+	mutatingWithRepairLaneReActPromptSHA256 = "bd79563bed28beaff5d11ebaf90f232ce956ddd79fdda01347f99284b716d5c4"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

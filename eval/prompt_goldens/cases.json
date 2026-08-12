@@ -140,5 +140,14 @@
     "expected_execution_path": "terminal_rag",
     "boundary": "asking whether a stopped instance is billed is a rules/fee question, not a request to stop it",
     "forbid_actions": ["StopInstanceWorkflow"]
+  },
+  {
+    "id": "adjacent_platform_product_requires_current_evidence",
+    "question": "优云智算可以创建纯 CPU 实例吗？",
+    "expect_intent": "knowledge_qa",
+    "expected_execution_path": "agent",
+    "boundary": "platform support for an adjacent product must be checked with current evidence; a GPU-only tool result cannot prove that CPU-only instances are supported or unsupported",
+    "allowed_actions": ["SearchKnowledge"],
+    "forbid_actions": ["CreateInstanceWorkflow"]
   }
 ]

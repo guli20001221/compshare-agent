@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/guardrails"
 )
@@ -349,12 +350,10 @@ func credentialURLTerminator(r rune) bool {
 }
 
 func credentialURLClosingDelimiter(text string) string {
-	for _, r := range text {
-		switch r {
-		case '\'', '"', '`', ')', ']', '}', '>', '，', '。', '；', '、':
-			return string(r)
-		}
-		break
+	r, _ := utf8.DecodeRuneInString(text)
+	switch r {
+	case '\'', '"', '`', ')', ']', '}', '>', '，', '。', '；', '、':
+		return string(r)
 	}
 	return ""
 }

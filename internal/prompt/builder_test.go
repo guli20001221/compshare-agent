@@ -176,7 +176,8 @@ func TestBuildSystemWithOptions_DoesNotInjectStaticFAQContent(t *testing.T) {
 			for _, text := range []string{
 				"已提供的对话历史、统一上下文或稳定通用知识足以回答时直接回答",
 				"无关或空结果不能推翻已有上下文",
-				"工具未覆盖的相邻产品须说“未确认”",
+				"平台产品/规则/价格/支持范围即使熟悉也先检索",
+				"工具未覆盖的相邻产品说“未确认”",
 			} {
 				if !strings.Contains(system, text) {
 					t.Fatalf("system prompt should contain knowledge-source boundary %q:\n%s", text, system)
@@ -195,7 +196,8 @@ func TestKnowledgePolicyDoesNotCompeteWithScopeOrToolDescriptions(t *testing.T) 
 		"稳定通用知识足以回答时直接回答",
 		"检索结果只是补充观察",
 		"可能的使用场景和排查方向",
-		"工具未覆盖的相邻产品须说“未确认”",
+		"平台产品/规则/价格/支持范围即使熟悉也先检索",
+		"工具未覆盖的相邻产品说“未确认”",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("统一检索契约缺少 %q", required)

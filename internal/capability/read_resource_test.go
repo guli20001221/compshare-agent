@@ -82,6 +82,43 @@ func TestResourceHandle_ListsAllInstances(t *testing.T) {
 	assert.Equal(t, envelope.KindResourceInfo, result.Envelope.Kind)
 }
 
+func TestResourceHandle_FullListingSyncsTheSessionResolver(t *testing.T) {
+	raw := describeFixture(instanceRowMap("uhost-only", "comfyui", "Running"))
+	exec := &fakeReadExec{result: raw}
+	var synced []map[string]any
+	reg := NewReadCapability(resourceReadSpec())
+
+	result := reg.Run(context.Background(), ResourceInfoRequest{}, ReadRuntime{
+		Executor: exec,
+		SyncRegistry: func(got map[string]any) {
+			synced = append(synced, got)
+		},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Len(t, synced, 1, "a complete list must update the same session resolver used by later execution checks")
+	require.Equal(t, raw, synced[0])
+}
+
+func TestResourceHandle_PinnedTargetDoesNotReplaceTheSessionResolver(t *testing.T) {
+	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-only", "comfyui", "Running"))}
+	syncCalls := 0
+	reg := NewReadCapability(resourceReadSpec())
+
+	result := reg.Run(context.Background(), ResourceInfoRequest{Targets: []platform.TargetRef{{
+		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-only", Source: platform.SourceUserText,
+	}}}, ReadRuntime{
+		Executor: exec,
+		Resolver: coldRegistrySnapshot(),
+		SyncRegistry: func(map[string]any) {
+			syncCalls++
+		},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Zero(t, syncCalls, "a point response is partial and must not overwrite the full session registry")
+}
+
 // TestResourceHandle_AppliesStateFilter: a filter ref describes everything then
 // filters client-side; the envelope advertises the applied filter + matched
 // count, and the excluded instance is absent from the reply.

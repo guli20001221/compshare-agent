@@ -89,6 +89,14 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 		// failure, matching the legacy failureAfterToolWithTrace path.
 		return ResourceInfoResponse{}, ReadFailureAfterTool(resourceInfoAction, resourceCapabilityLabel, err)
 	}
+	// A list/filter request just received a complete account listing. Keep the
+	// session resolver current with that same authoritative response: subsequent
+	// same-turn execution checks may safely rely on its account-single proof.
+	// Point queries deliberately do not replace the registry with their partial
+	// response.
+	if len(ids) == 0 && rt.SyncRegistry != nil {
+		rt.SyncRegistry(raw)
+	}
 
 	instances := describeData.Instances
 	totalCount := describeData.TotalCount

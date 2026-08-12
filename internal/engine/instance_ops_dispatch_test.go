@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
@@ -129,6 +131,65 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	require.Equal(t, 1, runner.calls)
 	require.Len(t, model.calls, 1, "finalReplyPrefix terminates the turn — no synthesis round after the verdict")
 	require.NotEmpty(t, runner.lastReq.TurnID, "the turn identity must reach the runner as the audit dedup key")
+}
+
+// Regression: a cold session compiles its turn context before the model's first
+// read. If that read proves the account has exactly one instance, a vague
+// diagnostic request has no list-selection ambiguity and may enter the lane.
+// This must work in the same Chat turn; requiring a second user message merely
+// because the registry became fresh a few milliseconds late is a real UX loss.
+func TestInstanceOps_AllowsSameTurnFreshSingleRegistry(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已确认 ComfyUI 服务未运行。"}}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("list", capability.ReadToolName(intent.IntentResourceInfo), `{}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("diagnose", "DiagnoseInstanceInternals", `{"UHostId":"uhost-only","Task":"排查 ComfyUI 无法打开"}`)}},
+	}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"TotalCount": float64(1), "UHostSet": []any{map[string]any{
+			"UHostId": "uhost-only", "Name": "training-4090", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(8), "Memory": float64(64),
+		}}},
+	}}
+	confirmCalls := 0
+	eng := NewWithDeps(model, executor, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+
+	reply, err := eng.Chat(context.Background(), "ComfyUI 打不开了", noopStep)
+
+	require.NoError(t, err)
+	id, _ := eng.singleRegistryInstance()
+	require.Equal(t, "uhost-only", id, "premise: the first read must have refreshed a complete singleton registry")
+	require.Equal(t, "已确认 ComfyUI 服务未运行。", reply)
+	require.Equal(t, 1, runner.calls, "a same-turn complete singleton registry is a proof, not a list-row guess")
+	require.Equal(t, 1, confirmCalls)
+	require.Len(t, model.calls, 2)
+}
+
+func TestInstanceOps_SingleRegistryNeverOverridesAnUnresolvedExplicitTarget(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "should not run"}}
+	confirmCalls := 0
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(1), "UHostSet": []any{map[string]any{
+			"UHostId": "uhost-only", "Name": "comfyui", "State": "Running",
+		}},
+	}, "test"))
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: "请排查 uhost-does-not-exist"}
+	eng.turnContextViewReady = true
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-only", "Task": "排查 ComfyUI 无法打开",
+	}, noopStep)
+
+	require.Zero(t, runner.calls, "an explicit unresolved id must never be replaced with the account singleton")
+	require.Zero(t, confirmCalls)
+	require.Contains(t, out, "请先明确要排查的实例")
 }
 
 // Regression for the production incident: after an account-wide list, a model

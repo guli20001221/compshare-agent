@@ -233,6 +233,15 @@ func (e *Engine) instanceOpsTargetIsSelected(instanceID string) bool {
 	if binding.bound() {
 		return strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID))
 	}
+	// The immutable view is intentionally compiled before the ReAct loop. A
+	// resource read may have refreshed the registry since then; a complete
+	// one-instance account is a current, unambiguous proof and is not a list-row
+	// guess. Never use it to override an explicit unresolved user reference.
+	if !binding.explicit {
+		if id, _ := e.singleRegistryInstance(); id != "" {
+			return strings.EqualFold(strings.TrimSpace(id), strings.TrimSpace(instanceID))
+		}
+	}
 	// A cold rehydrated session may not have a complete registry yet. An exact ID
 	// visibly authored by the user is still a choice, unlike an ID invented from a
 	// prior list; account membership is verified by the runner's point describe.
