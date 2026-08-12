@@ -28,6 +28,11 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 		e.groundingOutcomeThisTurn = groundingUnavailable
 	}
 	content = prependSensitiveReplies(content, e.sensitiveRepliesThisTurn)
+	// A user may deliberately paste a short-lived signed download URL and ask
+	// for the exact command to run. Preserve only that exact current-turn URL;
+	// arbitrary model/tool credentials remain redacted, and HTTP persistence
+	// immediately redacts this reply again for history.
+	content = security.RestoreUserProvidedCredentialURLs(content, userMsg, draft)
 
 	if strings.TrimSpace(content) == "" {
 		// A turn that already handed the user a verbatim block (the billing card,

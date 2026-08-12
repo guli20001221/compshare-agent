@@ -6,7 +6,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
@@ -48,6 +51,12 @@ func captureSteps(dst *[]StepEvent) func(StepEvent) {
 func newInstanceOpsEngine(runner InstanceOpsRunner, confirm ConfirmFunc) *Engine {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, confirm)
 	eng.SetInstanceOps(runner)
+	// Direct dispatch tests still need the same target-proof precondition as a
+	// real Chat turn. This explicit id is user-authored, not a fabricated list
+	// referent; tests for the ambiguous-list failure live below.
+	eng.lastUserMsg = "请排查 uhost-1"
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
+	eng.turnContextViewReady = true
 	return eng
 }
 
@@ -91,6 +100,9 @@ func TestInstanceOps_NilConfirmFailsClosed(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "unused"}}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
+	eng.lastUserMsg = "请排查 uhost-1"
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
+	eng.turnContextViewReady = true
 
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
 
@@ -113,12 +125,176 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
 	eng.SetInstanceOps(runner)
 
-	reply, err := eng.Chat(context.Background(), "我的实例掉卡了", noopStep)
+	reply, err := eng.Chat(context.Background(), "我的 uhost-1 实例掉卡了", noopStep)
 	require.NoError(t, err)
 	require.Equal(t, sentinel, reply, "the harness verdict must be the final reply, unrewritten")
 	require.Equal(t, 1, runner.calls)
 	require.Len(t, model.calls, 1, "finalReplyPrefix terminates the turn — no synthesis round after the verdict")
 	require.NotEmpty(t, runner.lastReq.TurnID, "the turn identity must reach the runner as the audit dedup key")
+}
+
+// Regression: a cold session compiles its turn context before the model's first
+// read. If that read proves the account has exactly one instance, a vague
+// diagnostic request has no list-selection ambiguity and may enter the lane.
+// This must work in the same Chat turn; requiring a second user message merely
+// because the registry became fresh a few milliseconds late is a real UX loss.
+func TestInstanceOps_AllowsSameTurnFreshSingleRegistry(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已确认 ComfyUI 服务未运行。"}}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("list", capability.ReadToolName(intent.IntentResourceInfo), `{}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("diagnose", "DiagnoseInstanceInternals", `{"UHostId":"uhost-only","Task":"排查 ComfyUI 无法打开"}`)}},
+	}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"TotalCount": float64(1), "UHostSet": []any{map[string]any{
+			"UHostId": "uhost-only", "Name": "training-4090", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(8), "Memory": float64(64),
+		}}},
+	}}
+	confirmCalls := 0
+	eng := NewWithDeps(model, executor, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+
+	reply, err := eng.Chat(context.Background(), "ComfyUI 打不开了", noopStep)
+
+	require.NoError(t, err)
+	id, _ := eng.singleRegistryInstance()
+	require.Equal(t, "uhost-only", id, "premise: the first read must have refreshed a complete singleton registry")
+	require.Equal(t, "已确认 ComfyUI 服务未运行。", reply)
+	require.Equal(t, 1, runner.calls, "a same-turn complete singleton registry is a proof, not a list-row guess")
+	require.Equal(t, 1, confirmCalls)
+	require.Len(t, model.calls, 2)
+}
+
+func TestInstanceOps_SingleRegistryNeverOverridesAnUnresolvedExplicitTarget(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "should not run"}}
+	confirmCalls := 0
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(1), "UHostSet": []any{map[string]any{
+			"UHostId": "uhost-only", "Name": "comfyui", "State": "Running",
+		}},
+	}, "test"))
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: "请排查 uhost-does-not-exist"}
+	eng.turnContextViewReady = true
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-only", "Task": "排查 ComfyUI 无法打开",
+	}, noopStep)
+
+	require.Zero(t, runner.calls, "an explicit unresolved id must never be replaced with the account singleton")
+	require.Zero(t, confirmCalls)
+	require.Contains(t, out, "请先明确要排查的实例")
+}
+
+// Regression for the production incident: after an account-wide list, a model
+// picked the first running row for a vague "镜像无法运行" symptom. A list is an
+// observation, not a selection, so no card and no harness entry may follow.
+func TestInstanceOps_RejectsSelfElectedTargetFromAccountList(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "should not run"}}
+	confirmCalls := 0
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(3),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-first", "Name": "image", "State": "Running"},
+			map[string]any{"UHostId": "uhost-second", "Name": "train", "State": "Running"},
+			map[string]any{"UHostId": "uhost-third", "Name": "old", "State": "Stopped"},
+		},
+	}, "test"))
+	eng.lastUserMsg = "实例开启后，镜像没办法正常运行"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-vague-image", time.Now())
+	eng.turnContextViewReady = true
+
+	var steps []StepEvent
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-first", "Task": "排查镜像无法运行",
+	}, captureSteps(&steps))
+
+	require.Zero(t, runner.calls, "an account-list row is never permission to enter that instance")
+	require.Zero(t, confirmCalls, "an ambiguous target must not show an authorization card")
+	require.False(t, eng.instanceOpsRanThisTurn, "a rejected target did not enter the lane and must not spend the run slot")
+	require.Contains(t, out, "请先明确要排查的实例")
+	require.NotEmpty(t, steps)
+	require.Equal(t, StepBlocked, steps[0].Type)
+}
+
+func TestInstanceOps_VagueToolCallReturnsToTheAgentForTargetSelection(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "should not run"}}
+	confirmCalls := 0
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("t-vague", "DiagnoseInstanceInternals", `{"UHostId":"uhost-first","Task":"排查镜像无法运行"}`)}},
+		{Content: "请告诉我要排查哪台实例：提供实例 ID、名称，或从候选列表中选择即可。"},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2),
+		"UHostSet": []any{
+			map[string]any{"UHostId": "uhost-first", "Name": "image", "State": "Running"},
+			map[string]any{"UHostId": "uhost-second", "Name": "train", "State": "Running"},
+		},
+	}, "test"))
+
+	reply, err := eng.Chat(context.Background(), "实例开启后，镜像没办法正常运行", noopStep)
+
+	require.NoError(t, err)
+	require.Equal(t, "请告诉我要排查哪台实例：提供实例 ID、名称，或从候选列表中选择即可。", reply)
+	require.Zero(t, runner.calls, "a vague symptom must return control to the agent before the SSH lane")
+	require.Zero(t, confirmCalls, "the user must not see an authorization card for a self-elected list row")
+	require.Len(t, model.calls, 2, "the blocked call is a normal observation, so the agent can ask for a target")
+	secondRequest := model.calls[1]
+	var sawSelectionBlock bool
+	for _, msg := range secondRequest.Messages {
+		if strings.Contains(msg.Content, "请先明确要排查的实例") {
+			sawSelectionBlock = true
+			break
+		}
+	}
+	require.True(t, sawSelectionBlock, "the follow-up model call must receive the target-selection reason")
+}
+
+func TestInstanceOps_AllowsFreshUserSelectionButRejectsDifferentModelTarget(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "done"}}
+	confirmCalls := 0
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+	eng.turnContextViewThisTurn = AgentContext{
+		CurrentQuestion: "帮我看看刚才那台",
+		SelectedEntities: []SemanticEntityHint{{
+			Kind: "instance", ID: "uhost-picked", Name: "picked", Source: SelectedInstanceSourceUser, Freshness: ContinuityFreshnessFresh,
+		}},
+	}
+	eng.turnContextViewReady = true
+
+	wrong := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-other", "Task": "排查服务",
+	}, noopStep)
+	require.Zero(t, runner.calls)
+	require.Zero(t, confirmCalls)
+	require.Contains(t, wrong, "请先明确要排查的实例")
+
+	right := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-picked", "Task": "排查服务",
+	}, noopStep)
+	require.Equal(t, 1, runner.calls, "a fresh user selection must keep pronoun follow-ups working")
+	require.Equal(t, 1, confirmCalls)
+	require.True(t, strings.HasPrefix(right, finalReplyPrefix))
 }
 
 // 门 6 — the activity stream shape: connected + each command + one summary; refused

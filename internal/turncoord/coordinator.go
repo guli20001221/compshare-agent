@@ -1288,6 +1288,10 @@ func sanitizeInteractionArgs(args map[string]any) map[string]any {
 }
 
 func redactTurnOutput(text string) string {
+	// Durable rows/events are a persistence boundary, not the live response
+	// gateway: they intentionally never restore a user-supplied signed URL. If
+	// durable turns are enabled, retain this redaction and add any copyable
+	// current-turn delivery outside the durable payload.
 	return guardrails.RedactOutputLeak(guardrails.RedactPII(text))
 }
 

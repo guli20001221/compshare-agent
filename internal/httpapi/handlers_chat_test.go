@@ -481,6 +481,38 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	assert.Contains(t, persisted, "4090")
 }
 
+func TestDispatchChatLetsUserCopyTheirCurrentSignedURLButPersistsOnlyTheRedactedForm(t *testing.T) {
+	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
+	const reply = "直接执行：curl -L '" + signedURL + "' -o model.safetensors"
+	llmClient := &scriptedChatLLM{content: reply}
+	eng := engine.NewWithDeps(llmClient, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+
+	messages := &recordingMessages{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			Meta: config.MetaConfig{MaxInputLength: 4000},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-signed-url": {ID: "sess-signed-url", TopOrganizationID: 1, OrganizationID: 2, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		}},
+		messages,
+		mockFeedback{},
+		fakePool{eng: eng},
+		nil,
+	)
+
+	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-signed-url","Message":"请给这个链接生成下载命令：https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst","request_uuid":"req-signed-url","top_organization_id":1,"organization_id":2}`)
+
+	assert.Contains(t, sink.body(), signedURL, "the live answer may echo only the link the user just supplied")
+	persisted := messages.patch.Content
+	assert.NotContains(t, persisted, "signed-token-abcdefghijklmnopqrst")
+	assert.Contains(t, persisted, "不能直接复制执行", "reloaded history must not present a redacted command as runnable")
+}
+
 func TestDispatchChatDoesNotPersistPartialAssistantContentOnError(t *testing.T) {
 	const leakedDelta = `partial reply Public IP: 1.2.3.4 token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	eng := engine.NewWithDeps(streamingErrorLLM{token: leakedDelta}, tools.ToolExecutor(chatExecutor{}), denyConfirm)

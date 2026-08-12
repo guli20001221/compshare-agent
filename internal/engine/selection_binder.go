@@ -22,6 +22,11 @@ const (
 type selectionBinding struct {
 	id       string
 	conflict bool
+	// explicit distinguishes "the user named a target which could not be
+	// resolved" from "the user did not name any target". The latter can safely
+	// use a complete account-single proof obtained later in the same turn; the
+	// former must never be silently replaced with that sole instance.
+	explicit bool
 }
 
 func (b selectionBinding) bound() bool { return b.id != "" && !b.conflict }
@@ -118,16 +123,16 @@ func (e *Engine) bindInstanceTarget(view AgentContext) selectionBinding {
 	}
 
 	if conflict || len(refs) > 1 {
-		return selectionBinding{conflict: true}
+		return selectionBinding{conflict: true, explicit: explicit}
 	}
 	if len(refs) == 1 {
-		return selectionBinding{id: refs[0]}
+		return selectionBinding{id: refs[0], explicit: explicit}
 	}
 	if explicit {
 		// The user referenced something we could not resolve to one id (typo'd id,
 		// out-of-range ordinal): do NOT fall back to carried context. Existence
 		// verification rejects it, never account-single overriding an explicit miss.
-		return selectionBinding{}
+		return selectionBinding{explicit: true}
 	}
 
 	// Tier B — carried context, only when the message names no target.
