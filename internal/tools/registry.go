@@ -1167,10 +1167,11 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name: "DiagnoseInstanceInternals",
-			Description: "登录到指定实例内部执行只读命令排查问题。适用于根因在实例内部、平台 API 看不到的故障：" +
+			Description: "登录到指定实例内部排查问题。适用于根因在实例内部、平台 API 看不到的故障：" +
 				"GPU 掉卡 / nvidia-smi 报错 / CUDA 找不到设备、显存被占满、服务或端口起不来（ComfyUI、Jupyter、vLLM 等）、" +
 				"磁盘写满、数据盘未挂载、Python 环境与依赖异常、进程卡死或负载异常。执行前会请用户在卡片上授权；" +
-				"只执行只读命令，任何会修改环境的操作都会被拒绝，修复步骤仅作为建议返回。" +
+				"实例内变更还会逐条请用户确认。若是平台提供的 Web 入口（如 FileBrowser/Jupyter）打不开，先查询 DescribeCompShareSoftwarePort 等平台端口事实；" +
+				"实例内只能检查既有服务，不能从某个二进制自行猜端口、根目录或认证并新起替代服务。只有已证实的镜像 supervisor/启动器才可在逐条确认后修复。" +
 				"不用于：SSH 连不上或登录失败、费用与计费（用 DiagnoseBilling）、" +
 				"平台侧安全组与端口开放（不在实例内）、不针对具体实例的通用知识问题。",
 			Parameters: map[string]any{

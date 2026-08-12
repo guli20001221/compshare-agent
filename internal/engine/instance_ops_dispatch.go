@@ -291,6 +291,8 @@ func instanceOpsRefusalReason(reason string) string {
 		return "你未批准这条命令"
 	case "refused_unconfirmable":
 		return "命令过长，无法完整展示在确认卡上"
+	case "refused_unmanaged_platform_service":
+		return "未核实平台入口契约，不能直接启动 FileBrowser；需先确认镜像服务管理方式和平台映射"
 	case "refused_mutating_phase1":
 		return "会修改实例环境（只读模式）"
 	}
