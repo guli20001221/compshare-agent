@@ -58,13 +58,28 @@ func TestClaimResolutionKeepsThePendingCardWhenItRefuses(t *testing.T) {
 	require.True(t, (<-ch).Confirmed)
 }
 
-// orderRecordingWriter notes the sequence of writes so a test can compare it
-// against when the turn was woken.
+// orderRecordingWriter observes, at the moment of each write, whether the
+// decision has ALREADY been handed to the waiting turn.
+//
+// It peeks at the waiter's channel instead of racing a second goroutine against
+// it. The first version of this test did exactly that and was an empty gate: the
+// pending channel is buffered (cap 1), so deliver() returns without blocking and
+// without synchronizing, and the reader goroutine had usually not been scheduled
+// by the time the writer recorded — so swapping the two lines under test changed
+// nothing observable. Peeking is single-goroutine and deterministic.
 type orderRecordingWriter struct {
 	events *[]string
+	ch     <-chan ConfirmDecision
+	seen   *ConfirmDecision
 }
 
 func (w orderRecordingWriter) WriteEvent(event string, _ any) error {
+	select {
+	case d := <-w.ch:
+		*w.seen = d
+		*w.events = append(*w.events, "turn:woken")
+	default:
+	}
 	*w.events = append(*w.events, "frame:"+event)
 	return nil
 }
@@ -73,9 +88,7 @@ func (w orderRecordingWriter) WriteKeepalive() error { return nil }
 // The acknowledgement must be on the wire BEFORE the turn is woken.
 //
 // This is the assertion the WS integration tests cannot make: they read the ack
-// off a socket and pass under either order. Here the waiting turn records the
-// moment it is unblocked into the same sequence the writer records into, so the
-// order is observable.
+// off a socket and pass under either order.
 //
 // Getting it backwards is not theoretical: the woken chat goroutine can finish
 // the turn, write `done` and cancel the connection context before this goroutine
@@ -87,19 +100,13 @@ func TestConfirmFrameAcknowledgesBeforeWakingTheTurn(t *testing.T) {
 	id, ch := h.confirmBroker.Register("sess-1", owner)
 
 	var events []string
-	woken := make(chan struct{})
-	go func() {
-		<-ch
-		events = append(events, "turn:woken")
-		close(woken)
-	}()
-
-	h.resolveConfirmFrame(orderRecordingWriter{events: &events}, id, "sess-1", owner,
+	var seen ConfirmDecision
+	h.resolveConfirmFrame(orderRecordingWriter{events: &events, ch: ch, seen: &seen}, id, "sess-1", owner,
 		ConfirmDecision{Confirmed: true})
-	<-woken
 
-	require.Equal(t, []string{"frame:confirmation_ack", "turn:woken"}, events,
-		"the turn must not be woken until the client has been told its answer was accepted")
+	require.Equal(t, []string{"frame:confirmation_ack"}, events,
+		"the turn must not hold the decision yet when the acknowledgement is written")
+	require.True(t, (<-ch).Confirmed, "the decision must still reach the turn afterwards")
 }
 
 // A refused resolve wakes nothing at all — the card stays pending for its own
@@ -110,7 +117,8 @@ func TestConfirmFrameRefusalWakesNothing(t *testing.T) {
 	id, ch := h.confirmBroker.Register("sess-1", owner)
 
 	var events []string
-	h.resolveConfirmFrame(orderRecordingWriter{events: &events}, "some-other-id", "sess-1", owner,
+	var seen ConfirmDecision
+	h.resolveConfirmFrame(orderRecordingWriter{events: &events, ch: ch, seen: &seen}, "some-other-id", "sess-1", owner,
 		ConfirmDecision{Confirmed: true})
 
 	require.Equal(t, []string{"frame:error"}, events)

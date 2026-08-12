@@ -235,3 +235,39 @@ func TestWS_Confirm_InvalidOverride_ErrorFrameAndPendingKept(t *testing.T) {
 		t.Fatal("corrected override frame did not resolve the waiter")
 	}
 }
+
+// A malformed Overrides VALUE never reaches form validation: overridesFromFrame
+// rejects it while parsing. That is a separate branch from "the value was not an
+// offered option", and it had no test — which is how it kept sending an error
+// frame with no ConfirmationId after the validation branch had been fixed.
+//
+// Without the id a client can only fail the whole turn on one bad form field,
+// the same shape as the expired-card bug: a card-scoped error tearing down a
+// still-running turn.
+func TestWS_Confirm_MalformedOverrideValueRejectionNamesTheCard(t *testing.T) {
+	srv, _, h := wsTestHandlers(t, chatLLM{}, denyConfirm)
+	conn := dialWS(t, srv, gatewayHeaders())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	confirmID, ch := h.confirmBroker.RegisterWithForm("sess-1", gatewayOwner, testGPUForm())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","ConfirmationId":"`+confirmID+
+			`","Confirmed":true,"Overrides":{"GpuType":123}}`)))
+
+	f := readOneFrame(t, ctx, conn)
+	assert.Equal(t, "error", f["event"])
+	assert.Equal(t, "InvalidParam", f["Code"])
+	assert.Equal(t, confirmID, f["ConfirmationId"],
+		"a parse rejection is scoped to one card and must say which")
+
+	// The card survives: a bad edit is fixable, so the user must still be able to
+	// answer the same confirmation.
+	select {
+	case d := <-ch:
+		t.Fatalf("a malformed override must not resolve the card (got %+v)", d)
+	default:
+	}
+}
