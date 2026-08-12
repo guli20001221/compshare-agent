@@ -99,6 +99,35 @@ func TestRedactForLLM_RedactsOperationalTokensInStringValues(t *testing.T) {
 	assert.Equal(t, "http://1.2.3.4:8888/lab?foo=bar&token=[REDACTED]", nested["URL"])
 }
 
+func TestRedactAssistantConversationTextMarksRedactedCommandsAsNonReusable(t *testing.T) {
+	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
+	raw := "直接复制执行：curl -L '" + signedURL + "' -o model.safetensors"
+
+	persisted := RedactAssistantConversationText(raw)
+
+	assert.NotContains(t, persisted, "signed-token-abcdefghijklmnopqrst")
+	assert.Contains(t, persisted, "Authorization=")
+	assert.Contains(t, persisted, redactedConversationCredentialNotice,
+		"a persisted redacted command must say that it cannot be copied after reload")
+	assert.Equal(t, persisted, RedactAssistantConversationText(persisted),
+		"the durable notice must be idempotent across hot/cold replay boundaries")
+}
+
+func TestRestoreUserProvidedCredentialURLsOnlyRestoresAnExactCurrentTurnEcho(t *testing.T) {
+	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
+	user := "请给我下载命令：" + signedURL
+	draft := "直接执行：curl -L '" + signedURL + "' -o model.safetensors"
+	redacted := RedactOperationalTokensInText(draft)
+
+	restored := RestoreUserProvidedCredentialURLs(redacted, user, draft)
+	assert.Equal(t, draft, restored, "the user can copy the complete command, including shell delimiters")
+
+	otherDraft := "直接执行：curl -L 'https://civitai.example/download?Authorization=other-token-abcdefghijklmnopqrst' -o model.safetensors"
+	other := RestoreUserProvidedCredentialURLs(RedactOperationalTokensInText(otherDraft), user, otherDraft)
+	assert.NotContains(t, other, signedURL, "a model-invented credential must never be replaced with the user's token")
+	assert.NotContains(t, other, "other-token-abcdefghijklmnopqrst")
+}
+
 func TestRedactForLLM_RedactsOAuthStyleSecretKeys(t *testing.T) {
 	input := map[string]any{
 		"RefreshToken":  "refresh-token-value",

@@ -2520,7 +2520,7 @@ const verbatimBlockObservation = "费用明细已按上游结构化数据逐字�
 // user already has the byte-exact card. Its purpose is to preserve the same
 // amount-free semantic boundary after a restart, where the persisted display
 // reply would otherwise be mistaken for the model's final assistant message.
-const verbatimBillingHistoryCompletion = "费用明细已由系统按上游结构化数据展示给用户；不要复述、计算或推断金额。"
+const verbatimBillingHistoryCompletion = "费用为实时数据；用户再次询问时调用 DiagnoseBilling，不要根据历史估算。"
 
 // composeWithVerbatimBlocks puts this turn's verbatim blocks in front of the
 // Agent's own reply. Called from one deferred site at the single turn exit so

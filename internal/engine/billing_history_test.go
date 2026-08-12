@@ -104,6 +104,17 @@ func TestPureBillingCardNeverEntersColdModelHistory(t *testing.T) {
 		"the server-rendered amount must never re-enter the model after a restart")
 }
 
+func TestBillingHistoryTellsTheAgentToRefreshRatherThanRefuseARepeatQuestion(t *testing.T) {
+	hot, _, _ := runBillingHistoryTurn(t, "")
+	assembled := nextModelRequest(t, hot)
+	replayed := renderReplayedRegion(t, assembled)
+
+	require.Contains(t, replayed, "用户再次询问时调用 DiagnoseBilling",
+		"the model sees an actionable fresh-query instruction, not a blanket no-repeat rule")
+	require.NotContains(t, replayed, "不要复述、计算或推断金额",
+		"the old rule caused a repeat billing question to fail despite a live billing tool")
+}
+
 func TestMixedBillingCardRehydratesTheModelTailNotTheDisplayCard(t *testing.T) {
 	const tail = "CPU 100% 的原因是 3 个 kworkerd 进程占满了核心。"
 	hot, reply, metadata := runBillingHistoryTurn(t, tail)

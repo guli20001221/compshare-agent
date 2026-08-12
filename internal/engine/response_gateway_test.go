@@ -62,3 +62,14 @@ func TestResponseGatewayNeverShipsToolProtocolMarkup(t *testing.T) {
 	require.NotContains(t, reply, "Secret123!")
 	require.NotContains(t, reply, "DSML")
 }
+
+func TestResponseGatewayLetsTheUserCopyOnlyTheirCurrentSignedURL(t *testing.T) {
+	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
+	user := "请给这个链接生成下载命令：" + signedURL
+	draft := "执行：curl -L '" + signedURL + "' -o model.safetensors"
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+
+	reply := eng.finalizeResponse(context.Background(), user, draft)
+
+	require.Equal(t, draft, reply)
+}

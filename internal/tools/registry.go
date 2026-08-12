@@ -1150,7 +1150,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseBilling",
-			Description: "核对已有实例当前配置的上游净报价及关机后仍计费的磁盘。用于查询现有实例当前费用构成；不用于账户余额、账单流水、发票或历史实际扣款。可传 UHostId 查特定实例，不传则检查全部实例。金额由服务端根据结构化上游数据生成，Agent 不应重算。",
+			Description: "核对已有实例当前配置的上游净报价及关机后仍计费的磁盘。用于查询现有实例当前费用构成；不用于账户余额、账单流水、发票或历史实际扣款。可传 UHostId 查特定实例，不传则检查全部实例。金额由服务端根据结构化上游数据生成，Agent 不应重算；用户再次询问当前费用时重新调用本工具。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1167,7 +1167,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name: "DiagnoseInstanceInternals",
-			Description: "登录到指定实例内部排查问题。适用于根因在实例内部、平台 API 看不到的故障：" +
+			Description: "登录到指定实例内部排查问题。仅在用户已明确指定实例或当前选择已唯一绑定时使用；多个实例且未指定目标时先让用户选择，绝不能从列表自行挑选。适用于根因在实例内部、平台 API 看不到的故障：" +
 				"GPU 掉卡 / nvidia-smi 报错 / CUDA 找不到设备、显存被占满、服务或端口起不来（ComfyUI、Jupyter、vLLM 等）、" +
 				"磁盘写满、数据盘未挂载、Python 环境与依赖异常、进程卡死或负载异常。执行前会请用户在卡片上授权；" +
 				"实例内变更还会逐条请用户确认。若是平台提供的 Web 入口（如 FileBrowser/Jupyter）打不开，先查询 DescribeCompShareSoftwarePort 等平台端口事实；" +

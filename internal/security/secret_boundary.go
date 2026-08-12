@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/compshare-agent/internal/guardrails"
 )
@@ -277,6 +279,86 @@ func RedactOperationalTokensInText(s string) string {
 	return redactOperationalTokens(s)
 }
 
+// RestoreUserProvidedCredentialURLs restores an exact signed URL only when it
+// was supplied by the current user and the model quoted that exact URL in its
+// draft. It lets the user copy a command built from their own one-time link
+// without creating a general credential-echo exception: any token invented by
+// a tool or the model remains redacted. Callers must still persist the result
+// through RedactAssistantConversationText.
+func RestoreUserProvidedCredentialURLs(redactedText, userText, draft string) string {
+	for _, rawURL := range credentialURLsInText(userText) {
+		// Do not turn an unrelated model sentence into an echo just because it
+		// happens to contain the same redacted placeholder.
+		if strings.ReplaceAll(draft, rawURL, "") == draft {
+			continue
+		}
+		redactedURL := RedactOperationalTokensInText(rawURL)
+		if redactedURL == rawURL {
+			continue
+		}
+		// The generic credential sanitizer intentionally accepts an opaque value
+		// up to whitespace. In a shell-quoted URL that can consume the closing
+		// quote too, so restore the one immediately-adjacent syntactic delimiter
+		// from the model's exact draft together with the user-owned URL.
+		rawFragment := rawURL
+		if _, suffix, found := strings.Cut(draft, rawURL); found {
+			rawFragment += credentialURLClosingDelimiter(suffix)
+		}
+		redactedFragment := RedactOperationalTokensInText(rawFragment)
+		redactedText = strings.ReplaceAll(redactedText, redactedFragment, rawFragment)
+		redactedText = strings.ReplaceAll(redactedText, redactedURL, rawURL)
+	}
+	return redactedText
+}
+
+func credentialURLsInText(text string) []string {
+	var urls []string
+	for len(text) > 0 {
+		beforeHTTPS, afterHTTPS, hasHTTPS := strings.Cut(text, "https://")
+		beforeHTTP, afterHTTP, hasHTTP := strings.Cut(text, "http://")
+		if !hasHTTPS && !hasHTTP {
+			break
+		}
+		scheme, after := "https://", afterHTTPS
+		if hasHTTP && (!hasHTTPS || len(beforeHTTP) < len(beforeHTTPS)) {
+			scheme, after = "http://", afterHTTP
+		}
+		candidate := scheme + after
+		if end := strings.IndexFunc(candidate, credentialURLTerminator); end >= 0 {
+			candidate = candidate[:end]
+		}
+		consumed := len(candidate) - len(scheme)
+		if consumed <= 0 {
+			break
+		}
+		parsed, err := url.ParseRequestURI(candidate)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			text = after[consumed:]
+			continue
+		}
+		if guardrails.ContainsCredential(candidate) {
+			urls = append(urls, candidate)
+		}
+		text = after[consumed:]
+	}
+	return urls
+}
+
+func credentialURLTerminator(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune("'\"`<>[]{}()，。；、", r)
+}
+
+func credentialURLClosingDelimiter(text string) string {
+	for _, r := range text {
+		switch r {
+		case '\'', '"', '`', ')', ']', '}', '>', '，', '。', '；', '、':
+			return string(r)
+		}
+		break
+	}
+	return ""
+}
+
 // RedactUserConversationText returns the durable form of a user conversation
 // endpoint. Persisted user rows and canonical history must use the same form:
 // otherwise a restart can no longer associate a valid tool transcript with the
@@ -290,8 +372,18 @@ func RedactUserConversationText(s string) string {
 // persistence and canonical history share one exact boundary rather than
 // attempting to fuzzy-match redacted text during cold reconstruction.
 func RedactAssistantConversationText(s string) string {
-	return RedactOperationalTokensInText(guardrails.RedactOutputLeak(s))
+	redacted := RedactOperationalTokensInText(guardrails.RedactOutputLeak(s))
+	// A redacted command is not a reusable command. The live SSE response may
+	// still contain the original value, but the persisted/replayed copy cannot.
+	// Make that durable boundary explicit instead of leaving a later reader (or
+	// the model) to mistake Authorization=[...] for something executable.
+	if guardrails.ContainsCredential(s) {
+		return redacted + redactedConversationCredentialNotice
+	}
+	return redacted
 }
+
+const redactedConversationCredentialNotice = "\n\n注：此历史记录中的敏感参数已脱敏，不能直接复制执行；需要重试时请重新提供原始链接或参数。"
 
 // ContainsToolProtocolMarkup detects provider/tool transport syntax that must
 // never be rendered as assistant prose. It does not infer user intent or parse

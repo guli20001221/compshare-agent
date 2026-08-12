@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -33,9 +34,10 @@ const instanceOpsWriteAction = "InstanceOpsWriteCommand"
 //
 // Ordering (plan §3.1 / the security invariants):
 //   - nil-runner  → feature disabled, inert refusal, no slot consumed (INV-10)
+//   - param check → UHostId + Task required
+//   - target proof → the user named/selected this exact instance (never pick a list row)
 //   - INV-11 gate → at most one in-instance run per turn; SET before confirm so a
 //     declined card still spends the slot (repeated cards would harass the user)
-//   - param check → UHostId + Task required
 //   - INV-7       → e.confirmFn == nil fails closed (never fetch, never spawn)
 //   - confirm     → user authorizes on the card; a decline continues the turn
 //   - Run         → progress→StepEvent live; verdict → finalReplyPrefix (unrewritable)
@@ -49,17 +51,6 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		return friendlyToolResultJSON(msg)
 	}
 
-	// INV-11: one in-instance run per turn. Check-then-set BEFORE confirm — a user
-	// who declines the card still spends the turn's single slot, so the agent cannot
-	// re-prompt with a one-word Task tweak (which would also dodge the DB dedup key).
-	// The second-call text is deliberately distinct from the decline text (V9).
-	if e.instanceOpsRanThisTurn {
-		msg := "本回合已经执行过一次实例内排查，不再重复进入实例。如需再次排查，请重新发送指令。"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-		return friendlyToolResultJSON(msg)
-	}
-	e.instanceOpsRanThisTurn = true
-
 	filtered := e.safeExecutor.FilterArgs(action, args)
 	instanceIDArg, _ := filtered["UHostId"].(string)
 	taskArg, _ := filtered["Task"].(string)
@@ -70,6 +61,28 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
+	// The SSH lane can read and, when separately enabled, modify a box. A non-empty
+	// model-authored id is therefore not enough: a preceding account-wide list is
+	// observation, not a user selection. Reuse the exact selection proof used by
+	// workflow writes, so "刚才那台" keeps working after a genuine pick while a
+	// vague symptom cannot silently target the first running list row.
+	if !e.instanceOpsTargetIsSelected(instanceID) {
+		msg := "请先明确要排查的实例。多个实例时请让用户提供实例 ID/名称或从候选列表选择；不能自行从实例列表挑选。"
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+		return friendlyToolResultJSON(msg)
+	}
+
+	// INV-11: one in-instance run per turn. Check-then-set BEFORE confirm — a user
+	// who declines the card still spends the turn's single slot, so the agent cannot
+	// re-prompt with a one-word Task tweak (which would also dodge the DB dedup key).
+	// A rejected target does NOT spend this slot: no instance was entered and no
+	// authorization card was shown.
+	if e.instanceOpsRanThisTurn {
+		msg := "本回合已经执行过一次实例内排查，不再重复进入实例。如需再次排查，请重新发送指令。"
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+		return friendlyToolResultJSON(msg)
+	}
+	e.instanceOpsRanThisTurn = true
 
 	// INV-7: the confirm wrapper is conditional (engine.go:1109), so e.confirmFn can
 	// be nil on a path that never installed one. Fail closed — never fetch a
@@ -201,6 +214,29 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// The verdict is a deterministic final reply: finalReplyPrefix routes it straight
 	// out through agentruntime.Final, structurally beyond any synthesis rewrite (F6).
 	return finalReplyPrefix + verdict.Text
+}
+
+// instanceOpsTargetIsSelected returns true only when the instance passed to the
+// SSH-ops lane has a selection proof from this turn. It deliberately shares the
+// workflow binder rather than treating a freshly observed account-list row as a
+// referent. A literal id the user typed is allowed on a cold session too: the
+// runner will still re-check that it belongs to the current account before entry.
+func (e *Engine) instanceOpsTargetIsSelected(instanceID string) bool {
+	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
+		return false
+	}
+	view := e.turnContextViewThisTurn
+	binding := e.bindInstanceTarget(view)
+	if binding.conflict {
+		return false
+	}
+	if binding.bound() {
+		return strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID))
+	}
+	// A cold rehydrated session may not have a complete registry yet. An exact ID
+	// visibly authored by the user is still a choice, unlike an ID invented from a
+	// prior list; account membership is verified by the runner's point describe.
+	return entity.TextExplicitlyMentionsName(view.CurrentQuestion, instanceID)
 }
 
 // instanceOpsCommandStep maps one command-progress event to its StepEvent. The

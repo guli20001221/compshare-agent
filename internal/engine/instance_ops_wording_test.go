@@ -41,6 +41,9 @@ func TestInstanceOpsDescriptionFollowsTheWriteGate(t *testing.T) {
 	if strings.Contains(*ro, "可以直接执行修复命令") {
 		t.Fatalf("read-only description promises repair: %q", *ro)
 	}
+	if !strings.Contains(*ro, "绝不能从列表自行挑选") {
+		t.Fatalf("read-only description omits the target-selection boundary: %q", *ro)
+	}
 
 	tools.SetInstanceOpsWritesEnabled(true)
 	rw := findInstanceOpsTool(centralAgentToolWindow(false, true))
@@ -49,6 +52,9 @@ func TestInstanceOpsDescriptionFollowsTheWriteGate(t *testing.T) {
 	}
 	if !strings.Contains(*rw, "可以直接执行修复命令") {
 		t.Fatalf("write description does not offer repair: %q", *rw)
+	}
+	if !strings.Contains(*rw, "绝不能从列表自行挑选") {
+		t.Fatalf("write description omits the target-selection boundary: %q", *rw)
 	}
 	// Still has to name the hard limits, or the model plans around commands it can never run.
 	if !strings.Contains(*rw, "始终会被拒绝") {
