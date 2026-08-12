@@ -21,8 +21,13 @@ type BuildOptions struct {
 	// name the exception or it silently disables the feature it does not know about.
 	InstanceOpsWritesEnabled bool
 	// FeishuConsoleHandoff is a response-only contract for the public Feishu
-	// knowledge adapter. It does not add tools or change user authorization.
+	// adapter. It does not add tools or change user authorization.
 	FeishuConsoleHandoff bool
+	// FeishuPublicPlatformReadOnly tells the prompt that the Feishu adapter
+	// exposes the public catalog/inventory subset instead of only RAG. The engine
+	// remains the authorization boundary; this only supplies the matching model
+	// contract.
+	FeishuPublicPlatformReadOnly bool
 }
 
 type PromptSection struct {
@@ -92,9 +97,16 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 		PromptSection{ID: "knowledge_turn_policy", Text: segmentKnowledgeTurnPolicy},
 		PromptSection{ID: "reply_style", Text: segmentCentralAgentReplyStyle},
 	)
+	if opts.FeishuPublicPlatformReadOnly && !opts.FeishuConsoleHandoff {
+		sections = append(sections, PromptSection{ID: "feishu_public_platform_scope", Text: segmentFeishuPublicPlatformScope})
+	}
 	if opts.FeishuConsoleHandoff {
+		segment := segmentFeishuConsoleHandoff
+		if opts.FeishuPublicPlatformReadOnly {
+			segment = segmentFeishuPublicPlatformConsoleHandoff
+		}
 		sections = append(sections, PromptSection{ID: "feishu_console_handoff", Text: strings.ReplaceAll(
-			segmentFeishuConsoleHandoff, "{{handoff_marker}}", agentprotocol.FeishuConsoleHandoffMarker,
+			segment, "{{handoff_marker}}", agentprotocol.FeishuConsoleHandoffMarker,
 		)})
 	}
 

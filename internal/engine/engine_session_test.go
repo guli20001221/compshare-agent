@@ -407,6 +407,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Public-channel authorization is turn-local and must never remain enabled
 		// or disabled because of another session's prior request.
 		"knowledgeOnlyThisTurn": true,
+		// The broader public catalog scope is just as turn-local: a pooled
+		// engine must not carry it into a subsequent console session.
+		"publicPlatformReadOnlyThisTurn": true,
 		// The Feishu handoff completion contract is likewise per-turn. A pooled
 		// engine must never carry its private marker contract into console chats.
 		"feishuConsoleHandoffThisTurn": true,
@@ -486,12 +489,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 96, len(perSessionFields); want != got {
+	if want, got := 97, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 102, typ.NumField(); want != got {
+	if want, got := 103, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

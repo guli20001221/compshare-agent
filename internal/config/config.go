@@ -81,7 +81,12 @@ type FeishuConfig struct {
 	// AutoReplyNewTopics answers a topic_group root message without requiring
 	// an @ mention. Replies inside the topic still require an @ mention.
 	AutoReplyNewTopics bool `yaml:"auto_reply_new_topics"`
-	// EnableConsoleHandoff lets the knowledge-only Feishu adapter show approved
+	// EnablePlatformReadOnlyQueries switches the Feishu adapter from its legacy
+	// RAG-only window to the fail-closed public-platform query window. That
+	// window contains only publicly safe catalog/inventory reads; it never
+	// exposes account, instance, diagnostic, or mutating tools.
+	EnablePlatformReadOnlyQueries bool `yaml:"enable_platform_readonly_queries"`
+	// EnableConsoleHandoff lets the public Feishu adapter show approved
 	// authenticated diagnosis entry points when the answer needs live instance
 	// state, logs, processes, ports, or another per-account diagnostic. It does
 	// not carry any Feishu conversation content or identity into either entry

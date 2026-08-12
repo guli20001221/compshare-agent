@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
@@ -247,4 +250,121 @@ func TestKnowledgeOnlyExecutionBlocksUnadvertisedToolCall(t *testing.T) {
 	})
 	require.Equal(t, StepBlocked, step.Type)
 	require.Contains(t, result, "仅允许查询知识库")
+}
+
+func TestPublicPlatformReadOnlyWindowExposesEveryPublicQueryAndNothingElse(t *testing.T) {
+	names := toolNameSet(centralAgentPublicPlatformReadOnlyToolWindow())
+	require.Len(t, names, len(feishuPublicPlatformReadTools)+2,
+		"the public Feishu window is exactly knowledge plus the reviewed public read set")
+	require.Contains(t, names, "SearchKnowledge")
+	require.Contains(t, names, "ReadChunk")
+	for name := range feishuPublicPlatformReadTools {
+		require.Contains(t, names, name)
+	}
+	for _, definition := range capability.ReadDefinitions() {
+		if definition.Tool.Function == nil || feishuPublicPlatformReadTools[definition.Tool.Function.Name] {
+			continue
+		}
+		require.NotContains(t, names, definition.Tool.Function.Name,
+			"non-mutating does not make a capability safe for an unauthenticated external group")
+	}
+	for name := range names {
+		require.NotContains(t, name, "Request", "public Feishu must not expose action proposals")
+		require.NotContains(t, name, "Diagnose", "public Feishu must not expose diagnoses")
+		require.NotContains(t, name, "DescribeCompShare", "public Feishu must not expose tenant resources")
+	}
+
+	var imageParams, priceParams map[string]any
+	for _, tool := range centralAgentPublicPlatformReadOnlyToolWindow() {
+		if tool.Function == nil {
+			continue
+		}
+		switch tool.Function.Name {
+		case capability.ReadToolName(intent.IntentImageList):
+			imageParams = tool.Function.Parameters.(map[string]any)
+		case capability.ReadToolName(intent.IntentPricingQuery):
+			priceParams = tool.Function.Parameters.(map[string]any)
+		}
+	}
+	require.NotNil(t, imageParams)
+	require.NotNil(t, priceParams)
+	imageSource := imageParams["properties"].(map[string]any)["source"].(map[string]any)
+	require.Equal(t, []string{string(platform.ImageSourcePlatform), string(platform.ImageSourceCommunity)}, imageSource["enum"])
+	priceKind := priceParams["properties"].(map[string]any)["price_kind"].(map[string]any)
+	require.Equal(t, []string{string(platform.PriceKindCatalog)}, priceKind["enum"])
+}
+
+func TestPublicPlatformReadOnlyExecutionBoundaryIsFailClosed(t *testing.T) {
+	for name := range feishuPublicPlatformReadTools {
+		require.True(t, publicPlatformReadOnlyToolAllowed(name), name)
+	}
+	require.True(t, publicPlatformReadOnlyToolAllowed("SearchKnowledge"))
+	require.True(t, publicPlatformReadOnlyToolAllowed("ReadChunk"))
+	require.False(t, publicPlatformReadOnlyToolAllowed(capability.ReadToolName(intent.IntentResourceInfo)))
+	require.False(t, publicPlatformReadOnlyToolAllowed(capability.ReadToolName(intent.IntentImageTagCatalog)))
+	require.False(t, publicPlatformReadOnlyToolAllowed(capability.ReadToolName(intent.IntentNetAcceleratorStatus)))
+	require.False(t, publicPlatformReadOnlyToolAllowed("DiagnoseInstanceInternals"))
+	require.False(t, publicPlatformReadOnlyToolAllowed("RequestStopInstance"))
+	require.False(t, publicPlatformReadOnlyToolAllowed("invented_tool"))
+
+	imageName := capability.ReadToolName(intent.IntentImageList)
+	require.True(t, publicPlatformReadOnlyArgsAllowed(imageName, map[string]any{"source": "platform"}))
+	require.True(t, publicPlatformReadOnlyArgsAllowed(imageName, map[string]any{"source": "community"}))
+	require.False(t, publicPlatformReadOnlyArgsAllowed(imageName, map[string]any{"source": "custom"}))
+	require.False(t, publicPlatformReadOnlyArgsAllowed(imageName, map[string]any{"source": "shared"}))
+
+	priceName := capability.ReadToolName(intent.IntentPricingQuery)
+	defaultPrice := map[string]any{}
+	require.True(t, publicPlatformReadOnlyArgsAllowed(priceName, defaultPrice))
+	require.Equal(t, string(platform.PriceKindCatalog), defaultPrice["price_kind"])
+	require.True(t, publicPlatformReadOnlyArgsAllowed(priceName, map[string]any{"price_kind": "catalog"}))
+	require.False(t, publicPlatformReadOnlyArgsAllowed(priceName, map[string]any{"price_kind": "account"}))
+
+	eng := &Engine{publicPlatformReadOnlyThisTurn: true}
+	var step StepEvent
+	result := eng.executeTool(context.Background(), openai.ToolCall{Function: openai.FunctionCall{
+		Name: capability.ReadToolName(intent.IntentResourceInfo), Arguments: `{}`,
+	}}, func(event StepEvent) {
+		step = event
+	})
+	require.Equal(t, StepBlocked, step.Type)
+	require.Contains(t, result, publicPlatformReadOnlyBoundary)
+
+	result = eng.executeTool(context.Background(), openai.ToolCall{Function: openai.FunctionCall{
+		Name: priceName, Arguments: `{"price_kind":"account"}`,
+	}}, func(event StepEvent) {
+		step = event
+	})
+	require.Equal(t, StepBlocked, step.Type)
+	require.Contains(t, result, "价格仅限目录价")
+}
+
+func TestChatWithOptionsUsesPublicPlatformWindowWithKnowledgeOnlyPrecedence(t *testing.T) {
+	publicClient := &deltaMockLLM{}
+	publicEngine := NewWithDeps(publicClient, &mockExecutor{}, nil)
+	publicEngine.InitWithContext("用户当前没有实例。")
+
+	_, err := publicEngine.ChatWithOptions(context.Background(), "A1000 有吗？", noopStep, ChatOptions{
+		PublicPlatformReadOnly: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, publicClient.reqs, 1)
+	require.Equal(t,
+		toolNameSet(centralAgentPublicPlatformReadOnlyToolWindow()),
+		toolNameSet(publicClient.reqs[0].Tools),
+		"the per-turn public option must reach the actual model request")
+
+	knowledgeClient := &deltaMockLLM{}
+	knowledgeEngine := NewWithDeps(knowledgeClient, &mockExecutor{}, nil)
+	knowledgeEngine.InitWithContext("用户当前没有实例。")
+	_, err = knowledgeEngine.ChatWithOptions(context.Background(), "A1000 有吗？", noopStep, ChatOptions{
+		KnowledgeOnly:          true,
+		PublicPlatformReadOnly: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, knowledgeClient.reqs, 1)
+	require.Equal(t,
+		toolNameSet(centralAgentKnowledgeToolWindow()),
+		toolNameSet(knowledgeClient.reqs[0].Tools),
+		"the legacy strict knowledge-only option must retain precedence")
 }

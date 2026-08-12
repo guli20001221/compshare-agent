@@ -152,6 +152,9 @@ type SubmitInput struct {
 	ConfirmForm   bool
 	GuidedCreate  bool
 	KnowledgeOnly bool
+	// PublicPlatformReadOnly is the Feishu adapter's fail-closed public catalog
+	// query scope. It is persisted so a retried turn has the same tool boundary.
+	PublicPlatformReadOnly bool
 	// FeishuConsoleHandoff is an adapter-private response-format feature. It is
 	// persisted for retry/replay consistency, but grants no agent capability.
 	FeishuConsoleHandoff bool
@@ -193,10 +196,11 @@ type stableExecutionContext struct {
 }
 
 type executionFeatures struct {
-	ConfirmForm          bool `json:"confirm_form"`
-	GuidedCreate         bool `json:"guided_create"`
-	KnowledgeOnly        bool `json:"knowledge_only,omitempty"`
-	FeishuConsoleHandoff bool `json:"feishu_console_handoff,omitempty"`
+	ConfirmForm            bool `json:"confirm_form"`
+	GuidedCreate           bool `json:"guided_create"`
+	KnowledgeOnly          bool `json:"knowledge_only,omitempty"`
+	PublicPlatformReadOnly bool `json:"public_platform_readonly,omitempty"`
+	FeishuConsoleHandoff   bool `json:"feishu_console_handoff,omitempty"`
 }
 
 type Disposition string
@@ -703,14 +707,15 @@ func (c *Coordinator) run(turn store.Turn) {
 		// not yet adopted ConfirmationResultFunc. Engine.ChatWithOptions gives
 		// the richer callback precedence, so the durable interaction is awaited
 		// exactly once on the production path.
-		ConfirmFunc:          confirm,
-		ConfirmResultFunc:    confirmResult,
-		ConfirmEditsFunc:     confirmEdits,
-		GuidedCreate:         in.GuidedCreate,
-		KnowledgeOnly:        in.KnowledgeOnly,
-		FeishuConsoleHandoff: in.FeishuConsoleHandoff,
-		SecretInputs:         in.SecretInputs,
-		OnUsage:              func(value llm.TokenUsage) { usage = value },
+		ConfirmFunc:            confirm,
+		ConfirmResultFunc:      confirmResult,
+		ConfirmEditsFunc:       confirmEdits,
+		GuidedCreate:           in.GuidedCreate,
+		KnowledgeOnly:          in.KnowledgeOnly,
+		PublicPlatformReadOnly: in.PublicPlatformReadOnly,
+		FeishuConsoleHandoff:   in.FeishuConsoleHandoff,
+		SecretInputs:           in.SecretInputs,
+		OnUsage:                func(value llm.TokenUsage) { usage = value },
 	})
 	eventMu.Lock()
 	persistEventErr := eventErr
@@ -1080,8 +1085,9 @@ func freezeSubmitInputWithSecretKey(in SubmitInput, secretKey []byte) (execution
 		},
 		Features: executionFeatures{
 			ConfirmForm: in.ConfirmForm, GuidedCreate: in.GuidedCreate,
-			KnowledgeOnly:        in.KnowledgeOnly,
-			FeishuConsoleHandoff: in.FeishuConsoleHandoff,
+			KnowledgeOnly:          in.KnowledgeOnly,
+			PublicPlatformReadOnly: in.PublicPlatformReadOnly,
+			FeishuConsoleHandoff:   in.FeishuConsoleHandoff,
 		},
 	}
 	if len(secretInputs) != 0 {
@@ -1153,9 +1159,10 @@ func thawSubmitInputWithSecretKey(turn store.Turn, secretKey []byte) (SubmitInpu
 			UserEmail: envelope.UserContext.UserEmail, ClientIP: envelope.UserContext.ClientIP,
 		},
 		ConfirmForm: envelope.Features.ConfirmForm, GuidedCreate: envelope.Features.GuidedCreate,
-		KnowledgeOnly:        envelope.Features.KnowledgeOnly,
-		FeishuConsoleHandoff: envelope.Features.FeishuConsoleHandoff,
-		SecretInputs:         secretInputs,
+		KnowledgeOnly:          envelope.Features.KnowledgeOnly,
+		PublicPlatformReadOnly: envelope.Features.PublicPlatformReadOnly,
+		FeishuConsoleHandoff:   envelope.Features.FeishuConsoleHandoff,
+		SecretInputs:           secretInputs,
 	}, nil
 }
 
