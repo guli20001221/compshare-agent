@@ -296,7 +296,7 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 				})
 				continue
 			}
-			h.resolveConfirmFrame(writer, confirmationID, sessionID, frameBase.Owner,
+			h.resolveConfirmFrame(writer, cancel, confirmationID, sessionID, frameBase.Owner,
 				ConfirmDecision{Confirmed: confirmed, Overrides: overrides})
 
 		default:
@@ -349,7 +349,16 @@ func stringMapFromFrame(m map[string]any) (map[string]string, error) {
 // the socket. The client would then be told that an accepted, already-executed
 // action had failed. It is a separate function so that order is testable at all:
 // driven through the real WebSocket, both orders look identical from outside.
-func (h *Handlers) resolveConfirmFrame(w streamWriter, confirmationID, sessionID string, owner store.Owner, decision ConfirmDecision) {
+//
+// An acknowledgement that cannot be WRITTEN is fail-closed: the decision is
+// dropped and cancelTurn ends the connection, so the waiting turn resolves as
+// client_disconnect and executes nothing. Ignoring that write error would give
+// the worst outcome of both designs — the user sees "服务端未在预期时间内回应"
+// after CONFIRM_ACK_TIMEOUT_MS while the box is being changed behind the dead
+// socket. The point of the acknowledgement is that the client and the server
+// agree on what was authorized; if it cannot be delivered, there is no agreement
+// to act on. (Only a broken/cancelled socket can fail here — see ws.Writer.)
+func (h *Handlers) resolveConfirmFrame(w streamWriter, cancelTurn context.CancelFunc, confirmationID, sessionID string, owner store.Owner, decision ConfirmDecision) {
 	deliver, err := h.confirmBroker.ClaimResolution(confirmationID, sessionID, owner, decision)
 	if err != nil {
 		code := "NotFound"
@@ -373,8 +382,12 @@ func (h *Handlers) resolveConfirmFrame(w streamWriter, confirmationID, sessionID
 	// The acknowledgement the socket never had. A client may now wait for THIS
 	// before showing the card as handled, instead of treating its own ws.send()
 	// as proof the server agreed.
-	_ = w.WriteEvent("confirmation_ack", confirmationAckEvent{
+	if err := w.WriteEvent("confirmation_ack", confirmationAckEvent{
 		ConfirmationID: confirmationID, Accepted: decision.Confirmed,
-	})
+	}); err != nil {
+		log.Printf("confirm %s: acknowledgement undeliverable (%v) — dropping the decision and ending the turn", confirmationID, err)
+		cancelTurn()
+		return
+	}
 	deliver()
 }

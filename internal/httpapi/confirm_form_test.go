@@ -270,4 +270,24 @@ func TestWS_Confirm_MalformedOverrideValueRejectionNamesTheCard(t *testing.T) {
 		t.Fatalf("a malformed override must not resolve the card (got %+v)", d)
 	default:
 	}
+
+	// "Not resolved" is only half the claim. The other half is that the SAME
+	// ConfirmationId still works — a card that survives the rejection but can no
+	// longer be answered is the expired-card bug with an extra step, and nothing
+	// above would notice. Retry with a legal value and watch it go through.
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","ConfirmationId":"`+confirmID+
+			`","Confirmed":true,"Overrides":{"GpuType":"A800"}}`)))
+
+	ackFrame := readOneFrame(t, ctx, conn)
+	assert.Equal(t, "confirmation_ack", ackFrame["event"], "the fixed edit must be accepted")
+	assert.Equal(t, confirmID, ackFrame["ConfirmationId"])
+
+	select {
+	case d := <-ch:
+		assert.True(t, d.Confirmed)
+		assert.Equal(t, map[string]string{"GpuType": "A800"}, d.Overrides)
+	case <-ctx.Done():
+		t.Fatal("the retried confirmation never reached the waiting turn")
+	}
 }

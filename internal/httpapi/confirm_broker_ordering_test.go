@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/compshare-agent/internal/store"
@@ -101,12 +102,58 @@ func TestConfirmFrameAcknowledgesBeforeWakingTheTurn(t *testing.T) {
 
 	var events []string
 	var seen ConfirmDecision
-	h.resolveConfirmFrame(orderRecordingWriter{events: &events, ch: ch, seen: &seen}, id, "sess-1", owner,
+	cancelled := false
+	h.resolveConfirmFrame(orderRecordingWriter{events: &events, ch: ch, seen: &seen},
+		func() { cancelled = true }, id, "sess-1", owner,
 		ConfirmDecision{Confirmed: true})
 
 	require.Equal(t, []string{"frame:confirmation_ack"}, events,
 		"the turn must not hold the decision yet when the acknowledgement is written")
+	require.False(t, cancelled, "a delivered acknowledgement must not end the connection")
 	require.True(t, (<-ch).Confirmed, "the decision must still reach the turn afterwards")
+}
+
+// failingAckWriter accepts every frame except the acknowledgement — the shape of
+// a socket that died between the confirm frame arriving and the answer going out
+// (the user closed the drawer, the gateway dropped the connection).
+type failingAckWriter struct{ events *[]string }
+
+func (w failingAckWriter) WriteEvent(event string, _ any) error {
+	*w.events = append(*w.events, event)
+	if event == "confirmation_ack" {
+		return errors.New("failed to write: use of closed network connection")
+	}
+	return nil
+}
+func (w failingAckWriter) WriteKeepalive() error { return nil }
+
+// An acknowledgement that cannot be written must NOT execute the action.
+//
+// The claim already happened, so it is tempting to treat the write as
+// best-effort and deliver anyway. That produces the one outcome this whole
+// change exists to prevent, only worse: the client waits out CONFIRM_ACK_TIMEOUT_MS
+// and reports that the server never answered, while the agent SSHes into the box
+// and runs the authorized command against a socket nobody is reading. Fail-closed
+// instead — drop the decision, end the connection, and let the waiting turn
+// resolve as client_disconnect.
+func TestConfirmFrameDoesNotExecuteWhenTheAcknowledgementCannotBeWritten(t *testing.T) {
+	owner := store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+	h := &Handlers{confirmBroker: NewConfirmBroker()}
+	id, ch := h.confirmBroker.Register("sess-1", owner)
+
+	var events []string
+	cancelled := false
+	h.resolveConfirmFrame(failingAckWriter{events: &events}, func() { cancelled = true },
+		id, "sess-1", owner, ConfirmDecision{Confirmed: true})
+
+	require.Equal(t, []string{"confirmation_ack"}, events)
+	select {
+	case d := <-ch:
+		t.Fatalf("an unacknowledged confirmation must not reach the turn (got %+v)", d)
+	default:
+	}
+	require.True(t, cancelled,
+		"the turn must be ended, not left waiting out its own timeout on a dead socket")
 }
 
 // A refused resolve wakes nothing at all — the card stays pending for its own
@@ -118,10 +165,14 @@ func TestConfirmFrameRefusalWakesNothing(t *testing.T) {
 
 	var events []string
 	var seen ConfirmDecision
-	h.resolveConfirmFrame(orderRecordingWriter{events: &events, ch: ch, seen: &seen}, "some-other-id", "sess-1", owner,
+	cancelled := false
+	h.resolveConfirmFrame(orderRecordingWriter{events: &events, ch: ch, seen: &seen},
+		func() { cancelled = true }, "some-other-id", "sess-1", owner,
 		ConfirmDecision{Confirmed: true})
 
 	require.Equal(t, []string{"frame:error"}, events)
+	require.False(t, cancelled,
+		"a card-scoped refusal must leave the connection open — the turn is still running")
 	select {
 	case d := <-ch:
 		t.Fatalf("a rejected resolve must not reach the waiting turn (got %+v)", d)
