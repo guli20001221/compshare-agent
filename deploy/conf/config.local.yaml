@@ -23,7 +23,7 @@ agent:
     agent_ws_url: "ws://127.0.0.1:7429/?Action=CreateCSAgentWS"
     company_id: 66391350               # 当前项目的固定测试账号身份
     organization_id: 64404856
-    project_id: ""
+    project_id: "org-cwy2qk"
     user_email: "feishu-bot@compshare.local"
     # 必填白名单。首次联调可临时写 ["*"]，从日志取得 chat_id 后立即收紧。
     allowed_chat_ids: ["oc_2b31629a0c15e04e41fc53e74c270084"]
