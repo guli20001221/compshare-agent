@@ -11,55 +11,103 @@ import (
 	"github.com/bitly/go-simplejson"
 	"github.com/coder/websocket"
 	wsx "github.com/compshare-agent/internal/httpapi/ws"
+	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/workflow"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	// minWSConnLifetime is the FLOOR for a single chat WebSocket. The gateway opens one connection
-	// per chat turn (see frame/src/Frame/AIAssistant/service.js: a new WebSocket per chatStream
-	// call, closed on done/error/abort), so this bounds a turn, not a session. It backstops a
-	// wedged connection that the gateway never closes.
+	// minWSMachineLifetime is the FLOOR for the MACHINE half of a single chat WebSocket. The
+	// gateway opens one connection per chat turn (see frame/src/Frame/AIAssistant/service.js: a
+	// new WebSocket per chatStream call, closed on done/error/abort), so this bounds a turn, not
+	// a session. It backstops a wedged connection that the gateway never closes.
 	//
 	// It was a flat ceiling named maxWSConnLifetime until 2026-07-30, chosen before the
 	// write-enabled SSH-ops lane existed. A live frontend run showed the contradiction that
 	// created: agent.ssh_ops.timeout was 12m, this was 10m, and an in-instance repair died at
 	// exactly 10:00.0 — the user got "[NetworkError] 连接已关闭" and nothing else, after the lane
 	// had already replaced an application directory on the box. Two independent numbers governing
-	// one turn will drift; see wsConnLifetime, which now derives the deadline from the lane budget
-	// so the socket always outlives the work it carries.
-	minWSConnLifetime = 10 * time.Minute
+	// one turn will drift; see wsConnLifetime, which derives the deadline from the lane budget so
+	// the socket always outlives the work it carries.
+	minWSMachineLifetime = 10 * time.Minute
 
-	// wsLaneSlack is what the turn needs BEYOND the lane's own budget: agent.ssh_ops.timeout bounds
-	// only the harness subprocess, while the same turn also retrieves knowledge, waits on the
-	// operator's consent cards, and writes the verdict after the harness returns.
-	wsLaneSlack = 2 * time.Minute
+	// wsMachineSlack is the MACHINE work a turn does outside the harness subprocess:
+	// agent.ssh_ops.timeout bounds only the subprocess, while the same turn also retrieves
+	// knowledge and writes the verdict after the harness returns.
+	//
+	// Until 2026-08-12 this was named wsLaneSlack and its comment also charged "waits on the
+	// operator's consent cards" to these two minutes. That was the bug below: it made a person
+	// reading an authorization card share a budget sized for machine work, and 2 minutes cannot
+	// hold even one card at the current timeout. Human time is now wsInteractionAllowance.
+	wsMachineSlack = 2 * time.Minute
+
+	// wsMaxConfirmationsPerTurn is the card count the human-time budget is sized from. It is
+	// workflow.MaxConfirmationsPerWorkflowTurn — DERIVED from the wizard's own step order plus its
+	// edit cap — and not a number chosen here.
+	//
+	// It was 6 for one commit, taken from the largest run seen in 30 days of agent_traces, with a
+	// comment claiming it covered every card a turn may legitimately show. That was false when it
+	// was written: guided create has eleven steps and allows three re-asks, so the code has always
+	// permitted fourteen. Sizing a bound from what users happened to do, and then describing it as
+	// what the system permits, is how a budget silently becomes the thing that fails.
+	wsMaxConfirmationsPerTurn = workflow.MaxConfirmationsPerWorkflowTurn
+
+	// wsInteractionAllowance is the socket headroom reserved for HUMAN time, kept deliberately
+	// separate from every machine budget above.
+	//
+	// agent.ssh_ops.timeout states how long the MACHINE may work inside an instance. It says
+	// nothing about how long a PERSON may take to read a card that authorizes writing to their
+	// box, and deriving one from the other would make a careful reader look like a slow harness.
+	// The socket has to cover the sum, so the sum is what it is built from — machine budget first,
+	// then this, never one folded into the other.
+	//
+	// What this is NOT: a guarantee that every legal turn fits. It covers the bounded flow
+	// (workflows, above) with certainty. The in-instance ops lane asks once per mutating command
+	// and has NO ceiling on how many that is — the harness's own 50-step cap is the only limit, so
+	// a repair that stopped for fifty separate approvals could still outlive the socket. That is a
+	// deliberate backstop, not an oversight: a turn parked on its fifteenth human approval is a
+	// wedged connection by any useful definition, and the connection deadline exists to end those.
+	// Stated here rather than left for someone to discover from a closed socket.
+	wsInteractionAllowance = wsMaxConfirmationsPerTurn * confirmWaitTimeout
 
 	// maxWSMessageBytes must fit screenshot uploads. OCR accepts up to 10 MiB raw
 	// image bytes; base64 plus JSON framing needs extra room on the WebSocket.
 	maxWSMessageBytes int64 = 20 * 1024 * 1024
 )
 
-// wsConnLifetime is the deadline for one chat socket: the wedged-connection floor, or the
-// configured in-instance lane budget plus slack when that is longer.
+// wsConnLifetime is the deadline for one chat socket: the machine budget for the turn, PLUS the
+// human time its authorization cards may take.
 //
-// Deriving it is the point. agent.ssh_ops.timeout is an operator's statement of how long a single
-// turn may legitimately spend inside an instance, so a transport deadline shorter than that does
-// not protect anything — it just kills the longest, most consequential turns, which under
-// allow_writes are the ones that have already changed the box. Deliberately NOT clamped to a
+// Deriving the machine half is the point. agent.ssh_ops.timeout is an operator's statement of how
+// long a single turn may legitimately spend inside an instance, so a transport deadline shorter
+// than that does not protect anything — it just kills the longest, most consequential turns, which
+// under allow_writes are the ones that have already changed the box. Deliberately NOT clamped to a
 // second ceiling: a cap that silently cut a longer configured lane short would be this same bug
 // with a bigger number.
+//
+// Adding the interaction allowance separately is the 2026-08-12 fix. Production traces showed 36
+// of 292 confirmation cards (12.3%) ending at exactly the confirm timeout, with real confirmations
+// landing 168ms before the wall — a live distribution being clipped, not users walking away.
+// Raising that timeout without giving the socket its own room for human time would just move the
+// wall onto the transport.
 func (h *Handlers) wsConnLifetime() time.Duration {
+	return h.wsMachineLifetime() + wsInteractionAllowance
+}
+
+// wsMachineLifetime is the machine half: the wedged-connection floor, or the configured
+// in-instance lane budget plus non-harness machine slack when that is longer.
+func (h *Handlers) wsMachineLifetime() time.Duration {
 	if h == nil || h.cfg == nil {
-		return minWSConnLifetime
+		return minWSMachineLifetime
 	}
 	// Keyed off the configured budget rather than the enabled flag: the lane can also be switched
 	// on by env (COMPSHARE_SSH_OPS) with no YAML `enabled`, and an operator who wrote a timeout has
 	// declared the length of a turn either way. When the lane is off the field is unset, so this
 	// reads the floor.
-	if lane := h.cfg.Agent.SSHOps.Timeout; lane > 0 && lane+wsLaneSlack > minWSConnLifetime {
-		return lane + wsLaneSlack
+	if lane := h.cfg.Agent.SSHOps.Timeout; lane > 0 && lane+wsMachineSlack > minWSMachineLifetime {
+		return lane + wsMachineSlack
 	}
-	return minWSConnLifetime
+	return minWSMachineLifetime
 }
 
 // HandleWS upgrades a gateway-initiated request to a WebSocket and serves the
@@ -239,21 +287,17 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 			// confirming the unedited card.
 			overrides, ovErr := overridesFromFrame(frame)
 			if ovErr != nil {
-				_ = writer.WriteEvent("error", streamErrorEvent{Code: "InvalidParam", Message: ovErr.Error()})
+				// Name the card here too. This frame is scoped to one card by
+				// construction, and without the id a client can only fail the whole
+				// turn — which would let a single malformed form field end a
+				// diagnosis, the same shape as the expired-card bug below.
+				_ = writer.WriteEvent("error", confirmationErrorEvent{
+					Code: "InvalidParam", Message: ovErr.Error(), ConfirmationID: confirmationID,
+				})
 				continue
 			}
-			if rErr := h.confirmBroker.Resolve(confirmationID, sessionID, frameBase.Owner, ConfirmDecision{Confirmed: confirmed, Overrides: overrides}); rErr != nil {
-				code := "NotFound"
-				switch {
-				case errors.Is(rErr, ErrConfirmationOwner):
-					code = "Forbidden"
-				case !errors.Is(rErr, ErrConfirmationNotFound):
-					// Override validation failure: pending is kept (the client
-					// may fix and resend within the timeout window).
-					code = "InvalidParam"
-				}
-				_ = writer.WriteEvent("error", streamErrorEvent{Code: code, Message: rErr.Error()})
-			}
+			h.resolveConfirmFrame(writer, cancel, confirmationID, sessionID, frameBase.Owner,
+				ConfirmDecision{Confirmed: confirmed, Overrides: overrides})
 
 		default:
 			_ = writer.WriteEvent("error", streamErrorEvent{
@@ -294,4 +338,56 @@ func stringMapFromFrame(m map[string]any) (map[string]string, error) {
 		out[k] = s
 	}
 	return out, nil
+}
+
+// resolveConfirmFrame answers one ConfirmCSAgentAction: it claims the decision,
+// writes the outcome frame, and only then wakes the turn.
+//
+// The ORDER is the contract. Waking first is a race this goroutine cannot win —
+// the decision unblocks the chat goroutine, which may finish the turn, write
+// `done` and cancel the connection context before the acknowledgement reaches
+// the socket. The client would then be told that an accepted, already-executed
+// action had failed. It is a separate function so that order is testable at all:
+// driven through the real WebSocket, both orders look identical from outside.
+//
+// An acknowledgement that cannot be WRITTEN is fail-closed: the decision is
+// dropped and cancelTurn ends the connection, so the waiting turn resolves as
+// client_disconnect and executes nothing. Ignoring that write error would give
+// the worst outcome of both designs — the user sees "服务端未在预期时间内回应"
+// after CONFIRM_ACK_TIMEOUT_MS while the box is being changed behind the dead
+// socket. The point of the acknowledgement is that the client and the server
+// agree on what was authorized; if it cannot be delivered, there is no agreement
+// to act on. (Only a broken/cancelled socket can fail here — see ws.Writer.)
+func (h *Handlers) resolveConfirmFrame(w streamWriter, cancelTurn context.CancelFunc, confirmationID, sessionID string, owner store.Owner, decision ConfirmDecision) {
+	deliver, err := h.confirmBroker.ClaimResolution(confirmationID, sessionID, owner, decision)
+	if err != nil {
+		code := "NotFound"
+		switch {
+		case errors.Is(err, ErrConfirmationOwner):
+			code = "Forbidden"
+		case !errors.Is(err, ErrConfirmationNotFound):
+			// Override validation failure: pending is kept (the client may fix and
+			// resend within the timeout window).
+			code = "InvalidParam"
+		}
+		// Name the card. The error frame used to carry only a code and a sentence,
+		// so a client could not tell which of several cards it rejected — and an
+		// expired card therefore stayed rendered as accepted while the turn went
+		// red somewhere else.
+		_ = w.WriteEvent("error", confirmationErrorEvent{
+			Code: code, Message: err.Error(), ConfirmationID: confirmationID,
+		})
+		return
+	}
+	// The acknowledgement the socket never had. A client may now wait for THIS
+	// before showing the card as handled, instead of treating its own ws.send()
+	// as proof the server agreed.
+	if err := w.WriteEvent("confirmation_ack", confirmationAckEvent{
+		ConfirmationID: confirmationID, Accepted: decision.Confirmed,
+	}); err != nil {
+		log.Printf("confirm %s: acknowledgement undeliverable (%v) — dropping the decision and ending the turn", confirmationID, err)
+		cancelTurn()
+		return
+	}
+	deliver()
 }

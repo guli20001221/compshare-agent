@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
@@ -97,7 +98,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// so the agent can still answer from cloud-side facts. The returned text is NOT
 	// a finalReplyPrefix (plan P1 门 3) and is distinct from the "already ran" text.
 	if !e.confirmFn(action, e.safeExecutor.RedactArgs(action, filtered)) {
-		msg := fmt.Sprintf("好的，已取消对实例 %s 的实例内排查。", instanceID)
+		msg := instanceOpsUnauthorizedMessage(instanceID, e.lastConfirmationTerminalReason)
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
@@ -215,6 +216,50 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// out through agentruntime.Final, structurally beyond any synthesis rewrite (F6).
 	return finalReplyPrefix + verdict.Text
 }
+
+// instanceOpsUnauthorizedMessage phrases a card that was not approved, using the
+// reason the confirmation harness already computed.
+//
+// One sentence used to cover every non-approval, and it named the user as the
+// actor: 「好的，已取消对实例 X 的实例内排查」. Production traces for 2026-07-13..08-12
+// show that was wrong far more often than it was right — of 104 entry cards, 9
+// ended in a timeout against 2 genuine declines, so the most common reader of
+// that sentence was someone who had NOT cancelled anything and, in the console,
+// had just clicked 确认 a moment too late and received a bare [NotFound] beside
+// it. A reply that misattributes the cause also misdirects the retry: "已取消"
+// invites re-asking, while a timeout wants "answer the card faster" and a
+// disconnect wants "reconnect".
+//
+// Deliberately no reason is phrased as a failure the user must report: every
+// branch here is a turn where NOTHING was executed inside the instance, and
+// saying so plainly is the point of the message.
+func instanceOpsUnauthorizedMessage(instanceID, terminalReason string) string {
+	switch strings.TrimSpace(terminalReason) {
+	case observability.ConfirmationReasonTimeout:
+		return fmt.Sprintf(
+			"授权卡片已超时（等待 %d 秒未收到确认），未进入实例 %s，也没有执行任何命令。需要的话请重新发送指令。",
+			int(InstanceOpsConfirmWindow.Seconds()), instanceID)
+	case observability.ConfirmationReasonClientDisconnect:
+		return fmt.Sprintf("连接已断开，授权未完成，未进入实例 %s，也没有执行任何命令。重新连接后可以再发一次指令。", instanceID)
+	case observability.ConfirmationReasonDeliveryFailed, observability.ConfirmationReasonBrokerCancelled:
+		return fmt.Sprintf("授权卡片未能送达，未进入实例 %s，也没有执行任何命令。请重新发送指令。", instanceID)
+	default:
+		// ConfirmationReasonUserDeclined, and the normalizer's fallback for a
+		// legacy boolean callback that cannot say why.
+		return fmt.Sprintf("好的，已取消对实例 %s 的实例内排查。", instanceID)
+	}
+}
+
+// InstanceOpsConfirmWindow is how long the transport gives a person to answer an
+// authorization card, quoted in the timeout message so the user learns the
+// actual window rather than a number to guess at.
+//
+// It duplicates httpapi.confirmWaitTimeout by VALUE and not by import, because
+// engine must not depend on a transport package — and the duplicate is pinned
+// by TestInstanceOpsConfirmWindowMatchesTheTransport in the httpapi package,
+// which can see both. A drift here only mis-states a number in one sentence; it
+// cannot change when the card actually expires.
+const InstanceOpsConfirmWindow = 120 * time.Second
 
 // instanceOpsTargetIsSelected returns true only when the instance passed to the
 // SSH-ops lane has a selection proof from this turn. It deliberately shares the

@@ -235,3 +235,59 @@ func TestWS_Confirm_InvalidOverride_ErrorFrameAndPendingKept(t *testing.T) {
 		t.Fatal("corrected override frame did not resolve the waiter")
 	}
 }
+
+// A malformed Overrides VALUE never reaches form validation: overridesFromFrame
+// rejects it while parsing. That is a separate branch from "the value was not an
+// offered option", and it had no test — which is how it kept sending an error
+// frame with no ConfirmationId after the validation branch had been fixed.
+//
+// Without the id a client can only fail the whole turn on one bad form field,
+// the same shape as the expired-card bug: a card-scoped error tearing down a
+// still-running turn.
+func TestWS_Confirm_MalformedOverrideValueRejectionNamesTheCard(t *testing.T) {
+	srv, _, h := wsTestHandlers(t, chatLLM{}, denyConfirm)
+	conn := dialWS(t, srv, gatewayHeaders())
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	confirmID, ch := h.confirmBroker.RegisterWithForm("sess-1", gatewayOwner, testGPUForm())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","ConfirmationId":"`+confirmID+
+			`","Confirmed":true,"Overrides":{"GpuType":123}}`)))
+
+	f := readOneFrame(t, ctx, conn)
+	assert.Equal(t, "error", f["event"])
+	assert.Equal(t, "InvalidParam", f["Code"])
+	assert.Equal(t, confirmID, f["ConfirmationId"],
+		"a parse rejection is scoped to one card and must say which")
+
+	// The card survives: a bad edit is fixable, so the user must still be able to
+	// answer the same confirmation.
+	select {
+	case d := <-ch:
+		t.Fatalf("a malformed override must not resolve the card (got %+v)", d)
+	default:
+	}
+
+	// "Not resolved" is only half the claim. The other half is that the SAME
+	// ConfirmationId still works — a card that survives the rejection but can no
+	// longer be answered is the expired-card bug with an extra step, and nothing
+	// above would notice. Retry with a legal value and watch it go through.
+	require.NoError(t, conn.Write(ctx, websocket.MessageText,
+		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","ConfirmationId":"`+confirmID+
+			`","Confirmed":true,"Overrides":{"GpuType":"A800"}}`)))
+
+	ackFrame := readOneFrame(t, ctx, conn)
+	assert.Equal(t, "confirmation_ack", ackFrame["event"], "the fixed edit must be accepted")
+	assert.Equal(t, confirmID, ackFrame["ConfirmationId"])
+
+	select {
+	case d := <-ch:
+		assert.True(t, d.Confirmed)
+		assert.Equal(t, map[string]string{"GpuType": "A800"}, d.Overrides)
+	case <-ctx.Done():
+		t.Fatal("the retried confirmation never reached the waiting turn")
+	}
+}
