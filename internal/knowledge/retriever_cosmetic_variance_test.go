@@ -46,7 +46,7 @@ func TestBM25SensitivityToCosmeticQueryRewrites(t *testing.T) {
 	retriever := NewRetriever(corpus, RetrieverOptions{
 		TopK: 10,
 		Mode: RetrievalModeBM25Only,
-		Now:  determinismProbeNow,
+		Now:  probeClockFor(t, corpus),
 	})
 
 	// Each group is one meaning. Variants are the exact shapes the live planner

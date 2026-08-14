@@ -568,7 +568,7 @@ func wideNetRetriever(t *testing.T, cfg *config.Config, corpus knowledge.Corpus,
 		EmbeddingSidecar: &sidecar,
 		Embedder:         embedClient,
 		EmbeddingModel:   embedModel,
-		Now:              realCorpusRecallNow,
+		Now:              realCorpusRecallNow(t, corpus),
 	})
 }
 

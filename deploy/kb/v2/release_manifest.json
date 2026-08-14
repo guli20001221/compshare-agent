@@ -71,6 +71,20 @@
     "external_corpus": {
       "path": "deploy/kb/v2/external_v2.jsonl",
       "sha256": "74f7356746d3262243dae80ece54a161cb76be77c2c2aa73964d53a3d55113e1"
+    },
+    "internal_embeddings": {
+      "path": "deploy/kb/embeddings_8007f0e64f32ef34a415be97bba0b28ab2d0a3396634bb9977e7f44db54407f3_qwen3-embedding-8b.jsonl",
+      "sha256": "40d3a1221b7dca747a266cbad57354ba0b5bd4aa4631222159fd10eb1d0a518e",
+      "model": "qwen3-embedding-8b",
+      "dim": 4096,
+      "rows": 526
+    },
+    "external_embeddings": {
+      "path": "deploy/kb/embeddings_74f7356746d3262243dae80ece54a161cb76be77c2c2aa73964d53a3d55113e1_qwen3-embedding-8b.jsonl",
+      "sha256": "180ebdfb71835cf4143e71f0ad69f6b6de0e993ac4e6593ec5f70b3bb1e439ce",
+      "model": "qwen3-embedding-8b",
+      "dim": 4096,
+      "rows": 1189
     }
   },
   "report": {
@@ -5066,5 +5080,9 @@
       "short_enough_no_split": 1393,
       "unsplittable_hard_split": 4
     }
+  },
+  "promotion": {
+    "internal_runtime_path": "deploy/kb/stage2b_w0.jsonl",
+    "external_runtime_path": "deploy/kb/external_w0.jsonl"
   }
 }

@@ -276,6 +276,6 @@ func productionAnswerRetriever(t *testing.T, cfg *config.Config, corpus knowledg
 		EmbeddingSidecar: &sidecar,
 		Embedder:         embedClient,
 		EmbeddingModel:   embedModel,
-		Now:              realCorpusRecallNow,
+		Now:              realCorpusRecallNow(t, corpus),
 	})
 }
