@@ -2,11 +2,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 from scripts.rag_w0.build_corpus_embeddings import write_sidecar
 
+from scripts.rag_v2 import pipeline
 from scripts.rag_v2.pipeline import (
     AssetNote,
+    ModelVerseClient,
     SourceDocument,
     build_chunks,
     clean_public_text,
@@ -19,6 +22,7 @@ from scripts.rag_v2.pipeline import (
     resolve_local_asset,
     semantic_parts,
     validate_chunks,
+    vl_payload_answered,
     _canonical_remote_image_url,
     _image_content_type,
     _is_decorative_asset,
@@ -26,6 +30,22 @@ from scripts.rag_v2.pipeline import (
     _retryable_asset_failure,
     _question_patterns,
 )
+
+
+class _FakeResponse:
+    """Minimal stand-in for the urlopen context manager json_chat consumes."""
+
+    def __init__(self, payload):
+        self._body = json.dumps({"choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body.encode("utf-8")
 
 
 class RAGV2PipelineTests(unittest.TestCase):
@@ -80,6 +100,127 @@ class RAGV2PipelineTests(unittest.TestCase):
         content-sniffing without touching the call site."""
         with self.assertRaises(TypeError):
             _question_patterns("t", ["h"], "area", "operation/upload.md", "body")
+
+    def test_planner_error_is_not_locked_but_a_structural_fallback_is(self):
+        """A null lock is permanent: it is read before the model on every build.
+
+        So it must record a decision, not an accident. 28 of the 67 locks shipped
+        with the current corpus are null with no reason attached, and a document
+        that hit one transient planner error is indistinguishable from one that
+        was deliberately left mechanical.
+        """
+        text = "\n\n".join(f"## 小节{i}\n" + "内容" * 400 for i in range(6))
+
+        class _Boom:
+            def __init__(self, cache_dir):
+                self.cache_dir = cache_dir
+
+            def json_chat(self, **kwargs):
+                raise TimeoutError("planner timed out")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "v2" / ".cache" / "modelverse"
+            cache.mkdir(parents=True)
+            locks = Path(tmp) / "v2" / "semantic_plans"
+            pipeline.SEMANTIC_PLAN_STATS.clear()
+            parts = semantic_parts(text, client=_Boom(cache), model="m")
+            self.assertEqual(text.replace("\n\n", ""), "".join(parts).replace("\n\n", ""),
+                             "the mechanical fallback must still be lossless")
+            self.assertEqual([], list(locks.glob("*.json")),
+                             "a transient planner error must not be locked in")
+            self.assertEqual(1, pipeline.SEMANTIC_PLAN_STATS["planner_error:TimeoutError"])
+
+        # A structural fallback IS a decision, so it locks — and says why.
+        many = "\n\n".join(f"## 小节{i}\n" + "内容" * 200 for i in range(60))
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "v2" / ".cache" / "modelverse"
+            cache.mkdir(parents=True)
+            locks = Path(tmp) / "v2" / "semantic_plans"
+            pipeline.SEMANTIC_PLAN_STATS.clear()
+            semantic_parts(many, client=_Boom(cache), model="m")
+            written = list(locks.glob("*.json"))
+            self.assertEqual(1, len(written))
+            self.assertEqual(
+                {"groups": None, "reason": "too_many_blocks"},
+                json.loads(written[0].read_text(encoding="utf-8")),
+            )
+            self.assertEqual(1, pipeline.SEMANTIC_PLAN_STATS["too_many_blocks"])
+
+    def test_vl_non_answer_is_rejected_but_a_decorative_verdict_is_kept(self):
+        """The schema gate passes a response that says nothing; this one does not.
+
+        Rejecting must not catch a real "this image is decorative" verdict — that
+        one arrives with a description and a confidence, and is the model doing
+        its job.
+        """
+        answered = {
+            "description": "云主机管理界面，显示主机状态与更多操作菜单。",
+            "visible_text": ["运行中", "更多操作"], "controls": ["重启"], "relations": [],
+            "confidence": 0.95, "visual_type": "界面截图", "include_in_rag": True,
+        }
+        decorative = {
+            "description": "一个卡通风格的男性头像图标，棕色头发，穿蓝色衬衫。",
+            "visible_text": [], "controls": [], "relations": [],
+            "confidence": 0.92, "visual_type": "icon", "include_in_rag": False,
+        }
+        non_answer = {
+            "description": "图片", "visible_text": [], "controls": [], "relations": [],
+            "confidence": 0.0, "visual_type": "unknown", "include_in_rag": False,
+        }
+        # Zero confidence but the model did extract text: it looked, so keep it.
+        text_only = {
+            "description": "", "visible_text": ["nvidia-smi"], "controls": [], "relations": [],
+            "confidence": 0.0, "visual_type": "unknown", "include_in_rag": True,
+        }
+        self.assertTrue(vl_payload_answered(answered))
+        self.assertTrue(vl_payload_answered(decorative))
+        self.assertTrue(vl_payload_answered(text_only))
+        self.assertFalse(vl_payload_answered(non_answer))
+        self.assertFalse(vl_payload_answered({**non_answer, "confidence": None}))
+        self.assertFalse(vl_payload_answered({**non_answer, "visible_text": ["", "  "]}))
+
+    def test_rejected_response_is_retried_and_never_cached(self):
+        """One bad minute must not become a permanent cache entry.
+
+        json_chat used to write whatever came back. With `accept`, a non-answer
+        is retried; if the retry answers, that is what gets cached, and if every
+        attempt fails the payload is returned without a cache write so the next
+        build asks again.
+        """
+        non_answer = {"description": "图片", "visible_text": [], "confidence": 0.0}
+        good = {"description": "终端输出", "visible_text": ["nvidia-smi"], "confidence": 0.9}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = ModelVerseClient(base_url="https://example.invalid/v1", api_key="k", cache_dir=Path(tmp))
+            responses = [non_answer, non_answer, good]
+            calls = []
+
+            def fake_urlopen(request, timeout=None):
+                calls.append(1)
+                return _FakeResponse(responses[len(calls) - 1])
+
+            with unittest.mock.patch.object(pipeline, "urlopen", fake_urlopen), \
+                 unittest.mock.patch.object(pipeline.time, "sleep", lambda _s: None):
+                got = client.json_chat(model="m", prompt="p", accept=vl_payload_answered)
+            self.assertEqual(good, got)
+            self.assertEqual(3, len(calls), "should have retried past both non-answers")
+            self.assertEqual(good, client.cached_json(model="m", prompt="p"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = ModelVerseClient(base_url="https://example.invalid/v1", api_key="k", cache_dir=Path(tmp))
+            calls = []
+
+            def always_bad(request, timeout=None):
+                calls.append(1)
+                return _FakeResponse(non_answer)
+
+            with unittest.mock.patch.object(pipeline, "urlopen", always_bad), \
+                 unittest.mock.patch.object(pipeline.time, "sleep", lambda _s: None):
+                got = client.json_chat(model="m", prompt="p", retries=2, accept=vl_payload_answered)
+            self.assertEqual(non_answer, got)
+            self.assertEqual(3, len(calls))
+            self.assertIsNone(client.cached_json(model="m", prompt="p"),
+                              "a non-answer must not be cached")
 
     def test_site_root_image_reference_resolves_under_public(self):
         """A leading slash is the site root, which Next.js serves from public/.

@@ -8,6 +8,7 @@ import tempfile
 
 try:
     from .pipeline import (
+        SEMANTIC_PLAN_STATS,
         ModelVerseClient,
         build_chunks,
         collect_external_docs,
@@ -172,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
             "merged_chunk_count": len(external_rows),
             "merge_duplicates_skipped": external_merge_skipped,
         }
+        # How every long document got its boundaries. Chunk counts look identical
+        # whether a semantic plan or a rune counter drew them, so without this a
+        # planner outage is invisible in the report and in the corpus.
+        report["semantic_split"] = dict(sorted(SEMANTIC_PLAN_STATS.items()))
 
         internal_errors = validate_chunks(internal_rows, expected_version=internal_version)
         external_errors = validate_chunks(external_rows, expected_version=external_version)
