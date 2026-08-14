@@ -40,13 +40,34 @@ from typing import Any
 DEFAULT_BASE_URL = "https://api.modelverse.cn/v1"
 DEFAULT_EMBED_MODEL = "text-embedding-3-large"
 BATCH_SIZE = 32
-# This is the index contract: chunk_repr below is what gets embedded, so every
-# stored vector is bound to this cap and raising it invalidates all of them —
-# it may only move together with a full re-embed and a new corpus digest.
-# The reranker cap is a separate number (evaluate_retrieval.py
-# RERANKER_MAX_CONTENT_RUNES / compshare-kb defaultRerankerDocRunes); do not
-# re-couple them. (Formerly cited run_hybrid_eval.py, which no longer exists.)
-MAX_CONTENT_RUNES_FOR_EMB = 1800
+# The index contract: chunk_repr below is the text that gets embedded, so every
+# stored vector is bound to this cap. Changing it invalidates all of them and may
+# only move together with a full re-embed and a new corpus digest.
+#
+# Raised from 1800 to 4000 on 2026-08-14, during the rebuild that moved the
+# corpus to the docs App Router revision. 54% of internal and 51% of external
+# chunks are longer than 1800 runes, so for more than half the corpus the dense
+# leg was matching against a truncated copy: one measured chunk stated its fact
+# at rune 1804 and ranked 1041st for a query that quoted it.
+#
+# The moment matters. chunk_id hashes source_path, every path changed in this
+# rebuild, so all 544 internal chunks re-embed regardless; carrying the cap along
+# costs only the 610 external chunks over 1800, instead of a second full pass
+# later.
+#
+# compshare-kb has a mirror (retrieval.embeddingContentMaxRunes) used when the
+# privileged update plane embeds a newly upserted chunk at runtime. It must move
+# with this one BEFORE the release is published, or chunks added after
+# publication land in the same vector space under a different text convention.
+#
+# The reranker cap is a SEPARATE number (evaluate_retrieval.py
+# RERANKER_MAX_CONTENT_RUNES / internal/knowledge rerankerDocMaxRunes /
+# compshare-kb defaultRerankerDocRunes). Do not re-couple them. As of this
+# rebuild both read 4000, which makes them look like one constant that got
+# duplicated; they are not. This one is frozen into the vectors at index build
+# time and can only move with a re-embed, that one bounds what the cross-encoder
+# reads per request and is bound by nothing but latency.
+MAX_CONTENT_RUNES_FOR_EMB = 4000
 
 
 def compute_lf_sha256(path: Path) -> str:

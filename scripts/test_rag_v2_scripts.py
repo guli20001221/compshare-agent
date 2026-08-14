@@ -41,17 +41,43 @@ class RAGV2PipelineTests(unittest.TestCase):
             self.assertEqual([0.12345679, -1.2345679e-05], row["vector"])
             self.assertNotIn("123456781234", path.read_text(encoding="utf-8"))
 
-    def test_disk_billing_patterns_require_local_context_and_cross_area(self):
-        unrelated = _question_patterns(
-            "XFTP上传", ["数据上传", "XFTP上传"], "billing_rule", "operation/upload.md",
-            "XFTP 软件可申请免费许可。" + "连接配置说明。" * 30 + "稍后截图还显示系统盘 200 GB。",
+    def test_question_patterns_are_document_metadata_and_never_invented(self):
+        """question_patterns is scored as if the document had said it.
+
+        compshare-kb joins the field into the BM25 patterns field AND into the
+        text that is embedded and reranked, so an entry here is indistinguishable
+        from source content at retrieval time. It may carry only what the
+        document itself provides.
+        """
+        patterns = _question_patterns(
+            "GPU 新功能发布记录", ["产品动态", "GPU 新功能发布记录"], "resource_purchase"
         )
-        self.assertNotIn("系统盘100GB为什么还收费", unrelated)
-        announcement = _question_patterns(
-            "GPU 新功能发布记录", ["GPU 新功能发布记录"], "resource_purchase", "overview/update-gpu.md",
-            "新实例系统盘免费额度从200G降至100G；旧实例扩容后也按100G重新计费。",
+        self.assertEqual(
+            patterns,
+            ["GPU 新功能发布记录", "产品动态 GPU 新功能发布记录", "resource purchase"],
+            "only the title, the heading path, and the product area",
         )
-        self.assertIn("系统盘100GB为什么还收费", announcement)
+
+        # No templated question forms. These were appended to every chunk and
+        # match no real query, e.g. "怎么AttachCompshareDisk — 挂载已有云盘".
+        for value in patterns:
+            self.assertFalse(value.startswith("怎么"), f"invented question form: {value}")
+            self.assertFalse(value.endswith("怎么办"), f"invented question form: {value}")
+
+        # No hand-written topic phrasings. Three keyword rules used to inject
+        # curated questions for disk billing, Coding Plan and resource capacity,
+        # which made those three topics rank on wording their source text does
+        # not support while every other topic in the corpus got none.
+        billing = _question_patterns("磁盘计费", ["计费概览", "磁盘计费"], "billing_rule")
+        for banned in ("系统盘100GB为什么还收费", "一直暂无资源是什么情况", "Coding Plan 支持退款吗"):
+            self.assertNotIn(banned, billing)
+
+    def test_question_patterns_takes_no_document_body(self):
+        """The source_path/content arguments existed only to feed the deleted
+        keyword rules. Removing them closes the seam for re-adding
+        content-sniffing without touching the call site."""
+        with self.assertRaises(TypeError):
+            _question_patterns("t", ["h"], "area", "operation/upload.md", "body")
 
     def test_cleaning_preserves_public_examples_and_does_not_redact(self):
         raw = "---\ntitle: x\n---\n# API\n\nAPI Key：sk-public-example\n\nhttps://cp.compshare.cn/v1\n"
