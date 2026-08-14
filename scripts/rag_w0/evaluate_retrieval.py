@@ -78,8 +78,12 @@ RERANKER_POOL_SIZE = 10
 RRF_BM25_POOL = 50
 RRF_DENSE_POOL = 50
 RRF_K = 60
-# Mirror internal/knowledge/retriever.go:chunkReprForRerank max content.
-RERANKER_MAX_CONTENT_RUNES = 1800
+# Mirror internal/knowledge/retriever.go:rerankerDocMaxRunes, which mirrors
+# compshare-kb retrieval.defaultRerankerDocRunes. Deliberately NOT
+# build_corpus_embeddings.py:MAX_CONTENT_RUNES_FOR_EMB — that cap is the index
+# contract for the frozen corpus vectors, this one only bounds what the
+# cross-encoder reads per request.
+RERANKER_MAX_CONTENT_RUNES = 4000
 ANSWER_BEHAVIOR = "answer"
 CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0}
 DEFAULT_EMBED_MODEL = "text-embedding-3-large"
@@ -363,9 +367,10 @@ def _chunk_repr_for_rerank(chunk: dict[str, Any]) -> str:
     """Build the per-chunk text the reranker scores.
 
     Must stay byte-equivalent to internal/knowledge/retriever.go
-    chunkReprForRerank and scripts/rag_w0/build_corpus_embeddings.py
-    chunk_repr — all three score the same chunk representation so cosine
-    and cross-encoder signals remain comparable.
+    chunkReprForRerank, including its rune cap. It matches
+    build_corpus_embeddings.py chunk_repr in shape but not in cap: the
+    embedded representation is frozen at the index contract, the reranked one
+    is not.
     """
     title = str(chunk.get("title") or "")
     patterns = " | ".join(str(p) for p in (chunk.get("question_patterns") or []))
