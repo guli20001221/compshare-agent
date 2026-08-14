@@ -38,6 +38,29 @@ HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 SPACE_RE = re.compile(r"[ \t]+")
 BLANK_RE = re.compile(r"\n{3,}")
 
+# MDX_LAYOUT_COMPONENTS are the compshare-docs presentation components whose TAGS
+# carry no information but whose CHILDREN are the documentation — <ApiFieldTable>
+# wraps the request/response parameter tables. Only the tags are removed; the body
+# between them is kept verbatim.
+#
+# This is an allowlist of names and deliberately not a general JSX pattern,
+# because the corpus is full of angle-bracket placeholders that a pattern would
+# eat: `ssh -p <ExternalPort> root@<ExternalHost>`, `<UModelverse_API_KEY>`,
+# `<YOUR_API_KEY>`, and `<EOF` in heredocs. Some of those are PascalCase too, so
+# even "looks like a component name" is not a safe discriminator.
+MDX_LAYOUT_COMPONENTS = ("ApiEndpoint", "ApiFieldTable")
+MDX_LAYOUT_TAG_RE = re.compile(
+    r"</?(?:" + "|".join(MDX_LAYOUT_COMPONENTS) + r")\b[^>]*/?>"
+)
+
+# UNKNOWN_MDX_BLOCK_RE finds a line that is nothing but one capitalized tag.
+# MDX requires a block-level component to sit alone on its line for the markdown
+# around it to keep parsing, while every placeholder above appears inline, inside
+# a code span or command. A match that is not in the allowlist is a component
+# added to the docs after this pipeline last looked, and the build reports it
+# rather than letting its tag text flow into a chunk unnoticed.
+UNKNOWN_MDX_BLOCK_RE = re.compile(r"^\s*(</?([A-Z][A-Za-z0-9]*)\b[^>]*/?>)\s*$")
+
 
 @dataclass(frozen=True)
 class SourceDocument:
@@ -232,9 +255,25 @@ def clean_public_text(text: str) -> str:
     text = FRONT_MATTER_RE.sub("", text)
     text = HTML_NOISE_RE.sub("", text)
     text = HTML_COMMENT_RE.sub("", text)
+    text = MDX_LAYOUT_TAG_RE.sub("", text)
     text = normalize_image_markup(text)
     lines = [SPACE_RE.sub(" ", line).rstrip() for line in text.splitlines()]
     return BLANK_RE.sub("\n\n", "\n".join(lines)).strip() + "\n"
+
+
+def unknown_mdx_components(text: str) -> set[str]:
+    """Report block-level MDX components this pipeline does not know about.
+
+    Called on the RAW document, before clean_public_text removes the allowlisted
+    tags, so a newly introduced component surfaces as a build signal instead of
+    as tag text inside a chunk.
+    """
+    found: set[str] = set()
+    for line in text.splitlines():
+        match = UNKNOWN_MDX_BLOCK_RE.match(line)
+        if match and match.group(2) not in MDX_LAYOUT_COMPONENTS:
+            found.add(match.group(2))
+    return found
 
 
 def normalize_image_markup(text: str) -> str:
@@ -271,28 +310,56 @@ def markdown_title(text: str, fallback: str) -> str:
     return fallback.replace("-", " ").replace("_", " ").strip()
 
 
+# INTERNAL_DOC_ROOTS are the compshare-docs directories that hold published
+# documentation. "content/" is the Next.js App Router layout the site migrated to
+# (revision 0cd491da); "pages/" is the Nextra layout it migrated from, kept so an
+# older pinned revision still builds.
+#
+# public/action_md/ is deliberately NOT here. Its eight API markdown files are
+# referenced by nothing in the repository at either revision, they duplicate
+# content/gpus/instance/*.mdx, and the URL this module derived for them
+# (/docs/gpus/action/<CamelCase>) answers 404 on the live site while the
+# lowercase content/ pages answer 200 — so every chunk built from them carried a
+# dead citation for content that was already in the corpus twice.
+INTERNAL_DOC_ROOTS = ("content/", "pages/")
+
+# Documentation extensions. .mdx is load-bearing: at revision 0cd491da the
+# migration rewrote every API reference page to MDX, so 118 of 232 documents
+# would be invisible to a .md-only scan.
+DOC_SUFFIXES = (".md", ".mdx")
+
+
 def public_docs_url(relative: str) -> str | None:
     rel = relative.replace("\\", "/")
-    if rel.startswith("pages/"):
-        rel = rel[len("pages/") :]
-    elif rel.startswith("public/action_md/"):
-        rel = "gpus/action/" + rel[len("public/action_md/") :]
+    for root in INTERNAL_DOC_ROOTS:
+        if rel.startswith(root):
+            rel = rel[len(root) :]
+            break
     else:
         return None
-    if rel.lower().endswith(".md"):
-        rel = rel[:-3]
+    for suffix in DOC_SUFFIXES:
+        if rel.lower().endswith(suffix):
+            rel = rel[: -len(suffix)]
+            break
     return "https://www.compshare.cn/docs/" + rel.strip("/")
 
 
 def collect_internal_docs(root: Path) -> list[SourceDocument]:
     docs: list[SourceDocument] = []
-    for path in sorted(root.rglob("*.md")):
+    candidates = sorted(
+        path for suffix in DOC_SUFFIXES for path in root.rglob(f"*{suffix}")
+    )
+    unknown_components: dict[str, str] = {}
+    for path in candidates:
         rel = path.relative_to(root).as_posix()
         if rel.startswith(".git/") or rel in {"README.md", "CONSOLE_DOCS_AUDIT.md"}:
             continue
-        if not (rel.startswith("pages/") or rel.startswith("public/action_md/")):
+        if not rel.startswith(INTERNAL_DOC_ROOTS):
             continue
-        text = clean_public_text(path.read_text(encoding="utf-8", errors="replace"))
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        for name in unknown_mdx_components(raw):
+            unknown_components.setdefault(name, rel)
+        text = clean_public_text(raw)
         if len(text.strip()) < 40:
             continue
         docs.append(SourceDocument(
@@ -306,6 +373,16 @@ def collect_internal_docs(root: Path) -> list[SourceDocument]:
             root=root,
             absolute_path=path,
         ))
+    if unknown_components:
+        listed = ", ".join(f"<{name}> ({rel})" for name, rel in sorted(unknown_components.items()))
+        raise ValueError(
+            "compshare-docs introduced MDX block components this pipeline does not "
+            f"classify: {listed}. Decide per component whether its tags are layout "
+            "(add to MDX_LAYOUT_COMPONENTS so only the tags are dropped and the body "
+            "is kept) or content, then rebuild. Failing closed here is deliberate: "
+            "the alternative is tag text flowing into chunks and being embedded, "
+            "retrieved and cited as if it were documentation."
+        )
     return docs
 
 
@@ -884,6 +961,36 @@ QUESTION_HEADING_RE = re.compile(
 )
 
 
+# Topic mixing in coalesced chunks is REAL and deliberately NOT fixed here.
+#
+# The rule below merges any two adjacent sections that share only their H1, so a
+# chunk keeps the heading of the section that OPENED it while later, unrelated
+# topics ride along invisible to title, heading_path and question_patterns —
+# matchable only through body text, in a vector they share with another subject.
+# Two shipped examples: v2-resource_purchase-15e832a82bdfedbb is titled
+# 查看账户活动记录 and also holds ## 学生权限限制 and ## FAQ（学生常见问题）;
+# v2-resource_purchase-0b932f89a95bcff9 is titled 操作说明 (under 功能二：邀请成员)
+# and also holds ## 功能三：预算分配.
+#
+# Two replacement rules were measured over all 232 documents, counting sections
+# whose body contains a heading at or above their own depth:
+#
+#	rule                     sections  median runes  <200 runes  mixed
+#	same H1 (this one)            364          2149          40     86
+#	siblings or direct child      643           808         125    142
+#	strict descendant only       1641           264         658     32
+#
+# Sibling merging makes the target metric WORSE — merging at the same depth is
+# what puts same-depth headings in one section. Descendant-only does fix it, and
+# fragments the corpus 4.5x to a 264-rune median, which pulls directly against
+# raising MAX_CONTENT_RUNES_FOR_EMB to 4000 in this same rebuild: one change gives
+# the dense leg more text per chunk while the other takes it away, and afterwards
+# neither is attributable.
+#
+# So this needs its own change with a retrieval eval behind it, not a ride-along
+# on a source sync. The numbers above are the starting point.
+
+
 def coalesce_sections(sections: list[tuple[list[str], str]]) -> list[tuple[list[str], str]]:
     """Join adjacent subordinate sections when they form one retrieval unit."""
     out: list[tuple[list[str], str]] = []
@@ -1100,6 +1207,7 @@ def build_chunks(
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     chunks: list[dict[str, Any]] = []
     skipped_duplicates = 0
+    skipped_headings_only = 0
     seen_content: set[str] = set()
     for doc in documents:
         text, media = inject_asset_notes(doc, asset_notes)
@@ -1112,6 +1220,9 @@ def build_chunks(
                 content = content.strip()
                 if len(content) < 10:
                     continue
+                if not has_body_beyond_headings(content):
+                    skipped_headings_only += 1
+                    continue
                 digest = sha256_bytes(content.encode("utf-8"))
                 if digest in seen_content:
                     skipped_duplicates += 1
@@ -1121,7 +1232,7 @@ def build_chunks(
                 stable = sha256_bytes(f"{doc.source_id}\x1f{doc.source_path}\x1f{section_index}\x1f{part_index}\x1f{digest}".encode("utf-8"))[:16]
                 prefix = "ext-v2" if doc.source_origin.startswith("external_") else "v2"
                 chunk_title = title if part_index == 1 else f"{title}（{part_index}）"
-                question_patterns = _question_patterns(chunk_title, heading_path, area, doc.source_path, content)
+                question_patterns = _question_patterns(chunk_title, heading_path, area)
                 row: dict[str, Any] = {
                     "acl": "customer_safe",
                     "asset_refs": _asset_refs_for_content(media, content),
@@ -1150,30 +1261,65 @@ def build_chunks(
                     row["compatibility"] = doc.compatibility
                 chunks.append(row)
     chunks.sort(key=lambda item: item["chunk_id"])
-    return chunks, {"chunk_count": len(chunks), "duplicate_content_skipped": skipped_duplicates}
+    return chunks, {
+        "chunk_count": len(chunks),
+        "duplicate_content_skipped": skipped_duplicates,
+        "headings_only_skipped": skipped_headings_only,
+    }
 
 
-def _question_patterns(title: str, heading_path: list[str], area: str, source_path: str = "", content: str = "") -> list[str]:
-    values = [title, "怎么" + title, title + "怎么办", " ".join(heading_path), area.replace("_", " ")]
-    haystack = (title + " " + " ".join(heading_path) + " " + source_path + " " + content[:1200]).lower()
-    location = (title + " " + " ".join(heading_path) + " " + source_path).lower()
-    disk_excerpt = content[:2000]
-    disk_billing_source = (
-        any(token in location for token in ("计费概览", "磁盘计费", "硬盘计费", "operation/charge/bill"))
-        or bool(re.search(r"系统盘.{0,100}(?:免费|100\s*G(?:B)?)|(?:免费|100\s*G(?:B)?).{0,100}系统盘", disk_excerpt, re.DOTALL | re.IGNORECASE))
-    )
-    if disk_billing_source:
-        values.extend(["磁盘空间怎么收费", "系统盘免费额度", "系统盘100GB为什么还收费", "数据盘收费", "100GB 原始空间免费吗"])
-    if "coding plan" in haystack or "code plan" in haystack:
-        values.extend(["删除 Coding Plan 包", "Coding Plan 套餐管理", "Coding Plan 支持退款吗", "Coding Plan 不支持退款", "Coding Plan 单次调用为什么扣多次", "不同模型额度倍率"])
-    if any(token in haystack for token in ("checkcompshareresourcecapacity", "describeavailablecompshareinstancetypes", "资源可用性", "可用机型")):
-        values.extend(["一直暂无资源是什么情况", "怎么检查库存", "Normal 状态一定有库存吗", "ResourceEnough", "SoldOut"])
+def _question_patterns(title: str, heading_path: list[str], area: str) -> list[str]:
+    """Structural metadata that labels a chunk, never invented question text.
+
+    question_patterns is not a free field. compshare-kb joins it into the BM25
+    "patterns" field AND into the text that is embedded and reranked
+    (retrieval_scoring.go, chunkRepr), so anything placed here is scored as
+    though the source document said it.
+
+    Two kinds of entry were removed for that reason:
+
+    Templated questions. "怎么" + title and title + "怎么办" were appended to every
+    chunk, producing strings the docs never contain — "怎么AttachCompshareDisk —
+    挂载已有云盘" — which dilute the patterns field on every chunk equally while
+    matching no real query.
+
+    Hand-written question lists. Three keyword rules injected curated phrasings
+    for disk billing, Coding Plan and resource capacity ("一直暂无资源是什么情况",
+    "Normal 状态一定有库存吗", …). They encode one author's guess at how users ask
+    about three topics out of the whole corpus, they are invisible to anyone
+    reading the source document, and they made those three topics rank on
+    phrasings their text does not support while every other topic got nothing.
+    Query-side understanding belongs in the planner, which sees the actual
+    question; the corpus side should describe what the document says.
+
+    What remains is derived from the document itself: its heading, its position
+    in the heading tree, and its product area.
+    """
+    values = [title, " ".join(heading_path), area.replace("_", " ")]
     out: list[str] = []
     for value in values:
         value = value.strip()
         if value and value not in out:
             out.append(value[:200])
     return out[:20]
+
+
+def has_body_beyond_headings(content: str) -> bool:
+    """Reject a chunk whose text is nothing but heading lines.
+
+    A section that got split so that its body went elsewhere leaves behind a
+    chunk like "## 控制台常见报错提示" and nothing else. It answers no question,
+    but it competes for retrieval like any other chunk: it embeds as a short,
+    topic-pure vector, which makes it an excellent cosine match for exactly the
+    query whose answer is in the sibling chunk it was severed from — so it wins
+    a top-3 slot and spends it saying only that the topic exists. 16 of 544
+    internal chunks and 10 of 1200 external ones were in this state.
+    """
+    for line in content.splitlines():
+        line = line.strip()
+        if line and not HEADING_RE.match(line):
+            return True
+    return False
 
 
 def _asset_refs_for_content(media: list[dict[str, Any]], content: str) -> list[dict[str, Any]]:
