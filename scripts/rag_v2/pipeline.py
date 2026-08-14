@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import collections
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timezone
@@ -12,7 +13,7 @@ import re
 import shutil
 import tempfile
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 import zipfile
@@ -620,7 +621,16 @@ class ModelVerseClient:
         max_tokens: int = 1200,
         timeout: int = 240,
         retries: int = 3,
+        accept: Callable[[dict[str, Any]], bool] | None = None,
     ) -> dict[str, Any]:
+        """Call the model and cache the answer.
+
+        `accept` decides whether a schema-valid response actually answered. The
+        HTTP retry above only fires on exceptions, so a 200 carrying an empty
+        answer used to be cached and returned as if it were a description. A
+        rejected response is retried and, if it never improves, returned
+        UNCACHED — caching it would make one bad minute permanent.
+        """
         cache_path = self._cache_path(model=model, prompt=prompt, image=image)
         cached = self.cached_json(model=model, prompt=prompt, image=image)
         if cached is not None:
@@ -651,21 +661,29 @@ class ModelVerseClient:
             method="POST",
         )
         last_error: Exception | None = None
+        payload: dict[str, Any] | None = None
         for attempt in range(retries + 1):
             try:
                 with urlopen(request, timeout=timeout) as response:
                     raw = json.loads(response.read().decode("utf-8"))
-                break
             except Exception as exc:  # noqa: BLE001 - retried then surfaced to release gate
                 last_error = exc
                 if attempt == retries:
                     raise
                 time.sleep(2 ** attempt)
-        else:  # pragma: no cover
+                continue
+            payload = json.loads(raw["choices"][0]["message"]["content"])
+            if accept is None or accept(payload):
+                cache_path.write_text(
+                    json.dumps({"payload": payload}, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                return payload
+            if attempt == retries:
+                break
+            time.sleep(2 ** attempt)
+        if payload is None:  # pragma: no cover - only reachable if the loop never ran
             raise RuntimeError("ModelVerse request failed") from last_error
-        content_raw = raw["choices"][0]["message"]["content"]
-        payload = json.loads(content_raw)
-        cache_path.write_text(json.dumps({"payload": payload}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return payload
 
 
@@ -847,7 +865,10 @@ def describe_assets(
             try:
                 payload = client.cached_json(model=model, prompt=prompt, image=legacy_image_url) if legacy_image_url else None
                 if payload is None:
-                    payload = client.json_chat(model=model, prompt=prompt, image=image_input, max_tokens=4000)
+                    payload = client.json_chat(
+                        model=model, prompt=prompt, image=image_input, max_tokens=4000,
+                        accept=vl_payload_answered,
+                    )
             except Exception:
                 if not fallback_model:
                     raise
@@ -857,11 +878,21 @@ def describe_assets(
                     prompt=fallback_prompt,
                     image=image_input,
                     max_tokens=2500,
+                    accept=vl_payload_answered,
                 )
                 used_model = fallback_model
             required = {"description", "visible_text", "controls", "relations", "confidence", "visual_type", "include_in_rag"}
             if set(payload) != required:
                 raise ValueError("VL response schema mismatch")
+            # A non-answer that survived every retry is a VL failure that happened
+            # to return HTTP 200. Route it down the same path as a thrown one so
+            # an internal image blocks the release instead of vanishing from the
+            # corpus, and so the report names it.
+            if not vl_payload_answered(payload):
+                raise ValueError(
+                    "VL returned no description after retries "
+                    f"(confidence={payload.get('confidence')!r}, visible_text=0 items)"
+                )
             note = AssetNote(
                 asset_id=asset_id,
                 source_path=doc.source_path,
@@ -938,6 +969,39 @@ def describe_assets(
         "failures": failures,
     }, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return notes, failures
+
+
+def vl_payload_answered(payload: dict[str, Any]) -> bool:
+    """Did the VL model actually look at the image, or just return the shape?
+
+    The schema check downstream only asserts the seven keys are present. A
+    response can satisfy it and say nothing:
+
+        {"description": "图片", "visible_text": [], "controls": [],
+         "relations": [], "confidence": 0.0, "visual_type": "unknown",
+         "include_in_rag": false}
+
+    That non-answer then removes the image from the corpus, because a note with
+    include_in_rag=false renders as the empty string. Measured on the two builds
+    of this corpus: confidence is bimodal, either 0.0 or >=0.5, with exactly one
+    value in between across 3698 model-answered notes. In the shipped build 33 of
+    1847 (1.8%) landed on 0.0; in the rebuild 858 of 1851 (46.4%) did, all with
+    empty visible_text, while a lone un-batched call for the same image at the
+    same time returned the full description. So this reads as the endpoint
+    shedding work under the build's fan-out, not as a judgment about the image.
+
+    A genuinely decorative image is NOT caught here: those come back with a real
+    description and confidence, and set include_in_rag=false on their own. The
+    combination below — no confidence AND no extracted text — is the model
+    declining to answer.
+    """
+    try:
+        confidence = float(payload.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if confidence > 0.0:
+        return True
+    return bool([item for item in (payload.get("visible_text") or []) if str(item).strip()])
 
 
 def inject_asset_notes(doc: SourceDocument, notes: dict[tuple[str, str, str], AssetNote]) -> tuple[str, list[dict[str, Any]]]:
@@ -1102,11 +1166,19 @@ def plan_document_units(doc: SourceDocument, text: str) -> list[tuple[list[str],
     return [(path, section, "topic_section") for path, section in coalesce_sections(sections)]
 
 
+# Counts how each long document was split. The planner failing produced no
+# signal at all before this: the build reported chunk counts, which look the
+# same whether a semantic plan or a rune-counter drew the boundaries.
+SEMANTIC_PLAN_STATS: collections.Counter[str] = collections.Counter()
+
+
 def semantic_parts(text: str, *, client: ModelVerseClient | None, model: str) -> list[str]:
     if len(text) <= TARGET_CONTENT_RUNES:
+        SEMANTIC_PLAN_STATS["short_enough_no_split"] += 1
         return [text.strip()]
     blocks = _semantic_blocks(text)
     if len(blocks) <= 1:
+        SEMANTIC_PLAN_STATS["unsplittable_hard_split"] += 1
         return _hard_split(text, TARGET_CONTENT_RUNES)
     lock_path: Path | None = None
     if client is not None:
@@ -1117,9 +1189,27 @@ def semantic_parts(text: str, *, client: ModelVerseClient | None, model: str) ->
             locked = json.loads(lock_path.read_text(encoding="utf-8"))
             groups = locked.get("groups")
             if groups is None:
+                # Counted here too, not just on the path that writes a lock. On a
+                # warm tree almost every document is answered by its lock, so a
+                # counter that only fires past this point reports on a handful of
+                # documents and reads as if the rest were planned.
+                # Bucket by block count as well. A lock written before reasons
+                # were recorded is ambiguous, but a document with >40 blocks
+                # would have been mechanical by rule anyway, so the <=40 bucket
+                # is the part that may be a planner failure worth retrying.
+                reason = locked.get("reason")
+                if reason is None:
+                    reason = "no_reason_recorded_" + ("gt40_blocks" if len(blocks) > 40 else "le40_blocks")
+                SEMANTIC_PLAN_STATS[f"locked_mechanical:{reason}"] += 1
                 return _pack_blocks(blocks, TARGET_CONTENT_RUNES)
             if _valid_groups(groups, len(blocks)):
+                SEMANTIC_PLAN_STATS["locked_planned"] += 1
                 return ["\n\n".join(blocks[i] for i in group).strip() for group in groups]
+    # Why the mechanical fallback was taken, so the lock records a decision
+    # rather than just an outcome. A null lock is permanent — it is consulted
+    # before the model on every later build — so "the planner was never asked"
+    # and "the planner errored once" must not be written the same way.
+    fallback_reason = "too_many_blocks" if len(blocks) > 40 else None
     if client is not None and len(blocks) <= 40:
         compact = [{"id": i, "text": block[:800]} for i, block in enumerate(blocks)]
         prompt = (
@@ -1134,12 +1224,36 @@ def semantic_parts(text: str, *, client: ModelVerseClient | None, model: str) ->
                 planned = ["\n\n".join(blocks[i] for i in group).strip() for group in groups]
                 if all(len(part) <= MAX_CONTENT_RUNES for part in planned):
                     if lock_path is not None:
-                        lock_path.write_text(json.dumps({"groups": groups}, sort_keys=True) + "\n", encoding="utf-8")
+                        lock_path.write_text(
+                            json.dumps({"groups": groups}, sort_keys=True) + "\n", encoding="utf-8"
+                        )
+                    SEMANTIC_PLAN_STATS["planned"] += 1
                     return planned
-        except Exception:
-            pass
-    if lock_path is not None:
-        lock_path.write_text('{"groups":null}\n', encoding="utf-8")
+                fallback_reason = "part_over_max_runes"
+            else:
+                fallback_reason = "invalid_groups"
+        except Exception as exc:  # noqa: BLE001 - classified below, not swallowed
+            fallback_reason = f"planner_error:{type(exc).__name__}"
+    elif client is None:
+        # plan_document_units deliberately calls in with no client and
+        # model="deterministic-boundary" to split an over-long section on a
+        # fixed rule. That is a design choice, not a missing dependency, and it
+        # should not read like one in the report.
+        fallback_reason = (
+            "deterministic_boundary_pass" if model == "deterministic-boundary" else "no_client"
+        )
+
+    SEMANTIC_PLAN_STATS[fallback_reason or "unknown"] += 1
+    # A transient planner error is not a decision. Locking it would deny this
+    # document a semantic plan on every future build, indistinguishably from a
+    # document that was deliberately left mechanical — which is how 28 of the 67
+    # locks committed with the shipped corpus came to be null.
+    transient = fallback_reason is not None and fallback_reason.startswith("planner_error")
+    if lock_path is not None and not transient:
+        lock_path.write_text(
+            json.dumps({"groups": None, "reason": fallback_reason}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     return _pack_blocks(blocks, TARGET_CONTENT_RUNES)
 
 
