@@ -46,8 +46,32 @@ jobs:
       # table" from "enable swap" could reach production with CI green. Both files are
       # stdlib-only, self-contained, and exit non-zero on the first failure, so this costs
       # about a second and needs no dependency install.
-      - name: ssh-ops guardrails (classification + redaction)
+      #
+      # The SDK is installed for ONE reason: test_harness.py's INV-9 checks against the REAL
+      # build_options — that `tools`, `setting_sources` and `skills` are all empty in the object
+      # the harness actually ships, and that the pinned SDK still gives `skills=[]` the meaning
+      # those asserts assume. Without it that block prints SKIPPED and the job stays green while
+      # the one invariant that keeps a control-plane built-in out of a customer instance goes
+      # unchecked. Pinned to the same version as requirements.txt — an unpinned install would
+      # silently test a different SDK than production runs. paramiko is deliberately NOT
+      # installed: ssh_transport imports it lazily, so the offline suites do not need it.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install the pinned Agent SDK (for the INV-9 real-options check)
+        run: pip install claude-agent-sdk==0.2.106
+
+      # All six suites, not two: the skill-deletion assertions (`skill-tool-no-longer-exists`,
+      # `skills-directory-is-gone`) live in test_write_mode.py, and a gate that runs only some of
+      # the files invites the next invariant to be written into an ungated one.
+      - name: ssh-ops harness suites (guardrails, INV-9, redaction, write mode)
         working-directory: deploy/ssh_ops_harness
         run: |
           python3 test_guardrails.py
           python3 test_harness.py
+          python3 test_write_mode.py
+          python3 test_policy_readonly.py
+          python3 test_clip.py
+          python3 test_confirm_loop.py

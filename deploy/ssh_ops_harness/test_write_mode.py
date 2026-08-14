@@ -210,32 +210,37 @@ check("write-tool-desc-drops-false-shape-clause",
 check("write-tool-desc-teaches-detach", "> /path/to/log 2>&1 &" in harness.tool_description(True))
 check("write-tool-desc-says-nohup-insufficient", "`nohup` alone does not" in harness.tool_description(True))
 
-# --- instance-repair is GONE (2026-08-08) --------------------------------------------------------
-# It existed to arbitrate one contradiction: instance-triage is read-only THROUGHOUT (H1, opening job
-# definition, section-4 verdict template), so a write-authorized run following it faithfully produced
-# 「请授权我执行安全修复」 after repair was already authorized. That arbitration then moved OUT of the
-# skills entirely — SYSTEM_PROMPT_WRITE names no skill at all (`write-prompt-names-no-skill` above).
-# What was left was a 6.9 KB playbook that nothing told the model to open and that the only
-# write-mode prompt could not refer to: unreachable by construction, not merely unloaded.
+# --- BOTH skills are GONE: instance-repair 2026-08-08, instance-triage 2026-08-14 ----------------
+# instance-repair existed to arbitrate one contradiction: instance-triage was read-only THROUGHOUT
+# (H1, opening job definition, section-4 verdict template), so a write-authorized run following it
+# faithfully produced 「请授权我执行安全修复」 after repair was already authorized. That arbitration
+# then moved OUT of the skills entirely — SYSTEM_PROMPT_WRITE names no skill at all
+# (`write-prompt-names-no-skill` above) — leaving a 6.9 KB playbook nothing told the model to open.
 #
-# The earlier "keeping the files costs nothing" note was true about COST and wrong about the question
-# it was preserving. The unresolved A/B it wanted to protect was about instance-TRIAGE (files removed
-# and the prompt mention removed in the same change, so the cause was ambiguous). That skill is still
-# here and still staged. Deleting the repair one moves no variable in that experiment.
-check("readonly-skills-unchanged", harness.skills_for(False) == ["instance-triage"])
-check("write-skills-no-longer-add-repair", harness.skills_for(True) == ["instance-triage"])
+# instance-triage was different and is the harder case to argue, so state it precisely. It WAS
+# reachable: a probe with these exact options (Skill absent from allowed_tools, no permission
+# callback) loaded it and quoted its first heading verbatim. What never happened is the model
+# choosing to. Two independent censuses — 21 tool_use / 0 Skill, then 89 over 11 runs / 0 Skill, the
+# second while the read-only prompt still said `Load the instance-triage skill FIRST` — say that
+# given a symptom and a tool that acts, the model acts. A playbook that only opens when it is the
+# only permitted task is not a diagnostic asset in this lane.
+#
+# The cost is stated rather than waved away: 11 KB of GPU/service/resource triage knowledge was never
+# measured against a run that lacked it, and now never can be. Against that, all four observed
+# correct diagnoses ran with zero skills loaded. Reviving the content means a task-prompt injection —
+# a different mechanism with a different measurement — not restoring this file.
+check("skills-are-gone-from-the-module", not hasattr(harness, "skills_for") and not hasattr(harness, "SKILLS"))
+check("skills-directory-is-gone",
+      not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(harness.__file__)), "skills")))
 check("readonly-prompt-has-no-repair-skill", "instance-repair" not in harness.system_prompt(False))
-check("repair-skill-file-is-gone",
-      not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(harness.__file__)),
-                                      "skills", "instance-repair")))
-# The read-only prompt no longer tells the model to load a skill either. That sentence instructed an
-# action the census shows never happens (89 tool calls over 11 runs, 0 Skill), and a prompt that
-# asserts a playbook was consulted invites answering as though one had been.
+# Neither prompt may tell the model to load a playbook that no longer exists — an instruction to open
+# a missing document is worse than the one it replaced, since it invites answering as though one had.
 check("readonly-prompt-does-not-claim-skill-load",
       "skill" not in harness.system_prompt(False).lower())
-# ...but the skill is still AVAILABLE. Not claiming it loads is different from removing the tool that
-# could load it, and the difference is what keeps the never-run injection experiment cheap.
-check("skill-tool-still-offered", harness.TOOLS_BASE == ["Skill"])
+# The Skill TOOL goes with them. It was the single permitted built-in, justified only by "skills are
+# how the playbook reaches the model"; with no playbook that justification is empty, and INV-9 is
+# back to its original posture — no built-in exists on the control-plane host.
+check("skill-tool-no-longer-exists", harness.TOOLS_BASE == [])
 
 # --- the lane repairs what it was asked about, and recommends the rest (2026-07-31) --------------
 # Two live frontend runs went past the request. On one the lane moved /workspace/ComfyUI aside and
@@ -295,16 +300,15 @@ check("repair-rule-nohup-insufficient-survives", "`nohup` alone does not" in _td
 check("repair-rule-own-failed-attempts-survives",
       "INCLUDING any that failed" in _wp and "labelled as your own attempt" in _wp)
 
-# Staging is the real boundary, not the `skills=` list: the CLI discovers skills by walking up from
-# cwd, so a repair playbook left on disk is reachable by a read-only run — a card that says 只读排查
-# over an agent that has been handed a repair procedure.
+# The working root is the real boundary, and it outlived the skills. The CLI discovers content by
+# walking UP from cwd, so anything left on disk near it is reachable by a read-only run — that is how
+# a repair playbook could once end up under a card that says 只读排查. Nothing is staged now, and BOTH
+# modes must leave the root empty: a mode-dependent file here would be exactly that bug again.
 _cwd = os.getcwd()
 try:
-    for allow, want in ((False, ["instance-triage"]),
-                        (True, ["instance-triage"])):
-        root = harness.stage_skills(allow)
-        staged = sorted(os.listdir(os.path.join(root, ".claude", "skills")))
-        check(f"staged-skills-match-mode::allow={allow}", staged == want)
+    for allow in (False, True):
+        root = harness.stage_clean_workdir(allow)
+        check(f"working-root-empty-in-both-modes::allow={allow}", os.listdir(root) == [])
         shutil.rmtree(root, ignore_errors=True)
 finally:
     os.chdir(_cwd)

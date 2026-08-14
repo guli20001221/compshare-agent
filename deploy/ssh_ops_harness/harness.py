@@ -52,6 +52,11 @@ ALLOWED_TOOLS = ["mcp__ssh_ops__ssh_exec"]
 DISALLOWED_TOOLS = [
     "Bash", "BashOutput", "KillShell", "Read", "Write", "Edit", "NotebookEdit",
     "Glob", "Grep", "WebSearch", "WebFetch", "Task", "TodoWrite", "ToolSearch",
+    # "Skill" joined the denylist on 2026-08-14 with the deletion of the last playbook. It is the
+    # third independent bar (tools=[] removes it by existence, skills=[] empties the listing), kept
+    # because those two are SDK-shaped and this one is not: it holds even if a future SDK changes
+    # what an empty `tools` or `skills` means.
+    "Skill",
 ]
 
 SYSTEM_PROMPT = (
@@ -67,9 +72,11 @@ SYSTEM_PROMPT = (
 # The `Load the instance-triage skill FIRST` sentence was DELETED on 2026-08-08. It was an
 # instruction to perform an action the model provably never performs — the same 21-tool_use / 0-Skill
 # run recorded below — so it was not merely inert: a prompt that asserts a playbook has been consulted
-# invites the model to answer as though it had one. The skill is still STAGED and still discoverable
-# through the Skill tool; what is gone is the claim that it gets loaded. Nothing measured is lost:
-# diagnosis was correct in 4/4 observed runs with zero skills loaded.
+# invites the model to answer as though it had one. On 2026-08-14 the skill itself followed: with
+# nothing naming it, a playbook the model never elects to open is not a fallback, it is a decoy. This
+# prompt, the tool descriptions and the server-injected platform facts are now the whole of what the
+# in-box agent is told. Nothing measured is lost: diagnosis was correct in 4/4 observed runs with zero
+# skills loaded, which is every observed run.
 #
 # The prompt is deliberately minimal and environment-agnostic: it must NOT assert the OS or that a GPU
 # exists. CompShare runs varied Linux images, Windows instances, and a diskless "no-GPU" (无卡) mode, so
@@ -80,14 +87,14 @@ SYSTEM_PROMPT = (
 # chars and only fails at ~12000 with an instant exit-1 — an OS/argv-length limit, not an initialize
 # timeout. Clarity, not byte-count, is the constraint.)
 
-# Write-enabled variant, selected only when the handshake carries allow_writes. `instance-triage` is
-# reused BYTE-IDENTICALLY so read-only runs stay exactly as measured — but that skill is read-only
-# THROUGHOUT, not in one sentence: its H1, its opening job definition and above all its section-4
-# verdict template ("you must never imply you ran them or offer to run them yourself"). One override
-# clause in a ~1.5k-char system prompt does not beat 15k chars of skill, and the observed failure is
-# precisely the template executed faithfully: 「请授权我执行安全修复」 after the repair was already
-# authorized. So write mode loads a SECOND skill that replaces section 4 and names itself the winner
-# — a contradiction the model can resolve by a stated rule, not by weighing tone.
+# Write-enabled variant, selected only when the handshake carries allow_writes. Its history is worth
+# keeping because it is the argument that eventually deleted both playbooks: `instance-triage` was
+# read-only THROUGHOUT — its H1, its opening job definition and above all its section-4 verdict
+# template ("you must never imply you ran them or offer to run them yourself") — so a write-authorized
+# run that loaded it produced 「请授权我执行安全修复」 for a repair already authorized, the template
+# executed faithfully. The first fix was a SECOND skill that replaced section 4 and named itself the
+# winner. Then the census below showed neither was ever loaded, so the contradiction had never been
+# arbitrated at all — it had been arbitrated in a file nobody opened.
 #
 # 2026-07-29, MEASURED, and it changes where rules belong: an instrumented live run logged every
 # tool_use block, and across 21 turns the model called `ssh_exec` 21 times and `Skill` ZERO times.
@@ -98,9 +105,10 @@ SYSTEM_PROMPT = (
 # hold has to live here — not in SKILL.md. What is inlined is deliberately NOT the playbook (11k of
 # the skill's 15k is GPU/service/resource triage knowledge, and diagnosis was correct in all four
 # observed runs with zero skills loaded — that content has never been missed). It is only the three
-# behaviours the model provably gets WRONG on its own. The skill files are kept, not deleted: they are
-# the material for a task-prompt injection if we ever measure that path, and we have never once run
-# WITH them loaded, so "not missed" is not the same as "worthless".
+# behaviours the model provably gets WRONG on its own. (The skill files were kept for another two
+# weeks on the argument that "not missed" is not "worthless" — they were material for a task-prompt
+# injection if we ever measured that path. Nobody did, nothing pointed at them, and a second census
+# repeated the first: 0/89. They were deleted on 2026-08-14 rather than carried indefinitely.)
 #
 # Then that inlining was MEASURED TOO, and two of the three rules moved out again:
 #   * The launcher rule ("use the image's own launcher, not main.py") was stated here and IGNORED —
@@ -141,10 +149,11 @@ SYSTEM_PROMPT_WRITE = (
 )
 
 
-# The description of the ONE tool the model gets. Of the three places that tell it
-# what it may do — this, SYSTEM_PROMPT_WRITE above, and the instance-triage skill —
-# this is the one it trusts, because a tool description IS the contract for what
-# that tool does. Making the system prompt write-aware and leaving this saying
+# The description of the ONE tool the model gets. Of the places that told it what it
+# may do — this, SYSTEM_PROMPT_WRITE above, and once the instance-triage skill — this
+# is the one it trusts, because a tool description IS the contract for what that tool
+# does. (The skill placed third and was deleted; between the other two, the tool
+# description won every measured contest.) Making the system prompt write-aware and leaving this saying
 # "Read-only commands only" produced exactly the failure you would predict: a
 # write-enabled run diagnosed the box correctly, found the right fix, and then
 # reported 「当前 SSH 诊断接口仅允许只读命令，无法直接执行启动/修改操作」 — reading
@@ -616,28 +625,46 @@ def preflight_probe(conn):
     return _preflight_reason(res, port=(conn or {}).get("port"), host=(conn or {}).get("host"))
 
 
-TOOLS_BASE = ["Skill"]                                   # see assert_single_tool
+# Empty, and back to the original posture: NO built-in tool exists. The lane's only tool is the
+# MCP ssh_exec. `Skill` sat here from 2026-07 until the last playbook was deleted (see below); with
+# no skill to load, keeping the tool would leave a control-plane built-in switched on for nothing.
+TOOLS_BASE = []
 
 
 def assert_single_tool(opts) -> None:
-    """INV-9: fail CLOSED unless the harness exposes EXACTLY ssh_exec plus the text-only Skill tool,
-    with every OTHER built-in stripped. A built-in Bash/Read here would run on the LOCAL control-plane
-    host and bypass the SSH guardrails entirely (the spike's #1 safety bug).
+    """INV-9: fail CLOSED unless the harness exposes EXACTLY ssh_exec and NO built-in tool at all.
+    A built-in Bash/Read here would run on the LOCAL control-plane host and bypass the SSH guardrails
+    entirely (the spike's #1 safety bug).
 
     `tools` is the load-bearing off-switch, asserted FIRST: per the SDK it is the base set of built-ins
     that EXIST, and anything absent from it cannot run at all. `allowed_tools` only grants auto-approval
     (a built-in NOT listed there still EXISTS), and `disallowed_tools` is a hand-enumerated denylist a
     future SDK built-in could slip past — both are defense-in-depth ON TOP of `tools`, never a substitute.
 
-    Why `Skill` is permitted (relaxed from the original `tools=[]`): skills are how the diagnostic
-    playbook reaches the model, and a probe confirmed `tools=[]` removes the Skill tool by existence, so
-    the skill never loads. `Skill` only reads a bundled SKILL.md and injects TEXT — it cannot execute.
-    With Bash/Read still non-existent, an adversarial probe ordering local execution produced zero local
-    tool calls (the model reported it had only ssh_exec + Skill), so the control-plane boundary holds."""
+    `Skill` was the one permitted exception while a playbook existed to load. It is now REFUSED like
+    every other built-in: `tools=[]` removes the Skill tool by existence (probed), and with the last
+    SKILL.md deleted there is nothing for it to read. Re-adding it means re-adding a skill AND a
+    measurement that the model loads it — the two rounds of evidence below say it does not on its own.
+
+    `setting_sources` must be EMPTY. It was `["project"]` solely so the CLI could discover the staged
+    skill by walking up from cwd; that same walk is how the repo's CLAUDE.md and the operator's
+    ~/.claude config leaked into a customer-facing agent (both verified live). With no skill to find,
+    loading no filesystem settings at all is the tighter and more honest setting — and it makes that
+    leak structurally impossible instead of dependent on the staging root staying clean.
+
+    `skills` must be EXACTLY `[]`, and omitting it is NOT equivalent. Quoting the pinned SDK
+    (claude-agent-sdk 0.2.106, types.py): "``None`` (default): no SDK auto-configuration. The CLI's
+    own defaults still apply, so this is **not** 'skills off' — to suppress every skill from the
+    listing, use ``[]``." `[]` sends an explicit empty filter in the initialize request
+    (`_internal/query.py`: the field is sent only when it is a list), while `None` sends nothing.
+    Note the coupling the same SDK adds: `_apply_skills_defaults` returns early ONLY for `None`, so
+    with a list it falls through to "if setting_sources is None: setting_sources = ['user',
+    'project']" — passing `skills=[]` while leaving setting_sources unset would silently load the
+    operator's ~/.claude. Both are asserted here, together, for that reason."""
     tools = getattr(opts, "tools", "MISSING")
     if tools != TOOLS_BASE:
         raise SystemExit(
-            f"INV-9: tools must be exactly {TOOLS_BASE} — every other built-in must not EXIST "
+            f"INV-9: tools must be exactly {TOOLS_BASE} — no built-in may EXIST "
             f"(allowed_tools grants auto-approval, not existence), got {tools!r}")
     allowed = list(getattr(opts, "allowed_tools", None) or [])
     if allowed != ALLOWED_TOOLS:
@@ -646,32 +673,33 @@ def assert_single_tool(opts) -> None:
     missing = [t for t in DISALLOWED_TOOLS if t not in disallowed]
     if missing:
         raise SystemExit(f"INV-9: built-in tools not stripped, missing from disallowed_tools: {missing}")
-    # "project" is required for the CLI to discover the staged skill. It must be ONLY that: "user"/"local"
-    # would pull in the operator's own ~/.claude config. Skill discovery walks up from cwd, which is why
-    # stage_skills() puts the staging root outside both the repo and $HOME (see its docstring).
-    if list(getattr(opts, "setting_sources", None) or []) != ["project"]:
-        raise SystemExit("INV-9: setting_sources must be exactly ['project'] (never 'user'/'local')")
+    if list(getattr(opts, "setting_sources", None) or []) != []:
+        raise SystemExit("INV-9: setting_sources must be empty (no 'project'/'user'/'local' settings)")
+    skills = getattr(opts, "skills", "MISSING")
+    if skills != []:
+        raise SystemExit(
+            "INV-9: skills must be exactly [] — None means 'no SDK auto-configuration, the CLI's own "
+            "defaults still apply', which is NOT skills-off, and any non-empty value re-adds the "
+            f"Skill tool to allowed_tools; got {skills!r}")
 
 
-SKILLS = ["instance-triage"]
-# `instance-repair` was DELETED on 2026-08-08, file and all. It was written to arbitrate a
-# contradiction — the read-only triage skill's section-4 verdict template telling a write-authorized
-# run to ask for authorization it already had — and then the fix for that contradiction moved into
-# SYSTEM_PROMPT_WRITE, which names no skill at all (pinned: `write-prompt-names-no-skill`). So write
-# mode staged a 6.9 KB playbook that nothing instructed the model to open and that the write prompt
-# could not even refer to. Unreachable by construction, not merely unused.
+# Both bundled playbooks are now DELETED, `instance-repair` on 2026-08-08 and `instance-triage`
+# (15.8 KB) on 2026-08-14. The repair one was unreachable by construction: SYSTEM_PROMPT_WRITE names
+# no skill at all, so nothing could instruct the model to open it.
 #
-# `instance-triage` stays: it is still offered through the Skill tool, and unlike the repair skill it
-# has never been superseded — it has simply never been measured, because no observed run has ever
-# loaded it. Deleting it would settle that question by making it unanswerable.
-SKILLS_WRITE = list(SKILLS)
-_BUNDLED_SKILLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
-
-
-def skills_for(allow_writes: bool):
-    return list(SKILLS_WRITE if allow_writes else SKILLS)
-
-
+# `instance-triage` was reachable and still went unused, which is the stronger finding. The Skill tool
+# WORKS — a probe with these exact options loaded it and quoted its first heading back verbatim, even
+# though `Skill` is not in `allowed_tools` and no permission callback is wired. What never happened is
+# the model ELECTING to load it: 0 `Skill` calls across 11 observed runs / 89 tool_use blocks, and
+# that census ran while the read-only prompt still said `Load the instance-triage skill FIRST`. Given
+# a real symptom and a tool that acts on the box, the model acts; it does not go read a playbook. A
+# probe only loads it when ordered to, as its only task, with ssh explicitly forbidden.
+#
+# So the lane now diagnoses from the two system prompts, the tool descriptions, the platform facts
+# the server injects as reference context, and the model's own knowledge. That is what the four
+# observed correct diagnoses already ran on — every one of them had zero skills loaded. The honest
+# cost of deleting: the 11 KB of GPU/service/resource triage knowledge in that file was never shown
+# to be missed, and now never can be. Reviving it means a task-prompt injection, not a skill.
 def _claude_md_ancestors(start: str):
     """Every CLAUDE.md discoverable by walking up from `start` — what would get injected as context."""
     found, d = [], os.path.realpath(start)
@@ -686,45 +714,106 @@ def _claude_md_ancestors(start: str):
         d = parent
 
 
-def stage_skills(allow_writes: bool = False) -> str:
-    """Copy this mode's bundled skills into a clean staging root and chdir there. Returns the root.
+def _is_under(path: str, base: str) -> bool:
+    """True when `path` is inside `base`. False — never an exception — when they cannot be compared.
 
-    The CLI discovers BOTH skills and CLAUDE.md by walking up from cwd. Running in-place would inject
-    this repo's CLAUDE.md (its whole architecture doc) into an agent whose verdict is shown to the
-    CUSTOMER, and staging under $HOME injects the operator's personal CLAUDE.md — both verified live.
-    So the staging root must sit outside the repo AND outside $HOME; on Windows the system TEMP is
-    inside the user profile, hence the volume-root fallback.
+    `os.path.commonpath` raises ValueError on different Windows drives (and on mixed absolute /
+    relative input). A TEMP on D: with a profile on C: is an ordinary configuration, and letting that
+    raise would abort the diagnosis before it starts — the caller is choosing a directory, not
+    validating one, so "cannot be compared" must mean "not contained", not "crash".
     """
-    home = os.path.realpath(os.path.expanduser("~"))
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(base)]) == os.path.realpath(base)
+    except ValueError:
+        return False
 
-    def under_home(p):
-        return os.path.commonpath([os.path.realpath(p), home]) == home
+
+def _stage_candidates(tmp: str, home: str, tree: str):
+    """Directories to try as the PARENT of the staging root, best first.
+
+    The list must contain a SHARED, writable temp directory that is neither the configured TEMP nor
+    the volume root, because both of those can be unavailable at once: a TEMP relocated into the
+    repository (`TMPDIR=./tmp`, a CI runner, a container) is rejected by the leak check, and the
+    volume root is not writable for an unprivileged user on Linux — CI proved that by refusing to
+    run at all when it was the only escape. So the platform's conventional temp directories are named
+    explicitly rather than reached through `tempfile`, which would just hand back the poisoned one.
+
+    The volume-root directory stays LAST-but-one because it is the only escape on the ordinary
+    Windows layout, where TEMP lives under the user profile and the profile carries ~/.claude/CLAUDE.md.
+    Containment against $HOME / the tree only ORDERS the list — it never accepts or rejects anything;
+    that is the leak check's job in stage_clean_workdir.
+    """
+    cands = [tmp]
+    if os.name == "nt":
+        cands.append(os.path.join(os.environ.get("SystemRoot") or "C:\\Windows", "Temp"))
+    else:
+        # /var/tmp as well as /tmp: a hardened image may mount /tmp noexec or tiny, and the CLI
+        # writes its session state under cwd.
+        cands.extend(["/tmp", "/var/tmp"])
+    cands.append(os.path.join(os.path.splitdrive(os.path.abspath(tmp))[0] + os.sep, ".sshops-stage"))
+
+    seen, preferred, last_resort = set(), [], []
+    for c in cands:
+        key = os.path.normcase(os.path.abspath(c))
+        if key in seen:
+            continue
+        seen.add(key)
+        (last_resort if (_is_under(c, home) or _is_under(c, tree)) else preferred).append(c)
+    return preferred + last_resort
+
+
+def stage_clean_workdir(allow_writes: bool = False) -> str:
+    """Create an EMPTY working root with NO discoverable CLAUDE.md above it, chdir there, return it.
+
+    It no longer stages anything — the bundled skills are gone — but the chdir is not optional and
+    must not be folded away with them. The CLI walks UP from cwd looking for context, so running in
+    place injects this repo's CLAUDE.md (its whole architecture doc) into an agent whose verdict is
+    shown to the CUSTOMER, and running under $HOME injects the operator's personal CLAUDE.md — both
+    verified live. `setting_sources=[]` is the primary defence and this is the second: a leak needs
+    BOTH to fail, which is only true if this one actually holds.
+
+    So the acceptance test is the INVARIANT ITSELF — no CLAUDE.md reachable from the chosen root —
+    not a proxy for it. The proxy version checked candidates against $HOME only, which meant a TEMP
+    configured inside the repository (`TMPDIR=./tmp`, a CI runner, a container that relocates TEMP)
+    was accepted as safe and exposed every ancestor CLAUDE.md; and it reported the leak it did detect
+    as a stderr warning, on a stream the supervisor only surfaces when the run FAILS. A candidate
+    that leaks is now rejected and the next one tried; if none is clean the run REFUSES. Containment
+    checks remain, but only to order the candidates (see _stage_candidates, which is also what
+    guarantees there IS a next one when TEMP itself is the poisoned directory).
+
+    allow_writes is kept in the signature (unused) because the caller passes the mode and a future
+    per-mode staging decision belongs here, not at the call site.
+    """
+    home = os.path.expanduser("~")
+    # The deployed tree, not just this directory: production runs the harness out of
+    # /opt/compshare-agent/deploy/ssh_ops_harness, and it is the whole tree above it that carries
+    # CLAUDE.md files.
+    tree = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     tmp = tempfile.gettempdir()
-    candidates = [tmp] if not under_home(tmp) else []
-    candidates.append(os.path.join(os.path.splitdrive(os.path.abspath(tmp))[0] + os.sep, ".sshops-stage"))
-    candidates.append(tmp)                                # last resort: correctness over tidiness
 
-    for base in candidates:
+    rejected = []
+    for base in _stage_candidates(tmp, home, tree):
         try:
             os.makedirs(base, exist_ok=True)
             root = tempfile.mkdtemp(prefix="sshops-", dir=base)
-            break
-        except OSError:
+        except OSError as exc:
+            # Record it: an unwritable candidate is the OTHER way this ends in a refusal, and the
+            # first version of this message dropped those silently — CI's refusal named only the one
+            # leaking candidate and read as if the volume root had never been tried at all.
+            rejected.append(f"{base} -> unwritable ({exc.__class__.__name__})")
             continue
-    else:
-        raise SystemExit("could not create a skill staging directory")
+        leaks = _claude_md_ancestors(root)
+        if not leaks:
+            os.chdir(root)
+            return root
+        # Reachable context nobody reviewed. Drop this root and try the next candidate.
+        rejected.append(f"{root} -> {leaks}")
+        shutil.rmtree(root, ignore_errors=True)
 
-    dest = os.path.join(root, ".claude", "skills")
-    os.makedirs(dest)
-    for name in skills_for(allow_writes):
-        shutil.copytree(os.path.join(_BUNDLED_SKILLS, name), os.path.join(dest, name))
-    leaks = _claude_md_ancestors(root)
-    if leaks:                                             # non-fatal: visible in stderr, never in the verdict
-        print(f"warning: CLAUDE.md reachable from skill staging root, will be injected: {leaks}",
-              file=sys.stderr)
-    os.chdir(root)
-    return root
+    raise SystemExit(
+        "refusing to run: no working directory free of an inherited CLAUDE.md; tried " + "; ".join(
+            rejected or ["no candidate"]))
 
 
 # Turn budget for the in-box agent. It was briefly raised to 80 to survive refusal-burn, but the
@@ -752,13 +841,13 @@ def resolve_claude_cli() -> str:
 def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, allow_writes=False):
     from claude_agent_sdk import ClaudeAgentOptions
     opts = ClaudeAgentOptions(
-        tools=list(TOOLS_BASE),                          # INV-9: only Skill exists; no Bash/Read/Write
+        tools=list(TOOLS_BASE),                          # INV-9: no built-in exists (no Skill/Bash/Read/Write)
         system_prompt=system_prompt(allow_writes),
         mcp_servers={"ssh_ops": server},
         allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
-        skills=skills_for(allow_writes),                 # the playbooks (staged, text-only)
-        setting_sources=["project"],                     # required for skill discovery; see stage_skills
+        setting_sources=[],                              # load NO filesystem settings; see assert_single_tool
+        skills=[],                                       # explicit skills-OFF; None would keep CLI defaults
         max_turns=max_turns,
         model=model,
         cli_path=resolve_claude_cli(),                    # never silently use the SDK's older bundled CLI
@@ -785,9 +874,9 @@ async def main():
         raise SystemExit("no handshake on stdin")
     set_conn(read_handshake(raw))
 
-    # Must run BEFORE the SDK spawns the CLI: it chdirs to the staging root the CLI will scan.
-    # set_conn() above has already latched _ALLOW_WRITES, so the staged set matches the mode.
-    stage_skills(_ALLOW_WRITES)
+    # Must run BEFORE the SDK spawns the CLI: it chdirs to the empty root the CLI would otherwise
+    # scan upward from. set_conn() above has already latched _ALLOW_WRITES.
+    stage_clean_workdir(_ALLOW_WRITES)
 
     # The task rides the stdin handshake, NOT argv — argv is visible to `ps` on the host, and the task
     # is free-form operator/model text that must stay off the process table (INV-3/4).
