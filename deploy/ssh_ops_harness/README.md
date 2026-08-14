@@ -31,6 +31,7 @@
 ```bash
 /opt/miniforge3/envs/py313/bin/python -m pip install -r /opt/compshare-agent/deploy/ssh_ops_harness/requirements.txt
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < deploy/migrations/0011_create_ssh_ops_audit.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < deploy/migrations/0013_add_ssh_ops_context_observability.sql
 ```
 
 还需要固定为 `2.1.218` 的 **`claude` CLI**。SDK 自带的 `2.1.185` 会被默认优先选择，所以
@@ -49,12 +50,43 @@ Python/Claude CLI 子进程的最小环境，不会复用完整的服务进程�
 3. 审计落库：
 
    ```sql
-   SELECT instance_id, phase, disposition, output_bytes, started_at
-   FROM ssh_ops_audit ORDER BY started_at DESC LIMIT 5;
+   SELECT instance_id, phase, disposition,
+          context_schema_version, context_fact_coverage,
+          commands_ran, commands_refused, first_command_class,
+          output_bytes, started_at, finished_at
+   FROM ssh_ops_audit
+   WHERE finished_at IS NOT NULL          -- 只有终态行的 context_* 才是「实际送达」
+   ORDER BY started_at DESC LIMIT 5;
    ```
 
    正常是 `phase=read_write`、`disposition=ok`。表里只有 who / which instance / 何时 / 结果 /
-   字节数，**没有任何存放凭据的列**。
+   字节数和聚合指标，**没有任何存放凭据或原始命令的列**。
+
+   **`finished_at IS NOT NULL` 这个条件不是可选的**：`Begin` 写入的 `started` 行记的是本次
+   **请求**的 schema/coverage（那时 harness 还没启动），`Finish` 才把它改写成**实际生效**的值——
+   harness 没能确认（旧版本、长度上限回退、SDK 在模型出首条消息前就失败）时清零。所以在终态行上，
+   `context_schema_version` 非 0 表示模型这一轮确实是带着版本化参考上下文跑的；`0` 表示没有。而
+   `started` 行只说明「请求过上下文」，把它当送达结果读会高估覆盖率——`Finish` 本身也可能失败
+   （日志里是 `ssh-ops: audit finish failed …`），那种行会永远停在 `started`。
+
+   当前生产值是 **`2`**。`1` 只出现在 Go 二进制回滚到 v2 之前、而 harness 已是新版的混合期：
+   新 harness 仍接受 v1，旧 harness 遇到 v2 会安全降级成 task-only（终态行就是 `0`，不是半份
+   上下文）。两版的差别全在事实键——v1 用一个 `instance.reported_ports` 同时装 Describe 的
+   `Ports` 与 `TcpForwards`，v2 拆成 `platform.instance_port_hints` / `platform.tcp_forwards`，
+   并新增 `instance.declared_software`（**只有名字**：同级的 `URL` 里带活的 Jupyter token）和
+   `catalog.expected_software_ports`（镜像目录的**预期**端口，状态恒为 `reported`，永远不会是
+   `known`）。这四个键任何一个都不证明实例里真的有进程在听——那只有 SSH 查完的
+   `guest.listeners` 能说，它的初值是 `not_observed`。
+
+   `DescribeCompShareSoftwarePort` **不接受实例参数**（只有 Region），返回的是整个区域的目录，
+   靠 `Softwares[].Name` 关联下来才与这台实例有关。**关联不上时事实换一个键**：
+   `catalog.region_port_hints`，围栏文案同步写明"这是未关联到本实例的区域目录，其中的软件并不
+   已知装在这台机器上"。不换键的话，别的镜像的 FileBrowser 端口会以"本实例预期端口"的名义进入
+   提示词，把排查引向一个从没装过的服务。审计里两者也是不同的 coverage 位。
+
+   `context_fact_coverage` 是位掩码，新位只追加不重排（`internal/opscontext/context.go`）。
+   注意 `CoveragePortHints`（16）在 v1 行里同时代表了 forwards，所以**跨版本比较这一位之前先按
+   `context_schema_version` 分组**。
 
 ## 没生效的排查
 

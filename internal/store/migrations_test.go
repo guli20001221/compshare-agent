@@ -207,6 +207,24 @@ func TestHTTPMigrationsCreateSSHOpsAudit(t *testing.T) {
 	assert.NotContains(t, strings.ToLower(ddl), "password")
 }
 
+// TestHTTPMigrationsAddSSHOpsContextObservability pins the columns introduced
+// by 0013. The audit writer references them on every contextual SSH run; a
+// missing column would otherwise make the fail-closed lane refuse after deploy.
+func TestHTTPMigrationsAddSSHOpsContextObservability(t *testing.T) {
+	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0013_add_ssh_ops_context_observability.sql")
+	data, err := os.ReadFile(sqlPath)
+	require.NoError(t, err)
+
+	ddl := string(data)
+	for _, column := range []string{
+		"context_schema_version", "context_fact_coverage", "commands_ran", "commands_refused", "first_command_class",
+	} {
+		assert.Contains(t, ddl, column, "0013 must define column %s", column)
+	}
+	assert.NotContains(t, strings.ToLower(ddl), "password")
+	assert.NotContains(t, strings.ToLower(ddl), "raw_command")
+}
+
 // TestHTTPMigrationsCreateFeishuOAuthTokens pins the schema used by the
 // external-group screenshot adapter. The durable fields must be ciphertexts:
 // a future migration must not accidentally turn the database into a plaintext

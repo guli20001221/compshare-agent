@@ -144,6 +144,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		TurnID:       e.currentTurnID,
 		InstanceID:   instanceID,
 		Task:         task,
+		Context:      e.instanceOpsModelContext(),
 		ConfirmWrite: confirmWrite,
 	}, onProgress)
 	if err != nil {

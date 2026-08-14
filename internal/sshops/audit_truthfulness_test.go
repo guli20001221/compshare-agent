@@ -106,13 +106,13 @@ func TestAbsentOutcomeLineMeansTheBoxWasEntered(t *testing.T) {
 	if len(steps) != 1 {
 		t.Fatalf("steps = %d, want 1", len(steps))
 	}
-	if outcome.Outcome != "" || outcome.ErrClass != "" {
+	if outcome.Outcome != "" || outcome.ErrClass != "" || outcome.ContextApplied {
 		t.Errorf("outcome = %+v, want zero value (entered) when no @@OUTCOME line is present", outcome)
 	}
 }
 
 func TestOutcomeLineIsParsed(t *testing.T) {
-	stream := "@@OUTCOME {\"outcome\":\"preflight_failed\",\"err_class\":\"NoValidConnectionsError\"}\n" +
+	stream := "@@OUTCOME {\"outcome\":\"preflight_failed\",\"err_class\":\"NoValidConnectionsError\",\"context_applied\":false}\n" +
 		"<<<VERDICT>>>\n⚠ 只读诊断未能开始\n<<<END>>>\n"
 	verdict, steps, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil)
 	if err != nil {
@@ -127,8 +127,23 @@ func TestOutcomeLineIsParsed(t *testing.T) {
 	if outcome.ErrClass != "NoValidConnectionsError" {
 		t.Errorf("err_class = %q", outcome.ErrClass)
 	}
+	if outcome.ContextApplied {
+		t.Errorf("context_applied = true, want false for a preflight refusal")
+	}
 	if !strings.Contains(verdict, "未能开始") {
 		t.Errorf("verdict = %q — the @@OUTCOME line must not leak into the answer body", verdict)
+	}
+}
+
+func TestOutcomeLineRecordsContextReceipt(t *testing.T) {
+	stream := "@@OUTCOME {\"outcome\":\"\",\"err_class\":\"\",\"context_applied\":true}\n" +
+		"<<<VERDICT>>>\nGPU 正常\n<<<END>>>\n"
+	_, _, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if outcome.Outcome != "" || !outcome.ContextApplied {
+		t.Errorf("outcome = %+v, want normal run with a context receipt", outcome)
 	}
 }
 

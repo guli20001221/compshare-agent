@@ -49,11 +49,24 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.
 # starts and logs the reason; it does not error.
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0011_create_ssh_ops_audit.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0012_create_feishu_oauth_tokens.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0013_add_ssh_ops_context_observability.sql
 ```
 
 `0012` is required only before enabling `agent.feishu.external_image_oauth`. It
 creates `feishu_oauth_tokens`, which holds AES-GCM ciphertext for the rotating
 delegated Feishu user token; it contains no plaintext access or refresh token.
+
+`0013` is required with the contextual SSH-ops harness. It adds only aggregate
+schema/coverage and command-class columns to `ssh_ops_audit`; it does not store
+the injected user reports, platform fact values, credentials, or raw commands.
+
+In the current production GitLab pipeline, clicking `deploy` does **not** run
+SQL migrations. Before deploying a binary that writes `0013`'s columns, run the
+manual `migrate-feishu-oauth` job from the same `main` pipeline first (the name
+is historical; its migration pod applies every idempotent `*.sql` file from that
+commit's image), then run `deploy`. The ordering matters: without `0013`, the
+fail-closed SSH-ops audit INSERT refuses contextual diagnosis rather than
+entering an unrecorded instance.
 
 Every file is idempotent, so the whole list can be applied to any database
 regardless of how far it already is — a new one, or a deployment still on 0004.
