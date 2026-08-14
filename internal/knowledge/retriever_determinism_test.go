@@ -35,11 +35,12 @@ func TestRetrieverIsDeterministicForAnIdenticalQuery(t *testing.T) {
 	for _, query := range queries {
 		t.Run(query, func(t *testing.T) {
 			var first []string
+			clock := probeClockFor(t, corpus)
 			for run := 0; run < 25; run++ {
 				retriever := NewRetriever(corpus, RetrieverOptions{
 					TopK: 10,
 					Mode: RetrievalModeBM25Only,
-					Now:  determinismProbeNow,
+					Now:  clock,
 				})
 				got := chunkIDsOf(retriever.Retrieve(query, ""))
 				if run == 0 {
@@ -63,7 +64,7 @@ func TestRetrieverIsDeterministicAcrossOneInstance(t *testing.T) {
 	retriever := NewRetriever(corpus, RetrieverOptions{
 		TopK: 10,
 		Mode: RetrievalModeBM25Only,
-		Now:  determinismProbeNow,
+		Now:  probeClockFor(t, corpus),
 	})
 
 	const query = "磁盘空间是如何收费的"
@@ -83,6 +84,38 @@ func chunkIDsOf(result RetrievalResult) []string {
 	return ids
 }
 
-func determinismProbeNow() time.Time {
-	return time.Date(2026, 7, 16, 12, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+// probeClockFor returns a fixed clock that is guaranteed to sit inside the
+// pinned corpus's validity window.
+//
+// These probes need a FIXED clock — a moving one would make a determinism test
+// non-deterministic — but they do not need a PARTICULAR date, only one at or
+// after every chunk's valid_from. A literal cannot know that. This clock was
+// frozen at 2026-07-16 against a corpus stamped valid_from 2026-07-15; the
+// 2026-08-14 rebuild stamped 2026-08-14, chunkActiveAt then rejected all 526
+// chunks as not-yet-valid, and four BM25 probes reported "retrieved nothing".
+// That reads exactly like a corpus that lost its billing documents, and it cost
+// a real investigation to establish that it had not.
+//
+// Deriving the date from the corpus keeps both properties: the corpus is pinned
+// by digest, so max(valid_from) over it is as constant as a literal was, and it
+// cannot fall outside the window on the next rebuild.
+func probeClockFor(t *testing.T, corpus Corpus) func() time.Time {
+	t.Helper()
+	latest := ""
+	for _, chunk := range corpus.Chunks {
+		// ISO-8601 dates order lexicographically.
+		if chunk.ValidFrom > latest {
+			latest = chunk.ValidFrom
+		}
+	}
+	require.NotEmpty(t, latest, "corpus carries no valid_from; the probe clock cannot be derived from it")
+	beijing := time.FixedZone("Asia/Shanghai", 8*60*60)
+	day, err := time.ParseInLocation("2006-01-02", latest, beijing)
+	require.NoError(t, err, "corpus valid_from %q is not a date", latest)
+	// Deriving the clock from the corpus would also hide the one case where
+	// "retrieved nothing" IS the corpus's fault: a chunk stamped valid_from in
+	// the future is invisible in production too, where the clock is real.
+	require.False(t, day.After(time.Now()),
+		"corpus valid_from %s has not arrived yet; production retrieval would return nothing for these chunks", latest)
+	return func() time.Time { return day.Add(12 * time.Hour) }
 }

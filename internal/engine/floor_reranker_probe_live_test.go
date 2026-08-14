@@ -67,7 +67,7 @@ func rerankedProductionRetriever(t *testing.T, cfg *config.Config, corpus knowle
 		EmbeddingModel:   embedModel,
 		Reranker:         testRerankerAdapter{c: rClient},
 		RerankerModel:    "qwen3-reranker-8b",
-		Now:              realCorpusRecallNow,
+		Now:              realCorpusRecallNow(t, corpus),
 	})
 }
 
