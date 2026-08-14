@@ -53,6 +53,40 @@ func TestNewTopicIsQueuedWithoutMentionButReplyIsNot(t *testing.T) {
 	require.Empty(t, service.queue, "topic replies without @bot must not trigger automatic chatter")
 }
 
+func TestTopicCreatorCommentDoesNotAutoReply(t *testing.T) {
+	service := &Service{
+		cfg:     config.FeishuConfig{AutoReplyNewTopics: true},
+		allowed: map[string]struct{}{"oc_topic": {}},
+		queue:   make(chan job, 2),
+		seen:    make(map[string]time.Time),
+	}
+	chatType := "group"
+	chatID := "oc_topic"
+	senderType := "user"
+	messageType := "text"
+	content := `{"text":"补充一下"}`
+	threadID := "omt_topic"
+	rootMessageID := "om_root"
+	otherCommentID := "om_other_comment"
+	creatorCommentID := "om_creator_comment"
+
+	// This event is sent by the topic creator, but it is a comment on another
+	// user's comment. Auto-reply mode must use the topic-root shape rather than
+	// merely accepting every user message from the original author.
+	event := &larkim.P2MessageReceiveV1{
+		Event: &larkim.P2MessageReceiveV1Data{
+			Sender: &larkim.EventSender{SenderType: &senderType},
+			Message: &larkim.EventMessage{
+				MessageId: &creatorCommentID, RootId: &rootMessageID, ParentId: &otherCommentID,
+				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &content,
+				ThreadId: &threadID,
+			},
+		},
+	}
+	require.NoError(t, service.onMessage(context.Background(), event))
+	require.Empty(t, service.queue, "comments must not automatically trigger, even from the topic creator")
+}
+
 func TestTopicReplyIsQueuedWithoutMentionWhenAllMessagesEnabled(t *testing.T) {
 	service := &Service{
 		cfg:     config.FeishuConfig{AutoReplyAllMessages: true},

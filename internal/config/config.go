@@ -78,9 +78,10 @@ type FeishuConfig struct {
 	ProjectID      string   `yaml:"project_id"`
 	UserEmail      string   `yaml:"user_email"`
 	AllowedChatIDs []string `yaml:"allowed_chat_ids"`
-	// AutoReplyNewTopics answers a topic_group root message without requiring
-	// an @ mention when AutoReplyAllMessages is disabled. Replies inside the
-	// topic otherwise still require an @ mention.
+	// AutoReplyNewTopics answers only a topic_group root message (the topic
+	// initiator's standalone post) without requiring an @ mention when
+	// AutoReplyAllMessages is disabled. Replies and comments inside the topic
+	// otherwise still require an @ mention.
 	AutoReplyNewTopics bool `yaml:"auto_reply_new_topics"`
 	// AutoReplyAllMessages answers every user message in an allowlisted group
 	// without requiring an @ mention. It supersedes AutoReplyNewTopics while
