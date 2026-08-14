@@ -9,6 +9,7 @@ monkeypatched so nothing actually connects.
 import os
 import shutil as _shutil
 import sys
+import tempfile as _tempfile
 import time
 import types
 
@@ -529,22 +530,82 @@ check("stage-outside-repo-tree", not harness._is_under(_stage_root, _TREE))
 # accepted it, handing the agent every ancestor CLAUDE.md with nothing but a stderr warning the
 # supervisor shows only when the run FAILS. The invariant is now the acceptance test, so a poisoned
 # TEMP must be rejected and the next candidate used.
+#
+# Run it against an INJECTED fallback rather than whatever the host happens to allow. The first
+# version of this test let the real candidate list run and the GitHub runner failed it: the only
+# escape from a poisoned TEMP was the volume root, `/.sshops-stage`, which an unprivileged user
+# cannot create — so the harness refused, correctly, and the test read the correct refusal as a bug.
+# What is under test here is the mechanism (reject the leaking candidate, take the next one, leave
+# nothing behind), so the "next one" is supplied; whether the platform HAS a usable next one is a
+# separate check, below.
 _cwd_before = os.getcwd()
 _repo_tmp = os.path.join(_TREE, "_test_tmp_inside_repo")
+_clean_base = _tempfile.mkdtemp(prefix="sshops-fallback-")     # made BEFORE TEMP is poisoned
 _saved_gettempdir = harness.tempfile.gettempdir
+_saved_candidates = harness._stage_candidates
+_saved_ancestors = harness._claude_md_ancestors
 try:
     os.makedirs(_repo_tmp, exist_ok=True)
     harness.tempfile.gettempdir = lambda: _repo_tmp
+    harness._stage_candidates = lambda tmp, home, tree: [tmp, _clean_base]
+    # The injected fallback is a real system temp directory, and on Windows that sits under the user
+    # profile — where ~/.claude/CLAUDE.md lives — so on that platform it would leak for real. Report
+    # leaks for the poisoned root only, so the test asserts the same thing on every host.
+    harness._claude_md_ancestors = lambda root: (
+        ["<repo>/CLAUDE.md"] if harness._is_under(root, _repo_tmp) else [])
     _poisoned = harness.stage_clean_workdir()
     check("stage-rejects-a-repo-local-TEMP", not harness._is_under(_poisoned, _TREE))
-    check("stage-still-leak-free-with-poisoned-TEMP", harness._claude_md_ancestors(_poisoned) == [])
+    check("stage-falls-back-to-the-next-candidate", harness._is_under(_poisoned, _clean_base))
+    check("stage-chdir-followed-the-fallback", os.path.realpath(os.getcwd()) == os.path.realpath(_poisoned))
     check("stage-poisoned-TEMP-left-no-root-behind", os.listdir(_repo_tmp) == [])
 finally:
     harness.tempfile.gettempdir = _saved_gettempdir
+    harness._stage_candidates = _saved_candidates
+    harness._claude_md_ancestors = _saved_ancestors
     os.chdir(_cwd_before)
     # rmtree, not rmdir: if this check ever FAILS it is because a root was created in here, and an
     # assertion failure must not leave a directory inside the repository for the next run to find.
     _shutil.rmtree(_repo_tmp, ignore_errors=True)
+    _shutil.rmtree(_clean_base, ignore_errors=True)
+
+# ...and the mechanism is worth nothing unless the REAL list offers somewhere to fall back to. This
+# is the check CI actually needed: with TEMP poisoned, the ordering must lead with a directory
+# outside both the tree and $HOME, and that directory must not be the volume root — the volume root
+# is a Windows-only escape hatch and is unwritable for the user this runs as on Linux.
+_cands = harness._stage_candidates(_repo_tmp, os.path.expanduser("~"), _TREE)
+_volume_root = os.path.join(os.path.splitdrive(os.path.abspath(_repo_tmp))[0] + os.sep, ".sshops-stage")
+_norm = lambda p: os.path.normcase(os.path.abspath(p))
+check("stage-candidates-do-not-lead-with-a-poisoned-TEMP",
+      bool(_cands) and not harness._is_under(_cands[0], _TREE))
+check("stage-candidates-offer-a-shared-temp-before-the-volume-root",
+      _norm(_cands[0]) != _norm(_volume_root))
+check("stage-candidates-still-keep-the-volume-root-as-an-escape",
+      any(_norm(c) == _norm(_volume_root) for c in _cands))
+# The poisoned TEMP is ordered last, never dropped: it is still tried if nothing else works, and the
+# leak check — not this ordering — is what refuses it.
+check("stage-candidates-keep-the-poisoned-TEMP-last", _norm(_cands[-1]) == _norm(_repo_tmp))
+# Not merely "named": at least one out-of-tree candidate must actually be creatable by THIS user on
+# THIS host. A list whose entries all fail to create is exactly the failure CI hit, and naming more
+# of them does not fix it. Probed in order and stopping at the first success, because which one
+# succeeds is a platform detail — that none does is the defect.
+_probe_errors = []
+for _cand in _cands:
+    if harness._is_under(_cand, _TREE):
+        continue
+    try:
+        # makedirs first, exactly as stage_clean_workdir does: the volume-root candidate does not
+        # exist until something creates it, and probing without that step would report a usable
+        # candidate as broken.
+        os.makedirs(_cand, exist_ok=True)
+        _probe = _tempfile.mkdtemp(prefix="sshops-probe-", dir=_cand)
+    except OSError as _exc:
+        _probe_errors.append(f"{_cand}: {_exc.__class__.__name__}")
+        continue
+    _shutil.rmtree(_probe, ignore_errors=True)
+    _probe_errors = None
+    break
+check("stage-has-a-writable-out-of-tree-candidate-on-this-host" + (
+      f" (tried {'; '.join(_probe_errors)})" if _probe_errors else ""), _probe_errors is None)
 
 # ...and the check above is defence-in-depth, not the gate: with the leak test in place, a candidate
 # that slips past containment is rejected anyway, so it passes even if containment alone regresses.

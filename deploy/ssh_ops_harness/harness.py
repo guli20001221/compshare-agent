@@ -728,6 +728,40 @@ def _is_under(path: str, base: str) -> bool:
         return False
 
 
+def _stage_candidates(tmp: str, home: str, tree: str):
+    """Directories to try as the PARENT of the staging root, best first.
+
+    The list must contain a SHARED, writable temp directory that is neither the configured TEMP nor
+    the volume root, because both of those can be unavailable at once: a TEMP relocated into the
+    repository (`TMPDIR=./tmp`, a CI runner, a container) is rejected by the leak check, and the
+    volume root is not writable for an unprivileged user on Linux — CI proved that by refusing to
+    run at all when it was the only escape. So the platform's conventional temp directories are named
+    explicitly rather than reached through `tempfile`, which would just hand back the poisoned one.
+
+    The volume-root directory stays LAST-but-one because it is the only escape on the ordinary
+    Windows layout, where TEMP lives under the user profile and the profile carries ~/.claude/CLAUDE.md.
+    Containment against $HOME / the tree only ORDERS the list — it never accepts or rejects anything;
+    that is the leak check's job in stage_clean_workdir.
+    """
+    cands = [tmp]
+    if os.name == "nt":
+        cands.append(os.path.join(os.environ.get("SystemRoot") or "C:\\Windows", "Temp"))
+    else:
+        # /var/tmp as well as /tmp: a hardened image may mount /tmp noexec or tiny, and the CLI
+        # writes its session state under cwd.
+        cands.extend(["/tmp", "/var/tmp"])
+    cands.append(os.path.join(os.path.splitdrive(os.path.abspath(tmp))[0] + os.sep, ".sshops-stage"))
+
+    seen, preferred, last_resort = set(), [], []
+    for c in cands:
+        key = os.path.normcase(os.path.abspath(c))
+        if key in seen:
+            continue
+        seen.add(key)
+        (last_resort if (_is_under(c, home) or _is_under(c, tree)) else preferred).append(c)
+    return preferred + last_resort
+
+
 def stage_clean_workdir(allow_writes: bool = False) -> str:
     """Create an EMPTY working root with NO discoverable CLAUDE.md above it, chdir there, return it.
 
@@ -744,7 +778,8 @@ def stage_clean_workdir(allow_writes: bool = False) -> str:
     was accepted as safe and exposed every ancestor CLAUDE.md; and it reported the leak it did detect
     as a stderr warning, on a stream the supervisor only surfaces when the run FAILS. A candidate
     that leaks is now rejected and the next one tried; if none is clean the run REFUSES. Containment
-    checks remain, but only to order the candidates.
+    checks remain, but only to order the candidates (see _stage_candidates, which is also what
+    guarantees there IS a next one when TEMP itself is the poisoned directory).
 
     allow_writes is kept in the signature (unused) because the caller passes the mode and a future
     per-mode staging decision belongs here, not at the call site.
@@ -756,16 +791,17 @@ def stage_clean_workdir(allow_writes: bool = False) -> str:
     tree = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     tmp = tempfile.gettempdir()
-    candidates = [] if (_is_under(tmp, home) or _is_under(tmp, tree)) else [tmp]
-    candidates.append(os.path.join(os.path.splitdrive(os.path.abspath(tmp))[0] + os.sep, ".sshops-stage"))
-    candidates.append(tmp)                                # last resort, still subject to the leak check
 
     rejected = []
-    for base in candidates:
+    for base in _stage_candidates(tmp, home, tree):
         try:
             os.makedirs(base, exist_ok=True)
             root = tempfile.mkdtemp(prefix="sshops-", dir=base)
-        except OSError:
+        except OSError as exc:
+            # Record it: an unwritable candidate is the OTHER way this ends in a refusal, and the
+            # first version of this message dropped those silently — CI's refusal named only the one
+            # leaking candidate and read as if the volume root had never been tried at all.
+            rejected.append(f"{base} -> unwritable ({exc.__class__.__name__})")
             continue
         leaks = _claude_md_ancestors(root)
         if not leaks:
@@ -777,7 +813,7 @@ def stage_clean_workdir(allow_writes: bool = False) -> str:
 
     raise SystemExit(
         "refusing to run: no working directory free of an inherited CLAUDE.md; tried " + "; ".join(
-            rejected or ["no writable candidate"]))
+            rejected or ["no candidate"]))
 
 
 # Turn budget for the in-box agent. It was briefly raised to 80 to survive refusal-burn, but the
