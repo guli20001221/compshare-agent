@@ -14,6 +14,7 @@ func TestStepCarriesTheSpecificRefusalReason(t *testing.T) {
 		`@@STEP {"command":"rm -rf /","tier":"destructive","disposition":"refused","reason":"refused_destructive","exit":null,"bytes":0}`,
 		`@@STEP {"command":"a $(b)","tier":"mutating","disposition":"refused","reason":"refused_form","exit":null,"bytes":0}`,
 		`@@STEP {"command":"pip install x","tier":"mutating","disposition":"refused","reason":"refused_not_approved","exit":null,"bytes":0}`,
+		`@@STEP {"command":"systemctl restart x","tier":"mutating","disposition":"refused","reason":"refused_confirmation_timeout","exit":null,"bytes":0}`,
 		"<<<VERDICT>>>", "结论", "<<<END>>>",
 	}, "\n") + "\n"
 
@@ -21,7 +22,7 @@ func TestStepCarriesTheSpecificRefusalReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	want := []string{"refused_destructive", "refused_form", "refused_not_approved"}
+	want := []string{"refused_destructive", "refused_form", "refused_not_approved", "refused_confirmation_timeout"}
 	if len(steps) != len(want) {
 		t.Fatalf("want %d steps, got %d", len(want), len(steps))
 	}

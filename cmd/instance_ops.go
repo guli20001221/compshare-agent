@@ -92,7 +92,13 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 	// which would look to the user like the model failing to fix anything.
 	var onConfirm sshops.ConfirmFunc
 	if req.ConfirmWrite != nil {
-		onConfirm = func(c sshops.ConfirmRequest) bool { return req.ConfirmWrite(c.Command) }
+		onConfirm = func(c sshops.ConfirmRequest) sshops.ConfirmDecision {
+			decision := req.ConfirmWrite(c.Command)
+			return sshops.ConfirmDecision{
+				Approved:       decision.Confirmed,
+				TerminalReason: decision.TerminalReason,
+			}
+		}
 	}
 
 	res, err := r.diag.DiagnoseWithContext(ctx, r.describer, owner, req.InstanceID, req.Task, req.Context, onStep, onConfirm)

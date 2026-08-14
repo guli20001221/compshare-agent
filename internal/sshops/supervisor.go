@@ -51,13 +51,27 @@ type ConfirmRequest struct {
 	Command string `json:"command"`
 }
 
-// ConfirmFunc asks the operator about one write. It must block until answered, and must return
-// false for anything that is not an explicit yes (timeout, disconnect, decline).
-type ConfirmFunc func(ConfirmRequest) bool
+// ConfirmDecision is the terminal result of a per-command confirmation card.
+//
+// A bool alone made three materially different outcomes indistinguishable: the user declined, the
+// card timed out, or the client disconnected. All must deny the write, but collapsing them caused a
+// timeout to be rendered as "you declined" in the activity stream. TerminalReason is the existing
+// transport-level closed-set spelling (user_declined | timeout | client_disconnect |
+// delivery_failed | broker_cancelled); an empty or unknown value deliberately degrades to the legacy
+// "no approval received" reason in the harness.
+type ConfirmDecision struct {
+	Approved       bool
+	TerminalReason string
+}
+
+// ConfirmFunc asks the user about one write. It must block until answered, and returns the terminal
+// decision so the harness can preserve WHY an unapproved command did not execute.
+type ConfirmFunc func(ConfirmRequest) ConfirmDecision
 
 type confirmReply struct {
-	ID       string `json:"id"`
-	Approved bool   `json:"approved"`
+	ID             string `json:"id"`
+	Approved       bool   `json:"approved"`
+	TerminalReason string `json:"terminal_reason,omitempty"`
 }
 
 // Result is what the supervisor returns to the engine. Output is the harness's scrubbed VERDICT body
@@ -232,11 +246,15 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 	// answer serialises one approval round-trip: the parser is single-threaded, so a request is
 	// always fully answered before the next line is read.
 	answer := func(req ConfirmRequest) {
-		approved := false
+		decision := ConfirmDecision{}
 		if onConfirm != nil { // no confirmer wired is not "allow" — it is a lane with no human on it
-			approved = onConfirm(req)
+			decision = onConfirm(req)
 		}
-		reply, mErr := json.Marshal(confirmReply{ID: req.ID, Approved: approved})
+		reply, mErr := json.Marshal(confirmReply{
+			ID:             req.ID,
+			Approved:       decision.Approved,
+			TerminalReason: strings.TrimSpace(decision.TerminalReason),
+		})
 		if mErr != nil {
 			return // the harness blocks, then EOFs on the deferred close and denies
 		}

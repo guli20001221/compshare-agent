@@ -18,7 +18,7 @@ class ConfirmingIO:
 
     def __init__(self, decide, corrupt=None):
         self.out = io.StringIO()
-        self.decide = decide          # callable(command) -> bool
+        self.decide = decide          # callable(command) -> bool | (bool, terminal_reason)
         self.corrupt = corrupt        # callable(reply_dict) -> str, to forge a bad reply
         self.requests = []
 
@@ -36,7 +36,17 @@ class ConfirmingIO:
             return ""                 # nothing pending -> EOF, which must read as a denial
         req = json.loads(matches[-1])
         self.requests.append(req)
-        reply = {"id": req["id"], "approved": bool(self.decide(req["command"]))}
+        decision = self.decide(req["command"])
+        if isinstance(decision, tuple):
+            approved, terminal_reason = decision
+        else:
+            approved = bool(decision)
+            # A false response from this test double models an explicit user
+            # choice. EOF/malformed replies below remain the ambiguous fallback.
+            terminal_reason = "" if approved else "user_declined"
+        reply = {"id": req["id"], "approved": bool(approved)}
+        if terminal_reason:
+            reply["terminal_reason"] = terminal_reason
         if self.corrupt is not None:
             return self.corrupt(reply)
         return json.dumps(reply) + "\n"

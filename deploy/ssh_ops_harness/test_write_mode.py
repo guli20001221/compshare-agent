@@ -254,12 +254,28 @@ for _name, _needle in [
     ("states the scope", "Repair the fault you diagnosed and nothing else"),
     ("names redeploying an app", "re-downloading an application"),
     ("names taking a service down", "taking down a service the user did not ask about"),
-    ("routes it to the operator rather than forbidding it", "let the operator decide"),
+    ("routes it to the user rather than forbidding it", "let the user decide"),
 ]:
     check(f"write-tool-desc-bounds-scope::{_name}", _needle in harness.tool_description(True))
 # Read-only mode cannot overreach — it executes nothing — so its description stays unchanged.
 check("readonly-tool-desc-unchanged-by-scope-rule",
       "Repair the fault" not in harness.tool_description(False))
+
+# A form refusal is recoverable by changing syntax, unlike a denied/expired
+# confirmation. The model must receive that distinction directly from its two
+# authoritative prompt surfaces, and neither should call the user an "operator".
+_WRITE_DESC = harness.tool_description(True)
+_WRITE_PROMPT = harness.system_prompt(True)
+check("write-tool-desc::reformats-form-refusals",
+      "command FORM rejected" in _WRITE_DESC and "rewrite it as a supported single plain command" in _WRITE_DESC)
+check("write-system-prompt::reformats-form-refusals",
+      "command FORM rejected" in _WRITE_PROMPT and "reformulate it as a supported single plain command" in _WRITE_PROMPT)
+check("write-system-prompt::does-not-manualize-unapproved-writes",
+      "do not tell the user to run them manually" in _WRITE_PROMPT)
+check("write-system-prompt::labels-waiting-for-confirmation",
+      "等待你确认" in _WRITE_PROMPT and "unapproved command into a manual user task" in _WRITE_PROMPT)
+check("write-prompts::name-the-user-not-an-operator",
+      "operator" not in _WRITE_DESC and "operator" not in _WRITE_PROMPT)
 
 # --- the three load-bearing rules live in the SYSTEM PROMPT, not in a skill ----------------------
 # Measured 2026-07-29: an instrumented live run logged 21 tool_use blocks — 21 ssh_exec, 0 Skill.

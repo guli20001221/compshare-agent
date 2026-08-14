@@ -81,10 +81,27 @@ check("unconfirmable-says-it-is-not-a-permissions-problem", "not\na permissions 
 # --- declined -> does NOT run, and settles as refused on the wire --------------------------------
 res, entry, _ = dispatch(WRITE, decide=lambda c: False)
 check("declined-does-not-run", res["executed"] is False)
-check("declined-disposition", entry["disposition"] == "refused_not_approved")
+check("declined-disposition", entry["disposition"] == "refused_user_declined")
 check("declined-wire", harness._wire_disposition(entry["disposition"]) == "refused")
 # The agent must not go hunting for an equivalent command; a decline is an answer, not an obstacle.
 check("declined-tells-agent-not-to-retry", "Do not" in res["text"] and "retry" in res["text"])
+
+# A timeout is also a denial, but it is not a decline. Preserve that fact all
+# the way to the step disposition so the activity stream can say what happened.
+res, entry, _ = dispatch(WRITE, decide=lambda c: (False, "timeout"))
+check("timeout-does-not-run", res["executed"] is False)
+check("timeout-disposition", entry["disposition"] == "refused_confirmation_timeout")
+check("timeout-wire", harness._wire_disposition(entry["disposition"]) == "refused")
+check("timeout-is-not-worded-as-decline",
+      "timed out" in res["text"] and "declined" not in res["text"])
+
+# A rolling upgrade can pair this harness with an older Go supervisor that only
+# sends {id, approved}. It must stay fail-closed and honestly generic rather
+# than inventing a user decision.
+res, entry, _ = dispatch(WRITE, decide=lambda c: (False, ""))
+check("legacy-no-reason-does-not-run", res["executed"] is False)
+check("legacy-no-reason-stays-generic", entry["disposition"] == "refused_not_approved")
+check("legacy-no-reason-does-not-claim-decline", "no explicit approval" in res["text"])
 
 # --- every ambiguity is a denial ----------------------------------------------------------------
 # These are the cases where "assume yes" would be catastrophic and silent: the parent died, the

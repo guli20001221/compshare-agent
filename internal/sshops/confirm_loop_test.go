@@ -23,7 +23,7 @@ for cmd in ["systemctl restart ollama", "kill 6934"]:
         results.append("EOF")
         continue
     r = json.loads(line)
-    results.append("%s:%s" % (r.get("id"), r.get("approved")))
+    results.append("%s:%s:%s" % (r.get("id"), r.get("approved"), r.get("terminal_reason")))
 print("<<<VERDICT>>>")
 print("REPLIES " + "|".join(results))
 print("<<<END>>>")
@@ -50,9 +50,12 @@ func TestSupervisorAnswersConfirmRequestsOnStdin(t *testing.T) {
 	var asked []string
 	sup := newConfirmSup(t)
 	res, err := sup.Run(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "t", nil,
-		func(req ConfirmRequest) bool {
+		func(req ConfirmRequest) ConfirmDecision {
 			asked = append(asked, req.Command)
-			return req.Command != "kill 6934" // approve the restart, decline the kill
+			if req.Command == "kill 6934" {
+				return ConfirmDecision{TerminalReason: "timeout"}
+			}
+			return ConfirmDecision{Approved: true, TerminalReason: "user_confirmed"}
 		})
 	if err != nil {
 		t.Fatalf("run: %v (output=%q)", err, res.Output)
@@ -60,8 +63,8 @@ func TestSupervisorAnswersConfirmRequestsOnStdin(t *testing.T) {
 	if len(asked) != 2 || asked[0] != "systemctl restart ollama" || asked[1] != "kill 6934" {
 		t.Fatalf("confirmer saw %q; the card must carry the literal command, in order", asked)
 	}
-	if !strings.Contains(res.Output, "REPLIES c1:True|c2:False") {
-		t.Fatalf("harness got %q, want c1 approved and c2 declined with matching ids", res.Output)
+	if !strings.Contains(res.Output, "REPLIES c1:True:user_confirmed|c2:False:timeout") {
+		t.Fatalf("harness got %q, want terminal reasons paired with matching ids", res.Output)
 	}
 }
 
