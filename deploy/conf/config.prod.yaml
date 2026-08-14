@@ -4,8 +4,8 @@ extends: config.local.yaml
 
 agent:
   # Keep the public production overlay credential-free. The baseline config
-  # contains the allowlist and Feishu credentials; this enables only each
-  # newly-created topic's root post to be answered without an @ mention.
+  # contains the allowlist and Feishu credentials; this enables each
+  # topic initiator's root post and direct follow-ups without an @ mention.
   feishu:
     auto_reply_new_topics: true
     auto_reply_all_messages: false
