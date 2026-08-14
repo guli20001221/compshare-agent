@@ -206,6 +206,145 @@ migrate-feishu-oauth:
   environment:
     name: production
 
+# Publish the corpus under deploy/kb/ as the active compshare-kb release.
+#
+# This repository is the only place where the corpus and cluster access already
+# coexist: compshare-kb owns the database and the worker binary but does not
+# carry the artifacts, and the artifacts are committed here.  Nothing else
+# writes knowledge into production -- the serving process only reads, and the
+# MCP update tools take at most twenty hand-authored chunks per call -- so
+# without this job a rebuilt corpus stays in git and production keeps answering
+# from the previous release.
+#
+# Deploying compshare-kb does NOT run this.  The two are independent: a deploy
+# swaps the image and leaves the corpus alone; this swaps the corpus and leaves
+# the image alone.
+#
+# If the worker creates the release but publication fails, re-running is
+# rejected by the release id's primary key rather than silently importing
+# twice.  Recover by publishing the existing candidate instead:
+#   kubectl -n prj-ucompshare-prod exec compshare-kb-0 -- \
+#     /usr/local/bin/compshare-kb-worker --action publish --release-id <id>
+import-knowledge-release:
+  stage: deploy
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    KB_STATEFULSET: compshare-kb
+    KB_IMAGE: uhub.service.ucloud.cn/ucompshare-job/compshare-kb:latest
+    KB_RELEASE_ID: kb-release-$CI_COMMIT_SHORT_SHA
+    KB_RELEASE_VERSION: kb.compshare.$CI_COMMIT_SHORT_SHA
+  script:
+    - |
+      set -eu
+      POD="compshare-kb-import-${CI_PIPELINE_ID}"
+      cleanup() {
+        kubectl -n "$NAMESPACE" delete pod "$POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+      }
+      trap cleanup EXIT
+
+      # Pair each corpus with its sidecar through the digest the sidecar
+      # filename carries.  No digest is restated here: a regenerated or
+      # renamed artifact fails this loop instead of importing a vector set
+      # built for different text, and the worker re-checks the same bijection
+      # server-side.  The \r strip makes the hash match on a CRLF checkout too.
+      CP_FILES=""
+      WORKER_ARGS=""
+      for corpus in stage2b_w0 external_w0; do
+        test -f "deploy/kb/$corpus.jsonl"
+        digest=$(tr -d '\r' < "deploy/kb/$corpus.jsonl" | sha256sum | cut -d' ' -f1)
+        sidecar="deploy/kb/embeddings_${digest}_qwen3-embedding-8b.jsonl"
+        if ! test -f "$sidecar"; then
+          echo "no embedding sidecar for deploy/kb/$corpus.jsonl (corpus digest $digest)" >&2
+          exit 1
+        fi
+        echo "$corpus.jsonl $(wc -c < "deploy/kb/$corpus.jsonl") bytes -> $(basename "$sidecar") $(wc -c < "$sidecar") bytes"
+        CP_FILES="$CP_FILES deploy/kb/$corpus.jsonl $sidecar"
+        WORKER_ARGS="$WORKER_ARGS --corpus /work/$corpus.jsonl --embeddings /work/$(basename "$sidecar")"
+      done
+
+      # Read the two settings that decide WHERE this release lands out of the
+      # serving process itself, rather than restating them or re-deriving them
+      # from the manifest: this is the value the query plane is actually using,
+      # and it stays correct if either one later moves into the Secret.  A wrong
+      # knowledge-base name is the one failure mode with no symptom -- the
+      # import succeeds, /healthz keeps reporting the old version, and nothing
+      # logs a complaint.
+      serving_env() {
+        kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- printenv "$1" || true
+      }
+      POSTGRES_HOST=$(serving_env COMPSHARE_KB_POSTGRES_HOST)
+      KNOWLEDGE_BASE=$(serving_env COMPSHARE_KB_KNOWLEDGE_BASE)
+      test -n "$POSTGRES_HOST"
+      test -n "$KNOWLEDGE_BASE"
+      echo "importing $KB_RELEASE_VERSION into knowledge base '$KNOWLEDGE_BASE'"
+
+      sed \
+        -e "s|__IMAGE__|$KB_IMAGE|g" \
+        -e "s|__POD_NAME__|$POD|g" \
+        -e "s|__POSTGRES_HOST__|$POSTGRES_HOST|g" \
+        -e "s|__KNOWLEDGE_BASE__|$KNOWLEDGE_BASE|g" \
+        deploy/k8s/kb-import-pod.yaml \
+        | kubectl -n "$NAMESPACE" apply -f -
+
+      attempt=0
+      until [ "$(kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{.status.phase}')" = "Running" ]; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 60 ]; then
+          kubectl -n "$NAMESPACE" describe pod "$POD" || true
+          echo "import pod did not reach Running" >&2
+          exit 1
+        fi
+        sleep 5
+      done
+
+      for file in $CP_FILES; do
+        base=$(basename "$file")
+        echo "copying $base"
+        kubectl -n "$NAMESPACE" cp "$file" "$POD:/work/$base"
+        want=$(wc -c < "$file")
+        got=$(kubectl -n "$NAMESPACE" exec "$POD" -- sh -c "wc -c < '/work/$base'" | tr -d '[:space:]')
+        if [ "$want" != "$got" ]; then
+          echo "$base copied as $got bytes, expected $want" >&2
+          exit 1
+        fi
+      done
+
+      # WORKER_ARGS is deliberately unquoted: it is a built argument list.
+      # --publish implies --validate, and both run in one transaction, so a
+      # corpus that fails validation never becomes active.
+      kubectl -n "$NAMESPACE" exec "$POD" -- /usr/local/bin/compshare-kb-worker \
+        --action import \
+        --knowledge-base "$KNOWLEDGE_BASE" \
+        --release-id "$KB_RELEASE_ID" \
+        --version "$KB_RELEASE_VERSION" \
+        --publish \
+        $WORKER_ARGS
+
+      # Acceptance is what the SERVING process reports, not what the worker
+      # returned: publication only moves a pointer, and the query plane picks it
+      # up on its own reload interval.
+      attempt=0
+      until kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
+        wget -qO- http://127.0.0.1:8088/healthz | grep -q "\"kb_version\":\"$KB_RELEASE_VERSION\""; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 20 ]; then
+          echo "compshare-kb did not start serving $KB_RELEASE_VERSION within ~100s" >&2
+          kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- wget -qO- http://127.0.0.1:8088/healthz || true
+          kubectl -n "$NAMESPACE" logs "${KB_STATEFULSET}-0" --tail=50 || true
+          exit 1
+        fi
+        sleep 5
+      done
+      echo "compshare-kb is serving $KB_RELEASE_VERSION"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  environment:
+    name: production
+
 deploy:
   stage: deploy
   image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17

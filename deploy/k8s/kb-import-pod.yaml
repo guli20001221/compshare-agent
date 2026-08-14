@@ -1,0 +1,70 @@
+# Manual-only knowledge-release import helper.  It is intentionally not
+# referenced by the normal delivery pipeline; only import-knowledge-release
+# applies it.
+#
+# Why a separate Pod rather than the serving StatefulSet: the compshare-kb image
+# carries the worker binary beside the server, but not the corpus, and the
+# serving Pod runs on a read-only root whose only writable path is a 16Mi tmpfs.
+# The ~100MB of corpus and embedding sidecars cannot be copied into it.  This
+# Pod gives them a writable volume without touching the workload that is
+# answering queries; a failed import leaves the active release untouched.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __POD_NAME__
+  labels:
+    app.kubernetes.io/name: compshare-kb-import
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 1800
+  imagePullSecrets:
+    - name: regcred
+  securityContext:
+    # Without this the emptyDir below is root-owned 0755 and the unprivileged
+    # container user cannot write to it, so `kubectl cp` fails inside tar.
+    fsGroup: 10001
+  containers:
+    - name: import
+      image: __IMAGE__
+      imagePullPolicy: Always
+      # The CI job copies the corpus in and then runs the worker over exec; the
+      # container itself only has to stay up long enough for both.
+      command: ["/bin/sh", "-c", "sleep 1700"]
+      envFrom:
+        - secretRef:
+            name: compshare-kb-env
+      env:
+        # Both of these live in the compshare-kb StatefulSet's own env, NOT in
+        # the compshare-kb-env Secret, so a Pod that only reads the Secret gets
+        # neither.  The CI job reads them off the running StatefulSet instead of
+        # restating them here, because restating the knowledge-base name is the
+        # one mistake this import cannot detect: the worker would create a valid
+        # release under a name nothing serves, print success, and leave the
+        # active pointer where it was.
+        - name: COMPSHARE_KB_POSTGRES_HOST
+          value: "__POSTGRES_HOST__"
+        - name: COMPSHARE_KB_KNOWLEDGE_BASE
+          value: "__KNOWLEDGE_BASE__"
+      volumeMounts:
+        - name: work
+          mountPath: /work
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 2Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        capabilities:
+          drop:
+            - ALL
+  volumes:
+    - name: work
+      emptyDir:
+        sizeLimit: 512Mi
