@@ -7,6 +7,7 @@ credential never reaching the audit/output, and INV-9 (only ssh_exec exposed). T
 monkeypatched so nothing actually connects.
 """
 import os
+import shutil as _shutil
 import sys
 import time
 import types
@@ -24,6 +25,15 @@ def check(name, cond):
     if not cond:
         FAILS.append(name)
         print(f"XX  {name}")
+
+
+def _sdk_importable():
+    """True when the real claude_agent_sdk is installed. The suite is otherwise SDK-free by design."""
+    try:
+        import claude_agent_sdk  # noqa: F401
+        return True
+    except Exception:                                    # noqa: BLE001 — absent or broken install
+        return False
 
 
 # --- handshake parsing: required fields, and the credential goes to a module var, NOT os.environ ---
@@ -357,16 +367,20 @@ check("blocking-command-partial-is-scrubbed", _PW not in _hung.get("partial", ""
 check("transport-keeps-benign", "role pw" in _res["stdout"])
 
 
-# --- INV-9: only ssh_exec + the text-only Skill tool; every other built-in stripped; only the
-# "project" setting source (needed for skill discovery). Fail CLOSED otherwise. ---
-def opts(allowed, disallowed, sources, tools="DEFAULT"):
+# --- INV-9: ssh_exec and NOTHING else — no built-in tool exists and no filesystem setting source is
+# loaded. Fail CLOSED otherwise. `Skill` was the one permitted built-in until the last playbook was
+# deleted (2026-08-14); with nothing to load it is refused like every other built-in, and
+# `setting_sources` (which existed only for skill discovery) is now empty. ---
+def opts(allowed, disallowed, sources, tools="DEFAULT", skills="DEFAULT"):
     if tools == "DEFAULT":
-        tools = list(harness.TOOLS_BASE)                 # valid: only Skill exists, no Bash/Read/Write
+        tools = list(harness.TOOLS_BASE)                 # valid: no built-in exists at all
+    if skills == "DEFAULT":
+        skills = []                                      # valid: explicit skills-off
     return types.SimpleNamespace(tools=tools, allowed_tools=allowed, disallowed_tools=disallowed,
-                                 setting_sources=sources)
+                                 setting_sources=sources, skills=skills)
 
 
-good = opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"])
+good = opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [])
 try:
     harness.assert_single_tool(good)
     check("inv9-accepts-good", True)
@@ -374,25 +388,37 @@ except SystemExit:
     check("inv9-accepts-good", False)
 
 for name, bad in [
-    ("inv9-rejects-extra-allowed", opts(harness.ALLOWED_TOOLS + ["Bash"], harness.DISALLOWED_TOOLS, ["project"])),
-    ("inv9-rejects-missing-disallowed", opts(harness.ALLOWED_TOOLS, ["Read"], ["project"])),
-    ("inv9-rejects-empty-allowed", opts([], harness.DISALLOWED_TOOLS, ["project"])),
-    # setting_sources must be EXACTLY ["project"]: "user"/"local" would pull in the operator's own
-    # ~/.claude config, and [] would stop the CLI discovering the staged skill at all.
+    ("inv9-rejects-extra-allowed", opts(harness.ALLOWED_TOOLS + ["Bash"], harness.DISALLOWED_TOOLS, [])),
+    ("inv9-rejects-missing-disallowed", opts(harness.ALLOWED_TOOLS, ["Read"], [])),
+    ("inv9-rejects-empty-allowed", opts([], harness.DISALLOWED_TOOLS, [])),
+    # Every setting source is now refused, not just "user"/"local": each one makes the CLI walk up
+    # from cwd for settings and CLAUDE.md, which is the leak stage_clean_workdir exists to prevent.
+    # "project" was permitted only while a staged skill had to be discovered.
     ("inv9-rejects-user-source", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["user"])),
+    ("inv9-rejects-project-source", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"])),
     ("inv9-rejects-project-plus-user", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project", "user"])),
-    ("inv9-rejects-empty-sources", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [])),
-    # `tools` is the existence off-switch. Only the exact Skill-only base passes: adding an executing
-    # built-in, None (the SDK default = everything exists), or a missing field (an older SDK without
-    # `tools`) all mean Bash/Read could exist on the CONTROL-PLANE host — each must fail closed.
+    # `tools` is the existence off-switch. Only the empty base passes: an executing built-in, the
+    # text-only Skill tool, None (the SDK default = everything exists), or a missing field (an older
+    # SDK without `tools`) all mean something could exist on the CONTROL-PLANE host — fail closed.
     ("inv9-rejects-tools-with-builtin",
-     opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"], tools=["Skill", "Bash"])),
-    ("inv9-rejects-tools-none", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"], tools=None)),
-    ("inv9-rejects-tools-empty-kills-skill",
-     opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, ["project"], tools=[])),
+     opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], tools=["Bash"])),
+    ("inv9-rejects-tools-readds-skill",
+     opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], tools=["Skill"])),
+    ("inv9-rejects-tools-none", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], tools=None)),
     ("inv9-rejects-tools-missing", types.SimpleNamespace(
         allowed_tools=harness.ALLOWED_TOOLS, disallowed_tools=harness.DISALLOWED_TOOLS,
-        setting_sources=["project"])),
+        setting_sources=[], skills=[])),
+    # `skills` is its own switch and OMITTING IT IS NOT OFF. The pinned SDK documents None as "no SDK
+    # auto-configuration; the CLI's own defaults still apply", and any non-empty value makes the SDK
+    # add `Skill`/`Skill(name)` to allowed_tools for you — so None and a stale list are both refused,
+    # and so is a missing field (an SDK too old to have the option cannot suppress the listing).
+    ("inv9-rejects-skills-none", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], skills=None)),
+    ("inv9-rejects-skills-nonempty",
+     opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], skills=["instance-triage"])),
+    ("inv9-rejects-skills-all", opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [], skills="all")),
+    ("inv9-rejects-skills-missing", types.SimpleNamespace(
+        tools=list(harness.TOOLS_BASE), allowed_tools=harness.ALLOWED_TOOLS,
+        disallowed_tools=harness.DISALLOWED_TOOLS, setting_sources=[])),
 ]:
     try:
         harness.assert_single_tool(bad)
@@ -401,16 +427,169 @@ for name, bad in [
         check(name, True)
 
 
-# The staging root must be reachable-CLAUDE.md-free: the CLI walks up from cwd for both skills AND
-# CLAUDE.md, so a root inside the repo would inject this project's architecture doc — and one under
-# $HOME the operator's personal one — into an agent whose verdict is shown to the customer.
-_stage_root = harness.stage_skills()
-check("stage-skill-present",
-      os.path.isfile(os.path.join(_stage_root, ".claude", "skills", "instance-triage", "SKILL.md")))
+# The working root must be EMPTY and reachable-CLAUDE.md-free: the CLI walks up from cwd, so a root
+# inside the repo would inject this project's architecture doc — and one under $HOME the operator's
+# personal one — into an agent whose verdict is shown to the customer. Nothing is staged into it any
+# more, and "nothing" is asserted: a stray .claude tree here would be discoverable content nobody
+# reviewed. This is the second defence; setting_sources=[] is the first.
+# Everything above asserts assert_single_tool against SYNTHESIZED namespaces, which cannot catch the
+# drift that matters most: build_options quietly constructing options that do not satisfy it. It is
+# fail-closed in production (the assert runs at the end of build_options, before any turn), but a
+# hand-built namespace passing proves nothing about the object the harness actually ships. So build
+# the real one. The CLI path is stubbed — resolve_claude_cli enforces an operator install and is not
+# what is under test here.
+if "claude_agent_sdk" in sys.modules or _sdk_importable():
+    _saved_resolver = harness.resolve_claude_cli
+    _real_opts = None
+    try:
+        harness.resolve_claude_cli = lambda: "stub-claude"
+        _real_opts = harness.build_options(object(), "test-model", 5, False)  # SystemExit on INV-9 drift
+        check("inv9-real-build-options-passes", True)
+    except SystemExit as exc:
+        print(f"XX  inv9-real-build-options-passes: {exc}")
+        FAILS.append("inv9-real-build-options-passes")
+    finally:
+        harness.resolve_claude_cli = _saved_resolver
+
+    # The INV-9 asserts are ours; these two are the SDK BEHAVIOURS they assume. `skills=[]` is only
+    # "off" if the SDK still treats a list as an explicit filter, and it is only SAFE if passing a
+    # list does not resurrect setting_sources — the pinned SDK returns early solely for None, then
+    # falls through to `if setting_sources is None: setting_sources = ["user", "project"]`. Pinning
+    # the assumption here means an SDK bump that changes it fails a test instead of silently loading
+    # the operator's ~/.claude into a customer-facing agent.
+    from claude_agent_sdk import ClaudeAgentOptions as _CAO
+    check("sdk-default-skills-is-not-off", _CAO(skills=None).skills is None)
+    try:
+        from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport as _T
+        _probe = _T.__new__(_T)
+        _probe._options = _real_opts
+        _allowed, _sources = _T._apply_skills_defaults(_probe)
+        check("sdk-does-not-inject-a-skill-tool",
+              not any(a == "Skill" or a.startswith("Skill(") for a in _allowed))
+        check("sdk-does-not-resurrect-setting-sources", _sources == [])
+        # ...and the LAST leg: what the SDK actually puts on the CLI command line. Everything above
+        # stops at the options object and at _apply_skills_defaults, so an SDK that serialized an
+        # empty `tools` or `setting_sources` as an OMITTED flag — which is not "empty", it is
+        # "default", i.e. every built-in exists and every settings file loads — would satisfy every
+        # check so far. INV-9's whole claim is about the process that gets spawned, so assert the
+        # argv. Verified as the gap it closes: making _build_command raise left the suite green.
+        #
+        # mcp_servers is replaced with {} because the real value holds a live SDK MCP server object
+        # that json.dumps cannot serialize; it is not part of what these four flags assert.
+        import dataclasses as _dc
+        _argv = _T(prompt="inv9-argv-probe", options=_dc.replace(_real_opts, mcp_servers={}))._build_command()
+
+        def _flag_value(flag):
+            """The value after `--flag`, or after `--flag=`; None when the flag is absent."""
+            if flag in _argv:
+                i = _argv.index(flag)
+                return _argv[i + 1] if i + 1 < len(_argv) else None
+            for a in _argv:
+                if a.startswith(flag + "="):
+                    return a[len(flag) + 1:]
+            return None
+
+        # `--tools ""` is the empty base set. An ABSENT --tools means the CLI's default set exists,
+        # which is Bash/Read/Write on the CONTROL-PLANE host — the spike's #1 safety bug.
+        check("argv-tools-flag-is-present-and-empty", "--tools" in _argv and _flag_value("--tools") == "")
+        check("argv-tools-is-not-default", "default" != _flag_value("--tools"))
+        # `--setting-sources=` with nothing after it. Absent means user+project settings load, which
+        # is how the repo's CLAUDE.md and the operator's ~/.claude reached a customer-facing agent.
+        check("argv-setting-sources-flag-is-present-and-empty",
+              any(a == "--setting-sources=" for a in _argv))
+        # Exactly the one MCP tool is auto-approved, and no Skill/Skill(name) rode along.
+        check("argv-allowed-tools-is-only-the-ssh-mcp-tool",
+              _flag_value("--allowedTools") == "mcp__ssh_ops__ssh_exec")
+        # The denylist is the third bar and must actually reach the process, Skill included.
+        _denied = (_flag_value("--disallowedTools") or "").split(",")
+        check("argv-disallowed-tools-carries-skill", "Skill" in _denied)
+        check("argv-disallowed-tools-carries-the-executors",
+              all(t in _denied for t in ("Bash", "Read", "Write")))
+    except Exception as exc:            # noqa: BLE001 — deliberately broad; see below
+        # Deliberately a FAILURE, not a skip: the SDK internals moved, so what `skills=[]`,
+        # `setting_sources=[]` and `tools=[]` now mean has to be re-read before INV-9 can be trusted.
+        print(f"XX  sdk-skills-semantics-still-verifiable: {exc}")
+        FAILS.append("sdk-skills-semantics-still-verifiable")
+else:
+    # Never silently: an absent SDK must read as "not checked", not as a pass.
+    print("--  inv9-real-build-options-passes SKIPPED (claude_agent_sdk not installed)")
+
+_stage_root = harness.stage_clean_workdir()
+check("stage-root-is-empty", os.listdir(_stage_root) == [])
+check("stage-no-dot-claude-dir", not os.path.exists(os.path.join(_stage_root, ".claude")))
 check("stage-chdir-took-effect", os.path.realpath(os.getcwd()) == os.path.realpath(_stage_root))
 check("stage-no-claude-md-leak", harness._claude_md_ancestors(_stage_root) == [])
-check("stage-outside-repo",
-      not os.path.realpath(_stage_root).startswith(os.path.realpath(os.path.dirname(harness.__file__))))
+# Outside the whole deployed TREE, not merely outside this directory: every CLAUDE.md above the
+# harness is discoverable by the CLI's upward walk, and the repo root is where the big one lives.
+_TREE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(harness.__file__))))
+check("stage-outside-repo-tree", not harness._is_under(_stage_root, _TREE))
+
+# A TEMP configured INSIDE the repository is not hypothetical (TMPDIR=./tmp, CI runners, containers
+# that relocate TEMP) and the previous containment check — candidates tested against $HOME only —
+# accepted it, handing the agent every ancestor CLAUDE.md with nothing but a stderr warning the
+# supervisor shows only when the run FAILS. The invariant is now the acceptance test, so a poisoned
+# TEMP must be rejected and the next candidate used.
+_cwd_before = os.getcwd()
+_repo_tmp = os.path.join(_TREE, "_test_tmp_inside_repo")
+_saved_gettempdir = harness.tempfile.gettempdir
+try:
+    os.makedirs(_repo_tmp, exist_ok=True)
+    harness.tempfile.gettempdir = lambda: _repo_tmp
+    _poisoned = harness.stage_clean_workdir()
+    check("stage-rejects-a-repo-local-TEMP", not harness._is_under(_poisoned, _TREE))
+    check("stage-still-leak-free-with-poisoned-TEMP", harness._claude_md_ancestors(_poisoned) == [])
+    check("stage-poisoned-TEMP-left-no-root-behind", os.listdir(_repo_tmp) == [])
+finally:
+    harness.tempfile.gettempdir = _saved_gettempdir
+    os.chdir(_cwd_before)
+    # rmtree, not rmdir: if this check ever FAILS it is because a root was created in here, and an
+    # assertion failure must not leave a directory inside the repository for the next run to find.
+    _shutil.rmtree(_repo_tmp, ignore_errors=True)
+
+# ...and the check above is defence-in-depth, not the gate: with the leak test in place, a candidate
+# that slips past containment is rejected anyway, so it passes even if containment alone regresses.
+# The gate is THIS — when no candidate can be made clean, the run must REFUSE. The old code warned to
+# stderr and proceeded, on a stream the supervisor surfaces only when the run FAILS, which means an
+# agent with an inherited CLAUDE.md in its context looked exactly like a normal run.
+_cwd_before = os.getcwd()
+_saved_ancestors = harness._claude_md_ancestors
+_leftovers = []
+try:
+    harness._claude_md_ancestors = lambda root: (_leftovers.append(root), ["<injected>/CLAUDE.md"])[1]
+    try:
+        harness.stage_clean_workdir()
+        check("stage-refuses-when-every-candidate-leaks", False)
+    except SystemExit as exc:
+        check("stage-refuses-when-every-candidate-leaks", "CLAUDE.md" in str(exc))
+    # A refused candidate must not be left on disk: it would accumulate one directory per attempt on
+    # a host where the condition is permanent.
+    check("stage-cleans-up-every-rejected-root",
+          bool(_leftovers) and not any(os.path.exists(p) for p in _leftovers))
+    check("stage-did-not-chdir-into-a-rejected-root", os.getcwd() == _cwd_before)
+finally:
+    harness._claude_md_ancestors = _saved_ancestors
+    os.chdir(_cwd_before)
+
+# Cross-drive containment must answer False, not raise: os.path.commonpath raises ValueError when the
+# paths are on different Windows drives (TEMP on D:, profile on C: — an ordinary setup), and that
+# exception used to escape stage_clean_workdir and kill the diagnosis before the first command.
+check("is-under-cross-drive-is-false-not-an-exception",
+      harness._is_under("Z:\\some\\temp", os.path.expanduser("~")) is False)
+# ...and that must hold for the REASON claimed, on every platform. The line above only reaches the
+# ValueError path on Windows (elsewhere "Z:\..." is just a relative name and commonpath answers
+# normally), so it would pass on the Linux CI runner without ever exercising the handler that exists
+# for the Windows case. Force the raise instead of relying on the platform to produce it.
+_saved_commonpath = os.path.commonpath
+try:
+    def _raising_commonpath(_paths):
+        raise ValueError("Paths don't have the same drive")
+    os.path.commonpath = _raising_commonpath
+    check("is-under-swallows-a-commonpath-valueerror",
+          harness._is_under(os.getcwd(), os.getcwd()) is False)
+finally:
+    os.path.commonpath = _saved_commonpath
+check("is-under-still-detects-real-containment",
+      harness._is_under(os.path.join(_TREE, "deploy"), _TREE) is True)
 
 
 # --- stdout line protocol: @@STEP metadata-only per command, one terminal VERDICT block ------------

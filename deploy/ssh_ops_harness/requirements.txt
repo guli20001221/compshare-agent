@@ -11,15 +11,24 @@
 # ⚠️ Any version change here MUST re-run `python test_guardrails.py` on the target host before the
 # lane is enabled — the credential-bearing SSH transport rides paramiko, so its version is a security
 # surface, not a convenience. (This file also used to name a `smoke_harness_protocol.py`; no such
-# script exists. The six test_*.py suites here are OFFLINE — they never touch ModelVerse, the Agent
-# SDK or SSH — so passing them says the guardrails are intact, NOT that the chain works. The only
-# check that covers the chain is a real run against a real box.)
+# script exists. The six test_*.py suites are OFFLINE — no ModelVerse, no SSH, no network — so passing
+# them says the guardrails are intact, NOT that the chain works; only a real run against a real box
+# covers the chain. One exception since 2026-08-14: test_harness.py IMPORTS this SDK when it is
+# installed, to build the real ClaudeAgentOptions and assert INV-9 against it. Still no network, and
+# it self-skips with a printed SKIPPED line when the SDK is absent — but that is why CI installs the
+# pinned version below, since a skipped invariant is not a checked one.)
 
-# The Claude Agent SDK that drives the agentic loop (built-ins restricted to text-only Skill; INV-9).
-# Exact-pinned: this is the version validated on 2026-07-23 (harness smoke + 265/265 guardrails).
-# Its wheel bundles Claude Code 2.1.185 and prefers that binary by default. harness.py explicitly sets
-# cli_path to the operator/image-installed Claude Code 2.1.218, which is the direct-ModelVerse-tested
-# runtime; do not remove that override merely because importing this package succeeds.
+# The Claude Agent SDK that drives the agentic loop. INV-9 pins its three off-switches together:
+# tools=[] (NO built-in exists on the control-plane host), skills=[] (explicit empty listing — the
+# SDK documents None as "CLI defaults still apply", i.e. NOT off) and setting_sources=[] (no
+# CLAUDE.md / ~/.claude is loaded). `Skill` was the single permitted built-in until the last bundled
+# playbook was deleted on 2026-08-14; it is now denied like every other one.
+# Exact-pinned: this is the version validated on 2026-07-23 (harness smoke + 265/265 guardrails), and
+# the pin is load-bearing for more than reproducibility — assert_single_tool encodes what THIS
+# version does with an empty `skills` list. Its wheel bundles Claude Code 2.1.185 and prefers that
+# binary by default; harness.py explicitly sets cli_path to the operator/image-installed 2.1.218,
+# which is the direct-ModelVerse-tested runtime. Do not remove that override merely because importing
+# this package succeeds. A bump here must be mirrored in .github/workflows/go-test.yml.
 claude-agent-sdk==0.2.106
 
 # SSH transport. The harness touches only the stable SSHClient / connect / exec_command / host-key-policy
