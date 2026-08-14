@@ -14,6 +14,7 @@ import (
 const (
 	instanceContextSourceDescribe = "DescribeCompShareInstance"
 	instanceContextSourceMonitor  = "GetCompShareInstanceMonitor"
+	instanceContextSourceCatalog  = "DescribeCompShareSoftwarePort"
 	// 2s, and NOT because the monitor fact never goes missing: it does, on roughly half the live UHost
 	// calls. The cause is not this budget. Measured 2026-08-14 through the production executor,
 	// GetCompShareInstanceMonitor answered in 81ms..1.25s over 12 samples (max on the UHost) — and the
@@ -27,7 +28,16 @@ const (
 	// logs elapsed plus which of the three (deadline / upstream error / empty) actually happened,
 	// so a future change here is driven by production numbers rather than by one coincidence.
 	instanceContextMonitorTimeout = 2 * time.Second
-	maxInstanceContextMonitorFact = 16
+	// The software-port catalog is a different endpoint with no latency history in this lane, so it
+	// carries its own budget rather than inheriting the monitor's justification. It is fetched
+	// SEQUENTIALLY after the monitor on purpose: running the two concurrently would save at most the
+	// smaller of two sub-second calls on a lane the user has already consented to and that then runs
+	// for minutes, and it would make the upstream call ORDER — which is itself an assertion about
+	// what this lane touches — untestable.
+	instanceContextCatalogTimeout  = 2 * time.Second
+	maxInstanceContextMonitorFact  = 16
+	maxInstanceContextSoftware     = 12
+	maxInstanceContextCatalogPorts = 16
 )
 
 // enrichInstanceOpsContext adds a deliberately small allowlist projection of
@@ -45,14 +55,16 @@ func enrichInstanceOpsContext(ctx context.Context, d Describer, base opscontext.
 	}
 	observedAt := time.Now().UTC().Format(time.RFC3339)
 	result := base
+	software, _ := instanceContextDeclaredSoftware(inst)
 	result.PlatformFacts = append(result.PlatformFacts, instanceFacts(inst, instanceID, observedAt)...)
 	result.PlatformFacts = append(result.PlatformFacts, monitorFacts(ctx, d, instanceID, observedAt)...)
+	result.PlatformFacts = append(result.PlatformFacts, catalogFacts(ctx, d, software, observedAt)...)
 	result.Coverage = instanceContextCoverage(result.PlatformFacts)
 	return result
 }
 
 func instanceFacts(inst map[string]any, instanceID, observedAt string) []opscontext.Fact {
-	facts := make([]opscontext.Fact, 0, 7)
+	facts := make([]opscontext.Fact, 0, 9)
 
 	state := allowlistedString(inst, "State")
 	facts = append(facts, instanceContextFact("instance.state", state, instanceContextSourceDescribe, observedAt, statusForString(state)))
@@ -78,11 +90,23 @@ func instanceFacts(inst map[string]any, instanceID, observedAt string) []opscont
 	disks, disksKnown := instanceContextDisks(inst)
 	facts = append(facts, instanceContextFact("instance.disks", disks, instanceContextSourceDescribe, observedAt, statusForKnown(disksKnown)))
 
-	ports, portsKnown := instanceContextPorts(inst)
-	// Describe's Ports/TcpForwards fields are useful leads, but this lane has not established whether
-	// every instance kind reports control-plane exposure, image-declared defaults, or both. Keep the
-	// fact deliberately neutral: neither it nor its presence proves an external route or guest listener.
-	facts = append(facts, instanceContextFact("instance.reported_ports", ports, instanceContextSourceDescribe, observedAt, statusForKnown(portsKnown)))
+	// Two facts, not one. v1 merged the Describe Ports block and the TcpForwards list under
+	// `instance.reported_ports`, which made "a port is configured on this instance" and "the platform
+	// forwards that port" indistinguishable in the payload — and both readable as a guest listener,
+	// which neither is. This lane has still not established whether every instance kind reports
+	// control-plane exposure, image-declared defaults, or both, so each fact stays deliberately
+	// neutral about what it proves; what changed is that the model can no longer confuse the two.
+	hints, hintsKnown := instanceContextPortHints(inst)
+	facts = append(facts, instanceContextFact("platform.instance_port_hints", hints, instanceContextSourceDescribe, observedAt, statusForKnown(hintsKnown)))
+	forwards, forwardsKnown := instanceContextTCPForwards(inst)
+	facts = append(facts, instanceContextFact("platform.tcp_forwards", forwards, instanceContextSourceDescribe, observedAt, statusForKnown(forwardsKnown)))
+
+	// Names only. Softwares[] entries also carry a URL, and on a Jupyter image that URL embeds a LIVE
+	// access token — the whole point of the allowlist is that a field like that never reaches a prompt
+	// by being part of an object somebody forwarded wholesale.
+	software, softwareKnown := instanceContextDeclaredSoftware(inst)
+	facts = append(facts, instanceContextFact("instance.declared_software", software, instanceContextSourceDescribe, observedAt, statusForKnown(softwareKnown)))
+
 	// This fact guards the most damaging inference in historical incidents: reported port metadata is
 	// not evidence that a guest process is listening. Only a subsequent SSH command can change this status.
 	facts = append(facts, instanceContextFact("guest.listeners", "not_checked", "ssh", observedAt, opscontext.StatusNotObserved))
@@ -141,6 +165,48 @@ func monitorFacts(ctx context.Context, d Describer, instanceID, observedAt strin
 	return facts
 }
 
+// catalogFacts projects the image application-port catalog: what the software on this image is
+// EXPECTED to listen on. It is the one fact here the lane could always have stated and never did,
+// and it is also the easiest to misread, so its status is never "known" — the catalog describes an
+// image, not this box, and only an SSH check can promote it to an observation.
+//
+// The endpoint takes no instance argument (region is filled in by the executor), so the response is
+// the region's whole catalog; it is correlated down to the software THIS instance declares. When the
+// declared list is unavailable the catalog is passed through capped instead of dropped, because a
+// bounded superset is still a usable prior and dropping it silently would be indistinguishable from
+// the endpoint failing.
+func catalogFacts(ctx context.Context, d Describer, software []string, observedAt string) []opscontext.Fact {
+	if d == nil {
+		return []opscontext.Fact{instanceContextFact("catalog.expected_software_ports", "unavailable", instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
+	}
+	catalogCtx, cancel := context.WithTimeout(ctx, instanceContextCatalogTimeout)
+	defer cancel()
+	started := time.Now()
+	raw, err := d.Execute(catalogCtx, instanceContextSourceCatalog, map[string]any{})
+	elapsed := time.Since(started)
+	if err != nil {
+		// Same three-way split as the monitor, for the same reason: the fact the model sees cannot
+		// distinguish a short budget from a refused call, and those need different fixes.
+		reason := "upstream_error"
+		if catalogCtx.Err() == context.DeadlineExceeded {
+			reason = "deadline_exceeded"
+		}
+		log.Printf("ssh-ops: instance context software-port catalog %s after %s (budget %s): %v",
+			reason, elapsed.Round(time.Millisecond), instanceContextCatalogTimeout, err)
+		return []opscontext.Fact{instanceContextFact("catalog.expected_software_ports", "unavailable", instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
+	}
+	entries := instanceContextCatalogEntries(raw, software)
+	if len(entries) == 0 {
+		// RetCode 0 and nothing correlated. Deliberately NOT "known: this instance has no expected
+		// ports" — the catalog may simply not cover this image, and an empty list asserted as known
+		// would be read as "nothing should be listening", which is the opposite of what it says.
+		log.Printf("ssh-ops: instance context software-port catalog empty_result in %s (budget %s): %d declared software name(s)",
+			elapsed.Round(time.Millisecond), instanceContextCatalogTimeout, len(software))
+		return []opscontext.Fact{instanceContextFact("catalog.expected_software_ports", entries, instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
+	}
+	return []opscontext.Fact{instanceContextFact("catalog.expected_software_ports", entries, instanceContextSourceCatalog, observedAt, opscontext.StatusReported)}
+}
+
 func instanceContextCoverage(facts []opscontext.Fact) uint32 {
 	var coverage uint32
 	for _, fact := range facts {
@@ -159,9 +225,24 @@ func instanceContextCoverage(facts []opscontext.Fact) uint32 {
 			if fact.Status == opscontext.StatusKnown {
 				coverage |= opscontext.CoverageDisk
 			}
-		case "instance.reported_ports":
+		case "platform.instance_port_hints":
 			if fact.Status == opscontext.StatusKnown {
-				coverage |= opscontext.CoveragePorts
+				coverage |= opscontext.CoveragePortHints
+			}
+		case "platform.tcp_forwards":
+			if fact.Status == opscontext.StatusKnown {
+				coverage |= opscontext.CoverageTCPForwards
+			}
+		case "instance.declared_software":
+			if fact.Status == opscontext.StatusKnown {
+				coverage |= opscontext.CoverageSoftware
+			}
+		case "catalog.expected_software_ports":
+			// Reported, not known: this fact describes the image catalog, and it never gets to
+			// claim the stronger status the others use. The bit still has to be set from the
+			// status it actually carries, or coverage would under-report a fact that was sent.
+			if fact.Status == opscontext.StatusReported {
+				coverage |= opscontext.CoverageCatalogPorts
 			}
 		default:
 			if instanceContextMonitorKey(fact.Key) {
@@ -196,36 +277,95 @@ func instanceContextDisks(inst map[string]any) ([]map[string]any, bool) {
 	return disks, true
 }
 
-func instanceContextPorts(inst map[string]any) (map[string]any, bool) {
+func instanceContextPortHints(inst map[string]any) (map[string]any, bool) {
 	result := map[string]any{}
 	ports, portsPresent := inst["Ports"].(map[string]any)
-	if portsPresent {
-		for _, entry := range []struct {
-			rawKey string
-			key    string
-		}{
-			{rawKey: "HttpPorts", key: "http"},
-			{rawKey: "TcpPorts", key: "tcp"},
-			{rawKey: "UdpPorts", key: "udp"},
-		} {
-			if raw, ok := ports[entry.rawKey]; ok {
-				result[entry.key] = instanceContextPortList(raw)
-			}
+	if !portsPresent {
+		return result, false
+	}
+	for _, entry := range []struct {
+		rawKey string
+		key    string
+	}{
+		{rawKey: "HttpPorts", key: "http"},
+		{rawKey: "TcpPorts", key: "tcp"},
+		{rawKey: "UdpPorts", key: "udp"},
+	} {
+		if raw, ok := ports[entry.rawKey]; ok {
+			result[entry.key] = instanceContextPortList(raw)
 		}
 	}
-	forwardsRaw, forwardsPresent := inst["TcpForwards"]
-	if forwardsPresent {
-		forwards := make([]map[string]int, 0)
-		for _, forward := range instanceContextMapSlice(forwardsRaw) {
-			internal, internalOK := allowlistedInt(forward, "InternalPort")
-			external, externalOK := allowlistedInt(forward, "ExternalPort")
-			if validInstanceContextPort(internal) && internalOK && validInstanceContextPort(external) && externalOK {
-				forwards = append(forwards, map[string]int{"internal": internal, "external": external})
-			}
-		}
-		result["tcp_forwards"] = forwards
+	return result, true
+}
+
+func instanceContextTCPForwards(inst map[string]any) ([]map[string]int, bool) {
+	forwards := make([]map[string]int, 0)
+	raw, present := inst["TcpForwards"]
+	if !present {
+		return forwards, false
 	}
-	return result, portsPresent || forwardsPresent
+	for _, forward := range instanceContextMapSlice(raw) {
+		internal, internalOK := allowlistedInt(forward, "InternalPort")
+		external, externalOK := allowlistedInt(forward, "ExternalPort")
+		if internalOK && externalOK && validInstanceContextPort(internal) && validInstanceContextPort(external) {
+			forwards = append(forwards, map[string]int{"internal": internal, "external": external})
+		}
+	}
+	return forwards, true
+}
+
+// instanceContextDeclaredSoftware reads Softwares[].Name and NOTHING else from each entry.
+// The sibling URL field is the reason this is a named projection rather than a field copy: on a
+// Jupyter image it carries a live access token, so an entry must never be forwarded as an object.
+func instanceContextDeclaredSoftware(inst map[string]any) ([]string, bool) {
+	names := make([]string, 0)
+	raw, present := inst["Softwares"]
+	if !present {
+		return names, false
+	}
+	for _, item := range instanceContextMapSlice(raw) {
+		name := allowlistedString(item, "Name")
+		if name == "" || len(names) >= maxInstanceContextSoftware {
+			continue
+		}
+		names = append(names, name)
+	}
+	// Present-but-empty stays "unknown" on purpose. An image response uses a MAP under the same key,
+	// and a shape this projection does not read must not be reported as "declares no software".
+	return names, len(names) > 0
+}
+
+// instanceContextCatalogEntries projects SoftwarePort[] down to {software, port}, correlated to the
+// names this instance declares. An empty `software` means the correlation is unavailable, not that
+// nothing matched, so the catalog is passed through capped rather than filtered to nothing.
+func instanceContextCatalogEntries(raw map[string]any, software []string) []map[string]any {
+	entries := make([]map[string]any, 0)
+	for _, item := range instanceContextMapSlice(raw["SoftwarePort"]) {
+		name := allowlistedString(item, "Software")
+		port, ok := allowlistedInt(item, "Port")
+		if name == "" || !ok || !validInstanceContextPort(port) {
+			continue
+		}
+		if len(software) > 0 && !instanceContextDeclares(software, name) {
+			continue
+		}
+		if len(entries) >= maxInstanceContextCatalogPorts {
+			break
+		}
+		entries = append(entries, map[string]any{"software": name, "port": port})
+	}
+	return entries
+}
+
+// instanceContextDeclares matches case-insensitively and exactly, the same rule the instance-access
+// capability already uses to line an instance's Softwares[].Name up with a catalog Software value.
+func instanceContextDeclares(software []string, name string) bool {
+	for _, declared := range software {
+		if strings.EqualFold(declared, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func instanceContextPortList(raw any) []int {

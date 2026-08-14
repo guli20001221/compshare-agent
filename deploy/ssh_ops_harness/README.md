@@ -65,9 +65,22 @@ Python/Claude CLI 子进程的最小环境，不会复用完整的服务进程�
    **`finished_at IS NOT NULL` 这个条件不是可选的**：`Begin` 写入的 `started` 行记的是本次
    **请求**的 schema/coverage（那时 harness 还没启动），`Finish` 才把它改写成**实际生效**的值——
    harness 没能确认（旧版本、长度上限回退、SDK 在模型出首条消息前就失败）时清零。所以在终态行上，
-   `context_schema_version=1` 表示模型这一轮确实是带着版本化参考上下文跑的；`0` 表示没有。而
+   `context_schema_version` 非 0 表示模型这一轮确实是带着版本化参考上下文跑的；`0` 表示没有。而
    `started` 行只说明「请求过上下文」，把它当送达结果读会高估覆盖率——`Finish` 本身也可能失败
    （日志里是 `ssh-ops: audit finish failed …`），那种行会永远停在 `started`。
+
+   当前生产值是 **`2`**。`1` 只出现在 Go 二进制回滚到 v2 之前、而 harness 已是新版的混合期：
+   新 harness 仍接受 v1，旧 harness 遇到 v2 会安全降级成 task-only（终态行就是 `0`，不是半份
+   上下文）。两版的差别全在事实键——v1 用一个 `instance.reported_ports` 同时装 Describe 的
+   `Ports` 与 `TcpForwards`，v2 拆成 `platform.instance_port_hints` / `platform.tcp_forwards`，
+   并新增 `instance.declared_software`（**只有名字**：同级的 `URL` 里带活的 Jupyter token）和
+   `catalog.expected_software_ports`（镜像目录的**预期**端口，状态恒为 `reported`，永远不会是
+   `known`）。这四个键任何一个都不证明实例里真的有进程在听——那只有 SSH 查完的
+   `guest.listeners` 能说，它的初值是 `not_observed`。
+
+   `context_fact_coverage` 是位掩码，新位只追加不重排（`internal/opscontext/context.go`）。
+   注意 `CoveragePortHints`（16）在 v1 行里同时代表了 forwards，所以**跨版本比较这一位之前先按
+   `context_schema_version` 分组**。
 
 ## 没生效的排查
 

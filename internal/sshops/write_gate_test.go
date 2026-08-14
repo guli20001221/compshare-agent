@@ -3,6 +3,7 @@ package sshops
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -46,13 +47,15 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 	modelContext := opscontext.Context{
 		SchemaVersion: opscontext.SchemaVersion,
 		PlatformFacts: []opscontext.Fact{{
-			Key: "instance.reported_ports", Value: map[string]any{"http": []int{8188}},
+			Key: "platform.instance_port_hints", Value: map[string]any{"http": []int{8188}},
 			Source: "DescribeCompShareInstance", ObservedAt: "2026-08-13T00:00:00Z", Status: opscontext.StatusKnown,
 		}},
 	}
 	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "task", modelContext, nil, nil)
 	require.NoError(t, err)
-	require.Contains(t, res.Output, "CONTEXT_SCHEMA=1")
+	// The version on the wire is the constant, not a literal: this asserts the supervisor forwards
+	// what the producer set, and a hardcoded 1 here would have gone on passing after the v2 bump.
+	require.Contains(t, res.Output, fmt.Sprintf("CONTEXT_SCHEMA=%d", opscontext.SchemaVersion))
 	require.Contains(t, res.Output, "CONTEXT_FACTS=1")
 	require.True(t, res.ContextApplied)
 }

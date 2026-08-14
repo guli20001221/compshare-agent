@@ -5,10 +5,28 @@
 package opscontext
 
 const (
-	// SchemaVersion is the first wire contract for contextual SSH diagnosis.
+	// SchemaVersion is the current wire contract for contextual SSH diagnosis.
 	// A zero value means no contextual payload was requested, preserving the
 	// legacy task-only handshake for direct callers.
-	SchemaVersion = 1
+	//
+	// v2 (2026-08-14) exists because v1 shipped ONE fact, instance.reported_ports,
+	// holding two things that must never be conflated: DescribeCompShareInstance's
+	// Ports block and its TcpForwards list. "A port is configured" and "the platform
+	// forwards that port" are different claims with different failure modes, and a
+	// single key invited the model to read either as the other — and as evidence of a
+	// guest listener, which neither is. v2 splits them and adds what the lane could
+	// state but never did: the software this instance declares, and the image
+	// catalog's EXPECTED port for that software.
+	//
+	// Version compatibility is deliberately asymmetric. An older harness rejects an
+	// unknown version and degrades to a task-only run — no facts, but no misread
+	// facts either. A newer harness still accepts v1, so a rollback of the server
+	// binary alone does not silently strip the context.
+	SchemaVersion = 2
+
+	// SchemaVersionPortsMerged is v1, kept named because the harness must keep
+	// accepting it during a mixed deploy, not because anything still produces it.
+	SchemaVersionPortsMerged = 1
 
 	StatusKnown       = "known"
 	StatusUnknown     = "unknown"
@@ -19,13 +37,23 @@ const (
 // Fact-coverage bits are audit metadata only. They deliberately describe which
 // server facts were supplied, not their values, so the audit never becomes a
 // second copy of platform data or user conversation.
+//
+// New bits are appended, never reordered: the value is persisted in
+// ssh_ops_audit.context_fact_coverage and a shifted bit would silently rewrite
+// the meaning of every row already stored.
 const (
 	CoverageInstance uint32 = 1 << iota
 	CoverageGPU
 	CoverageImage
 	CoverageDisk
-	CoveragePorts
+	// CoveragePortHints is the Describe Ports block ALONE. It was CoveragePorts in
+	// v1, where it also stood for the forwards; a row written by that producer
+	// therefore over-claims this bit, which is why the version is stored beside it.
+	CoveragePortHints
 	CoverageMonitor
+	CoverageTCPForwards
+	CoverageSoftware
+	CoverageCatalogPorts
 )
 
 // Context is independent from the planner-produced Task. Keeping the two

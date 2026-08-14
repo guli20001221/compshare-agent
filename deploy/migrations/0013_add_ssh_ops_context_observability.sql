@@ -11,6 +11,12 @@
 -- Finish zeroes them when the harness did not confirm the context reached the
 -- model. A row that never finished keeps the requested value forever, so a
 -- query that ignores finished_at over-reports coverage.
+--
+-- context_fact_coverage is a bitmask defined in internal/opscontext/context.go.
+-- Bits are appended, never reordered, but their MEANING is still version-scoped:
+-- bit 16 covered the Describe ports block AND the TCP forwards under schema
+-- version 1, and only the ports block under version 2, which split them into
+-- separate facts and bits. Group by context_schema_version before comparing it.
 
 ALTER TABLE ssh_ops_audit
     ADD COLUMN IF NOT EXISTS context_schema_version INTEGER NOT NULL DEFAULT 0,

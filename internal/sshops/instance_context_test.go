@@ -15,6 +15,8 @@ type contextDescriber struct {
 	describe   map[string]any
 	monitor    map[string]any
 	monitorErr error
+	catalog    map[string]any
+	catalogErr error
 	calls      []string
 }
 
@@ -25,6 +27,8 @@ func (d *contextDescriber) Execute(_ context.Context, action string, _ map[strin
 		return d.describe, nil
 	case "GetCompShareInstanceMonitor":
 		return d.monitor, d.monitorErr
+	case "DescribeCompShareSoftwarePort":
+		return d.catalog, d.catalogErr
 	default:
 		return nil, nil
 	}
@@ -48,7 +52,18 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 			"DiskSet":             []any{map[string]any{"DiskType": "Data", "Size": float64(100), "Status": "InUse"}},
 			"Ports":               map[string]any{"HttpPorts": []any{float64(8188)}, "TcpPorts": []any{float64(6006)}},
 			"TcpForwards":         []any{map[string]any{"InternalPort": float64(8188), "ExternalPort": float64(30188)}},
+			// Each entry's URL carries a live access token. Only Name may cross into the context.
+			"Softwares": []any{
+				map[string]any{"Name": "ComfyUI", "URL": "http://198.51.100.9:8188/?token=comfy-token-value"},
+				map[string]any{"Name": "JupyterLab", "URL": "http://198.51.100.9:8888/?token=jupyter-url-token"},
+			},
 		}}},
+		catalog: map[string]any{"SoftwarePort": []any{
+			map[string]any{"Software": "ComfyUI", "Port": float64(8188)},
+			map[string]any{"Software": "JupyterLab", "Port": float64(8888)},
+			// Not declared by this instance: the catalog is region-wide and must be correlated down.
+			map[string]any{"Software": "FileBrowser", "Port": float64(8080)},
+		}},
 		monitor: map[string]any{
 			"Data": map[string]any{
 				"List": []any{
@@ -84,7 +99,7 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 
 	_, err := svc.DiagnoseWithContext(context.Background(), describer, Owner{RequestUUID: "req", TurnID: "turn"}, "uhost-abc", "排查 Web UI", modelContext, nil, nil)
 	require.NoError(t, err)
-	require.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, describer.calls)
+	require.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor", "DescribeCompShareSoftwarePort"}, describer.calls)
 	require.Equal(t, opscontext.SchemaVersion, runner.lastContext.SchemaVersion)
 	require.NotEmpty(t, runner.lastContext.PlatformFacts)
 	for _, fact := range runner.lastContext.PlatformFacts {
@@ -99,18 +114,32 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	for _, forbidden := range []string{
 		"SshLoginCommand", "198.51.100.9", secretPW, "jupyter-secret-value", "filebrowser-secret-value",
 		"Password", "IPSet", "JupyterToken", "FileBrowserPassword",
+		// Softwares[].URL: the name beside it is wanted, the token in it never is.
+		"comfy-token-value", "jupyter-url-token", "token=", "URL",
 	} {
 		require.NotContains(t, text, forbidden)
 	}
 	require.Contains(t, text, "8188")
-	require.Contains(t, text, "instance.reported_ports")
+	// v2 states the port-shaped claims separately, and the merged v1 key is gone rather than aliased.
+	require.Contains(t, text, "platform.instance_port_hints")
+	require.Contains(t, text, "platform.tcp_forwards")
+	require.Contains(t, text, "instance.declared_software")
+	require.Contains(t, text, "catalog.expected_software_ports")
+	require.NotContains(t, text, "instance.reported_ports")
 	require.NotContains(t, text, "configured_ports")
+	// The region-wide catalog is correlated down to what this instance declares: FileBrowser is in
+	// the catalog and not on this box, so its port must not arrive as an expectation for this box.
+	require.NotContains(t, text, "FileBrowser")
+	require.NotContains(t, text, "8080")
 	require.Contains(t, text, "not_observed")
 	require.Contains(t, text, "monitor.gpu_usage")
 
 	begin, done := audit.Events[0], audit.Events[1]
 	require.Equal(t, opscontext.SchemaVersion, begin.ContextSchemaVersion)
-	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoveragePorts)
+	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoveragePortHints)
+	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageTCPForwards)
+	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageSoftware)
+	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageCatalogPorts)
 	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageMonitor)
 	require.Equal(t, 1, done.CommandsRan)
 	require.Equal(t, 1, done.CommandsRefused)
@@ -144,6 +173,9 @@ func TestMonitorContextFailureDoesNotBlockSSHDiagnosis(t *testing.T) {
 	describer := &contextDescriber{
 		describe:   describeResp("ssh root@10.0.0.9", b64),
 		monitorErr: errors.New("monitor unavailable"),
+		// Both enrichment endpoints down at once: neither is allowed to turn a consented,
+		// already-authorized SSH diagnosis into a failure, and each has to say so as its own fact.
+		catalogErr: errors.New("software port catalog unavailable"),
 	}
 	runner := &fakeRunner{res: Result{Output: "SSH diagnosis still ran"}}
 	svc := NewService(runner, &MemAuditWriter{})
@@ -152,14 +184,95 @@ func TestMonitorContextFailureDoesNotBlockSSHDiagnosis(t *testing.T) {
 		opscontext.Context{SchemaVersion: opscontext.SchemaVersion}, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, runner.calls)
-	require.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, describer.calls)
-	var monitorUnknown bool
+	require.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor", "DescribeCompShareSoftwarePort"}, describer.calls)
+	unknown := map[string]bool{}
 	for _, fact := range runner.lastContext.PlatformFacts {
-		if fact.Key == "monitor" && fact.Status == opscontext.StatusUnknown {
-			monitorUnknown = true
+		if fact.Status == opscontext.StatusUnknown {
+			unknown[fact.Key] = true
 		}
 	}
-	require.True(t, monitorUnknown)
+	require.True(t, unknown["monitor"])
+	require.True(t, unknown["catalog.expected_software_ports"])
+}
+
+// TestInstanceContextCatalogIsNeverPresentedAsGuestState pins the distinction the whole v2 split
+// exists for. The catalog answers "what port should this software use"; only SSH answers "what is
+// listening". A catalog entry that arrived as StatusKnown would read as the second, and the model's
+// stated rule is to trust `known` facts without re-checking them.
+func TestInstanceContextCatalogIsNeverPresentedAsGuestState(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	describe := describeResp("ssh root@10.0.0.9", b64)
+	host := describe["UHostSet"].([]any)[0].(map[string]any)
+	host["Softwares"] = []any{map[string]any{"Name": "ComfyUI", "URL": "http://198.51.100.9:8188/?token=t"}}
+	describer := &contextDescriber{
+		describe: describe,
+		catalog:  map[string]any{"SoftwarePort": []any{map[string]any{"Software": "ComfyUI", "Port": float64(8188)}}},
+	}
+	runner := &fakeRunner{res: Result{Output: "done"}}
+	svc := NewService(runner, &MemAuditWriter{})
+
+	_, err := svc.DiagnoseWithContext(context.Background(), describer, Owner{TurnID: "turn"}, "uhost-abc", "task",
+		opscontext.Context{SchemaVersion: opscontext.SchemaVersion}, nil, nil)
+	require.NoError(t, err)
+
+	byKey := map[string]opscontext.Fact{}
+	for _, fact := range runner.lastContext.PlatformFacts {
+		byKey[fact.Key] = fact
+	}
+	catalog, ok := byKey["catalog.expected_software_ports"]
+	require.True(t, ok)
+	require.Equal(t, opscontext.StatusReported, catalog.Status)
+	require.NotEqual(t, opscontext.StatusKnown, catalog.Status)
+	require.Equal(t, "DescribeCompShareSoftwarePort", catalog.Source)
+	// ...and the guest-side fact it must not be confused with still says nothing was observed.
+	require.Equal(t, opscontext.StatusNotObserved, byKey["guest.listeners"].Status)
+	require.Equal(t, "ssh", byKey["guest.listeners"].Source)
+}
+
+// TestInstanceContextNeverCarriesEndpointsOrCredentials is the boundary test for the whole
+// projection: it feeds the fields that actually appear on a real Describe response and asserts the
+// serialized context contains none of them. Softwares[].URL is the newest of these and the reason
+// v2 touches this file at all — the name beside it is a useful fact, the live token in it is not.
+func TestInstanceContextNeverCarriesEndpointsOrCredentials(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	describer := &contextDescriber{
+		describe: map[string]any{"UHostSet": []any{map[string]any{
+			"UHostId":             "uhost-abc",
+			"State":               "Running",
+			"SshLoginCommand":     "ssh -p 23 root@198.51.100.9",
+			"Password":            b64,
+			"IPSet":               []any{map[string]any{"IP": "198.51.100.9", "Type": "International"}},
+			"PrivateIP":           "10.64.46.5",
+			"JupyterToken":        "jupyter-secret-value",
+			"FileBrowserPassword": "filebrowser-secret-value",
+			"Softwares": []any{map[string]any{
+				"Name": "JupyterLab",
+				"URL":  "http://198.51.100.9:8888/lab?token=live-jupyter-token",
+			}},
+		}}},
+	}
+	runner := &fakeRunner{res: Result{Output: "done"}}
+	svc := NewService(runner, &MemAuditWriter{})
+
+	_, err := svc.DiagnoseWithContext(context.Background(), describer, Owner{TurnID: "turn"}, "uhost-abc", "task",
+		opscontext.Context{SchemaVersion: opscontext.SchemaVersion}, nil, nil)
+	require.NoError(t, err)
+	encoded, err := json.Marshal(runner.lastContext)
+	require.NoError(t, err)
+	text := string(encoded)
+
+	for _, forbidden := range []string{
+		"ssh -p 23", "root@", secretPW, b64,
+		"198.51.100.9", "10.64.46.5",
+		"live-jupyter-token", "token=", "lab?token", "http://",
+		"jupyter-secret-value", "filebrowser-secret-value",
+		"SshLoginCommand", "Password", "IPSet", "PrivateIP", "JupyterToken", "FileBrowserPassword", "URL",
+	} {
+		require.NotContainsf(t, text, forbidden, "context leaked %q", forbidden)
+	}
+	// The projection is not vacuous: the one allowlisted field of that same object did come through.
+	require.Contains(t, text, "JupyterLab")
+	require.Contains(t, text, "instance.declared_software")
 }
 
 func TestContextDoesNotChangeTaskHash(t *testing.T) {
