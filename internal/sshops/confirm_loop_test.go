@@ -84,6 +84,14 @@ func TestWriteLaneWithoutConfirmerRefusesBeforeTouchingTheBox(t *testing.T) {
 	if entered {
 		t.Fatal("refusal happened after the harness had already been spawned")
 	}
+	// ...and it must also happen before the audit row is begun. A 'started' row is what a genuinely
+	// interrupted run leaves behind, and it now carries the REQUESTED context schema/coverage — so a
+	// row written for a lane that refused to run at all would read, in the same table and with the
+	// same columns, as an in-instance access that entered the box with context and then vanished.
+	if len(audit.Events) != 0 {
+		t.Fatalf("wiring refusal wrote %d audit event(s); a run that never happened must leave no row",
+			len(audit.Events))
+	}
 	// The read-only lane has no such requirement — it never asks anything, so a nil confirmer is fine.
 	roSvc := NewService(runnerFunc(func(context.Context, Credential, string, func(Step)) (Result, error) {
 		return Result{Output: "ok"}, nil

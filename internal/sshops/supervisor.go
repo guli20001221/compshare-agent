@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/compshare-agent/internal/opscontext"
 )
 
 // Supervisor spawns the Python Agent-SDK harness once per consented ops-task and feeds it the SSH
@@ -36,6 +38,10 @@ type Supervisor struct {
 	// classified under one gate and executed under another. Default false = the read-only lane.
 	AllowWrites bool
 }
+
+// Keep the core service contract compiler-enforced. Run remains a public compatibility wrapper,
+// but all Service paths use RunWithContext so a new runner cannot quietly drop model context.
+var _ harnessRunner = Supervisor{}
 
 // ConfirmRequest is one pending write the harness will not run until a human answers. Command is
 // the LITERAL string it is about to execute — the card must show exactly what runs, or the approval
@@ -72,6 +78,11 @@ type Result struct {
 	// name, calibrated in _DIAL_CLASS_REASONS: TimeoutError = packets dropped, NoValidConnectionsError
 	// = actively refused, gaierror = DNS. Empty on a run that entered the box.
 	ErrClass string
+	// ContextApplied is true only when the harness confirmed — after the model turn had actually begun
+	// on that prompt, not merely after building it — that it included the independently transported
+	// context. It is deliberately false for old harnesses, bounded fallbacks, and any SDK failure
+	// before the first model message, so the finished audit row never overstates delivery.
+	ContextApplied bool
 }
 
 // Step is one command the harness ran or refused, parsed from an @@STEP wire line. Metadata ONLY —
@@ -125,6 +136,13 @@ func (s Supervisor) childEnv() []string {
 // non-nil, fires once per command as its @@STEP line is parsed — the LIVE activity stream, metadata
 // only (INV-6). The same Steps are also returned in Result.Steps for the caller's tally/audit.
 func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
+	return s.RunWithContext(ctx, cred, task, opscontext.Context{}, onStep, onConfirm)
+}
+
+// RunWithContext is Run with a separately serialized reference context. It is
+// not placed in argv or merged into task, so host process listings and task-hash
+// semantics retain their previous boundaries.
+func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task string, modelContext opscontext.Context, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
 	if s.HarnessPath == "" {
 		return Result{}, fmt.Errorf("sshops: no harness path configured")
 	}
@@ -170,6 +188,7 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onSte
 		"instance_id":  cred.InstanceID,
 		"model":        s.Model,
 		"task":         task, // NL request -> stdin, off the host process table
+		"context":      modelContext,
 		"allow_writes": s.AllowWrites,
 	})
 	if err != nil {
@@ -232,6 +251,7 @@ func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onSte
 		Steps:           steps,
 		PreflightFailed: outcome.Outcome == outcomePreflightFailed,
 		ErrClass:        outcome.ErrClass,
+		ContextApplied:  outcome.ContextApplied,
 	}
 	if cmd.ProcessState != nil {
 		res.ExitCode = cmd.ProcessState.ExitCode()
@@ -274,10 +294,12 @@ const (
 // silently turn a successful diagnosis into a refusal on an older supervisor.
 const outcomePreflightFailed = "preflight_failed"
 
-// harnessOutcome is the parsed @@OUTCOME line. Absent line -> zero value -> the box was entered.
+// harnessOutcome is the parsed @@OUTCOME line. An absent line still means the box was entered, but
+// it cannot prove an independently transported context reached the model, so ContextApplied is false.
 type harnessOutcome struct {
-	Outcome  string `json:"outcome"`
-	ErrClass string `json:"err_class"`
+	Outcome        string `json:"outcome"`
+	ErrClass       string `json:"err_class"`
+	ContextApplied bool   `json:"context_applied"`
 }
 
 func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRequest)) (verdict string, steps []Step, outcome harnessOutcome, err error) {

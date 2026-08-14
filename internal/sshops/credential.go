@@ -182,16 +182,26 @@ type dialPolicy struct {
 // giving up the first one: the internal address stays the leading candidate, so a zone that
 // works today picks the same address it picks today.
 func FetchCredentialWithDialPolicy(ctx context.Context, d Describer, instanceID string, hr HostResolver, pol dialPolicy) (Credential, error) {
+	cred, _, err := fetchCredentialWithDialPolicy(ctx, d, instanceID, hr, pol)
+	return cred, err
+}
+
+// fetchCredentialWithDialPolicy is the credential boundary's internal form. In
+// addition to the credential it returns the single resolved Describe row so the
+// caller can build a separately allowlisted context projection without issuing
+// a second Describe request. The raw map is package-private and must never cross
+// into the harness or engine: it contains the login command and password.
+func fetchCredentialWithDialPolicy(ctx context.Context, d Describer, instanceID string, hr HostResolver, pol dialPolicy) (Credential, map[string]any, error) {
 	if strings.TrimSpace(instanceID) == "" {
-		return Credential{}, fmt.Errorf("sshops: empty instance id")
+		return Credential{}, nil, fmt.Errorf("sshops: empty instance id")
 	}
 	raw, err := d.Execute(ctx, "DescribeCompShareInstance", map[string]any{"UHostIds.0": instanceID})
 	if err != nil {
-		return Credential{}, fmt.Errorf("sshops: describe instance: %w", err)
+		return Credential{}, nil, fmt.Errorf("sshops: describe instance: %w", err)
 	}
 	inst, resolvedID, err := resolveInstance(raw, instanceID)
 	if err != nil {
-		return Credential{}, err
+		return Credential{}, nil, err
 	}
 	// State is checked BEFORE SshLoginCommand on purpose. A stopped Linux box can
 	// also come back with an empty SshLoginCommand, and telling that user
@@ -200,32 +210,32 @@ func FetchCredentialWithDialPolicy(ctx context.Context, d Describer, instanceID 
 	// entrypoint still falls through to the structural refusal below.
 	stateValue, _ := inst["State"].(string)
 	if state := strings.TrimSpace(stateValue); state != "" && !strings.EqualFold(state, "Running") {
-		return Credential{}, &NotRunningError{InstanceID: resolvedID, State: state}
+		return Credential{}, nil, &NotRunningError{InstanceID: resolvedID, State: state}
 	}
 	loginCmd, _ := inst["SshLoginCommand"].(string)
 	if strings.TrimSpace(loginCmd) == "" {
 		// Windows instances (and any without SSH) return an empty SshLoginCommand.
 		// Wrap the sentinel so the engine surfaces an honest, non-retryable refusal
 		// instead of the generic "please retry" text (see ErrNoSSHTarget).
-		return Credential{}, fmt.Errorf("%w: instance %s has no SshLoginCommand", ErrNoSSHTarget, instanceID)
+		return Credential{}, nil, fmt.Errorf("%w: instance %s has no SshLoginCommand", ErrNoSSHTarget, instanceID)
 	}
 	host, user, port, err := parseSSHLoginCommand(loginCmd)
 	if err != nil {
-		return Credential{}, err
+		return Credential{}, nil, err
 	}
 	if host, err = resolveDialHost(ctx, hr, inst, host, port, pol); err != nil {
-		return Credential{}, err
+		return Credential{}, nil, err
 	}
 	// Password is base64(plaintext root password) — must be decoded before use.
 	encPw, _ := inst["Password"].(string)
 	dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encPw))
 	if err != nil || len(dec) == 0 {
-		return Credential{}, fmt.Errorf("sshops: instance %s password unavailable", instanceID)
+		return Credential{}, nil, fmt.Errorf("sshops: instance %s password unavailable", instanceID)
 	}
 	// InstanceID is the id the credential was actually READ FROM, never the id
 	// that was asked for. The caller re-checks the two are equal before showing
 	// a consent card, so the box named on the card is the box entered.
-	return Credential{InstanceID: resolvedID, Host: host, User: user, Port: port, password: string(dec)}, nil
+	return Credential{InstanceID: resolvedID, Host: host, User: user, Port: port, password: string(dec)}, inst, nil
 }
 
 // resolveDialHost applies hr to the address SshLoginCommand advertised.

@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/compshare-agent/internal/opscontext"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeEchoWrites reports what the write gate looked like from INSIDE the harness. The gate is
@@ -18,6 +21,61 @@ print("<<<VERDICT>>>")
 print("ALLOW_WRITES=%r" % (conn.get("allow_writes"),))
 print("<<<END>>>")
 `
+
+const fakeEchoContext = `
+import json, sys
+conn = json.loads(sys.stdin.readline())
+context = conn.get("context") or {}
+facts = context.get("platform_facts") or []
+print("@@OUTCOME " + json.dumps({"outcome": "", "err_class": "", "context_applied": True}))
+print("<<<VERDICT>>>")
+print("CONTEXT_SCHEMA=%r" % context.get("schema_version"))
+print("CONTEXT_FACTS=%r" % len(facts))
+print("<<<END>>>")
+`
+
+func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
+	sup := Supervisor{
+		Python:      requirePython(t),
+		HarnessPath: writeFakeHarness(t, fakeEchoContext),
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
+		Model:       "gpt-5.6-terra",
+		Timeout:     30 * time.Second,
+	}
+	modelContext := opscontext.Context{
+		SchemaVersion: opscontext.SchemaVersion,
+		PlatformFacts: []opscontext.Fact{{
+			Key: "instance.reported_ports", Value: map[string]any{"http": []int{8188}},
+			Source: "DescribeCompShareInstance", ObservedAt: "2026-08-13T00:00:00Z", Status: opscontext.StatusKnown,
+		}},
+	}
+	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "task", modelContext, nil, nil)
+	require.NoError(t, err)
+	require.Contains(t, res.Output, "CONTEXT_SCHEMA=1")
+	require.Contains(t, res.Output, "CONTEXT_FACTS=1")
+	require.True(t, res.ContextApplied)
+}
+
+// An image rollout can temporarily pair a new Go supervisor with an older harness that ignores
+// the context handshake key and never emits the receipt. The diagnosis must still run, but its
+// finished audit record must not claim contextual delivery; Service enforces the latter from this
+// false result (covered separately in TestFinishedAuditClearsUnconfirmedContextReceipt).
+func TestSupervisorOldHarnessDegradesContextReceiptToFalse(t *testing.T) {
+	sup := Supervisor{
+		Python:      requirePython(t),
+		HarnessPath: writeFakeHarness(t, fakeEchoWrites),
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
+		Model:       "gpt-5.6-terra",
+		Timeout:     30 * time.Second,
+	}
+	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "task",
+		opscontext.Context{SchemaVersion: opscontext.SchemaVersion}, nil, nil)
+	require.NoError(t, err)
+	require.Contains(t, res.Output, "ALLOW_WRITES=False")
+	require.False(t, res.ContextApplied)
+}
 
 // The harness decides whether to execute a mutating command by reading allow_writes off the
 // handshake. If the supervisor omits it, conn.get returns None and the harness silently falls back
@@ -98,5 +156,9 @@ func TestAuditPhaseRecordsTheAuthorityTheBoxWasEnteredUnder(t *testing.T) {
 type runnerFunc func(context.Context, Credential, string, func(Step)) (Result, error)
 
 func (f runnerFunc) Run(ctx context.Context, c Credential, task string, onStep func(Step), _ ConfirmFunc) (Result, error) {
+	return f(ctx, c, task, onStep)
+}
+
+func (f runnerFunc) RunWithContext(ctx context.Context, c Credential, task string, _ opscontext.Context, onStep func(Step), _ ConfirmFunc) (Result, error) {
 	return f(ctx, c, task, onStep)
 }

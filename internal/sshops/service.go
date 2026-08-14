@@ -5,7 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
+
+	"github.com/compshare-agent/internal/opscontext"
 )
 
 // Owner is the tenant identity carried into the audit row. It is NOT the credential.
@@ -32,12 +35,14 @@ const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-s
 // credential fetch, the fail-closed audit, and the per-task harness spawn. It never holds, logs,
 // or returns the credential — that lives only inside FetchCredential's Credential value and the
 // supervisor's one-shot stdin handshake.
-// harnessRunner is the harness-spawning surface Diagnose needs. A Supervisor value satisfies it
-// (its Run has a value receiver); tests inject a fake so they never spawn the real Python harness.
+// harnessRunner is the harness-spawning surface Diagnose needs. Every runner receives the versioned
+// context explicitly; making that part of the required interface prevents a future wrapper from
+// silently discarding it and making the audit claim facts reached the model when they did not.
+// A Supervisor value satisfies it; tests inject a fake so they never spawn the real Python harness.
 // onStep fires once per command as it settles, so the caller can surface a LIVE activity stream
 // (command + disposition metadata only, never output — INV-6); it may be nil.
 type harnessRunner interface {
-	Run(ctx context.Context, cred Credential, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error)
+	RunWithContext(ctx context.Context, cred Credential, task string, modelContext opscontext.Context, onStep func(Step), onConfirm ConfirmFunc) (Result, error)
 }
 
 type Service struct {
@@ -108,6 +113,13 @@ func phaseFor(allowWrites bool) string {
 // settles (nil to opt out). The returned Result.Output is the harness's already-scrubbed verdict;
 // the credential never appears in it.
 func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instanceID, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
+	return s.DiagnoseWithContext(ctx, d, owner, instanceID, task, opscontext.Context{}, onStep, onConfirm)
+}
+
+// DiagnoseWithContext is Diagnose with a versioned, independently transported
+// reference context for the inner agent. Context is deliberately not appended to
+// task: task remains the exact value used for audit hashing and replay identity.
+func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Owner, instanceID, task string, modelContext opscontext.Context, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
 	// Fail closed: an in-instance access we could not durably record must never happen. Refuse BEFORE
 	// the credential is fetched — no audit sink means no credential pull and no harness spawn. Production
 	// always wires a fail-closed AuditWriter (store.SSHOpsAuditStore); a nil audit is a construction /
@@ -115,10 +127,19 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 	if s.audit == nil {
 		return Result{}, fmt.Errorf("sshops: no audit writer configured, refusing to run (fail-closed)")
 	}
+	// A write lane with no confirmer is a lane no human is watching. It is a wiring error, not a mode,
+	// so it is refused here — before the credential is fetched and before the audit row is begun.
+	// Running with every write auto-denied would burn the budget proposing repairs that can never be
+	// approved, and the user would read that as the model failing. Beginning the row first would leave
+	// ssh_ops_audit holding a 'started' row — carrying a context schema/coverage — for an access that
+	// provably never happened, and a 'started' row is exactly what a genuinely interrupted run leaves.
+	if s.allowWrites && onConfirm == nil {
+		return Result{}, fmt.Errorf("sshops: writes are enabled but no per-command confirmer was wired, refusing to run (fail-closed)")
+	}
 	if strings.TrimSpace(task) == "" {
 		task = DefaultDiagnosisTask
 	}
-	cred, err := FetchCredentialWithDialPolicy(ctx, d, instanceID, s.hostResolver,
+	cred, inst, err := fetchCredentialWithDialPolicy(ctx, d, instanceID, s.hostResolver,
 		dialPolicy{PublicIPv6Prefix: s.publicIPv6Prefix})
 	if err != nil {
 		return Result{}, err // credential-free error (see credential.go)
@@ -131,6 +152,7 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 	if cred.InstanceID != instanceID {
 		return Result{}, fmt.Errorf("sshops: resolved instance %q != requested %q, refusing (INV-13)", cred.InstanceID, instanceID)
 	}
+	modelContext = enrichInstanceOpsContext(ctx, d, modelContext, inst, cred.InstanceID)
 
 	ev := AuditEvent{
 		RequestUUID:       owner.RequestUUID,
@@ -143,7 +165,9 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		// The phase is what the box was ENTERED under, so it is taken from the lane's gate rather
 		// than from what the harness happened to run: a write-authorized session that ended up
 		// issuing only reads still entered under write authority, and the audit has to say so.
-		Phase: phaseFor(s.allowWrites),
+		Phase:                phaseFor(s.allowWrites),
+		ContextSchemaVersion: modelContext.SchemaVersion,
+		ContextFactCoverage:  modelContext.Coverage,
 	}
 	auditID, err := s.audit.Begin(ctx, ev)
 	if err != nil {
@@ -152,16 +176,20 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 		return Result{}, fmt.Errorf("sshops: audit begin failed, refusing to run (fail-closed): %w", err)
 	}
 
-	// A write lane with no confirmer is a lane no human is watching. Refuse before the credential is
-	// used rather than running with every write auto-denied: the run would burn its budget proposing
-	// repairs that can never be approved, and the user would read that as the model failing.
-	if s.allowWrites && onConfirm == nil {
-		return Result{}, fmt.Errorf("sshops: writes are enabled but no per-command confirmer was wired, refusing to run (fail-closed)")
-	}
-	res, runErr := s.sup.Run(ctx, cred, task, onStep, onConfirm)
+	res, runErr := s.sup.RunWithContext(ctx, cred, task, modelContext, onStep, onConfirm)
 
 	done := ev
+	// Begin records the REQUESTED context, before the box is entered. The harness confirms on its wire
+	// protocol only once the model turn has actually begun on the prompt carrying that context. If it
+	// could not (a bounded prompt fallback, an older harness, or an SDK/transport failure before the
+	// first model message), clear the final aggregate fields rather than leaving the finished audit row
+	// claiming a delivery that never happened.
+	if !res.ContextApplied {
+		done.ContextSchemaVersion = 0
+		done.ContextFactCoverage = 0
+	}
 	done.ExitCode, done.TimedOut, done.OutputBytes = res.ExitCode, res.TimedOut, len(res.Output)
+	done.CommandsRan, done.CommandsRefused, done.FirstCommandClass = summarizeAuditSteps(res.Steps)
 	done.Disposition = "ok"
 	done.ErrClass = res.ErrClass
 	switch {
@@ -186,13 +214,18 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 			done.ErrClass = "preflight_failed"
 		}
 	}
-	// Best effort: the attempt is already durably recorded by Begin; a failed enrichment must
-	// not discard a valid verdict, but it is surfaced to logs by the SQL writer's error return.
+	// Best effort: the attempt is already durably recorded by Begin, so a failed enrichment must not
+	// discard a valid verdict — but it must not be silent either. The writer only RETURNS the error;
+	// nothing else logs it, so dropping it here would leave a row stuck at "started" with no trace of
+	// why. That matters for how the table is read: the started row carries the context schema/coverage
+	// that was REQUESTED, and only a finished row (finished_at IS NOT NULL) carries what was applied.
 	// Detached from the request ctx: on client disconnect (browser tab close / curl --max-time)
 	// the request ctx is already cancelled, and the SQL writer derives a WithTimeout child from it
 	// — a cancelled parent makes the Finish UPDATE fail, orphaning the row forever at "started".
 	// WithoutCancel keeps the values but drops the cancellation so the outcome still lands (Go 1.21+).
-	_ = s.audit.Finish(context.WithoutCancel(ctx), auditID, done)
+	if err := s.audit.Finish(context.WithoutCancel(ctx), auditID, done); err != nil {
+		log.Printf("ssh-ops: audit finish failed for instance %s (row stays 'started'): %v", cred.InstanceID, err)
+	}
 	return res, runErr
 }
 

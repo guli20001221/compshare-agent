@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+
+	"github.com/compshare-agent/internal/opscontext"
 )
 
 // ErrInstanceOpsNoSSHTarget is returned by a runner when the target instance has no
@@ -62,6 +64,10 @@ type InstanceOpsRequest struct {
 	TurnID     string
 	InstanceID string
 	Task       string
+	// Context is the versioned, redacted reference data for the inner agent.
+	// It is intentionally independent from Task so changing observations cannot
+	// change the task hash used by the durable replay guard.
+	Context opscontext.Context
 	// ConfirmWrite asks the user about ONE command that will change the box, and blocks until they
 	// answer. It is separate from the lane-level card: that one authorizes entering the instance and
 	// never names what will change, so it cannot stand as consent for `kill 6934`. nil means no human

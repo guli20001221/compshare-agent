@@ -21,11 +21,20 @@ type AuditEvent struct {
 	InstanceID        string
 	Task              string
 	Phase             string // "read_only" in Phase 1
-	ExitCode          int
-	TimedOut          bool
-	OutputBytes       int
-	Disposition       string // "started" | "ok" | "error"
-	ErrClass          string // credential-free error class (e.g. "auth_failed"); "" on success
+	// ContextSchemaVersion and ContextFactCoverage are aggregate observability
+	// only. Begin records the requested context; Finish retains them only after
+	// the harness confirms it constructed a model prompt containing that context. Neither stores
+	// user reports or platform fact values in the audit table.
+	ContextSchemaVersion int
+	ContextFactCoverage  uint32
+	CommandsRan          int
+	CommandsRefused      int
+	FirstCommandClass    string
+	ExitCode             int
+	TimedOut             bool
+	OutputBytes          int
+	Disposition          string // "started" | "ok" | "error"
+	ErrClass             string // credential-free error class (e.g. "auth_failed"); "" on success
 }
 
 // AuditWriter records SSH-ops attempts. Begin MUST durably persist the attempt BEFORE the harness

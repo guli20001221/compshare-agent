@@ -13,6 +13,18 @@
 //	SSHH_BASE_URL (default https://api.modelverse.cn)  SSHH_MODEL (default gpt-5.6-terra)
 //	SSHH_PYTHON  (default "python")           — interpreter with claude_agent_sdk + paramiko
 //	SSHH_INSTANCE (default "uhost-livetest")  SSHH_TASK (default: 掉卡 root-cause probe)
+//	SSHH_CONTEXT=0 disables the reference-context arm; any other value enables it (the default).
+//	SSHH_CONTEXT_CURRENT_REPORT optionally supplies the raw user wording for the enabled arm.
+//
+// What these tests do NOT cover, so nobody reads a green live run as broader than it is:
+//   - No write is ever executed. TestLiveFullFlow skips itself under SSHH_ALLOW_WRITES=1 and
+//     TestLiveKeystone passes a nil ConfirmFunc, so the mutating tier is refused in both. The
+//     write lane's live validation (2026-08-13, fault injected and repaired on a real pod) was
+//     manual and is not reproduced here.
+//   - No database. They use MemAuditWriter, so migration 0013's columns, the fail-closed INSERT
+//     and the INV-9 UNIQUE(turn_id, task_hash) replay refusal are covered only by unit tests.
+//   - No production dial path. There is no internal-IPv6 resolver here, so the address these
+//     tests reach is not the address production reaches (see agent.ssh_ops.internal_ipv6).
 package sshops
 
 import (
@@ -20,8 +32,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/opscontext"
+	"github.com/compshare-agent/internal/tools"
 )
 
 func liveEnv(t *testing.T) (host, port, user, pass string) {
@@ -42,6 +60,11 @@ func envOr(k, d string) string {
 	}
 	return d
 }
+
+// liveContextEnabled deliberately has an explicit off switch so one known fault can be run in
+// baseline and contextual arms without editing source. TestLiveFullFlow is always read-only: it
+// intentionally has no per-command confirmer and rejects SSHH_ALLOW_WRITES=1 below.
+func liveContextEnabled() bool { return os.Getenv("SSHH_CONTEXT") != "0" }
 
 // liveDescriber returns a stub DescribeCompShareInstance response carrying the REAL test
 // box's SshLoginCommand + base64(password). FetchCredential runs unmodified against it —
@@ -64,6 +87,57 @@ func liveDescriber(host, port, user, pass, instanceID string) Describer {
 			"Password":        base64.StdEncoding.EncodeToString([]byte(pass)),
 		}},
 	}}
+}
+
+// liveRealDescriber builds the production ExternalExecutor as the lane's Describer and
+// returns the tenant context it must be called with. This is the only way the contextual
+// arm exercises the real projection: the stub describer has no image, disks, ports or
+// monitor data, so every platform fact would be `unknown` and the A/B would silently
+// measure only the prompt fencing.
+//
+// Identity comes from env, never a default: a live probe pointed at the wrong tenant
+// returns an empty instance set, which reads exactly like "the instance is gone".
+func liveRealDescriber(t *testing.T) (Describer, context.Context) {
+	t.Helper()
+	topOrg, org := os.Getenv("SSHH_TOP_ORG"), os.Getenv("SSHH_ORG")
+	if topOrg == "" || org == "" {
+		t.Skip("SSHH_REAL_DESCRIBE=1 needs SSHH_TOP_ORG and SSHH_ORG")
+	}
+	cfg, err := config.Load(envOr("SSHH_CONFIG", "../../deploy/conf/config.local.yaml"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if project := os.Getenv("SSHH_PROJECT"); project != "" {
+		cfg.Agent.ProjectId = project
+	}
+	top, err := strconv.ParseUint(topOrg, 10, 32)
+	if err != nil {
+		t.Fatalf("SSHH_TOP_ORG: %v", err)
+	}
+	sub, err := strconv.ParseUint(org, 10, 32)
+	if err != nil {
+		t.Fatalf("SSHH_ORG: %v", err)
+	}
+	// Same precedence as the server request path: a configured default role wins,
+	// otherwise the per-company template. An empty RoleUrn fails inside the executor
+	// with a message that says nothing about which of the two was missing.
+	roleURN := strings.TrimSpace(cfg.Agent.STS.DefaultRoleUrn)
+	if roleURN == "" {
+		roleURN, err = tools.RoleUrnFromTemplate(cfg.Agent.STS.RoleUrnTemplate, uint32(top))
+		if err != nil {
+			t.Fatalf("role urn: %v", err)
+		}
+	}
+	ctx := tools.WithUser(context.Background(), tools.UserContext{
+		TopOrganizationID: uint32(top),
+		OrganizationID:    uint32(sub),
+		CompanyID:         uint32(top),
+		RoleUrn:           roleURN,
+		SessionName:       topOrg + "-" + org,
+		ProjectId:         cfg.Agent.ProjectId,
+		Region:            cfg.Agent.Region,
+	})
+	return tools.NewExternalExecutor(cfg.Agent), ctx
 }
 
 func liveSupervisor() Supervisor {
@@ -130,20 +204,43 @@ func TestLiveKeystone(t *testing.T) {
 // then Diagnose enters over real SSH and runs the real harness. Run it against a box whose NVIDIA
 // user-space driver lib has been relocated to reproduce a "掉卡".
 func TestLiveFullFlow(t *testing.T) {
-	host, port, user, pass := liveEnv(t)
 	if os.Getenv("SSHH_HARNESS") == "" {
 		t.Skip("need SSHH_HARNESS (abs path to harness.py)")
 	}
+	if os.Getenv("SSHH_API_KEY") == "" {
+		t.Skip("need SSHH_API_KEY (ModelVerse API key)")
+	}
 	instanceID := envOr("SSHH_INSTANCE", "uhost-livetest")
 
-	d := liveDescriber(host, port, user, pass, instanceID)
+	// Two describer modes, and the difference decides what the A/B can measure.
+	// The stub carries five fields (id/name/gpu/state/login), so a contextual arm
+	// run against it gets a user report and a row of `unknown` facts — it can
+	// compare fencing, but never whether the FACTS changed the diagnosis. The real
+	// executor is the production Describer the server wires, so the projection sees
+	// the same image/disks/ports/monitor a real turn would.
+	var (
+		d    Describer
+		ctx  = context.Background()
+		pass = os.Getenv("SSHH_PASS")
+	)
+	if os.Getenv("SSHH_REAL_DESCRIBE") == "1" {
+		d, ctx = liveRealDescriber(t)
+	} else {
+		var host, port, user string
+		host, port, user, pass = liveEnv(t)
+		d = liveDescriber(host, port, user, pass, instanceID)
+	}
 	audit := &MemAuditWriter{}
 	sup := liveSupervisor()
-	// Log the arm. Which system prompt and tool description the harness selects is decided here, and
+	// Log the arm. Which system prompt, tool description and contextual prompt shape the harness selects is decided here, and
 	// a run whose arm is invisible cannot be compared with another: an A/B was already spent
 	// measuring two arms that turned out to be the same one, because SSHH_ALLOW_WRITES was silently
 	// not wired at the time and nothing in the output said so.
-	t.Logf("[arm] allow_writes=%v model=%s", sup.AllowWrites, sup.Model)
+	contextEnabled := liveContextEnabled()
+	t.Logf("[arm] allow_writes=%v context=%v model=%s", sup.AllowWrites, contextEnabled, sup.Model)
+	if sup.AllowWrites {
+		t.Skip("TestLiveFullFlow is a read-only A/B; leave SSHH_ALLOW_WRITES unset (no write confirmer is wired)")
+	}
 	svc := NewService(sup, audit)
 
 	// The model already selected DiagnoseInstanceInternals{UHostId, Task} and the user authorized it
@@ -153,7 +250,18 @@ func TestLiveFullFlow(t *testing.T) {
 	task := os.Getenv("SSHH_TASK")
 	t.Logf("[授权后] 进入实例 %s 只读排查 · task=%q", instanceID, task)
 	owner := Owner{TopOrganizationID: 1, OrganizationID: 2, RequestUUID: "live-req-1", TurnID: "live-turn-1"}
-	res, err := svc.Diagnose(context.Background(), d, owner, instanceID, task, func(st Step) {
+	modelContext := opscontext.Context{}
+	if contextEnabled {
+		modelContext.SchemaVersion = opscontext.SchemaVersion
+	}
+	if contextEnabled {
+		if report := envOr("SSHH_CONTEXT_CURRENT_REPORT", task); report != "" {
+			modelContext.CurrentUserReport = &opscontext.UserReport{
+				Text: report, Source: "live_test.user_report", ObservedAt: opscontext.StatusUnknown, Status: opscontext.StatusReported,
+			}
+		}
+	}
+	res, err := svc.DiagnoseWithContext(ctx, d, owner, instanceID, task, modelContext, func(st Step) {
 		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
 	}, nil)
 	t.Logf("\n========== [beat 4] 进入实例排查 · 诊断结论 ==========\n%s\n====================================================", res.Output)
@@ -166,10 +274,23 @@ func TestLiveFullFlow(t *testing.T) {
 	if len(audit.Events) != 2 || audit.Events[0].Disposition != "started" {
 		t.Fatalf("audit not recorded: %+v", audit.Events)
 	}
+	if contextEnabled {
+		if !res.ContextApplied {
+			t.Fatal("context arm did not receive a harness prompt-delivery receipt")
+		}
+		if audit.Events[1].ContextSchemaVersion != opscontext.SchemaVersion {
+			t.Fatalf("finished audit context schema = %d, want %d: %+v", audit.Events[1].ContextSchemaVersion, opscontext.SchemaVersion, audit.Events[1])
+		}
+	} else if res.ContextApplied || audit.Events[1].ContextSchemaVersion != 0 || audit.Events[1].ContextFactCoverage != 0 {
+		t.Fatalf("baseline arm unexpectedly recorded contextual delivery: result=%+v audit=%+v", res, audit.Events[1])
+	}
 	t.Logf("[audit] %d 行: begin=%s finish=%s exit=%d bytes=%d (org=%d/%d, instance=%s, 无凭据)",
 		len(audit.Events), audit.Events[0].Disposition, audit.Events[1].Disposition,
 		audit.Events[1].ExitCode, audit.Events[1].OutputBytes,
 		audit.Events[0].TopOrganizationID, audit.Events[0].OrganizationID, audit.Events[0].InstanceID)
+	t.Logf("[context] requested_schema=%d delivered_schema=%d coverage=%d commands=%d refused=%d first=%s",
+		audit.Events[0].ContextSchemaVersion, audit.Events[1].ContextSchemaVersion, audit.Events[1].ContextFactCoverage,
+		audit.Events[1].CommandsRan, audit.Events[1].CommandsRefused, audit.Events[1].FirstCommandClass)
 }
 
 func containsSecret(s, secret string) bool {

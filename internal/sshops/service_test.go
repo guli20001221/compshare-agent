@@ -5,23 +5,31 @@ import (
 	"encoding/base64"
 	"fmt"
 	"testing"
+
+	"github.com/compshare-agent/internal/opscontext"
 )
 
 // fakeRunner stands in for the Supervisor so Diagnose can be tested without spawning the harness.
 type fakeRunner struct {
-	res      Result
-	err      error
-	calls    int
-	lastCred Credential
-	lastTask string
-	streamed []Step // steps the runner streamed live via onStep (mirrors res.Steps)
-	onRun    func() // optional side effect invoked inside Run (e.g. cancel the request ctx)
+	res         Result
+	err         error
+	calls       int
+	lastCred    Credential
+	lastTask    string
+	lastContext opscontext.Context
+	streamed    []Step // steps the runner streamed live via onStep (mirrors res.Steps)
+	onRun       func() // optional side effect invoked inside Run (e.g. cancel the request ctx)
 }
 
-func (f *fakeRunner) Run(_ context.Context, cred Credential, task string, onStep func(Step), _ ConfirmFunc) (Result, error) {
+func (f *fakeRunner) Run(ctx context.Context, cred Credential, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
+	return f.RunWithContext(ctx, cred, task, opscontext.Context{}, onStep, onConfirm)
+}
+
+func (f *fakeRunner) RunWithContext(_ context.Context, cred Credential, task string, modelContext opscontext.Context, onStep func(Step), _ ConfirmFunc) (Result, error) {
 	f.calls++
 	f.lastCred = cred
 	f.lastTask = task
+	f.lastContext = modelContext
 	// Mirror the real supervisor: emit each step live as it "settles" so Diagnose's onStep
 	// plumbing (and the caller's activity stream) is exercised, not just the returned Steps.
 	for _, st := range f.res.Steps {

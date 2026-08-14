@@ -12,6 +12,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/sshops"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
@@ -24,7 +25,7 @@ const instanceOpsAction = "DiagnoseInstanceInternals"
 // (not the concrete *sshops.Service) so the adapter's rate-limit gate can be unit-tested with a fake
 // that records whether the diagnosis was reached at all — proving a denial spawns nothing (P2 gate 5).
 type instanceOpsDiagnoser interface {
-	Diagnose(ctx context.Context, d sshops.Describer, owner sshops.Owner, instanceID, task string, onStep func(sshops.Step), onConfirm sshops.ConfirmFunc) (sshops.Result, error)
+	DiagnoseWithContext(ctx context.Context, d sshops.Describer, owner sshops.Owner, instanceID, task string, modelContext opscontext.Context, onStep func(sshops.Step), onConfirm sshops.ConfirmFunc) (sshops.Result, error)
 }
 
 // instanceOpsRunner adapts the sshops SSH-ops core to engine.InstanceOpsRunner: it derives the tenant
@@ -94,7 +95,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		onConfirm = func(c sshops.ConfirmRequest) bool { return req.ConfirmWrite(c.Command) }
 	}
 
-	res, err := r.diag.Diagnose(ctx, r.describer, owner, req.InstanceID, req.Task, onStep, onConfirm)
+	res, err := r.diag.DiagnoseWithContext(ctx, r.describer, owner, req.InstanceID, req.Task, req.Context, onStep, onConfirm)
 	if err != nil {
 		// Translate the no-SSH-target sentinel into the engine's transport-agnostic
 		// mirror so the engine gives an honest, non-retryable refusal (e.g. a Windows

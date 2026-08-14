@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/sshops"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/require"
@@ -36,13 +37,14 @@ type fakeDiagnoser struct {
 	lastOwner      sshops.Owner
 	lastInstanceID string
 	lastTask       string
+	lastContext    opscontext.Context
 }
 
-func (f *fakeDiagnoser) Diagnose(_ context.Context, _ sshops.Describer, owner sshops.Owner, instanceID, task string,
+func (f *fakeDiagnoser) DiagnoseWithContext(_ context.Context, _ sshops.Describer, owner sshops.Owner, instanceID, task string, modelContext opscontext.Context,
 	onStep func(sshops.Step), onConfirm sshops.ConfirmFunc) (sshops.Result, error) {
 	f.lastConfirm = onConfirm
 	f.calls++
-	f.lastOwner, f.lastInstanceID, f.lastTask = owner, instanceID, task
+	f.lastOwner, f.lastInstanceID, f.lastTask, f.lastContext = owner, instanceID, task, modelContext
 	for _, st := range f.steps {
 		if onStep != nil {
 			onStep(st)
@@ -93,8 +95,9 @@ func TestInstanceOpsRunner_RateLimitDeniedNeverDiagnoses(t *testing.T) {
 func TestInstanceOpsRunner_CarriesTenantIdentityAndTurnID(t *testing.T) {
 	diag := &fakeDiagnoser{output: "健康"}
 	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+	modelContext := opscontext.Context{SchemaVersion: opscontext.SchemaVersion}
 
-	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "turn-9", InstanceID: "uhost-x", Task: "check gpu"},
+	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "turn-9", InstanceID: "uhost-x", Task: "check gpu", Context: modelContext},
 		func(engine.InstanceOpsProgress) {})
 
 	require.NoError(t, err)
@@ -103,6 +106,7 @@ func TestInstanceOpsRunner_CarriesTenantIdentityAndTurnID(t *testing.T) {
 	require.Equal(t, uint32(8), diag.lastOwner.OrganizationID)
 	require.Equal(t, "turn-9", diag.lastOwner.TurnID, "the INV-9 dedup key must be the engine turn id")
 	require.Equal(t, "turn-9", diag.lastOwner.RequestUUID)
+	require.Equal(t, modelContext, diag.lastContext)
 	require.Equal(t, "uhost-x", diag.lastInstanceID)
 	require.Equal(t, "check gpu", diag.lastTask)
 }
