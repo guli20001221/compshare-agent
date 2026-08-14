@@ -65,6 +65,17 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 	require.Contains(t, text, "根级 status、data、error.code、retryable、next_step、meta 为准")
 	require.Contains(t, text, "NO_CITABLE_EVIDENCE")
 	require.Equal(t, 1, strings.Count(text, "## 工具结果"))
+	// A resource confirmed as reclaimed is a terminal platform fact, not a
+	// customer-service escalation, and must not offer speculative recovery paths
+	// for related assets the user did not separately ask about.
+	require.Contains(t, text, "实时状态确认当前实例已被回收，或当前对象已被系统删除")
+	require.Contains(t, text, "直接告知“无法找回”")
+	require.Contains(t, text, "不得给出或暗示恢复、复查、保留期、人工客服、例外")
+	require.Contains(t, text, "关联资源仍可找回的任何可能")
+	// ...and the rule must keep naming what it does NOT cover. A stopped or
+	// overdue-limited instance IS recoverable, so a terminal-sounding rule with
+	// the exclusions dropped would tell a customer their live data is gone.
+	require.Contains(t, text, "停机、欠费限制、宽限期、回收中不适用")
 	// A call the model itself malformed needs nothing from the user. The
 	// exception is written INTO the needs_input clause rather than after it:
 	// stated separately, the generic "补问缺字段" rule is what the model reads

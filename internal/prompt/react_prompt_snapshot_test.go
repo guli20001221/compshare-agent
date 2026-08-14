@@ -119,8 +119,16 @@ const (
 	// product outside the available tools is unconfirmed. The compact wording
 	// deliberately retains "即使熟悉也先检索": it prevents a familiar-looking
 	// product question from becoming an unsupported platform assertion.
-	mutatingReActPromptSHA256 = "1dd0ab0c493578e5661ea12a83e80cc91d4ea485331dc6f0955d8ae45a472bc1"
-	readOnlyReActPromptSHA256 = "124da5863a3eabf20e29a143054d94fbf43b1c92318c2040e62b3b2097811a18"
+	// 2026-08-14: one line added to the knowledge-turn policy. A resource whose
+	// CURRENT state is confirmed reclaimed or deleted is a terminal platform fact,
+	// and the reply must say so instead of manufacturing a recovery path —
+	// retention window, manual support escalation, or "related resources may still
+	// be recoverable". The exclusions are named in the same sentence (stopped,
+	// overdue-limited, grace period, reclaiming) so the rule cannot swallow the
+	// states that ARE recoverable. Verified byte-for-byte as exactly one added
+	// line in all three shapes; +294 bytes each.
+	mutatingReActPromptSHA256 = "13299dbaeba6fe8ca4f1c44cb79ceda9cf92a742da37276652c974640eb7f333"
+	readOnlyReActPromptSHA256 = "d89a59945d64e5a9ebcbcf368efd07b6115269ec79ec85cf66d340b58c529080"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
 	// That leaves the rollout shape unpinned: deploy/conf/config.prod.yaml already sets
@@ -129,7 +137,7 @@ const (
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
 	// third SHA pins that combination. It includes the same shared 2026-07-31
 	// catalog-candidate contract as the two snapshots above.
-	mutatingWithRepairLaneReActPromptSHA256 = "bd79563bed28beaff5d11ebaf90f232ce956ddd79fdda01347f99284b716d5c4"
+	mutatingWithRepairLaneReActPromptSHA256 = "a4d6e30358e6c0f34ff84c2848ed2c7d266f0cd8ce1f0d49fef5dee519f145a9"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

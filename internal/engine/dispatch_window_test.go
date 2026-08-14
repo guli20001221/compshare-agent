@@ -113,7 +113,16 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// engine.go's parse-error comment and tool_arg_parse_test's fixtures).
 		// That is the over-questioning this budget exists to protect against, so
 		// squeezing the exception into ambiguity would defeat its own purpose.
-		require.LessOrEqual(t, len(system), 4900, "central system prompt grew past its reviewed byte budget")
+		//
+		// 4900 -> 5250 (2026-08-14): +294 bytes for the reclaimed-resource
+		// terminal rule. Bought deliberately: without it a confirmed-reclaimed
+		// instance gets a manufactured recovery path — retention window, manual
+		// support escalation, "related resources may still be recoverable" — for
+		// data the platform has already permanently deleted, which is a worse
+		// failure than any number of bytes. Measured max after the change is 5183
+		// (read-only shape), so the number is the measurement plus a small margin,
+		// not a round number chosen to be safe.
+		require.LessOrEqual(t, len(system), 5250, "central system prompt grew past its reviewed byte budget")
 		require.NotContains(t, system, "更新任务状态",
 			"the retired semantic-memory tool must not remain as a model instruction")
 		// Each Request tool keeps its operation-specific safety boundary and adds
