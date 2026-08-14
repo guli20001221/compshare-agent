@@ -1025,8 +1025,8 @@ check("proto-dispositions",
       [o.get("disposition") for o in _pobjs] == ["refused", "refused", "ran"])
 # Exact set, not a subset: an @@STEP line is metadata that reaches the user's activity stream and an
 # audit row, so a field appearing here is a decision, never a leak. `reason` joined on 2026-08-08 —
-# it carries the SIX-valued disposition the three-valued `disposition` above throws away, which is
-# what lets the server say WHICH gate refused instead of one sentence covering four of them.
+# it carries the fine-grained disposition the three-valued `disposition` above throws away, which is
+# what lets the server say WHICH gate refused instead of one sentence covering all of them at once.
 check("proto-step-fields-present",
       all(set(o) == {"command", "tier", "disposition", "reason", "exit", "bytes"} for o in _pobjs))
 # ...and it must be the specific value, or the server is back to guessing.

@@ -103,6 +103,32 @@ check("legacy-no-reason-does-not-run", res["executed"] is False)
 check("legacy-no-reason-stays-generic", entry["disposition"] == "refused_not_approved")
 check("legacy-no-reason-does-not-claim-decline", "no explicit approval" in res["text"])
 
+# --- every transport reason survives the crossing, and none of them lands as "failed" ------------
+# The Go side computes this closed set once per card (observability.ConfirmationReason*) and it has
+# to arrive intact: the two tests above cover the two ends of the range, and these cover the middle,
+# which is where a table entry gets forgotten. `_DISPOSITION_MAP` is checked per reason because a
+# disposition missing from it does not error — `_wire_disposition` defaults to "failed", which would
+# show the user a command that broke rather than one that was never approved.
+for _reason, _disposition, _needle in [
+    ("user_declined", "refused_user_declined", "the user declined"),
+    ("timeout", "refused_confirmation_timeout", "confirmation timed out"),
+    ("client_disconnect", "refused_client_disconnect", "client connection ended"),
+    ("delivery_failed", "refused_confirmation_delivery_failed", "could not be delivered"),
+    ("broker_cancelled", "refused_confirmation_broker_cancelled", "was cancelled"),
+]:
+    res, entry, _ = dispatch(WRITE, decide=lambda c, _r=_reason: (False, _r))
+    check(f"reason-crosses-intact::{_reason}",
+          res["executed"] is False and entry["disposition"] == _disposition)
+    check(f"reason-is-refused-not-failed::{_reason}",
+          harness._wire_disposition(entry["disposition"]) == "refused")
+    check(f"reason-names-itself-to-the-model::{_reason}", _needle in res["text"])
+    check(f"reason-says-nothing-ran::{_reason}", "NOT EXECUTED" in res["text"])
+# An unknown reason is a newer server talking to this harness. It must degrade to the generic
+# sentence, never guess the nearest known cause.
+res, entry, _ = dispatch(WRITE, decide=lambda c: (False, "some_future_reason"))
+check("unknown-reason-degrades-generic", entry["disposition"] == "refused_not_approved")
+check("unknown-reason-does-not-guess", "declined" not in res["text"] and "timed out" not in res["text"])
+
 # --- every ambiguity is a denial ----------------------------------------------------------------
 # These are the cases where "assume yes" would be catastrophic and silent: the parent died, the
 # reply was garbage, or a stale reply arrived for a different request.
@@ -135,6 +161,10 @@ check("destructive-never-asks", len(io_obj.requests) == 0)
 res, entry, io_obj = dispatch(WRITE, allow_writes=False)
 check("readonly-refuses-without-asking",
       entry["disposition"] == "refused_mutating_phase1" and len(io_obj.requests) == 0)
+# The person on the other end of this lane is the customer who owns the instance, not an operator
+# of ours. The write-mode prompts are pinned in test_write_mode.py; this is the read-only path's
+# one model-visible sentence, which was left behind when the rest was renamed.
+check("readonly-refusal-names-the-user", "for the user" in res["text"] and "operator" not in res["text"])
 
 # --- ids are per-request, so a reply cannot be replayed onto the next command --------------------
 harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw", "allow_writes": True})

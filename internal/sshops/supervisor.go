@@ -105,8 +105,9 @@ type Step struct {
 	Command     string
 	Tier        string
 	Disposition string // "ran" | "refused" | "failed"
-	// Reason is the harness's own six-valued disposition ("refused_destructive",
-	// "refused_form", "refused_not_approved", …) — the fact Disposition throws away. Empty when
+	// Reason is the harness's own fine-grained disposition ("refused_destructive",
+	// "refused_form", "refused_confirmation_timeout", …) — the fact Disposition throws away. The set
+	// is open by design: consumers map what they know and degrade on the rest. Empty when
 	// the harness predates the field, which is why every consumer must degrade rather than switch
 	// exhaustively on it.
 	Reason   string

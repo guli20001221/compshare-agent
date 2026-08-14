@@ -75,6 +75,33 @@ func TestUnknownRefusalReasonDegradesInsteadOfBlanking(t *testing.T) {
 	}
 }
 
+// refused_not_approved is what a harness emits when it can prove only that no approval arrived: an
+// EOF, a malformed reply, a stale id, or a Go supervisor too old to send terminal_reason at all.
+// That last one is not hypothetical — the binary and the harness are separate deploy artifacts
+// (agent.ssh_ops.harness_path), so a rolling upgrade runs one old half against one new half, and
+// this branch is the one it walks through.
+//
+// Absence of an approval is not a decision by the user. The wording therefore may not attribute the
+// refusal to them, and must still state the fact that matters: nothing ran. Asserted as forbidden
+// substrings rather than one literal, because the failure mode is a REWORD back toward blame, not a
+// specific sentence.
+func TestTheCompatibilityDegradeDoesNotInventAUserDecision(t *testing.T) {
+	got := instanceOpsRefusalReason("refused_not_approved")
+	for _, blamed := range []string{"未批准", "拒绝", "取消", "你不同意"} {
+		if strings.Contains(got, blamed) {
+			t.Fatalf("an absent approval was reported as the user's own %q: %q", blamed, got)
+		}
+	}
+	if !strings.Contains(got, "未执行") {
+		t.Fatalf("the degraded reason must still say the command did not run, got %q", got)
+	}
+	// And it has to stay distinguishable from the case where the user really did decline —
+	// otherwise the degrade is just the old bug spelled differently.
+	if got == instanceOpsRefusalReason("refused_user_declined") {
+		t.Fatalf("the degrade and a real decline render identically: %q", got)
+	}
+}
+
 // End to end through the step builder: the specific reason has to reach the user-visible message,
 // not merely exist on the struct.
 func TestCommandStepMessageCarriesTheSpecificReason(t *testing.T) {

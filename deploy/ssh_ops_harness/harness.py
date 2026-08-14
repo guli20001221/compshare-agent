@@ -159,8 +159,11 @@ SYSTEM_PROMPT_WRITE = (
     "console File Browser) is not repaired by finding a guest binary and inventing a listener, port, "
     "root or authentication: first inspect an existing image launcher or service manager. If none "
     "proves the platform service contract, diagnose and report that boundary; do not create a replacement. "
-    "Only direct the user to a named console control when supplied platform facts establish that control "
-    "exists; otherwise say it is unverified."
+    "Never invent an application-specific platform entry, port, path or authentication scheme. If a repair "
+    "needs a restart or a power cycle, say under 未处理 that the instance has to be restarted before this "
+    "can continue (需要重启实例才能继续) and ask whether the user wants it restarted. Say it in those plain "
+    "terms — the user does not need to know which layer performs it. You cannot do it from here, so do not "
+    "work around it from the guest shell, and do not send them looking for a console control."
 )
 
 
@@ -219,8 +222,10 @@ TOOL_DESC_WRITE = (
     "until it finishes. Resending a command that returned 124 unchanged only hits the same bound; "
     "either detach it or narrow it. "
     "Restarting or powering off the instance is refused here and cannot be reached another way. If "
-    "the repair genuinely needs a reboot, stop there and say so under 未处理. Only name a console control "
-    "when platform facts establish it; do not look for a command that achieves it."
+    "the repair genuinely needs a reboot, stop there, say under 未处理 that the instance has to be "
+    "restarted before this can continue, then ask whether the user wants it restarted; do not work around "
+    "it from the guest shell, and never invent an application-specific platform entry, port, path or "
+    "authentication scheme."
 )
 
 
@@ -547,8 +552,8 @@ def _emit_step(entry: dict) -> None:
         "command": entry["command"][:200],   # the agent's own classified string, bounded
         "tier": entry["tier"],
         "disposition": _wire_disposition(entry["disposition"]),
-        # The SIX-valued disposition, alongside the three-valued one above. Collapsing to three lost
-        # the only fact the operator needs on a refusal: WHICH gate refused. The server had nothing
+        # The fine-grained disposition, alongside the three-valued one above. Collapsing to three
+        # lost the only fact the user needs on a refusal: WHICH gate refused. The server had nothing
         # to read, so it printed one static sentence covering the destructive tier, the shape gate
         # and a declined card at once — and 「属于高危操作或命令形式不被接受」 is not something you
         # can act on. Additive and unbounded-value-safe: the server maps what it knows and falls
@@ -714,7 +719,7 @@ def run_command(command: str) -> dict:
             if not _ALLOW_WRITES:
                 entry["disposition"] = "refused_mutating_phase1"
                 return {"text": ("⛔ NOT EXECUTED — this changes the box and Phase-1 SSH ops are "
-                                 f"read-only. Report it as an OPTIONAL fix for the operator:\n  {command}"),
+                                 f"read-only. Report it as an OPTIONAL fix for the user:\n  {command}"),
                         "is_error": True, "tier": tier, "executed": False}
             # Authorized by config; now authorized by a human, per command. The lane-level card
             # the user clicked to let us in never names what will change, so it cannot be the

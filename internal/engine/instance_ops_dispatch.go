@@ -362,17 +362,18 @@ func instanceOpsPhaseNoun() string {
 	return "只读排查"
 }
 
-// A refusal in write mode is NOT "只读模式" — that wording sent the operator looking for a switch
-// that was already on. In write mode the only refusals left are the destructive tier and the shape
-// gate, so the reason has to name those instead.
+// A refusal in write mode is NOT "只读模式" — that wording sent the user looking for a switch that
+// was already on. Write mode still refuses for several distinct reasons — the destructive tier, the
+// shape gate, a command too long to fit on a card, an unverified platform service, and each of the
+// ways a per-command card can end without an approval — so the reason has to name which one.
 //
-// And "those" is plural, which is the whole problem the `reason` argument fixes. The harness writes
-// six distinct dispositions and the wire carried three, so this function had nothing to read and
-// answered every write-mode refusal with one sentence covering the destructive tier, the shape gate,
-// an over-long command and a card the operator declined. 「属于高危操作或命令形式不被接受」 is not a
-// fact anyone can act on: the operator cannot tell a policy refusal from their own click, and the
-// model cannot tell "never going to work" from "resend it split in two" — measured in #516's class,
-// where an unactionable refusal made the run delete half its own probe chain and retry.
+// That plurality is the whole problem the `reason` argument fixes. The harness distinguishes more
+// dispositions than the three-valued wire `disposition` can carry, so this function had nothing to
+// read and answered every write-mode refusal with one sentence covering all of them at once.
+// 「属于高危操作或命令形式不被接受」 is not a fact anyone can act on: the user cannot tell a policy
+// refusal from their own click, and the model cannot tell "never going to work" from "resend it
+// split in two" — measured in #516's class, where an unactionable refusal made the run delete half
+// its own probe chain and retry.
 //
 // An unknown or empty reason keeps exactly the previous wording, so a server ahead of the harness
 // (or behind it) degrades instead of printing a blank.
