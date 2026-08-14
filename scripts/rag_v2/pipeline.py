@@ -37,6 +37,12 @@ HTML_NOISE_RE = re.compile(r"<(?:script|style)\b.*?</(?:script|style)>", re.DOTA
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 SPACE_RE = re.compile(r"[ \t]+")
 BLANK_RE = re.compile(r"\n{3,}")
+EXACT_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:-]*")
+MODEL_NUMBER_RE = re.compile(r"\b(?:[A-Za-z]{1,16}\s*[-_]?\s*)?\d{2,5}(?:\s*(?:GB|GiB|TB|MB|MHz|W))?\b", re.IGNORECASE)
+KNOWN_EXACT_TERMS = {
+    "api", "cli", "comfyui", "cuda", "docker", "linux", "pytorch",
+    "sdk", "sglang", "ssh", "tensorflow", "vllm", "windows",
+}
 
 
 @dataclass(frozen=True)
@@ -284,7 +290,7 @@ def public_docs_url(relative: str) -> str | None:
     return "https://www.compshare.cn/docs/" + rel.strip("/")
 
 
-def collect_internal_docs(root: Path) -> list[SourceDocument]:
+def collect_internal_docs(root: Path, *, source_revision: str = "") -> list[SourceDocument]:
     docs: list[SourceDocument] = []
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(root).as_posix()
@@ -305,6 +311,7 @@ def collect_internal_docs(root: Path) -> list[SourceDocument]:
             surface_url=public_docs_url(rel),
             root=root,
             absolute_path=path,
+            metadata={"source_revision": source_revision} if source_revision else {},
         ))
     return docs
 
@@ -1146,11 +1153,68 @@ def build_chunks(
                     "valid_from": valid_from,
                     "v2_source_kind": doc.source_kind,
                 }
+                # V2's original provenance fields above are already sufficient to
+                # derive a runtime metadata index. These additions make future
+                # GitLab deltas self-describing without forcing a migration of the
+                # frozen public FAQ exports.
+                exact_terms = extract_exact_terms(
+                    doc.title, chunk_title, *heading_path, doc.source_path,
+                    *question_patterns, content[:1600],
+                )
+                if exact_terms:
+                    row["exact_terms"] = exact_terms
+                row["parent_id"] = document_id
+                row["chunk_ordinal"] = (section_index - 1) * 1000 + part_index
+                source_revision = str(doc.metadata.get("source_revision") or "").strip()
+                if source_revision:
+                    row["source_revision"] = source_revision
                 if doc.compatibility:
                     row["compatibility"] = doc.compatibility
                 chunks.append(row)
     chunks.sort(key=lambda item: item["chunk_id"])
     return chunks, {"chunk_count": len(chunks), "duplicate_content_skipped": skipped_duplicates}
+
+
+def extract_exact_terms(*values: str) -> list[str]:
+    """Return a small, display-preserving list of technical identifiers.
+
+    These values are metadata, not embedding input. Runtime normalizes them
+    case-insensitively and uses a match only as a third RRF candidate list, so
+    a stale or broad term cannot exclude the normal lexical/dense candidates.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        term = SPACE_RE.sub(" ", raw.strip()).strip("-_/. :")
+        key = term.casefold()
+        if not term or len(term) > 200 or "://" in term or key in seen:
+            return
+        has_ascii = bool(re.search(r"[A-Za-z0-9]", term))
+        has_digit = any(char.isdigit() for char in term)
+
+        has_letter = bool(re.search(r"[A-Za-z]", term))
+        has_separator = any(char in "-_/." for char in term)
+        camel_case = bool(re.search(r"[a-z][A-Z]", term))
+        if not has_ascii:
+            return
+        if has_digit and not has_letter and len(term) < 3:
+            return
+        if not (has_digit or has_separator or camel_case or key in KNOWN_EXACT_TERMS):
+            return
+        seen.add(key)
+        out.append(term)
+
+    for value in values:
+        if not value:
+            continue
+        for match in MODEL_NUMBER_RE.finditer(value):
+            add(match.group(0))
+        for match in EXACT_IDENTIFIER_RE.finditer(value):
+            add(match.group(0))
+        if len(out) >= 32:
+            break
+    return out[:32]
 
 
 def _question_patterns(title: str, heading_path: list[str], area: str, source_path: str = "", content: str = "") -> list[str]:
@@ -1243,6 +1307,35 @@ def validate_chunks(rows: list[dict[str, Any]], *, expected_version: str) -> lis
             errors.append(f"row {index}: content exceeds {MAX_CONTENT_RUNES}")
         if len(row.get("question_patterns") or []) > 20:
             errors.append(f"row {index}: too many question patterns")
+        metadata_lists = (
+            ("heading_path", 20, 300, False),
+            ("source_refs", 16, 600, True),
+            ("exact_terms", 32, 200, True),
+        )
+        for field_name, max_entries, max_runes, require_unique in metadata_lists:
+            values = row.get(field_name) or []
+            if not isinstance(values, list):
+                errors.append(f"row {index}: {field_name} must be a list")
+                continue
+            if len(values) > max_entries:
+                errors.append(f"row {index}: {field_name} has more than {max_entries} entries")
+            seen_values: set[str] = set()
+            for value_index, value in enumerate(values):
+                text = str(value).strip()
+                if not text:
+                    errors.append(f"row {index}: {field_name}[{value_index}] is empty")
+                if len(text) > max_runes:
+                    errors.append(f"row {index}: {field_name}[{value_index}] exceeds {max_runes} runes")
+                if require_unique and text in seen_values:
+                    errors.append(f"row {index}: {field_name}[{value_index}] duplicates an earlier entry")
+                seen_values.add(text)
+        try:
+            if int(row.get("chunk_ordinal") or 0) < 0:
+                errors.append(f"row {index}: chunk_ordinal must be non-negative")
+        except (TypeError, ValueError):
+            errors.append(f"row {index}: chunk_ordinal must be an integer")
+        if str(row.get("parent_id") or "").strip() and not str(row.get("document_id") or "").strip():
+            errors.append(f"row {index}: parent_id requires document_id")
         for asset_index, asset in enumerate(row.get("asset_refs") or []):
             if not isinstance(asset, dict):
                 errors.append(f"row {index}: asset_refs[{asset_index}] must be an object")

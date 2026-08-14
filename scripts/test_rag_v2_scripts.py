@@ -11,6 +11,7 @@ from scripts.rag_v2.pipeline import (
     build_chunks,
     clean_public_text,
     document_type,
+    extract_exact_terms,
     inject_asset_notes,
     normalize_image_markup,
     merge_external,
@@ -27,6 +28,41 @@ from scripts.rag_v2.pipeline import (
 
 
 class RAGV2PipelineTests(unittest.TestCase):
+
+    def test_v2_chunk_emits_incremental_provenance_and_exact_terms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "pages" / "gpu" / "rtx4090.md"
+            path.parent.mkdir(parents=True)
+            text = "# RTX 4090 配置\n\nComfyUI 可使用 qwen3-reranker-8b，显存为 24GB。"
+            path.write_text(text, encoding="utf-8")
+            doc = SourceDocument(
+                source_id="gitlab-compshare-docs", source_path="pages/gpu/rtx4090.md",
+                source_kind="platform_public_doc", source_origin="official", title="RTX 4090 配置",
+                text=text, surface_url=None, root=root, absolute_path=path,
+                metadata={"source_revision": "abc123"},
+            )
+            rows, _ = build_chunks(
+                [doc], kb_version="kb.platform.v2.test", valid_from="2026-08-02",
+                asset_notes={}, semantic_client=None, semantic_model="unused",
+            )
+            self.assertEqual(1, len(rows))
+            row = rows[0]
+            self.assertEqual(row["document_id"], row["parent_id"])
+            self.assertEqual(1, row["chunk_ordinal"])
+            self.assertEqual("abc123", row["source_revision"])
+            self.assertIn("qwen3-reranker-8b", [term.casefold() for term in row["exact_terms"]])
+            self.assertIn("24GB", row["exact_terms"])
+
+    def test_extract_exact_terms_rejects_plain_natural_language(self):
+        terms = extract_exact_terms("怎么开通套餐", "选择适合的实例")
+        self.assertEqual([], terms)
+
+    def test_extract_exact_terms_ignores_list_markers_but_keeps_numeric_units(self):
+        terms = extract_exact_terms("1. 选择 24GB 显存规格")
+        self.assertNotIn("1", terms)
+        self.assertIn("24GB", terms)
+
     def test_embedding_sidecar_uses_float32_appropriate_precision(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "embeddings.jsonl"

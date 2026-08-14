@@ -32,13 +32,14 @@ func TestProjectEvidenceTraceHitsPropagatesRRFFields(t *testing.T) {
 
 	items := []knowledge.RetrievalHit{
 		{
-			Chunk:       knowledge.KBChunk{ChunkID: "rrf-chunk-a"},
-			Score:       0.42,
-			Kept:        true,
-			BM25Rank:    2,
-			DenseRank:   5,
-			FusionRank:  1,
-			FusionScore: 0.0301,
+			Chunk:        knowledge.KBChunk{ChunkID: "rrf-chunk-a"},
+			Score:        0.42,
+			Kept:         true,
+			BM25Rank:     2,
+			DenseRank:    5,
+			MetadataRank: 1,
+			FusionRank:   1,
+			FusionScore:  0.0301,
 		},
 	}
 
@@ -48,6 +49,7 @@ func TestProjectEvidenceTraceHitsPropagatesRRFFields(t *testing.T) {
 	assert.True(t, hits[0].Kept)
 	assert.Equal(t, 2, hits[0].BM25Rank)
 	assert.Equal(t, 5, hits[0].DenseRank)
+	assert.Equal(t, 1, hits[0].MetadataRank)
 	assert.Equal(t, 1, hits[0].FusionRank)
 	assert.InDelta(t, 0.0301, hits[0].FusionScore, 1e-12)
 }
@@ -86,6 +88,7 @@ func TestProjectEvidenceTraceHitsZeroFieldsForNonRRFMode(t *testing.T) {
 	require.Len(t, hits, 1)
 	assert.Zero(t, hits[0].BM25Rank, "non-RRF modes leave BM25Rank zero")
 	assert.Zero(t, hits[0].DenseRank, "non-RRF modes leave DenseRank zero")
+	assert.Zero(t, hits[0].MetadataRank, "non-RRF modes leave MetadataRank zero")
 	assert.Zero(t, hits[0].FusionRank, "non-RRF modes leave FusionRank zero")
 	assert.Zero(t, hits[0].FusionScore, "non-RRF modes leave FusionScore zero")
 }

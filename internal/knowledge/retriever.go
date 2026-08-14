@@ -285,10 +285,11 @@ type RetrievalHit struct {
 	// reranker overwrites scoredChunk.score with the relevance score; when
 	// debugging "this chunk had high RRF score but reranker demoted it",
 	// the pre-rerank fusion score is the only reliable signal.
-	BM25Rank    int
-	DenseRank   int
-	FusionRank  int
-	FusionScore float64
+	BM25Rank     int
+	DenseRank    int
+	MetadataRank int
+	FusionRank   int
+	FusionScore  float64
 }
 
 type Retriever struct {
@@ -297,6 +298,7 @@ type Retriever struct {
 	threshold        float64
 	now              func() time.Time
 	bm25             retrievalBM25Index
+	metadata         metadataExactIndex
 	embeddingSidecar *EmbeddingSidecar
 	embedder         VectorEmbedder
 	embeddingModel   string
@@ -352,6 +354,7 @@ func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
 		threshold:        threshold,
 		now:              now,
 		bm25:             newRetrievalBM25Index(corpus.Chunks),
+		metadata:         newMetadataExactIndex(corpus.Chunks),
 		embeddingSidecar: opts.EmbeddingSidecar,
 		embedder:         opts.Embedder,
 		embeddingModel:   opts.EmbeddingModel,
@@ -468,6 +471,7 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 	rerankerFallbackReason := ""
 	rrfInfo := map[string]rrfRankInfo(nil)
 	if r.mode == RetrievalModeQwen3RRF {
+		metadataCandidates := r.metadata.candidates(question, r.corpus.Chunks, r.now())
 		// CRITICAL: do NOT gate on len(bm25Candidates) > 0. The entire
 		// value of RRF is recovering BM25-zero-hit queries via the dense
 		// leg. The cascade path skips the embedder when BM25 is empty
@@ -493,7 +497,7 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 			if r.rerankerEnabled() {
 				fuseTopN = rerankerPoolSize
 			}
-			fused, info := rrfFusion(bm25Candidates, denseTopN, fuseTopN)
+			fused, info := rrfFusionWithMetadata(bm25Candidates, denseTopN, metadataCandidates, fuseTopN)
 			finalCandidates = fused
 			rrfInfo = info
 			hybridMode = "qwen3_rrf"
@@ -584,6 +588,7 @@ func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {
 		if info, ok := rrfInfo[candidate.chunk.ChunkID]; ok {
 			hit.BM25Rank = info.BM25Rank
 			hit.DenseRank = info.DenseRank
+			hit.MetadataRank = info.MetadataRank
 			hit.FusionRank = info.FusionRank
 			hit.FusionScore = info.FusionScore
 		}
@@ -938,17 +943,19 @@ func dateOnlyBeijing(t time.Time) time.Time {
 // rrfRankInfo carries per-chunk diagnostics from a Reciprocal Rank Fusion
 // pass. Used by the qwen3_rrf retrieval path to populate RetrievalHit's
 // debug fields so trace consumers can attribute "why did this chunk rise
-// to the top": was it BM25-driven, dense-driven, or fused from both?
+// to the top": was it BM25-driven, dense-driven, metadata-driven, or fused
+// from several signals?
 //
 // All ranks are 1-indexed. Zero means "absent from that input list".
 // FusionScore is preserved separately because a downstream reranker may
 // overwrite RetrievalHit.Score, and we still want to debug "high RRF
 // score but reranker demoted it" cases from trace alone.
 type rrfRankInfo struct {
-	BM25Rank    int
-	DenseRank   int
-	FusionRank  int
-	FusionScore float64
+	BM25Rank     int
+	DenseRank    int
+	MetadataRank int
+	FusionRank   int
+	FusionScore  float64
 }
 
 // rrfFusion combines two ranked lists via Reciprocal Rank Fusion with the
@@ -969,26 +976,31 @@ type rrfRankInfo struct {
 //   - Elastic 8.8+ rank_constant default + OpenSearch 2.19+ score-ranker.
 //   - Vespa phased ranking + LlamaIndex QueryFusionRetriever.
 func rrfFusion(bm25List, denseList []scoredChunk, topN int) ([]scoredChunk, map[string]rrfRankInfo) {
-	scores := make(map[string]float64, len(bm25List)+len(denseList))
-	chunks := make(map[string]KBChunk, len(bm25List)+len(denseList))
-	ranks := make(map[string]rrfRankInfo, len(bm25List)+len(denseList))
+	return rrfFusionWithMetadata(bm25List, denseList, nil, topN)
+}
 
-	for i, c := range bm25List {
-		cid := c.chunk.ChunkID
-		scores[cid] += 1.0 / float64(rrfK+i+1)
-		chunks[cid] = c.chunk
-		info := ranks[cid]
-		info.BM25Rank = i + 1
-		ranks[cid] = info
+// rrfFusionWithMetadata preserves the canonical BM25+dense fusion while
+// allowing precise V2 metadata matches to contribute a third ranked list.
+// Passing nil metadata is byte-for-byte equivalent to rrfFusion and keeps the
+// existing two-lane contract available to callers and tests.
+func rrfFusionWithMetadata(bm25List, denseList, metadataList []scoredChunk, topN int) ([]scoredChunk, map[string]rrfRankInfo) {
+	scores := make(map[string]float64, len(bm25List)+len(denseList)+len(metadataList))
+	chunks := make(map[string]KBChunk, len(bm25List)+len(denseList)+len(metadataList))
+	ranks := make(map[string]rrfRankInfo, len(bm25List)+len(denseList)+len(metadataList))
+
+	addRankedList := func(list []scoredChunk, setRank func(*rrfRankInfo, int)) {
+		for i, c := range list {
+			cid := c.chunk.ChunkID
+			scores[cid] += 1.0 / float64(rrfK+i+1)
+			chunks[cid] = c.chunk
+			info := ranks[cid]
+			setRank(&info, i+1)
+			ranks[cid] = info
+		}
 	}
-	for i, c := range denseList {
-		cid := c.chunk.ChunkID
-		scores[cid] += 1.0 / float64(rrfK+i+1)
-		chunks[cid] = c.chunk
-		info := ranks[cid]
-		info.DenseRank = i + 1
-		ranks[cid] = info
-	}
+	addRankedList(bm25List, func(info *rrfRankInfo, rank int) { info.BM25Rank = rank })
+	addRankedList(denseList, func(info *rrfRankInfo, rank int) { info.DenseRank = rank })
+	addRankedList(metadataList, func(info *rrfRankInfo, rank int) { info.MetadataRank = rank })
 
 	fused := make([]scoredChunk, 0, len(scores))
 	for cid, score := range scores {
