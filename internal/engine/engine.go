@@ -308,6 +308,15 @@ type Engine struct {
 	// turn-aggregate retrieval trace and must never gate, rewrite or replace an
 	// answer (see finalizeAgentLoopKnowledgeAnswer).
 	answerEchoedChunkIDThisTurn string
+	// answerCitationsBlockThisTurn is this turn's rendered 参考来源 block, or "" when
+	// the answer cited nothing checkable. DISPLAY ONLY: the final-text branch
+	// composes it onto the reply the user reads and deliberately records the reply
+	// WITHOUT it in e.messages, so the model never meets a rendered documentation
+	// URL in its own history and cannot learn to produce one from memory. A URL in
+	// prose would bypass the surface-policy and liveness filters that are the only
+	// reason a link here can be trusted. Same display/history split the verbatim
+	// billing card already uses for its figures. Reset per turn.
+	answerCitationsBlockThisTurn string
 	// readChunkCallsThisTurn / readChunkIDsThisTurn bound the full-body ReadChunk
 	// tool: the call budget withdraws it once spent, and the id set makes a
 	// re-read of the same chunk a no-op instead of a second copy in context.
@@ -1440,6 +1449,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.answerEchoedChunkIDThisTurn = ""
+	e.answerCitationsBlockThisTurn = ""
 	e.readChunkCallsThisTurn = 0
 	e.readChunkIDsThisTurn = nil
 	e.searchKnowledgeCapabilitiesThisTurn = nil
@@ -1748,6 +1758,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			draft := rawContent
 			content := e.finalizeResponse(ctx, userMsg, draft)
 			e.commitDisplayedResourceSelectionIfVisible(content)
+			// displayed is what the user reads; content is what the model reads
+			// next turn. They differ only by this turn's 参考来源 block, which is
+			// deliberately kept out of history — see answerCitationsBlockThisTurn.
+			displayed := withAnswerCitations(content, e.answerCitationsBlockThisTurn)
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
@@ -1758,22 +1772,23 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				// carry that break too. Emitted only when the Agent actually adds text —
 				// mirroring compose, which returns the block alone when the reply is
 				// empty (the pure-billing shape), so nothing trails the card there.
-				if len(e.verbatimBlocksThisTurn) > 0 && content != "" {
+				if len(e.verbatimBlocksThisTurn) > 0 && displayed != "" {
 					opts.OnTextDelta(verbatimBlockSeparator)
 				}
-				if content == rawContent {
+				if displayed == rawContent {
 					for _, delta := range streamedDeltas {
 						opts.OnTextDelta(delta)
 					}
 				} else {
-					opts.OnTextDelta(content)
+					opts.OnTextDelta(displayed)
 				}
 			}
 			// An empty content here means the Agent deliberately added nothing after a
 			// verbatim block (finalizeResponse only returns "" in that case). Recording
 			// an empty assistant message would put a contentless turn into history for
 			// every later request; the block itself is intentionally NOT recorded, so the
-			// figures stay out of the model's context.
+			// figures stay out of the model's context. The 参考来源 block is held out
+			// of this message for the same reason: content, never displayed.
 			if content != "" {
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
@@ -1792,7 +1807,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 					Content: verbatimBillingHistoryCompletion,
 				})
 			}
-			return agentruntime.Final(content, agentruntime.FinishFinalAnswer), nil
+			return agentruntime.Final(displayed, agentruntime.FinishFinalAnswer), nil
 		}
 
 		// Has tool calls → execute each and feed results back.
@@ -1940,10 +1955,12 @@ func evidencesFromRetrievalHits(items []knowledge.RetrievalHit, queryNormalized 
 	producedAt := time.Now().UTC()
 	for _, item := range items {
 		score := item.Score
+		// Both URL fields, via the shared reader: the deployed corpus emits
+		// surface_url and no longer emits source_url, so reading only the legacy
+		// field left every projected Evidence with a nil SurfaceURL.
 		var surfaceURL *string
-		if strings.TrimSpace(item.Chunk.SourceURL) != "" {
-			url := strings.TrimSpace(item.Chunk.SourceURL)
-			surfaceURL = &url
+		if raw := chunkSurfaceURL(item.Chunk); raw != "" {
+			surfaceURL = &raw
 		}
 		evidence, err := envelope.NewEvidence(envelope.EvidenceInput{
 			SourceTitle:     item.Chunk.Title,

@@ -325,6 +325,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-session for the same reason as the hits it is derived from. Reset
 		// every turn.
 		"answerEchoedChunkIDThisTurn": true,
+		// Per-turn rendered 参考来源 block, display-only. Per-session for the same
+		// reason as the hits it is built from: sharing it would label one tenant's
+		// answer with the pages another tenant's retrieval surfaced. Reset every
+		// turn.
+		"answerCitationsBlockThisTurn": true,
 		// Per-turn ReadChunk budget + already-read set. Per-session by design —
 		// a shared read budget would let one tenant withdraw the tool from
 		// another's turn, and a shared read set would suppress a chunk body the
@@ -495,12 +500,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 98, len(perSessionFields); want != got {
+	if want, got := 99, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 104, typ.NumField(); want != got {
+	if want, got := 105, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}
