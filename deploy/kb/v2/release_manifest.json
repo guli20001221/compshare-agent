@@ -1,15 +1,15 @@
 {
   "schema_version": "compshare.rag.release.v2",
-  "generated_at": "2026-07-23T07:04:52.967276+00:00",
-  "release_id": "rag-v2-2026-07-23",
+  "generated_at": "2026-08-14T04:43:41.370874+00:00",
+  "release_id": "rag-v2-2026-08-14",
   "sources": [
     {
       "id": "gitlab-compshare-docs",
       "kind": "git",
-      "revision": "8a81268e3d275d4767d045554680e7c5ddf82a9d",
-      "file_count": 401,
-      "byte_count": 27376180,
-      "sha256": "49cecb4b40bd39c39952893aa3c9cc00da0bafb32e76a188903fdf3f2b7b59e2"
+      "revision": "0cd491da5e8cd5b6d63e772fbdbb3bf1edf61cd5",
+      "file_count": 421,
+      "byte_count": 27722757,
+      "sha256": "d1cfb81920bee219e5bec9b58fda6f40c667d840c25bb4c95054c29b62f18a44"
     },
     {
       "id": "legacy-external-unrebuildable",
@@ -66,25 +66,11 @@
   "artifacts": {
     "internal_corpus": {
       "path": "deploy/kb/v2/stage2b_v2.jsonl",
-      "sha256": "c4421ea2ef5b9f83226d36d2c2d3b5bc0b319591af59dc659b6d341316959870"
+      "sha256": "8007f0e64f32ef34a415be97bba0b28ab2d0a3396634bb9977e7f44db54407f3"
     },
     "external_corpus": {
       "path": "deploy/kb/v2/external_v2.jsonl",
-      "sha256": "9b30c68385c3f5ef028b377300dc0a962be3c7acc640413fc084b5be9cd5ad0d"
-    },
-    "internal_embeddings": {
-      "path": "deploy/kb/embeddings_c4421ea2ef5b9f83226d36d2c2d3b5bc0b319591af59dc659b6d341316959870_qwen3-embedding-8b.jsonl",
-      "sha256": "e0bd57ee7f4fb3de588486761f6ca5564727cecb1cb2d8df6a6f7dae9533db32",
-      "model": "qwen3-embedding-8b",
-      "dim": 4096,
-      "rows": 544
-    },
-    "external_embeddings": {
-      "path": "deploy/kb/embeddings_9b30c68385c3f5ef028b377300dc0a962be3c7acc640413fc084b5be9cd5ad0d_qwen3-embedding-8b.jsonl",
-      "sha256": "4516e2e4638b774afbbd7cd92d86db480115f5f06ea70967dfbdbc90de59af65",
-      "model": "qwen3-embedding-8b",
-      "dim": 4096,
-      "rows": 1200
+      "sha256": "74f7356746d3262243dae80ece54a161cb76be77c2c2aa73964d53a3d55113e1"
     }
   },
   "report": {
@@ -109,7 +95,7 @@
       }
     },
     "assets": {
-      "described": 1935,
+      "described": 1940,
       "published": 0,
       "runtime_mode": "caption_only",
       "failures": [
@@ -5058,21 +5044,27 @@
       ]
     },
     "internal": {
-      "chunk_count": 544,
+      "chunk_count": 526,
       "duplicate_content_skipped": 0,
-      "documents": 240
+      "headings_only_skipped": 16,
+      "documents": 237
     },
     "external": {
-      "chunk_count": 945,
-      "duplicate_content_skipped": 145,
+      "chunk_count": 934,
+      "duplicate_content_skipped": 142,
+      "headings_only_skipped": 13,
       "documents": 246,
       "legacy_chunks_retained": 255,
-      "merged_chunk_count": 1200,
+      "merged_chunk_count": 1189,
       "merge_duplicates_skipped": 0
+    },
+    "semantic_split": {
+      "deterministic_boundary_pass": 21,
+      "locked_mechanical:no_reason_recorded_gt40_blocks": 14,
+      "locked_mechanical:no_reason_recorded_le40_blocks": 18,
+      "locked_planned": 34,
+      "short_enough_no_split": 1393,
+      "unsplittable_hard_split": 4
     }
-  },
-  "promotion": {
-    "internal_runtime_path": "deploy/kb/stage2b_w0.jsonl",
-    "external_runtime_path": "deploy/kb/external_w0.jsonl"
   }
 }
