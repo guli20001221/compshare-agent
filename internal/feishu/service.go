@@ -149,7 +149,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.AppSecret,
 		larkws.WithEventHandler(eventHandler),
 	)
-	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, platform_readonly=%t, auto_reply_new_topics=%t, console_handoff=%t, client_handoff=%t", len(s.allowed), workers, s.cfg.EnablePlatformReadOnlyQueries, s.cfg.AutoReplyNewTopics, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "")
+	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, platform_readonly=%t, auto_reply_new_topics=%t, auto_reply_all_messages=%t, console_handoff=%t, client_handoff=%t", len(s.allowed), workers, s.cfg.EnablePlatformReadOnlyQueries, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "")
 	started := make(chan error, 1)
 	go func() {
 		started <- client.Start(ctx)
@@ -177,7 +177,7 @@ func (s *Service) onMessage(_ context.Context, event *larkim.P2MessageReceiveV1)
 		return nil
 	}
 	mentioned := mentionedBot(message.Mentions, s.botOpenID, s.botUserID)
-	if !shouldRespond(message, mentioned, s.cfg.AutoReplyNewTopics) {
+	if !shouldRespond(message, mentioned, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages) {
 		return nil
 	}
 	input, ok := inputFromMessage(message)
@@ -209,8 +209,8 @@ func (s *Service) onMessage(_ context.Context, event *larkim.P2MessageReceiveV1)
 	return nil
 }
 
-func shouldRespond(message *larkim.EventMessage, mentioned, autoReplyNewTopics bool) bool {
-	return mentioned || (autoReplyNewTopics && isNewTopicRoot(message))
+func shouldRespond(message *larkim.EventMessage, mentioned, autoReplyNewTopics, autoReplyAllMessages bool) bool {
+	return autoReplyAllMessages || mentioned || (autoReplyNewTopics && isNewTopicRoot(message))
 }
 
 func (s *Service) worker(ctx context.Context) {

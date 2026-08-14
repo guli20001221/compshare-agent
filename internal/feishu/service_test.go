@@ -52,3 +52,61 @@ func TestNewTopicIsQueuedWithoutMentionButReplyIsNot(t *testing.T) {
 	require.NoError(t, service.onMessage(context.Background(), replyEvent))
 	require.Empty(t, service.queue, "topic replies without @bot must not trigger automatic chatter")
 }
+
+func TestTopicReplyIsQueuedWithoutMentionWhenAllMessagesEnabled(t *testing.T) {
+	service := &Service{
+		cfg:     config.FeishuConfig{AutoReplyAllMessages: true},
+		allowed: map[string]struct{}{"oc_topic": {}},
+		queue:   make(chan job, 1),
+		seen:    make(map[string]time.Time),
+	}
+	chatType := "group"
+	chatID := "oc_topic"
+	senderType := "user"
+	messageType := "text"
+	content := `{"text":"继续看这个截图"}`
+	threadID := "omt_topic"
+	rootMessageID := "om_root"
+	replyMessageID := "om_reply"
+	event := &larkim.P2MessageReceiveV1{
+		Event: &larkim.P2MessageReceiveV1Data{
+			Sender: &larkim.EventSender{SenderType: &senderType},
+			Message: &larkim.EventMessage{
+				MessageId: &replyMessageID, RootId: &rootMessageID, ParentId: &rootMessageID,
+				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &content,
+				ThreadId: &threadID,
+			},
+		},
+	}
+	require.NoError(t, service.onMessage(context.Background(), event))
+	require.Len(t, service.queue, 1)
+	queued := <-service.queue
+	require.Equal(t, "继续看这个截图", queued.question)
+	require.Equal(t, "oc_topic:omt_topic", queued.topicKey)
+}
+
+func TestAllMessagesStillIgnoresBotSender(t *testing.T) {
+	service := &Service{
+		cfg:     config.FeishuConfig{AutoReplyAllMessages: true},
+		allowed: map[string]struct{}{"oc_topic": {}},
+		queue:   make(chan job, 1),
+		seen:    make(map[string]time.Time),
+	}
+	chatType := "group"
+	chatID := "oc_topic"
+	senderType := "bot"
+	messageType := "text"
+	content := `{"text":"机器人自己的回复"}`
+	messageID := "om_bot"
+	event := &larkim.P2MessageReceiveV1{
+		Event: &larkim.P2MessageReceiveV1Data{
+			Sender: &larkim.EventSender{SenderType: &senderType},
+			Message: &larkim.EventMessage{
+				MessageId: &messageID, ChatId: &chatID, ChatType: &chatType,
+				MessageType: &messageType, Content: &content,
+			},
+		},
+	}
+	require.NoError(t, service.onMessage(context.Background(), event))
+	require.Empty(t, service.queue)
+}

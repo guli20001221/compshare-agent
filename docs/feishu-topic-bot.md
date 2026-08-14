@@ -3,8 +3,8 @@
 这套接入实现以下效果：
 
 - 白名单话题群成员点击右下角“＋”创建新话题后，机器人自动回答；外部群还需发布 `im:message.group_msg` 权限和对外共享能力；
-- 同一话题里的后续追问需要 `@机器人`，避免机器人插入所有人工讨论；
-- 普通群仍然需要 `@机器人`；
+- 已启用全消息模式时，白名单话题群内的每条用户消息都会自动回复；关闭该模式后，同一话题里的后续追问才需要 `@机器人`；
+- 非白名单群仍不会被处理；
 - 问题交给当前部署的 Compshare Agent，而不是交给飞书生成答案；
 - 机器人始终在原消息所属的话题中回复；
 - 同一话题会复用上下文，不同话题互不串线；
@@ -51,6 +51,8 @@ feishu:
   user_email: "feishu-bot@compshare.local"
   allowed_chat_ids: ["oc_xxx"]
   auto_reply_new_topics: true
+  # true：白名单群内所有用户消息免 @；false：仅新话题根消息免 @。
+  auto_reply_all_messages: true
   # 默认 false 保持旧版纯 RAG；true 开启受限的公共平台查询。
   enable_platform_readonly_queries: true
   # 仅在知识库/公共平台查询需要进一步实例内诊断时显示；URL 应指向已登录的控制台入口。
@@ -69,7 +71,7 @@ feishu:
 
 `allowed_chat_ids` 是必须配置的群白名单。第一次联调不知道群 ID 时，可以临时写成 `["*"]`。在群里创建一条测试话题后，启动日志会显示 `chat=oc_xxx`；把该值写进白名单并移除 `"*"`。
 
-开启 `auto_reply_new_topics` 后，所有已加入白名单的**话题根消息**都会被自动回答；飞书在消息事件中将话题群也标记为 `chat_type=group`，由非空 `thread_id` 且为空的 `root_id`、`parent_id` 识别根消息。这同时适用于内部群和已开通 `im:message.group_msg` 的外部群。话题里的评论、普通群消息仍需 `@机器人`。图片最大值应与 `agent.ocr.max_bytes` 保持一致；当前部署均为 5 MB。富文本内有多张图片时，当前版本读取第一张。回答会以飞书 `post` 消息中的 `md` 元素发送，而不是文本消息，因此 CommonMark/GFM 的常用格式会在飞书中渲染。
+`auto_reply_all_messages: true` 会使所有已加入白名单的群内**用户消息**进入机器人；消息仍受 `allowed_chat_ids` 限制，且机器人发送的消息会由 `sender_type=user` 检查排除，因此不会自我回复。关闭该开关时，`auto_reply_new_topics` 才控制白名单话题根消息的免 `@` 回答；话题评论和普通群消息仍需 `@机器人`。无论哪种模式，未开通 `im:message.group_msg` 的应用都只能收到 `@机器人` 的群消息。飞书在消息事件中将话题群也标记为 `chat_type=group`，由非空 `thread_id` 且为空的 `root_id`、`parent_id` 识别根消息。图片最大值应与 `agent.ocr.max_bytes` 保持一致；当前部署均为 5 MB。富文本内有多张图片时，当前版本读取第一张。回答会以飞书 `post` 消息中的 `md` 元素发送，而不是文本消息，因此 CommonMark/GFM 的常用格式会在飞书中渲染。
 
 生产部署读取 `config.prod.yaml`，该文件会继承 `config.local.yaml` 并显式启用此开关；全部配置仍留在 YAML 中，无需在部署机额外输入开关参数。
 

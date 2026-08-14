@@ -4,10 +4,11 @@ extends: config.local.yaml
 
 agent:
   # Keep the public production overlay credential-free. The baseline config
-  # contains the allowlist and Feishu credentials; this enables root-topic
-  # replies without requiring an @ mention in that allowlisted topic group.
+  # contains the allowlist and Feishu credentials; this enables every user
+  # message in that allowlisted topic group to be answered without an @ mention.
   feishu:
     auto_reply_new_topics: true
+    auto_reply_all_messages: true
     # Keep the external group limited to reviewed public catalog/inventory
     # reads. Account/instance reads, diagnoses and every write remain absent.
     enable_platform_readonly_queries: true

@@ -43,10 +43,11 @@ func TestProductionConfigUsesProductionKnowledgeService(t *testing.T) {
 	assert.Equal(t, "2003:da8:2004:1000:0a3c:7623:2712:f9c0", cfg.Agent.MySQL.HostOverride)
 }
 
-func TestProductionConfigEnablesAllowlistedTopicRootAutoReplies(t *testing.T) {
+func TestProductionConfigEnablesAllowlistedTopicAutoReplies(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	require.NoError(t, err)
 	assert.True(t, cfg.Agent.Feishu.AutoReplyNewTopics)
+	assert.True(t, cfg.Agent.Feishu.AutoReplyAllMessages)
 }
 
 func TestLoad_ExtendsBaseConfigAndOverridesNestedValues(t *testing.T) {

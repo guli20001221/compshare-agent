@@ -79,8 +79,13 @@ type FeishuConfig struct {
 	UserEmail      string   `yaml:"user_email"`
 	AllowedChatIDs []string `yaml:"allowed_chat_ids"`
 	// AutoReplyNewTopics answers a topic_group root message without requiring
-	// an @ mention. Replies inside the topic still require an @ mention.
+	// an @ mention when AutoReplyAllMessages is disabled. Replies inside the
+	// topic otherwise still require an @ mention.
 	AutoReplyNewTopics bool `yaml:"auto_reply_new_topics"`
+	// AutoReplyAllMessages answers every user message in an allowlisted group
+	// without requiring an @ mention. It supersedes AutoReplyNewTopics while
+	// retaining the chat allowlist and the adapter's bot-message loop guard.
+	AutoReplyAllMessages bool `yaml:"auto_reply_all_messages"`
 	// EnablePlatformReadOnlyQueries switches the Feishu adapter from its legacy
 	// RAG-only window to the fail-closed public-platform query window. That
 	// window contains only publicly safe catalog/inventory reads; it never

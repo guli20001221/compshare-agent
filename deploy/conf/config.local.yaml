@@ -27,9 +27,11 @@ agent:
     user_email: "feishu-bot@compshare.local"
     # 必填白名单。首次联调可临时写 ["*"]，从日志取得 chat_id 后立即收紧。
     allowed_chat_ids: ["oc_2b31629a0c15e04e41fc53e74c270084"]
-    # 只对允许群里的新话题根消息免 @ 回答。话题内的后续评论仍必须 @机器人，
-    # 防止把正常的用户讨论当作机器人提问。
+    # 兼容开关：仅新话题根消息免 @。生产下方已开启全消息模式，
+    # 因此同一白名单话题内的每条用户消息都会进入该话题会话。
     auto_reply_new_topics: true
+    # 仅作用于 allowed_chat_ids；机器人消息仍被 sender_type=user 过滤，不会自我回复。
+    auto_reply_all_messages: true
     # 外部群可查询公共平台目录与实时库存；账号、实例、诊断和写操作仍不会开放。
     enable_platform_readonly_queries: true
     max_concurrent: 4
