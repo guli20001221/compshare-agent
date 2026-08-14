@@ -171,13 +171,23 @@ func monitorFacts(ctx context.Context, d Describer, instanceID, observedAt strin
 // image, not this box, and only an SSH check can promote it to an observation.
 //
 // The endpoint takes no instance argument (region is filled in by the executor), so the response is
-// the region's whole catalog; it is correlated down to the software THIS instance declares. When the
-// declared list is unavailable the catalog is passed through capped instead of dropped, because a
-// bounded superset is still a usable prior and dropping it silently would be indistinguishable from
-// the endpoint failing.
+// the REGION'S whole catalog and correlating it down to the software this instance declares is what
+// makes it about this instance at all. When the declared list is unavailable that correlation cannot
+// happen — and then the fact ships under a DIFFERENT KEY, because a region-wide list published as
+// `catalog.expected_software_ports` would be a name asserting a relevance the value does not have:
+// another image's FileBrowser port would arrive as this box's expected port and send the diagnosis
+// after a service that was never installed. It is still worth sending (a bounded superset is a real
+// prior, and dropping it silently would look identical to the endpoint failing) — under a name, and
+// a prompt note, that say it is uncorrelated.
 func catalogFacts(ctx context.Context, d Describer, software []string, observedAt string) []opscontext.Fact {
+	// Chosen from what is known BEFORE the call, so every return path below — unavailable, empty,
+	// populated — uses one key and the audit cannot show a fact under two names for one run.
+	key := "catalog.expected_software_ports"
+	if len(software) == 0 {
+		key = "catalog.region_port_hints"
+	}
 	if d == nil {
-		return []opscontext.Fact{instanceContextFact("catalog.expected_software_ports", "unavailable", instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
+		return []opscontext.Fact{instanceContextFact(key, "unavailable", instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
 	}
 	catalogCtx, cancel := context.WithTimeout(ctx, instanceContextCatalogTimeout)
 	defer cancel()
@@ -193,7 +203,7 @@ func catalogFacts(ctx context.Context, d Describer, software []string, observedA
 		}
 		log.Printf("ssh-ops: instance context software-port catalog %s after %s (budget %s): %v",
 			reason, elapsed.Round(time.Millisecond), instanceContextCatalogTimeout, err)
-		return []opscontext.Fact{instanceContextFact("catalog.expected_software_ports", "unavailable", instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
+		return []opscontext.Fact{instanceContextFact(key, "unavailable", instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
 	}
 	entries := instanceContextCatalogEntries(raw, software)
 	if len(entries) == 0 {
@@ -202,9 +212,9 @@ func catalogFacts(ctx context.Context, d Describer, software []string, observedA
 		// would be read as "nothing should be listening", which is the opposite of what it says.
 		log.Printf("ssh-ops: instance context software-port catalog empty_result in %s (budget %s): %d declared software name(s)",
 			elapsed.Round(time.Millisecond), instanceContextCatalogTimeout, len(software))
-		return []opscontext.Fact{instanceContextFact("catalog.expected_software_ports", entries, instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
+		return []opscontext.Fact{instanceContextFact(key, entries, instanceContextSourceCatalog, observedAt, opscontext.StatusUnknown)}
 	}
-	return []opscontext.Fact{instanceContextFact("catalog.expected_software_ports", entries, instanceContextSourceCatalog, observedAt, opscontext.StatusReported)}
+	return []opscontext.Fact{instanceContextFact(key, entries, instanceContextSourceCatalog, observedAt, opscontext.StatusReported)}
 }
 
 func instanceContextCoverage(facts []opscontext.Fact) uint32 {
@@ -243,6 +253,13 @@ func instanceContextCoverage(facts []opscontext.Fact) uint32 {
 			// status it actually carries, or coverage would under-report a fact that was sent.
 			if fact.Status == opscontext.StatusReported {
 				coverage |= opscontext.CoverageCatalogPorts
+			}
+		case "catalog.region_port_hints":
+			// Its own bit, so the audit can tell "the model got this instance's expected ports"
+			// from "the model got an uncorrelated region list" — the two support very different
+			// conclusions, and one bit for both would hide which one a run actually had.
+			if fact.Status == opscontext.StatusReported {
+				coverage |= opscontext.CoverageRegionPortHints
 			}
 		default:
 			if instanceContextMonitorKey(fact.Key) {

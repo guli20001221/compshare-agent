@@ -78,6 +78,12 @@ Python/Claude CLI 子进程的最小环境，不会复用完整的服务进程�
    `known`）。这四个键任何一个都不证明实例里真的有进程在听——那只有 SSH 查完的
    `guest.listeners` 能说，它的初值是 `not_observed`。
 
+   `DescribeCompShareSoftwarePort` **不接受实例参数**（只有 Region），返回的是整个区域的目录，
+   靠 `Softwares[].Name` 关联下来才与这台实例有关。**关联不上时事实换一个键**：
+   `catalog.region_port_hints`，围栏文案同步写明"这是未关联到本实例的区域目录，其中的软件并不
+   已知装在这台机器上"。不换键的话，别的镜像的 FileBrowser 端口会以"本实例预期端口"的名义进入
+   提示词，把排查引向一个从没装过的服务。审计里两者也是不同的 coverage 位。
+
    `context_fact_coverage` 是位掩码，新位只追加不重排（`internal/opscontext/context.go`）。
    注意 `CoveragePortHints`（16）在 v1 行里同时代表了 forwards，所以**跨版本比较这一位之前先按
    `context_schema_version` 分组**。

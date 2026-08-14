@@ -16,7 +16,10 @@ const (
 	// single key invited the model to read either as the other — and as evidence of a
 	// guest listener, which neither is. v2 splits them and adds what the lane could
 	// state but never did: the software this instance declares, and the image
-	// catalog's EXPECTED port for that software.
+	// catalog's EXPECTED port for that software — or, when the declared list is
+	// unavailable and the catalog therefore cannot be correlated, the same data
+	// under `catalog.region_port_hints`, a name that does not claim it applies to
+	// this instance.
 	//
 	// Version compatibility is deliberately asymmetric. An older harness rejects an
 	// unknown version and degrades to a task-only run — no facts, but no misread
@@ -53,7 +56,11 @@ const (
 	CoverageMonitor
 	CoverageTCPForwards
 	CoverageSoftware
+	// CoverageCatalogPorts means the catalog was correlated to this instance's declared software.
+	// CoverageRegionPortHints means it could not be, and the model received a region-wide list under
+	// a name that says so. Separate bits because the two support different conclusions.
 	CoverageCatalogPorts
+	CoverageRegionPortHints
 )
 
 // Context is independent from the planner-produced Task. Keeping the two

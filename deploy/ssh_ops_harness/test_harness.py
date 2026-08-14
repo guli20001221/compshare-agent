@@ -107,6 +107,25 @@ check("context-drops-the-merged-v1-port-key-from-a-v2-payload",
 check("context-carries-the-catalog-port-as-expectation-not-state",
       "catalog.expected_software_ports" in _rendered_context_prompt and
       "SHOULD be, never what this box is doing" in _rendered_context_prompt)
+# The uncorrelated form is a separate key with its own warning. Same catalog data, but nothing in it
+# is known to be installed on this box, so the fence must forbid exactly that inference — a
+# region-wide list published under the "expected for this instance" name would send the diagnosis
+# after another image's FileBrowser.
+_region_hints_prompt = harness.render_prompt("task", dict(_reference_context, platform_facts=[{
+    "key": "catalog.region_port_hints",
+    "value": [{"software": "FileBrowser", "port": 8080}],
+    "source": "DescribeCompShareSoftwarePort", "observed_at": "2026-08-13T00:00:00Z", "status": "reported",
+}]))
+check("context-region-hints-are-allowlisted-in-v2",
+      '"key":"catalog.region_port_hints"' in _region_hints_prompt)
+check("context-region-hints-are-fenced-as-uncorrelated",
+      "NOT known to be installed here" in _region_hints_prompt and
+      "region-wide list" in _region_hints_prompt)
+check("context-region-hints-are-not-in-v1",
+      '"key":"catalog.region_port_hints"' not in harness.render_prompt("task", {
+          "schema_version": 1, "platform_facts": [{
+              "key": "catalog.region_port_hints", "value": [], "source": "DescribeCompShareSoftwarePort",
+              "observed_at": "2026-08-13T00:00:00Z", "status": "reported"}]}))
 check("context-declared-software-renders-as-names", '"ComfyUI"' in _rendered_context_prompt)
 # Not a restatement of the fixture: a producer regression that forwarded whole Softwares[] entries
 # would carry the sibling URL, and that URL embeds a live Jupyter token. The harness is the last gate
@@ -818,6 +837,11 @@ async def _fake_query(prompt, options):
     _captured_sdk_prompts.append(prompt)
     message = type("ResultMessage", (), {})()
     message.result = "mocked contextual diagnosis"
+    # The pinned SDK makes is_error and num_turns REQUIRED keys on the result event, so a fake that
+    # omits them is not a successful run — it is a shape the CLI never emits. Set what a real success
+    # carries, or the receipt gate below is being tested against a message that could not occur.
+    message.is_error = False
+    message.num_turns = 3
     yield message
 
 
@@ -893,6 +917,80 @@ check("context-receipt-absent-when-sdk-dies-before-first-message",
 # The run must still report SOMETHING: the receipt is what is withheld, not the verdict.
 check("context-sdk-failure-still-emits-a-verdict",
       "<<<VERDICT>>>" in _failed_output and "simulated transport/auth failure" in _failed_output)
+
+
+# ...and the SAME attestation must hold one layer in, where the failure arrives AS MESSAGES rather
+# than as an exception. In the pinned SDK the CLI's own failures do exactly that: AssistantMessage
+# carries an `error` field parsed from the assistant event (authentication_failed, billing_error,
+# rate_limit, invalid_request, server_error, unknown) and ResultMessage carries required is_error /
+# num_turns. A rejected ModelVerse token therefore reaches the loop as an error-tagged assistant
+# message followed by is_error=true, num_turns=0 — no exception is raised, nothing else downstream
+# tells it apart from a completed diagnosis, and confirming on "an AssistantMessage arrived" would
+# attest that the context reached a model that never ran.
+def _sdk_failure_messages():
+    assistant = type("AssistantMessage", (), {})()
+    assistant.content = []
+    assistant.error = "authentication_failed"
+    result = type("ResultMessage", (), {})()
+    result.result = None
+    result.is_error = True
+    result.num_turns = 0
+    return [assistant, result]
+
+
+async def _auth_failure_query(prompt, options):
+    for message in _sdk_failure_messages():
+        yield message
+
+
+_fake_sdk.query = _auth_failure_query
+_saved_stdin, _saved_conn, _saved_allow, _saved_preflight = sys.stdin, harness._CONN, harness._ALLOW_WRITES, harness.preflight_probe
+_saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
+try:
+    sys.modules["claude_agent_sdk"] = _fake_sdk
+    harness.stage_clean_workdir = lambda _allow_writes: None
+    harness.preflight_probe = lambda _conn: None
+    harness.build_options = lambda *_args, **_kwargs: object()
+    sys.stdin = _io.StringIO(_json.dumps({
+        "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
+        "task": "诊断 8188 无法访问", "context": _reference_context,
+    }) + "\n")
+    _auth_failed_output = _capture(lambda: _asyncio.run(harness.main()))
+finally:
+    sys.stdin = _saved_stdin
+    harness._CONN, harness._ALLOW_WRITES = _saved_conn, _saved_allow
+    harness.preflight_probe, harness.stage_clean_workdir, harness.build_options = _saved_preflight, _saved_stage, _saved_options
+    _fake_sdk.query = _fake_query
+    if _saved_sdk is None:
+        sys.modules.pop("claude_agent_sdk", None)
+    else:
+        sys.modules["claude_agent_sdk"] = _saved_sdk
+
+check("context-receipt-absent-when-the-model-turn-failed",
+      '"context_applied": true' not in _auth_failed_output.replace('"context_applied":true', '"context_applied": true'))
+check("context-auth-failure-still-emits-a-verdict", "<<<VERDICT>>>" in _auth_failed_output)
+# Unit-level, so each clause of the gate is pinned rather than only their conjunction.
+_ok_assistant = type("AssistantMessage", (), {})()
+_ok_assistant.content = []
+_ok_result = type("ResultMessage", (), {})()
+_ok_result.is_error, _ok_result.num_turns = False, 1
+_err_assistant, _err_result = _sdk_failure_messages()
+_zero_turn_result = type("ResultMessage", (), {})()
+_zero_turn_result.is_error, _zero_turn_result.num_turns = False, 0
+check("turn-began-accepts-a-clean-assistant-message",
+      harness._model_turn_began(_ok_assistant, "AssistantMessage") is True)
+check("turn-began-rejects-an-error-tagged-assistant-message",
+      harness._model_turn_began(_err_assistant, "AssistantMessage") is False)
+check("turn-began-accepts-a-clean-result", harness._model_turn_began(_ok_result, "ResultMessage") is True)
+check("turn-began-rejects-an-errored-result", harness._model_turn_began(_err_result, "ResultMessage") is False)
+check("turn-began-rejects-a-zero-turn-result",
+      harness._model_turn_began(_zero_turn_result, "ResultMessage") is False)
+# A SystemMessage(init) is the state an auth failure also reaches, so it has never counted.
+check("turn-began-rejects-a-system-init", harness._model_turn_began(object(), "SystemMessage") is False)
+# Absence is resolved in the fail-closed direction wherever it is ambiguous: a ResultMessage missing
+# the required fields is not a message the pinned SDK produces, so it must not be read as a success.
+check("turn-began-rejects-a-result-missing-the-required-fields",
+      harness._model_turn_began(type("ResultMessage", (), {})(), "ResultMessage") is False)
 
 
 # run three commands (refused, refused, ran) with the box echoing the credential, then emit a verdict.

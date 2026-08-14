@@ -192,7 +192,12 @@ func TestMonitorContextFailureDoesNotBlockSSHDiagnosis(t *testing.T) {
 		}
 	}
 	require.True(t, unknown["monitor"])
-	require.True(t, unknown["catalog.expected_software_ports"])
+	// The region key, not the expected-ports one: this fixture declares no Softwares, and the key is
+	// chosen from what is knowable before the call, so a failed call reports under the same name a
+	// successful one would have used.
+	require.True(t, unknown["catalog.region_port_hints"])
+	_, claimed := unknown["catalog.expected_software_ports"]
+	require.False(t, claimed)
 }
 
 // TestInstanceContextCatalogIsNeverPresentedAsGuestState pins the distinction the whole v2 split
@@ -227,6 +232,50 @@ func TestInstanceContextCatalogIsNeverPresentedAsGuestState(t *testing.T) {
 	// ...and the guest-side fact it must not be confused with still says nothing was observed.
 	require.Equal(t, opscontext.StatusNotObserved, byKey["guest.listeners"].Status)
 	require.Equal(t, "ssh", byKey["guest.listeners"].Source)
+}
+
+// TestUncorrelatedCatalogShipsUnderTheRegionKey covers the case the endpoint forces on us: it takes
+// no instance argument, so its answer is region-wide, and correlating it to Softwares[].Name is the
+// ONLY thing that makes it about this instance. With no declared software there is no correlation,
+// and publishing that list as "this instance's expected ports" would assert a relevance the value
+// does not have — another image's FileBrowser port arriving as this box's expected port is a
+// diagnosis sent after a service that was never installed.
+func TestUncorrelatedCatalogShipsUnderTheRegionKey(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	describe := describeResp("ssh root@10.0.0.9", b64)
+	host := describe["UHostSet"].([]any)[0].(map[string]any)
+	delete(host, "Softwares") // nothing to correlate against
+	describer := &contextDescriber{
+		describe: describe,
+		catalog: map[string]any{"SoftwarePort": []any{
+			map[string]any{"Software": "FileBrowser", "Port": float64(8080)},
+			map[string]any{"Software": "JupyterLab", "Port": float64(8888)},
+		}},
+	}
+	runner := &fakeRunner{res: Result{Output: "done"}}
+	audit := &MemAuditWriter{}
+	svc := NewService(runner, audit)
+
+	_, err := svc.DiagnoseWithContext(context.Background(), describer, Owner{TurnID: "turn"}, "uhost-abc", "task",
+		opscontext.Context{SchemaVersion: opscontext.SchemaVersion}, nil, nil)
+	require.NoError(t, err)
+
+	byKey := map[string]opscontext.Fact{}
+	for _, fact := range runner.lastContext.PlatformFacts {
+		byKey[fact.Key] = fact
+	}
+	hints, ok := byKey["catalog.region_port_hints"]
+	require.True(t, ok, "uncorrelated catalog must still be sent, under the region key")
+	require.Equal(t, opscontext.StatusReported, hints.Status)
+	require.Len(t, hints.Value, 2)
+	_, claimed := byKey["catalog.expected_software_ports"]
+	require.False(t, claimed, "an uncorrelated list must never claim to be this instance's expected ports")
+	// The declared-software fact is honest about why: unknown, not an empty "declares nothing".
+	require.Equal(t, opscontext.StatusUnknown, byKey["instance.declared_software"].Status)
+	// Separate coverage bits, so the audit can tell a correlated run from an uncorrelated one.
+	require.NotZero(t, audit.Events[0].ContextFactCoverage&opscontext.CoverageRegionPortHints)
+	require.Zero(t, audit.Events[0].ContextFactCoverage&opscontext.CoverageCatalogPorts)
+	require.Zero(t, audit.Events[0].ContextFactCoverage&opscontext.CoverageSoftware)
 }
 
 // TestInstanceContextNeverCarriesEndpointsOrCredentials is the boundary test for the whole

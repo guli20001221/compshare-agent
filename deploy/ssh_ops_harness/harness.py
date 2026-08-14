@@ -260,7 +260,7 @@ _CONTEXT_FACT_KEYS_V1 = {
 _CONTEXT_FACT_KEYS_V2 = {
     "instance.id", "instance.state", "instance.gpu", "instance.image", "instance.disks",
     "instance.declared_software", "platform.instance_port_hints", "platform.tcp_forwards",
-    "catalog.expected_software_ports", "guest.listeners", "monitor",
+    "catalog.expected_software_ports", "catalog.region_port_hints", "guest.listeners", "monitor",
 }
 _CONTEXT_FACT_KEYS_BY_VERSION = {1: _CONTEXT_FACT_KEYS_V1, 2: _CONTEXT_FACT_KEYS_V2}
 
@@ -396,9 +396,38 @@ _CONTEXT_FENCE_NOTES = {
        "public route, and neither proves a process is listening. `catalog.expected_software_ports` "
        "is the image catalog's EXPECTED port for software this instance declares — what the port "
        "SHOULD be, never what this box is doing; a mismatch between it and the guest is a finding, "
-       "not an error in the fact. `instance.declared_software` is a name list only, with no ports "
-       "and no URLs. ",
+       "not an error in the fact. `catalog.region_port_hints` is the SAME catalog when it could NOT "
+       "be matched to this instance's software: it is a region-wide list, the software in it is NOT "
+       "known to be installed here, and you must not infer from its presence that any of it runs on "
+       "this box. `instance.declared_software` is a name list only, with no ports and no URLs. ",
 }
+
+
+def _model_turn_began(msg, kind) -> bool:
+    """True only for a message that PROVES the model started working on this prompt.
+
+    "An AssistantMessage arrived" is not that proof. In the pinned SDK the CLI's own failures come
+    back AS messages, not as exceptions: `AssistantMessage.error` is parsed straight from the assistant
+    event and carries `authentication_failed` / `billing_error` / `rate_limit` / `invalid_request` /
+    `server_error` / `unknown`, and `ResultMessage` carries required `is_error` and `num_turns` fields,
+    so a rejected token can surface as an error-tagged assistant message followed by
+    `is_error=true, num_turns=0`. Confirming on either of those would attest that the context reached
+    a model that never ran — the exact failure this receipt exists to prevent, one layer further in.
+
+    Defaults are fail-closed where absence is ambiguous (`is_error` missing -> assume error,
+    `num_turns` missing -> assume none) and fail-open only where absence is unambiguous: an SDK with
+    no `error` field on AssistantMessage has no way to signal one, and an assistant message from such
+    an SDK does mean the model produced content.
+    """
+    if kind == "AssistantMessage":
+        return getattr(msg, "error", None) is None
+    if kind == "ResultMessage":
+        try:
+            turns = int(getattr(msg, "num_turns", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        return not getattr(msg, "is_error", True) and turns > 0
+    return False
 
 
 def render_prepared_prompt(task, context):
@@ -1136,7 +1165,7 @@ async def main():
             # the CLI started, which is exactly the state an auth failure also reaches. The value itself
             # still says whether the bounded, validated context is in the prompt supplied to the SDK, so
             # a prompt-size fallback (prepare_reference_context -> None) is still false.
-            if not context_receipt_sent and kind in ("AssistantMessage", "ResultMessage"):
+            if not context_receipt_sent and _model_turn_began(msg, kind):
                 _emit_outcome("", "", context_applied=reference_context is not None)
                 context_receipt_sent = True
             if kind == "ResultMessage":
