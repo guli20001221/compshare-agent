@@ -451,13 +451,47 @@ def extract_pdf_text(path: Path) -> str:
 
 
 def resolve_local_asset(doc: SourceDocument, decoded_ref: str) -> Path | None:
-    for candidate in (
-        (doc.absolute_path.parent / decoded_ref).resolve(),
-        (doc.root / decoded_ref.lstrip("/")),
-    ):
+    """Map an image reference in a document to a file on disk.
+
+    A leading slash means the site root, not the filesystem root. Next.js serves
+    everything under public/ at the site root, so /foo.png IS public/foo.png —
+    that is the framework's contract, not a guess about this repo's layout.
+
+    compshare-docs used to write these references as literal repo-relative paths
+    (`![](public/sysdisk_step1.jpg)`), which the root candidate resolved. The App
+    Router migration rewrote all of them into the site-root form
+    (`![](/sysdisk_step1.jpg)`), and 14 required images in content/operation/
+    stopped resolving — enough to fail the build outright, since a missing image
+    on an internal doc is an error, not a warning.
+
+    A site-root reference is also never document-relative, so the parent-relative
+    candidate is skipped for it. On Windows `Path("F:/a/b") / "/c.png"` discards
+    the base and resolves against the current drive, which could silently match
+    an unrelated file at the drive root and feed its VL description into the
+    corpus as if it were the documented screenshot.
+    """
+    for candidate in local_asset_candidates(doc, decoded_ref):
         if candidate.is_file():
             return candidate.resolve()
     return None
+
+
+def local_asset_candidates(doc: SourceDocument, decoded_ref: str) -> list[Path]:
+    """The paths resolve_local_asset will try, in order.
+
+    Split out so the candidate SET is testable on its own. Whether the
+    parent-relative candidate is present for a site-root reference cannot be
+    asserted through the return value — it only differs when a file happens to
+    exist at the drive root, which a test must not create.
+    """
+    site_root_ref = decoded_ref.startswith("/")
+    candidates: list[Path] = []
+    if not site_root_ref:
+        candidates.append((doc.absolute_path.parent / decoded_ref).resolve())
+    candidates.append(doc.root / decoded_ref.lstrip("/"))
+    if site_root_ref:
+        candidates.append(doc.root / "public" / decoded_ref.lstrip("/"))
+    return candidates
 
 
 EXTERNAL_EXCLUDED_PATH_PARTS = {

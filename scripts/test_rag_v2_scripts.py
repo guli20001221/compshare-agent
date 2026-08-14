@@ -14,7 +14,9 @@ from scripts.rag_v2.pipeline import (
     inject_asset_notes,
     normalize_image_markup,
     merge_external,
+    local_asset_candidates,
     plan_document_units,
+    resolve_local_asset,
     semantic_parts,
     validate_chunks,
     _canonical_remote_image_url,
@@ -78,6 +80,69 @@ class RAGV2PipelineTests(unittest.TestCase):
         content-sniffing without touching the call site."""
         with self.assertRaises(TypeError):
             _question_patterns("t", ["h"], "area", "operation/upload.md", "body")
+
+    def test_site_root_image_reference_resolves_under_public(self):
+        """A leading slash is the site root, which Next.js serves from public/.
+
+        compshare-docs wrote these as literal repo paths (public/x.jpg) until the
+        App Router migration rewrote them to /x.jpg. Both forms have to resolve,
+        or 14 required images in content/operation/ fail the build.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "public").mkdir()
+            (root / "public" / "sysdisk_step1.jpg").write_bytes(b"jpg")
+            path = root / "content" / "operation" / "gpu" / "disk.md"
+            path.parent.mkdir(parents=True)
+            path.write_text("![](/sysdisk_step1.jpg)", encoding="utf-8")
+            doc = SourceDocument(
+                source_id="test", source_path="content/operation/gpu/disk.md",
+                source_kind="platform_public_doc", source_origin="official", title="disk",
+                text=path.read_text(encoding="utf-8"), surface_url=None, root=root, absolute_path=path,
+            )
+            self.assertEqual(
+                (root / "public" / "sysdisk_step1.jpg").resolve(),
+                resolve_local_asset(doc, "/sysdisk_step1.jpg"),
+            )
+            # The pre-migration spelling still resolves, so a rebuild of an older
+            # revision does not regress.
+            self.assertEqual(
+                (root / "public" / "sysdisk_step1.jpg").resolve(),
+                resolve_local_asset(doc, "public/sysdisk_step1.jpg"),
+            )
+            self.assertIsNone(resolve_local_asset(doc, "/not_there.jpg"))
+
+    def test_site_root_reference_is_never_resolved_against_the_document_directory(self):
+        """Windows discards the base when joining an absolute-looking path.
+
+        Path("F:/a/b") / "/c.png" is "/c.png", which resolves against the current
+        drive. Left in the candidate list, a site-root reference could silently
+        match an unrelated file and feed its VL description into the corpus as
+        the documented screenshot.
+
+        Asserted on the candidate list, not on the return value: the two differ
+        only when a file exists at the drive root, and a test must not create one
+        — checking the outcome here would pass with or without the guard.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docs_dir = root / "content" / "operation"
+            docs_dir.mkdir(parents=True)
+            path = docs_dir / "disk.md"
+            path.write_text("![](/shot.png)", encoding="utf-8")
+            doc = SourceDocument(
+                source_id="test", source_path="content/operation/disk.md",
+                source_kind="platform_public_doc", source_origin="official", title="disk",
+                text=path.read_text(encoding="utf-8"), surface_url=None, root=root, absolute_path=path,
+            )
+            site_root = local_asset_candidates(doc, "/shot.png")
+            self.assertEqual([root / "shot.png", root / "public" / "shot.png"], site_root)
+            self.assertNotIn(docs_dir.resolve(), [c.parent for c in site_root])
+            # A genuinely document-relative reference still starts at the document.
+            self.assertEqual(
+                (docs_dir / "shot.png").resolve(),
+                local_asset_candidates(doc, "shot.png")[0],
+            )
 
     def test_cleaning_preserves_public_examples_and_does_not_redact(self):
         raw = "---\ntitle: x\n---\n# API\n\nAPI Key：sk-public-example\n\nhttps://cp.compshare.cn/v1\n"
