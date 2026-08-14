@@ -70,9 +70,11 @@ type InstanceOpsRequest struct {
 	Context opscontext.Context
 	// ConfirmWrite asks the user about ONE command that will change the box, and blocks until they
 	// answer. It is separate from the lane-level card: that one authorizes entering the instance and
-	// never names what will change, so it cannot stand as consent for `kill 6934`. nil means no human
-	// is reachable, and the runner must then refuse rather than proceed — see sshops.Service.
-	ConfirmWrite func(command string) bool
+	// never names what will change, so it cannot stand as consent for `kill 6934`. The terminal
+	// reason matters just as much as the boolean: a timeout, a disconnect and an explicit decline
+	// all keep the command unexecuted, but require different user-facing guidance. nil means no
+	// human is reachable, and the runner must then refuse rather than proceed — see sshops.Service.
+	ConfirmWrite func(command string) ConfirmationResult
 }
 
 // Progress kinds emitted by a runner. The engine translates each into exactly
@@ -93,8 +95,9 @@ type InstanceOpsProgress struct {
 	Command     string // the command (Kind==command only)
 	Disposition string // "ran" | "refused" | "failed" (Kind==command only)
 	// Reason names WHICH gate refused, when the runner knows: the destructive tier, the shape gate,
-	// a card the operator declined, a command too long to put on a card. Empty means unknown, and
-	// every consumer must degrade to the old generic wording rather than assume a value.
+	// a declined/timed-out/disconnected confirmation, or a command too long to put on a card. Empty
+	// means unknown, and every consumer must degrade to the old generic wording rather than assume a
+	// value.
 	Reason   string
 	ExitCode *int // nil for refused/failed commands that never produced an exit status
 	Bytes    int  // output byte count (metadata only; the output itself never crosses here)

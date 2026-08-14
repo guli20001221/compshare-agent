@@ -254,12 +254,65 @@ for _name, _needle in [
     ("states the scope", "Repair the fault you diagnosed and nothing else"),
     ("names redeploying an app", "re-downloading an application"),
     ("names taking a service down", "taking down a service the user did not ask about"),
-    ("routes it to the operator rather than forbidding it", "let the operator decide"),
+    ("routes it to the user rather than forbidding it", "let the user decide"),
 ]:
     check(f"write-tool-desc-bounds-scope::{_name}", _needle in harness.tool_description(True))
 # Read-only mode cannot overreach — it executes nothing — so its description stays unchanged.
 check("readonly-tool-desc-unchanged-by-scope-rule",
       "Repair the fault" not in harness.tool_description(False))
+
+# A form refusal is recoverable by changing syntax, unlike a denied/expired
+# confirmation. The model must receive that distinction directly from its two
+# authoritative prompt surfaces, and neither should call the user an "operator".
+_WRITE_DESC = harness.tool_description(True)
+_WRITE_PROMPT = harness.system_prompt(True)
+check("write-tool-desc::reformats-form-refusals",
+      "command FORM rejected" in _WRITE_DESC and "rewrite it as a supported single plain command" in _WRITE_DESC)
+check("write-system-prompt::reformats-form-refusals",
+      "command FORM rejected" in _WRITE_PROMPT and "reformulate it as a supported single plain command" in _WRITE_PROMPT)
+check("write-system-prompt::does-not-manualize-unapproved-writes",
+      "do not tell the user to run them manually" in _WRITE_PROMPT)
+check("write-system-prompt::labels-waiting-for-confirmation",
+      "等待你确认" in _WRITE_PROMPT and "unapproved command into a manual user task" in _WRITE_PROMPT)
+check("write-prompts::name-the-user-not-an-operator",
+      "operator" not in _WRITE_DESC and "operator" not in _WRITE_PROMPT)
+
+# The FileBrowser lesson is "do not invent an app's platform entry", NOT "never mention a
+# platform-level operation". Those were briefly the same rule, and the wider one had no way to be
+# satisfied: nothing in the reference context describes a console control (the fact keys are
+# instance/gpu/image/disks/port_hints/tcp_forwards/declared_software/listeners/catalog), so a
+# repair that genuinely needs a reboot could only ever be reported as 未核实 — turning the one
+# correct handoff into a dead end.
+#
+# Naming the boundary is necessary but not sufficient: this verdict ENDS the turn (the Go side
+# returns it behind finalReplyPrefix), so a sentence that only states "this needs a platform-level
+# restart" leaves the user holding a diagnosis with no next move. The rule therefore has to make the
+# model ASK, which is a question the user can answer on the following turn and the outer agent can
+# act on with RebootInstanceWorkflow. Both surfaces carry all four clauses; they are asserted
+# together because a rule present in only one of them is a rule the model may not see.
+for _name, _needle in [
+    ("forbids inventing an app entry", "invent an application-specific platform entry"),
+    ("names the boundary", "the instance has to be restarted before this can continue"),
+    ("asks instead of dead-ending", "ask whether the user wants it restarted"),
+    ("still blocks the guest-shell workaround", "work around it from the guest shell"),
+]:
+    check(f"write-tool-desc-platform-boundary::{_name}", _needle in _WRITE_DESC)
+    check(f"write-system-prompt-platform-boundary::{_name}", _needle in _WRITE_PROMPT)
+# The verdict is Chinese, so the sentence the user actually reads is pinned too.
+check("write-system-prompt::states-the-boundary-in-the-verdict-language",
+      "需要重启实例才能继续" in _WRITE_PROMPT)
+# WHICH layer performs the restart is a fact for the model (it is why the guest shell is off
+# limits), not a phrase for the customer. "平台级重启" says nothing a user can act on, and an
+# English "platform-level restart" in the prompt is an invitation for the model to translate it
+# straight into the verdict. Neither spelling may come back on either surface.
+for _surface, _text in [("desc", _WRITE_DESC), ("prompt", _WRITE_PROMPT)]:
+    check(f"write-prompts::no-layer-jargon-in-the-handoff::{_surface}",
+          "platform-level" not in _text and "平台级" not in _text)
+# The over-broad phrasing, verbatim. It is cheaper to name the sentence we removed than to
+# rediscover why reboots stopped being mentioned.
+for _surface, _text in [("desc", _WRITE_DESC), ("prompt", _WRITE_PROMPT)]:
+    check(f"write-prompts::no-facts-gate-on-console-controls::{_surface}",
+          "platform facts establish" not in _text)
 
 # --- the three load-bearing rules live in the SYSTEM PROMPT, not in a skill ----------------------
 # Measured 2026-07-29: an instrumented live run logged 21 tool_use blocks — 21 ssh_exec, 0 Skill.

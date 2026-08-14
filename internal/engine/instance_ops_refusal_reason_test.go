@@ -16,6 +16,11 @@ func TestEachRefusalReasonIsDistinguishable(t *testing.T) {
 	reasons := []string{
 		"refused_destructive",
 		"refused_form",
+		"refused_user_declined",
+		"refused_confirmation_timeout",
+		"refused_client_disconnect",
+		"refused_confirmation_delivery_failed",
+		"refused_confirmation_broker_cancelled",
 		"refused_not_approved",
 		"refused_unconfirmable",
 		"refused_unmanaged_platform_service",
@@ -45,9 +50,13 @@ func TestShapeRefusalIsNotWordedAsAPolicyRefusal(t *testing.T) {
 	if strings.Contains(form, "高危") {
 		t.Fatalf("a form refusal must not be worded as a danger refusal, got %q", form)
 	}
-	declined := instanceOpsRefusalReason("refused_not_approved")
+	declined := instanceOpsRefusalReason("refused_user_declined")
 	if strings.Contains(declined, "高危") || strings.Contains(declined, "命令形式") {
-		t.Fatalf("the operator's own decline must not be reported as a policy refusal, got %q", declined)
+		t.Fatalf("the user's own decline must not be reported as a policy refusal, got %q", declined)
+	}
+	timeout := instanceOpsRefusalReason("refused_confirmation_timeout")
+	if !strings.Contains(timeout, "等待你的确认") || strings.Contains(timeout, "未批准") {
+		t.Fatalf("a timed-out card must not be reported as a user decline, got %q", timeout)
 	}
 	platform := instanceOpsRefusalReason("refused_unmanaged_platform_service")
 	if !strings.Contains(platform, "平台入口") || !strings.Contains(platform, "FileBrowser") {
@@ -66,6 +75,33 @@ func TestUnknownRefusalReasonDegradesInsteadOfBlanking(t *testing.T) {
 	}
 }
 
+// refused_not_approved is what a harness emits when it can prove only that no approval arrived: an
+// EOF, a malformed reply, a stale id, or a Go supervisor too old to send terminal_reason at all.
+// That last one is not hypothetical — the binary and the harness are separate deploy artifacts
+// (agent.ssh_ops.harness_path), so a rolling upgrade runs one old half against one new half, and
+// this branch is the one it walks through.
+//
+// Absence of an approval is not a decision by the user. The wording therefore may not attribute the
+// refusal to them, and must still state the fact that matters: nothing ran. Asserted as forbidden
+// substrings rather than one literal, because the failure mode is a REWORD back toward blame, not a
+// specific sentence.
+func TestTheCompatibilityDegradeDoesNotInventAUserDecision(t *testing.T) {
+	got := instanceOpsRefusalReason("refused_not_approved")
+	for _, blamed := range []string{"未批准", "拒绝", "取消", "你不同意"} {
+		if strings.Contains(got, blamed) {
+			t.Fatalf("an absent approval was reported as the user's own %q: %q", blamed, got)
+		}
+	}
+	if !strings.Contains(got, "未执行") {
+		t.Fatalf("the degraded reason must still say the command did not run, got %q", got)
+	}
+	// And it has to stay distinguishable from the case where the user really did decline —
+	// otherwise the degrade is just the old bug spelled differently.
+	if got == instanceOpsRefusalReason("refused_user_declined") {
+		t.Fatalf("the degrade and a real decline render identically: %q", got)
+	}
+}
+
 // End to end through the step builder: the specific reason has to reach the user-visible message,
 // not merely exist on the struct.
 func TestCommandStepMessageCarriesTheSpecificReason(t *testing.T) {
@@ -73,12 +109,12 @@ func TestCommandStepMessageCarriesTheSpecificReason(t *testing.T) {
 		Kind:        InstanceOpsProgressCommand,
 		Command:     "pip install torch",
 		Disposition: "refused",
-		Reason:      "refused_not_approved",
+		Reason:      "refused_confirmation_timeout",
 	})
 	if ev.Type != StepBlocked {
 		t.Fatalf("a refusal must ride StepBlocked, got %v", ev.Type)
 	}
-	if !strings.Contains(ev.Message, instanceOpsRefusalReason("refused_not_approved")) {
+	if !strings.Contains(ev.Message, instanceOpsRefusalReason("refused_confirmation_timeout")) {
 		t.Fatalf("step message does not carry the specific reason: %q", ev.Message)
 	}
 	if strings.Contains(ev.Message, "属于高危操作或命令形式不被接受") {

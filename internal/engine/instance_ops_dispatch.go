@@ -130,13 +130,17 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// reads, and a card for each would train the user to click through without reading — which is
 	// worse than no card. Only the 1-3 that change the box stop and ask, and the card shows the
 	// literal command, because "may I change something" is not a question anyone can answer.
-	var confirmWrite func(string) bool
+	var confirmWrite func(string) ConfirmationResult
 	if tools.InstanceOpsWritesEnabled() {
-		confirmWrite = func(command string) bool {
-			return e.confirmFn(instanceOpsWriteAction, map[string]any{
+		confirmWrite = func(command string) ConfirmationResult {
+			confirmed := e.confirmFn(instanceOpsWriteAction, map[string]any{
 				"UHostId": instanceID,
 				"Command": command,
 			})
+			return ConfirmationResult{
+				Confirmed:      confirmed,
+				TerminalReason: e.lastConfirmationTerminalReason,
+			}
 		}
 	}
 
@@ -358,17 +362,18 @@ func instanceOpsPhaseNoun() string {
 	return "只读排查"
 }
 
-// A refusal in write mode is NOT "只读模式" — that wording sent the operator looking for a switch
-// that was already on. In write mode the only refusals left are the destructive tier and the shape
-// gate, so the reason has to name those instead.
+// A refusal in write mode is NOT "只读模式" — that wording sent the user looking for a switch that
+// was already on. Write mode still refuses for several distinct reasons — the destructive tier, the
+// shape gate, a command too long to fit on a card, an unverified platform service, and each of the
+// ways a per-command card can end without an approval — so the reason has to name which one.
 //
-// And "those" is plural, which is the whole problem the `reason` argument fixes. The harness writes
-// six distinct dispositions and the wire carried three, so this function had nothing to read and
-// answered every write-mode refusal with one sentence covering the destructive tier, the shape gate,
-// an over-long command and a card the operator declined. 「属于高危操作或命令形式不被接受」 is not a
-// fact anyone can act on: the operator cannot tell a policy refusal from their own click, and the
-// model cannot tell "never going to work" from "resend it split in two" — measured in #516's class,
-// where an unactionable refusal made the run delete half its own probe chain and retry.
+// That plurality is the whole problem the `reason` argument fixes. The harness distinguishes more
+// dispositions than the three-valued wire `disposition` can carry, so this function had nothing to
+// read and answered every write-mode refusal with one sentence covering all of them at once.
+// 「属于高危操作或命令形式不被接受」 is not a fact anyone can act on: the user cannot tell a policy
+// refusal from their own click, and the model cannot tell "never going to work" from "resend it
+// split in two" — measured in #516's class, where an unactionable refusal made the run delete half
+// its own probe chain and retry.
 //
 // An unknown or empty reason keeps exactly the previous wording, so a server ahead of the harness
 // (or behind it) degrades instead of printing a blank.
@@ -378,8 +383,20 @@ func instanceOpsRefusalReason(reason string) string {
 		return "属于高危操作，已硬性拒绝"
 	case "refused_form":
 		return "命令形式不被接受（含命令替换或多行），需拆成单条命令重发"
+	case "refused_user_declined":
+		return "你未批准这条命令，命令未执行"
+	case "refused_confirmation_timeout":
+		return fmt.Sprintf("等待你的确认超过 %d 秒，命令未执行", int(InstanceOpsConfirmWindow.Seconds()))
+	case "refused_client_disconnect":
+		return "连接已断开，命令未执行"
+	case "refused_confirmation_delivery_failed":
+		return "确认卡片未能送达，命令未执行"
+	case "refused_confirmation_broker_cancelled":
+		return "确认请求已取消，命令未执行"
 	case "refused_not_approved":
-		return "你未批准这条命令"
+		// A pre-terminal-reason harness can only prove that no approval arrived.
+		// Do not turn that absence into a claim that the user explicitly declined.
+		return "未收到对这条命令的确认，命令未执行"
 	case "refused_unconfirmable":
 		return "命令过长，无法完整展示在确认卡上"
 	case "refused_unmanaged_platform_service":

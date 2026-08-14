@@ -140,7 +140,7 @@ func TestAuditPhaseRecordsTheAuthorityTheBoxWasEnteredUnder(t *testing.T) {
 			// though this test is about the audit phase: the refusal is the subject of its own test.
 			var confirm ConfirmFunc
 			if tc.allow {
-				confirm = func(ConfirmRequest) bool { return true }
+				confirm = func(ConfirmRequest) ConfirmDecision { return ConfirmDecision{Approved: true} }
 			}
 			if _, err := svc.Diagnose(context.Background(), stubDescriber{resp: describeResp("ssh root@1.2.3.4", base64.StdEncoding.EncodeToString([]byte("S3cr3tPw")))}, Owner{RequestUUID: "r", TurnID: "t"},
 				"uhost-abc", "task", nil, confirm); err != nil {

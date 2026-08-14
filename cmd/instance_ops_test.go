@@ -13,6 +13,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/sshops"
 	"github.com/compshare-agent/internal/tools"
@@ -109,6 +110,31 @@ func TestInstanceOpsRunner_CarriesTenantIdentityAndTurnID(t *testing.T) {
 	require.Equal(t, modelContext, diag.lastContext)
 	require.Equal(t, "uhost-x", diag.lastInstanceID)
 	require.Equal(t, "check gpu", diag.lastTask)
+}
+
+// The SSH harness must see WHY a write card was not approved, not merely false.
+// A timeout used to cross this adapter as false and came back to the user as a
+// voluntary rejection. Drive the callback through the real adapter boundary so
+// changing it back to a boolean cannot leave the UI-specific tests green.
+func TestInstanceOpsRunner_PreservesPerCommandConfirmationReason(t *testing.T) {
+	diag := &fakeDiagnoser{output: "健康"}
+	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+
+	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{
+		TurnID:     "turn-confirm-reason",
+		InstanceID: "uhost-x",
+		Task:       "修复服务",
+		ConfirmWrite: func(command string) engine.ConfirmationResult {
+			require.Equal(t, "systemctl restart demo", command)
+			return engine.ConfirmationResult{TerminalReason: observability.ConfirmationReasonTimeout}
+		},
+	}, func(engine.InstanceOpsProgress) {})
+
+	require.NoError(t, err)
+	require.NotNil(t, diag.lastConfirm)
+	decision := diag.lastConfirm(sshops.ConfirmRequest{Command: "systemctl restart demo"})
+	require.False(t, decision.Approved)
+	require.Equal(t, observability.ConfirmationReasonTimeout, decision.TerminalReason)
 }
 
 // The activity stream: one synthesized "connected" (exactly once, before the first command) then one
