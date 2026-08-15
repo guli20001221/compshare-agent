@@ -50,7 +50,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--asset-base-url", default="https://raw.githubusercontent.com/guli20001221/compshare-agent/main/deploy/kb/v2/assets")
     parser.add_argument("--skip-vl", action="store_true")
     parser.add_argument("--skip-semantic", action="store_true")
-    parser.add_argument("--vl-workers", type=int, default=8)
+    # Serial by default. Measured 2026-08-15 over 20 images x 2 calls against
+    # the same endpoint: at 8 workers 9/40 calls came back a non-answer on the
+    # first attempt and 6/40 never answered across all four attempts, which
+    # silently drops those images from the corpus (include_in_rag=false renders
+    # as the empty string). At 1 worker it was 0/40 and 0/40, every call
+    # accepted on its first attempt. The model is not the variable -- the same
+    # 20 images score identically on Qwen3-VL-235B, Qwen3-vl-Plus, qwen3-vl-flash
+    # and gpt-5.6-terra; the fan-out is, exactly as vl_payload_answered's
+    # docstring already suspected. Text still varies run to run at either
+    # setting and that is inherent to captioning with a model; losing images is
+    # not. With identity-keyed reuse a routine update captions only the images
+    # whose bytes are new, so serial costs minutes, not the ~2.6h a full
+    # cache-less pass would take.
+    parser.add_argument("--vl-workers", type=int, default=1)
     args = parser.parse_args(argv)
 
     if len(args.faq_zip) != len(FAQ_IDS):

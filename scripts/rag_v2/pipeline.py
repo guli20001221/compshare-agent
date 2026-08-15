@@ -687,6 +687,38 @@ class ModelVerseClient:
         return payload
 
 
+def locked_note_identity(note: AssetNote, ref: str) -> str | None:
+    """Content identity of a note already in asset_lock.json.
+
+    asset_id is a content digest on both branches that produce one — local
+    images use "asset-" + sha256_file(...)[:16] and remote ones "remote-" +
+    sha256(bytes)[:16] — so a caption recorded under one document path is valid
+    for the same bytes wherever else they appear. Keying reuse on the path
+    instead threw the caption away whenever a document moved, which is what a
+    docs restructure is.
+
+    "decorative-" notes deliberately return None. They are produced by the
+    deterministic pre-VL filter, never by a model call, so re-deriving one costs
+    nothing and matching them here would only add a way to be wrong. In the
+    shipped lock that is 88 of 1940 notes; the other 1852 -- every note that
+    cost a model call -- carry a digest.
+    """
+    if note.asset_id.startswith("remote-"):
+        return "url:" + (note.public_url or ref)
+    if note.asset_id.startswith("asset-"):
+        return note.asset_id
+    return None
+
+
+def reuse_key_for_identity(identity: str) -> str | None:
+    """Map a task_groups identity onto the key locked_note_identity produces."""
+    if identity.startswith("url:"):
+        return identity
+    if identity.startswith("file:"):
+        return "asset-" + identity[len("file:"):][:16]
+    return None  # "missing:" groups have no content to match on.
+
+
 def describe_assets(
     documents: list[SourceDocument],
     *,
@@ -695,7 +727,7 @@ def describe_assets(
     fallback_model: str | None,
     assets_dir: Path,
     raw_asset_base_url: str,
-    workers: int = 8,
+    workers: int = 1,
     reuse_existing_notes: bool = False,
 ) -> tuple[dict[tuple[str, str, str], AssetNote], list[dict[str, Any]]]:
     notes: dict[tuple[str, str, str], AssetNote] = {}
@@ -724,6 +756,7 @@ def describe_assets(
         ),
     }, ensure_ascii=False, sort_keys=True).encode("utf-8"))
     reusable_notes: dict[tuple[str, str, str], AssetNote] = {}
+    reusable_by_identity: dict[str, AssetNote] = {}
     reusable_failures: dict[tuple[str, str, str], dict[str, Any]] = {}
     reusable_failures_by_path: dict[tuple[str, str], dict[str, Any]] = {}
     if lock_path.exists():
@@ -736,12 +769,27 @@ def describe_assets(
                     note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
                     notes[(str(item["source_id"]), str(item["source_path"]), str(item["ref"]))] = AssetNote(**note_fields)
                 return notes, locked_failures
+            # Per-image reuse is deliberately NOT gated on exact_lock or on
+            # reuse_existing_notes. Both of those are false exactly when the
+            # documents changed: the fingerprint covers every image reference in
+            # the whole corpus, so one added screenshot invalidates it, and
+            # reuse_existing_notes compares the docs git revision, which a docs
+            # update is defined by. Gating here meant every routine update
+            # re-captioned all ~1900 images, which is where the VL step's cost
+            # and its non-answer losses both came from. What actually decides
+            # whether a caption still applies is the image bytes, and that is
+            # what the identity map below matches on.
+            for item in locked.get("notes") or []:
+                note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
+                note = AssetNote(**note_fields)
+                if note.model not in {model, fallback_model, "deterministic-decoration-filter"}:
+                    continue
+                ref = str(item["ref"])
+                reusable_notes[(str(item["source_id"]), str(item["source_path"]), ref)] = note
+                identity = locked_note_identity(note, ref)
+                if identity is not None:
+                    reusable_by_identity.setdefault(identity, note)
             if exact_lock or reuse_existing_notes:
-                for item in locked.get("notes") or []:
-                    note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
-                    note = AssetNote(**note_fields)
-                    if note.model in {model, fallback_model, "deterministic-decoration-filter"}:
-                        reusable_notes[(str(item["source_id"]), str(item["source_path"]), str(item["ref"]))] = note
                 for item in locked_failures:
                     if _retryable_asset_failure(item):
                         continue
@@ -913,9 +961,19 @@ def describe_assets(
             return key, None, {"source": doc.source_path, "ref": ref, "reason": f"vl_failed:{type(exc).__name__}:{exc}", "severity": severity}
 
     pending_groups: list[list[tuple[SourceDocument, str, str]]] = []
-    for aliases in task_groups.values():
+    reused_by_path = 0
+    reused_by_identity = 0
+    for identity, aliases in task_groups.items():
         first_doc, _first_alt, first_ref = aliases[0]
         reusable = reusable_notes.get((first_doc.source_id, first_doc.source_path, first_ref))
+        if reusable is not None:
+            reused_by_path += 1
+        else:
+            identity_key = reuse_key_for_identity(identity)
+            if identity_key is not None:
+                reusable = reusable_by_identity.get(identity_key)
+                if reusable is not None:
+                    reused_by_identity += 1
         if reusable is not None:
             for alias_doc, _alias_alt, alias_ref in aliases:
                 notes[(alias_doc.source_id, alias_doc.source_path, alias_ref)] = replace(reusable, source_path=alias_doc.source_path)
@@ -939,8 +997,14 @@ def describe_assets(
             continue
         pending_groups.append(aliases)
 
-    if reuse_existing_notes:
-        print(f"asset_groups={len(task_groups)} reused={len(task_groups) - len(pending_groups)} pending_vl={len(pending_groups)}", flush=True)
+    # Always reported, not only under reuse_existing_notes: pending_vl is the
+    # number of model calls this build will make, and it is the one number that
+    # says whether an "incremental" rebuild actually was one.
+    print(
+        f"asset_groups={len(task_groups)} reused_by_path={reused_by_path} "
+        f"reused_by_identity={reused_by_identity} pending_vl={len(pending_groups)}",
+        flush=True,
+    )
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         pending = {executor.submit(process, aliases[0]): aliases for aliases in pending_groups}

@@ -415,6 +415,106 @@ class RAGV2PipelineTests(unittest.TestCase):
             self.assertNotIn("原文图片未包含", content)
             self.assertEqual([], media)
 
+    def _caption_lock_fixture(self, tmp: Path, doc_path: str):
+        """A document with one local image, plus the release dir describe_assets uses."""
+        root = tmp / "docs"
+        (root / Path(doc_path).parent).mkdir(parents=True, exist_ok=True)
+        image = root / "screen.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"pretend-png-bytes")
+        page = root / doc_path
+        page.write_text("说明\n\n![控制台](/screen.png)\n", encoding="utf-8")
+        doc = SourceDocument(
+            source_id="gitlab-compshare-docs", source_path=doc_path,
+            source_kind="public_faq_export", source_origin="official", title="页面",
+            text=page.read_text(encoding="utf-8"), surface_url=None, root=root, absolute_path=page,
+        )
+        return doc, image
+
+    def test_a_moved_document_reuses_its_caption_instead_of_recaptioning(self):
+        """The regression that made every routine update a full re-caption.
+
+        Reuse used to be keyed on (source_id, source_path, ref) and gated behind
+        a fingerprint covering every image reference in the corpus. Both are
+        invalidated by the ordinary act of updating the docs, so a rebuild
+        re-captioned all ~1900 images -- paying for them again and, at the
+        concurrency the build used, silently losing some to non-answers.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            note = AssetNote(
+                asset_id="asset-" + pipeline.sha256_file(
+                    self._caption_lock_fixture(Path(tmp), "pages/guide.md")[1])[:16],
+                source_path="pages/guide.md", repo_path=None, public_url="",
+                description="控制台创建实例页面", visible_text=["创建实例"], controls=["确认"],
+                relations=[], confidence=0.98, model="vl-model", visual_type="ui",
+            )
+            (release / "asset_lock.json").write_text(json.dumps({
+                "schema_version": "compshare.rag.asset-lock.v1",
+                "fingerprint": "fingerprint-of-the-previous-corpus",
+                "notes": [{"source_id": "gitlab-compshare-docs", "ref": "/screen.png",
+                           **{k: v for k, v in vars(note).items()}}],
+                "failures": [],
+            }, ensure_ascii=False), encoding="utf-8")
+
+            # Same image bytes, new path: exactly what the pages/ -> content/
+            # App Router migration did to every document in the corpus.
+            moved, _image = self._caption_lock_fixture(Path(tmp), "content/guide.md")
+
+            def explode(*args, **kwargs):
+                raise AssertionError("describe_assets called the VL model for an unchanged image")
+
+            client = unittest.mock.Mock(spec=ModelVerseClient)
+            client.cache_dir = release / ".cache" / "modelverse"
+            client.json_chat.side_effect = explode
+            client.cached_json.side_effect = explode
+
+            notes, failures = pipeline.describe_assets(
+                [moved], client=client, model="vl-model", fallback_model=None,
+                assets_dir=release / "assets", raw_asset_base_url="https://example.invalid/a",
+            )
+
+            self.assertEqual([], failures)
+            reused = notes[("gitlab-compshare-docs", "content/guide.md", "/screen.png")]
+            self.assertEqual("控制台创建实例页面", reused.description)
+            self.assertEqual(["创建实例"], reused.visible_text)
+            # The note follows the image to its new home rather than keeping the
+            # path it was first captioned under.
+            self.assertEqual("content/guide.md", reused.source_path)
+
+    def test_reuse_is_refused_when_the_note_came_from_a_different_model(self):
+        """Content identity says the bytes match, not that the caption is ours."""
+        self.assertEqual(
+            "asset-0123456789abcdef",
+            pipeline.reuse_key_for_identity("file:0123456789abcdef" + "f" * 48),
+        )
+        self.assertEqual("url:https://x.invalid/a.png",
+                         pipeline.reuse_key_for_identity("url:https://x.invalid/a.png"))
+        self.assertIsNone(pipeline.reuse_key_for_identity("missing:src:doc.md:a.png"))
+
+        local = AssetNote(asset_id="asset-0123456789abcdef", source_path="a.md", repo_path=None,
+                          public_url="", description="d", visible_text=[], controls=[],
+                          relations=[], confidence=0.9, model="m")
+        self.assertEqual("asset-0123456789abcdef", pipeline.locked_note_identity(local, "a.png"))
+        remote = AssetNote(asset_id="remote-0123456789abcdef", source_path="a.md", repo_path=None,
+                           public_url="https://x.invalid/a.png", description="d", visible_text=[],
+                           controls=[], relations=[], confidence=0.9, model="m")
+        self.assertEqual("url:https://x.invalid/a.png", pipeline.locked_note_identity(remote, "ignored"))
+        # A note carrying no content digest must not be matched by identity at
+        # all, or every such note would collide onto one key.
+        opaque = AssetNote(asset_id="legacy", source_path="a.md", repo_path=None, public_url="",
+                           description="d", visible_text=[], controls=[], relations=[],
+                           confidence=0.9, model="m")
+        self.assertIsNone(pipeline.locked_note_identity(opaque, "a.png"))
+
+    def test_vl_concurrency_defaults_to_serial(self):
+        """Non-answers were a fan-out artifact: 6/40 lost at 8 workers, 0/40 at 1."""
+        import inspect
+
+        self.assertEqual(1, inspect.signature(pipeline.describe_assets).parameters["workers"].default)
+        build_source = Path("scripts/rag_v2/build.py").read_text(encoding="utf-8")
+        self.assertIn('"--vl-workers", type=int, default=1', build_source)
+
     def test_only_transient_asset_failures_are_retried(self):
         self.assertTrue(_retryable_asset_failure({"reason": "source_remote_image_unavailable:TimeoutError:x"}))
         self.assertFalse(_retryable_asset_failure({"reason": "source_remote_image_unavailable:HTTPError:HTTP Error 404"}))
