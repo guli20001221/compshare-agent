@@ -1041,11 +1041,19 @@ class RAGV2PipelineTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as caught:
                     pipeline._prepare_vl_image(source, Path(tmp) / "vl-ready")
             self.assertIn("0.0.0", str(caught.exception))
-            # A corpus with no animated image must still build anywhere.
+
+            # The pin binds a RENDERING, so it may only be enforced where one
+            # happens. A non-image and a SINGLE-frame GIF are both handed to the
+            # model untouched; failing those would fail builds over a transform
+            # that never runs.
             plain = Path(tmp) / "shot.png"
             plain.write_bytes(b"\x89PNG\r\n\x1a\n")
+            static_gif = Path(tmp) / "static.gif"
+            Image.new("RGB", (4, 4), "red").save(static_gif)
             with unittest.mock.patch.object(pipeline, "VL_PILLOW_VERSION", "0.0.0"):
                 self.assertEqual(plain, pipeline._prepare_vl_image(plain, Path(tmp) / "vl-ready"))
+                self.assertEqual(static_gif,
+                                 pipeline._prepare_vl_image(static_gif, Path(tmp) / "vl-ready"))
 
     def test_an_unrevalidated_platform_image_is_reported_as_a_degradation(self):
         """Availability-first is a policy; hiding that it fired is not.
@@ -1300,6 +1308,37 @@ class ReleaseDiffTests(unittest.TestCase):
         self.assertEqual([], result["documents_moved"])
         self.assertEqual(["src:pages/a/x.md"], result["documents_removed"])
         self.assertEqual(2, len(result["documents_added"]))
+
+    def test_a_move_is_never_paired_across_sources_by_content(self):
+        """The external corpus holds three independent third-party snapshots.
+
+        A guide deleted from one and added to another is two real events. Pairing
+        them as a move deletes both from the report -- and those are precisely
+        the rows the reviewer is there to see.
+        """
+        old = [self._chunk("external-comfyui:docs/guide.md", "标题", "一模一样的内容")]
+        new = [self._chunk("external-voice-audio:docs/guide.md", "标题", "一模一样的内容")]
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual([], result["documents_moved"])
+        self.assertEqual(["external-comfyui:docs/guide.md"], result["documents_removed"])
+        self.assertEqual(["external-voice-audio:docs/guide.md"], result["documents_added"])
+
+    def test_a_move_is_never_paired_across_sources_by_path(self):
+        """Same trap in the second tier, where the content differs too."""
+        old = [self._chunk("external-comfyui:pages/a/guide.md", "标题", "旧内容")]
+        new = [self._chunk("external-voice-audio:content/a/guide.mdx", "标题", "新内容")]
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual([], result["documents_moved"])
+        self.assertEqual(1, len(result["documents_removed"]))
+        self.assertEqual(1, len(result["documents_added"]))
+
+    def test_a_move_within_one_source_still_pairs(self):
+        """Scoping to the source must not disable the thing pairing is for."""
+        old = [self._chunk("external-comfyui:pages/a/guide.md", "标题", "旧内容")]
+        new = [self._chunk("external-comfyui:content/a/guide.mdx", "标题", "新内容")]
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual(1, len(result["documents_moved"]))
+        self.assertTrue(result["documents_moved"][0]["content_changed"])
 
     def test_a_genuinely_new_document_survives_rename_detection(self):
         old = [self._chunk("src:pages/x.md", "标题", "内容")]

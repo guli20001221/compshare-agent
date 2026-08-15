@@ -76,27 +76,50 @@ jobs:
           python3 test_clip.py
           python3 test_confirm_loop.py
 
-      # Pillow is installed for ONE reason: scripts/rag_v2/pipeline.py flattens
-      # animated GIF/WebP into a contact sheet before captioning, that transform
-      # is part of the caption contract the reuse cache is keyed on, and its test
-      # self-skips without Pillow. A skipped test cannot hold a pin.
-      #
-      # From the requirements file rather than a bare `pip install pillow`: the
-      # pinned version is IN the contract digest, so an unpinned install would
-      # let CI verify a rendering the released captions were never produced by.
-      - name: Install the pinned RAG build dependencies
-        run: pip install -r scripts/rag_v2/requirements.txt
 
-      # The RAG corpus scripts had no gate at all: the suite that decides when a
-      # cached image caption may be reused, and therefore whether a stale caption
-      # can reach the published knowledge base, was manual-only. It is stdlib-only
-      # apart from the Pillow step above and costs about two seconds.
-      #
-      # No working-directory: it must run from the repo root or `import
-      # scripts.rag_w0` fails -- and it fails in a way worth knowing about, by
-      # erroring one module while still reporting ~117 passing tests, so a
-      # partially-green log reads as success. It also has to come after
-      # `go test ./...`, because two rag_w0 tests shell out to `go test
-      # ./internal/knowledge` with no toolchain guard.
+  # Separate job, on its own interpreter, deliberately.
+  #
+  # The RAG corpus scripts had no gate at all: the suite that decides when a
+  # cached image caption may be reused -- and therefore whether a stale caption
+  # can reach the published knowledge base -- was manual-only.
+  #
+  # Python 3.12, not the 3.13 the job above uses. Pillow is pinned because the
+  # contact sheet it renders IS the model's input and its version is part of the
+  # caption contract; pillow==10.3.0 ships no cp313 wheel, so on 3.13 pip falls
+  # back to a source build that fails outright. Moving the whole go-test job to
+  # 3.12 would have silently dropped the ssh-ops suites off 3.13, so the two
+  # interpreters live in two jobs instead. Raising the Pillow pin is NOT the
+  # cheap fix: the version is inside caption_contract_digest(), so bumping it
+  # invalidates all ~1900 stored captions to re-earn the ~45 animated ones.
+  #
+  # Go is set up because two rag_w0 tests shell out to
+  # `go test ./internal/knowledge` with no toolchain guard -- a missing `go`
+  # errors them rather than skipping them.
+  #
+  # No working-directory: it must run from the repo root or `import
+  # scripts.rag_w0` fails, and it fails in a way worth knowing about -- one
+  # module errors while ~117 tests still report as passing, so a partially-green
+  # log reads as success.
+  rag-scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the pinned RAG build dependencies
+        run: python -m pip install -r scripts/rag_v2/requirements.txt
+
       - name: RAG corpus script suites (scripts/)
         run: python -m unittest discover -s scripts -p "test_*.py"

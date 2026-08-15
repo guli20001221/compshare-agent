@@ -179,25 +179,32 @@ def _prepare_vl_image(path: Path, cache_dir: Path) -> Path:
     try:
         from PIL import Image, __version__ as pillow_version
     except ImportError as exc:
-        # Silently returning the raw animated file made a Pillow-less machine
-        # produce different captions while attesting the same caption contract.
-        # A build that cannot honour the preprocessing it claims must stop.
+        # Silently returning the raw file made a Pillow-less machine produce
+        # different captions while attesting the same caption contract. Telling
+        # a static GIF from an animated one already needs a decoder, so any
+        # GIF/WebP requires Pillow -- but see below for what requires the PINNED
+        # Pillow, which is a narrower claim.
         raise RuntimeError(
-            f"Pillow is required to flatten {path.name} for captioning; install "
+            f"Pillow is required to inspect {path.name} for captioning; install "
             "scripts/rag_v2/requirements.txt"
         ) from exc
-    if pillow_version != VL_PILLOW_VERSION:
-        # The sheet this produces IS the model's input, and two Pillow versions
-        # can render one source differently. Letting an unpinned version write a
-        # caption would file it under a contract that attests to the pinned one.
-        raise RuntimeError(
-            f"Pillow {pillow_version} does not match the pinned {VL_PILLOW_VERSION} that the "
-            "caption contract attests to; install scripts/rag_v2/requirements.txt"
-        )
     with Image.open(path) as source:
         frame_count = int(getattr(source, "n_frames", 1))
         if frame_count <= 1:
+            # A single-frame GIF/WebP is handed to the model untouched, so no
+            # version of Pillow can change what it sees. Checking the pin here
+            # would fail builds over a rendering that never happens.
             return path
+        if pillow_version != VL_PILLOW_VERSION:
+            # From here on Pillow renders the bytes the model is shown, and two
+            # versions can render one source differently. Letting an unpinned
+            # version write a caption would file it under a contract attesting
+            # to the pinned one.
+            raise RuntimeError(
+                f"Pillow {pillow_version} does not match the pinned {VL_PILLOW_VERSION} that the "
+                f"caption contract attests to, and {path.name} needs flattening; install "
+                "scripts/rag_v2/requirements.txt"
+            )
         sample_count = min(4, frame_count)
         frame_indexes = sorted({round(index * (frame_count - 1) / max(1, sample_count - 1)) for index in range(sample_count)})
         frames = []
@@ -270,11 +277,14 @@ PREPROCESS_SOURCE_PINS = {
     "_canonical_remote_image_url": "a1e4062a98e87901",
     "_image_content_type": "1993d1bc1dd0c346",
     "_is_decorative_asset": "7e9feffa21694d89",
-    # Re-pinned without bumping VL_PREPROCESS_VERSION, deliberately: the two
-    # edits since the last pin are a hard failure where Pillow used to be
-    # silently skipped, and putting the version into the contact sheet's own
-    # filename. Neither changes the bytes any stored caption was produced from.
-    "_prepare_vl_image": "bd328ca124a70bd0",
+    # Re-pinned without bumping VL_PREPROCESS_VERSION, deliberately. Three edits
+    # since the last pin: a hard failure where Pillow used to be silently
+    # skipped, the version in the contact sheet's own filename, and moving the
+    # pinned-version check to AFTER the single-frame early return so a static
+    # GIF/WebP -- which is handed to the model untouched -- no longer fails over
+    # a rendering that never happens. None of them changes the bytes any stored
+    # caption was produced from.
+    "_prepare_vl_image": "edd9f58ec5c0b398",
 }
 
 

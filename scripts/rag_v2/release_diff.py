@@ -87,16 +87,23 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
     # rendered as 232 added and 235 removed documents. A document whose chunks
     # carry exactly the old document's content digests has MOVED, and saying so
     # is the difference between a reviewable report and a wall.
+    # Both tiers are scoped to the SOURCE. The external corpus carries three
+    # independent snapshots (comfyui, digital-human, voice-audio); without this
+    # a guide.md deleted from one and added to another pairs as a move, and both
+    # halves vanish from the report -- the exact rows a reviewer is there for.
+    def source_of(doc: str) -> str:
+        return doc.partition(":")[0]
+
     def fingerprint(doc: str, rows: list[dict[str, Any]]) -> tuple[str, ...]:
         return tuple(sorted(content_digest(row) for row in rows if document_key(row) == doc))
 
     gone, fresh = old_docs - new_docs, new_docs - old_docs
-    old_prints: dict[tuple[str, ...], list[str]] = {}
+    old_prints: dict[tuple[str, tuple[str, ...]], list[str]] = {}
     for doc in sorted(gone):
-        old_prints.setdefault(fingerprint(doc, old_rows), []).append(doc)
+        old_prints.setdefault((source_of(doc), fingerprint(doc, old_rows)), []).append(doc)
     moved = []
     for doc in sorted(fresh):
-        candidates = old_prints.get(fingerprint(doc, new_rows))
+        candidates = old_prints.get((source_of(doc), fingerprint(doc, new_rows)))
         if candidates:
             moved.append({"from": candidates.pop(0), "to": doc, "content_changed": False})
     moved_from = {item["from"] for item in moved}
@@ -108,12 +115,12 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
     # and ONLY when that key is unique on both sides -- an ambiguous match is
     # reported as a real addition and a real deletion, because guessing a rename
     # would hide a document that genuinely appeared.
-    def path_stem(doc: str) -> str:
-        _source, _, path = doc.partition(":")
+    def path_stem(doc: str) -> tuple[str, str]:
+        source, _, path = doc.partition(":")
         head, _, tail = path.partition("/")
-        return (tail or head).rsplit(".", 1)[0].lower()
+        return source, (tail or head).rsplit(".", 1)[0].lower()
 
-    def unique_stems(docs: set[str]) -> dict[str, str]:
+    def unique_stems(docs: set[str]) -> dict[tuple[str, str], str]:
         counts: Counter = Counter(path_stem(doc) for doc in docs)
         return {path_stem(doc): doc for doc in docs if counts[path_stem(doc)] == 1}
 

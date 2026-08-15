@@ -47,11 +47,20 @@ placeholder is fabricated.
 
 Flattening is **not optional**: the contact sheet is what the model is shown, so
 it decides caption content, and captions are cached across builds under a
-contract digest. A release build therefore requires the pinned Pillow from
-`scripts/rag_v2/requirements.txt` and fails on any animated image if Pillow is
-missing or a different version — the pinned version is part of the contract, so
-changing it re-earns every animated caption rather than silently mixing two
-renderings under one digest.
+contract digest. Two boundaries, deliberately different widths:
+
+- **Pillow is required for any GIF/WebP**, because telling a static one from an
+  animated one already needs a decoder.
+- **The pinned Pillow version is required only when a sheet is actually
+  rendered**, i.e. for a genuinely animated image. A single-frame GIF/WebP is
+  handed to the model untouched, so no version can change what it sees, and
+  failing that build would be failing over a rendering that never happens.
+
+The pinned version is part of the caption contract, so changing it re-earns
+every animated caption rather than silently mixing two renderings under one
+digest. It also, today, re-earns every OTHER caption too — the contract is
+global — which is why raising the pin is a deliberate act and not a routine
+dependency bump.
 
 ```bash
 python -m pip install -r scripts/rag_v2/requirements.txt
@@ -74,13 +83,31 @@ of runtime data.
 One command covers build → refresh embeddings → diff → promote → repin →
 offline bundle check:
 
+First read the release production is serving, because the candidate has to
+declare what it is built on:
+
+```powershell
+kubectl -n prj-ucompshare-prod exec compshare-kb-0 -- wget -qO- http://127.0.0.1:8088/healthz
+```
+
 ```powershell
 python -m scripts.rag_v2.release --env .env.local `
+  --parent-release-id kb-release-<that release_id> `
   --build-arg --internal-docs --build-arg <docs-checkout> `
   --build-arg --internal-revision --build-arg <sha> `
   --build-arg --valid-from --build-arg 2026-08-16 `
   ... (one --build-arg per token; see scripts/rag_v2/build.py for the full list)
 ```
+
+That id is recorded in `deploy/kb/v2/release_base.json` and committed with the
+corpus. The import job refuses a candidate whose recorded parent is not what
+production is currently serving, and passes it to the worker as
+`--parent-release-id` so the later publish is a compare-and-swap. It cannot be
+derived at import time: reading the active release then records whatever is live
+when the job runs, and the two differ exactly when it matters — build on R0, let
+R1 publish while the candidate is in review, and an import-time read would file
+the candidate as R1's child, so publishing it overwrites content it never saw
+while the base match reports success.
 
 It does **not** publish. Publication is two separate manual GitLab jobs so that
 a person reads the diff in between:

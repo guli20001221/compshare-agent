@@ -19,6 +19,7 @@ that a person reads release_diff.md between the two.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -121,6 +122,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--embed-model", default="qwen3-embedding-8b")
     parser.add_argument("--skip-build", action="store_true",
                         help="reuse the corpora already in --release-dir")
+    # The release this corpus is BUILT ON, recorded here so the import job can
+    # pass it as the candidate's parent. It cannot be derived at import time:
+    # reading the active release then records whatever is live when the job
+    # runs, and the two differ exactly when it matters -- build on R0, let R1
+    # publish while the candidate is in review, and an import-time read files
+    # the candidate as R1's child, so publishing it silently overwrites content
+    # it never saw. Get the value from the serving process:
+    #   kubectl -n prj-ucompshare-prod exec compshare-kb-0 -- \
+    #     wget -qO- http://127.0.0.1:8088/healthz
+    parser.add_argument("--parent-release-id",
+                        help="active release id this corpus is built on (see /healthz)")
     parser.add_argument("--build-arg", action="append", default=[],
                         help="passed through to scripts.rag_v2.build; repeat per argument")
     args, _unknown = parser.parse_known_args(argv)
@@ -133,6 +145,29 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="kb-release-baseline-") as raw:
         baseline = snapshot_released(repo, Path(raw))
         print(f"baseline snapshot: {sorted(baseline)}")
+
+        # Written before the build, from the artifacts the build is about to
+        # overwrite: this file is the candidate's claim about what it was based
+        # on, and the import job passes it through as --parent-release-id.
+        base_record = {
+            "parent_release_id": args.parent_release_id,
+            "baseline_digests": {
+                label: normalized_file_digest(path)
+                for label, path in sorted(baseline.items()) if label != "lock"
+            },
+        }
+        (release_dir).mkdir(parents=True, exist_ok=True)
+        (release_dir / "release_base.json").write_text(
+            json.dumps(base_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+        if args.parent_release_id:
+            print(f"built on release {args.parent_release_id}")
+        else:
+            print(
+                "WARNING: no --parent-release-id. The import job will refuse this candidate\n"
+                "         unless it is the first publication into an empty knowledge base.",
+                flush=True,
+            )
 
         if not args.skip_build:
             run([python, "-m", "scripts.rag_v2.build", *args.build_arg,
