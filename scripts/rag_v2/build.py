@@ -70,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
     # returning a shaped non-answer, not HTTP. 1200 URLs at 8 in flight is
     # minutes, and a 304 costs no body at all.
     parser.add_argument("--remote-workers", type=int, default=8)
+    # Keeping cached bytes for an unreachable origin stops a CDN blip from
+    # failing a build, but for a platform image it means shipping a caption
+    # nothing verified this run. That is a person's call, not a default.
+    parser.add_argument("--allow-stale-remote", action="store_true")
     args = parser.parse_args(argv)
 
     if len(args.faq_zip) != len(FAQ_IDS):
@@ -125,10 +129,10 @@ def main(argv: list[str] | None = None) -> int:
         internal_docs = collect_internal_docs(args.internal_docs) + faq_docs
         all_image_docs = [*internal_docs, *external_docs]
         if args.skip_vl:
-            asset_notes, asset_failures = {}, []
+            asset_notes, asset_failures, asset_degradations = {}, [], []
         else:
             assert client is not None
-            asset_notes, asset_failures = describe_assets(
+            asset_notes, asset_failures, asset_degradations = describe_assets(
                 all_image_docs,
                 client=client,
                 model=args.vl_model,
@@ -143,6 +147,12 @@ def main(argv: list[str] | None = None) -> int:
             "published": 0,
             "runtime_mode": "caption_only",
             "failures": asset_failures,
+            # Images whose origin could not be revalidated this build, so the
+            # bytes came from cache. Not a failure -- the caption is usable --
+            # but it is the difference between "the image is still this" and
+            # "the image was this the last time anyone could ask", and that
+            # difference has to be readable rather than inferred from a log line.
+            "degradations": asset_degradations,
         }
         # Source-local images are temporary VL inputs, not release artifacts.
         for generated_asset in (out / "assets").glob("*"):
@@ -194,6 +204,13 @@ def main(argv: list[str] | None = None) -> int:
         blocking_asset_failures = [item for item in asset_failures if item.get("severity", "error") == "error"]
         if blocking_asset_failures and not args.skip_vl:
             raise ValueError(f"asset processing failed for {len(blocking_asset_failures)} required references; see build report")
+        stale_platform_assets = [item for item in asset_degradations if item.get("severity") == "error"]
+        if stale_platform_assets and not args.allow_stale_remote:
+            raise ValueError(
+                f"{len(stale_platform_assets)} platform image(s) could not be revalidated and were taken "
+                "from cache; see asset_report.json degradations. Re-run when the origin is reachable, or "
+                "pass --allow-stale-remote to publish captions nothing verified this build."
+            )
         if internal_errors or external_errors:
             raise ValueError("chunk validation failed:\n" + "\n".join([*internal_errors, *external_errors][:100]))
 

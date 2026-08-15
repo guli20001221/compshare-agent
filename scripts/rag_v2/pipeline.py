@@ -177,15 +177,23 @@ def _prepare_vl_image(path: Path, cache_dir: Path) -> Path:
     if path.suffix.lower() not in {".gif", ".webp"}:
         return path
     try:
-        from PIL import Image
+        from PIL import Image, __version__ as pillow_version
     except ImportError as exc:
         # Silently returning the raw animated file made a Pillow-less machine
         # produce different captions while attesting the same caption contract.
         # A build that cannot honour the preprocessing it claims must stop.
         raise RuntimeError(
-            f"Pillow is required to flatten {path.name} for captioning "
-            f"(caption contract {VL_PREPROCESS_VERSION})"
+            f"Pillow is required to flatten {path.name} for captioning; install "
+            "scripts/rag_v2/requirements.txt"
         ) from exc
+    if pillow_version != VL_PILLOW_VERSION:
+        # The sheet this produces IS the model's input, and two Pillow versions
+        # can render one source differently. Letting an unpinned version write a
+        # caption would file it under a contract that attests to the pinned one.
+        raise RuntimeError(
+            f"Pillow {pillow_version} does not match the pinned {VL_PILLOW_VERSION} that the "
+            "caption contract attests to; install scripts/rag_v2/requirements.txt"
+        )
     with Image.open(path) as source:
         frame_count = int(getattr(source, "n_frames", 1))
         if frame_count <= 1:
@@ -251,6 +259,13 @@ VL_FALLBACK_SUFFIX = " 输出务必精炼：description 不超过200字，数组
 # is a human decision and the pins only force that decision to be made.
 VL_PREPROCESS_VERSION = "gif-webp-contact-sheet-v1"
 
+# Pinned in scripts/rag_v2/requirements.txt and folded into the contract below.
+# Pillow renders the contact sheet that IS the model's input for an animated
+# image, so a different version is a different instruction, not a different
+# dependency. The pin is asserted at the moment a sheet is actually built, so a
+# corpus with no animated images still builds anywhere.
+VL_PILLOW_VERSION = "10.3.0"
+
 PREPROCESS_SOURCE_PINS = {
     "_canonical_remote_image_url": "a1e4062a98e87901",
     "_image_content_type": "1993d1bc1dd0c346",
@@ -259,7 +274,7 @@ PREPROCESS_SOURCE_PINS = {
     # edits since the last pin are a hard failure where Pillow used to be
     # silently skipped, and putting the version into the contact sheet's own
     # filename. Neither changes the bytes any stored caption was produced from.
-    "_prepare_vl_image": "7ff137f4710fb19d",
+    "_prepare_vl_image": "bd328ca124a70bd0",
 }
 
 
@@ -288,6 +303,7 @@ def caption_contract_digest() -> str:
         "prompt": VL_CAPTION_PROMPT,
         "fallback_suffix": VL_FALLBACK_SUFFIX,
         "preprocess": VL_PREPROCESS_VERSION,
+        "pillow": VL_PILLOW_VERSION,
     }, ensure_ascii=False, sort_keys=True).encode("utf-8"))
 
 
@@ -296,6 +312,11 @@ class RemoteAsset:
     path: Path
     digest: str
     content_type: str
+    # True when the origin could not be reached and these are the bytes we
+    # already held. The caption is still usable, but nothing this build did
+    # proves the image still looks like that, so the caller has to say so out
+    # loud rather than let an availability decision pass for a freshness one.
+    stale: bool = False
 
 
 def resolve_remote_image(url: str, cache_dir: Path, *, timeout: int = 10) -> RemoteAsset:
@@ -334,11 +355,12 @@ def resolve_remote_image(url: str, cache_dir: Path, *, timeout: int = 10) -> Rem
         if cached.get("last_modified"):
             headers["If-Modified-Since"] = str(cached["last_modified"])
 
-    def from_cache() -> RemoteAsset:
+    def from_cache(*, stale: bool) -> RemoteAsset:
         return RemoteAsset(
             path=cached_path,
             digest=str(cached["digest"]),
             content_type=str(cached.get("content_type") or "application/octet-stream"),
+            stale=stale,
         )
 
     request_url = quote(_canonical_remote_image_url(url), safe="/:?&=%#@+;,[]!$'()*")
@@ -369,8 +391,9 @@ def resolve_remote_image(url: str, cache_dir: Path, *, timeout: int = 10) -> Rem
             # 304 can only be an answer to a validator we sent. Without one it
             # is a server bug, and there is nothing to retry into a 200.
             if exc.code == 304:
+                # A 304 is the origin confirming the bytes, so this is fresh.
                 if have_cached_bytes:
-                    return from_cache()
+                    return from_cache(stale=False)
                 raise ValueError("server answered 304 to an unconditional request") from exc
             if attempt == 2:
                 raise
@@ -385,7 +408,7 @@ def resolve_remote_image(url: str, cache_dir: Path, *, timeout: int = 10) -> Rem
                 # a build in which the server could not be asked at all.
                 if have_cached_bytes:
                     print(f"remote revalidation failed, keeping cached bytes: {url}", flush=True)
-                    return from_cache()
+                    return from_cache(stale=True)
                 raise
             time.sleep(2 ** attempt)
     if data is None:  # pragma: no cover - the loop either breaks, returns or raises
@@ -928,7 +951,7 @@ def describe_assets(
     workers: int = 1,
     remote_workers: int = 8,
     fetch_remote: Callable[[str, Path], RemoteAsset] = resolve_remote_image,
-) -> tuple[dict[tuple[str, str, str], AssetNote], list[dict[str, Any]]]:
+) -> tuple[dict[tuple[str, str, str], AssetNote], list[dict[str, Any]], list[dict[str, Any]]]:
     notes: dict[tuple[str, str, str], AssetNote] = {}
     failures: list[dict[str, Any]] = []
     assets_dir.mkdir(parents=True, exist_ok=True)
@@ -1024,6 +1047,25 @@ def describe_assets(
                     resolved[url] = asset
                 else:
                     remote_failures[url] = str(reason)
+
+    # Keeping cached bytes when the origin is unreachable is an availability
+    # decision, not a freshness one: the caption still describes the bytes we
+    # hold, but nothing this build did proves the origin still serves them. A
+    # degrade nobody can see is indistinguishable from a healthy build, so every
+    # affected reference is recorded, and for platform sources it is an error
+    # the release gate stops on unless a human passes --allow-stale-remote.
+    degradations: list[dict[str, Any]] = []
+    for doc, _alt, ref, decoded in references:
+        asset = resolved.get(decoded)
+        if asset is None or not asset.stale:
+            continue
+        degradations.append({
+            "source_id": doc.source_id,
+            "source": doc.source_path,
+            "ref": ref,
+            "reason": "remote_revalidation_failed:kept_cached_bytes",
+            "severity": "warning" if doc.source_origin.startswith("external_") else "error",
+        })
 
     # Identity IS the reuse key: for every image that costs a model call it is
     # that image's content digest, in the same form asset_id records it.
@@ -1192,7 +1234,8 @@ def describe_assets(
     print(
         f"asset_groups={len(task_groups)} reused_captions={reused_captions} "
         f"carried_failures={carried_failures} remote_resolved={len(resolved)} "
-        f"remote_unresolved={len(remote_failures)} pending_vl={len(pending_groups)}",
+        f"remote_unresolved={len(remote_failures)} remote_stale={len(degradations)} "
+        f"pending_vl={len(pending_groups)}",
         flush=True,
     )
 
@@ -1222,7 +1265,7 @@ def describe_assets(
         "notes": locked_notes,
         "failures": failures,
     }, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return notes, failures
+    return notes, failures, degradations
 
 
 def vl_payload_answered(payload: dict[str, Any]) -> bool:

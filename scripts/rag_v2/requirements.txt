@@ -1,0 +1,15 @@
+# Release-build dependencies for the RAG V2 corpus.
+#
+# Pillow is NOT optional. _prepare_vl_image flattens animated GIF/WebP into the
+# contact sheet that is literally what the model is shown, so it decides caption
+# content, and captions are cached across builds under a contract digest. Two
+# Pillow versions can render two different sheets from one source file while the
+# contract claims they are the same, so the version is pinned here AND folded
+# into caption_contract_digest() via VL_PILLOW_VERSION: changing this line
+# changes the contract and every animated caption is re-earned.
+#
+# Keep in sync with VL_PILLOW_VERSION in pipeline.py -- test_the_pinned_pillow_
+# version_is_the_one_the_contract_attests_to fails if they drift.
+#
+#   python -m pip install -r scripts/rag_v2/requirements.txt
+pillow==10.3.0

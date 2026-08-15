@@ -497,6 +497,11 @@ class RAGV2PipelineTests(unittest.TestCase):
         return fetch
 
     def _describe(self, release: Path, docs, client, **kwargs):
+        """describe_assets, dropping degradations for the tests that ignore them."""
+        notes, failures, _degradations = self._describe_full(release, docs, client, **kwargs)
+        return notes, failures
+
+    def _describe_full(self, release: Path, docs, client, **kwargs):
         return pipeline.describe_assets(
             docs, client=client, model="vl-model", fallback_model=None,
             assets_dir=release / "assets", raw_asset_base_url="https://example.invalid/a", **kwargs,
@@ -1005,6 +1010,87 @@ class RAGV2PipelineTests(unittest.TestCase):
                 with self.assertRaises(Exception):
                     pipeline.resolve_remote_image(url, cache)
             self.assertEqual([], list((cache / "by-url").glob("*.json")))
+
+    def test_the_pinned_pillow_version_is_the_one_the_contract_attests_to(self):
+        """One producer for the number, and the file pip reads must agree with it.
+
+        Pillow renders the contact sheet the model is shown, so two versions are
+        two instructions. Declaring it without folding it into the digest would
+        let two machines write captions the contract calls interchangeable.
+        """
+        requirements = (REPO_ROOT / "scripts/rag_v2/requirements.txt").read_text(encoding="utf-8")
+        self.assertIn(f"pillow=={pipeline.VL_PILLOW_VERSION}", requirements)
+        with unittest.mock.patch.object(pipeline, "VL_PILLOW_VERSION", "0.0.0"):
+            self.assertNotEqual(pipeline.caption_contract_digest(),
+                                json.loads((REPO_ROOT / "deploy/kb/v2/asset_lock.json")
+                                           .read_text(encoding="utf-8"))["contract"])
+
+    def test_an_unpinned_pillow_refuses_to_write_a_caption(self):
+        """A build that cannot honour the preprocessing it attests to must stop."""
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "anim.gif"
+            frames = [Image.new("RGB", (4, 4), color) for color in ("red", "blue")]
+            frames[0].save(source, save_all=True, append_images=frames[1:], duration=10)
+            with unittest.mock.patch.object(pipeline, "VL_PILLOW_VERSION", "0.0.0"):
+                with self.assertRaises(RuntimeError) as caught:
+                    pipeline._prepare_vl_image(source, Path(tmp) / "vl-ready")
+            self.assertIn("0.0.0", str(caught.exception))
+            # A corpus with no animated image must still build anywhere.
+            plain = Path(tmp) / "shot.png"
+            plain.write_bytes(b"\x89PNG\r\n\x1a\n")
+            with unittest.mock.patch.object(pipeline, "VL_PILLOW_VERSION", "0.0.0"):
+                self.assertEqual(plain, pipeline._prepare_vl_image(plain, Path(tmp) / "vl-ready"))
+
+    def test_an_unrevalidated_platform_image_is_reported_as_a_degradation(self):
+        """Availability-first is a policy; hiding that it fired is not.
+
+        The build keeps the cached bytes rather than dying on a CDN blip, but
+        the caption then describes bytes nothing checked this run, and for a
+        platform image that has to reach the report and the release gate.
+        """
+        url = "https://docs.invalid/a.png"
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [self._locked_row(
+                self._note("remote-" + "a" * 16, source_path="remote.md", public_url=url), url)])
+
+            def stale_fetch(fetch_url, cache_dir):
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                path = cache_dir / "cached.png"
+                path.write_bytes(b"\x89PNG\r\n\x1a\n")
+                return pipeline.RemoteAsset(path=path, digest="a" * 64,
+                                            content_type="image/png", stale=True)
+
+            platform = self._remote_doc(Path(tmp), url, source_origin="official")
+            _n, _f, degradations = self._describe_full(
+                release, [platform], self._mock_client(release), fetch_remote=stale_fetch)
+            self.assertEqual(1, len(degradations))
+            self.assertEqual("error", degradations[0]["severity"])
+            self.assertIn("remote_revalidation_failed", degradations[0]["reason"])
+
+            third_party = self._remote_doc(Path(tmp), url, source_origin="external_comfyui")
+            _n, _f, degradations = self._describe_full(
+                release, [third_party], self._mock_client(release), fetch_remote=stale_fetch)
+            self.assertEqual("warning", degradations[0]["severity"])
+
+    def test_a_fresh_304_is_not_reported_as_a_degradation(self):
+        """Only an unanswered origin is stale; a 304 IS the origin answering."""
+        url = "https://docs.invalid/a.png"
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [self._locked_row(
+                self._note("remote-" + "a" * 16, source_path="remote.md", public_url=url), url)])
+            doc = self._remote_doc(Path(tmp), url, source_origin="official")
+            _n, _f, degradations = self._describe_full(
+                release, [doc], self._mock_client(release),
+                fetch_remote=self._fake_remote({url: "a" * 64}))
+            self.assertEqual([], degradations)
 
     def test_the_flattened_contact_sheet_is_keyed_on_the_preprocess_version(self):
         """Otherwise bumping the version re-captions against the old sheet."""

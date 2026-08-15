@@ -80,8 +80,12 @@ jobs:
       # animated GIF/WebP into a contact sheet before captioning, that transform
       # is part of the caption contract the reuse cache is keyed on, and its test
       # self-skips without Pillow. A skipped test cannot hold a pin.
-      - name: Install Pillow (for the GIF/WebP flattening test)
-        run: pip install pillow
+      #
+      # From the requirements file rather than a bare `pip install pillow`: the
+      # pinned version is IN the contract digest, so an unpinned install would
+      # let CI verify a rendering the released captions were never produced by.
+      - name: Install the pinned RAG build dependencies
+        run: pip install -r scripts/rag_v2/requirements.txt
 
       # The RAG corpus scripts had no gate at all: the suite that decides when a
       # cached image caption may be reused, and therefore whether a stale caption

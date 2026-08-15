@@ -1,5 +1,5 @@
 {
-  "contract": "ff63dfe682819c081f73c2d20f44988ac339357ba1065ed28eda31e6ef3f8064",
+  "contract": "9057faade485c15dafaf65ee03a255c4d52e78620694369c917669063a36d76f",
   "failures": [
     {
       "reason": "missing_local_image",
@@ -28168,22 +28168,6 @@
       "visual_type": "table"
     },
     {
-      "asset_id": "remote-0343dc81e26b2779",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一张装饰性金色太阳放射状吊灯的图片，中心为圆形镜面，周围有多根带珠饰的金属辐条向外辐射，背景可见部分花纹墙面和模糊的室内物品。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://drive.google.com/thumbnail?id=1Z-esCujQF_uEa_YJjkibc3NUrW4aR_d4&sz=w400",
-      "ref": "https://drive.google.com/thumbnail?id=1Z-esCujQF_uEa_YJjkibc3NUrW4aR_d4&sz=w400",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "images/500WHhII1fnz/custom-nodes/active/ComfyUI_LayerStyle_Advance-main/py/BiRefNet_v2/README.md",
-      "visible_text": [],
-      "visual_type": "装饰灯具"
-    },
-    {
       "asset_id": "remote-43cc18d5f1d1aa79",
       "confidence": 0.98,
       "controls": [],
@@ -47186,22 +47170,6 @@
       "visual_type": "雕塑"
     },
     {
-      "asset_id": "remote-a00e91c7ccb27ba2",
-      "confidence": 1.0,
-      "controls": [],
-      "description": "人物面部特写，金发女性闭眼，背景为模糊绿色自然景物。无文字、按钮、控件或结构化信息。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-vl-Plus",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_control/input/01-portrait_video.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_control/input/01-portrait_video.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/fun-control.md",
-      "visible_text": [],
-      "visual_type": "portrait"
-    },
-    {
       "asset_id": "remote-483ce38d914251f8",
       "confidence": 0.95,
       "controls": [],
@@ -47210,22 +47178,6 @@
       "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
       "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_control/input/02-robot's_eye.png",
       "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_control/input/02-robot's_eye.png",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/fun-control.md",
-      "visible_text": [],
-      "visual_type": "插画"
-    },
-    {
-      "asset_id": "remote-955d3b104fccc0b5",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "四张垂直排列的科幻风格机械眼特写，展示不同状态：三只眼睛发出蓝光，一只闭合并显示橙色矩形。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_control/wan2.1_fun_control_use_custom_nodes.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_control/wan2.1_fun_control_use_custom_nodes.webp",
       "relations": [],
       "repo_path": null,
       "source_id": "external-comfyui",

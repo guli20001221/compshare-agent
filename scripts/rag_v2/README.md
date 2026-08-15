@@ -40,10 +40,28 @@ External snapshots must include every source-local image that carries workflow,
 input/output, architecture, or UI evidence. The pipeline does not fetch an
 unpinned current copy from an upstream repository when a pinned ZIP omitted the
 file. Remote images are retried, GitHub `blob` links are normalized to raw
-content, animated GIF/WebP inputs are flattened when Pillow is available, and
-decorative badges are excluded before VL. Missing external images are recorded
-in `asset_report.json` and omitted from runtime text; no caption or placeholder
-is fabricated.
+content, animated GIF/WebP inputs are flattened into a 4-frame contact sheet,
+and decorative badges are excluded before VL. Missing external images are
+recorded in `asset_report.json` and omitted from runtime text; no caption or
+placeholder is fabricated.
+
+Flattening is **not optional**: the contact sheet is what the model is shown, so
+it decides caption content, and captions are cached across builds under a
+contract digest. A release build therefore requires the pinned Pillow from
+`scripts/rag_v2/requirements.txt` and fails on any animated image if Pillow is
+missing or a different version — the pinned version is part of the contract, so
+changing it re-earns every animated caption rather than silently mixing two
+renderings under one digest.
+
+```bash
+python -m pip install -r scripts/rag_v2/requirements.txt
+```
+
+When a remote image cannot be revalidated and cached bytes are on hand, the
+build keeps the cached bytes rather than failing over a transient error — but
+it records the degrade in `asset_report.json` under `degradations`, and for
+platform (non-third-party) sources that is an error the release gate blocks on
+unless `--allow-stale-remote` is passed deliberately.
 
 The output is an immutable release bundle containing both corpora, copied local assets, model caches, source locks, and a release manifest. Model caches are build artifacts and should not be committed.
 
