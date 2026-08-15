@@ -26,10 +26,36 @@ import re
 import shlex
 from typing import Iterable
 
-# A lone `binary --help/--version` mutates nothing — classify as read_only before anything else.
-# Only the UNAMBIGUOUS long forms: `-h`/`-V` are excluded because on power binaries `-h`==--halt
-# (shutdown/reboot/poweroff -h powers the box off), and _HELP runs before the destructive scan.
-_HELP = re.compile(r"^[\w./-]+\s+(--help|--version|help|version)\s*$")
+# A `binary --help/--version` mutates nothing — but only when we can say WHICH binary.
+# The old general form (`^[\w./-]+\s+(--help|--version|help|version)\s*$`, any name at all)
+# was wrong in three separate ways, and this check runs at step 0, ahead of BOTH the
+# destructive scan and the multi-line refusal, so each one was a full bypass:
+#
+#   - `\s` matches a NEWLINE. `reboot\n--help` classified read_only and executed with NO
+#     consent card in both read-only and write mode: the mutating branch is where the
+#     multi-line refusal lives, so a read_only verdict never reaches it, and ssh_transport
+#     hands the whole string to `bash -c`, which runs `reboot` as line 1.
+#   - the name was unconstrained, so `./unknown --help` and `/root/payload.sh --help` ran
+#     unconfirmed too. "any program with --help has no side effects" is a property of the
+#     program, not of the argument, and an unknown program cannot assert it.
+#   - the path form let a planted binary borrow a trusted name: `./dd --version`.
+#
+# So the fast-path now needs a BARE name (no `/`, so nothing attacker-chosen resolves into
+# it) that is on an explicit list, and the separator can no longer be a newline.
+#
+# The list is short because the fast-path buys very little. Measured over the pinned
+# CLASSIFY_CASES corpus, exactly TWO of 407 cases depend on it: `dd --version` (otherwise
+# mutating) and `usermod --help` (otherwise destructive). `curl` is here so a plain version
+# query does not cost a card — bare `curl` already has its own restricted loopback-probe
+# rule below, so this widens nothing. Everything else a diagnosis actually runs —
+# `nvidia-smi --help`, `python3 --version`, `git --version` — is read_only through the
+# normal path and needs no exemption at all.
+#
+# NOT on the list, deliberately: the power binaries. `reboot --help` is now hard-refused as
+# destructive. `-h`/`-V` stay out of the pattern for the older reason that on those same
+# binaries `-h` == --halt; granting any of them an exemption is how the bypass above existed.
+_HELP_SAFE_BINARIES = frozenset({"dd", "usermod", "curl"})
+_HELP = re.compile(r"^([A-Za-z0-9._-]+)[ \t]+(--help|--version|help|version)[ \t]*$")
 
 # Verbs that write EVERY path they are handed, so a lockout path anywhere in the argv is a write.
 # `mv` belongs here rather than below because its SOURCE disappears too: `mv /etc/fstab /tmp/bak`
@@ -1660,7 +1686,8 @@ def classify(command: str) -> str:
     cmd = (command or "").strip()
     if not cmd:
         return "mutating"
-    if _HELP.fullmatch(cmd):                              # 0) help/version is always safe
+    help_query = _HELP.fullmatch(cmd)                     # 0) help/version, NAMED binaries only
+    if help_query and help_query.group(1) in _HELP_SAFE_BINARIES:
         return "read_only"
     if _scan_destructive(cmd):                            # 1) destructive precedes everything
         return "destructive"

@@ -424,6 +424,43 @@ CLASSIFY_CASES = [
     ("shutdown -h", "destructive"),                   # r3 CRIT: -h is --halt on power binaries, not help
     ("reboot -h", "destructive"),
     ("poweroff -h", "destructive"),
+
+    # The help/version fast-path runs at step 0, ahead of the destructive scan AND the
+    # multi-line refusal, so anything it accepts executes with no consent card in BOTH
+    # read-only and write mode. It used to accept `^[\w./-]+\s+(--help|...)$` from any name:
+    # `\s` matches a newline, so `reboot\n--help` was read_only and `bash -c` ran `reboot`
+    # as line 1. These pin the three shapes that reopens if the pattern is ever loosened —
+    # newline separator, unnamed program, borrowed name on a path.
+    ("reboot\n--help", "destructive"),
+    ("poweroff\n--help", "destructive"),
+    ("halt\n--help", "destructive"),
+    ("reboot\n--version", "destructive"),
+    ("reboot\n\n--help", "destructive"),           # \s+ swallowed repeats too
+    ("reboot\thelp", "destructive"),               # tab is not a line, but `help` is not a flag
+    ("reboot --help", "destructive"),               # power binaries get no exemption at all
+    ("poweroff --version", "destructive"),
+    ("rm\n--help", "mutating"),                    # no target -> not destructive; the
+                                                    # multi-line shape gate refuses it
+                                                    # inside the mutating branch
+    ("./unknown --help", "mutating"),               # --help is not a property of an unknown program
+    ("/root/payload.sh --help", "mutating"),
+    ("./setup.sh --version", "mutating"),
+    ("./dd --version", "mutating"),                 # a planted binary may not borrow a listed name
+    ("/tmp/dd --version", "mutating"),
+    # The separator is load-bearing only for names that ARE on the list -- for anything else
+    # the allowlist rejects it first. These three are what make `[ \t]` (not `\s`) the fix:
+    # with `\s` they all take the fast-path, and `usermod\n--help` auto-executes a usermod
+    # line with no card, in both read-only and write mode.
+    ("dd\n--version", "mutating"),
+    ("curl\n--version", "mutating"),
+    ("usermod\n--help", "destructive"),
+    # The two the fast-path actually exists for are pinned above already (`dd --version`,
+    # `usermod --help`); this is the third name, added with the allowlist.
+    ("curl --version", "read_only"),
+    # Unaffected: these are read_only through the normal path and never needed the exemption.
+    ("nvidia-smi --help", "read_only"),
+    ("python3 --version", "read_only"),
+    ("git --version", "read_only"),
     ("/usr/bin/passwd root", "destructive"),          # r3: path-qualified passwd binary
     ("sudo passwd root", "destructive"),
     ("chmod -R 777 /", "destructive"),
