@@ -8,7 +8,7 @@ firewall.
 
 Three tiers (mirror internal/tools/safe_executor.go semantics):
   - read_only  : auto-run, no human prompt        (curated, one-shot diagnostics)
-  - mutating   : requires explicit human confirm  (deny-first: unknown => needs confirm)
+  - mutating   : requires explicit human confirm
   - destructive: hard-refused, even with confirm  (checked FIRST, unconditional)
 
 Two adversarial red-team rounds shaped this. Round 1 closed exfil/streaming/destructive holes.
@@ -18,7 +18,16 @@ checksums (sha256sum), git/docker IDs, and `KeyError:` tracebacks were being ove
 value-shape + vendor prefixes), classification anchors flags to the right binary, and the
 transport's hard per-command timeout backstops any streaming command that still slips through.
 
-Read tier is deny-by-default: anything not positively matching the allowlist is >= mutating.
+The read tier is NOT deny-by-default, and this file used to claim it was. A command that
+matches no rule at all falls through to read_only: `evil`, `evil -q`, `frobnicate --all` and
+`/tmp/x` all auto-run. `./evil`, `/root/payload.sh` and `bash /tmp/x.sh` do not — script and
+relative-path shapes are caught — and that asymmetry is the whole of the current defence. It
+was accepted deliberately on 2026-07-23 (see POLICY_RELAXED_TO_READ in test_guardrails.py, and
+`frobnicate --all` in CLASSIFY_CASES, which is pinned mutating there and re-baselined to
+read_only by the policy), on the reasoning that a name we do not know is not a name we know to
+be dangerous. Whether that trade is still right is an open decision; what is not open is
+describing it as deny-by-default, because a reader who believes that will not look for the
+fallthrough — which is exactly how a `--help` suffix came to skip the consent card.
 """
 import ast
 import posixpath
@@ -26,37 +35,33 @@ import re
 import shlex
 from typing import Iterable
 
-# A `binary --help/--version` mutates nothing — but only when we can say WHICH binary.
-# The old general form (`^[\w./-]+\s+(--help|--version|help|version)\s*$`, any name at all)
-# was wrong in three separate ways, and this check runs at step 0, ahead of BOTH the
-# destructive scan and the multi-line refusal, so each one was a full bypass:
+# There is deliberately NO help/version fast-path. Do not add one back.
 #
-#   - `\s` matches a NEWLINE. `reboot\n--help` classified read_only and executed with NO
-#     consent card in both read-only and write mode: the mutating branch is where the
-#     multi-line refusal lives, so a read_only verdict never reaches it, and ssh_transport
-#     hands the whole string to `bash -c`, which runs `reboot` as line 1.
-#   - the name was unconstrained, so `./unknown --help` and `/root/payload.sh --help` ran
-#     unconfirmed too. "any program with --help has no side effects" is a property of the
-#     program, not of the argument, and an unknown program cannot assert it.
-#   - the path form let a planted binary borrow a trusted name: `./dd --version`.
+# There was one, `^[\w./-]+\s+(--help|--version|help|version)\s*$`, consulted at classify()
+# step 0 — ahead of BOTH the destructive scan and the multi-line refusal, so anything it
+# accepted executed with no consent card in read-only mode as well as write mode. It was
+# wrong in four ways, and each one was a full bypass on its own:
 #
-# So the fast-path now needs a BARE name (no `/`, so nothing attacker-chosen resolves into
-# it) that is on an explicit list, and the separator can no longer be a newline.
+#   - `\s` matches a NEWLINE. `reboot\n--help` classified read_only, and the multi-line
+#     refusal could not save it because that refusal lives inside the `mutating` branch,
+#     which a read_only verdict never reaches. ssh_transport hands the whole string to
+#     `bash -c`, which runs `reboot` as line 1.
+#   - the name was unconstrained: `./unknown --help`, `/root/payload.sh --help`.
+#   - `help` and `version` were accepted WITHOUT the dashes, so `curl version` — which is
+#     curl fetching a host named `version`, not a version query — took the fast path
+#     straight past the loopback-probe rule that exists to gate egress.
+#   - and the repair that suggests itself, an allowlist of trusted binaries, does not work
+#     either: the transport runs the command through the REMOTE `bash -c` with no fixed
+#     PATH, so a bare `dd` is whatever that box's PATH resolves `dd` to. A name is not an
+#     identity here, and an allowlist keyed on one only looks like it establishes trust.
 #
-# The list is short because the fast-path buys very little. Measured over the pinned
-# CLASSIFY_CASES corpus, exactly TWO of 407 cases depend on it: `dd --version` (otherwise
-# mutating) and `usermod --help` (otherwise destructive). `curl` is here so a plain version
-# query does not cost a card — bare `curl` already has its own restricted loopback-probe
-# rule below, so this widens nothing. Everything else a diagnosis actually runs —
-# `nvidia-smi --help`, `python3 --version`, `git --version` — is read_only through the
-# normal path and needs no exemption at all.
-#
-# NOT on the list, deliberately: the power binaries. `reboot --help` is now hard-refused as
-# destructive. `-h`/`-V` stay out of the pattern for the older reason that on those same
-# binaries `-h` == --halt; granting any of them an exemption is how the bypass above existed.
-_HELP_SAFE_BINARIES = frozenset({"dd", "usermod", "curl"})
-_HELP = re.compile(r"^([A-Za-z0-9._-]+)[ \t]+(--help|--version|help|version)[ \t]*$")
-
+# The exemption was also worth almost nothing. Measured over the pinned CLASSIFY_CASES
+# corpus by removing it and re-classifying, exactly THREE cases change: `dd --version`
+# (-> mutating), `curl --version` (-> mutating) and `usermod --help` (-> destructive).
+# Everything a diagnosis actually runs — `nvidia-smi --help`, `python3 --version`,
+# `git --version`, `docker --version` — is read_only through the normal path below and
+# never needed an exemption. Three extra cards is the entire price of not having a rule
+# whose safety argument cannot be made.
 # Verbs that write EVERY path they are handed, so a lockout path anywhere in the argv is a write.
 # `mv` belongs here rather than below because its SOURCE disappears too: `mv /etc/fstab /tmp/bak`
 # leaves the box unbootable just as surely as overwriting it does.
@@ -795,8 +800,9 @@ def _is_read_only(cmd: str) -> bool:
         return _NVIDIA.fullmatch(cmd) is not None
     # Match the allowlist on the BASENAME-normalized command as well: a venv/conda interpreter is
     # invoked by absolute path (`/usr/local/miniconda3/envs/comfyui/bin/python --version`), which is
-    # exactly as read-only as the bare form. `_HELP` above already permits the path-qualified
-    # `--version`, so this only closes the gap for forms that carry a redirect (`2>&1`) and for the
+    # exactly as read-only as the bare form. This is the ONLY route by which a path-qualified
+    # `--version` reads as read_only — there is no help/version fast-path above any more (see
+    # the tombstone at the top) — and it also covers forms carrying a redirect (`2>&1`) and the
     # other allowlisted read-only subcommands (`pip list`, `conda env list`, ...).
     norm = " ".join([binary] + tokens[1:])
     if any(p.fullmatch(cmd) or p.fullmatch(norm) for p in _STRUCTURED_DIAG):
@@ -1686,9 +1692,6 @@ def classify(command: str) -> str:
     cmd = (command or "").strip()
     if not cmd:
         return "mutating"
-    help_query = _HELP.fullmatch(cmd)                     # 0) help/version, NAMED binaries only
-    if help_query and help_query.group(1) in _HELP_SAFE_BINARIES:
-        return "read_only"
     if _scan_destructive(cmd):                            # 1) destructive precedes everything
         return "destructive"
     if "\n" in cmd:                                       # 2) never accept a multi-line script
