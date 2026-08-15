@@ -60,8 +60,10 @@ from typing import Iterable
 # (-> mutating), `curl --version` (-> mutating) and `usermod --help` (-> destructive).
 # Everything a diagnosis actually runs — `nvidia-smi --help`, `python3 --version`,
 # `git --version`, `docker --version` — is read_only through the normal path below and
-# never needed an exemption. Three extra cards is the entire price of not having a rule
-# whose safety argument cannot be made.
+# never needed an exemption. Two extra confirmation cards (`dd`, `curl`) plus one hard
+# refusal (`usermod --help`, which the destructive scan owns once nothing exempts it) is
+# the entire price of not having a rule whose safety argument cannot be made. The refusal
+# is worth naming separately: a card can be clicked, a destructive verdict cannot.
 # Verbs that write EVERY path they are handed, so a lockout path anywhere in the argv is a write.
 # `mv` belongs here rather than below because its SOURCE disappears too: `mv /etc/fstab /tmp/bak`
 # leaves the box unbootable just as surely as overwriting it does.

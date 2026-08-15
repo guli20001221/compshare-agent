@@ -51,8 +51,10 @@ CLASSIFY_CASES = [
     # `dd --version` and `usermod --help` were read_only from 2026-06 until 2026-08-16 via a
     # help/version fast-path that has since been deleted outright (see the tombstone at the top
     # of guardrails.py). They are the entire measured cost of that deletion, together with
-    # `curl --version` below: three cards, in exchange for a rule whose safety argument could
-    # not be made once the transport was taken into account.
+    # `curl --version` below: two confirmation cards and one hard refusal -- `usermod --help`
+    # lands in the destructive scan once nothing exempts it, and a destructive verdict cannot
+    # be clicked through the way a card can. That is the whole price of dropping a rule whose
+    # safety argument could not be made once the transport was taken into account.
     ("dd --version", "mutating"),
     ("usermod --help", "destructive"),
     ("df /etc/passwd", "read_only"),                  # r2 FP: df reads fs, not the file
