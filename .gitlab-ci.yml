@@ -220,19 +220,11 @@ migrate-feishu-oauth:
 # swaps the image and leaves the corpus alone; this swaps the corpus and leaves
 # the image alone.
 #
-# Publication is a compare-and-swap against deploy/kb/base_release.txt, the
-# release this corpus supersedes.  Regenerating the corpus means updating that
-# file in the same commit; see the comment on BASE_FILE below for why it is
-# committed rather than read off the cluster.
-#
 # If the worker creates the release but publication fails, re-running is
 # rejected by the release id's primary key rather than silently importing
 # twice.  Recover by publishing the existing candidate instead:
 #   kubectl -n prj-ucompshare-prod exec compshare-kb-0 -- \
 #     /usr/local/bin/compshare-kb-worker --action publish --release-id <id>
-# That path is not an escape from the base match: the candidate row carries the
-# base it was created with, so publishing it later compares against the same id
-# and refuses the same way if the pointer has moved since.
 import-knowledge-release:
   stage: deploy
   image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
@@ -243,6 +235,12 @@ import-knowledge-release:
     KB_STATEFULSET: compshare-kb
     KB_RELEASE_ID: kb-release-$CI_COMMIT_SHORT_SHA
     KB_RELEASE_VERSION: kb.compshare.$CI_COMMIT_SHORT_SHA
+  # Two imports from different commits must not interleave. Job A's candidate
+  # insert plus corpus load takes real time, and with import and publish now
+  # separate, an overlapping run is the one way a stale candidate can end up
+  # published over a newer one from this side. (The server-side guard is the
+  # worker's base-match; this only stops the races we ourselves start.)
+  resource_group: kb-import
   script:
     - |
       set -eu
@@ -251,55 +249,6 @@ import-knowledge-release:
         kubectl -n "$NAMESPACE" delete pod "$POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
       }
       trap cleanup EXIT
-
-      # The release this corpus supersedes.  --require-base-match defaults on in
-      # the worker, so publication is a compare-and-swap against this id: if the
-      # active pointer moved between the moment somebody wrote it down and the
-      # moment this job publishes, the import is refused and production keeps
-      # serving what it was already serving.
-      #
-      # It is committed rather than read off the cluster here, deliberately.  The
-      # worker refuses to read the active release itself -- an import-time read
-      # files the candidate as a child of whatever happens to be live, which is
-      # exactly the release the corpus may not have been built on -- and reading
-      # it in this script one line before passing it is the same read wearing a
-      # different hat.  What the file holds is what a human looked at, in review,
-      # in git.
-      #
-      # So regenerating the corpus means updating this file in the same commit.
-      # Forgetting is safe and loud: the stale id is no longer active, the
-      # compare-and-swap refuses, and nothing is published.
-      #
-      # KB_PARENT_RELEASE_ID overrides it for the case the file cannot serve --
-      # two imports in a row, where the second one's base only comes into
-      # existence once the first has run.
-      BASE_FILE="deploy/kb/base_release.txt"
-      PARENT="${KB_PARENT_RELEASE_ID:-}"
-      if [ -z "$PARENT" ] && [ -f "$BASE_FILE" ]; then
-        PARENT=$(tr -d '\r' < "$BASE_FILE" | head -n 1 | tr -d '[:space:]')
-      fi
-      if [ -z "$PARENT" ]; then
-        echo "no base release: $BASE_FILE is missing or empty, and KB_PARENT_RELEASE_ID is unset." >&2
-        echo "Run knowledge-release-ledger in compshare-kb, then write the release this" >&2
-        echo "corpus supersedes into $BASE_FILE." >&2
-        exit 1
-      fi
-      # Shape check before the value is used as an argument at all.  A release id
-      # is letters, digits, dot, dash and underscore; refusing everything else
-      # here is what stops a hand-typed KB_PARENT_RELEASE_ID from carrying a
-      # second flag along with it, and it fails with the offending value in hand
-      # rather than as a puzzling worker error further down.
-      case "$PARENT" in
-        *[!A-Za-z0-9._-]*)
-          echo "refusing base release id '$PARENT': expected only letters, digits, '.', '-', '_'." >&2
-          exit 1
-          ;;
-      esac
-      if [ "$PARENT" = "none" ]; then
-        echo "base: none -- asserting this knowledge base has no active release"
-      else
-        echo "base: $PARENT -- publication is refused if the pointer has moved"
-      fi
 
       # Pair each corpus with its sidecar through the digest the sidecar
       # filename carries.  No digest is restated here: a regenerated or
@@ -336,24 +285,16 @@ import-knowledge-release:
       test -n "$POSTGRES_HOST"
       test -n "$KNOWLEDGE_BASE"
 
-      # The worker binary comes from the image the serving Pod is RUNNING, not
-      # from a `:latest` tag.  A mutable tag drifts: the writer that imports a
-      # corpus and the reader that serves it would be different builds whenever
-      # `:latest` moved after the last rollout, which is the shape of bug where
-      # a schema or format change lands only on one side of the pair.
-      #
-      # It is read off the Pod rather than the StatefulSet on purpose.  Between
-      # `kubectl apply` and the rollout completing, the StatefulSet already
-      # declares the new image while the Pod that answers queries is still on
-      # the old one, and the process this corpus has to match is the running one.
-      KB_IMAGE=$(kubectl -n "$NAMESPACE" get pod "${KB_STATEFULSET}-0" \
-        -o jsonpath='{.spec.containers[0].image}')
-      if [ -z "$KB_IMAGE" ]; then
-        echo "could not read the running image off ${KB_STATEFULSET}-0; refusing to guess." >&2
-        exit 1
-      fi
-      echo "importing $KB_RELEASE_VERSION into knowledge base '$KNOWLEDGE_BASE'"
-      echo "worker image: $KB_IMAGE (the image ${KB_STATEFULSET}-0 is running)"
+      # The import binary validates the bundle the serving binary will load, and
+      # the rune cap it validates against is a compile-time constant with no
+      # runtime surface -- /healthz reports status, release_id and kb_version and
+      # nothing else.  So the only available proof that the two agree is that
+      # they are the same build.  A floating :latest gave no such proof; this
+      # takes the image the StatefulSet is actually running, the same jsonpath
+      # the compshare-kb repo's own deploy job checks.
+      KB_IMAGE=$(kubectl -n "$NAMESPACE" get pod "${KB_STATEFULSET}-0" -o jsonpath='{.spec.containers[0].image}')
+      test -n "$KB_IMAGE"
+      echo "importing $KB_RELEASE_VERSION into knowledge base '$KNOWLEDGE_BASE' using $KB_IMAGE"
 
       sed \
         -e "s|__IMAGE__|$KB_IMAGE|g" \
@@ -374,25 +315,6 @@ import-knowledge-release:
         sleep 5
       done
 
-      # What this database already holds, printed before anything is copied.
-      # `mcp_authored` is the number that matters: worker.Import builds its
-      # candidate purely from JSONL and never reads the active release, so
-      # publishing a batch over an `mcp-` release discards that edit and reports
-      # success.  The base match cannot catch it -- it compares release ids, and
-      # a base naming the mcp release matches it exactly.
-      #
-      # This PRINTS and does not gate, deliberately.  `safe_to_batch_import` is
-      # a field in a JSON document that also carries operator-authored `summary`
-      # text, and a shell substring test cannot tell the top-level field from the
-      # same characters inside a string -- so a gate here would be a guard that
-      # can be made to pass by its own input.  The sound version is an exit code
-      # from the worker, which is a compshare-kb change and a deploy; until then
-      # this leaves the count in the log for whoever clicked the button.  Today
-      # it reads 0, and the MCP write tools that could raise it are disabled.
-      echo "== release ledger before import =="
-      kubectl -n "$NAMESPACE" exec "$POD" -- \
-        /usr/local/bin/compshare-kb-worker --action releases --knowledge-base "$KNOWLEDGE_BASE"
-
       for file in $CP_FILES; do
         base=$(basename "$file")
         echo "copying $base"
@@ -405,58 +327,79 @@ import-knowledge-release:
         fi
       done
 
-      # --require-base-match is passed EXPLICITLY even though it is the worker's
-      # default today.  A default living in another repository is not this job
-      # asking for a compare-and-swap; the flag is the request, the default is
-      # somebody else's decision, and the two can stop agreeing without either
-      # side noticing.
-      #
-      # The base arguments arrive as "$@" rather than through a variable spliced
-      # in unquoted.  A hand-typed KB_PARENT_RELEASE_ID of
-      # `kb-release-x --require-base-match=false` would otherwise have word-split
-      # into a second flag and turned the compare-and-swap OFF -- an override
-      # meant for one awkward case quietly disabling the guarantee the job
-      # exists for.  The shape check above already refuses that value; passing
-      # arguments properly makes the splice impossible rather than merely
-      # unreachable.
-      #
-      # WORKER_ARGS stays a built list because nothing a person types reaches it:
-      # it is assembled from a fixed pair of corpus names and the sidecar files
-      # sitting beside them in this repository.
-      #
-      # --publish implies --validate, and both run in one transaction, so a
-      # corpus that fails validation never becomes active.
-      import_release() {
-        kubectl -n "$NAMESPACE" exec "$POD" -- /usr/local/bin/compshare-kb-worker \
-          --action import \
-          --knowledge-base "$KNOWLEDGE_BASE" \
-          --release-id "$KB_RELEASE_ID" \
-          --version "$KB_RELEASE_VERSION" \
-          --publish \
-          "$@" \
-          $WORKER_ARGS
-      }
-      # A refusal here reads `candidate ... was based on ..., active release is
-      # ...`: the pointer moved.  Nothing was published and the pointer did not
-      # move.  The candidate row survives as `validated`, but it CANNOT be
-      # rescued -- its parent and its release id are both immutable, so
-      # `--action publish --release-id <id>` compares against the same base and
-      # refuses identically, and re-running this pipeline on the same commit
-      # collides with that release id's primary key.
-      #
-      # Recovery is therefore one of two things, and both are deliberate:
-      #   * update deploy/kb/base_release.txt in a NEW commit (new short SHA,
-      #     new release id) and click again -- the stale candidate stays behind
-      #     as a `validated` row, which is the honest record of a build that was
-      #     never published; or
-      #   * if the pointer moved by mistake, roll the active release back to the
-      #     original parent in compshare-kb (`--action rollback`), after which
-      #     the original candidate publishes with its base match satisfied.
-      if [ "$PARENT" = "none" ]; then
-        import_release --require-base-match --allow-empty-parent
+      # WORKER_ARGS is deliberately unquoted: it is a built argument list.
+      # No --publish: --validate already defaults to true, so this leaves a
+      # VALIDATED CANDIDATE and does not touch the active pointer.  Nothing a
+      # user sees changes until publish-knowledge-release is run.
+      kubectl -n "$NAMESPACE" exec "$POD" -- /usr/local/bin/compshare-kb-worker \
+        --action import \
+        --knowledge-base "$KNOWLEDGE_BASE" \
+        --release-id "$KB_RELEASE_ID" \
+        --version "$KB_RELEASE_VERSION" \
+        $WORKER_ARGS
+
+      echo
+      echo "candidate $KB_RELEASE_ID imported and validated; the active release is UNCHANGED."
+      echo "Review deploy/kb/v2/release_diff.md (artifact of this job), then run"
+      echo "publish-knowledge-release on this same commit to make it active."
+      echo
+      if [ -f deploy/kb/v2/release_diff.md ]; then
+        echo "----- release_diff.md (head) -----"
+        head -40 deploy/kb/v2/release_diff.md
+        echo "----- (full report in this job's artifacts) -----"
       else
-        import_release --require-base-match --parent-release-id "$PARENT"
+        echo "WARNING: deploy/kb/v2/release_diff.md is missing -- this candidate was built" >&2
+        echo "without the orchestrated release command, so nobody can review what changed." >&2
       fi
+  artifacts:
+    paths:
+      - deploy/kb/v2/release_diff.md
+      - deploy/kb/v2/asset_report.json
+    expire_in: 30 days
+    when: always
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  environment:
+    # Not `production`: importing a candidate changes nothing a user can see.
+    # Naming it production would record a deployment that did not happen and
+    # would make the real one, below, look like a repeat.
+    name: production-kb-candidate
+
+# The second half of the gate.  Separate from the import because a candidate
+# nobody looked at is not a review, and the import job is where the reviewable
+# diff is produced.  This job needs no import Pod, no corpus files and no
+# image reference at all: `--action publish` takes only a release id, and it
+# runs on the serving pod itself, i.e. on the SHA-pinned binary that will load
+# the release.
+#
+# Rolling back is not automated: a retired release keeps its chunks and vectors
+# (nothing deletes them) but no code path re-activates it.  Today that needs
+#   UPDATE knowledge.kb_releases SET status='validated' WHERE id='<old-id>';
+# followed by this job's worker command with that id -- two transactions, not
+# one, so treat it as emergency recovery rather than a supported rollback.
+publish-knowledge-release:
+  stage: deploy
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    KB_STATEFULSET: compshare-kb
+    KB_RELEASE_ID: kb-release-$CI_COMMIT_SHORT_SHA
+    KB_RELEASE_VERSION: kb.compshare.$CI_COMMIT_SHORT_SHA
+  resource_group: kb-publish
+  script:
+    - |
+      set -eu
+      echo "publishing $KB_RELEASE_ID ($KB_RELEASE_VERSION)"
+
+      # Fails loudly if the candidate was never imported or never validated:
+      # store.Publish requires status='validated' and refuses anything else.
+      kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
+        /usr/local/bin/compshare-kb-worker \
+        --action publish \
+        --release-id "$KB_RELEASE_ID"
 
       # Acceptance is what the SERVING process reports, not what the worker
       # returned: publication only moves a pointer, and the query plane picks it

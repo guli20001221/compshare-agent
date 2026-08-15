@@ -7,6 +7,8 @@ import unittest.mock
 from scripts.rag_w0.build_corpus_embeddings import write_sidecar
 
 from scripts.rag_v2 import pipeline
+from scripts.rag_v2 import release
+from scripts.rag_v2 import release_diff
 from scripts.rag_v2.pipeline import (
     AssetNote,
     ModelVerseClient,
@@ -1196,6 +1198,156 @@ class RAGV2PipelineTests(unittest.TestCase):
         self.assertIn("![直接图片](https://example.com/c.jpg)", normalized)
         self.assertIn("![本地空格](images/a%20bad%20result.png)", normalized)
         self.assertIn("![](https://img.shields.io/badge/📖%20arXiv-red)", normalized)
+
+
+class DigestPinTests(unittest.TestCase):
+    """Four SHA256 literals were hand-edited into a Go file every release."""
+
+    def test_pins_are_rewritten_without_touching_the_comments(self):
+        source = (
+            "// CorpusDigestExpected pins deploy/kb/stage2b_w0.jsonl.\n"
+            "//\n"
+            "// Every source_path changed in this rebuild.\n"
+            'const CorpusDigestExpected = "' + "a" * 64 + '"\n'
+            "\n"
+            "// Dead, deliberately frozen.\n"
+            'const EmbeddingDigestExpected = "' + "b" * 64 + '"\n'
+            'const ExternalCorpusDigestExpected = "' + "c" * 64 + '"\n'
+        )
+        rewritten, changed = release.rewrite_pins(source, {
+            "CorpusDigestExpected": "d" * 64,
+            "ExternalCorpusDigestExpected": "c" * 64,
+        })
+        self.assertIn("// Every source_path changed in this rebuild.", rewritten)
+        self.assertIn('const CorpusDigestExpected = "' + "d" * 64 + '"', rewritten)
+        # The dead legacy pin is not in PINNED_ARTIFACTS and must not move.
+        self.assertIn('const EmbeddingDigestExpected = "' + "b" * 64 + '"', rewritten)
+        # Reported only when it actually changed.
+        self.assertEqual({"CorpusDigestExpected": ("a" * 64, "d" * 64)}, changed)
+
+    def test_a_renamed_constant_is_an_error_not_a_silent_skip(self):
+        """Otherwise a rename leaves a stale digest pinned and nothing says so."""
+        with self.assertRaises(ValueError):
+            release.rewrite_pins("const SomethingElse = \"" + "a" * 64 + "\"\n",
+                                 {"CorpusDigestExpected": "d" * 64})
+
+    def test_the_real_digest_file_declares_every_pin_we_rewrite(self):
+        source = (REPO_ROOT / "internal/knowledge/corpus_digest.go").read_text(encoding="utf-8")
+        rewritten, _changed = release.rewrite_pins(
+            source, {name: "e" * 64 for name in release.PINNED_ARTIFACTS})
+        self.assertEqual(len(release.PINNED_ARTIFACTS), rewritten.count("e" * 64))
+        self.assertNotIn("EmbeddingDigestExpected\"", release.PINNED_ARTIFACTS)
+
+    def test_the_committed_pins_match_the_promoted_artifacts(self):
+        """The release command computes these; drift means a bad publish."""
+        pins = release.compute_pins(REPO_ROOT / "deploy/kb")
+        source = (REPO_ROOT / "internal/knowledge/corpus_digest.go").read_text(encoding="utf-8")
+        _rewritten, changed = release.rewrite_pins(source, pins)
+        self.assertEqual({}, changed, msg=f"corpus_digest.go is stale: {changed}")
+
+
+class ReleaseDiffTests(unittest.TestCase):
+    """The publish gate is a human; this is the only thing they get to read."""
+
+    def _chunk(self, doc: str, heading: str, content: str, area: str = "billing_rule"):
+        return {
+            "chunk_id": "v2-" + area + "-" + pipeline.sha256_bytes(
+                (doc + heading + content).encode("utf-8"))[:16],
+            "content": content,
+            "heading_path": [heading] if heading else [],
+            "product_area": area,
+            "source_refs": [doc],
+            "document_id": "doc-" + pipeline.sha256_bytes(doc.encode("utf-8"))[:16],
+        }
+
+    def test_an_edited_section_reads_as_an_edit_not_a_delete_and_an_add(self):
+        """chunk_id digests the content, so id-based diffing shows only churn."""
+        old = [self._chunk("src:a.md", "计费", "旧的一段话")]
+        new = [self._chunk("src:a.md", "计费", "改过的一段话，更长一些")]
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual([], result["sections_added"])
+        self.assertEqual([], result["sections_removed"])
+        self.assertEqual(1, len(result["sections_changed"]))
+        self.assertEqual("计费", result["sections_changed"][0]["heading"])
+        self.assertEqual(5, result["sections_changed"][0]["runes_before"])
+
+    def test_a_document_that_only_moved_is_reported_as_moved(self):
+        """The pages/ -> content/ migration renamed 227 documents at once."""
+        old = [self._chunk("src:pages/x.md", "标题", "一模一样的内容")]
+        new = [self._chunk("src:content/x.md", "标题", "一模一样的内容")]
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual([], result["documents_added"])
+        self.assertEqual([], result["documents_removed"])
+        self.assertEqual([{"from": "src:pages/x.md", "to": "src:content/x.md",
+                           "content_changed": False}], result["documents_moved"])
+
+    def test_a_document_that_moved_and_changed_is_paired_by_path(self):
+        """.md -> .mdx rewrote the body too, so content fingerprints miss it."""
+        old = [self._chunk("src:pages/gpus/x.md", "标题", "旧内容")]
+        new = [self._chunk("src:content/gpus/x.mdx", "标题", "新内容")]
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual([], result["documents_added"])
+        self.assertEqual([], result["documents_removed"])
+        self.assertEqual(1, len(result["documents_moved"]))
+        self.assertTrue(result["documents_moved"][0]["content_changed"])
+
+    def test_an_ambiguous_rename_is_not_guessed(self):
+        """Two candidates for one stem: pairing either would hide a real add."""
+        old = [self._chunk("src:pages/a/x.md", "标题", "旧内容")]
+        new = [self._chunk("src:content/a/x.md", "标题", "新内容甲"),
+               self._chunk("src:other/a/x.md", "标题", "新内容乙")]
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual([], result["documents_moved"])
+        self.assertEqual(["src:pages/a/x.md"], result["documents_removed"])
+        self.assertEqual(2, len(result["documents_added"]))
+
+    def test_a_genuinely_new_document_survives_rename_detection(self):
+        old = [self._chunk("src:pages/x.md", "标题", "内容")]
+        new = [self._chunk("src:content/x.md", "标题", "内容"),
+               self._chunk("src:content/brand-new.md", "新标题", "全新内容")]
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual(["src:content/brand-new.md"], result["documents_added"])
+        self.assertEqual(1, len(result["documents_moved"]))
+
+    def test_a_caption_rewritten_for_identical_bytes_is_called_out_as_noise(self):
+        """Same asset_id means same image; a different caption is the model."""
+        old = {"contract": "c1", "notes": [{"asset_id": "remote-aaaa", "description": "旧说明"}]}
+        new = {"contract": "c1", "notes": [{"asset_id": "remote-aaaa", "description": "新说明"},
+                                           {"asset_id": "remote-bbbb", "description": "新图"}]}
+        result = release_diff.diff_captions(old, new)
+        self.assertEqual(["remote-bbbb"], result["images_added"])
+        self.assertEqual([], result["images_removed"])
+        self.assertEqual(1, len(result["captions_rewritten_for_identical_bytes"]))
+        markdown = release_diff.render_markdown({
+            "headline": {}, "corpora": {}, "captions": result})
+        self.assertIn("字节未变但说明变了", markdown)
+
+    def test_a_contract_change_says_the_caption_churn_is_expected(self):
+        old = {"contract": "c1", "notes": [{"asset_id": "remote-aaaa", "description": "旧说明"}]}
+        new = {"contract": "c2", "notes": [{"asset_id": "remote-aaaa", "description": "新说明"}]}
+        markdown = release_diff.render_markdown({
+            "headline": {}, "corpora": {}, "captions": release_diff.diff_captions(old, new)})
+        self.assertIn("caption 契约变了", markdown)
+
+    def test_build_degradations_reach_the_reviewer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("old_i.jsonl", "new_i.jsonl", "old_e.jsonl", "new_e.jsonl"):
+                (root / name).write_text(json.dumps(self._chunk("src:a.md", "h", "c")) + "\n",
+                                         encoding="utf-8")
+            (root / "asset_report.json").write_text(json.dumps({
+                "failures": [{"severity": "error"}],
+                "degradations": [{"source": "a.md", "ref": "https://x/y.png", "severity": "error"}],
+            }), encoding="utf-8")
+            report = release_diff.build_report(
+                old_internal=root / "old_i.jsonl", new_internal=root / "new_i.jsonl",
+                old_external=root / "old_e.jsonl", new_external=root / "new_e.jsonl",
+                asset_report=root / "asset_report.json")
+            self.assertEqual(1, len(report["assets"]["degradations"]))
+            self.assertEqual(1, report["assets"]["blocking_failures"])
+            markdown = release_diff.render_markdown(report)
+            self.assertIn("未能回源校验", markdown)
+            self.assertIn("必需图片处理失败", markdown)
 
 
 if __name__ == "__main__":

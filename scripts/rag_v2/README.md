@@ -65,17 +65,52 @@ unless `--allow-stale-remote` is passed deliberately.
 
 The output is an immutable release bundle containing both corpora, copied local assets, model caches, source locks, and a release manifest. Model caches are build artifacts and should not be committed.
 
-After validating the candidate corpora, build or incrementally refresh their
-`qwen3-embedding-8b` sidecars in the release directory, then promote them to
-the runtime paths:
-
-```powershell
-python -m scripts.rag_v2.promote --release-dir deploy\kb\v2 --deploy-dir deploy\kb
-```
-
 The committed release keeps the promoted runtime sidecars only. Candidate
 sidecars in `deploy/kb/v2` are transient because they duplicate roughly 150 MB
 of runtime data.
+
+## Cutting a release
+
+One command covers build → refresh embeddings → diff → promote → repin →
+offline bundle check:
+
+```powershell
+python -m scripts.rag_v2.release --env .env.local `
+  --build-arg --internal-docs --build-arg <docs-checkout> `
+  --build-arg --internal-revision --build-arg <sha> `
+  --build-arg --valid-from --build-arg 2026-08-16 `
+  ... (one --build-arg per token; see scripts/rag_v2/build.py for the full list)
+```
+
+It does **not** publish. Publication is two separate manual GitLab jobs so that
+a person reads the diff in between:
+
+1. `import-knowledge-release` — copies the promoted corpora into a throwaway
+   Pod, imports and validates a **candidate**, and leaves the active pointer
+   alone. Nothing a user sees changes. It attaches `release_diff.md` and
+   `asset_report.json` as job artifacts.
+2. `publish-knowledge-release` — runs `--action publish` on the serving pod and
+   waits for `/healthz` to report the new `kb_version`.
+
+`release_diff.md` is written into `deploy/kb/v2` and is meant to be committed
+with the corpus, because the reviewer needs it before the candidate exists. It
+compares chunks by SLOT rather than by `chunk_id` (which digests the content, so
+every edit would otherwise read as one deletion plus one addition), and it pairs
+renamed documents — the `pages/` → `content/` migration renamed 227 documents at
+once, which rendered as 232 additions beside 235 deletions before pairing and as
+5 additions and 9 deletions after.
+
+Incrementality lives entirely in the build. Captions, semantic plans and
+embeddings are all content-addressed and skip unchanged work; the database
+always receives a complete immutable candidate and an atomic pointer swap. Do
+not make the ingest incremental — the atomic swap is what makes a release
+reviewable and reversible.
+
+Rolling back is **not** automated. A retired release keeps its chunks and
+vectors, but no code path re-activates one. Emergency recovery today is
+`UPDATE knowledge.kb_releases SET status='validated' WHERE id='<old-id>'`
+followed by `--action publish --release-id <old-id>` — two transactions, not
+one, so treat it as recovery rather than a supported rollback.
 
 ## Evaluation
 
