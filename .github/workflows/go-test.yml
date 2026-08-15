@@ -75,3 +75,24 @@ jobs:
           python3 test_policy_readonly.py
           python3 test_clip.py
           python3 test_confirm_loop.py
+
+      # Pillow is installed for ONE reason: scripts/rag_v2/pipeline.py flattens
+      # animated GIF/WebP into a contact sheet before captioning, that transform
+      # is part of the caption contract the reuse cache is keyed on, and its test
+      # self-skips without Pillow. A skipped test cannot hold a pin.
+      - name: Install Pillow (for the GIF/WebP flattening test)
+        run: pip install pillow
+
+      # The RAG corpus scripts had no gate at all: the suite that decides when a
+      # cached image caption may be reused, and therefore whether a stale caption
+      # can reach the published knowledge base, was manual-only. It is stdlib-only
+      # apart from the Pillow step above and costs about two seconds.
+      #
+      # No working-directory: it must run from the repo root or `import
+      # scripts.rag_w0` fails -- and it fails in a way worth knowing about, by
+      # erroring one module while still reporting ~117 passing tests, so a
+      # partially-green log reads as success. It also has to come after
+      # `go test ./...`, because two rag_w0 tests shell out to `go test
+      # ./internal/knowledge` with no toolchain guard.
+      - name: RAG corpus script suites (scripts/)
+        run: python -m unittest discover -s scripts -p "test_*.py"

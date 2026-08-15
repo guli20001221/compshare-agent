@@ -64,6 +64,12 @@ def main(argv: list[str] | None = None) -> int:
     # whose bytes are new, so serial costs minutes, not the ~2.6h a full
     # cache-less pass would take.
     parser.add_argument("--vl-workers", type=int, default=1)
+    # Remote images are revalidated with a conditional GET before the reuse
+    # decision, so this pass runs on every build. It fans out where the VL step
+    # cannot: what made captioning unstable under concurrency was the model
+    # returning a shaped non-answer, not HTTP. 1200 URLs at 8 in flight is
+    # minutes, and a 304 costs no body at all.
+    parser.add_argument("--remote-workers", type=int, default=8)
     args = parser.parse_args(argv)
 
     if len(args.faq_zip) != len(FAQ_IDS):
@@ -116,14 +122,6 @@ def main(argv: list[str] | None = None) -> int:
             source_locks.append({"id": f"external-{package}", "kind": "zip", "filename": zip_path.name, "sha256": sha256_file(zip_path)})
         report["external_selection"] = external_selection
 
-        reuse_existing_asset_notes = False
-        prior_manifest = out / "release_manifest.json"
-        if prior_manifest.exists():
-            try:
-                reuse_existing_asset_notes = json.loads(prior_manifest.read_text(encoding="utf-8")).get("sources") == source_locks
-            except (OSError, ValueError, TypeError):
-                reuse_existing_asset_notes = False
-
         internal_docs = collect_internal_docs(args.internal_docs) + faq_docs
         all_image_docs = [*internal_docs, *external_docs]
         if args.skip_vl:
@@ -138,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 assets_dir=out / "assets",
                 raw_asset_base_url=args.asset_base_url,
                 workers=args.vl_workers,
-                reuse_existing_notes=reuse_existing_asset_notes,
+                remote_workers=args.remote_workers,
             )
         report["assets"] = {
             "described": len(asset_notes),

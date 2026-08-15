@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timezone
 import hashlib
+import inspect
 import json
 import mimetypes
 from pathlib import Path
@@ -14,6 +15,7 @@ import shutil
 import tempfile
 import time
 from typing import Any, Callable, Iterable
+from urllib.error import HTTPError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 import zipfile
@@ -176,8 +178,14 @@ def _prepare_vl_image(path: Path, cache_dir: Path) -> Path:
         return path
     try:
         from PIL import Image
-    except ImportError:
-        return path
+    except ImportError as exc:
+        # Silently returning the raw animated file made a Pillow-less machine
+        # produce different captions while attesting the same caption contract.
+        # A build that cannot honour the preprocessing it claims must stop.
+        raise RuntimeError(
+            f"Pillow is required to flatten {path.name} for captioning "
+            f"(caption contract {VL_PREPROCESS_VERSION})"
+        ) from exc
     with Image.open(path) as source:
         frame_count = int(getattr(source, "n_frames", 1))
         if frame_count <= 1:
@@ -200,10 +208,209 @@ def _prepare_vl_image(path: Path, cache_dir: Path) -> Path:
             contact_sheet.paste(frame, (0, offset))
             offset += frame.height
         cache_dir.mkdir(parents=True, exist_ok=True)
-        target = cache_dir / f"{sha256_file(path)[:24]}-frames.png"
+        # The version is in the name because this file IS the model's input:
+        # without it, bumping VL_PREPROCESS_VERSION re-captions every animated
+        # image against the sheet the previous version had already built.
+        target = cache_dir / f"{sha256_file(path)[:24]}-{VL_PREPROCESS_VERSION}-frames.png"
         if not target.exists():
             contact_sheet.save(target, format="PNG", optimize=True)
         return target
+
+
+ASSET_LOCK_SCHEMA_VERSION = "compshare.rag.asset-lock.v2"
+
+# The caption contract: everything that decides what a stored caption MEANS.
+#
+# A cached caption may only be reused if it was produced under the same
+# contract. Before this existed the sole per-note guard was the model name, so
+# editing the prompt invalidated nothing and a rebuild silently mixed captions
+# written under two different instructions. The "caption-only-v3" tag that was
+# meant to be the escape hatch only ever reached the whole-corpus fingerprint,
+# never the per-image reuse map -- so once per-image reuse stopped being gated
+# on that fingerprint, bumping it forced nothing at all.
+#
+# Models are deliberately NOT in the digest. They are already checked per note
+# (a note may come from the primary model, the fallback, or the deterministic
+# filter), and folding them in would make swapping the fallback model
+# invalidate all ~1300 captions in order to re-earn the 2 the fallback
+# actually produced.
+VL_CAPTION_PROMPT = (
+    "识别这张公开文档图片。禁止猜测不可见或打码内容。只输出 JSON，严格包含 "
+    "description(string)、visible_text(array of strings)、controls(array of strings)、"
+    "relations(array of strings)、confidence(number)、visual_type(string)、include_in_rag(boolean)。"
+    "保留命令、路径、错误码、模型名、数字、单位和按钮原文。二维码、群聊码、纯装饰图和无信息图设置 include_in_rag=false。"
+)
+VL_FALLBACK_SUFFIX = " 输出务必精炼：description 不超过200字，数组各不超过20项、每项不超过100字。"
+
+# Bump when a preprocessing change alters what the model is shown, or which
+# images reach it at all. Forgetting is not possible: PREPROCESS_SOURCE_PINS
+# below pins the source of every function that does either, and its test fails
+# on any edit -- telling you to bump this version, or to re-pin deliberately
+# when the edit was cosmetic. A digest over the sources themselves would make a
+# comment edit cost a full re-caption of every image, which is why the version
+# is a human decision and the pins only force that decision to be made.
+VL_PREPROCESS_VERSION = "gif-webp-contact-sheet-v1"
+
+PREPROCESS_SOURCE_PINS = {
+    "_canonical_remote_image_url": "a1e4062a98e87901",
+    "_image_content_type": "1993d1bc1dd0c346",
+    "_is_decorative_asset": "7e9feffa21694d89",
+    # Re-pinned without bumping VL_PREPROCESS_VERSION, deliberately: the two
+    # edits since the last pin are a hard failure where Pillow used to be
+    # silently skipped, and putting the version into the contact sheet's own
+    # filename. Neither changes the bytes any stored caption was produced from.
+    "_prepare_vl_image": "7ff137f4710fb19d",
+}
+
+
+def preprocess_source_digests() -> dict[str, str]:
+    """Current digests of the functions VL_PREPROCESS_VERSION stands for.
+
+    Line endings are normalized because this repo checks out CRLF on Windows
+    and LF in CI; without that the pins would pass locally and fail on the
+    runner for a reason that has nothing to do with the code.
+    """
+    functions = {
+        "_canonical_remote_image_url": _canonical_remote_image_url,
+        "_image_content_type": _image_content_type,
+        "_is_decorative_asset": _is_decorative_asset,
+        "_prepare_vl_image": _prepare_vl_image,
+    }
+    return {
+        name: sha256_bytes(inspect.getsource(func).replace("\r\n", "\n").encode("utf-8"))[:16]
+        for name, func in sorted(functions.items())
+    }
+
+
+def caption_contract_digest() -> str:
+    """Identity of the instruction a stored caption was produced under."""
+    return sha256_bytes(json.dumps({
+        "prompt": VL_CAPTION_PROMPT,
+        "fallback_suffix": VL_FALLBACK_SUFFIX,
+        "preprocess": VL_PREPROCESS_VERSION,
+    }, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+
+
+@dataclass(frozen=True)
+class RemoteAsset:
+    path: Path
+    digest: str
+    content_type: str
+
+
+def resolve_remote_image(url: str, cache_dir: Path, *, timeout: int = 10) -> RemoteAsset:
+    """Resolve a remote image reference to BYTES, cheaply when it has not changed.
+
+    Reuse used to be keyed on the URL string, which is not an identity. 1200 of
+    the corpus's 1276 distinct images are remote, so an image swapped behind a
+    stable URL kept its old caption forever -- and for 223 of those URLs the
+    stored verdict is include_in_rag=false, which renders as the empty string,
+    so replacing a QR code with a real screenshot dropped the new content out of
+    the corpus with nothing in the build report to show for it.
+
+    Re-downloading 471 MB every build to usually learn nothing is the other
+    extreme, so the cache entry carries the server's validators: 304 means the
+    bytes we already hold are current and their digest stands, 200 means the
+    image changed and its caption has to be earned again. Entries written before
+    this function existed carry no digest and no validators; they take one full
+    fetch and are rewritten in the new shape.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    url_map_dir = cache_dir / "by-url"
+    url_map_dir.mkdir(exist_ok=True)
+    url_map = url_map_dir / f"{sha256_bytes(url.encode('utf-8'))}.json"
+    cached: dict[str, Any] = {}
+    if url_map.exists():
+        try:
+            cached = json.loads(url_map.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cached = {}
+    cached_path = cache_dir / str(cached.get("filename") or "")
+    have_cached_bytes = bool(cached.get("digest")) and cached_path.is_file()
+    headers = {"User-Agent": "compshare-rag-v2/1.0"}
+    if have_cached_bytes:
+        if cached.get("etag"):
+            headers["If-None-Match"] = str(cached["etag"])
+        if cached.get("last_modified"):
+            headers["If-Modified-Since"] = str(cached["last_modified"])
+
+    def from_cache() -> RemoteAsset:
+        return RemoteAsset(
+            path=cached_path,
+            digest=str(cached["digest"]),
+            content_type=str(cached.get("content_type") or "application/octet-stream"),
+        )
+
+    request_url = quote(_canonical_remote_image_url(url), safe="/:?&=%#@+;,[]!$'()*")
+    data: bytes | None = None
+    content_type = "application/octet-stream"
+    etag = ""
+    last_modified = ""
+    declared_length: str | None = None
+    for attempt in range(3):
+        try:
+            with urlopen(Request(request_url, headers=headers), timeout=timeout) as response:
+                data = response.read(20 * 1024 * 1024 + 1)
+                content_type = response.headers.get_content_type()
+                etag = response.headers.get("ETag") or ""
+                last_modified = response.headers.get("Last-Modified") or ""
+                declared_length = response.headers.get("Content-Length")
+            # A body shorter than the length the server declared is a truncated
+            # read, not an image. Catching it here matters more than usual:
+            # accepting it would store the server's ETag beside bytes nobody
+            # verified, and every later build would revalidate to 304 and keep
+            # the truncation forever.
+            if declared_length is not None and data is not None and len(data) != int(declared_length):
+                raise ValueError(
+                    f"truncated remote image: {len(data)} bytes, Content-Length {declared_length}"
+                )
+            break
+        except HTTPError as exc:
+            # 304 can only be an answer to a validator we sent. Without one it
+            # is a server bug, and there is nothing to retry into a 200.
+            if exc.code == 304:
+                if have_cached_bytes:
+                    return from_cache()
+                raise ValueError("server answered 304 to an unconditional request") from exc
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
+        except Exception:
+            if attempt == 2:
+                # The bytes on disk are exactly what the stored caption
+                # describes. Discarding them because the origin was unreachable
+                # this minute would fail the build over a transient error AND
+                # drop the caption from the rewritten lock, so a later build
+                # would have to buy it again. Staleness goes unnoticed only for
+                # a build in which the server could not be asked at all.
+                if have_cached_bytes:
+                    print(f"remote revalidation failed, keeping cached bytes: {url}", flush=True)
+                    return from_cache()
+                raise
+            time.sleep(2 ** attempt)
+    if data is None:  # pragma: no cover - the loop either breaks, returns or raises
+        raise RuntimeError("remote image fetch produced no response")
+    if len(data) > 20 * 1024 * 1024:
+        raise ValueError("remote image exceeds 20 MiB")
+    detected_content_type = _image_content_type(data, content_type, url)
+    if detected_content_type is None:
+        raise ValueError(f"remote asset is not an image: {content_type}")
+    digest = sha256_bytes(data)
+    suffix = mimetypes.guess_extension(detected_content_type) or Path(urlparse(url).path).suffix.lower() or ".img"
+    target = cache_dir / f"{digest[:24]}{suffix}"
+    if not target.exists():
+        target.write_bytes(data)
+    url_map.write_text(
+        json.dumps({
+            "content_type": detected_content_type,
+            "digest": digest,
+            "etag": etag,
+            "filename": target.name,
+            "last_modified": last_modified,
+        }, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return RemoteAsset(path=target, digest=digest, content_type=detected_content_type)
 
 
 def tree_lock(path: Path) -> dict[str, Any]:
@@ -687,36 +894,27 @@ class ModelVerseClient:
         return payload
 
 
-def locked_note_identity(note: AssetNote, ref: str) -> str | None:
-    """Content identity of a note already in asset_lock.json.
+def locked_note_identity(note: AssetNote) -> str | None:
+    """Reuse key of a note already in asset_lock.json, or None if it has none.
 
-    asset_id is a content digest on both branches that produce one — local
+    asset_id is a content digest on both branches that produce one -- local
     images use "asset-" + sha256_file(...)[:16] and remote ones "remote-" +
-    sha256(bytes)[:16] — so a caption recorded under one document path is valid
-    for the same bytes wherever else they appear. Keying reuse on the path
-    instead threw the caption away whenever a document moved, which is what a
-    docs restructure is.
+    sha256(bytes)[:16] -- so a caption recorded under one document path is valid
+    for the same bytes wherever else they appear, and only for those bytes.
+    Keying reuse on the document path threw the caption away whenever a document
+    moved, which is what a docs restructure is. Keying it on the URL was worse
+    in the other direction: it kept the caption when the image behind that URL
+    had been replaced.
 
     "decorative-" notes deliberately return None. They are produced by the
     deterministic pre-VL filter, never by a model call, so re-deriving one costs
-    nothing and matching them here would only add a way to be wrong. In the
-    shipped lock that is 88 of 1940 notes; the other 1852 -- every note that
-    cost a model call -- carry a digest.
+    nothing, and their id digests the reference string rather than any content --
+    matching on it would let a reference that merely looks the same claim a
+    verdict about bytes nobody read. In the shipped lock that is 88 of 1940.
     """
-    if note.asset_id.startswith("remote-"):
-        return "url:" + (note.public_url or ref)
-    if note.asset_id.startswith("asset-"):
+    if note.asset_id.startswith(("asset-", "remote-")):
         return note.asset_id
     return None
-
-
-def reuse_key_for_identity(identity: str) -> str | None:
-    """Map a task_groups identity onto the key locked_note_identity produces."""
-    if identity.startswith("url:"):
-        return identity
-    if identity.startswith("file:"):
-        return "asset-" + identity[len("file:"):][:16]
-    return None  # "missing:" groups have no content to match on.
 
 
 def describe_assets(
@@ -728,80 +926,121 @@ def describe_assets(
     assets_dir: Path,
     raw_asset_base_url: str,
     workers: int = 1,
-    reuse_existing_notes: bool = False,
+    remote_workers: int = 8,
+    fetch_remote: Callable[[str, Path], RemoteAsset] = resolve_remote_image,
 ) -> tuple[dict[tuple[str, str, str], AssetNote], list[dict[str, Any]]]:
     notes: dict[tuple[str, str, str], AssetNote] = {}
     failures: list[dict[str, Any]] = []
     assets_dir.mkdir(parents=True, exist_ok=True)
-    task_groups: dict[str, list[tuple[SourceDocument, str, str]]] = {}
+    remote_cache_dir = client.cache_dir.parent / "remote-assets"
+
+    references: list[tuple[SourceDocument, str, str, str]] = []
+    remote_urls: set[str] = set()
+    external_only: dict[str, bool] = {}
     for doc in documents:
         for alt, ref in IMAGE_RE.findall(doc.text):
             decoded = unquote(ref).replace("\\", "/")
-            if decoded.startswith(("https://", "http://")):
-                identity = "url:" + decoded
-            else:
-                candidate = resolve_local_asset(doc, decoded)
-                identity = "file:" + sha256_file(candidate) if candidate else f"missing:{doc.source_id}:{doc.source_path}:{decoded}"
-            task_groups.setdefault(identity, []).append((doc, alt, ref))
+            references.append((doc, alt, ref, decoded))
+            if decoded.startswith("https://") and not _is_decorative_asset(alt, decoded):
+                remote_urls.add(decoded)
+                external = doc.source_origin.startswith("external_")
+                external_only[decoded] = external_only.get(decoded, True) and external
 
+    # Reuse is gated on the caption contract and on nothing else. It used to be
+    # gated on a fingerprint covering every image reference in the corpus, and
+    # on whether the docs git revision had moved -- both of which are false
+    # exactly when the documents changed, which is the only occasion this
+    # function has anything to decide. That made every routine update
+    # re-caption all ~1900 images, which is where the VL step's cost and its
+    # non-answer losses both came from.
     lock_path = assets_dir.parent / "asset_lock.json"
-    lock_fingerprint = sha256_bytes(json.dumps({
-        "processor": "caption-only-v3",
-        "model": model,
-        "fallback_model": fallback_model,
-        "references": sorted(
-            (doc.source_id, doc.source_path, alt, ref)
-            for aliases in task_groups.values()
-            for doc, alt, ref in aliases
-        ),
-    }, ensure_ascii=False, sort_keys=True).encode("utf-8"))
-    reusable_notes: dict[tuple[str, str, str], AssetNote] = {}
+    contract = caption_contract_digest()
     reusable_by_identity: dict[str, AssetNote] = {}
-    reusable_failures: dict[tuple[str, str, str], dict[str, Any]] = {}
-    reusable_failures_by_path: dict[tuple[str, str], dict[str, Any]] = {}
+    reusable_remote_failures: dict[str, dict[str, Any]] = {}
     if lock_path.exists():
         try:
             locked = json.loads(lock_path.read_text(encoding="utf-8"))
-            locked_failures = list(locked.get("failures") or [])
-            exact_lock = locked.get("fingerprint") == lock_fingerprint
-            if exact_lock and not any(_retryable_asset_failure(item) for item in locked_failures):
+            locked_contract = locked.get("contract")
+            if locked_contract != contract:
+                # Loud, because the alternative is an hours-long rebuild that
+                # looks exactly like a cheap one until the bill arrives.
+                print(
+                    f"asset_lock contract mismatch: lock={locked_contract!r} current={contract!r}"
+                    " -- every caption will be re-earned",
+                    flush=True,
+                )
+            else:
                 for item in locked.get("notes") or []:
-                    note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
-                    notes[(str(item["source_id"]), str(item["source_path"]), str(item["ref"]))] = AssetNote(**note_fields)
-                return notes, locked_failures
-            # Per-image reuse is deliberately NOT gated on exact_lock or on
-            # reuse_existing_notes. Both of those are false exactly when the
-            # documents changed: the fingerprint covers every image reference in
-            # the whole corpus, so one added screenshot invalidates it, and
-            # reuse_existing_notes compares the docs git revision, which a docs
-            # update is defined by. Gating here meant every routine update
-            # re-captioned all ~1900 images, which is where the VL step's cost
-            # and its non-answer losses both came from. What actually decides
-            # whether a caption still applies is the image bytes, and that is
-            # what the identity map below matches on.
-            for item in locked.get("notes") or []:
-                note_fields = {key: value for key, value in item.items() if key not in {"source_id", "ref"}}
-                note = AssetNote(**note_fields)
-                if note.model not in {model, fallback_model, "deterministic-decoration-filter"}:
-                    continue
-                ref = str(item["ref"])
-                reusable_notes[(str(item["source_id"]), str(item["source_path"]), ref)] = note
-                identity = locked_note_identity(note, ref)
-                if identity is not None:
-                    reusable_by_identity.setdefault(identity, note)
-            if exact_lock or reuse_existing_notes:
-                for item in locked_failures:
-                    if _retryable_asset_failure(item):
+                    note = AssetNote(**{k: v for k, v in item.items() if k not in {"source_id", "ref"}})
+                    if note.model not in {model, fallback_model, "deterministic-decoration-filter"}:
                         continue
-                    failure_key = (
-                        str(item.get("source_id") or ""),
-                        str(item.get("source") or ""),
-                        str(item.get("ref") or ""),
-                    )
-                    reusable_failures[failure_key] = dict(item)
-                    reusable_failures_by_path[(failure_key[1], failure_key[2])] = dict(item)
-        except (OSError, ValueError, TypeError, KeyError):
-            notes = {}
+                    identity = locked_note_identity(note)
+                    if identity is not None:
+                        reusable_by_identity.setdefault(identity, note)
+                for item in locked.get("failures") or []:
+                    # Only remote failures are worth carrying. Re-deriving a
+                    # missing local image is a stat() call, while re-attempting a
+                    # dead URL is three requests against a 10s timeout, and the
+                    # shipped lock holds 52 of those against 654 local misses.
+                    ref = str(item.get("ref") or "")
+                    if not ref.startswith("https://") or _retryable_asset_failure(item):
+                        continue
+                    reusable_remote_failures.setdefault(unquote(ref).replace("\\", "/"), dict(item))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            # AssetNote(**...) raises TypeError on any per-note field drift, and
+            # swallowing that silently turned a schema change into an
+            # unexplained full re-caption with nothing in the log to say why.
+            print(
+                f"asset_lock unusable ({type(exc).__name__}: {exc}) -- every caption will be re-earned",
+                flush=True,
+            )
+            reusable_by_identity = {}
+            reusable_remote_failures = {}
+
+    # Remote bytes are resolved BEFORE the reuse decision, because for 1200 of
+    # this corpus's 1276 distinct images the bytes are what the reuse decision
+    # is about. A URL whose failure is both permanent and referenced only by
+    # third-party snapshots is skipped rather than re-attempted; an internal
+    # image is always re-attempted, because the release gate has to block on it.
+    resolved: dict[str, RemoteAsset] = {}
+    remote_failures: dict[str, str] = {}
+    pending_urls = sorted(
+        url for url in remote_urls
+        if url not in reusable_remote_failures or not external_only.get(url, False)
+    )
+
+    def resolve(url: str) -> tuple[str, RemoteAsset | None, str | None]:
+        try:
+            return url, fetch_remote(url, remote_cache_dir), None
+        except Exception as exc:  # source defect, not a preprocessing defect
+            return url, None, f"source_remote_image_unavailable:{type(exc).__name__}:{exc}"
+
+    if pending_urls:
+        # Safe to fan out: the instability that forced the VL step serial was
+        # the model returning a shaped non-answer under concurrency, not HTTP.
+        with ThreadPoolExecutor(max_workers=max(1, remote_workers)) as pool:
+            for url, asset, reason in pool.map(resolve, pending_urls):
+                if asset is not None:
+                    resolved[url] = asset
+                else:
+                    remote_failures[url] = str(reason)
+
+    # Identity IS the reuse key: for every image that costs a model call it is
+    # that image's content digest, in the same form asset_id records it.
+    task_groups: dict[str, list[tuple[SourceDocument, str, str]]] = {}
+    for doc, alt, ref, decoded in references:
+        if _is_decorative_asset(alt, decoded):
+            identity = "decorative:" + sha256_bytes(decoded.encode("utf-8"))[:16]
+        elif decoded.startswith(("https://", "http://")):
+            asset = resolved.get(decoded)
+            identity = "remote-" + asset.digest[:16] if asset is not None else "unresolved:" + decoded
+        else:
+            candidate = resolve_local_asset(doc, decoded)
+            identity = (
+                "asset-" + sha256_file(candidate)[:16] if candidate
+                else f"missing:{doc.source_id}:{doc.source_path}:{decoded}"
+            )
+        task_groups.setdefault(identity, []).append((doc, alt, ref))
 
     def process(task: tuple[SourceDocument, str, str]) -> tuple[tuple[str, str, str], AssetNote | None, dict[str, Any] | None]:
         doc, alt, ref = task
@@ -825,68 +1064,25 @@ def describe_assets(
                 ), None
             image_input: Path | str
             repo_path: str | None = None
-            legacy_image_url: str | None = None
             if decoded.startswith(("https://", "http://")):
                 if not decoded.startswith("https://"):
                     severity = "warning" if doc.source_origin.startswith("external_") else "error"
                     return key, None, {"source": doc.source_path, "ref": ref, "reason": "non_https_image", "severity": severity}
-                try:
-                    remote_cache_dir = client.cache_dir.parent / "remote-assets"
-                    remote_cache_dir.mkdir(parents=True, exist_ok=True)
-                    url_map_dir = remote_cache_dir / "by-url"
-                    url_map_dir.mkdir(exist_ok=True)
-                    url_map = url_map_dir / f"{sha256_bytes(decoded.encode('utf-8'))}.json"
-                    cached_remote: Path | None = None
-                    content_type = "application/octet-stream"
-                    if url_map.exists():
-                        mapping = json.loads(url_map.read_text(encoding="utf-8"))
-                        candidate = remote_cache_dir / str(mapping["filename"])
-                        if candidate.is_file():
-                            cached_remote = candidate
-                            content_type = str(mapping["content_type"])
-                    if cached_remote is None:
-                        last_download_error: Exception | None = None
-                        for download_attempt in range(3):
-                            try:
-                                request_url = quote(_canonical_remote_image_url(decoded), safe="/:?&=%#@+;,[]!$'()*")
-                                request = Request(request_url, headers={"User-Agent": "compshare-rag-v2/1.0"})
-                                with urlopen(request, timeout=10) as response:
-                                    data = response.read(20 * 1024 * 1024 + 1)
-                                    content_type = response.headers.get_content_type()
-                                break
-                            except Exception as exc:
-                                last_download_error = exc
-                                if download_attempt == 2:
-                                    raise
-                                time.sleep(2 ** download_attempt)
-                    else:
-                        data = cached_remote.read_bytes()
-                    if len(data) > 20 * 1024 * 1024:
-                        raise ValueError("remote image exceeds 20 MiB")
-                    detected_content_type = _image_content_type(data, content_type, decoded)
-                    if detected_content_type is None:
-                        raise ValueError(f"remote asset is not an image: {content_type}")
-                    content_type = detected_content_type
-                except Exception as exc:  # source defect, not a preprocessing defect
+                # Bytes were already resolved (and content-addressed) before the
+                # reuse decision, so this branch only reads the outcome.
+                asset = resolved.get(decoded)
+                if asset is None:
                     return key, None, {
                         "source": doc.source_path,
                         "ref": ref,
-                        "reason": f"source_remote_image_unavailable:{type(exc).__name__}:{exc}",
+                        "reason": remote_failures.get(
+                            decoded, "source_remote_image_unavailable:LookupError:not resolved"
+                        ),
                         "severity": "warning",
                     }
-                digest = sha256_bytes(data)
-                suffix = mimetypes.guess_extension(content_type) or Path(urlparse(decoded).path).suffix.lower() or ".img"
-                target = remote_cache_dir / f"{digest[:24]}{suffix}"
-                if not target.exists():
-                    target.write_bytes(data)
-                url_map.write_text(
-                    json.dumps({"filename": target.name, "content_type": content_type}, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                )
                 public_url = decoded
-                asset_id = "remote-" + digest[:16]
-                image_input = target
-                legacy_image_url = decoded
+                asset_id = "remote-" + asset.digest[:16]
+                image_input = asset.path
             else:
                 candidate = resolve_local_asset(doc, decoded)
                 if candidate is None:
@@ -901,26 +1097,25 @@ def describe_assets(
                 public_url = raw_asset_base_url.rstrip("/") + "/" + target.name
                 asset_id = "asset-" + digest[:16]
                 image_input = candidate
-            prompt = (
-                "识别这张公开文档图片。禁止猜测不可见或打码内容。只输出 JSON，严格包含 "
-                "description(string)、visible_text(array of strings)、controls(array of strings)、"
-                "relations(array of strings)、confidence(number)、visual_type(string)、include_in_rag(boolean)。"
-                "保留命令、路径、错误码、模型名、数字、单位和按钮原文。二维码、群聊码、纯装饰图和无信息图设置 include_in_rag=false。"
-            )
+            prompt = VL_CAPTION_PROMPT
             if isinstance(image_input, Path):
                 image_input = _prepare_vl_image(image_input, client.cache_dir.parent / "vl-ready")
             used_model = model
             try:
-                payload = client.cached_json(model=model, prompt=prompt, image=legacy_image_url) if legacy_image_url else None
-                if payload is None:
-                    payload = client.json_chat(
-                        model=model, prompt=prompt, image=image_input, max_tokens=4000,
-                        accept=vl_payload_answered,
-                    )
+                # No URL-keyed pre-check. ModelVerseClient._cache_path digests a
+                # Path input and uses a str input verbatim, so looking the answer
+                # up by URL handed back the payload for whatever image used to
+                # live there -- re-keying reuse on content would have changed
+                # nothing for remote images, because this layer sat underneath it
+                # and answered first. json_chat's own lookup is content-keyed.
+                payload = client.json_chat(
+                    model=model, prompt=prompt, image=image_input, max_tokens=4000,
+                    accept=vl_payload_answered,
+                )
             except Exception:
                 if not fallback_model:
                     raise
-                fallback_prompt = prompt + " 输出务必精炼：description 不超过200字，数组各不超过20项、每项不超过100字。"
+                fallback_prompt = prompt + VL_FALLBACK_SUFFIX
                 payload = client.json_chat(
                     model=fallback_model,
                     prompt=fallback_prompt,
@@ -961,48 +1156,43 @@ def describe_assets(
             return key, None, {"source": doc.source_path, "ref": ref, "reason": f"vl_failed:{type(exc).__name__}:{exc}", "severity": severity}
 
     pending_groups: list[list[tuple[SourceDocument, str, str]]] = []
-    reused_by_path = 0
-    reused_by_identity = 0
+    reused_captions = 0
+    carried_failures = 0
     for identity, aliases in task_groups.items():
-        first_doc, _first_alt, first_ref = aliases[0]
-        reusable = reusable_notes.get((first_doc.source_id, first_doc.source_path, first_ref))
-        if reusable is not None:
-            reused_by_path += 1
-        else:
-            identity_key = reuse_key_for_identity(identity)
-            if identity_key is not None:
-                reusable = reusable_by_identity.get(identity_key)
-                if reusable is not None:
-                    reused_by_identity += 1
+        reusable = reusable_by_identity.get(identity)
         if reusable is not None:
             for alias_doc, _alias_alt, alias_ref in aliases:
                 notes[(alias_doc.source_id, alias_doc.source_path, alias_ref)] = replace(reusable, source_path=alias_doc.source_path)
+            reused_captions += 1
             continue
-        reusable_failure = reusable_failures.get((first_doc.source_id, first_doc.source_path, first_ref))
-        if reusable_failure is None:
-            reusable_failure = reusable_failures_by_path.get((first_doc.source_path, first_ref))
-        # Internal/public-platform images are mandatory. Never preserve a prior
-        # failure for them: retry it and let the release gate block if it still
-        # cannot be described. Missing images in third-party snapshots remain
-        # non-blocking source warnings.
-        if reusable_failure is not None and all(alias_doc.source_origin.startswith("external_") for alias_doc, _alt, _ref in aliases):
-            for alias_doc, _alias_alt, alias_ref in aliases:
-                failures.append({
-                    **reusable_failure,
-                    "source_id": alias_doc.source_id,
-                    "source": alias_doc.source_path,
-                    "ref": alias_ref,
-                    "severity": "warning",
-                })
-            continue
+        # A URL we deliberately did not re-attempt keeps the verdict that made
+        # us stop attempting it. A URL we DID attempt keeps this build's result,
+        # even when the stored one says the same thing: the carried copy is
+        # always a warning, so reusing it for an internal image would downgrade
+        # a failure the release gate is supposed to block on.
+        if identity.startswith("unresolved:"):
+            unresolved_url = identity[len("unresolved:"):]
+            carried = None if unresolved_url in remote_failures else reusable_remote_failures.get(unresolved_url)
+            if carried is not None:
+                for alias_doc, _alias_alt, alias_ref in aliases:
+                    failures.append({
+                        **carried,
+                        "source_id": alias_doc.source_id,
+                        "source": alias_doc.source_path,
+                        "ref": alias_ref,
+                        "severity": "warning",
+                    })
+                carried_failures += 1
+                continue
         pending_groups.append(aliases)
 
-    # Always reported, not only under reuse_existing_notes: pending_vl is the
-    # number of model calls this build will make, and it is the one number that
-    # says whether an "incremental" rebuild actually was one.
+    # pending_vl is the number of model calls this build will make, and it is
+    # the one number that says whether an "incremental" rebuild actually was
+    # one. remote_resolved/remote_unresolved say what the revalidation pass cost.
     print(
-        f"asset_groups={len(task_groups)} reused_by_path={reused_by_path} "
-        f"reused_by_identity={reused_by_identity} pending_vl={len(pending_groups)}",
+        f"asset_groups={len(task_groups)} reused_captions={reused_captions} "
+        f"carried_failures={carried_failures} remote_resolved={len(resolved)} "
+        f"remote_unresolved={len(remote_failures)} pending_vl={len(pending_groups)}",
         flush=True,
     )
 
@@ -1027,8 +1217,8 @@ def describe_assets(
     for (source_id, source_path, ref), note in sorted(notes.items()):
         locked_notes.append({"source_id": source_id, "source_path": source_path, "ref": ref, **asdict(note)})
     lock_path.write_text(json.dumps({
-        "schema_version": "compshare.rag.asset-lock.v1",
-        "fingerprint": lock_fingerprint,
+        "schema_version": ASSET_LOCK_SCHEMA_VERSION,
+        "contract": contract,
         "notes": locked_notes,
         "failures": failures,
     }, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

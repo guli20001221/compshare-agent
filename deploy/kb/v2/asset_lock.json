@@ -1,4 +1,5 @@
 {
+  "contract": "ff63dfe682819c081f73c2d20f44988ac339357ba1065ed28eda31e6ef3f8064",
   "failures": [
     {
       "reason": "missing_local_image",
@@ -4943,7 +4944,6 @@
       "source_id": "external-digital-human"
     }
   ],
-  "fingerprint": "a5073d6c4892fd929831351f23ac1eed740b3532732f6bdc3fe32f93ea2d7e93",
   "notes": [
     {
       "asset_id": "remote-f064040d7d1bcc95",
@@ -27100,66 +27100,6 @@
       "visual_type": "diagram"
     },
     {
-      "asset_id": "remote-428678504a20922b",
-      "confidence": 0.95,
-      "controls": [
-        "Load Video (Upload)",
-        "Video Combine",
-        "video leader.webm",
-        "force_rate 8",
-        "force_size Disabled",
-        "frame_load_cap 8",
-        "skip_first frames 0",
-        "select_every_nth 1",
-        "choose video to upload",
-        "frame_rate 8",
-        "loop_count 0",
-        "filename_prefix AnimateDiff",
-        "format video/av1-webm",
-        "pingpong false",
-        "save_image false"
-      ],
-      "description": "一个图形用户界面，显示了多个“Load Video (Upload)”和“Video Combine”节点，每个节点包含参数设置如视频文件名、帧率、循环计数等，并通过连线连接。部分节点预览窗口中显示数字8、7、6。",
-      "include_in_rag": true,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite/assets/4284322/b5fc993c-5c9b-4608-afa4-48ae2e1380ef",
-      "ref": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite/assets/4284322/b5fc993c-5c9b-4608-afa4-48ae2e1380ef",
-      "relations": [
-        "Load Video (Upload) → Video Combine",
-        "Video Combine → Video Combine",
-        "frame_count 连接到 images 输入",
-        "skip_first frames 设置为 0, 16, 24",
-        "预览数字 8, 7, 6 显示在 Video Combine 节点中"
-      ],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "images/500WHhII1fnz/custom-nodes/active/ComfyUI-VideoHelperSuite/README.md",
-      "visible_text": [
-        "Load Video (Upload)",
-        "IMAGE",
-        "frame_count",
-        "video leader.webm",
-        "force_rate 8",
-        "force_size Disabled",
-        "frame_load_cap 8",
-        "skip_first frames 0",
-        "select_every_nth 1",
-        "choose video to upload",
-        "Video Combine",
-        "images",
-        "frame_rate 8",
-        "loop_count 0",
-        "filename_prefix AnimateDiff",
-        "format video/av1-webm",
-        "pingpong false",
-        "save_image false",
-        "8",
-        "7",
-        "6"
-      ],
-      "visual_type": "ui_diagram"
-    },
-    {
       "asset_id": "remote-d72d0e64e50a2d40",
       "confidence": 0.98,
       "controls": [
@@ -27755,22 +27695,6 @@
         "Images"
       ],
       "visual_type": "文档截图"
-    },
-    {
-      "asset_id": "remote-af63624ac2b899b7",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一座中国传统风格的亭子，位于水边，有红色柱子和橙色瓦顶，周围有白色栏杆和绿树。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://drive.google.com/thumbnail?id=1ItXaA26iYnE8XQ_GgNLy71MOWePoS2-g&sz=w400",
-      "ref": "https://drive.google.com/thumbnail?id=1ItXaA26iYnE8XQ_GgNLy71MOWePoS2-g&sz=w400",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "images/500WHhII1fnz/custom-nodes/active/ComfyUI_LayerStyle_Advance-main/py/BiRefNet_v2/README.md",
-      "visible_text": [],
-      "visual_type": "风景照片"
     },
     {
       "asset_id": "remote-300a628b88bb02d0",
@@ -30441,22 +30365,6 @@
       "visual_type": "logo"
     },
     {
-      "asset_id": "remote-44ab93e0b59551a3",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "两只狗在沙滩上奔跑，共同叼着一根木棍，背景是蓝天。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://github.com/facebookresearch/segment-anything/raw/main/assets/minidemo.gif",
-      "ref": "https://github.com/facebookresearch/segment-anything/raw/main/assets/minidemo.gif",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "images/500WHhII1fnz/custom-nodes/active/was-node-suite-comfyui/repos/SAM/demo/README.md",
-      "visible_text": [],
-      "visual_type": "自然场景"
-    },
-    {
       "asset_id": "decorative-ea77064cd685a31f",
       "confidence": 1.0,
       "controls": [],
@@ -31955,66 +31863,6 @@
         "8"
       ],
       "visual_type": "diagram"
-    },
-    {
-      "asset_id": "remote-428678504a20922b",
-      "confidence": 0.95,
-      "controls": [
-        "Load Video (Upload)",
-        "Video Combine",
-        "video leader.webm",
-        "force_rate 8",
-        "force_size Disabled",
-        "frame_load_cap 8",
-        "skip_first frames 0",
-        "select_every_nth 1",
-        "choose video to upload",
-        "frame_rate 8",
-        "loop_count 0",
-        "filename_prefix AnimateDiff",
-        "format video/av1-webm",
-        "pingpong false",
-        "save_image false"
-      ],
-      "description": "一个图形用户界面，显示了多个“Load Video (Upload)”和“Video Combine”节点，每个节点包含参数设置如视频文件名、帧率、循环计数等，并通过连线连接。部分节点预览窗口中显示数字8、7、6。",
-      "include_in_rag": true,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite/assets/4284322/b5fc993c-5c9b-4608-afa4-48ae2e1380ef",
-      "ref": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite/assets/4284322/b5fc993c-5c9b-4608-afa4-48ae2e1380ef",
-      "relations": [
-        "Load Video (Upload) → Video Combine",
-        "Video Combine → Video Combine",
-        "frame_count 连接到 images 输入",
-        "skip_first frames 设置为 0, 16, 24",
-        "预览数字 8, 7, 6 显示在 Video Combine 节点中"
-      ],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "installed-custom-nodes/active/ComfyUI-VideoHelperSuite/README.md",
-      "visible_text": [
-        "Load Video (Upload)",
-        "IMAGE",
-        "frame_count",
-        "video leader.webm",
-        "force_rate 8",
-        "force_size Disabled",
-        "frame_load_cap 8",
-        "skip_first frames 0",
-        "select_every_nth 1",
-        "choose video to upload",
-        "Video Combine",
-        "images",
-        "frame_rate 8",
-        "loop_count 0",
-        "filename_prefix AnimateDiff",
-        "format video/av1-webm",
-        "pingpong false",
-        "save_image false",
-        "8",
-        "7",
-        "6"
-      ],
-      "visual_type": "ui_diagram"
     },
     {
       "asset_id": "remote-d72d0e64e50a2d40",
@@ -38419,31 +38267,6 @@
       "visual_type": "software_interface"
     },
     {
-      "asset_id": "remote-ee3cbf9beb4eaec5",
-      "confidence": 0.95,
-      "controls": [
-        "菜单图标（三条横线）",
-        "向上箭头图标",
-        "立方体图标",
-        "刷新/重置图标"
-      ],
-      "description": "3D点云渲染的蒸汽火车模型，主体为蓝色与粉色混合色块，置于黑色网格背景上，左下角有RGB坐标轴指示器，左侧有垂直工具栏。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/hunyuan3d-2/hunyuan3d-non-multiview-train.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/hunyuan3d-2/hunyuan3d-non-multiview-train.webp",
-      "relations": [
-        "左侧工具栏图标垂直排列",
-        "火车模型位于网格平面上方",
-        "坐标轴指示器位于左下角"
-      ],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/3d/hunyuan3D-2.md",
-      "visible_text": [],
-      "visual_type": "3D点云可视化图"
-    },
-    {
       "asset_id": "remote-1c074ee704111929",
       "confidence": 0.98,
       "controls": [],
@@ -38476,29 +38299,6 @@
       "visual_type": "角色立绘"
     },
     {
-      "asset_id": "remote-ff826c0cd3d697dd",
-      "confidence": 0.95,
-      "controls": [
-        "菜单图标",
-        "向上箭头",
-        "立方体图标",
-        "旋转图标"
-      ],
-      "description": "3D网格渲染的角色模型，具有紫色和青色渐变着色，站立在网格地面上，左侧有控制面板图标。",
-      "include_in_rag": true,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/hunyuan3d-2/hunyuan3d_2mv_elf/hunyuan-3d-multiview-elf.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/hunyuan3d-2/hunyuan3d_2mv_elf/hunyuan-3d-multiview-elf.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/3d/hunyuan3D-2.md",
-      "visible_text": [
-        "clear"
-      ],
-      "visual_type": "3D渲染图"
-    },
-    {
       "asset_id": "remote-b9ff334b3bb98bfd",
       "confidence": 0.95,
       "controls": [],
@@ -38529,27 +38329,6 @@
       "source_path": "official/tutorials/zh/tutorials/3d/hunyuan3D-2.md",
       "visible_text": [],
       "visual_type": "3D模型"
-    },
-    {
-      "asset_id": "remote-97417b92b387b368",
-      "confidence": 0.95,
-      "controls": [
-        "菜单图标",
-        "向上箭头图标",
-        "立方体图标",
-        "重置视角图标"
-      ],
-      "description": "一个彩色点云渲染的3D角色模型，站立在网格地面上，左侧有控制面板和坐标轴指示器。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/hunyuan3d-2/hunyuan3d_2mv_turbo/hunyuan-3d-turbo.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/hunyuan3d-2/hunyuan3d_2mv_turbo/hunyuan-3d-turbo.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/3d/hunyuan3D-2.md",
-      "visible_text": [],
-      "visual_type": "3D模型渲染图"
     },
     {
       "asset_id": "remote-d0f484922f5dc035",
@@ -38593,54 +38372,6 @@
         "173"
       ],
       "visual_type": "产品模型图"
-    },
-    {
-      "asset_id": "remote-6c582fdb3f6560b7",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "两个卡通风格的3D人物模型站在粉色背景前，左侧角色戴着猫耳帽、穿橙色印花外套，右侧角色金发、穿蓝色连体衣。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Tencent/Hunyuan3D-2/main/assets/images/e2e-1.gif",
-      "ref": "https://raw.githubusercontent.com/Tencent/Hunyuan3D-2/main/assets/images/e2e-1.gif",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/3d/hunyuan3D-2.md",
-      "visible_text": [],
-      "visual_type": "3D渲染图"
-    },
-    {
-      "asset_id": "remote-074ecb05f60c224f",
-      "confidence": 0.98,
-      "controls": [],
-      "description": "一张展示室内家具与配饰的图片，包含一个棕色木质圆桌和一个三座沙发。桌上放置一个蓝色圆形花卉图案手提包，沙发为橙黄色皮质，扶手与支脚为紫色。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Tencent/Hunyuan3D-2/main/assets/images/e2e-2.gif",
-      "ref": "https://raw.githubusercontent.com/Tencent/Hunyuan3D-2/main/assets/images/e2e-2.gif",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/3d/hunyuan3D-2.md",
-      "visible_text": [],
-      "visual_type": "产品展示图"
-    },
-    {
-      "asset_id": "remote-50319e18e3f1165d",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一个白色建筑模型置于雪地场景中，周围有树木和积雪覆盖的地面，整体呈现立体微缩景观效果。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_triposplat_image_to_gaussian_splat-1.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_triposplat_image_to_gaussian_splat-1.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/3d/triposplat.md",
-      "visible_text": [],
-      "visual_type": "3D模型图"
     },
     {
       "asset_id": "remote-4cf2e42abf2d3b73",
@@ -39112,72 +38843,6 @@
       "source_path": "official/tutorials/zh/tutorials/basic/image-to-image.md",
       "visible_text": [],
       "visual_type": "艺术图像"
-    },
-    {
-      "asset_id": "remote-d2003db237277684",
-      "confidence": 0.98,
-      "controls": [
-        "Load Image",
-        "choose file to upload",
-        "Queue",
-        "Manager",
-        "Workflow",
-        "Edit",
-        "Help",
-        "sd1.5_inpain",
-        "+",
-        "★",
-        "🔒",
-        "→",
-        "▼",
-        "×",
-        "□",
-        "🌙",
-        "⚙️",
-        "➕",
-        "➖",
-        "↖️",
-        "👁️"
-      ],
-      "description": "ComfyUI 界面截图，显示 'Load Image' 节点正在加载一张戴花环的卡通小猫图片，右侧连接到 VAE Encode 节点，用于图像修复（inpainting）流程。",
-      "include_in_rag": true,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://mintcdn.com/dripart/OltlUSVBSNcJsDMs/images/tutorial/basic/inpaint/inpaint-maskeditor.gif?s=217f481d8cd4e22183c0dd1551f3e831",
-      "ref": "https://mintcdn.com/dripart/OltlUSVBSNcJsDMs/images/tutorial/basic/inpaint/inpaint-maskeditor.gif?s=217f481d8cd4e22183c0dd1551f3e831",
-      "relations": [
-        "Load Image 节点的 IMAGE 输出连接到 VAE Encode 的 pixels 输入",
-        "Load Image 节点的 MASK 输出连接到 VAE Encode 的 mask 输入",
-        "红色箭头指向 Queue 按钮，表示流程排队执行"
-      ],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/basic/inpaint.md",
-      "visible_text": [
-        "ComfyUI",
-        "Workflow",
-        "Edit",
-        "Help",
-        "sd1.5_inpain",
-        "Manager",
-        "Queue",
-        "Load image and a ... for inpainting",
-        "Load Image",
-        "IMAGE",
-        "MASK",
-        "image clipspace/clipspace-mask-4022918.199999988...",
-        "choose file to upload",
-        "VAE Encode (for In",
-        "pixels",
-        "vae",
-        "mask",
-        "grow_mask_by",
-        "T: 0.00s",
-        "t: 0",
-        "N: 10 (4)",
-        "V: 21",
-        "FPS: 57.14"
-      ],
-      "visual_type": "software_interface"
     },
     {
       "asset_id": "remote-f0466e08d9f41e06",
@@ -46238,38 +45903,6 @@
       "visual_type": "场景图"
     },
     {
-      "asset_id": "remote-546317fc9ebf45d7",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "纯色渐变背景图，左下角有模糊的浅灰色物体轮廓，无任何可识别文字或控件。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_depth_anything3_video_depth_estimation-1.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_depth_anything3_video_depth_estimation-1.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/utility/depth-anything-3.md",
-      "visible_text": [],
-      "visual_type": "纯装饰图"
-    },
-    {
-      "asset_id": "remote-ba862d35967fafdf",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一个穿着荧光黄连帽衫、紫色短发、绿色眼睛的动漫风格人物，背景为淡紫色。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_face_detection_mediapipe-1.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_face_detection_mediapipe-1.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/utility/face-detection/mediapipe.md",
-      "visible_text": [],
-      "visual_type": "插画"
-    },
-    {
       "asset_id": "remote-11117f9405512d65",
       "confidence": 0.95,
       "controls": [],
@@ -46302,22 +45935,6 @@
       "visual_type": "风景照片"
     },
     {
-      "asset_id": "remote-59d18271ead8719f",
-      "confidence": 0.98,
-      "controls": [],
-      "description": "两张并列图片，展示同一人物在不同场景中的穿搭：左图为户外荒野背景，右图为城市街道背景。人物穿着米色高领毛衣、棕色长外套、卡其色工装裤和棕色靴子，头戴浅色帽子。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/video_bernini_r_video_editing-1.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/video_bernini_r_video_editing-1.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/bytedance/bernini-r.md",
-      "visible_text": [],
-      "visual_type": "fashion_outfit_comparison"
-    },
-    {
       "asset_id": "remote-d5e3882ab9a701e1",
       "confidence": 0.95,
       "controls": [],
@@ -46332,38 +45949,6 @@
       "source_path": "official/tutorials/zh/tutorials/video/hunyuan/hunyuan-video.md",
       "visible_text": [],
       "visual_type": "illustration"
-    },
-    {
-      "asset_id": "remote-131b77633ae1bc73",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一个穿着女仆装、长着狐狸耳朵和尾巴的动漫风格角色，手持一个点燃蜡烛的生日蛋糕，站在厨房中。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://comfyanonymous.github.io/ComfyUI_examples/hunyuan_video/hunyuan_video_image_to_video.webp",
-      "ref": "https://comfyanonymous.github.io/ComfyUI_examples/hunyuan_video/hunyuan_video_image_to_video.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/hunyuan/hunyuan-video.md",
-      "visible_text": [],
-      "visual_type": "插画"
-    },
-    {
-      "asset_id": "remote-d717c614cb82d93c",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一个穿着女仆装、长着狐狸耳朵和尾巴的动漫风格女孩，手持一个点燃蜡烛的巧克力蛋糕，站在厨房中。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://comfyanonymous.github.io/ComfyUI_examples/hunyuan_video/hunyuan_video_image_to_video_v2.webp",
-      "ref": "https://comfyanonymous.github.io/ComfyUI_examples/hunyuan_video/hunyuan_video_image_to_video_v2.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/hunyuan/hunyuan-video.md",
-      "visible_text": [],
-      "visual_type": "插画"
     },
     {
       "asset_id": "remote-6388e55382238589",
@@ -46931,54 +46516,6 @@
       "visual_type": "插画"
     },
     {
-      "asset_id": "remote-1f53c15a2ad9ba10",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一个穿着未来主义服装的机器人在霓虹灯走廊中摆出舞蹈姿势，背景是粉色和青色的灯光。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/hunyuan-video/i2v/v1_robot.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/hunyuan-video/i2v/v1_robot.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/hunyuan/hunyuan-video.md",
-      "visible_text": [],
-      "visual_type": "插画"
-    },
-    {
-      "asset_id": "remote-9dddb9b3bc6d4cb7",
-      "confidence": 0.98,
-      "controls": [],
-      "description": "一个穿着女仆装、长着狐狸耳朵和尾巴的动漫风格女孩，双手托着一个插有三根蜡烛的巧克力蛋糕，背景是昏暗的厨房和窗外夜景。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/hunyuan-video/i2v/v2_fennec_gril.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/hunyuan-video/i2v/v2_fennec_gril.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/hunyuan/hunyuan-video.md",
-      "visible_text": [],
-      "visual_type": "插画"
-    },
-    {
-      "asset_id": "remote-35806c237b1f4e07",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一个人在厨房准备食物，背景有窗户和植物。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/hunyuan-video/t2v/kitchen.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/hunyuan-video/t2v/kitchen.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/hunyuan/hunyuan-video.md",
-      "visible_text": [],
-      "visual_type": "场景图"
-    },
-    {
       "asset_id": "remote-9852a784d39ad625",
       "confidence": 0.95,
       "controls": [],
@@ -47003,22 +46540,6 @@
       "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
       "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/ltxv/i2v/girl1.png",
       "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/ltxv/i2v/girl1.png",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/ltxv.md",
-      "visible_text": [],
-      "visual_type": "人像摄影"
-    },
-    {
-      "asset_id": "remote-a164e149f0683dc5",
-      "confidence": 0.98,
-      "controls": [],
-      "description": "女性面部特写，聚焦于眼睛、鼻子和嘴唇，光线柔和，皮肤光滑，妆容精致。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/ltxv/i2v/workflow.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/ltxv/i2v/workflow.webp",
       "relations": [],
       "repo_path": null,
       "source_id": "external-comfyui",
@@ -47057,38 +46578,6 @@
       "source_path": "official/tutorials/zh/tutorials/video/ltxv.md",
       "visible_text": [],
       "visual_type": "艺术装置摄影"
-    },
-    {
-      "asset_id": "remote-5742323a611952b0",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一张户外街景照片，主体为一栋粉色现代风格建筑，前方停有一辆黄色汽车，背景是蓝天和远山。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/ltxv/multi-frame/workflow.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/ltxv/multi-frame/workflow.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/ltxv.md",
-      "visible_text": [],
-      "visual_type": "photograph"
-    },
-    {
-      "asset_id": "remote-85f63a4753aab2fc",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一张人物面部特写图片，背景为暖色调，无可见文字或控件。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/ltxv/t2v.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/ltxv/t2v.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/ltxv.md",
-      "visible_text": [],
-      "visual_type": "人物肖像"
     },
     {
       "asset_id": "remote-e86f993ccdb979b7",
@@ -47729,22 +47218,6 @@
       "visual_type": "插画"
     },
     {
-      "asset_id": "remote-29a653bd1da9a1c7",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "黏土雕塑风格的女性面部特写，闭眼，脸颊有粉红色斑点，黄色与橙色长发，背景为绿色抽象纹理。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_control/wan2.1_fun_control_native.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_control/wan2.1_fun_control_native.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/fun-control.md",
-      "visible_text": [],
-      "visual_type": "雕塑艺术"
-    },
-    {
       "asset_id": "remote-955d3b104fccc0b5",
       "confidence": 0.95,
       "controls": [],
@@ -47873,22 +47346,6 @@
         "method: default"
       ],
       "visual_type": "workflow_diagram"
-    },
-    {
-      "asset_id": "remote-8cd2c8c1533a1ee9",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "时尚模特穿着黑色长款羽绒服，内搭图案T恤和蛇纹长裙，脚穿黑色厚底鞋，佩戴墨镜和帽子。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_inp/wan2.1_fun_inp.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/wan2.1_fun_inp/wan2.1_fun_inp.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/fun-inp.md",
-      "visible_text": [],
-      "visual_type": "fashion_photography"
     },
     {
       "asset_id": "remote-240424e899f9a7c7",
@@ -48759,22 +48216,6 @@
       "visual_type": "3D渲染插画"
     },
     {
-      "asset_id": "remote-b75cf68095fb53eb",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一个金发人物骑在一只白色毛茸茸的生物上，背景是深蓝色调，画面充满动感。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/video_causal_forcing_i2v-1.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/video_causal_forcing_i2v-1.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/wan-causal-forcing.md",
-      "visible_text": [],
-      "visual_type": "艺术插画"
-    },
-    {
       "asset_id": "remote-e37ca9054cc49743",
       "confidence": 0.98,
       "controls": [
@@ -48908,22 +48349,6 @@
       "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
       "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1_flf2v/input/start_image.png",
       "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1_flf2v/input/start_image.png",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/wan-flf.md",
-      "visible_text": [],
-      "visual_type": "艺术插画"
-    },
-    {
-      "asset_id": "remote-802704f72dfc7d26",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "透明玻璃质感的植物枝叶在阳光下闪耀，背景为淡蓝色天空与模糊山景。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1_flf2v/wan2.1_flf2v_720_f16.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1_flf2v/wan2.1_flf2v_720_f16.webp",
       "relations": [],
       "repo_path": null,
       "source_id": "external-comfyui",
@@ -49305,54 +48730,6 @@
       "source_path": "official/tutorials/zh/tutorials/video/wan/wan-video.md",
       "visible_text": [],
       "visual_type": "插画"
-    },
-    {
-      "asset_id": "remote-ffea80a606bb64d2",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一个穿着女仆装、长着狐狸耳朵和尾巴的动漫风格女孩，双手托着一个插有三根蜡烛并装饰有草莓的巧克力蛋糕，站在一个有烛光和大窗户的厨房里。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1/wan2.1_i2v_14b_480P.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1/wan2.1_i2v_14b_480P.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/wan-video.md",
-      "visible_text": [],
-      "visual_type": "illustration"
-    },
-    {
-      "asset_id": "remote-f1dd55b1c8069c09",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一位穿着华丽礼服、戴着高顶帽的魔术师正在桌前表演纸牌魔术，手中有纸牌飞舞，背景有彩色烟雾效果。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1/wan2.1_i2v_14b_720P.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1/wan2.1_i2v_14b_720P.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/wan-video.md",
-      "visible_text": [],
-      "visual_type": "illustration"
-    },
-    {
-      "asset_id": "remote-7098c9666ceb9e9f",
-      "confidence": 0.95,
-      "controls": [],
-      "description": "一只狐狸在雪地上行走，背景是橙色和黑色的模糊条纹。",
-      "include_in_rag": false,
-      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-      "public_url": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1/wan2.1_t2v_1.3b.webp",
-      "ref": "https://raw.githubusercontent.com/Comfy-Org/example_workflows/refs/heads/main/wan2.1/wan2.1_t2v_1.3b.webp",
-      "relations": [],
-      "repo_path": null,
-      "source_id": "external-comfyui",
-      "source_path": "official/tutorials/zh/tutorials/video/wan/wan-video.md",
-      "visible_text": [],
-      "visual_type": "自然场景"
     },
     {
       "asset_id": "remote-f269ca358bdc639e",
@@ -83864,5 +83241,5 @@
       "visual_type": "web_interface"
     }
   ],
-  "schema_version": "compshare.rag.asset-lock.v1"
+  "schema_version": "compshare.rag.asset-lock.v2"
 }

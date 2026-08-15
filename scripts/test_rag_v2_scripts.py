@@ -32,6 +32,9 @@ from scripts.rag_v2.pipeline import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 class _FakeResponse:
     """Minimal stand-in for the urlopen context manager json_chat consumes."""
 
@@ -415,12 +418,17 @@ class RAGV2PipelineTests(unittest.TestCase):
             self.assertNotIn("原文图片未包含", content)
             self.assertEqual([], media)
 
-    def _caption_lock_fixture(self, tmp: Path, doc_path: str):
+    VL_PAYLOAD = {
+        "description": "新截图", "visible_text": ["创建实例"], "controls": ["确认"],
+        "relations": [], "confidence": 0.9, "visual_type": "ui", "include_in_rag": True,
+    }
+
+    def _caption_lock_fixture(self, tmp: Path, doc_path: str, image_bytes: bytes = b"pretend-png-bytes"):
         """A document with one local image, plus the release dir describe_assets uses."""
         root = tmp / "docs"
         (root / Path(doc_path).parent).mkdir(parents=True, exist_ok=True)
         image = root / "screen.png"
-        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"pretend-png-bytes")
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + image_bytes)
         page = root / doc_path
         page.write_text("说明\n\n![控制台](/screen.png)\n", encoding="utf-8")
         doc = SourceDocument(
@@ -429,6 +437,70 @@ class RAGV2PipelineTests(unittest.TestCase):
             text=page.read_text(encoding="utf-8"), surface_url=None, root=root, absolute_path=page,
         )
         return doc, image
+
+    def _remote_doc(self, tmp: Path, url: str, *, source_origin: str = "official", body: str | None = None):
+        root = tmp / "docs"
+        root.mkdir(parents=True, exist_ok=True)
+        page = root / "remote.md"
+        page.write_text(body if body is not None else f"说明\n\n![截图]({url})\n", encoding="utf-8")
+        return SourceDocument(
+            source_id="gitlab-compshare-docs", source_path="remote.md",
+            source_kind="public_faq_export", source_origin=source_origin, title="页面",
+            text=page.read_text(encoding="utf-8"), surface_url=None, root=root, absolute_path=page,
+        )
+
+    def _note(self, asset_id: str, *, source_path: str, public_url: str = "",
+              description: str = "控制台创建实例页面", model: str = "vl-model"):
+        return AssetNote(
+            asset_id=asset_id, source_path=source_path, repo_path=None, public_url=public_url,
+            description=description, visible_text=["创建实例"], controls=["确认"], relations=[],
+            confidence=0.98, model=model, visual_type="ui",
+        )
+
+    def _write_lock(self, release: Path, notes, *, contract=None, failures=()):
+        (release / "asset_lock.json").write_text(json.dumps({
+            "schema_version": pipeline.ASSET_LOCK_SCHEMA_VERSION,
+            "contract": pipeline.caption_contract_digest() if contract is None else contract,
+            "notes": list(notes),
+            "failures": list(failures),
+        }, ensure_ascii=False), encoding="utf-8")
+
+    def _locked_row(self, note: AssetNote, ref: str, source_id: str = "gitlab-compshare-docs"):
+        return {"source_id": source_id, "ref": ref, **vars(note)}
+
+    def _mock_client(self, release: Path, payload=None):
+        """A VL client that either answers, or fails the test for being called."""
+        client = unittest.mock.Mock(spec=ModelVerseClient)
+        client.cache_dir = release / ".cache" / "modelverse"
+        if payload is None:
+            def explode(*args, **kwargs):
+                raise AssertionError("describe_assets called the VL model for an unchanged image")
+            client.json_chat.side_effect = explode
+            client.cached_json.side_effect = explode
+        else:
+            client.cached_json.return_value = None
+            client.json_chat.return_value = dict(payload)
+        return client
+
+    def _fake_remote(self, digest_by_url: dict, calls: list | None = None):
+        def fetch(url, cache_dir):
+            if calls is not None:
+                calls.append(url)
+            if url not in digest_by_url:
+                raise AssertionError(f"describe_assets re-fetched {url}")
+            digest = digest_by_url[url]
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            path = cache_dir / f"{digest[:24]}.png"
+            if not path.exists():
+                path.write_bytes(b"\x89PNG\r\n\x1a\n" + digest.encode("ascii"))
+            return pipeline.RemoteAsset(path=path, digest=digest, content_type="image/png")
+        return fetch
+
+    def _describe(self, release: Path, docs, client, **kwargs):
+        return pipeline.describe_assets(
+            docs, client=client, model="vl-model", fallback_model=None,
+            assets_dir=release / "assets", raw_asset_base_url="https://example.invalid/a", **kwargs,
+        )
 
     def test_a_moved_document_reuses_its_caption_instead_of_recaptioning(self):
         """The regression that made every routine update a full re-caption.
@@ -442,37 +514,16 @@ class RAGV2PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             release = Path(tmp) / "release"
             release.mkdir()
-            note = AssetNote(
-                asset_id="asset-" + pipeline.sha256_file(
-                    self._caption_lock_fixture(Path(tmp), "pages/guide.md")[1])[:16],
-                source_path="pages/guide.md", repo_path=None, public_url="",
-                description="控制台创建实例页面", visible_text=["创建实例"], controls=["确认"],
-                relations=[], confidence=0.98, model="vl-model", visual_type="ui",
-            )
-            (release / "asset_lock.json").write_text(json.dumps({
-                "schema_version": "compshare.rag.asset-lock.v1",
-                "fingerprint": "fingerprint-of-the-previous-corpus",
-                "notes": [{"source_id": "gitlab-compshare-docs", "ref": "/screen.png",
-                           **{k: v for k, v in vars(note).items()}}],
-                "failures": [],
-            }, ensure_ascii=False), encoding="utf-8")
+            _original, image = self._caption_lock_fixture(Path(tmp), "pages/guide.md")
+            note = self._note("asset-" + pipeline.sha256_file(image)[:16], source_path="pages/guide.md")
+            self._write_lock(release, [self._locked_row(note, "/screen.png")])
 
             # Same image bytes, new path: exactly what the pages/ -> content/
             # App Router migration did to every document in the corpus.
             moved, _image = self._caption_lock_fixture(Path(tmp), "content/guide.md")
+            client = self._mock_client(release)
 
-            def explode(*args, **kwargs):
-                raise AssertionError("describe_assets called the VL model for an unchanged image")
-
-            client = unittest.mock.Mock(spec=ModelVerseClient)
-            client.cache_dir = release / ".cache" / "modelverse"
-            client.json_chat.side_effect = explode
-            client.cached_json.side_effect = explode
-
-            notes, failures = pipeline.describe_assets(
-                [moved], client=client, model="vl-model", fallback_model=None,
-                assets_dir=release / "assets", raw_asset_base_url="https://example.invalid/a",
-            )
+            notes, failures = self._describe(release, [moved], client)
 
             self.assertEqual([], failures)
             reused = notes[("gitlab-compshare-docs", "content/guide.md", "/screen.png")]
@@ -482,38 +533,508 @@ class RAGV2PipelineTests(unittest.TestCase):
             # path it was first captioned under.
             self.assertEqual("content/guide.md", reused.source_path)
 
-    def test_reuse_is_refused_when_the_note_came_from_a_different_model(self):
-        """Content identity says the bytes match, not that the caption is ours."""
-        self.assertEqual(
-            "asset-0123456789abcdef",
-            pipeline.reuse_key_for_identity("file:0123456789abcdef" + "f" * 48),
-        )
-        self.assertEqual("url:https://x.invalid/a.png",
-                         pipeline.reuse_key_for_identity("url:https://x.invalid/a.png"))
-        self.assertIsNone(pipeline.reuse_key_for_identity("missing:src:doc.md:a.png"))
+    def test_a_local_image_replaced_in_place_is_recaptioned(self):
+        """Same document, same markdown reference, different bytes.
 
-        local = AssetNote(asset_id="asset-0123456789abcdef", source_path="a.md", repo_path=None,
-                          public_url="", description="d", visible_text=[], controls=[],
-                          relations=[], confidence=0.9, model="m")
-        self.assertEqual("asset-0123456789abcdef", pipeline.locked_note_identity(local, "a.png"))
-        remote = AssetNote(asset_id="remote-0123456789abcdef", source_path="a.md", repo_path=None,
-                           public_url="https://x.invalid/a.png", description="d", visible_text=[],
-                           controls=[], relations=[], confidence=0.9, model="m")
-        self.assertEqual("url:https://x.invalid/a.png", pipeline.locked_note_identity(remote, "ignored"))
-        # A note carrying no content digest must not be matched by identity at
-        # all, or every such note would collide onto one key.
-        opaque = AssetNote(asset_id="legacy", source_path="a.md", repo_path=None, public_url="",
-                           description="d", visible_text=[], controls=[], relations=[],
-                           confidence=0.9, model="m")
-        self.assertIsNone(pipeline.locked_note_identity(opaque, "a.png"))
+        Reuse was consulted by (source_id, source_path, ref) BEFORE the content
+        key and never checked that the stored note's asset_id matched the file on
+        disk, so swapping a screenshot kept the caption written for the one it
+        replaced. The stale note was then re-serialized under its dead asset_id,
+        so every later build hit the same path key again.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            _doc, image = self._caption_lock_fixture(Path(tmp), "guide.md", b"old-bytes")
+            old_digest = pipeline.sha256_file(image)
+            self._write_lock(release, [self._locked_row(
+                self._note("asset-" + old_digest[:16], source_path="guide.md", description="旧截图"),
+                "/screen.png")])
+
+            replaced, image = self._caption_lock_fixture(Path(tmp), "guide.md", b"different-bytes")
+            new_digest = pipeline.sha256_file(image)
+            self.assertNotEqual(old_digest, new_digest)
+            client = self._mock_client(release, payload=self.VL_PAYLOAD)
+
+            notes, failures = self._describe(release, [replaced], client)
+
+            self.assertEqual([], failures)
+            self.assertEqual(1, client.json_chat.call_count)
+            note = notes[("gitlab-compshare-docs", "guide.md", "/screen.png")]
+            self.assertEqual("新截图", note.description)
+            self.assertEqual("asset-" + new_digest[:16], note.asset_id)
+
+    def test_a_remote_image_replaced_behind_a_stable_url_is_recaptioned(self):
+        """1200 of the corpus's 1276 distinct images are reached by URL.
+
+        Reuse was keyed on the URL string and short-circuited before any
+        download, so an image swapped behind a stable URL was never re-fetched,
+        re-hashed or re-captioned. For the 223 URLs whose stored verdict is
+        include_in_rag=false that silently deleted the replacement's content from
+        the corpus, because such a note renders as the empty string.
+        """
+        url = "https://docs.invalid/a.png"
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [self._locked_row(
+                self._note("remote-" + "a" * 16, source_path="remote.md", public_url=url,
+                           description="旧二维码"),
+                url)])
+            doc = self._remote_doc(Path(tmp), url)
+            client = self._mock_client(release, payload=self.VL_PAYLOAD)
+
+            notes, failures = self._describe(
+                release, [doc], client, fetch_remote=self._fake_remote({url: "b" * 64}))
+
+            self.assertEqual([], failures)
+            self.assertEqual(1, client.json_chat.call_count)
+            note = notes[("gitlab-compshare-docs", "remote.md", url)]
+            self.assertEqual("新截图", note.description)
+            self.assertEqual("remote-" + "b" * 16, note.asset_id)
+
+    def test_a_remote_image_whose_bytes_are_unchanged_is_reused(self):
+        """The saving the revalidation pass exists to keep.
+
+        A conditional GET that comes back 304 yields the digest we already hold,
+        which is the same reuse key the stored note carries -- so the image costs
+        one validator round-trip instead of one model call.
+        """
+        url = "https://docs.invalid/a.png"
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [self._locked_row(
+                self._note("remote-" + "a" * 16, source_path="remote.md", public_url=url), url)])
+            doc = self._remote_doc(Path(tmp), url)
+            client = self._mock_client(release)
+            fetched: list = []
+
+            notes, failures = self._describe(
+                release, [doc], client, fetch_remote=self._fake_remote({url: "a" * 64}, fetched))
+
+            self.assertEqual([], failures)
+            self.assertEqual([url], fetched)
+            self.assertEqual("控制台创建实例页面", notes[("gitlab-compshare-docs", "remote.md", url)].description)
+
+    def test_a_caption_contract_change_invalidates_every_locked_caption(self):
+        """Editing the prompt used to invalidate nothing at all.
+
+        The only per-note guard was the model name, and the "caption-only-v3"
+        tag that was meant to be the escape hatch reached only the corpus-wide
+        fingerprint -- never the per-image reuse map.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            _doc, image = self._caption_lock_fixture(Path(tmp), "guide.md")
+            self._write_lock(
+                release,
+                [self._locked_row(self._note("asset-" + pipeline.sha256_file(image)[:16],
+                                             source_path="guide.md"), "/screen.png")],
+                contract="the-digest-of-a-different-prompt",
+            )
+            doc, _image = self._caption_lock_fixture(Path(tmp), "guide.md")
+            client = self._mock_client(release, payload=self.VL_PAYLOAD)
+
+            notes, failures = self._describe(release, [doc], client)
+
+            self.assertEqual([], failures)
+            self.assertEqual(1, client.json_chat.call_count)
+            self.assertEqual("新截图", notes[("gitlab-compshare-docs", "guide.md", "/screen.png")].description)
+
+    def test_an_image_removed_from_the_docs_leaves_the_lock(self):
+        """The lock records this build's captions, not every caption ever taken."""
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            _doc, image = self._caption_lock_fixture(Path(tmp), "guide.md")
+            self._write_lock(release, [self._locked_row(
+                self._note("asset-" + pipeline.sha256_file(image)[:16], source_path="guide.md"),
+                "/screen.png")])
+            without = self._remote_doc(Path(tmp), "", body="说明\n\n正文里已经没有图片了。\n")
+            client = self._mock_client(release)
+
+            notes, failures = self._describe(release, [without], client)
+
+            self.assertEqual({}, notes)
+            self.assertEqual([], failures)
+            rewritten = json.loads((release / "asset_lock.json").read_text(encoding="utf-8"))
+            self.assertEqual([], rewritten["notes"])
+            self.assertEqual(pipeline.caption_contract_digest(), rewritten["contract"])
+
+    def test_a_permanent_remote_failure_is_not_refetched_for_third_party_docs(self):
+        """52 dead URLs at three attempts against a 10s timeout, every build."""
+        url = "https://docs.invalid/gone.png"
+        failure = {"source_id": "external-comfyui", "source": "remote.md", "ref": url,
+                   "reason": "source_remote_image_unavailable:HTTPError:HTTP Error 404",
+                   "severity": "warning"}
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [], failures=[failure])
+            doc = self._remote_doc(Path(tmp), url, source_origin="external_comfyui")
+            client = self._mock_client(release)
+            fetched: list = []
+
+            notes, failures_out = self._describe(
+                release, [doc], client, fetch_remote=self._fake_remote({}, fetched))
+
+            self.assertEqual({}, notes)
+            # The point of the carry is the round-trip that never happens.
+            self.assertEqual([], fetched)
+            self.assertEqual(1, len(failures_out))
+            self.assertEqual("warning", failures_out[0]["severity"])
+            self.assertIn("HTTP Error 404", failures_out[0]["reason"])
+
+    def test_a_platform_image_that_fails_again_blocks_instead_of_being_downgraded(self):
+        """The carried copy is always a warning; this build's verdict is not.
+
+        Reusing the stored failure for an image we did re-attempt would turn an
+        internal image's error -- which build.py raises on -- into a warning the
+        release sails past.
+        """
+        url = "https://docs.invalid/gone.png"
+        failure = {"source_id": "gitlab-compshare-docs", "source": "remote.md", "ref": url,
+                   "reason": "source_remote_image_unavailable:HTTPError:HTTP Error 404",
+                   "severity": "warning"}
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [], failures=[failure])
+            doc = self._remote_doc(Path(tmp), url, source_origin="official")
+            client = self._mock_client(release)
+
+            notes, failures_out = self._describe(
+                release, [doc], client, fetch_remote=self._fake_remote({}))
+
+            self.assertEqual({}, notes)
+            self.assertEqual(1, len(failures_out))
+            self.assertEqual("error", failures_out[0]["severity"])
+
+    def test_a_permanent_remote_failure_is_still_retried_for_platform_docs(self):
+        """An internal image is mandatory: the release gate has to block on it."""
+        url = "https://docs.invalid/gone.png"
+        failure = {"source_id": "gitlab-compshare-docs", "source": "remote.md", "ref": url,
+                   "reason": "source_remote_image_unavailable:HTTPError:HTTP Error 404",
+                   "severity": "error"}
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [], failures=[failure])
+            doc = self._remote_doc(Path(tmp), url, source_origin="official")
+            client = self._mock_client(release, payload=self.VL_PAYLOAD)
+            fetched: list = []
+
+            notes, failures_out = self._describe(
+                release, [doc], client, fetch_remote=self._fake_remote({url: "c" * 64}, fetched))
+
+            self.assertEqual([url], fetched)
+            self.assertEqual([], failures_out)
+            self.assertEqual("remote-" + "c" * 16, notes[("gitlab-compshare-docs", "remote.md", url)].asset_id)
+
+    def test_preprocessing_changes_force_a_caption_contract_decision(self):
+        """VL_PREPROCESS_VERSION is a human decision; this makes it a required one."""
+        self.assertEqual(
+            pipeline.PREPROCESS_SOURCE_PINS,
+            pipeline.preprocess_source_digests(),
+            msg="A function the caption contract stands for changed. Bump "
+                "VL_PREPROCESS_VERSION so every stored caption is re-earned, or "
+                "re-pin here if the edit was purely cosmetic.",
+        )
+
+    def test_only_content_addressed_notes_are_reusable(self):
+        """Identity says the bytes match, not that the caption is ours."""
+        local = self._note("asset-0123456789abcdef", source_path="a.md")
+        self.assertEqual("asset-0123456789abcdef", pipeline.locked_note_identity(local))
+        remote = self._note("remote-0123456789abcdef", source_path="a.md",
+                            public_url="https://x.invalid/a.png")
+        self.assertEqual("remote-0123456789abcdef", pipeline.locked_note_identity(remote))
+        # A decorative note digests the reference string, not any content, so
+        # matching on it would let a lookalike reference claim a verdict about
+        # bytes nobody read -- and re-deriving one costs no model call.
+        decorative = self._note("decorative-0123456789abcdef", source_path="a.md")
+        self.assertIsNone(pipeline.locked_note_identity(decorative))
+        opaque = self._note("legacy", source_path="a.md")
+        self.assertIsNone(pipeline.locked_note_identity(opaque))
+
+    def test_the_shipped_lock_carries_the_contract_it_was_produced_under(self):
+        """The backfill is only honest if it still matches the code."""
+        lock = json.loads((REPO_ROOT / "deploy/kb/v2/asset_lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(pipeline.ASSET_LOCK_SCHEMA_VERSION, lock["schema_version"])
+        self.assertEqual(pipeline.caption_contract_digest(), lock["contract"])
+        self.assertNotIn("fingerprint", lock)
+        # Every note must still load, or the build silently re-captions the lot.
+        for item in lock["notes"]:
+            AssetNote(**{k: v for k, v in item.items() if k not in {"source_id", "ref"}})
+
+    def test_a_note_produced_by_another_model_is_not_reused(self):
+        """Why models are allowed to stay out of the contract digest.
+
+        The digest covers the prompt and the preprocessing; the model is checked
+        per note instead, so swapping the fallback model re-earns the handful of
+        captions it produced rather than all ~1300.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            _doc, image = self._caption_lock_fixture(Path(tmp), "guide.md")
+            self._write_lock(release, [self._locked_row(
+                self._note("asset-" + pipeline.sha256_file(image)[:16], source_path="guide.md",
+                           description="别的模型写的", model="some-other-vl-model"),
+                "/screen.png")])
+            doc, _image = self._caption_lock_fixture(Path(tmp), "guide.md")
+            client = self._mock_client(release, payload=self.VL_PAYLOAD)
+
+            notes, failures = self._describe(release, [doc], client)
+
+            self.assertEqual([], failures)
+            self.assertEqual(1, client.json_chat.call_count)
+            self.assertEqual("vl-model", notes[("gitlab-compshare-docs", "guide.md", "/screen.png")].model)
+
+    def test_a_transient_remote_failure_is_re_attempted_even_for_third_party_docs(self):
+        """Only permanent verdicts may be carried; a timeout is not a verdict."""
+        url = "https://docs.invalid/flaky.png"
+        failure = {"source_id": "external-comfyui", "source": "remote.md", "ref": url,
+                   "reason": "source_remote_image_unavailable:TimeoutError:timed out",
+                   "severity": "warning"}
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [], failures=[failure])
+            doc = self._remote_doc(Path(tmp), url, source_origin="external_comfyui")
+            client = self._mock_client(release, payload=self.VL_PAYLOAD)
+            fetched: list = []
+
+            _notes, failures_out = self._describe(
+                release, [doc], client, fetch_remote=self._fake_remote({url: "d" * 64}, fetched))
+
+            self.assertEqual([url], fetched)
+            self.assertEqual([], failures_out)
+
+    def test_a_url_a_platform_doc_also_uses_is_re_attempted(self):
+        """external_only is an AND over every document that references the URL.
+
+        A third-party snapshot must not be able to decide, on a platform
+        document's behalf, that an image it needs may stay unresolved.
+        """
+        url = "https://docs.invalid/shared.png"
+        failure = {"source_id": "external-comfyui", "source": "remote.md", "ref": url,
+                   "reason": "source_remote_image_unavailable:HTTPError:HTTP Error 404",
+                   "severity": "warning"}
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [], failures=[failure])
+            external = self._remote_doc(Path(tmp), url, source_origin="external_comfyui")
+            internal = self._remote_doc(Path(tmp), url, source_origin="official")
+            # The external document is listed LAST, so a last-wins fold would
+            # decide the URL is skippable.
+            client = self._mock_client(release)
+            fetched: list = []
+
+            _notes, failures_out = self._describe(
+                release, [internal, external], client, fetch_remote=self._fake_remote({}, fetched))
+
+            self.assertEqual([url], fetched)
+            self.assertIn("error", {item["severity"] for item in failures_out})
+
+    def test_a_contract_mismatch_drops_carried_failures_too(self):
+        """"Every caption will be re-earned" has to include the verdicts."""
+        url = "https://docs.invalid/gone.png"
+        failure = {"source_id": "external-comfyui", "source": "remote.md", "ref": url,
+                   "reason": "source_remote_image_unavailable:HTTPError:HTTP Error 404",
+                   "severity": "warning"}
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [], failures=[failure], contract="a-different-contract")
+            doc = self._remote_doc(Path(tmp), url, source_origin="external_comfyui")
+            client = self._mock_client(release, payload=self.VL_PAYLOAD)
+            fetched: list = []
+
+            _notes, _failures = self._describe(
+                release, [doc], client, fetch_remote=self._fake_remote({url: "e" * 64}, fetched))
+
+            self.assertEqual([url], fetched)
+
+    def test_an_unreadable_lock_reuses_nothing(self):
+        """AssetNote(**...) raises on field drift, and that used to be silent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            _doc, image = self._caption_lock_fixture(Path(tmp), "guide.md")
+            good = self._locked_row(
+                self._note("asset-" + pipeline.sha256_file(image)[:16], source_path="guide.md"),
+                "/screen.png")
+            # A readable note BEFORE the unreadable one: the partially-filled
+            # reuse map has to be discarded too, not just the notes dict.
+            row = dict(good)
+            row["a_field_from_a_future_schema"] = 1
+            self._write_lock(release, [good, row])
+            doc, _image = self._caption_lock_fixture(Path(tmp), "guide.md")
+            client = self._mock_client(release, payload=self.VL_PAYLOAD)
+
+            notes, failures = self._describe(release, [doc], client)
+
+            self.assertEqual([], failures)
+            self.assertEqual(1, client.json_chat.call_count)
+            self.assertEqual("新截图", notes[("gitlab-compshare-docs", "guide.md", "/screen.png")].description)
+
+    def test_a_decorative_remote_reference_is_never_fetched(self):
+        """The deterministic filter runs before the network, not after it."""
+        badge = "https://img.shields.io/badge/build-passing.svg"
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            release.mkdir()
+            self._write_lock(release, [])
+            doc = self._remote_doc(Path(tmp), badge, body=f"说明\n\n![badge]({badge})\n")
+            client = self._mock_client(release)
+            fetched: list = []
+
+            notes, failures = self._describe(
+                release, [doc], client, fetch_remote=self._fake_remote({}, fetched))
+
+            self.assertEqual([], fetched)
+            self.assertEqual([], failures)
+            note = notes[("gitlab-compshare-docs", "remote.md", badge)]
+            self.assertTrue(note.asset_id.startswith("decorative-"))
+            self.assertFalse(note.include_in_rag)
+
+    def _serve(self, handler):
+        import http.server
+        import threading
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}/a.png"
+
+    def test_resolve_remote_image_revalidates_instead_of_re_downloading(self):
+        """The whole reason a content key is affordable for 1200 remote images."""
+        import http.server
+
+        body = b"\x89PNG\r\n\x1a\n" + b"real-bytes"
+        seen: list = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get("If-None-Match"))
+                if self.headers.get("If-None-Match") == '"v1"':
+                    self.send_response(304)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("ETag", '"v1"')
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        url = self._serve(Handler)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "remote-assets"
+            first = pipeline.resolve_remote_image(url, cache)
+            self.assertEqual(pipeline.sha256_bytes(body), first.digest)
+            self.assertTrue(first.path.is_file())
+            stored = json.loads(next((cache / "by-url").glob("*.json")).read_text(encoding="utf-8"))
+            self.assertEqual('"v1"', stored["etag"])
+            self.assertEqual(pipeline.sha256_bytes(body), stored["digest"])
+
+            second = pipeline.resolve_remote_image(url, cache)
+            self.assertEqual(first.digest, second.digest)
+            # First request unconditional, second carried the validator.
+            self.assertEqual([None, '"v1"'], seen)
+
+    def test_resolve_remote_image_keeps_cached_bytes_when_the_origin_is_unreachable(self):
+        """A build must not lose a caption because a CDN blinked.
+
+        The bytes on disk are exactly what the stored caption describes, and the
+        lock is rewritten from this build's notes -- so raising here would both
+        fail the build and delete the caption it could have kept.
+        """
+        url = "https://docs.invalid/a.png"
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "remote-assets"
+            (cache / "by-url").mkdir(parents=True)
+            body = b"\x89PNG\r\n\x1a\n" + b"cached-bytes"
+            digest = pipeline.sha256_bytes(body)
+            (cache / f"{digest[:24]}.png").write_bytes(body)
+            (cache / "by-url" / f"{pipeline.sha256_bytes(url.encode('utf-8'))}.json").write_text(
+                json.dumps({"content_type": "image/png", "digest": digest, "etag": '"v1"',
+                            "filename": f"{digest[:24]}.png", "last_modified": ""}),
+                encoding="utf-8")
+
+            with unittest.mock.patch.object(pipeline, "urlopen", side_effect=OSError("unreachable")), \
+                 unittest.mock.patch.object(pipeline.time, "sleep"):
+                asset = pipeline.resolve_remote_image(url, cache)
+
+            self.assertEqual(digest, asset.digest)
+            self.assertEqual(body, asset.path.read_bytes())
+
+    def test_resolve_remote_image_refuses_a_truncated_body(self):
+        """A short read must never be blessed with the server's ETag.
+
+        Storing a validator beside bytes nobody verified makes the truncation
+        permanent: every later build revalidates to 304 and keeps it.
+        """
+        import http.server
+
+        body = b"\x89PNG\r\n\x1a\n" + b"half"
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(body) + 64))
+                self.send_header("ETag", '"v1"')
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        url = self._serve(Handler)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "remote-assets"
+            with unittest.mock.patch.object(pipeline.time, "sleep"):
+                with self.assertRaises(Exception):
+                    pipeline.resolve_remote_image(url, cache)
+            self.assertEqual([], list((cache / "by-url").glob("*.json")))
+
+    def test_the_flattened_contact_sheet_is_keyed_on_the_preprocess_version(self):
+        """Otherwise bumping the version re-captions against the old sheet."""
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "anim.gif"
+            frames = [Image.new("RGB", (4, 4), color) for color in ("red", "blue")]
+            frames[0].save(source, save_all=True, append_images=frames[1:], duration=10)
+            cache = Path(tmp) / "vl-ready"
+            first = pipeline._prepare_vl_image(source, cache)
+            self.assertIn(pipeline.VL_PREPROCESS_VERSION, first.name)
+            with unittest.mock.patch.object(pipeline, "VL_PREPROCESS_VERSION", "some-other-version"):
+                second = pipeline._prepare_vl_image(source, cache)
+            self.assertNotEqual(first.name, second.name)
 
     def test_vl_concurrency_defaults_to_serial(self):
         """Non-answers were a fan-out artifact: 6/40 lost at 8 workers, 0/40 at 1."""
         import inspect
 
         self.assertEqual(1, inspect.signature(pipeline.describe_assets).parameters["workers"].default)
-        build_source = Path("scripts/rag_v2/build.py").read_text(encoding="utf-8")
+        build_source = (REPO_ROOT / "scripts/rag_v2/build.py").read_text(encoding="utf-8")
         self.assertIn('"--vl-workers", type=int, default=1', build_source)
+        # The HTTP revalidation pass is the opposite case and must stay wired:
+        # it is safe to fan out, and it runs on every build.
+        self.assertEqual(8, inspect.signature(pipeline.describe_assets).parameters["remote_workers"].default)
+        self.assertIn('"--remote-workers", type=int, default=8', build_source)
+        self.assertIn("remote_workers=args.remote_workers", build_source)
 
     def test_only_transient_asset_failures_are_retried(self):
         self.assertTrue(_retryable_asset_failure({"reason": "source_remote_image_unavailable:TimeoutError:x"}))
