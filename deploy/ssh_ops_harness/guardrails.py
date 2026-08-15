@@ -8,7 +8,7 @@ firewall.
 
 Three tiers (mirror internal/tools/safe_executor.go semantics):
   - read_only  : auto-run, no human prompt        (curated, one-shot diagnostics)
-  - mutating   : requires explicit human confirm  (deny-first: unknown => needs confirm)
+  - mutating   : requires explicit human confirm
   - destructive: hard-refused, even with confirm  (checked FIRST, unconditional)
 
 Two adversarial red-team rounds shaped this. Round 1 closed exfil/streaming/destructive holes.
@@ -18,7 +18,16 @@ checksums (sha256sum), git/docker IDs, and `KeyError:` tracebacks were being ove
 value-shape + vendor prefixes), classification anchors flags to the right binary, and the
 transport's hard per-command timeout backstops any streaming command that still slips through.
 
-Read tier is deny-by-default: anything not positively matching the allowlist is >= mutating.
+The read tier is NOT deny-by-default, and this file used to claim it was. A command that
+matches no rule at all falls through to read_only: `evil`, `evil -q`, `frobnicate --all` and
+`/tmp/x` all auto-run. `./evil`, `/root/payload.sh` and `bash /tmp/x.sh` do not — script and
+relative-path shapes are caught — and that asymmetry is the whole of the current defence. It
+was accepted deliberately on 2026-07-23 (see POLICY_RELAXED_TO_READ in test_guardrails.py, and
+`frobnicate --all` in CLASSIFY_CASES, which is pinned mutating there and re-baselined to
+read_only by the policy), on the reasoning that a name we do not know is not a name we know to
+be dangerous. Whether that trade is still right is an open decision; what is not open is
+describing it as deny-by-default, because a reader who believes that will not look for the
+fallthrough — which is exactly how a `--help` suffix came to skip the consent card.
 """
 import ast
 import posixpath
@@ -26,11 +35,35 @@ import re
 import shlex
 from typing import Iterable
 
-# A lone `binary --help/--version` mutates nothing — classify as read_only before anything else.
-# Only the UNAMBIGUOUS long forms: `-h`/`-V` are excluded because on power binaries `-h`==--halt
-# (shutdown/reboot/poweroff -h powers the box off), and _HELP runs before the destructive scan.
-_HELP = re.compile(r"^[\w./-]+\s+(--help|--version|help|version)\s*$")
-
+# There is deliberately NO help/version fast-path. Do not add one back.
+#
+# There was one, `^[\w./-]+\s+(--help|--version|help|version)\s*$`, consulted at classify()
+# step 0 — ahead of BOTH the destructive scan and the multi-line refusal, so anything it
+# accepted executed with no consent card in read-only mode as well as write mode. It was
+# wrong in four ways, and each one was a full bypass on its own:
+#
+#   - `\s` matches a NEWLINE. `reboot\n--help` classified read_only, and the multi-line
+#     refusal could not save it because that refusal lives inside the `mutating` branch,
+#     which a read_only verdict never reaches. ssh_transport hands the whole string to
+#     `bash -c`, which runs `reboot` as line 1.
+#   - the name was unconstrained: `./unknown --help`, `/root/payload.sh --help`.
+#   - `help` and `version` were accepted WITHOUT the dashes, so `curl version` — which is
+#     curl fetching a host named `version`, not a version query — took the fast path
+#     straight past the loopback-probe rule that exists to gate egress.
+#   - and the repair that suggests itself, an allowlist of trusted binaries, does not work
+#     either: the transport runs the command through the REMOTE `bash -c` with no fixed
+#     PATH, so a bare `dd` is whatever that box's PATH resolves `dd` to. A name is not an
+#     identity here, and an allowlist keyed on one only looks like it establishes trust.
+#
+# The exemption was also worth almost nothing. Measured over the pinned CLASSIFY_CASES
+# corpus by removing it and re-classifying, exactly THREE cases change: `dd --version`
+# (-> mutating), `curl --version` (-> mutating) and `usermod --help` (-> destructive).
+# Everything a diagnosis actually runs — `nvidia-smi --help`, `python3 --version`,
+# `git --version`, `docker --version` — is read_only through the normal path below and
+# never needed an exemption. Two extra confirmation cards (`dd`, `curl`) plus one hard
+# refusal (`usermod --help`, which the destructive scan owns once nothing exempts it) is
+# the entire price of not having a rule whose safety argument cannot be made. The refusal
+# is worth naming separately: a card can be clicked, a destructive verdict cannot.
 # Verbs that write EVERY path they are handed, so a lockout path anywhere in the argv is a write.
 # `mv` belongs here rather than below because its SOURCE disappears too: `mv /etc/fstab /tmp/bak`
 # leaves the box unbootable just as surely as overwriting it does.
@@ -769,8 +802,9 @@ def _is_read_only(cmd: str) -> bool:
         return _NVIDIA.fullmatch(cmd) is not None
     # Match the allowlist on the BASENAME-normalized command as well: a venv/conda interpreter is
     # invoked by absolute path (`/usr/local/miniconda3/envs/comfyui/bin/python --version`), which is
-    # exactly as read-only as the bare form. `_HELP` above already permits the path-qualified
-    # `--version`, so this only closes the gap for forms that carry a redirect (`2>&1`) and for the
+    # exactly as read-only as the bare form. This is the ONLY route by which a path-qualified
+    # `--version` reads as read_only — there is no help/version fast-path above any more (see
+    # the tombstone at the top) — and it also covers forms carrying a redirect (`2>&1`) and the
     # other allowlisted read-only subcommands (`pip list`, `conda env list`, ...).
     norm = " ".join([binary] + tokens[1:])
     if any(p.fullmatch(cmd) or p.fullmatch(norm) for p in _STRUCTURED_DIAG):
@@ -1660,8 +1694,6 @@ def classify(command: str) -> str:
     cmd = (command or "").strip()
     if not cmd:
         return "mutating"
-    if _HELP.fullmatch(cmd):                              # 0) help/version is always safe
-        return "read_only"
     if _scan_destructive(cmd):                            # 1) destructive precedes everything
         return "destructive"
     if "\n" in cmd:                                       # 2) never accept a multi-line script

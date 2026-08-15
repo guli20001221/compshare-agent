@@ -48,8 +48,15 @@ CLASSIFY_CASES = [
     ("docker ps", "read_only"),
     ("pip list", "read_only"),
     ("jupyter --version", "read_only"),
-    ("dd --version", "read_only"),                    # r2 FP: help/version always safe
-    ("usermod --help", "read_only"),
+    # `dd --version` and `usermod --help` were read_only from 2026-06 until 2026-08-16 via a
+    # help/version fast-path that has since been deleted outright (see the tombstone at the top
+    # of guardrails.py). They are the entire measured cost of that deletion, together with
+    # `curl --version` below: two confirmation cards and one hard refusal -- `usermod --help`
+    # lands in the destructive scan once nothing exempts it, and a destructive verdict cannot
+    # be clicked through the way a card can. That is the whole price of dropping a rule whose
+    # safety argument could not be made once the transport was taken into account.
+    ("dd --version", "mutating"),
+    ("usermod --help", "destructive"),
     ("df /etc/passwd", "read_only"),                  # r2 FP: df reads fs, not the file
     # curated SAFE exact reads (the ONLY auto-run file surface)
     ("cat /proc/meminfo", "read_only"),
@@ -424,6 +431,63 @@ CLASSIFY_CASES = [
     ("shutdown -h", "destructive"),                   # r3 CRIT: -h is --halt on power binaries, not help
     ("reboot -h", "destructive"),
     ("poweroff -h", "destructive"),
+
+    # --- F14: the deleted help/version fast-path (2026-08-16) ---
+    # It sat at classify() step 0, ahead of the destructive scan AND the multi-line refusal,
+    # so anything it accepted ran with no consent card in read-only mode as well as write
+    # mode. These pin every shape that reopens if anyone adds one back.
+    #
+    # (a) the separator: `\s` matches a newline, and the multi-line refusal lives inside the
+    #     `mutating` branch, which a read_only verdict never reaches. `bash -c` then ran
+    #     `reboot` as line 1.
+    ("reboot\n--help", "destructive"),
+    ("poweroff\n--help", "destructive"),
+    ("halt\n--help", "destructive"),
+    ("reboot\n--version", "destructive"),
+    ("reboot\n\n--help", "destructive"),           # `\s+` swallowed repeats too
+    ("reboot\thelp", "destructive"),
+    ("dd\n--version", "mutating"),                 # the shapes an allowlist would have
+    ("curl\n--version", "mutating"),               # let through on a listed name
+    ("usermod\n--help", "destructive"),
+    ("rm\n--help", "mutating"),                    # no target -> not destructive; the
+                                                    # multi-line shape gate refuses it
+                                                    # inside the mutating branch
+    #
+    # (b) the program: `--help` having no side effects is a property of the PROGRAM, and an
+    #     unknown one cannot assert it. A bare name is not an identity either — the transport
+    #     runs the string through the REMOTE `bash -c` with no fixed PATH.
+    ("./unknown --help", "mutating"),
+    ("/root/payload.sh --help", "mutating"),
+    ("./setup.sh --version", "mutating"),
+    ("./dd --version", "mutating"),
+    ("/tmp/dd --version", "mutating"),
+    #
+    # (c) the flag: `help`/`version` were accepted WITHOUT the dashes, so `curl version` is
+    #     curl fetching a host named `version` — egress, past the loopback-probe rule that
+    #     exists to gate exactly that.
+    ("curl version", "mutating"),
+    ("curl help", "mutating"),
+    ("dd version", "mutating"),
+    ("usermod help", "destructive"),
+    #
+    # (d) power binaries never had an exemption and must not acquire one.
+    ("reboot --help", "destructive"),
+    ("poweroff --version", "destructive"),
+    #
+    # (e) the third and last case the deletion costs.
+    ("curl --version", "mutating"),
+    #
+    # (f) ...and what it does NOT cost: everything a diagnosis actually runs reaches read_only
+    #     through the normal path and never needed the exemption. If these ever go mutating,
+    #     the deletion was not the reason.
+    ("nvidia-smi --help", "read_only"),
+    ("python3 --version", "read_only"),
+    ("git --version", "read_only"),
+    ("docker --version", "read_only"),
+    #     A path-qualified interpreter stays read_only via the basename-normalized allowlist
+    #     in _is_read_only_segment, which is now its ONLY route.
+    ("/usr/local/miniconda3/envs/comfyui/bin/python --version", "read_only"),
+
     ("/usr/bin/passwd root", "destructive"),          # r3: path-qualified passwd binary
     ("sudo passwd root", "destructive"),
     ("chmod -R 777 /", "destructive"),
