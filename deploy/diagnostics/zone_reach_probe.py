@@ -104,15 +104,23 @@ def transform_ipv4_to_ipv6(gateway_url, region_id, private_ip, vpc_id, timeout=1
         gateway_url, data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode("utf-8", "replace"))
-    for key in ("ip", "IP", "Ip", "IPv6", "Ipv6"):
-        if isinstance(payload.get(key), str) and payload[key]:
-            return payload[key], payload
-    data = payload.get("Data") or payload.get("data")
-    if isinstance(data, dict):
-        for key in ("ip", "IP", "IPv6"):
-            if isinstance(data.get(key), str) and data[key]:
-                return data[key], payload
-    return None, payload
+
+    # A non-zero RetCode is raised, not returned as "no mapping". The first run of
+    # this probe read the address out of the wrong key and a SUCCESSFUL call came
+    # back looking exactly like an unreachable zone, which is the one confusion
+    # this whole measurement exists to avoid.
+    ret = payload.get("RetCode")
+    if ret not in (0, None):
+        raise RuntimeError("RetCode=%s %s" % (ret, payload.get("Message")))
+
+    # "IpV6" is the wire's spelling -- see internal/tools/uvpc.go, which unmarshals
+    # exactly this field. The others are accepted only as a courtesy; if one of them
+    # ever hits, the product would already be broken.
+    for key in ("IpV6", "IPv6", "Ipv6", "ipv6", "ip", "IP", "Ip"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), payload
+    raise RuntimeError("RetCode=0 but no address field; keys=%s" % sorted(payload))
 
 
 def public_v6_candidates(prefix, ipv4):
@@ -165,6 +173,11 @@ def main():
                     notes.append(f"transform failed: {type(exc).__name__}: {exc}")
             elif not gateway:
                 notes.append("no gateway url on this vantage; internal-ipv6 not resolvable")
+            else:
+                # Say WHICH input was missing. "no mapping" with no reason is what
+                # made the first run unreadable.
+                missing = [k for k in ("private_ip", "vpc_id") if not target.get(k)]
+                notes.append("target carries no %s; cannot ask for a mapping" % "/".join(missing))
             if internal:
                 candidates.append(("internal-ipv6", internal, target["port"]))
             else:
