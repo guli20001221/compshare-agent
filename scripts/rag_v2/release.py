@@ -102,6 +102,10 @@ def snapshot_released(repo: Path, destination: Path) -> dict[str, Path]:
         ("internal", "deploy/kb/stage2b_w0.jsonl"),
         ("external", "deploy/kb/external_w0.jsonl"),
         ("lock", "deploy/kb/v2/asset_lock.json"),
+        # The manifest is here for the gate, which needs the docs revision and
+        # the six input ZIP digests as they stood BEFORE the build -- and the
+        # build overwrites this file in place.
+        ("manifest", "deploy/kb/v2/release_manifest.json"),
     ):
         source = repo / relative
         if source.exists():
@@ -135,7 +139,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="active release id this corpus is built on (see /healthz)")
     parser.add_argument("--build-arg", action="append", default=[],
                         help="passed through to scripts.rag_v2.build; repeat per argument")
-    args, _unknown = parser.parse_known_args(argv)
+    parser.add_argument("--docs-diff", type=Path,
+                        help="file of paths from `git diff --no-renames --name-only "
+                             "<pinned>..<head>`; without it the gate reports the "
+                             "attribution check as evidence_missing rather than passing it")
+    parser.add_argument("--gate-mode", choices=("shadow", "enforce"), default="shadow",
+                        help="shadow records a verdict and never fails; enforce blocks")
+    args, unknown = parser.parse_known_args(argv)
+    if unknown:
+        # parse_known_args used to swallow these silently. That is tolerable
+        # while every flag is advisory and intolerable now that --gate-mode
+        # exists: a typo'd `--gate-mod enforce` would drop back to shadow, and
+        # the whole point of enforce is that nobody is watching when it runs.
+        parser.error(f"unrecognized arguments: {' '.join(unknown)}")
 
     repo = args.repo.resolve()
     release_dir = (repo / args.release_dir).resolve()
@@ -219,6 +235,32 @@ def main(argv: list[str] | None = None) -> int:
             "--out-md", str(report_path),
             "--out-json", str(release_dir / "release_diff.json"),
         ])
+
+        # The gate runs on EVERY candidate, not only the ones a scheduled job
+        # produced. That is the whole point of the shadow phase: the thresholds
+        # it will eventually block on need a base rate, and a base rate measured
+        # only on unattended releases says nothing about the ones a person cuts
+        # by hand.
+        #
+        # Invoked as a subprocess rather than as a function call. In shadow it
+        # exits 0 either way, so this buys nothing today -- and that is exactly
+        # why it is worth doing now: release_diff is called as a function three
+        # lines above and its `return 1` has been dead the whole time, and the
+        # difference between the two call sites is only visible on the day
+        # someone passes --gate-mode enforce.
+        #
+        # --docs-diff is optional and usually absent here. The gate then reports
+        # G5 as evidence_missing rather than passing it, which is the honest
+        # answer for a release nobody supplied a commit range for.
+        run([python, "-m", "scripts.rag_v2.release_gate",
+             "--release-dir", str(release_dir),
+             "--released-internal", str(baseline.get("internal", deploy_dir / "stage2b_w0.jsonl")),
+             "--released-external", str(baseline.get("external", deploy_dir / "external_w0.jsonl")),
+             "--released-manifest", str(baseline.get("manifest", release_dir / "release_manifest.json")),
+             *(["--docs-diff", str(args.docs_diff)] if args.docs_diff else []),
+             "--mode", args.gate_mode,
+             "--out-md", str(release_dir / "release_gate.md"),
+             "--out-json", str(release_dir / "release_gate.json")], cwd=repo)
 
         run([python, "-m", "scripts.rag_v2.promote",
              "--release-dir", str(release_dir), "--deploy-dir", str(deploy_dir),

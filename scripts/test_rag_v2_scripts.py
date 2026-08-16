@@ -1627,6 +1627,46 @@ class BuildEndToEndTests(unittest.TestCase):
         self.assertEqual("2026-07-15", manifest["report"]["external"]["valid_from"])
 
 
+class ReleaseOrchestrationTests(unittest.TestCase):
+    """release.py's own wiring, which nothing exercised before.
+
+    Two of its properties are load-bearing for the shadow phase: the gate needs
+    the RELEASED manifest, and the build overwrites that file in place, so it
+    has to be snapshotted before anything runs.
+    """
+
+    def test_the_baseline_snapshot_includes_the_manifest_the_gate_needs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / "deploy/kb/v2").mkdir(parents=True)
+            for relative in ("deploy/kb/stage2b_w0.jsonl", "deploy/kb/external_w0.jsonl",
+                             "deploy/kb/v2/asset_lock.json", "deploy/kb/v2/release_manifest.json"):
+                (repo / relative).write_text("{}", encoding="utf-8")
+            kept = release.snapshot_released(repo, Path(tmp) / "snap")
+            self.assertEqual({"internal", "external", "lock", "manifest"}, set(kept))
+            for path in kept.values():
+                self.assertTrue(path.is_file())
+
+    def test_a_missing_released_file_is_absent_rather_than_invented(self):
+        """The gate must see 'no baseline', not an empty one that reads as clean."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / "deploy/kb").mkdir(parents=True)
+            (repo / "deploy/kb/stage2b_w0.jsonl").write_text("{}", encoding="utf-8")
+            kept = release.snapshot_released(repo, Path(tmp) / "snap")
+            self.assertEqual({"internal"}, set(kept))
+
+    def test_a_mistyped_flag_is_an_error_not_a_silent_default(self):
+        """--gate-mod enforce must not quietly run in shadow.
+
+        parse_known_args swallowed unknown flags. That is tolerable while every
+        flag is advisory and not once enforce exists, because the entire point
+        of enforce is that nobody is watching when it runs.
+        """
+        with self.assertRaises(SystemExit):
+            release.main(["--env", "x", "--gate-mod", "enforce"])
+
+
 class ReleaseInputTests(unittest.TestCase):
     """The values the unattended job reads off its own artifacts.
 

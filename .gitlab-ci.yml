@@ -299,14 +299,6 @@ build-knowledge-candidate:
       git config --global user.email "compshare-agent-ci@ucloud.cn"
       git config --global user.name "compshare-agent CI"
 
-      # The RELEASED bytes, snapshotted before anything overwrites them. Same
-      # premise release.py's own snapshot_released uses: what production
-      # imported is what is in this checkout, not what some git revision says.
-      mkdir -p "$WORK/released"
-      cp deploy/kb/stage2b_w0.jsonl "$WORK/released/"
-      cp deploy/kb/external_w0.jsonl "$WORK/released/"
-      cp deploy/kb/v2/release_manifest.json "$WORK/released/"
-
       # A full clone; 761 commits is nothing, and a shallow one cannot answer
       # what changed between the pinned revision and HEAD.
       git clone --quiet "$COMPSHARE_DOCS_URL" "$WORK/compshare-docs"
@@ -354,9 +346,17 @@ build-knowledge-candidate:
       # safety property and an unattended build must not be able to acquire one
       # by inheriting it from somewhere else. build.py records this argv into
       # release_manifest.json and the gate reads it back.
+      #
+      # The gate runs inside release.py -- on every candidate, including the
+      # ones a person cuts by hand -- because a base rate measured only on
+      # unattended releases says nothing about the others. This job's
+      # contribution is --docs-diff, which is the evidence the attribution check
+      # needs and the one thing a manual release cannot supply.
       python -m scripts.rag_v2.release \
         --env "$WORK/build.env" \
         --parent-release-id "$KB_PARENT_RELEASE_ID" \
+        --docs-diff "$WORK/docs_diff.txt" \
+        --gate-mode "${KB_GATE_MODE:-shadow}" \
         --build-arg --internal-docs --build-arg "$WORK/compshare-docs" \
         --build-arg --internal-revision --build-arg "$KB_DOCS_HEAD" \
         --build-arg --faq-zip --build-arg 'deploy/kb/v2/sources/优云智算模型套餐FAQ.zip' \
@@ -368,20 +368,6 @@ build-knowledge-candidate:
         --build-arg --legacy-external --build-arg deploy/kb/v2/legacy_external_lock.jsonl \
         --build-arg --valid-from --build-arg "$VALID_FROM" \
         --build-arg --external-valid-from --build-arg "$EXTERNAL_VALID_FROM"
-
-      # Its own process with its own exit code. release_diff is called as a
-      # function by release.py and its return value is discarded there, so a
-      # verdict living inside it would be a no-op -- which is how this tree
-      # already shipped one gate that could not fail.
-      python -m scripts.rag_v2.release_gate \
-        --release-dir deploy/kb/v2 \
-        --released-internal "$WORK/released/stage2b_w0.jsonl" \
-        --released-external "$WORK/released/external_w0.jsonl" \
-        --released-manifest "$WORK/released/release_manifest.json" \
-        --docs-diff "$WORK/docs_diff.txt" \
-        --mode "${KB_GATE_MODE:-shadow}" \
-        --out-md deploy/kb/v2/release_gate.md \
-        --out-json deploy/kb/v2/release_gate.json
 
       rm -rf "$WORK/compshare-docs" "$WORK/build.env"
 
