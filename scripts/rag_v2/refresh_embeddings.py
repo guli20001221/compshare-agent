@@ -25,15 +25,26 @@ def read_sidecar(path: Path) -> tuple[dict[str, Any], dict[str, list[float]]]:
     return meta, vectors
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Reuse unchanged vectors and embed only changed RAG V2 chunk representations.")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Reuse unchanged vectors and embed only changed RAG V2 chunk representations.",
+        allow_abbrev=False)
     parser.add_argument("--old-corpus", type=Path, required=True)
     parser.add_argument("--new-corpus", type=Path, required=True)
     parser.add_argument("--old-sidecar", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--env", type=Path, required=True)
     parser.add_argument("--embed-model", default="qwen3-embedding-8b")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--report", type=Path,
+        help="write the reuse counts here as JSON. Without it the numbers exist "
+             "only on stdout, where nothing reads them: a build that silently "
+             "re-embedded the whole corpus is indistinguishable in every "
+             "artifact from one that reused every vector.")
+    parser.add_argument(
+        "--corpus-name", default="",
+        help="label for the report; this script only ever sees paths")
+    args = parser.parse_args(argv)
 
     old_rows = read_jsonl(args.old_corpus)
     new_rows = read_jsonl(args.new_corpus)
@@ -71,7 +82,29 @@ def main() -> int:
     digest = compute_lf_sha256(args.new_corpus)
     out = args.out_dir / sidecar_filename(digest, args.embed_model)
     write_sidecar(out, corpus_digest=digest, embed_model=args.embed_model, dim=dim, rows=output_rows)
-    print(f"reused={len(new_rows) - len(changed)} embedded={len(changed)} output={out}")
+    reused = len(new_rows) - len(changed)
+    print(f"reused={reused} embedded={len(changed)} output={out}")
+
+    if args.report:
+        # The reuse KEY is chunk_repr -- title + question patterns + truncated
+        # content -- and not chunk_id. Those first two fields are not in the
+        # chunk_id hash, so rewriting the question-pattern or product-area rule
+        # invalidates every vector while every id stays put. Measured on one real
+        # release pair: 78 of 526 chunk ids survived and 0 of 526 vectors did.
+        # That failure raises nothing and looks exactly like an ordinary build;
+        # it is only visible as this number.
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps({
+            "corpus": args.corpus_name or args.new_corpus.stem,
+            "chunks": len(new_rows),
+            "reused": reused,
+            "embedded": len(changed),
+            "reuse_ratio": round(reused / len(new_rows), 4) if new_rows else 0.0,
+            "embed_model": args.embed_model,
+            "dim": dim,
+            "corpus_digest": digest,
+            "sidecar": out.name,
+        }, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
 

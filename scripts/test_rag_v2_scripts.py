@@ -8,11 +8,16 @@ import unittest
 import unittest.mock
 import zipfile
 
-from scripts.rag_w0.build_corpus_embeddings import write_sidecar
+from scripts.rag_w0.build_corpus_embeddings import (
+    compute_lf_sha256,
+    sidecar_filename,
+    write_sidecar,
+)
 
 from scripts.rag_v2 import build
 from scripts.rag_v2 import pipeline
 from scripts.rag_v2 import release
+from scripts.rag_v2 import refresh_embeddings
 from scripts.rag_v2 import release_diff
 from scripts.rag_v2 import release_gate
 from scripts.rag_v2 import release_inputs
@@ -1704,6 +1709,117 @@ class ReleaseOrchestrationTests(unittest.TestCase):
                 self.assertIn(flag, err.getvalue())
 
 
+class EmbeddingRefreshReportTests(unittest.TestCase):
+    """The reuse counts as an ARTIFACT, not as a line of job log.
+
+    refresh_embeddings printed reused=/embedded= and nothing consumed it, so a
+    build that re-embedded every chunk and one that reused every vector were
+    indistinguishable in every file a reviewer or a gate can read. These tests
+    drive the real script; the no-change path needs no network, because when
+    nothing changed there is nothing to embed.
+    """
+
+    def _corpus(self, path, rows):
+        path.write_text(
+            "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows),
+            encoding="utf-8")
+
+    def _row(self, chunk_id, content, title=None):
+        return {
+            "chunk_id": chunk_id,
+            "kb_version": "kb.platform.v2.2026-08-16",
+            "valid_from": "2026-08-16",
+            "source_type": "runbook",
+            "source_origin": "official",
+            "product_area": "gpu",
+            "acl": "customer_safe",
+            "confidence": "high",
+            "title": title or ("标题 " + chunk_id),
+            "question_patterns": [],
+            "content": content,
+        }
+
+    def _run_refresh(self, rows_before, rows_after):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        old_corpus = root / "old.jsonl"
+        new_corpus = root / "new.jsonl"
+        self._corpus(old_corpus, rows_before)
+        self._corpus(new_corpus, rows_after)
+
+        digest = compute_lf_sha256(old_corpus)
+        sidecar = root / sidecar_filename(digest, "qwen3-embedding-8b")
+        write_sidecar(
+            sidecar,
+            corpus_digest=digest,
+            embed_model="qwen3-embedding-8b",
+            dim=2,
+            rows=[(str(row["chunk_id"]), [0.1, 0.2]) for row in rows_before],
+        )
+
+        env_file = root / "env"
+        env_file.write_text("MODELVERSE_API_KEY=unused\n", encoding="utf-8")
+        report = root / "embedding_refresh_stage2b.json"
+        code = refresh_embeddings.main([
+            "--old-corpus", str(old_corpus),
+            "--new-corpus", str(new_corpus),
+            "--old-sidecar", str(sidecar),
+            "--out-dir", str(root),
+            "--env", str(env_file),
+            "--corpus-name", "stage2b",
+            "--report", str(report),
+        ])
+        self.assertEqual(0, code)
+        return json.loads(report.read_text(encoding="utf-8"))
+
+    def test_an_unchanged_corpus_reports_full_reuse_and_makes_no_model_call(self):
+        rows = [self._row("v2-gpu-a", "第一段正文"), self._row("v2-gpu-b", "第二段正文")]
+        record = self._run_refresh(rows, rows)
+        self.assertEqual(2, record["reused"])
+        self.assertEqual(0, record["embedded"])
+        self.assertEqual(2, record["chunks"])
+        self.assertEqual(1.0, record["reuse_ratio"])
+        self.assertEqual("stage2b", record["corpus"])
+
+    def test_a_rewritten_title_alone_invalidates_the_vector(self):
+        """The finding G8 exists for, reproduced against the real script.
+
+        chunk_id hashes source path, position and CONTENT. chunk_repr also
+        carries the title and the question patterns. So this row keeps its
+        id and loses its vector -- which is how a question-pattern or
+        product-area rule change re-embeds an entire corpus while every id
+        looks stable and nothing that reads ids notices.
+
+        embed_batch is patched rather than reached: the point is which rows
+        the script classifies as changed, and a test that needed the network
+        to answer that would be slow, flaky, and would call a paid endpoint
+        with a fake key.
+        """
+        before = [self._row("v2-gpu-a", "同一段正文", title="原标题")]
+        after = [self._row("v2-gpu-a", "同一段正文", title="改写过的标题")]
+        self.assertEqual(before[0]["chunk_id"], after[0]["chunk_id"],
+                         "fixture must keep the id identical, or it tests nothing")
+        self.assertEqual(before[0]["content"], after[0]["content"],
+                         "fixture must keep the body identical, or it tests content change")
+
+        calls = []
+
+        def fake_embed_batch(texts, **kwargs):
+            calls.append(list(texts))
+            return [[0.9, 0.9] for _ in texts], 2
+
+        with unittest.mock.patch.object(
+                refresh_embeddings, "embed_batch", fake_embed_batch):
+            record = self._run_refresh(before, after)
+
+        self.assertEqual(1, record["embedded"],
+                         "a title-only edit must count as changed")
+        self.assertEqual(0, record["reused"])
+        self.assertEqual(0.0, record["reuse_ratio"])
+        self.assertEqual(1, len(calls))
+        self.assertIn("改写过的标题", calls[0][0])
+
 class ReleaseInputTests(unittest.TestCase):
     """The values the unattended job reads off its own artifacts.
 
@@ -1825,13 +1941,23 @@ class ReleaseGateTests(unittest.TestCase):
             "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows),
             encoding="utf-8")
 
-    def _manifest(self, revision: str, zips: dict[str, str], argv: list[str]):
+    def _manifest(self, revision: str, zips: dict[str, str], argv: list[str],
+                  embeddings: dict | None = None):
         sources = [{"id": "gitlab-compshare-docs", "kind": "git", "revision": revision}]
         sources += [{"id": name, "kind": "zip", "filename": f"{name}.zip", "sha256": digest}
                     for name, digest in sorted(zips.items())]
+        if embeddings is None:
+            # An ordinary docs-only release: one internal chunk re-embedded,
+            # the frozen external corpus reusing everything.
+            embeddings = {
+                "stage2b": {"corpus": "stage2b", "chunks": 3, "reused": 2, "embedded": 1,
+                            "reuse_ratio": 0.6667, "embed_model": "qwen3-embedding-8b"},
+                "external": {"corpus": "external", "chunks": 1, "reused": 1, "embedded": 0,
+                             "reuse_ratio": 1.0, "embed_model": "qwen3-embedding-8b"},
+            }
         return {"schema_version": "compshare.rag.release.v2", "sources": sources,
                 "models": {"vl": "Qwen/Qwen3-VL-235B-A22B-Instruct"},
-                "report": {"build_argv": argv}}
+                "report": {"build_argv": argv, "embeddings": embeddings}}
 
     def _lock(self, captions: dict[str, str], owner: str = "gitlab-compshare-docs:content/a.md"):
         source, _, path = owner.partition(":")
@@ -2151,6 +2277,70 @@ class ReleaseGateTests(unittest.TestCase):
         finding = self._check(self._run(max_shrink=0.05), "G7")
         self.assertFalse(finding["ok"])
         self.assertTrue(finding["blocking"])
+
+    def _zips(self):
+        return {f"zip{i}": pipeline.sha256_bytes(f"z{i}".encode()) for i in range(6)}
+
+    def _full_re_embed_manifest(self):
+        return self._manifest(
+            self.NEW_REV, self._zips(), self.new_manifest["report"]["build_argv"],
+            embeddings={
+                "stage2b": {"corpus": "stage2b", "chunks": 526, "reused": 0,
+                            "embedded": 526, "reuse_ratio": 0.0,
+                            "embed_model": "qwen3-embedding-8b"},
+            })
+
+    def test_G8_records_reuse_without_blocking_until_a_threshold_is_set(self):
+        finding = self._check(self._run(), "G8")
+        self.assertTrue(finding["ok"])
+        self.assertFalse(finding["blocking"])
+        self.assertIn("reused 2/3", finding["detail"])
+        self.assertIn("external reused 1/1", finding["detail"])
+
+    def test_G8_names_a_silent_full_re_embed(self):
+        """0% reuse is the shape that costs a full rebuild and raises nothing.
+
+        The reuse key is chunk_repr -- title + question patterns + content --
+        while chunk_id hashes source path, position and content. A rewritten
+        question-pattern rule therefore leaves every id in place and
+        invalidates every vector: the corpus is correct, the digests bind,
+        every other check passes, and the build quietly makes one model call
+        per chunk. Nothing but this number can tell the two apart.
+        """
+        self.new_manifest = self._full_re_embed_manifest()
+        self._write()
+        finding = self._check(self._run(), "G8")
+        self.assertIn("reused 0/526", finding["detail"])
+        self.assertIn("NOTHING was reused", finding["detail"])
+        # Still non-blocking without a threshold: it reports, it does not judge.
+        self.assertTrue(finding["ok"])
+        self.assertFalse(finding["blocking"])
+
+    def test_G8_blocks_once_a_threshold_is_set(self):
+        self.new_manifest = self._full_re_embed_manifest()
+        self._write()
+        result = self._run(min_reuse=0.5)
+        finding = self._check(result, "G8")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["blocking"])
+        self.assertFalse(result["auto_publishable"])
+
+    def test_G8_treats_an_absent_record_as_missing_evidence_not_as_full_reuse(self):
+        """A release built before the numbers were recorded proves nothing.
+
+        This is the failure mode the whole gate was written against: an
+        absent key read through `.get(...) or {}` and reported as a clean
+        result. No reuse record must never be indistinguishable from a build
+        that reused every vector.
+        """
+        manifest = self._manifest(
+            self.NEW_REV, self._zips(), self.new_manifest["report"]["build_argv"])
+        del manifest["report"]["embeddings"]
+        self.new_manifest = manifest
+        self._write()
+        finding = self._check(self._run(), "G8")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["evidence_missing"])
 
     # ---- the mode contract ------------------------------------------------
     def test_shadow_records_a_rejection_without_failing_the_pipeline(self):

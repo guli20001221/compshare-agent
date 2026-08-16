@@ -225,7 +225,34 @@ def main(argv: list[str] | None = None) -> int:
             run([python, "-m", "scripts.rag_v2.refresh_embeddings",
                  "--old-corpus", str(old_corpus), "--new-corpus", str(candidate),
                  "--old-sidecar", str(old_sidecar), "--out-dir", str(release_dir),
-                 "--env", str(args.env), "--embed-model", args.embed_model], cwd=repo)
+                 "--env", str(args.env), "--embed-model", args.embed_model,
+                 "--corpus-name", corpus,
+                 "--report", str(release_dir / f"embedding_refresh_{corpus}.json")], cwd=repo)
+
+        # Folded into the manifest so the numbers travel with the release rather
+        # than living in the job log. A build that re-embedded every chunk and one
+        # that reused every vector produce identical artifacts otherwise -- same
+        # corpus, same sidecar shape, same digests -- and differ only in what they
+        # cost and in what that cost implies about the build.
+        embedding_reports = {}
+        for corpus in ("stage2b", "external"):
+            report_path = release_dir / f"embedding_refresh_{corpus}.json"
+            if report_path.exists():
+                embedding_reports[corpus] = json.loads(report_path.read_text(encoding="utf-8"))
+        if embedding_reports:
+            manifest_path = release_dir / "release_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # Under `report`, beside build_argv, because both answer the same
+            # question: what did this build actually do, as opposed to what it
+            # was asked to do.
+            manifest.setdefault("report", {})["embeddings"] = embedding_reports
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            for corpus, item in sorted(embedding_reports.items()):
+                print(f"embeddings {corpus}: reused={item['reused']} "
+                      f"embedded={item['embedded']} of {item['chunks']} "
+                      f"({item['reuse_ratio'] * 100:.1f}% reused)")
 
         # The diff is produced BEFORE promotion, while the released bytes and
         # the candidate bytes both still exist under their own names.

@@ -551,7 +551,63 @@ def check_corpus_volume(inputs: Inputs, *, max_shrink: float | None) -> Finding:
                    detail + f"; threshold -{abs(max_shrink):.2%}")
 
 
-def evaluate(inputs: Inputs, *, max_shrink: float | None = None) -> list[Finding]:
+# --------------------------------------------------------------------------
+# G8 -- the incremental build was actually incremental
+# --------------------------------------------------------------------------
+def check_embedding_reuse(inputs: Inputs, *, min_reuse: float | None) -> Finding:
+    """Report how many vectors were reused, because nothing else can.
+
+    Vector reuse is keyed on chunk_repr -- title, question patterns and
+    truncated content -- and NOT on chunk_id. The first two are absent from the
+    chunk_id hash, so a change to the question-pattern or product-area rule
+    invalidates every vector while every id stays put. Measured on one real
+    release pair: 78 of 526 chunk ids survived and 0 of 526 vectors did.
+
+    That degradation raises nothing. The corpus is correct, the sidecar is
+    correct, the digests bind, every other check here passes -- the build simply
+    made 1715 model calls instead of three, and no artifact said so. This is the
+    only place that number becomes visible, which is why the check exists even
+    while it cannot fail.
+    """
+    title = "G8 向量复用符合预期"
+    manifest = _read_json(inputs.candidate_manifest)
+    if manifest is None:
+        return _missing("G8", title, "release_manifest.json")
+    reports = ((manifest.get("report") or {}).get("embeddings")) or {}
+    if not reports:
+        # Not a pass. A release built before this was recorded, or by a path that
+        # skipped the refresh, has no evidence either way -- and "no evidence"
+        # must not read as "reused everything".
+        return _missing("G8", title, "report.embeddings in release_manifest.json")
+
+    parts = []
+    worst = 1.0
+    for corpus, item in sorted(reports.items()):
+        chunks = int(item.get("chunks") or 0)
+        reused = int(item.get("reused") or 0)
+        embedded = int(item.get("embedded") or 0)
+        ratio = (reused / chunks) if chunks else 0.0
+        worst = min(worst, ratio)
+        parts.append(f"{corpus} reused {reused}/{chunks} ({ratio:.1%}), embedded {embedded}")
+    detail = "; ".join(parts)
+
+    if min_reuse is None:
+        # Same reasoning as G7: shadow mode exists to learn what an ordinary
+        # release looks like. A threshold invented now would be defended by
+        # nothing. What IS worth saying without one is the degenerate case,
+        # because zero reuse across a whole corpus is not a matter of degree.
+        if worst <= 0.0:
+            detail += ("; NOTHING was reused -- if the docs diff is small, suspect a "
+                       "changed question-pattern or product-area rule rather than a "
+                       "docs edit, and expect the model bill of a full rebuild")
+        return Finding("G8", title, True, detail + "; no threshold set (--min-reuse unset)",
+                       blocking=False)
+    return Finding("G8", title, worst >= min_reuse,
+                   detail + f"; threshold {min_reuse:.1%}")
+
+
+def evaluate(inputs: Inputs, *, max_shrink: float | None = None,
+             min_reuse: float | None = None) -> list[Finding]:
     findings = [check_docs_revision_moved(inputs)]
     findings += check_build_ran_with_nothing_disabled(inputs)
     findings.append(check_input_zips_unchanged(inputs))
@@ -560,6 +616,7 @@ def evaluate(inputs: Inputs, *, max_shrink: float | None = None) -> list[Finding
     findings.append(check_every_change_is_attributed(inputs))
     findings.append(check_caption_drift_is_attributed(inputs))
     findings.append(check_corpus_volume(inputs, max_shrink=max_shrink))
+    findings.append(check_embedding_reuse(inputs, min_reuse=min_reuse))
     return findings
 
 
@@ -599,8 +656,14 @@ def render_markdown(result: dict[str, Any], *, mode: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # allow_abbrev=False for the same reason build.py and release.py set it. This
+    # parser now carries --mode, --max-shrink and --min-reuse, and an abbreviation
+    # landing a threshold on the wrong check, or `--mod enforce` resolving to
+    # --mode, is a silent wrong answer from the process whose entire job is to
+    # give a correct one.
     parser = argparse.ArgumentParser(
-        description="Decide whether a knowledge candidate is safe to publish unattended.")
+        description="Decide whether a knowledge candidate is safe to publish unattended.",
+        allow_abbrev=False)
     parser.add_argument("--release-dir", type=Path, default=Path("deploy/kb/v2"))
     parser.add_argument("--released-internal", type=Path, required=True,
                         help="the internal corpus as it stood BEFORE this build")
@@ -611,6 +674,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("shadow", "enforce"), default="shadow")
     parser.add_argument("--max-shrink", type=float,
                         help="fraction, e.g. 0.05; omit until shadow runs have shown the base rate")
+    parser.add_argument("--min-reuse", type=float,
+                        help="fraction of vectors that must be reused, e.g. 0.5; omit until "
+                             "shadow runs have shown the base rate")
     parser.add_argument("--today", help="YYYY-MM-DD override for G3; defaults to Asia/Shanghai today")
     parser.add_argument("--out-json", type=Path)
     parser.add_argument("--out-md", type=Path)
@@ -624,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
         docs_diff=args.docs_diff,
         today=date.fromisoformat(args.today) if args.today else datetime.now(CHINA).date(),
     )
-    result = evaluate(inputs, max_shrink=args.max_shrink)
+    result = evaluate(inputs, max_shrink=args.max_shrink, min_reuse=args.min_reuse)
     payload = verdict(result)
     payload["mode"] = args.mode
 
