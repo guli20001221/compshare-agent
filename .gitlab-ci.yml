@@ -859,17 +859,28 @@ rollback-knowledge-release:
     - |
       set -eu
       TARGET="$KB_ROLLBACK_RELEASE_ID"
-      if [ -z "$TARGET" ]; then
+      # `|| true` and the -f test are both load-bearing under `set -e`: a missing
+      # or unreadable release_base.json used to abort the job HERE, before the
+      # "no rollback target" message below could name the thing to set. An
+      # operator reaching for break-glass got a sed error instead of an
+      # instruction.
+      if [ -z "$TARGET" ] && [ -f deploy/kb/v2/release_base.json ]; then
         TARGET=$(sed -n 's/^[[:space:]]*"parent_release_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-          deploy/kb/v2/release_base.json)
+          deploy/kb/v2/release_base.json || true)
       fi
       if [ -z "$TARGET" ]; then
         echo "no rollback target: set KB_ROLLBACK_RELEASE_ID." >&2
         exit 1
       fi
 
+      # DIAGNOSTIC ONLY, and it must never be able to fail this job. This job
+      # exists precisely because the service may be unhealthy or unreachable, so
+      # a /healthz that errors is the NORMAL case here, not an abort condition.
+      # As a bare command substitution under `set -e` it aborted the rollback at
+      # the one moment a rollback was most needed -- the check stood in front of
+      # the repair it was reporting on.
       BEFORE=$(kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
-        wget -qO- http://127.0.0.1:8088/healthz)
+        wget -qO- http://127.0.0.1:8088/healthz 2>/dev/null || echo '<unreachable>')
       echo "production is currently serving: $BEFORE"
       echo "rolling back to: $TARGET"
 

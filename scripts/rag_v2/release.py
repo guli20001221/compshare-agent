@@ -116,8 +116,14 @@ def snapshot_released(repo: Path, destination: Path) -> dict[str, Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # allow_abbrev=False for the same reason the unknown-flag check below exists,
+    # which that check could not deliver on its own: argparse abbreviates by
+    # default, so `--gate-mod enforce` was silently resolved to `--gate-mode` and
+    # never reached `unknown` at all. The guard was unreachable for the exact
+    # input it names. Off, a partial flag is an error instead of a guess.
     parser = argparse.ArgumentParser(
-        description="Build, embed, promote, pin and diff a knowledge release candidate.")
+        description="Build, embed, promote, pin and diff a knowledge release candidate.",
+        allow_abbrev=False)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--release-dir", type=Path, default=Path("deploy/kb/v2"))
     parser.add_argument("--deploy-dir", type=Path, default=Path("deploy/kb"))

@@ -1,4 +1,6 @@
+import contextlib
 from datetime import date
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -1662,9 +1664,44 @@ class ReleaseOrchestrationTests(unittest.TestCase):
         parse_known_args swallowed unknown flags. That is tolerable while every
         flag is advisory and not once enforce exists, because the entire point
         of enforce is that nobody is watching when it runs.
+
+        This test used to assert only `SystemExit`, and it passed for a reason
+        that had nothing to do with the flag: argparse abbreviates by default, so
+        `--gate-mod` was resolved to `--gate-mode`, `unknown` stayed empty, the
+        guard never ran, and release.main got as far as failing on the missing
+        env file -- raising the SystemExit the test was reading as success. It
+        now pins the MESSAGE, and --repo keeps a parse-level test out of the real
+        deploy/kb tree, where it used to leave an untracked release_base.json.
         """
-        with self.assertRaises(SystemExit):
-            release.main(["--env", "x", "--gate-mod", "enforce"])
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as caught:
+                    release.main(["--repo", tmp, "--env", "x", "--gate-mod", "enforce"])
+        self.assertEqual(2, caught.exception.code)
+        self.assertIn("--gate-mod", err.getvalue())
+        self.assertFalse(
+            (Path(tmp) / "deploy/kb/v2/release_base.json").exists(),
+            "a rejected invocation must not leave a candidate baseline behind")
+
+    def test_an_abbreviated_safety_flag_cannot_slip_past_the_argv_gate(self):
+        """`--skip-v` must not become `--skip-vl`.
+
+        G1.argv asks whether "--skip-vl" is in the recorded build_argv, by exact
+        list membership. Under argparse's default abbreviation matching the build
+        would accept `--skip-v`, skip captioning, and record the abbreviation --
+        which G1.argv does not match, so the gate would report a clean build over
+        a corpus missing a third of its internal text.
+        """
+        for flag in ("--skip-v", "--skip-seman", "--allow-stale"):
+            with self.subTest(flag=flag):
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    with self.assertRaises(SystemExit):
+                        build.main(["--internal-docs", ".", "--internal-revision", "r",
+                                    "--faq-zip", "a.zip", "--external-zip", "b.zip",
+                                    "--legacy-external", "c.jsonl", "--out-dir", ".",
+                                    "--valid-from", "2026-08-16", flag])
+                self.assertIn("unrecognized arguments", err.getvalue())
+                self.assertIn(flag, err.getvalue())
 
 
 class ReleaseInputTests(unittest.TestCase):
@@ -2006,6 +2043,62 @@ class ReleaseGateTests(unittest.TestCase):
         finding = self._check(result, "G5")
         self.assertFalse(finding["ok"])
         self.assertIn("content/b.md", finding["detail"])
+
+    def test_G5_fails_when_only_served_metadata_changed_on_an_unattributed_document(self):
+        # content/b.md is not in docs_diff.txt. Its BODY is byte-identical on
+        # both sides, so content_digest matches, the slot key matches, and before
+        # sections_metadata_changed existed this produced no entry in any view of
+        # the diff -- G5 never saw the document and certified it as attributed.
+        # title and question_patterns are what retrieval matches on.
+        self.new_internal[1]["title"] = "改写过的标题"
+        self.new_internal[1]["question_patterns"] = ["这台机器怎么开机"]
+        self._write()
+
+        self.assertEqual(
+            self.old_internal[1]["content"], self.new_internal[1]["content"],
+            "fixture must keep the body byte-identical, or this tests sections_changed instead")
+
+        result = self._run()
+        finding = self._check(result, "G5")
+        self.assertFalse(finding["ok"], msg=f"G5 stayed green on a metadata-only edit: {finding}")
+        self.assertIn("content/b.md", finding["detail"])
+        self.assertIn("title", finding["detail"])
+        self.assertFalse(result["auto_publishable"])
+
+    def test_G5_stays_green_when_metadata_changed_on_a_document_the_docs_diff_names(self):
+        # The mirror of the test above: the same edit on content/a.md, which the
+        # docs diff DOES name, must not start failing releases. A check that
+        # cannot pass is removed rather than obeyed.
+        self.new_internal[0]["title"] = "改写过的标题"
+        self._write()
+        result = self._run()
+        self.assertTrue(self._check(result, "G5")["ok"])
+        self.assertTrue(result["auto_publishable"])
+
+    def test_release_diff_reports_a_metadata_only_edit_to_the_reviewer(self):
+        # G5 reading a view the human-facing report does not render would be
+        # attribution without review.
+        self.new_internal[1]["product_area"] = "billing_rule"
+        self._write()
+        report = json.loads((self.candidate / "release_diff.json").read_text(encoding="utf-8"))
+        internal = next(corpus for name, corpus in report["corpora"].items() if "stage2b" in name)
+        rows = internal["sections_metadata_changed"]
+        self.assertEqual(1, len(rows), msg=f"expected exactly one metadata-only row, got {rows}")
+        self.assertEqual("gitlab-compshare-docs:content/b.md", rows[0]["document"])
+        self.assertEqual(["product_area"], rows[0]["fields"])
+        self.assertFalse(rows[0]["content_also_changed"])
+        markdown = release_diff.render_markdown(report)
+        self.assertIn("正文未变、检索字段改动的小节", markdown)
+        self.assertIn("product_area", markdown)
+
+    def test_release_stamps_alone_never_count_as_a_metadata_change(self):
+        # kb_version and valid_from move on EVERY internal row of every rebuild.
+        # If they were in the projection, this baseline would report all three
+        # chunks as metadata-changed and G5 would demand a docs commit for the
+        # FAQ rows on every single release.
+        report = json.loads((self.candidate / "release_diff.json").read_text(encoding="utf-8"))
+        internal = next(corpus for name, corpus in report["corpora"].items() if "stage2b" in name)
+        self.assertEqual([], internal["sections_metadata_changed"])
 
     def test_G5_fails_when_the_docs_diff_is_absent_rather_than_passing(self):
         inputs = release_gate.Inputs(

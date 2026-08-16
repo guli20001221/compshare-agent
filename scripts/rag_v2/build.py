@@ -36,7 +36,16 @@ EXTERNAL_PACKAGES = ("comfyui", "digital-human", "voice-audio")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build RAG V2 internal and external corpora from pinned public sources.")
+    # allow_abbrev=False because build_argv is EVIDENCE. The gate's G1.argv asks
+    # whether `--skip-vl` is in the recorded argument list, by exact membership.
+    # With argparse's default abbreviation matching, `--skip-v` is an unambiguous
+    # prefix: the build accepts it, skips captioning, and records the string
+    # `--skip-v`, which G1.argv does not match -- the check reports a clean build
+    # while a third of the internal corpus text is missing. Rejecting the
+    # abbreviation outright is what makes the exact-string check sound.
+    parser = argparse.ArgumentParser(
+        description="Build RAG V2 internal and external corpora from pinned public sources.",
+        allow_abbrev=False)
     parser.add_argument("--internal-docs", type=Path, required=True)
     parser.add_argument("--internal-revision", required=True)
     parser.add_argument("--faq-zip", type=Path, action="append", required=True)

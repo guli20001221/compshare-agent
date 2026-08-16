@@ -401,12 +401,47 @@ def _changed_internal_documents(diff: dict[str, Any]) -> set[str]:
     for move in internal.get("documents_moved") or []:
         touched.add(str(move.get("from")))
         touched.add(str(move.get("to")))
-    for section in internal.get("sections_changed") or []:
-        touched.add(str(section.get("document")))
-    for key in ("sections_added", "sections_removed"):
+    for key in ("sections_changed", "sections_metadata_changed", "sections_added", "sections_removed"):
         for section in internal.get(key) or []:
             touched.add(str(section.get("document")))
     return {doc for doc in touched if doc and doc != "?"}
+
+
+def _metadata_only_documents(diff: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Documents whose only change was in served metadata, and the field names.
+
+    Kept apart from _changed_internal_documents so G5 can SAY which view put a
+    document on the list. A rewrite of the question-pattern or product-area rule
+    is a code change, not a docs change, and it lands as dozens of unattributed
+    documents at once -- a reviewer reading only "no docs commit touched this
+    path" would go looking in compshare-docs for something that is not there.
+    """
+    internal = None
+    for name, corpus in (diff.get("corpora") or {}).items():
+        if "stage2b" in name:
+            internal = corpus
+            break
+    if internal is None:
+        return set(), set()
+    body_moved: set[str] = set()
+    for key in ("sections_changed", "sections_added", "sections_removed"):
+        for section in internal.get(key) or []:
+            body_moved.add(str(section.get("document")))
+    for item in internal.get("documents_moved") or []:
+        body_moved.add(str(item.get("from")))
+        body_moved.add(str(item.get("to")))
+    body_moved.update(internal.get("documents_added") or [])
+    body_moved.update(internal.get("documents_removed") or [])
+
+    documents: set[str] = set()
+    fields: set[str] = set()
+    for section in internal.get("sections_metadata_changed") or []:
+        document = str(section.get("document"))
+        if document in body_moved:
+            continue
+        documents.add(document)
+        fields.update(str(name) for name in (section.get("fields") or []))
+    return {doc for doc in documents if doc and doc != "?"}, fields
 
 
 def check_every_change_is_attributed(inputs: Inputs) -> Finding:
@@ -429,12 +464,23 @@ def check_every_change_is_attributed(inputs: Inputs) -> Finding:
         elif _path_of(document) not in changed_paths:
             unattributed.append(f"{document} (no docs commit touched this path)")
     if unattributed:
-        return Finding("G5", title, False,
-                       f"{len(unattributed)} of {len(touched)} changed documents are unattributed: "
-                       f"{unattributed[:8]}")
-    return Finding("G5", title, True,
-                   f"{len(touched)} changed documents, all present in a docs diff of "
-                   f"{len(changed_paths)} paths")
+        detail = (f"{len(unattributed)} of {len(touched)} changed documents are unattributed: "
+                  f"{unattributed[:8]}")
+        metadata_only, fields = _metadata_only_documents(diff)
+        overlap = metadata_only & {item.split(" (", 1)[0] for item in unattributed}
+        if overlap:
+            detail += (f". {len(overlap)} of them changed ONLY in served metadata "
+                       f"({', '.join(sorted(fields))}) with the body byte-identical -- "
+                       "if that is most of the list, suspect a change to the "
+                       "question-pattern or product-area rule rather than a docs edit.")
+        return Finding("G5", title, False, detail)
+    metadata_only, fields = _metadata_only_documents(diff)
+    detail = (f"{len(touched)} changed documents, all present in a docs diff of "
+              f"{len(changed_paths)} paths")
+    if metadata_only:
+        detail += (f" (of which {len(metadata_only)} changed only in served metadata: "
+                   f"{', '.join(sorted(fields))})")
+    return Finding("G5", title, True, detail)
 
 
 # --------------------------------------------------------------------------

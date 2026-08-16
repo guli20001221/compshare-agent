@@ -60,25 +60,79 @@ def content_digest(row: dict[str, Any]) -> str:
     return sha256_bytes(str(row.get("content") or "").encode("utf-8"))
 
 
+# The fields that REACH kb_chunks and are not the content itself. A chunk whose
+# title, question patterns or product area were rewritten while its body stayed
+# byte-identical changes what retrieval matches on and what a citation says, and
+# until this existed it produced no entry in any view of the diff: content_digest
+# was equal, the slot key was equal, so `sections_changed` stayed empty and G5
+# certified the document as attributable without ever seeing it.
+#
+# Deliberately excluded:
+#   kb_version / valid_from -- release stamps. The internal corpus carries a
+#     single kb_version, so including them would report all 526 chunks as changed
+#     on every rebuild and make G5 demand a docs commit for every document.
+#   chunk_id -- it hashes the content and the slot position, and both already
+#     have their own view (sections_changed, and sections_added/removed via the
+#     slot key). It would only ever restate them.
+#   asset_refs / heading_path / document_* / evidence_kind / source_refs /
+#     v2_source_kind / chunk_role / retrieval_score_hint -- the importer drops
+#     these; they never reach the database, so they cannot change an answer.
+SERVED_METADATA_FIELDS = (
+    "acl",
+    "confidence",
+    "product_area",
+    "question_patterns",
+    "source_origin",
+    "source_type",
+    "surface_url",
+    "title",
+    "valid_to",
+)
+
+
+def metadata_digest(row: dict[str, Any]) -> str:
+    """Digest of the served, non-content fields. Kept SEPARATE from
+    content_digest on purpose: fingerprint() pairs moved documents by their
+    content digests, so widening that function would repartition the move
+    detection as a side effect of tightening the gate."""
+    projection = {key: row.get(key) for key in SERVED_METADATA_FIELDS}
+    return sha256_bytes(json.dumps(projection, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+
+
 def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> dict[str, Any]:
     old_slots, new_slots = slot_keys(old_rows), slot_keys(new_rows)
     old_docs = {document_key(row) for row in old_rows}
     new_docs = {document_key(row) for row in new_rows}
 
     changed = []
+    metadata_changed = []
     for key in sorted(old_slots.keys() & new_slots.keys()):
         before, after = old_slots[key], new_slots[key]
-        if content_digest(before) == content_digest(after):
-            continue
-        changed.append({
-            "document": key[0],
-            "heading": key[1],
-            "occurrence": key[2],
-            "runes_before": len(str(before.get("content") or "")),
-            "runes_after": len(str(after.get("content") or "")),
-            "chunk_id_before": before.get("chunk_id"),
-            "chunk_id_after": after.get("chunk_id"),
-        })
+        content_moved = content_digest(before) != content_digest(after)
+        if content_moved:
+            changed.append({
+                "document": key[0],
+                "heading": key[1],
+                "occurrence": key[2],
+                "runes_before": len(str(before.get("content") or "")),
+                "runes_after": len(str(after.get("content") or "")),
+                "chunk_id_before": before.get("chunk_id"),
+                "chunk_id_after": after.get("chunk_id"),
+            })
+        if metadata_digest(before) != metadata_digest(after):
+            metadata_changed.append({
+                "document": key[0],
+                "heading": key[1],
+                "occurrence": key[2],
+                "fields": [name for name in SERVED_METADATA_FIELDS
+                           if before.get(name) != after.get(name)],
+                # A reviewer needs to tell "the body was rewritten and the title
+                # followed" from "only the title moved" -- the second is the
+                # shape that used to be invisible.
+                "content_also_changed": content_moved,
+                "chunk_id_before": before.get("chunk_id"),
+                "chunk_id_after": after.get("chunk_id"),
+            })
     changed.sort(key=lambda item: abs(item["runes_after"] - item["runes_before"]), reverse=True)
 
     # A docs restructure renames every path at once. Reported naively that is
@@ -154,6 +208,7 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
         "documents_removed": sorted(gone - moved_from),
         "documents_moved": moved,
         "sections_changed": changed,
+        "sections_metadata_changed": metadata_changed,
         "sections_added": added,
         "sections_removed": removed,
         "product_areas_changed": areas,
@@ -241,6 +296,23 @@ def render_markdown(report: dict[str, Any], *, limit: int = 25) -> str:
             )
             if len(corpus["sections_changed"]) > limit:
                 lines.append(f"\n…另有 {len(corpus['sections_changed']) - limit} 处")
+            lines.append("")
+        # Only the rows whose BODY did not move. The ones where it did are
+        # already in the table above, and repeating them there would bury the
+        # shape this section exists to surface: a chunk whose retrieval-facing
+        # metadata was rewritten under unchanged text.
+        metadata_only = [item for item in corpus.get("sections_metadata_changed") or []
+                         if not item.get("content_also_changed")]
+        if metadata_only:
+            lines += [f"**正文未变、检索字段改动的小节 ({len(metadata_only)})**", ""]
+            lines += _table(
+                [[f"`{item['document']}`", item["heading"] or "(顶层)",
+                  ", ".join(f"`{name}`" for name in item["fields"])]
+                 for item in metadata_only[:limit]],
+                ["文档", "小节", "改动字段"],
+            )
+            if len(metadata_only) > limit:
+                lines.append(f"\n…另有 {len(metadata_only) - limit} 处")
             lines.append("")
         for label, key in (("新增小节", "sections_added"), ("删除小节", "sections_removed")):
             if corpus[key]:
