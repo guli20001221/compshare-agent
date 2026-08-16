@@ -29,12 +29,18 @@ be dangerous. Closing it needs an IDENTITY judgement — measured at 95 of 221 c
 16 of 20 realistic commands changing tier — so it is a separate decision with its own blast
 radius, and it is still open.
 
-Running a FILE is no longer part of that gap. Every path shape is refused unless the path
-itself says a system or toolchain binary lives there: script extensions and relative paths
-(`./x`, `../x`) always were, and since 2026-08-16 an absolute path must sit in a `bin`/`sbin`
-directory outside shared temp (`_trusted_program_path`). `/tmp/x`, `/root/payload`,
-`/opt/whatever` and `/data/run` used to auto-run purely because `./x` and `/tmp/x` are the same
-act spelled differently. Measured at adoption: 0 of 434 pinned cases changed tier.
+Running a FILE is no longer part of that gap, and the rule for it is deliberately small: a
+program named by absolute path auto-runs as a read only from /bin, /sbin, /usr/bin and
+/usr/sbin. Everything else — /tmp/x, /root/payload, /opt/app/bin/run, /root/<venv>/bin/python —
+gets a confirmation card. Not a refusal: the agent can still run them and still complete a
+repair, it just asks first. Script extensions and relative paths (`./x`, `../x`) were always
+refused; `/tmp/x` was not, which was a distinction about spelling rather than effect.
+
+This rule deliberately does NOT try to establish that a path is trustworthy. /root/x/bin/payload
+and /root/x/payload carry the same real risk; separating them needs a growing list of exceptions
+for bin-shaped directories, temp dirs, symlinks, venvs and toolchain paths, and none of it ever
+proves a remote file is safe to execute unattended. System programs auto-read, user and
+application paths confirm first.
 
 What is not open is describing any of this as deny-by-default, because a reader who believes
 that will not look for the fallthrough — which is exactly how a `--help` suffix came to skip
@@ -1062,44 +1068,36 @@ _SCRIPT_SHAPE = re.compile(r"\.(sh|bash|py|pl|rb|js|php|lua|ksh|zsh|run|bin|out)
 # because the read tier falls through (module docstring). `./x` was refused and `/tmp/x` was
 # not, which is a distinction about how the path was SPELLED, not about what it does.
 #
-# The trust test is entirely about the path's SHAPE. Two conditions, both required:
+# The line drawn here is deliberately small and dumb: a program named by absolute path is
+# auto-run as a READ only from the four system program directories. Everything else gets a
+# confirmation card. Not a refusal — a card. The agent can still run /root/venv/bin/python,
+# /opt/app/bin/run and /usr/local/bin/whatever and still complete a repair; it just asks first.
 #
-#   1. the directory's basename is `bin` or `sbin`. An allowlist of literal system paths
-#      (/usr/bin, /bin, ...) is what suggests itself and it is wrong on these images:
-#      /opt/conda/bin/python, /usr/local/cuda/bin/nvcc and /root/<venv>/bin/python are
-#      ordinary, and refusing them would card the most common GPU diagnostics.
-#   2. the path is not under a SHARED-TEMP prefix. `/tmp/bin/x` satisfies (1) and is the
-#      obvious way around it. These four directories are the ones ANY process on the box
-#      can write — including an unprivileged one, an unpacked archive, or a sibling
-#      container — which is what separates them from `/root/venv/bin`, where placing a
-#      file already requires the privilege the lane is using.
+# SYSTEM PROGRAMS AUTO-READ, USER/APPLICATION PATHS CONFIRM FIRST. That is the whole rule.
 #
-# It deliberately makes NO judgement about the program's NAME. Whether an unknown BARE name
-# (`evil`, resolved through the remote PATH, which is why a name is not an identity here)
-# should auto-run is the other half of the open decision in the module docstring; it needs an
-# identity rule and a much larger blast radius, and it is not answered here.
+# The version this replaced tried to establish that a path was TRUSTWORTHY — bin/sbin directory
+# shape, minus shared temp, with carve-outs coming for symlinks, venvs and toolchain dirs. That
+# cannot be made correct: /root/x/bin/payload and /root/x/payload carry the same real risk, and
+# the difference between them is a naming convention. Each carve-out would have added rules and
+# tests without ever establishing that a remote file is safe to execute unattended. A short,
+# honest boundary that sometimes asks is worth more than a long one that infers.
 #
-# Measured before adoption over the pinned CLASSIFY_CASES corpus: 0 of 434 cases change tier,
-# 27 of 27 attack shapes close, and 22 realistic absolute-path diagnostics are unaffected — so
-# this adds no confirmation card to anything a diagnosis is known to run.
-_SHARED_TEMP_PREFIXES = ("/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/")
+# It makes NO judgement about the program's NAME. An unknown BARE name (`evil`, resolved through
+# the remote PATH, which is why a name is not an identity here) still auto-runs. That is a known,
+# tracked debt: closing it needs identity, adds real diagnostic friction, and should be decided
+# from an actual incident rather than from a list of hypothetical spellings.
+_SYSTEM_PROGRAM_DIRS = ("/bin", "/sbin", "/usr/bin", "/usr/sbin")
 
 
-def _trusted_program_path(raw0: str) -> bool:
-    """True only for an absolute path whose SHAPE says a system/toolchain binary lives there."""
+def _is_system_program_path(raw0: str) -> bool:
+    """True only for an absolute path whose directory IS one of the four system program dirs."""
     path = _unquote(raw0)
     if not path.startswith("/"):
         return False
-    # normpath first: `/usr/bin/../../tmp/x` is /tmp/x, and both halves below must judge the
-    # real target rather than the spelling. (`..` is separately refused by the shape gate; this
-    # does not rely on that, because the two gates are allowed to be reordered.)
-    norm = posixpath.normpath(path)
-    if not norm.startswith("/"):
-        return False
-    directory = posixpath.dirname(norm)
-    if posixpath.basename(directory) not in ("bin", "sbin"):
-        return False
-    return not norm.startswith(_SHARED_TEMP_PREFIXES)
+    # normpath so the check judges the real target rather than its spelling: `/usr/bin/../../tmp/x`
+    # is /tmp/x. (`..` is separately refused by the shape gate; not relying on that keeps the two
+    # gates independently reorderable.)
+    return posixpath.dirname(posixpath.normpath(path)) in _SYSTEM_PROGRAM_DIRS
 # Reads that never terminate or that stream a whole block device.
 _BLOCKING_PATHS = re.compile(r"^/proc/kmsg$|^/dev/(sd|nvme|vd|hd|xvd|loop|zero|random|urandom|full|port|mem|kmem)")
 # Readers that emit raw byte CONTENT — only these turn a device path into an endless stream.
@@ -1474,9 +1472,9 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # running a file on the box: a script by name, or anything by relative path
     if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
         return True
-    # ...or by absolute path, unless the path's SHAPE says a system/toolchain binary lives
-    # there. See _trusted_program_path: this judges the PATH, never the program's name.
-    if "/" in raw0 and not _trusted_program_path(raw0):
+    # ...or by absolute path, unless it is one of the four system program directories. Anything
+    # else asks first; see _is_system_program_path. This judges the PATH, never the program's name.
+    if "/" in raw0 and not _is_system_program_path(raw0):
         return True
     if binary in _WRAPPER_BINARIES:                       # the effect is the INNER command's
         return _wrapper_is_mutating(binary, tokens, _depth)

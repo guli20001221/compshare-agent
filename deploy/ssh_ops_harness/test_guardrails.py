@@ -293,7 +293,9 @@ CLASSIFY_CASES = [
     # was already read_only. What made this refused was the payload, and `import torch` is
     # now provably read-only (2026-07-26 AST rule below). Executing a RELATIVE path
     # (`./python …`) is still refused, which is the rule that guards unknown binaries.
-    ("/root/badenv/bin/python -c 'import torch'", "read_only"),
+    # Re-baselined 2026-08-16 (F15): a venv python is not in a system program directory, so it
+    # asks first. It is a CARD, not a refusal — the probe still runs once the user clicks.
+    ("/root/badenv/bin/python -c 'import torch'", "mutating"),
 
     # === 2026-07-26: `python -c` is classified STRUCTURALLY (AST), not by literal match ===
     # The previous rule allowed exactly seven torch payloads. It was sound but unusable:
@@ -308,7 +310,7 @@ CLASSIFY_CASES = [
     ('python3 -c "import torch;print(torch.cuda.is_available())"', "read_only"),     # spacing irrelevant
     ("python3 -c 'import torch; print(torch.cuda.device_count())'", "read_only"),
     ("python -c 'import torch; print(torch.__version__)'", "read_only"),             # `python`, not `python3`
-    ("/opt/conda/envs/comfyui/bin/python -c 'import torch; print(torch.cuda.is_available())'", "read_only"),  # abs-path env python
+    ("/opt/conda/envs/comfyui/bin/python -c 'import torch; print(torch.cuda.is_available())'", "mutating"),  # abs-path env python: cards (F15)
     # WIDENED — each of these was refused by the literal allowlist; all are reads.
     ("python -c 'import torch'", "read_only"),                                       # an import alone changes nothing
     ("python3 -c 'print(1)'", "read_only"),
@@ -486,7 +488,7 @@ CLASSIFY_CASES = [
     ("docker --version", "read_only"),
     #     A path-qualified interpreter stays read_only via the basename-normalized allowlist
     #     in _is_read_only_segment, which is now its ONLY route.
-    ("/usr/local/miniconda3/envs/comfyui/bin/python --version", "read_only"),
+    ("/usr/local/miniconda3/envs/comfyui/bin/python --version", "mutating"),  # F15: cards
 
     ("/usr/bin/passwd root", "destructive"),          # r3: path-qualified passwd binary
     ("sudo passwd root", "destructive"),
@@ -626,90 +628,58 @@ CLASSIFY_CASES = [
     ("rm -rf /root/notcache", "destructive"),
 
     # --- F15: executing a file by ABSOLUTE path (2026-08-16) ---
-    # `./x` was refused and `/tmp/x` was not. That is a distinction about how the path was
-    # SPELLED, not about what the command does, and the second half auto-ran with no consent
-    # card because the read tier falls through on a name no rule mentions.
+    # ONE rule: a program named by absolute path auto-runs as a read only from the four system
+    # program directories. Everything else asks first. `./x` was refused while `/tmp/x` was not,
+    # which was a distinction about how the path was SPELLED rather than about what it does.
     #
-    # (a) the shapes that used to auto-run. Nothing here is named anything suspicious — that
-    #     is the point: the verdict comes from the PATH, so a payload cannot dress itself up
-    #     by picking a familiar name (`/tmp/nvidia-smi`).
-    ("/tmp/x", "mutating"),
-    ("/tmp/payload", "mutating"),
-    ("/tmp/nvidia-smi", "mutating"),
-    ("/var/tmp/x", "mutating"),
-    ("/dev/shm/x", "mutating"),
-    ("/root/payload", "mutating"),
-    ("/root/.cache/x", "mutating"),
-    ("/home/ubuntu/x", "mutating"),
-    ("/opt/evil", "mutating"),
-    ("/data/run", "mutating"),
-    ("/workspace/agent", "mutating"),
-    ("/srv/x", "mutating"),
-    ("/mnt/x", "mutating"),
-    ("/etc/x", "mutating"),
-    ("/var/lib/x", "mutating"),
-    ("/usr/share/x", "mutating"),                          # under /usr, but not a bin dir
+    # A card is NOT a refusal. Every "mutating" below still runs once the user clicks it, so the
+    # agent can use a venv python, a toolchain binary or an application launcher and still finish
+    # a repair. That is what makes the rule affordable at this size.
     #
-    # (b) the ways around the two conditions. `bin`-shape alone is not trust: shared temp is
-    #     writable by ANY process on the box, which is what separates /tmp/bin from
-    #     /root/<venv>/bin, where placing a file already needs the lane's own privilege.
-    ("/tmp/bin/x", "mutating"),
-    ("/var/tmp/bin/x", "mutating"),
-    ("/dev/shm/bin/x", "mutating"),
-    ("/run/shm/bin/x", "mutating"),
-    ("/usr/bin/../../tmp/x", "mutating"),                  # judged after normpath
-    ("/root/venv/bin/../../payload", "mutating"),
-    # The case that needs normpath specifically: WITHOUT it the directory's basename is
-    # already `bin` and the string starts with `/usr/`, so both conditions pass and the
-    # command auto-runs — while the file it actually names is /tmp/bin/x. The two cases above
-    # are refused either way (their unnormalized basename is `..`), so they do not test this.
-    # The opposite spelling, `/tmp/../usr/bin/ls`, is read_only and correctly so: it names
-    # /usr/bin/ls. It is deliberately NOT pinned here — a corpus line reading `..` -> read_only
-    # invites being cited as a blessing of `..` paths, which the shape gate refuses separately.
-    ("/usr/bin/../../../tmp/bin/x", "mutating"),
-    ("/tmp/./x", "mutating"),
-    ("sudo /tmp/x", "mutating"),                           # a privilege prefix is not a disguise
-    ("nice /tmp/x", "mutating"),                           # nor a wrapper
-    ("timeout 5 /tmp/x", "mutating"),
-    # `bin` must be a whole path COMPONENT, not a suffix. /usr/binx/tool fails a suffix test
-    # too, so it cannot tell the two apart; /usr/localbin/tool is the shape that can.
-    ("/usr/localbin/tool", "mutating"),
-    ("/opt/mybin/x", "mutating"),
-    ("/usr/binx/tool", "mutating"),
-    ("/usr/sbinx/tool", "mutating"),
-    # Quoting is judged on the path's real value. `'/tmp/x'` is refused either way (a leading
-    # quote is not `/`), so what this pins is the other direction: not unwrapping would card
-    # every quoted path for its quotes, which buys no safety and costs a card.
-    ("'/tmp/x'", "mutating"),
-    ("'/usr/bin/ls'", "read_only"),
+    # These cases deliberately do NOT enumerate bypass spellings. An earlier version tried to
+    # establish that a path was TRUSTWORTHY — bin/sbin-shaped, minus shared temp — which meant
+    # policing /tmp/bin/x, /usr/localbin/tool, /opt/mybin/x and a growing list of others. That
+    # cannot be made correct: /root/x/bin/payload and /root/x/payload carry the same real risk,
+    # and the pair below is pinned together to say so.
     #
-    # (c) ...and everything the rule must NOT reach. An allowlist of literal system paths is
-    #     what suggests itself and is wrong on these images: the toolchain lives in
-    #     /opt/conda/bin and /usr/local/cuda/bin, and a user venv in /root/<env>/bin. Carding
-    #     those would card the most common GPU diagnostics there are.
+    # (a) the four system program directories auto-read
     ("/usr/bin/nvidia-smi", "read_only"),
     ("/bin/uname -a", "read_only"),
     ("/sbin/ip addr", "read_only"),
     ("/usr/sbin/ss -lntp", "read_only"),
-    ("/usr/local/bin/nvidia-smi", "read_only"),
     ("/usr/bin/cat /etc/os-release", "read_only"),
-    ("/usr/bin/systemctl status vllm", "read_only"),
-    ("/opt/conda/bin/python --version", "read_only"),
-    ("/usr/local/cuda/bin/nvcc --version", "read_only"),
-    ("/root/venv/bin/python --version", "read_only"),
-    ("/home/ubuntu/miniconda3/bin/python --version", "read_only"),
-    ("/root/.local/bin/pip --version", "read_only"),
     #
-    # (d) a trusted PATH is not a blank cheque — the normal rules still run after it.
+    # (b) every other path asks first — including the two that a path-shape rule would have tried
+    #     to separate, and cannot.
+    ("/root/x/bin/payload", "mutating"),
+    ("/root/x/payload", "mutating"),
+    ("/tmp/x", "mutating"),
+    ("/tmp/nvidia-smi", "mutating"),                       # the verdict is the path, not the name
+    ("/root/payload", "mutating"),
+    ("/opt/app/bin/run", "mutating"),
+    ("/data/run", "mutating"),
+    ("/usr/local/bin/nvidia-smi", "mutating"),
+    ("/usr/share/x", "mutating"),                          # under /usr, not a program directory
+    ("sudo /tmp/x", "mutating"),                           # a privilege prefix is not a disguise
+    ("nice /tmp/x", "mutating"),                           # nor a wrapper
+    ("/usr/bin/sub/tool", "mutating"),                     # the CONTAINING dir, not a prefix
+    ("/usr/bin/../../tmp/x", "mutating"),
+    #
+    #     Two spellings that must not cost a card for being spelled oddly. Neither is a safety
+    #     property: with an exact directory match, dropping normalization or unquoting can only
+    #     turn read_only into mutating, never the reverse. (`//usr/bin/ls` does still card —
+    #     POSIX keeps the leading double slash — and that is left alone rather than carved out.)
+    ("/usr/bin/./ls", "read_only"),
+    ("'/usr/bin/ls'", "read_only"),
+    #
+    # (c) a system program directory is not a blank cheque: the normal rules still run after it.
     ("/usr/bin/rm -rf /", "destructive"),
     ("/bin/systemctl restart vllm", "mutating"),
     ("/usr/bin/curl https://example.com/x", "mutating"),
-    ("/opt/conda/bin/python -c 'import os; os.remove(\"/etc/passwd\")'", "mutating"),
     #
-    # (e) the BARE-NAME half is deliberately untouched. This rule judges paths and makes no
-    #     identity claim; `evil` still auto-runs, tracked as its own decision in the module
-    #     docstring. If someone closes that later, these move — and they should move
-    #     deliberately, not as a side effect of a path rule.
+    # (d) the BARE-NAME half is untouched and stays a tracked debt. This rule judges paths and
+    #     makes no identity claim. Closing that half needs identity, adds real diagnostic
+    #     friction, and should be decided from an actual incident — not from this list.
     ("evil", "read_only"),
     ("evil -q", "read_only"),
     ("unknown-tool --status", "read_only"),
