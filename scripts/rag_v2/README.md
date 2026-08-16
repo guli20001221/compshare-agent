@@ -22,12 +22,12 @@ promotion stages described here.
 python -m scripts.rag_v2.build `
   --internal-docs F:\compshare-agent-rag-v2-sources\compshare-docs `
   --internal-revision 8a81268e3d275d4767d045554680e7c5ddf82a9d `
-  --faq-zip 'G:\下载\优云智算模型套餐FAQ.zip' `
-  --faq-zip 'G:\下载\ComfyUI基础镜像常见问题解答（持续更新中）.zip' `
-  --faq-zip 'G:\下载\优云智算使用问题FAQ.zip' `
-  --external-zip 'C:\Users\23843\Documents\Codex\2026-07-15\new-chat\outputs\comfyui-mirror-docs.zip' `
-  --external-zip 'C:\Users\23843\Documents\Codex\2026-07-15\new-chat\outputs\digital-human-docs.zip' `
-  --external-zip 'C:\Users\23843\Documents\Codex\2026-07-15\new-chat\outputs\voice-audio-docs.zip' `
+  --faq-zip 'deploy\kb\v2\sources\优云智算模型套餐FAQ.zip' `
+  --faq-zip 'deploy\kb\v2\sources\ComfyUI基础镜像常见问题解答（持续更新中）.zip' `
+  --faq-zip 'deploy\kb\v2\sources\优云智算使用问题FAQ.zip' `
+  --external-zip 'deploy\kb\v2\sources\comfyui-mirror-docs.zip' `
+  --external-zip 'deploy\kb\v2\sources\digital-human-docs.zip' `
+  --external-zip 'deploy\kb\v2\sources\voice-audio-docs.zip' `
   --legacy-external deploy\kb\v2\legacy_external_lock.jsonl `
   --out-dir deploy\kb\v2 `
   --env F:\compshare-agent\.env.local `
@@ -65,6 +65,29 @@ dependency bump.
 ```bash
 python -m pip install -r scripts/rag_v2/requirements.txt
 ```
+
+`pypdf` and `pymupdf` are in there for the same reason: the usage FAQ ships two
+PDFs and the extractor hard-raises without either. PyMuPDF renders the PDF page
+images the VL model is shown, so it decides caption content the way Pillow does —
+but it is **not** in `caption_contract_digest()`, so bumping it re-earns those
+captions with nothing saying so. `requirements.txt` states why that is deliberate
+and what the real fix is.
+
+### The six ZIP inputs are vendored
+
+`deploy/kb/v2/sources/` holds all six, byte-identical to what built the shipped
+corpus. Only `--internal-docs` still comes from outside the repo, and that is a
+git remote a machine can clone — which is what makes an unattended rebuild
+possible at all.
+
+`VendoredSourceTests` joins each file against the `sha256` its
+`release_manifest.json` entry already records, and fails on a stray file in the
+directory. Present is a weaker claim than *is the one that built the corpus*, and
+the ZIPs are passed **positionally** (`FAQ_IDS` / `EXTERNAL_PACKAGES` map by
+order, not by name), so a re-export dropped in beside the originals is exactly how
+the wrong input gets built silently. When a FAQ is genuinely re-exported, replace
+the file and re-run the build — the test then fails until the manifest is
+regenerated, which is the intended sequence, not an obstacle.
 
 When a remote image cannot be revalidated and cached bytes are on hand, the
 build keeps the cached bytes rather than failing over a transient error — but

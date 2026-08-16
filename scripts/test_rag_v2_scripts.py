@@ -1254,6 +1254,45 @@ class DigestPinTests(unittest.TestCase):
         self.assertEqual({}, changed, msg=f"corpus_digest.go is stale: {changed}")
 
 
+class VendoredSourceTests(unittest.TestCase):
+    """The six ZIP inputs used to exist only on one laptop.
+
+    Vendoring them makes a release reproducible from a clean checkout, but
+    "the file is present" is a much weaker claim than "the file is the one that
+    built the shipped corpus". release_manifest.json already records a sha256
+    per source, so the join is free -- and without it a re-export dropped into
+    this directory would rebuild a different corpus with nothing saying so.
+    """
+
+    SOURCES = REPO_ROOT / "deploy/kb/v2/sources"
+
+    def _zip_sources(self):
+        manifest = json.loads(
+            (REPO_ROOT / "deploy/kb/v2/release_manifest.json").read_text(encoding="utf-8"))
+        return [s for s in manifest["sources"] if s.get("kind") == "zip"]
+
+    def test_every_zip_the_manifest_names_is_vendored_and_matches_its_digest(self):
+        declared = self._zip_sources()
+        self.assertEqual(6, len(declared), "the build requires exactly 3 FAQ + 3 external ZIPs")
+        for source in declared:
+            path = self.SOURCES / source["filename"]
+            with self.subTest(source=source["id"]):
+                self.assertTrue(path.is_file(), f"{source['id']} is not vendored at {path}")
+                # The same function build.py:116,126 used to write the manifest
+                # entry, so the assertion cannot drift from its producer.
+                actual = pipeline.sha256_file(path)
+                self.assertEqual(
+                    source["sha256"], actual,
+                    msg=(f"{source['id']} ({source['filename']}) does not match the release "
+                         f"manifest. Building from it would produce a different corpus."))
+
+    def test_no_unexpected_file_sits_in_the_sources_directory(self):
+        """A stray ZIP is how the wrong export gets passed positionally."""
+        declared = {s["filename"] for s in self._zip_sources()}
+        present = {p.name for p in self.SOURCES.iterdir() if p.is_file()}
+        self.assertEqual(declared, present)
+
+
 class ReleaseDiffTests(unittest.TestCase):
     """The publish gate is a human; this is the only thing they get to read."""
 

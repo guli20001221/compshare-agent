@@ -13,3 +13,27 @@
 #
 #   python -m pip install -r scripts/rag_v2/requirements.txt
 pillow==10.3.0
+
+# The usage FAQ ships two PDFs, and extract_pdf_text hard-raises without either
+# of these (pipeline.py:664 for pypdf, :671 for fitz). They are not optional for
+# a release build; they were simply never declared, because the corpus has only
+# ever been built on a machine that happened to have them.
+#
+# These are the versions the shipped 2026-08-14 corpus was built with, on
+# CPython 3.12.4.
+pypdf==4.3.1
+
+# KNOWN GAP, stated rather than papered over: PyMuPDF renders the PDF page
+# images that are fed to the VL model, so like Pillow it decides caption
+# content -- but unlike Pillow it is NOT folded into caption_contract_digest().
+# Changing this line therefore re-renders those pages and silently re-earns
+# their captions under an unchanged contract.
+#
+# It is not added to the contract here on purpose. The contract is global, so
+# doing that would invalidate all ~1900 captions to protect the handful derived
+# from PDF pages -- the same 40x over-invalidation the Pillow pin already
+# suffers. The real fix is to key caption reuse on the RENDERED bytes actually
+# sent to the model instead of the source file's bytes, at which point neither
+# renderer needs to be named in a global contract at all. Until then: treat a
+# bump of this line as a caption-affecting change and rebuild deliberately.
+pymupdf==1.24.11
