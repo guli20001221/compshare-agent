@@ -1388,6 +1388,50 @@ class ReleaseDiffTests(unittest.TestCase):
             self.assertIn("未能回源校验", markdown)
             self.assertIn("必需图片处理失败", markdown)
 
+    def test_an_asset_report_predating_degradations_is_not_read_as_clean(self):
+        """A report with no `degradations` key never examined the question.
+
+        The shipped deploy/kb/v2/asset_report.json is exactly this shape --
+        described/failures/published/runtime_mode and nothing else -- because it
+        was written before build.py emitted the key. Coercing the absence to []
+        renders it as "nothing degraded", which is a clean bill of health from a
+        file that never looked.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("old_i.jsonl", "new_i.jsonl", "old_e.jsonl", "new_e.jsonl"):
+                (root / name).write_text(json.dumps(self._chunk("src:a.md", "h", "c")) + "\n",
+                                         encoding="utf-8")
+            (root / "asset_report.json").write_text(json.dumps({
+                "described": 1940, "failures": [], "published": 0, "runtime_mode": "full",
+            }), encoding="utf-8")
+            report = release_diff.build_report(
+                old_internal=root / "old_i.jsonl", new_internal=root / "new_i.jsonl",
+                old_external=root / "old_e.jsonl", new_external=root / "new_e.jsonl",
+                asset_report=root / "asset_report.json")
+            self.assertIsNone(report["assets"]["degradations"])
+            self.assertFalse(report["assets"]["degradations_reported"])
+            self.assertIn("回源校验情况未知", release_diff.render_markdown(report))
+
+    def test_a_report_that_did_look_and_found_nothing_says_nothing(self):
+        """The control: an empty list means examined-and-clean, and stays silent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("old_i.jsonl", "new_i.jsonl", "old_e.jsonl", "new_e.jsonl"):
+                (root / name).write_text(json.dumps(self._chunk("src:a.md", "h", "c")) + "\n",
+                                         encoding="utf-8")
+            (root / "asset_report.json").write_text(json.dumps({
+                "described": 3, "failures": [], "degradations": [],
+            }), encoding="utf-8")
+            report = release_diff.build_report(
+                old_internal=root / "old_i.jsonl", new_internal=root / "new_i.jsonl",
+                old_external=root / "old_e.jsonl", new_external=root / "new_e.jsonl",
+                asset_report=root / "asset_report.json")
+            self.assertTrue(report["assets"]["degradations_reported"])
+            markdown = release_diff.render_markdown(report)
+            self.assertNotIn("回源校验情况未知", markdown)
+            self.assertNotIn("需要人看的构建降级", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

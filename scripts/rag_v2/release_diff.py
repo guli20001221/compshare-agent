@@ -293,9 +293,15 @@ def render_markdown(report: dict[str, Any], *, limit: int = 25) -> str:
             lines.append("")
 
     assets = report.get("assets") or {}
-    if assets.get("degradations") or assets.get("blocking_failures"):
+    stale_unknown = "assets" in report and not assets.get("degradations_reported")
+    if assets.get("degradations") or assets.get("blocking_failures") or stale_unknown:
         lines += ["## 需要人看的构建降级", ""]
-        if assets.get("degradations"):
+        if stale_unknown:
+            lines.append(
+                "- **回源校验情况未知**：asset_report.json 里没有 `degradations` 字段，"
+                "说明它是更早的构建产物，没有回答过这个问题。不要读成「没有降级」。"
+            )
+        elif assets.get("degradations"):
             lines.append(
                 f"- **{len(assets['degradations'])} 张图未能回源校验**，用的是缓存字节；"
                 "其中平台来源的会阻断发布（除非显式 `--allow-stale-remote`）"
@@ -347,8 +353,16 @@ def build_report(
         )
     if asset_report and asset_report.exists():
         data = json.loads(asset_report.read_text(encoding="utf-8"))
+        # `degradations` is distinguished from absent, not coerced to empty. A
+        # report written before build.py started emitting the key has no opinion
+        # about stale remote images, and `.get(...) or []` would render that as
+        # "nothing degraded" -- a clean bill of health from a file that never
+        # examined the question. The shipped deploy/kb/v2/asset_report.json is
+        # exactly that file: its keys are described/failures/published/
+        # runtime_mode and nothing else.
         report["assets"] = {
-            "degradations": data.get("degradations") or [],
+            "degradations": data.get("degradations"),
+            "degradations_reported": "degradations" in data,
             "blocking_failures": sum(
                 1 for item in (data.get("failures") or []) if item.get("severity") == "error"
             ),
