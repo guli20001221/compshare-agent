@@ -95,10 +95,10 @@ STILL_REFUSED = [
     # --- holes found by running the old locked corpus against the new policy ---
     ("nvidia-smi | sh", "mutating"),                 # untrusted box output piped into a shell
     ("cat /etc/passwd | bash", "mutating"),
-    # A path-qualified interpreter was never the deciding factor (`--version` on this same
-    # path was already read_only); the payload was. Executing a RELATIVE path is what stays
-    # refused, and that case is asserted below (`./deploy.sh`).
-    ("/root/badenv/bin/python -c 'import torch'", "read_only"),
+    # Re-baselined 2026-08-16 (F15): a venv python is not in one of the four system program
+    # directories, so it asks first. A CARD, not a refusal — the probe still runs once the
+    # user clicks, and a RELATIVE path (`./deploy.sh`, asserted below) stays refused outright.
+    ("/root/badenv/bin/python -c 'import torch'", "mutating"),
     ("python3 -c 'print(1)'", "read_only"),
     ("python3 -c 'open(chr(47),chr(119))'", "mutating"),          # write mode, computed: unprovable
     ("python", "mutating"),                          # bare REPL never returns
@@ -126,7 +126,7 @@ NOT_MISFLAGGED = [
     ("lsblk -f", "read_only"),
     ("df -h", "read_only"),
     ("python --version", "read_only"),
-    ("/usr/local/miniconda3/envs/comfyui/bin/python --version", "read_only"),
+    ("/usr/local/miniconda3/envs/comfyui/bin/python --version", "mutating"),  # F15: cards, not refused
     ("sudo cat /etc/shadow", "read_only"),           # sudo+read is allowed under the new policy
     ("journalctl -n 200", "read_only"),
     ("nvidia-smi -q", "read_only"),
