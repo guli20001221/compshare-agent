@@ -19,15 +19,26 @@ value-shape + vendor prefixes), classification anchors flags to the right binary
 transport's hard per-command timeout backstops any streaming command that still slips through.
 
 The read tier is NOT deny-by-default, and this file used to claim it was. A command that
-matches no rule at all falls through to read_only: `evil`, `evil -q`, `frobnicate --all` and
-`/tmp/x` all auto-run. `./evil`, `/root/payload.sh` and `bash /tmp/x.sh` do not — script and
-relative-path shapes are caught — and that asymmetry is the whole of the current defence. It
-was accepted deliberately on 2026-07-23 (see POLICY_RELAXED_TO_READ in test_guardrails.py, and
+matches no rule at all falls through to read_only: `evil`, `evil -q` and `frobnicate --all`
+auto-run. What is left of that gap is now exactly ONE shape — an unknown BARE NAME, resolved
+through the remote PATH — and it is a known, tracked debt, not an oversight. It was accepted
+deliberately on 2026-07-23 (see POLICY_RELAXED_TO_READ in test_guardrails.py, and
 `frobnicate --all` in CLASSIFY_CASES, which is pinned mutating there and re-baselined to
 read_only by the policy), on the reasoning that a name we do not know is not a name we know to
-be dangerous. Whether that trade is still right is an open decision; what is not open is
-describing it as deny-by-default, because a reader who believes that will not look for the
-fallthrough — which is exactly how a `--help` suffix came to skip the consent card.
+be dangerous. Closing it needs an IDENTITY judgement — measured at 95 of 221 corpus cases and
+16 of 20 realistic commands changing tier — so it is a separate decision with its own blast
+radius, and it is still open.
+
+Running a FILE is no longer part of that gap. Every path shape is refused unless the path
+itself says a system or toolchain binary lives there: script extensions and relative paths
+(`./x`, `../x`) always were, and since 2026-08-16 an absolute path must sit in a `bin`/`sbin`
+directory outside shared temp (`_trusted_program_path`). `/tmp/x`, `/root/payload`,
+`/opt/whatever` and `/data/run` used to auto-run purely because `./x` and `/tmp/x` are the same
+act spelled differently. Measured at adoption: 0 of 434 pinned cases changed tier.
+
+What is not open is describing any of this as deny-by-default, because a reader who believes
+that will not look for the fallthrough — which is exactly how a `--help` suffix came to skip
+the consent card.
 """
 import ast
 import posixpath
@@ -1046,6 +1057,49 @@ _VERSION_ONLY = re.compile(r"^(--version|-V|--help|version|help)$")
 # execution regardless of what it is named — this is what keeps an unknown binary from
 # becoming an arbitrary write primitive now that the read allowlist is gone.
 _SCRIPT_SHAPE = re.compile(r"\.(sh|bash|py|pl|rb|js|php|lua|ksh|zsh|run|bin|out)$", re.I)
+# ...and the other half of that: a file named by ABSOLUTE path. `/tmp/x`, `/root/payload`,
+# `/opt/whatever` and `/data/run` matched no rule at all and auto-ran with no consent card,
+# because the read tier falls through (module docstring). `./x` was refused and `/tmp/x` was
+# not, which is a distinction about how the path was SPELLED, not about what it does.
+#
+# The trust test is entirely about the path's SHAPE. Two conditions, both required:
+#
+#   1. the directory's basename is `bin` or `sbin`. An allowlist of literal system paths
+#      (/usr/bin, /bin, ...) is what suggests itself and it is wrong on these images:
+#      /opt/conda/bin/python, /usr/local/cuda/bin/nvcc and /root/<venv>/bin/python are
+#      ordinary, and refusing them would card the most common GPU diagnostics.
+#   2. the path is not under a SHARED-TEMP prefix. `/tmp/bin/x` satisfies (1) and is the
+#      obvious way around it. These four directories are the ones ANY process on the box
+#      can write — including an unprivileged one, an unpacked archive, or a sibling
+#      container — which is what separates them from `/root/venv/bin`, where placing a
+#      file already requires the privilege the lane is using.
+#
+# It deliberately makes NO judgement about the program's NAME. Whether an unknown BARE name
+# (`evil`, resolved through the remote PATH, which is why a name is not an identity here)
+# should auto-run is the other half of the open decision in the module docstring; it needs an
+# identity rule and a much larger blast radius, and it is not answered here.
+#
+# Measured before adoption over the pinned CLASSIFY_CASES corpus: 0 of 434 cases change tier,
+# 27 of 27 attack shapes close, and 22 realistic absolute-path diagnostics are unaffected — so
+# this adds no confirmation card to anything a diagnosis is known to run.
+_SHARED_TEMP_PREFIXES = ("/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/")
+
+
+def _trusted_program_path(raw0: str) -> bool:
+    """True only for an absolute path whose SHAPE says a system/toolchain binary lives there."""
+    path = _unquote(raw0)
+    if not path.startswith("/"):
+        return False
+    # normpath first: `/usr/bin/../../tmp/x` is /tmp/x, and both halves below must judge the
+    # real target rather than the spelling. (`..` is separately refused by the shape gate; this
+    # does not rely on that, because the two gates are allowed to be reordered.)
+    norm = posixpath.normpath(path)
+    if not norm.startswith("/"):
+        return False
+    directory = posixpath.dirname(norm)
+    if posixpath.basename(directory) not in ("bin", "sbin"):
+        return False
+    return not norm.startswith(_SHARED_TEMP_PREFIXES)
 # Reads that never terminate or that stream a whole block device.
 _BLOCKING_PATHS = re.compile(r"^/proc/kmsg$|^/dev/(sd|nvme|vd|hd|xvd|loop|zero|random|urandom|full|port|mem|kmem)")
 # Readers that emit raw byte CONTENT — only these turn a device path into an endless stream.
@@ -1419,6 +1473,10 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
         return True
     # running a file on the box: a script by name, or anything by relative path
     if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
+        return True
+    # ...or by absolute path, unless the path's SHAPE says a system/toolchain binary lives
+    # there. See _trusted_program_path: this judges the PATH, never the program's name.
+    if "/" in raw0 and not _trusted_program_path(raw0):
         return True
     if binary in _WRAPPER_BINARIES:                       # the effect is the INNER command's
         return _wrapper_is_mutating(binary, tokens, _depth)
