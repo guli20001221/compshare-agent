@@ -9,12 +9,20 @@
 stages:
   - diagnose
   - test
+  - knowledge
   - build
   - deploy
 
 variables:
   IMAGE: uhub.service.ucloud.cn/ucompshare-job/compshare-agent
+  KB_BUILD_IMAGE: uhub.service.ucloud.cn/ucompshare-job/compshare-kb-build
   GOPROXY: https://goproxy.cn,direct
+  # The upstream documentation site. Read-only; the pipeline never writes here.
+  COMPSHARE_DOCS_URL: https://git.ucloudadmin.com/www/compshare-docs.git
+  # One fixed branch, deliberately. A second failing tick must update the same
+  # merge request rather than opening a second one, so there is exactly one
+  # place to look and no queue of stale candidates to triage.
+  KB_CANDIDATE_BRANCH: auto/knowledge-candidate
 
 # A read-only production diagnostic path. It is optional so it never blocks a
 # release, but makes a failed rollout observable without copying KUN access to
@@ -115,7 +123,11 @@ test:
     - go test ./...
     - go vet ./...
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    # Excluded from scheduled pipelines. A schedule here means one thing -- the
+    # knowledge tick -- and it runs on an unchanged main commit whose Go code
+    # this job already tested when it merged. Letting it re-run would spend a
+    # runner every tick to re-prove the same tree.
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "schedule"'
 
 build:
   stage: build
@@ -153,7 +165,315 @@ build:
       --destination "$IMAGE:$CI_COMMIT_SHORT_SHA"
       --destination "$IMAGE:latest"
   rules:
+    # Never on a schedule: a knowledge tick changes the corpus, not the service,
+    # and this job moves the `latest` tag. Rebuilding and retagging the runtime
+    # image on a corpus tick would make an unrelated deploy look like a change.
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "schedule"'
+
+# ---------------------------------------------------------------------------
+# Docs-driven knowledge releases
+#
+# A scheduled pipeline asks one question -- has compshare-docs moved since the
+# corpus was built -- and on almost every tick the answer is no and nothing
+# happens. When it has moved, the corpus is rebuilt, the release gate records a
+# verdict, and a merge request is opened for a human.
+#
+# NOTHING here publishes. Phase 2 runs the gate in SHADOW: it evaluates every
+# candidate a person still approves and never fails the pipeline, because the
+# thresholds it would block on have no base rate yet. Auto-merge and
+# auto-publish are Phase 3, and they are gated on the gate having been observed
+# both agreeing with the human and demonstrably red on a broken candidate.
+#
+# Required CI variables (protected, masked):
+#   COMPSHARE_DOCS_TOKEN      read access to www/compshare-docs
+#   KB_BUILD_MODELVERSE_KEY   a ModelVerse key authorized for ALL of
+#                             Qwen/Qwen3-VL-235B-A22B-Instruct (captions),
+#                             qwen3.7-max (semantic splits) and
+#                             qwen3-embedding-8b (sidecars). This is the
+#                             retrieval-side key, not the terra answer key --
+#                             the terra key is scoped to terra alone.
+#   KB_CANDIDATE_TOKEN        push to this project + create merge requests
+#
+# Cadence is bounded by git, not by build cost. Every release rewrites the
+# embedding sidecars in full: measured on the shipped artifacts they are
+# 60.2 MB external + 26.6 MB internal raw, 15.3 + 6.8 MB as git stores them.
+# Holding the external date back (--external-valid-from) keeps the external
+# sidecar's filename and bytes identical, so a docs-only release costs ~7.4 MB
+# of history instead of ~23.8 MB. Weekly is ~30 MB/month; a tick per docs
+# commit would be up to ~290 MB/month even with that saving, so if the cadence
+# is ever raised, move the sidecars out of git first.
+# ---------------------------------------------------------------------------
+
+# The cheap half. It runs on the kubectl image because reading the ACTIVE
+# release id needs the cluster, and it exists as its own job so the common case
+# -- docs unchanged -- never pulls the multi-hundred-MB build image at all.
+knowledge-tick:
+  stage: knowledge
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    KB_STATEFULSET: compshare-kb
+  before_script:
+    - apk add --no-cache git python3
+  script:
+    - |
+      set -eu
+
+      # The token never reaches argv or the process table. GitLab masks
+      # protected variables in the log, but a credentials file keeps it out of
+      # `ps` on a shared runner as well.
+      umask 077
+      printf 'https://oauth2:%s@git.ucloudadmin.com\n' "$COMPSHARE_DOCS_TOKEN" \
+        > "$HOME/.git-credentials"
+      git config --global credential.helper store
+
+      # The revision the CORPUS was built from, read out of the artifact that
+      # recorded it rather than restated anywhere. release_inputs is stdlib-only
+      # precisely so this job can run it on `apk add python3`.
+      PINNED=$(python3 -m scripts.rag_v2.release_inputs \
+        pinned-docs-revision deploy/kb/v2/release_manifest.json)
+      HEAD_REV=$(git ls-remote "$COMPSHARE_DOCS_URL" HEAD | cut -f1)
+      test -n "$HEAD_REV"
+      echo "corpus was built from $PINNED; compshare-docs HEAD is $HEAD_REV"
+
+      if [ "$PINNED" = "$HEAD_REV" ]; then
+        echo "docs unchanged -- nothing to build"
+        printf 'KB_TICK_WORK=none\n' > tick.env
+        exit 0
+      fi
+
+      # The candidate must declare the release its corpus is built ON, and that
+      # value can only come from the process that is serving it. Read here, in
+      # the job that already has cluster access, and carried forward -- the
+      # build job neither needs nor gets kubectl.
+      HEALTHZ=$(kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
+        wget -qO- http://127.0.0.1:8088/healthz)
+      ACTIVE=$(printf '%s' "$HEALTHZ" | sed -n 's/.*"release_id":"\([^"]*\)".*/\1/p')
+      test -n "$ACTIVE"
+      echo "production is serving $ACTIVE"
+
+      printf 'KB_TICK_WORK=build\nKB_DOCS_PINNED=%s\nKB_DOCS_HEAD=%s\nKB_PARENT_RELEASE_ID=%s\n' \
+        "$PINNED" "$HEAD_REV" "$ACTIVE" > tick.env
+  artifacts:
+    reports:
+      dotenv: tick.env
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $KB_AUTO_BUILD == "1"'
     - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: true
+
+# The expensive half. Only the work the docs change touched is redone --
+# captions are keyed on image bytes, semantic plans on section text and vectors
+# on chunk content, and all three caches are committed, so a cold runner makes
+# roughly the same number of model calls as a warm laptop.
+build-knowledge-candidate:
+  stage: build
+  image: $KB_BUILD_IMAGE:latest
+  tags:
+    - uaek-c5
+  needs:
+    - job: knowledge-tick
+      artifacts: true
+  timeout: 3h
+  # One candidate at a time. Two concurrent builds would race on the same fixed
+  # branch and each would force-push the other's work away.
+  resource_group: kb-candidate
+  script:
+    - |
+      set -eu
+      if [ "${KB_TICK_WORK:-none}" != "build" ]; then
+        echo "knowledge-tick found nothing to do"
+        exit 0
+      fi
+      test -n "${KB_DOCS_HEAD:-}"
+      test -n "${KB_PARENT_RELEASE_ID:-}"
+
+      WORK=$(mktemp -d)
+      umask 077
+      printf 'https://oauth2:%s@git.ucloudadmin.com\n' "$COMPSHARE_DOCS_TOKEN" \
+        > "$HOME/.git-credentials"
+      git config --global credential.helper store
+      git config --global user.email "compshare-agent-ci@ucloud.cn"
+      git config --global user.name "compshare-agent CI"
+
+      # The RELEASED bytes, snapshotted before anything overwrites them. Same
+      # premise release.py's own snapshot_released uses: what production
+      # imported is what is in this checkout, not what some git revision says.
+      mkdir -p "$WORK/released"
+      cp deploy/kb/stage2b_w0.jsonl "$WORK/released/"
+      cp deploy/kb/external_w0.jsonl "$WORK/released/"
+      cp deploy/kb/v2/release_manifest.json "$WORK/released/"
+
+      # A full clone; 761 commits is nothing, and a shallow one cannot answer
+      # what changed between the pinned revision and HEAD.
+      git clone --quiet "$COMPSHARE_DOCS_URL" "$WORK/compshare-docs"
+      git -C "$WORK/compshare-docs" checkout --quiet "$KB_DOCS_HEAD"
+
+      # Refuse a history that was rewritten under us. Without this the diff is
+      # still computable and still looks reasonable while describing a
+      # ROLLBACK -- which is exactly how one investigation in this repo came to
+      # report 29 upserts for a revision that was an ancestor of the pin.
+      if ! git -C "$WORK/compshare-docs" merge-base --is-ancestor \
+           "$KB_DOCS_PINNED" "$KB_DOCS_HEAD"; then
+        echo "$KB_DOCS_PINNED is not an ancestor of $KB_DOCS_HEAD." >&2
+        echo "compshare-docs history was rewritten; a human has to decide what this release means." >&2
+        exit 1
+      fi
+
+      # --no-renames on purpose: rename detection reports only the new path,
+      # and attribution needs BOTH sides -- a moved document is a removed
+      # document plus an added one in the corpus, and the removed half has to
+      # be explainable too.
+      git -C "$WORK/compshare-docs" diff --no-renames --name-only \
+        "$KB_DOCS_PINNED" "$KB_DOCS_HEAD" > "$WORK/docs_diff.txt"
+      echo "docs changed $(wc -l < "$WORK/docs_diff.txt") paths"
+
+      # Fails in seconds, naming the file, instead of after the VL budget is
+      # spent: collect_internal_docs raises on an MDX component the cleaner has
+      # never seen, and that is the single most common way a docs change breaks
+      # this build.
+      python -c 'import pathlib, sys; from scripts.rag_v2 import pipeline; print("MDX pre-check ok:", len(pipeline.collect_internal_docs(pathlib.Path(sys.argv[1]))), "platform documents")' "$WORK/compshare-docs"
+
+      printf 'MODELVERSE_API_KEY=%s\n' "$KB_BUILD_MODELVERSE_KEY" > "$WORK/build.env"
+
+      # The external corpus keeps the date it already has. Nothing about the
+      # external snapshots changed -- G2 asserts their ZIP digests are
+      # identical -- so restamping them would rewrite 3.7 MB of corpus and a
+      # 60 MB sidecar to say a different date, and would make G4's "the
+      # partitions with no reviewer did not move" impossible to satisfy.
+      EXTERNAL_VALID_FROM=$(python -m scripts.rag_v2.release_inputs \
+        corpus-valid-from deploy/kb/external_w0.jsonl)
+      VALID_FROM=$(date -u -d '+8 hours' +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)
+      echo "internal valid_from=$VALID_FROM, external held at $EXTERNAL_VALID_FROM"
+
+      # Every argument spelled out here rather than defaulted, because the
+      # absence of --skip-vl / --skip-semantic / --allow-stale-remote is a
+      # safety property and an unattended build must not be able to acquire one
+      # by inheriting it from somewhere else. build.py records this argv into
+      # release_manifest.json and the gate reads it back.
+      python -m scripts.rag_v2.release \
+        --env "$WORK/build.env" \
+        --parent-release-id "$KB_PARENT_RELEASE_ID" \
+        --build-arg --internal-docs --build-arg "$WORK/compshare-docs" \
+        --build-arg --internal-revision --build-arg "$KB_DOCS_HEAD" \
+        --build-arg --faq-zip --build-arg 'deploy/kb/v2/sources/优云智算模型套餐FAQ.zip' \
+        --build-arg --faq-zip --build-arg 'deploy/kb/v2/sources/ComfyUI基础镜像常见问题解答（持续更新中）.zip' \
+        --build-arg --faq-zip --build-arg 'deploy/kb/v2/sources/优云智算使用问题FAQ.zip' \
+        --build-arg --external-zip --build-arg 'deploy/kb/v2/sources/comfyui-mirror-docs.zip' \
+        --build-arg --external-zip --build-arg 'deploy/kb/v2/sources/digital-human-docs.zip' \
+        --build-arg --external-zip --build-arg 'deploy/kb/v2/sources/voice-audio-docs.zip' \
+        --build-arg --legacy-external --build-arg deploy/kb/v2/legacy_external_lock.jsonl \
+        --build-arg --valid-from --build-arg "$VALID_FROM" \
+        --build-arg --external-valid-from --build-arg "$EXTERNAL_VALID_FROM"
+
+      # Its own process with its own exit code. release_diff is called as a
+      # function by release.py and its return value is discarded there, so a
+      # verdict living inside it would be a no-op -- which is how this tree
+      # already shipped one gate that could not fail.
+      python -m scripts.rag_v2.release_gate \
+        --release-dir deploy/kb/v2 \
+        --released-internal "$WORK/released/stage2b_w0.jsonl" \
+        --released-external "$WORK/released/external_w0.jsonl" \
+        --released-manifest "$WORK/released/release_manifest.json" \
+        --docs-diff "$WORK/docs_diff.txt" \
+        --mode "${KB_GATE_MODE:-shadow}" \
+        --out-md deploy/kb/v2/release_gate.md \
+        --out-json deploy/kb/v2/release_gate.json
+
+      rm -rf "$WORK/compshare-docs" "$WORK/build.env"
+
+      # A branch, a force-push and at most one merge request. A human merges it;
+      # merging is what triggers import-knowledge-release, which is still manual.
+      git add -A deploy/kb internal/knowledge/corpus_digest.go
+      if git diff --cached --quiet; then
+        echo "docs moved but the corpus did not change; nothing to propose"
+        exit 0
+      fi
+      # Built with printf into a file rather than a multi-line -m: a here-doc or
+      # an embedded newline would have to sit at column 0 to keep its shape, and
+      # column 0 ends the YAML block scalar this whole script lives in.
+      {
+        printf 'chore(kb): rebuild corpus for compshare-docs %s\n\n' "$KB_DOCS_HEAD"
+        printf 'compshare-docs %s -> %s\n' "$KB_DOCS_PINNED" "$KB_DOCS_HEAD"
+        printf 'built on release %s\n' "$KB_PARENT_RELEASE_ID"
+        printf 'internal valid_from %s, external held at %s\n\n' "$VALID_FROM" "$EXTERNAL_VALID_FROM"
+        printf 'Gate verdict: deploy/kb/v2/release_gate.md (shadow -- records, does not block).\n'
+        printf 'Reviewable diff: deploy/kb/v2/release_diff.md\n'
+      } > "$WORK/commit.txt"
+      git commit --quiet -F "$WORK/commit.txt"
+      git push --force \
+        "https://oauth2:${KB_CANDIDATE_TOKEN}@git.ucloudadmin.com/${CI_PROJECT_PATH}.git" \
+        "HEAD:refs/heads/${KB_CANDIDATE_BRANCH}"
+
+      OPEN=$(curl --fail --silent --show-error \
+        --header "PRIVATE-TOKEN: $KB_CANDIDATE_TOKEN" \
+        "$CI_API_V4_URL/projects/${CI_PROJECT_ID}/merge_requests?state=opened&source_branch=${KB_CANDIDATE_BRANCH}" \
+        | python -c 'import json,sys; print(len(json.load(sys.stdin)))')
+      if [ "$OPEN" = "0" ]; then
+        # --form-string, not --form: curl's --form reads a value beginning with
+        # @ or < as a FILENAME, and the description is a generated markdown
+        # table whose first character is not something this job controls.
+        curl --fail --silent --show-error --request POST \
+          --header "PRIVATE-TOKEN: $KB_CANDIDATE_TOKEN" \
+          --form-string "source_branch=${KB_CANDIDATE_BRANCH}" \
+          --form-string "target_branch=main" \
+          --form-string "title=chore(kb): 知识库语料随 compshare-docs 更新" \
+          --form-string "description=$(head -60 deploy/kb/v2/release_gate.md)" \
+          "$CI_API_V4_URL/projects/${CI_PROJECT_ID}/merge_requests" > /dev/null
+        echo "opened a merge request for ${KB_CANDIDATE_BRANCH}"
+      else
+        echo "merge request for ${KB_CANDIDATE_BRANCH} already open; force-pushed into it"
+      fi
+  artifacts:
+    paths:
+      - deploy/kb/v2/release_gate.md
+      - deploy/kb/v2/release_gate.json
+      - deploy/kb/v2/release_diff.md
+      - deploy/kb/v2/asset_report.json
+    expire_in: 90 days
+    when: always
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $KB_AUTO_BUILD == "1"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: true
+
+# Rebuilt only when its inputs move. It pins a 3.12 interpreter and the render
+# dependencies the caption contract attests to, and asserts both at image-build
+# time so a broken image fails at pull rather than at the end of a release.
+build-kb-build-image:
+  stage: build
+  image:
+    name: uhub.service.ucloud.cn/ucompshare-job/kaniko-executor:debug
+    entrypoint: [""]
+  tags:
+    - uaek-c5
+  variables:
+    DOCKER_CONFIG: $CI_PROJECT_DIR/.docker
+  script:
+    - mkdir -p "$DOCKER_CONFIG"
+    - |
+      AUTH=$(printf "%s:%s" "$UHUB_USER" "$UHUB_PASS" | base64 | tr -d '\n')
+      printf '{"auths":{"uhub.service.ucloud.cn":{"auth":"%s"}}}\n' "$AUTH" > "$DOCKER_CONFIG/config.json"
+    - >-
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/Dockerfile.kb-build"
+      --destination "$KB_BUILD_IMAGE:$CI_COMMIT_SHORT_SHA"
+      --destination "$KB_BUILD_IMAGE:latest"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - Dockerfile.kb-build
+        - scripts/rag_v2/requirements.txt
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: true
 
 # The external-group screenshot reader persists a rotating Feishu user token.
 # Its table is a separate, explicit production change: operators trigger this

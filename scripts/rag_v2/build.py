@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 import tempfile
 
 try:
@@ -44,6 +45,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--env", type=Path)
     parser.add_argument("--valid-from", required=True)
+    # The external corpus gets its OWN date, defaulting to --valid-from so an
+    # unattended caller that passes one date keeps today's behaviour exactly.
+    #
+    # One date for both corpora makes a docs-only rebuild rewrite the external
+    # corpus for zero external change: valid_from lands in every row (via
+    # kb_version AND the row's own field), so all 1189 external chunks change
+    # bytes, the corpus digest changes, and the ~63 MB sidecar is rewritten under
+    # a new digest-bearing filename with two Go pins following it. Not one vector
+    # is recomputed -- chunk_repr is title/question_patterns/content and knows
+    # nothing about the date -- so the entire churn is a rename plus a copy that
+    # nothing asked for, and it lands in the reviewer's diff as "外部语料 digest:
+    # 变了" on a release where no external source moved.
+    #
+    # This matters more once the build is scheduled: a corpus rewritten on every
+    # tick is a corpus whose frozen partitions can never be asserted byte-frozen,
+    # which is the assertion standing between auto-publish and the 1268 chunks
+    # that have no upstream reviewer.
+    parser.add_argument(
+        "--external-valid-from",
+        help="valid_from for the external corpus; defaults to --valid-from. "
+             "Pass the PREVIOUS release's external date on a docs-only rebuild "
+             "so the external corpus keeps its bytes.",
+    )
     parser.add_argument("--vl-model", default="Qwen/Qwen3-VL-235B-A22B-Instruct")
     parser.add_argument("--vl-fallback-model", default="Qwen/Qwen3-vl-Plus")
     parser.add_argument("--semantic-model", default="qwen3.7-max")
@@ -75,6 +99,16 @@ def main(argv: list[str] | None = None) -> int:
     # nothing verified this run. That is a person's call, not a default.
     parser.add_argument("--allow-stale-remote", action="store_true")
     args = parser.parse_args(argv)
+    # What this build was actually told to do, recorded by the process that did
+    # it. The release gate reads it to see whether a safety flag was in play.
+    #
+    # It is a convenience for the reader, NOT the gate's evidence: a recorder can
+    # only ever attest to itself, so the gate's real assertions about --skip-vl
+    # and --allow-stale-remote are made against the ARTIFACTS those flags change
+    # (the caption count in asset_report.json, the presence of asset_lock.json,
+    # the degradations list). Nothing here carries a secret -- the API key
+    # arrives through --env as a path, and never on the command line.
+    effective_argv = list(argv) if argv is not None else list(sys.argv[1:])
 
     if len(args.faq_zip) != len(FAQ_IDS):
         parser.error(f"exactly {len(FAQ_IDS)} --faq-zip arguments are required in documented order")
@@ -104,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         "filename": args.legacy_external.name,
         "sha256": sha256_file(args.legacy_external),
     }]
-    report: dict[str, object] = {"external_selection": {}}
+    report: dict[str, object] = {"external_selection": {}, "build_argv": effective_argv}
 
     with tempfile.TemporaryDirectory(prefix="compshare-rag-v2-") as tmp_raw:
         tmp = Path(tmp_raw)
@@ -166,8 +200,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         semantic_client = None if args.skip_semantic else client
+        external_valid_from = args.external_valid_from or args.valid_from
         internal_version = f"kb.platform.v2.{args.valid_from}"
-        external_version = f"kb.external.v2.{args.valid_from}"
+        external_version = f"kb.external.v2.{external_valid_from}"
         internal_rows, internal_stats = build_chunks(
             internal_docs,
             kb_version=internal_version,
@@ -179,17 +214,18 @@ def main(argv: list[str] | None = None) -> int:
         rebuilt_external, external_stats = build_chunks(
             external_docs,
             kb_version=external_version,
-            valid_from=args.valid_from,
+            valid_from=external_valid_from,
             asset_notes=asset_notes,
             semantic_client=semantic_client,
             semantic_model=args.semantic_model,
         )
         legacy = load_legacy_external(args.legacy_external, kb_version=external_version)
         external_rows, external_merge_skipped = merge_external(legacy, rebuilt_external)
-        report["internal"] = {**internal_stats, "documents": len(internal_docs)}
+        report["internal"] = {**internal_stats, "documents": len(internal_docs), "valid_from": args.valid_from}
         report["external"] = {
             **external_stats,
             "documents": len(external_docs),
+            "valid_from": external_valid_from,
             "legacy_chunks_retained": len(legacy),
             "merged_chunk_count": len(external_rows),
             "merge_duplicates_skipped": external_merge_skipped,

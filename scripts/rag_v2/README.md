@@ -31,7 +31,22 @@ python -m scripts.rag_v2.build `
   --legacy-external deploy\kb\v2\legacy_external_lock.jsonl `
   --out-dir deploy\kb\v2 `
   --env F:\compshare-agent\.env.local `
-  --valid-from 2026-07-15
+  --valid-from 2026-08-16 `
+  --external-valid-from 2026-08-14
+```
+
+`--external-valid-from` defaults to `--valid-from`, so a single date behaves
+exactly as before. Pass the PREVIOUS external date whenever the external
+snapshots did not change — which is every docs-only rebuild. One date for both
+corpora restamps all 1189 external chunks, moves the corpus digest, and rewrites
+the 60 MB sidecar under a new digest-bearing filename with two Go pins following
+it, while re-embedding nothing (`chunk_repr` is title/patterns/content and knows
+no dates). Measured as git stores them, holding it back costs ~7.4 MB of history
+per release instead of ~23.8 MB. Read the current value off the released corpus
+rather than remembering it:
+
+```powershell
+python -m scripts.rag_v2.release_inputs corpus-valid-from deploy\kb\external_w0.jsonl
 ```
 
 `--skip-vl` and `--skip-semantic` are only for deterministic unit tests and local diagnosis. A release build must process all referenced images and must fail closed when a required asset cannot be extracted.
@@ -168,6 +183,78 @@ vectors, but no code path re-activates one. Emergency recovery today is
 `UPDATE knowledge.kb_releases SET status='validated' WHERE id='<old-id>'`
 followed by `--action publish --release-id <old-id>` — two transactions, not
 one, so treat it as recovery rather than a supported rollback.
+
+## Unattended releases
+
+A scheduled GitLab pipeline asks one question — has `compshare-docs` moved since
+the corpus was built — and on almost every tick the answer is no and nothing
+happens. `knowledge-tick` is deliberately a separate, cheap job on the kubectl
+image: it compares `release_manifest.json`'s recorded revision against
+`git ls-remote`, and only when they differ does it read the active release id out
+of `/healthz` and hand both to `build-knowledge-candidate`.
+
+The build job does exactly what the manual command above does, then runs the
+gate, commits, force-pushes one fixed branch and opens at most one merge request.
+It does **not** merge, import or publish. Auto-publish is a later phase and is
+gated on the gate having been observed both agreeing with a human and
+demonstrably red on a broken candidate.
+
+Cadence is bounded by git rather than by build cost: every release rewrites the
+embedding sidecars in full (60.2 MB external + 26.6 MB internal raw; 15.3 + 6.8
+MB compressed the way git stores them). Weekly is about 30 MB a month. A tick per
+docs commit would be up to ~290 MB a month even with the external corpus held
+frozen, so raising the cadence means moving the sidecars out of git first.
+
+Three CI variables carry what the job cannot derive: read access to
+compshare-docs, a token that can push and open a merge request here, and a
+ModelVerse key authorized for **all three** of `Qwen/Qwen3-VL-235B-A22B-Instruct`,
+`qwen3.7-max` and `qwen3-embedding-8b` — the retrieval-side key, not the terra
+answer key, which is scoped to terra alone.
+
+## The release gate
+
+`release_gate.py` decides whether every difference in a candidate is
+*attributable*. That is a weaker claim than "the content is correct" and a much
+stronger one than anything a diff can offer: the compshare-docs half of the
+corpus inherits the review its upstream merge request already had, and the half
+with no upstream reviewer — the three after-sales FAQ ZIPs and the scraped
+external snapshots — is not judged at all, only proven not to have moved.
+
+```powershell
+python -m scripts.rag_v2.release_gate `
+  --release-dir deploy\kb\v2 `
+  --released-internal <pre-build copy of deploy\kb\stage2b_w0.jsonl> `
+  --released-external <pre-build copy of deploy\kb\external_w0.jsonl> `
+  --released-manifest <pre-build copy of deploy\kb\v2\release_manifest.json> `
+  --docs-diff <git diff --no-renames --name-only pinned..head> `
+  --mode shadow
+```
+
+The released inputs must be snapshotted **before** the build, because
+`release.py` promotes over them. `--no-renames` on the docs diff is not
+cosmetic: rename detection reports only the new path, and a moved document is a
+removal plus an addition in the corpus, so the removed half needs explaining too.
+
+Two properties are structural rather than incidental:
+
+- **It is its own process with its own exit code.** `release.py` calls
+  `release_diff.main` and discards the return value, so a verdict living in that
+  module would be a no-op — which is how this tree already shipped a gate that
+  could not fail.
+- **A missing input fails.** Every check reports what it read; one that could
+  not read its evidence is `evidence_missing`, never a pass. The most recent
+  empty gate here was `degradations`, where an asset report written before the
+  key existed read as "nothing degraded".
+
+`--mode shadow` (the default) evaluates everything, writes the verdict and always
+exits 0. That is the only way to learn the base rate `--max-shrink` needs before
+a threshold can block anything; `G7` therefore reports and does not block until
+one is passed. `--mode enforce` exits 1 on any blocking failure.
+
+Every check ships with a fixture that turns it red (`ReleaseGateTests`), and
+`test_every_check_the_gate_emits_has_a_test_that_turns_it_red` fails when a new
+check arrives without one — an assertion never observed failing is not evidence
+of anything.
 
 ## Evaluation
 

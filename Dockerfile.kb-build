@@ -1,0 +1,89 @@
+# syntax=docker/dockerfile:1
+#
+# The image that rebuilds the knowledge corpus unattended.
+#
+# It is a SEPARATE image from Dockerfile on purpose. The runtime image ships a
+# 3.13 interpreter for the ssh-ops harness, and this one cannot: pillow==10.3.0
+# publishes no cp313 wheel, so on 3.13 pip falls back to a source build that
+# fails outright -- and if it ever succeeded it would be worse, because the
+# rendered contact sheet IS the VL model's input and a locally compiled Pillow
+# is not the artefact caption_contract_digest() attests to. Two interpreters,
+# two images.
+#
+# Every base is an internal UHub mirror. Docker Hub is not routable from the c5
+# build network (see the same note in Dockerfile) so a tag that is not mirrored
+# fails at pull, not at run.
+ARG GO_IMAGE=uhub.service.ucloud.cn/ucompshare-job/golang:1.25-alpine
+ARG PYTHON_IMAGE=uhub.service.ucloud.cn/base-images/python:3.12-slim
+
+FROM ${GO_IMAGE} AS go-toolchain
+
+FROM ${PYTHON_IMAGE} AS build
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    GOPROXY=https://goproxy.cn,direct \
+    GOTOOLCHAIN=local \
+    PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# git clones compshare-docs and commits the candidate; curl opens the merge
+# request through the GitLab API. ca-certificates is what makes both, plus the
+# ModelVerse and CDN calls the build itself makes, work at all.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+# release.py's last stage is `go test ./internal/knowledge`, which is the only
+# check that the digests it just rewrote actually load. Running it here rather
+# than in a second job keeps the whole build -> repin -> prove chain inside one
+# command, which is what makes the candidate self-contained.
+#
+# The toolchain is copied out of the mirrored Alpine image, so it was linked
+# against musl while this base is glibc. Go's own tools are statically linked
+# and this works in practice -- but "in practice" is not a thing to discover at
+# the END of an unattended release, after the model calls have already been
+# paid for. `go version` here turns that into a pull-time failure.
+COPY --from=go-toolchain /usr/local/go /usr/local/go
+RUN go version
+
+# --only-binary=:all: is the gate, not an optimisation: a source build is
+# precisely the failure this image exists to prevent, and pip's default is to
+# fall back to one silently when a wheel is missing for the platform.
+COPY scripts/rag_v2/requirements.txt /tmp/rag-requirements.txt
+RUN python -m pip install --no-cache-dir --only-binary=:all: \
+      --requirement /tmp/rag-requirements.txt
+
+# Fail the IMAGE build, not the release, when the interpreter contract is
+# broken. Each of these has already been a real failure mode somewhere in this
+# pipeline's history:
+#   - a 3.13 base silently source-building Pillow
+#   - Pillow resolving to a version the caption contract does not attest to
+#   - pypdf/pymupdf missing, which extract_pdf_text turns into a hard raise
+#     halfway through a build that has already spent its VL budget
+RUN python - <<'PY'
+import sys
+import PIL, pypdf, fitz
+
+assert sys.version_info[:2] == (3, 12), f"interpreter is {sys.version.split()[0]}, want 3.12.x"
+
+pinned = {}
+for line in open("/tmp/rag-requirements.txt", encoding="utf-8"):
+    line = line.split("#", 1)[0].strip()
+    if "==" in line:
+        name, _, version = line.partition("==")
+        pinned[name.strip().lower()] = version.strip()
+
+installed = {
+    "pillow": PIL.__version__,
+    "pypdf": pypdf.__version__,
+    # fitz.VersionBind is the PyMuPDF package version (1.24.11); fitz.version[1]
+    # is the bundled MuPDF (1.24.10) and is deliberately NOT what is pinned.
+    "pymupdf": fitz.VersionBind,
+}
+for name, want in pinned.items():
+    got = installed[name]
+    assert got == want, f"{name} resolved to {got}, requirements.txt pins {want}"
+print("interpreter and pinned render dependencies match requirements.txt:", installed)
+PY
+
+WORKDIR /src

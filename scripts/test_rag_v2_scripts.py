@@ -1,14 +1,19 @@
+from datetime import date
 import json
 from pathlib import Path
 import tempfile
 import unittest
 import unittest.mock
+import zipfile
 
 from scripts.rag_w0.build_corpus_embeddings import write_sidecar
 
+from scripts.rag_v2 import build
 from scripts.rag_v2 import pipeline
 from scripts.rag_v2 import release
 from scripts.rag_v2 import release_diff
+from scripts.rag_v2 import release_gate
+from scripts.rag_v2 import release_inputs
 from scripts.rag_v2.pipeline import (
     AssetNote,
     ModelVerseClient,
@@ -1470,6 +1475,596 @@ class ReleaseDiffTests(unittest.TestCase):
             markdown = release_diff.render_markdown(report)
             self.assertNotIn("回源校验情况未知", markdown)
             self.assertNotIn("需要人看的构建降级", markdown)
+
+
+class BuildEndToEndTests(unittest.TestCase):
+    """The only coverage that drives build.main's real argv.
+
+    Everything else in this file tests pipeline functions directly, which means
+    a flag can thread correctly into a helper and still never reach the corpus.
+    These fixtures are tiny and --skip-vl/--skip-semantic keep them offline, so
+    the whole class is a rounding error on runtime.
+    """
+
+    def _zip_of(self, path: Path, files: dict[str, str]) -> None:
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, body in files.items():
+                archive.writestr(name, body)
+
+    def _inputs(self, root: Path) -> list[str]:
+        """Three FAQ ZIPs, three external ZIPs, a docs tree and a legacy slice."""
+        body = "# 标题\n\n这是一段足够长的正文，用来越过 40 字符的下限，" \
+               "这样收集器不会把它当成空文档丢掉。\n"
+        docs = root / "docs"
+        (docs / "content").mkdir(parents=True)
+        (docs / "content" / "guide.md").write_text(body, encoding="utf-8")
+
+        faq_zips = []
+        for index in range(3):
+            path = root / f"faq{index}.zip"
+            self._zip_of(path, {f"faq{index}.md": body})
+            faq_zips.append(path)
+
+        external_zips = []
+        for index, package in enumerate(("comfyui", "digital-human", "voice-audio")):
+            path = root / f"ext{index}.zip"
+            source_type = {
+                "comfyui": "official_tutorial",
+                "digital-human": "runtime_inventory",
+                "voice-audio": "official_tutorial",
+            }[package]
+            manifest = {"files": [{"path": "a.md", "title": "外部文档",
+                                   "source_type": source_type}]}
+            self._zip_of(path, {"manifest.json": json.dumps(manifest), "a.md": body})
+            external_zips.append(path)
+
+        # Field-for-field the shape of a real row in
+        # deploy/kb/v2/legacy_external_lock.jsonl, so validate_chunks sees the
+        # same contract production does rather than one this test invented.
+        legacy = root / "legacy.jsonl"
+        legacy.write_text(json.dumps({
+            "chunk_id": "ext-legacy-001",
+            "kb_version": "kb.external.w0.2026-06-06",
+            "source_type": "faq",
+            "source_origin": "external_official",
+            "product_area": "inference_serving",
+            "acl": "customer_safe",
+            "title": "遗留外部语料",
+            "question_patterns": ["遗留语料怎么保留"],
+            "content": "遗留外部语料的一段内容，它的源快照已经不存在，因此只能原样保留。",
+            "source_refs": ["legacy-docs:one.md"],
+            "asset_refs": [],
+            "confidence": "high",
+            "valid_from": "2026-06-06",
+            "evidence_kind": "knowledge",
+            "surface_url": None,
+            "retrieval_score_hint": None,
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        argv = ["--internal-docs", str(docs), "--internal-revision", "0" * 40]
+        for path in faq_zips:
+            argv += ["--faq-zip", str(path)]
+        for path in external_zips:
+            argv += ["--external-zip", str(path)]
+        argv += ["--legacy-external", str(legacy), "--skip-vl", "--skip-semantic"]
+        return argv
+
+    def _build(self, root: Path, out: str, *dates: str) -> tuple[list[dict], list[dict]]:
+        out_dir = root / out
+        argv = [*self._argv, "--out-dir", str(out_dir), *dates]
+        self.assertEqual(0, build.main(argv))
+        return (
+            [json.loads(line) for line in
+             (out_dir / "stage2b_v2.jsonl").read_text(encoding="utf-8").splitlines() if line],
+            [json.loads(line) for line in
+             (out_dir / "external_v2.jsonl").read_text(encoding="utf-8").splitlines() if line],
+        )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self._argv = self._inputs(self.root)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_one_date_still_stamps_both_corpora(self):
+        """The default has to be byte-for-byte the old behaviour."""
+        internal, external = self._build(self.root, "one", "--valid-from", "2026-08-16")
+        self.assertTrue(internal and external)
+        self.assertEqual({"2026-08-16"}, {row["valid_from"] for row in internal})
+        self.assertEqual({"kb.platform.v2.2026-08-16"}, {row["kb_version"] for row in internal})
+        rebuilt = [row for row in external if not row.get("legacy_unrebuildable")]
+        self.assertTrue(rebuilt)
+        self.assertEqual({"2026-08-16"}, {row["valid_from"] for row in rebuilt})
+        self.assertEqual({"kb.external.v2.2026-08-16"}, {row["kb_version"] for row in external})
+
+    def test_the_external_date_can_be_held_back_independently(self):
+        internal, external = self._build(
+            self.root, "split",
+            "--valid-from", "2026-08-16", "--external-valid-from", "2026-07-15")
+        self.assertEqual({"2026-08-16"}, {row["valid_from"] for row in internal})
+        self.assertEqual({"kb.platform.v2.2026-08-16"}, {row["kb_version"] for row in internal})
+        self.assertEqual({"kb.external.v2.2026-07-15"}, {row["kb_version"] for row in external})
+
+    def test_a_docs_only_rebuild_leaves_the_external_corpus_byte_identical(self):
+        """The property the flag exists for, asserted on the bytes.
+
+        Without --external-valid-from this is exactly what fails: every external
+        row's kb_version moves, so the corpus digest moves, so the ~63 MB sidecar
+        is rewritten under a new name and two Go pins follow it -- for a release
+        in which no external source changed.
+        """
+        _, july = self._build(
+            self.root, "a", "--valid-from", "2026-07-15", "--external-valid-from", "2026-07-15")
+        _, august = self._build(
+            self.root, "b", "--valid-from", "2026-08-16", "--external-valid-from", "2026-07-15")
+        self.assertEqual(
+            (self.root / "a" / "external_v2.jsonl").read_bytes(),
+            (self.root / "b" / "external_v2.jsonl").read_bytes(),
+        )
+        # …and the mutation control: the internal corpus DID move, so this is
+        # not two identical builds passing an assertion about nothing.
+        self.assertNotEqual(
+            (self.root / "a" / "stage2b_v2.jsonl").read_bytes(),
+            (self.root / "b" / "stage2b_v2.jsonl").read_bytes(),
+        )
+        self.assertTrue(july and august)
+
+    def test_without_the_flag_the_same_two_builds_do_diverge(self):
+        """The inverse of the test above: proves it is the flag doing the work."""
+        self._build(self.root, "c", "--valid-from", "2026-07-15")
+        self._build(self.root, "d", "--valid-from", "2026-08-16")
+        self.assertNotEqual(
+            (self.root / "c" / "external_v2.jsonl").read_bytes(),
+            (self.root / "d" / "external_v2.jsonl").read_bytes(),
+        )
+
+    def test_the_manifest_records_both_dates(self):
+        self._build(self.root, "m", "--valid-from", "2026-08-16",
+                    "--external-valid-from", "2026-07-15")
+        manifest = json.loads(
+            (self.root / "m" / "release_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual("2026-08-16", manifest["report"]["internal"]["valid_from"])
+        self.assertEqual("2026-07-15", manifest["report"]["external"]["valid_from"])
+
+
+class ReleaseInputTests(unittest.TestCase):
+    """The values the unattended job reads off its own artifacts.
+
+    These decide what a release is BUILT FROM, so a wrong answer here is not a
+    crash, it is a corpus rebuilt against the wrong docs revision or restamped
+    for nothing. Each one used to be a `sed` or an embedded `python -c`, where
+    none of this could be asserted.
+    """
+
+    def test_the_pinned_revision_comes_from_the_shipped_manifest(self):
+        revision = release_inputs.pinned_docs_revision(
+            REPO_ROOT / "deploy/kb/v2/release_manifest.json")
+        self.assertRegex(revision, r"^[0-9a-f]{40}$")
+
+    def test_a_manifest_without_a_docs_source_is_an_error_not_an_empty_string(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "m.json"
+            path.write_text(json.dumps({"sources": [{"id": "faq-usage", "kind": "zip"}]}),
+                            encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                release_inputs.pinned_docs_revision(path)
+
+    def test_an_empty_revision_is_an_error_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "m.json"
+            path.write_text(json.dumps(
+                {"sources": [{"id": "gitlab-compshare-docs", "revision": ""}]}), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                release_inputs.pinned_docs_revision(path)
+
+    def test_the_external_stamp_comes_from_kb_version_on_the_real_corpus(self):
+        self.assertEqual(
+            release_inputs.corpus_valid_from(REPO_ROOT / "deploy/kb/external_w0.jsonl"),
+            "2026-08-14")
+
+    def test_the_stamp_is_not_taken_from_valid_from(self):
+        """The shipped external corpus genuinely mixes two valid_from values.
+
+        A max() over valid_from returns the same answer today, so this fixture
+        makes the two disagree: the legacy row is stamped LATER than the
+        rebuilt one, which is the case that separates the two readings.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "external.jsonl"
+            path.write_text("".join(json.dumps(row) + "\n" for row in [
+                {"chunk_id": "a", "kb_version": "kb.external.v2.2026-07-15",
+                 "valid_from": "2026-07-15"},
+                {"chunk_id": "b", "kb_version": "kb.external.v2.2026-07-15",
+                 "valid_from": "2026-12-31"},
+            ]), encoding="utf-8")
+            self.assertEqual("2026-07-15", release_inputs.corpus_valid_from(path))
+
+    def test_a_corpus_with_two_kb_versions_refuses_to_guess(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "external.jsonl"
+            path.write_text("".join(json.dumps(row) + "\n" for row in [
+                {"chunk_id": "a", "kb_version": "kb.external.v2.2026-07-15"},
+                {"chunk_id": "b", "kb_version": "kb.external.v2.2026-08-16"},
+            ]), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                release_inputs.corpus_valid_from(path)
+
+    def test_a_kb_version_with_no_date_stamp_refuses_to_guess(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "external.jsonl"
+            path.write_text(json.dumps({"chunk_id": "a", "kb_version": "kb.external.w0"}) + "\n",
+                            encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                release_inputs.corpus_valid_from(path)
+
+    def test_release_inputs_needs_nothing_outside_the_standard_library(self):
+        """knowledge-tick runs it on `apk add python3` and nothing else.
+
+        An import of pipeline here would drag Pillow onto the cheap job whose
+        whole purpose is to answer one question without paying for the build.
+        """
+        source = (REPO_ROOT / "scripts/rag_v2/release_inputs.py").read_text(encoding="utf-8")
+        for forbidden in ("pipeline", "PIL", "requests", "fitz", "pypdf"):
+            self.assertNotIn(f"import {forbidden}", source)
+            self.assertNotIn(f"from {forbidden}", source)
+
+
+class ReleaseGateTests(unittest.TestCase):
+    """One passing candidate, then one mutation per assertion.
+
+    Given this tree's history of gates that could not fail -- the discarded
+    release_diff return value, `degradations` reading absent as clean, --skip-vl
+    making the caption diff compare a file to itself -- an assertion that has
+    never been observed red is not evidence of anything. So every check below
+    has a fixture that turns it red, and the baseline proves the fixture is
+    otherwise clean.
+    """
+
+    OLD, NEW = "2026-07-15", "2026-08-16"
+    OLD_REV, NEW_REV = "a" * 40, "b" * 40
+
+    def _chunk(self, doc: str, content: str, *, kb: str, valid: str, index: int = 0):
+        source, _, path = doc.partition(":")
+        return {
+            "chunk_id": f"v2-{pipeline.sha256_bytes((doc + content).encode())[:16]}",
+            "kb_version": kb,
+            "valid_from": valid,
+            "source_type": "platform_public_doc",
+            "source_origin": "official",
+            "product_area": "gpu",
+            "acl": "customer_safe",
+            "title": path or source,
+            "question_patterns": [],
+            "content": content,
+            "heading_path": [f"h{index}"],
+            "source_refs": [doc],
+            "asset_refs": [],
+            "confidence": "high",
+            "evidence_kind": "knowledge",
+        }
+
+    def _jsonl(self, path: Path, rows):
+        path.write_text(
+            "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows),
+            encoding="utf-8")
+
+    def _manifest(self, revision: str, zips: dict[str, str], argv: list[str]):
+        sources = [{"id": "gitlab-compshare-docs", "kind": "git", "revision": revision}]
+        sources += [{"id": name, "kind": "zip", "filename": f"{name}.zip", "sha256": digest}
+                    for name, digest in sorted(zips.items())]
+        return {"schema_version": "compshare.rag.release.v2", "sources": sources,
+                "models": {"vl": "Qwen/Qwen3-VL-235B-A22B-Instruct"},
+                "report": {"build_argv": argv}}
+
+    def _lock(self, captions: dict[str, str], owner: str = "gitlab-compshare-docs:content/a.md"):
+        source, _, path = owner.partition(":")
+        return {
+            "schema_version": 1,
+            "contract": "c" * 64,
+            "failures": [],
+            "notes": [{"asset_id": asset, "description": text, "source_id": source,
+                       "source_path": path, "include_in_rag": True,
+                       "model": "Qwen/Qwen3-VL-235B-A22B-Instruct"}
+                      for asset, text in sorted(captions.items())],
+        }
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.released = root / "released"
+        self.candidate = root / "candidate"
+        self.released.mkdir()
+        self.candidate.mkdir()
+
+        zips = {f"zip{i}": pipeline.sha256_bytes(f"z{i}".encode()) for i in range(6)}
+        old_kb, new_kb = f"kb.platform.v2.{self.OLD}", f"kb.platform.v2.{self.NEW}"
+
+        self.old_internal = [
+            self._chunk("gitlab-compshare-docs:content/a.md", "原来的一段平台文档正文",
+                        kb=old_kb, valid=self.OLD),
+            self._chunk("gitlab-compshare-docs:content/b.md", "另一篇没有改动的文档",
+                        kb=old_kb, valid=self.OLD),
+            self._chunk("faq-usage:usage.md", "售后群里整理的一条常见问题",
+                        kb=old_kb, valid=self.OLD),
+        ]
+        # The FAQ row moves its kb_version and valid_from like every other
+        # internal row -- the internal corpus carries ONE kb_version. The
+        # baseline passing G4.faq is what proves the projection excludes them.
+        self.new_internal = [
+            self._chunk("gitlab-compshare-docs:content/a.md", "改写过的一段平台文档正文，更长了一点",
+                        kb=new_kb, valid=self.NEW),
+            self._chunk("gitlab-compshare-docs:content/b.md", "另一篇没有改动的文档",
+                        kb=new_kb, valid=self.NEW),
+            self._chunk("faq-usage:usage.md", "售后群里整理的一条常见问题",
+                        kb=new_kb, valid=self.NEW),
+        ]
+        self.external = [self._chunk("external-comfyui:guide.md", "外部快照里的一段内容",
+                                     kb=f"kb.external.v2.{self.OLD}", valid=self.OLD)]
+
+        self.old_manifest = self._manifest(self.OLD_REV, zips, [])
+        self.new_manifest = self._manifest(
+            self.NEW_REV, zips,
+            ["--internal-revision", self.NEW_REV, "--valid-from", self.NEW,
+             "--external-valid-from", self.OLD])
+        self.report = {"described": 1908, "published": 0, "runtime_mode": "caption_only",
+                       "failures": [], "degradations": []}
+        self.old_lock = self._lock({"remote-1": "一张截图"})
+        self.new_lock = self._lock({"remote-1": "一张截图"})
+        self.docs_diff = "content/a.md\n"
+        self._write()
+
+    def _write(self):
+        self._jsonl(self.released / "stage2b_w0.jsonl", self.old_internal)
+        self._jsonl(self.released / "external_w0.jsonl", self.external)
+        self._jsonl(self.candidate / "stage2b_v2.jsonl", self.new_internal)
+        self._jsonl(self.candidate / "external_v2.jsonl", self.external)
+        (self.released / "release_manifest.json").write_text(
+            json.dumps(self.old_manifest, ensure_ascii=False), encoding="utf-8")
+        (self.candidate / "release_manifest.json").write_text(
+            json.dumps(self.new_manifest, ensure_ascii=False), encoding="utf-8")
+        (self.candidate / "asset_report.json").write_text(
+            json.dumps(self.report, ensure_ascii=False), encoding="utf-8")
+        (self.released / "asset_lock.json").write_text(
+            json.dumps(self.old_lock, ensure_ascii=False), encoding="utf-8")
+        (self.candidate / "asset_lock.json").write_text(
+            json.dumps(self.new_lock, ensure_ascii=False), encoding="utf-8")
+        (self.candidate / "docs_diff.txt").write_text(self.docs_diff, encoding="utf-8")
+        # Produced by its real producer rather than hand-shaped, so this fixture
+        # cannot drift from what release.py actually writes.
+        report = release_diff.build_report(
+            old_internal=self.released / "stage2b_w0.jsonl",
+            new_internal=self.candidate / "stage2b_v2.jsonl",
+            old_external=self.released / "external_w0.jsonl",
+            new_external=self.candidate / "external_v2.jsonl",
+            old_lock=self.released / "asset_lock.json",
+            new_lock=self.candidate / "asset_lock.json",
+            asset_report=self.candidate / "asset_report.json")
+        (self.candidate / "release_diff.json").write_text(
+            json.dumps(report, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+
+    def _run(self, **overrides):
+        inputs = release_gate.Inputs(
+            release_dir=self.candidate,
+            released_internal=self.released / "stage2b_w0.jsonl",
+            released_external=self.released / "external_w0.jsonl",
+            released_manifest=self.released / "release_manifest.json",
+            docs_diff=self.candidate / "docs_diff.txt",
+            today=date.fromisoformat(self.NEW),
+        )
+        return release_gate.verdict(release_gate.evaluate(inputs, **overrides))
+
+    def _check(self, result, check_id):
+        for finding in result["findings"]:
+            if finding["id"] == check_id:
+                return finding
+        self.fail(f"no check named {check_id}; got {[f['id'] for f in result['findings']]}")
+
+    # ---- the baseline ----------------------------------------------------
+    def test_an_ordinary_docs_only_release_is_auto_publishable(self):
+        result = self._run()
+        failed = [f for f in result["findings"] if not f["ok"]]
+        self.assertEqual([], failed, msg=f"baseline should be clean, got {failed}")
+        self.assertTrue(result["auto_publishable"])
+        self.assertEqual([], result["evidence_missing"])
+
+    # ---- one mutation per assertion --------------------------------------
+    def test_G0_fails_when_the_docs_revision_did_not_move(self):
+        self.new_manifest = self._manifest(self.OLD_REV, {}, [])
+        self.new_manifest["sources"] += self.old_manifest["sources"][1:]
+        self._write()
+        result = self._run()
+        self.assertFalse(self._check(result, "G0")["ok"])
+        self.assertFalse(result["auto_publishable"])
+
+    def test_G1_argv_fails_when_a_safety_flag_was_passed(self):
+        self.new_manifest["report"]["build_argv"].append("--skip-vl")
+        self._write()
+        result = self._run()
+        self.assertFalse(self._check(result, "G1.argv")["ok"])
+        self.assertIn("--skip-vl", self._check(result, "G1.argv")["detail"])
+
+    def test_G1_captions_fails_when_nothing_was_described(self):
+        """--skip-vl also removes its own trace from argv if someone edits it."""
+        self.report["described"] = 0
+        self._write()
+        result = self._run()
+        self.assertFalse(self._check(result, "G1.captions")["ok"])
+
+    def test_G1_stale_remote_reports_evidence_missing_not_clean(self):
+        self.report.pop("degradations")
+        self._write()
+        result = self._run()
+        finding = self._check(result, "G1.stale-remote")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["evidence_missing"])
+        self.assertIn("G1.stale-remote", result["evidence_missing"])
+
+    def test_G1_stale_remote_fails_on_an_unrevalidated_platform_image(self):
+        self.report["degradations"] = [{"ref": "x.png", "severity": "error"}]
+        self._write()
+        result = self._run()
+        self.assertFalse(self._check(result, "G1.stale-remote")["ok"])
+
+    def test_G1_lock_fails_when_the_caption_lock_was_never_written(self):
+        self.new_lock = {"contract": "", "notes": [], "failures": [], "schema_version": 1}
+        self._write()
+        result = self._run()
+        self.assertFalse(self._check(result, "G1.lock")["ok"])
+
+    def test_G2_fails_when_an_input_zip_was_swapped(self):
+        for source in self.new_manifest["sources"]:
+            if source.get("kind") == "zip":
+                source["sha256"] = pipeline.sha256_bytes(b"a different export")
+                break
+        self._write()
+        result = self._run()
+        self.assertFalse(self._check(result, "G2")["ok"])
+
+    def test_G3_fails_on_a_chunk_that_is_not_in_effect_yet(self):
+        self.new_internal[0]["valid_from"] = "2099-01-01"
+        self._write()
+        result = self._run()
+        finding = self._check(result, "G3")
+        self.assertFalse(finding["ok"])
+        self.assertIn("2099-01-01", finding["detail"])
+
+    def test_G3_fails_on_an_unparsable_date(self):
+        self.new_internal[0]["valid_from"] = "not-a-date"
+        self._write()
+        self.assertFalse(self._check(self._run(), "G3")["ok"])
+
+    def test_G4_faq_fails_when_an_unreviewed_faq_chunk_moves(self):
+        self.new_internal[2]["content"] = "有人悄悄改了售后 FAQ 的正文"
+        self._write()
+        result = self._run()
+        self.assertFalse(self._check(result, "G4.faq")["ok"])
+        self.assertFalse(result["auto_publishable"])
+
+    def test_G4_external_names_the_stamp_when_only_the_stamp_moved(self):
+        restamped = [dict(row, kb_version=f"kb.external.v2.{self.NEW}", valid_from=self.NEW)
+                     for row in self.external]
+        self._write()
+        self._jsonl(self.candidate / "external_v2.jsonl", restamped)
+        result = self._run()
+        finding = self._check(result, "G4.external")
+        self.assertFalse(finding["ok"])
+        self.assertIn("--external-valid-from", finding["detail"])
+
+    def test_G4_external_names_content_when_the_content_moved(self):
+        self._write()
+        self._jsonl(self.candidate / "external_v2.jsonl",
+                    [dict(row, content="外部内容被改掉了") for row in self.external])
+        finding = self._check(self._run(), "G4.external")
+        self.assertFalse(finding["ok"])
+        self.assertIn("CONTENT", finding["detail"])
+
+    def test_G5_fails_when_a_changed_document_is_in_no_docs_commit(self):
+        self.new_internal[1]["content"] = "这篇文档也变了，但没有对应的 docs 提交"
+        self._write()
+        result = self._run()
+        finding = self._check(result, "G5")
+        self.assertFalse(finding["ok"])
+        self.assertIn("content/b.md", finding["detail"])
+
+    def test_G5_fails_when_the_docs_diff_is_absent_rather_than_passing(self):
+        inputs = release_gate.Inputs(
+            release_dir=self.candidate,
+            released_internal=self.released / "stage2b_w0.jsonl",
+            released_external=self.released / "external_w0.jsonl",
+            released_manifest=self.released / "release_manifest.json",
+            docs_diff=None, today=date.fromisoformat(self.NEW))
+        result = release_gate.verdict(release_gate.evaluate(inputs))
+        finding = self._check(result, "G5")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["evidence_missing"])
+
+    def test_G6_fails_when_a_caption_drifts_on_an_untouched_document(self):
+        self.old_lock = self._lock({"remote-1": "原来的说明"},
+                                   owner="gitlab-compshare-docs:content/b.md")
+        self.new_lock = self._lock({"remote-1": "模型这次说了别的"},
+                                   owner="gitlab-compshare-docs:content/b.md")
+        self._write()
+        result = self._run()
+        finding = self._check(result, "G6")
+        self.assertFalse(finding["ok"])
+        self.assertIn("content/b.md", finding["detail"])
+
+    def test_G6_allows_a_caption_rewrite_inside_a_document_that_did_change(self):
+        """The control: same drift, but on the document the docs commit touched."""
+        self.old_lock = self._lock({"remote-1": "原来的说明"})
+        self.new_lock = self._lock({"remote-1": "模型这次说了别的"})
+        self._write()
+        self.assertTrue(self._check(self._run(), "G6")["ok"])
+
+    def test_G6_fails_when_the_caption_contract_itself_changed(self):
+        self.new_lock["contract"] = "d" * 64
+        self._write()
+        finding = self._check(self._run(), "G6")
+        self.assertFalse(finding["ok"])
+        self.assertIn("contract", finding["detail"])
+
+    def test_G7_only_records_until_a_threshold_is_set(self):
+        self.new_internal = [self.new_internal[2]]
+        self._write()
+        result = self._run()
+        finding = self._check(result, "G7")
+        self.assertTrue(finding["ok"])
+        self.assertFalse(finding["blocking"])
+
+    def test_G7_blocks_once_a_threshold_is_set(self):
+        self.new_internal = [self.new_internal[2]]
+        self._write()
+        finding = self._check(self._run(max_shrink=0.05), "G7")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["blocking"])
+
+    # ---- the mode contract ------------------------------------------------
+    def test_shadow_records_a_rejection_without_failing_the_pipeline(self):
+        self.new_internal[2]["content"] = "改了没人评审的 FAQ"
+        self._write()
+        common = [
+            "--release-dir", str(self.candidate),
+            "--released-internal", str(self.released / "stage2b_w0.jsonl"),
+            "--released-external", str(self.released / "external_w0.jsonl"),
+            "--released-manifest", str(self.released / "release_manifest.json"),
+            "--docs-diff", str(self.candidate / "docs_diff.txt"),
+            "--today", self.NEW,
+            "--out-json", str(self.candidate / "gate.json"),
+        ]
+        self.assertEqual(0, release_gate.main([*common, "--mode", "shadow"]))
+        recorded = json.loads((self.candidate / "gate.json").read_text(encoding="utf-8"))
+        self.assertFalse(recorded["auto_publishable"])
+        self.assertIn("G4.faq", recorded["blocking_failures"])
+        self.assertEqual(1, release_gate.main([*common, "--mode", "enforce"]))
+
+    def test_enforce_passes_a_clean_candidate(self):
+        self.assertEqual(0, release_gate.main([
+            "--release-dir", str(self.candidate),
+            "--released-internal", str(self.released / "stage2b_w0.jsonl"),
+            "--released-external", str(self.released / "external_w0.jsonl"),
+            "--released-manifest", str(self.released / "release_manifest.json"),
+            "--docs-diff", str(self.candidate / "docs_diff.txt"),
+            "--today", self.NEW, "--mode", "enforce"]))
+
+    def test_every_check_the_gate_emits_has_a_test_that_turns_it_red(self):
+        """The meta-assertion: a check nobody proved can fail is not a gate.
+
+        Without this, adding a check whose fixture nobody wrote is invisible --
+        it ships green forever and reads as coverage.
+        """
+        emitted = {f["id"] for f in self._run()["findings"]}
+        proven = set()
+        for name in dir(self):
+            if not name.startswith("test_G"):
+                continue
+            # test_G1_stale_remote_... -> G1.stale-remote / G1.captions / G0 / G7
+            head = name[len("test_"):].split("_fails")[0].split("_only")[0]
+            head = head.split("_allows")[0].split("_blocks")[0].split("_names")[0]
+            proven.add(head.replace("_", ".", 1).replace("_", "-"))
+        self.assertEqual(
+            emitted, emitted & proven,
+            msg=f"checks with no red fixture: {sorted(emitted - proven)}")
 
 
 if __name__ == "__main__":
