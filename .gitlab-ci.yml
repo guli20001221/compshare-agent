@@ -245,18 +245,29 @@ import-knowledge-release:
     - |
       set -eu
       POD="compshare-kb-import-${CI_PIPELINE_ID}"
+      CP_LIST="/tmp/kb-cp-files-${CI_PIPELINE_ID}"
       cleanup() {
         kubectl -n "$NAMESPACE" delete pod "$POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+        rm -f "$CP_LIST"
       }
       trap cleanup EXIT
 
+      # The worker's arguments are accumulated in the POSITIONAL PARAMETERS, not
+      # in a string.  A string would have to be expanded unquoted to become an
+      # argument list, and one of its values -- the parent release id -- is read
+      # out of a committed JSON file, so an unquoted expansion lets that file
+      # decide the worker's argv: a `parent_release_id` of "r0 --publish" would
+      # word-split into a --publish this job deliberately never passes, turning
+      # the candidate-then-review gate into a publish.  `set --` appends whole
+      # arguments, so a value containing spaces stays one argument and fails the
+      # base-match comparison instead of becoming a flag.
+      set --
       # Pair each corpus with its sidecar through the digest the sidecar
       # filename carries.  No digest is restated here: a regenerated or
       # renamed artifact fails this loop instead of importing a vector set
       # built for different text, and the worker re-checks the same bijection
       # server-side.  The \r strip makes the hash match on a CRLF checkout too.
-      CP_FILES=""
-      WORKER_ARGS=""
+      : > "$CP_LIST"
       for corpus in stage2b_w0 external_w0; do
         test -f "deploy/kb/$corpus.jsonl"
         digest=$(tr -d '\r' < "deploy/kb/$corpus.jsonl" | sha256sum | cut -d' ' -f1)
@@ -266,8 +277,8 @@ import-knowledge-release:
           exit 1
         fi
         echo "$corpus.jsonl $(wc -c < "deploy/kb/$corpus.jsonl") bytes -> $(basename "$sidecar") $(wc -c < "$sidecar") bytes"
-        CP_FILES="$CP_FILES deploy/kb/$corpus.jsonl $sidecar"
-        WORKER_ARGS="$WORKER_ARGS --corpus /work/$corpus.jsonl --embeddings /work/$(basename "$sidecar")"
+        printf '%s\n%s\n' "deploy/kb/$corpus.jsonl" "$sidecar" >> "$CP_LIST"
+        set -- "$@" --corpus "/work/$corpus.jsonl" --embeddings "/work/$(basename "$sidecar")"
       done
 
       # Read the two settings that decide WHERE this release lands out of the
@@ -305,11 +316,21 @@ import-knowledge-release:
       # so publishing it overwrites content it never saw while the base match
       # reports success.  Checking it now also beats discovering it as a
       # publish-time ErrStaleCandidate, which says nothing about which corpus.
-      if ! test -f deploy/kb/v2/release_base.json; then
-        echo "deploy/kb/v2/release_base.json is missing." >&2
-        echo "Build the candidate with: python -m scripts.rag_v2.release --parent-release-id <id> ..." >&2
-        exit 1
-      fi
+      #
+      # release_diff.md is checked HERE rather than after the import, for two
+      # reasons.  It is a gate, and a gate that reports after the candidate
+      # exists has already let the thing through; and failing now leaves nothing
+      # behind, while failing afterwards strands an orphan candidate that the
+      # next run's base match has no opinion about.  Both files come from the
+      # same `release.py` invocation, so a candidate missing either one was not
+      # built by the orchestrated command and nobody can review what changed.
+      for required in release_base.json release_diff.md; do
+        if ! test -f "deploy/kb/v2/$required"; then
+          echo "deploy/kb/v2/$required is missing." >&2
+          echo "Build the candidate with: python -m scripts.rag_v2.release --parent-release-id <id> ..." >&2
+          exit 1
+        fi
+      done
       PARENT_RELEASE_ID=$(sed -n 's/^[[:space:]]*"parent_release_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' deploy/kb/v2/release_base.json)
       HEALTHZ=$(kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- wget -qO- http://127.0.0.1:8088/healthz)
       ACTIVE_RELEASE_ID=$(printf '%s' "$HEALTHZ" | sed -n 's/.*"release_id":"\([^"]*\)".*/\1/p')
@@ -320,7 +341,7 @@ import-knowledge-release:
           echo "Rebuild with: python -m scripts.rag_v2.release --parent-release-id $ACTIVE_RELEASE_ID ..." >&2
           exit 1
         fi
-        BASE_ARGS="--allow-empty-parent"
+        set -- "$@" --allow-empty-parent
         echo "no active release; importing as the first publication"
       else
         if [ "$PARENT_RELEASE_ID" != "$ACTIVE_RELEASE_ID" ]; then
@@ -329,7 +350,7 @@ import-knowledge-release:
           echo "current release, or publish the pending candidate first." >&2
           exit 1
         fi
-        BASE_ARGS="--parent-release-id $PARENT_RELEASE_ID"
+        set -- "$@" --parent-release-id "$PARENT_RELEASE_ID"
         echo "corpus is based on $PARENT_RELEASE_ID, which is what production is serving"
       fi
 
@@ -352,7 +373,10 @@ import-knowledge-release:
         sleep 5
       done
 
-      for file in $CP_FILES; do
+      # Redirected, not piped: a `cmd | while` body runs in a subshell, where
+      # `exit 1` on a short copy would end the subshell and let the import go
+      # ahead on a truncated corpus.
+      while IFS= read -r file; do
         base=$(basename "$file")
         echo "copying $base"
         kubectl -n "$NAMESPACE" cp "$file" "$POD:/work/$base"
@@ -362,35 +386,30 @@ import-knowledge-release:
           echo "$base copied as $got bytes, expected $want" >&2
           exit 1
         fi
-      done
+      done < "$CP_LIST"
 
-      # WORKER_ARGS and BASE_ARGS are deliberately unquoted: both are built
-      # argument lists.  No --publish: --validate already defaults to true, so
-      # this leaves a VALIDATED CANDIDATE and does not touch the active pointer.
-      # Nothing a user sees changes until publish-knowledge-release is run, and
-      # --require-base-match (default true) makes that later publish a
-      # compare-and-swap against the parent recorded above.
+      # "$@" carries the corpus/sidecar pairs and the base-match argument built
+      # above, each as one whole argument.  No --publish: --validate already
+      # defaults to true, so this leaves a VALIDATED CANDIDATE and does not touch
+      # the active pointer.  Nothing a user sees changes until
+      # publish-knowledge-release is run, and --require-base-match (default true)
+      # makes that later publish a compare-and-swap against the parent recorded
+      # above.
       kubectl -n "$NAMESPACE" exec "$POD" -- /usr/local/bin/compshare-kb-worker \
         --action import \
         --knowledge-base "$KNOWLEDGE_BASE" \
         --release-id "$KB_RELEASE_ID" \
         --version "$KB_RELEASE_VERSION" \
-        $BASE_ARGS \
-        $WORKER_ARGS
+        "$@"
 
       echo
       echo "candidate $KB_RELEASE_ID imported and validated; the active release is UNCHANGED."
       echo "Review deploy/kb/v2/release_diff.md (artifact of this job), then run"
       echo "publish-knowledge-release on this same commit to make it active."
       echo
-      if [ -f deploy/kb/v2/release_diff.md ]; then
-        echo "----- release_diff.md (head) -----"
-        head -40 deploy/kb/v2/release_diff.md
-        echo "----- (full report in this job's artifacts) -----"
-      else
-        echo "WARNING: deploy/kb/v2/release_diff.md is missing -- this candidate was built" >&2
-        echo "without the orchestrated release command, so nobody can review what changed." >&2
-      fi
+      echo "----- release_diff.md (head) -----"
+      head -40 deploy/kb/v2/release_diff.md
+      echo "----- (full report in this job's artifacts) -----"
   artifacts:
     paths:
       - deploy/kb/v2/release_diff.md
