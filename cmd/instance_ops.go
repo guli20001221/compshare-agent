@@ -250,6 +250,23 @@ func instanceOpsHostResolver(cfg *config.Config, describer sshops.Describer) (ss
 //   - the credential provider is per-tenant STS, not a shared static account: under static AK/SK there
 //     is no upstream tenant scoping on the target instance, so the lane must refuse (INV-12 / gate 7)
 //   - a database is available for the fail-closed audit store
+//   - that database's ssh_ops_audit carries every column the writer names
+//
+// Which failures take the SERVER down and which only take the LANE down is a deliberate layering:
+//
+//   - core tables (sessions, messages, the turn protocol) missing → boot failure. The product cannot
+//     run without them, and store.VerifySchema already refuses at OpenMySQL.
+//   - SSH-ops CONFIGURATION wrong (no harness_path/base_url/key, internal_ipv6 without iam_url, an
+//     unparseable public_ipv6_prefix) → boot failure. The artifact is broken: restarting it a hundred
+//     times produces the same lane that cannot enter any box, so a silent downgrade would let a bad
+//     edit be reported as a failed experiment.
+//   - the ssh_ops_audit table or one of its columns missing → LANE DISABLED, loudly. Nothing is wrong
+//     with the artifact; the environment is not ready yet, and one migration job fixes it without a
+//     new image. The safety property the audit exists for — do not enter a user's instance when the
+//     access cannot be recorded — is fully delivered by a nil runner: the tool is absent from the
+//     model's window (engine.go centralAgentToolWindow), the prompt does not advertise write mode
+//     (engine.go refreshSystemPrompt), and even a replayed or hallucinated call gets INV-10's inert
+//     refusal (instance_ops_dispatch.go). No credential is fetched and no SSH is dialled.
 //
 // It deliberately does NOT require durable turns. The lane is READ-ONLY, so the only thing the durable
 // path adds is disconnect-survival (a detached worker ctx) and per-step replay persistence — both are
@@ -275,13 +292,25 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 	// Check the audit columns once, here, where the lane is being turned on. Without this a missing
 	// migration does not degrade the lane — it lets Begin succeed (its columns are all from 0011),
 	// the harness enter the box, and only Finish fail, which under allow_writes means an instance was
-	// changed and the row that says what happened is stuck at 'started'. A boot error, like every
-	// other SSH-ops misconfiguration, because a lane whose record cannot be completed is broken
-	// rather than degraded.
+	// changed and the row that says what happened is stuck at 'started'.
+	//
+	// The failure DISABLES THE LANE rather than failing the boot, which is the layering above: this
+	// is an environment state, not a broken artifact. The safety boundary is "audit unavailable → do
+	// not enter a user's instance", and a nil runner delivers exactly that; taking chat and the
+	// create flow down with it would be a different, larger promise that the audit table never made.
+	// It matters concretely because deploy/k8s/deployment.yaml is replicas: 1 with strategy: Recreate
+	// — the old Pod is gone before the new one starts, so a boot error here is a full outage with no
+	// version to fall back to, over an optional lane's optional column.
+	//
+	// The probe is boot-only by design. After the migration runs, the lane comes back on the next
+	// restart/redeploy; nothing polls for it, because a background re-check would add a moving part
+	// to buy an operation the operator is already performing.
 	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelProbe()
 	if err := store.VerifySSHOpsAuditSchema(probeCtx, db); err != nil {
-		return nil, fmt.Errorf("ssh-ops: %w", err)
+		log.Printf("ssh-ops disabled: audit schema unavailable, so entering an instance could not be recorded: %v "+
+			"(in-instance diagnosis stays off until the migration runs AND this process restarts — the probe is boot-only)", err)
+		return nil, nil
 	}
 	hostResolver, err := instanceOpsHostResolver(cfg, describer)
 	if err != nil {

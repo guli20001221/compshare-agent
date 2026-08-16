@@ -41,10 +41,17 @@
 --
 -- ORDERING IS CHECKED, NOT ONLY DOCUMENTED. Apply this before the binary: Finish
 -- is a single UPDATE, so a missing column fails the whole statement and orphans
--- the row at 'started'. When the lane is enabled the server now probes every
--- writer column at boot (store.VerifySSHOpsAuditSchema) and refuses to start
--- rather than discover this on the first diagnosis -- by which time, under
--- allow_writes, the instance has already been changed.
+-- the row at 'started'. When the lane is enabled the server probes every writer
+-- column at boot (store.VerifySSHOpsAuditSchema) and DISABLES THE LANE rather
+-- than discover this on the first diagnosis -- by which time, under allow_writes,
+-- the instance has already been changed.
+--
+-- Disabled, not fatal: the boundary is "audit unavailable -> do not enter a
+-- user's instance", which a nil runner delivers completely, and the deployment
+-- is replicas: 1 / strategy: Recreate, so failing the boot over an optional
+-- lane's optional column would be a full outage with no version left serving.
+-- Chat keeps working; only in-instance diagnosis is off, and it returns after
+-- the migration plus a restart (the probe is boot-only, nothing polls).
 --
 -- Reading it: NULL means either an old row or a run that recorded no steps.
 -- commands_ran / commands_refused already distinguish those, and as with the

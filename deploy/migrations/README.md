@@ -46,9 +46,9 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.
 
 # 0011/0013/0014 belong to the OPTIONAL SSH-ops lane, not to the cutover above.
 # They are required as a SET whenever the lane is enabled: since 2026-08-16 the
-# server probes ssh_ops_audit for every column its writer names and REFUSES TO
-# BOOT if any is missing (see "boot probe" below). With the lane off they are not
-# probed and not needed.
+# server probes ssh_ops_audit for every column its writer names and DISABLES THE
+# LANE (loudly, still serving chat) if any is missing — see "boot probe" below.
+# With the lane off they are not probed and not needed.
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0011_create_ssh_ops_audit.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0012_create_feishu_oauth_tokens.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0013_add_ssh_ops_context_observability.sql
@@ -82,8 +82,15 @@ an older binary against a migrated database simply leaves the column NULL.
 
 That ordering is now **checked, not just documented**. When the lane is enabled,
 `serverInstanceOpsRunner` runs `store.VerifySSHOpsAuditSchema` — one
-`SELECT <every writer column> FROM ssh_ops_audit LIMIT 0` — and any failure is a
-boot error naming the migrations, like every other SSH-ops misconfiguration.
+`SELECT <every writer column> FROM ssh_ops_audit LIMIT 0`. On failure it logs
+
+```
+ssh-ops disabled: audit schema unavailable, so entering an instance could not be
+recorded: ... (in-instance diagnosis stays off until the migration runs AND this
+process restarts — the probe is boot-only)
+```
+
+and **disables the lane. The server still starts.**
 
 It exists because the un-probed failure is silent, late, and on the wrong side of
 the safety boundary. `Begin` names only `0011`'s columns, so on a partially
@@ -94,13 +101,28 @@ row at `started`. `TestSSHOpsAuditSchemaProbeStopsTheLaneBeforeAnUnrecordableRun
 reproduces exactly that against a real PostgreSQL before asserting the probe
 refuses first.
 
-**This changed one previously-documented behavior**: a missing `0011` used to
-disable the lane silently (the server started and logged the reason, because the
-fail-closed `Begin` refused every diagnosis). It is now a boot error too. That
-case was genuinely safe — no instance was ever entered — but "enabled and
-refusing 100% of requests" is not a working deployment either, and one rule for
-the whole table is easier to operate than "table absent is fine, column absent is
-fatal".
+**Which failures take the server down, and which only take the lane down:**
+
+| failure | result | why |
+|---|---|---|
+| core tables (`sessions`, `messages`, turn protocol) missing | boot failure | the product cannot run; `store.VerifySchema` already refuses at `OpenMySQL` |
+| SSH-ops **configuration** wrong (`harness_path`, `base_url`, key, `internal_ipv6` without `iam_url`, unparseable `public_ipv6_prefix`) | boot failure | the artifact is broken — restarting produces the same lane that can enter no box, so a silent downgrade would let a bad edit read as a failed experiment |
+| `ssh_ops_audit` table or column missing | **lane disabled**, loudly | nothing is wrong with the artifact; the environment is not ready, and one migration job fixes it without a new image |
+
+The safety boundary is *audit unavailable → do not enter a user's instance*, not
+*audit unavailable → nobody may chat*. A nil runner delivers the first exactly:
+the tool is absent from the model's window, the prompt does not advertise write
+mode, and even a replayed or hallucinated call gets INV-10's inert refusal — no
+credential is fetched and no SSH is dialled. Failing the boot instead would be a
+full outage, because `deploy/k8s/deployment.yaml` is `replicas: 1` with
+`strategy: Recreate`: the old Pod is gone before the new one starts, so there is
+no version left serving.
+
+**If a deploy does land before its migration**, chat keeps working and only
+in-instance diagnosis is off. Recovery is: run the migration job, then redeploy
+the same image (or restart the Pod). The redeploy is required — the probe runs at
+boot and nothing polls for the column afterwards, deliberately: a background
+re-check would add a moving part to buy an action the operator is already taking.
 
 In the current production GitLab pipeline, clicking `deploy` does **not** run
 SQL migrations. Before deploying a binary that writes `0013`'s columns, run the
