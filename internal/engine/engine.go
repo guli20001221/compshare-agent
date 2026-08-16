@@ -542,6 +542,12 @@ type Engine struct {
 	// still spends the slot. Reset per turn. Per-session/per-turn — sharing would
 	// let one tenant's run withdraw the lane from another's turn.
 	instanceOpsRanThisTurn bool
+
+	// pendingInstanceOpsInterruption is a user-facing notice left by a diagnosis that ended without
+	// delivering its verdict, drained by the next turn. It is session state, not turn state, so it
+	// is deliberately NOT reset in the per-turn block — resetting it there would clear it on the
+	// very turn that is supposed to show it. See instance_ops_interruption.go.
+	pendingInstanceOpsInterruption *instanceOpsInterruption
 	// lastConfirmationTerminalReason is why the most recent authorization card in
 	// this turn ended, in observability's closed-set spelling. It exists because
 	// ConfirmFunc answers a bool, so every non-approval — the user declining, the
@@ -1458,6 +1464,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.actionProposalDispositionThisTurn = ""
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.instanceOpsRanThisTurn = false
+	// Deliver any notice left by a diagnosis that ended without a verdict. It goes to the USER, on
+	// the activity stream, and is never appended to e.messages — the model must not restate,
+	// summarize or act on it. Drained here, at the top of the turn, so it can never fire on the same
+	// turn that stashed it (executeInstanceOps runs strictly later).
+	e.emitPendingInstanceOpsInterruption(onStep)
 	e.lastConfirmationTerminalReason = ""
 	e.verbatimBlocksThisTurn = nil
 	// Single composition site for verbatim blocks: every success path — normal
@@ -4504,6 +4515,13 @@ const (
 	StepConfirmNeeded                 // L1 operation needs confirmation
 	StepBlocked                       // L2 operation blocked
 	StepError                         // Error occurred
+	// StepUserNotice is a message for the USER that is not a tool event at all: nothing was
+	// called, nothing failed, and nothing was blocked. It exists because the alternative was
+	// dressing such a message up as StepBlocked, which made the trace record a phantom blocked
+	// tool error on a turn where no tool ran — polluting exactly the counters an incident is
+	// read from. Appended last on purpose: StepType is an iota and renumbering the existing
+	// values would silently relabel every step a client or trace already knows.
+	StepUserNotice
 )
 
 // StepEvent is an intermediate event during the ReAct loop.

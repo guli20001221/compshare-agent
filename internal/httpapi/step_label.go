@@ -86,6 +86,12 @@ var stepActionLabels = map[string]string{
 	// sees the same words twice cannot tell which question they just answered.
 	"InstanceOpsWriteCommand": "执行实例内修复命令",
 
+	// --- internal/engine: not a tool at all -------------------------------
+	// The deterministic notice a turn emits when the PREVIOUS diagnosis ended without a verdict.
+	// Nothing dispatches on this action; it exists so the console can label the frame rather than
+	// rendering a bare identifier above the one message that says the box may have been changed.
+	"InstanceOpsInterrupted": "上一轮排查中断记录",
+
 	"ProposeAction": "生成操作提案",
 }
 

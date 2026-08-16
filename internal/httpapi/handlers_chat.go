@@ -191,6 +191,15 @@ func stepTypeString(t engine.StepType) string {
 		return "blocked"
 	case engine.StepError:
 		return "error"
+	case engine.StepUserNotice:
+		// Its own wire word, not "blocked": the console renders this as a notice, and a client
+		// that counts errors must not count it.
+		//
+		// This is a NEW ENUM VALUE on the existing step frame — not a new frame, not a new
+		// handshake, and nothing negotiates it. A frontend that predates it falls through its own
+		// switch and shows the frame's Label alone, which loses the notice's detail but breaks
+		// nothing; the frontend's one-line `case 'user_notice'` is what recovers the detail.
+		return "user_notice"
 	default:
 		return "unknown"
 	}
