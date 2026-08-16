@@ -50,6 +50,7 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0011_create_ssh_ops_audit.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0012_create_feishu_oauth_tokens.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0013_add_ssh_ops_context_observability.sql
+psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0014_add_ssh_ops_step_detail.sql
 ```
 
 `0012` is required only before enabling `agent.feishu.external_image_oauth`. It
@@ -59,6 +60,20 @@ delegated Feishu user token; it contains no plaintext access or refresh token.
 `0013` is required with the contextual SSH-ops harness. It adds only aggregate
 schema/coverage and command-class columns to `ssh_ops_audit`; it does not store
 the injected user reports, platform fact values, credentials, or raw commands.
+
+`0014` adds `ssh_ops_audit.steps` (JSONB): the per-command detail behind
+`commands_ran` / `commands_refused`, so a run interrupted by a disconnect can be
+described by name rather than only by count. It holds the REDACTED display
+command (200-rune cap), tier, disposition, the fine-grained refusal reason, exit
+code and byte count — never command output, and never the raw command.
+
+It has the **same ordering requirement as `0013`: apply it BEFORE deploying a
+binary that writes it.** `Finish` is a single `UPDATE` and `steps` is one more
+`SET` in it, so against a database missing the column the whole statement errors
+— not just the new field. The outcome (`disposition`, `err_class`, the counts) is
+then never written and the row orphans at `started`, which is precisely the state
+the detached-context handling exists to prevent. The reverse direction is safe:
+an older binary against a migrated database simply leaves the column NULL.
 
 In the current production GitLab pipeline, clicking `deploy` does **not** run
 SQL migrations. Before deploying a binary that writes `0013`'s columns, run the

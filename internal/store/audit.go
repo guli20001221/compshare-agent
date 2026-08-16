@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 	"unicode/utf8"
 
@@ -55,20 +57,54 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'started', now())`,
 func (s *SSHOpsAuditStore) Finish(ctx context.Context, id string, ev sshops.AuditEvent) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `
+	steps, err := marshalAuditSteps(ev.Steps)
+	if err != nil {
+		// Never fail the outcome over the detail: the counts, disposition and err_class are what a
+		// query relies on, and losing them to keep a nicer column would trade the record for the
+		// annotation. Write NULL steps and say why.
+		log.Printf("ssh-ops: audit step detail dropped for row %s (counts still written): %v", id, err)
+		steps = nil
+	}
+	_, err = s.db.ExecContext(ctx, `
 UPDATE ssh_ops_audit
 SET disposition = $2, exit_code = $3, timed_out = $4, output_bytes = $5, err_class = $6,
     context_schema_version = $7, context_fact_coverage = $8,
-    commands_ran = $9, commands_refused = $10, first_command_class = $11, finished_at = now()
+    commands_ran = $9, commands_refused = $10, first_command_class = $11, steps = $12,
+    finished_at = now()
 WHERE id = $1`,
 		id, ev.Disposition, ev.ExitCode, ev.TimedOut, ev.OutputBytes, ev.ErrClass,
 		ev.ContextSchemaVersion, ev.ContextFactCoverage,
-		ev.CommandsRan, ev.CommandsRefused, ev.FirstCommandClass)
+		ev.CommandsRan, ev.CommandsRefused, ev.FirstCommandClass, steps)
 	if err != nil {
 		return fmt.Errorf("ssh_ops_audit finish: %w", err)
 	}
 	return nil
 }
+
+// marshalAuditSteps renders the per-command detail for the JSONB column, or nil for none.
+// nil becomes SQL NULL rather than '[]' so "this run recorded no steps" and "this row predates the
+// column" look the same on read — which they should, since commands_ran already separates them.
+func marshalAuditSteps(steps []sshops.PersistedStepSummary) ([]byte, error) {
+	if len(steps) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(steps)
+	if err != nil {
+		return nil, fmt.Errorf("marshal ssh_ops_audit steps: %w", err)
+	}
+	// A last-resort ceiling on the write. The producer already bounds rows (maxAuditStepRows) and
+	// each command (maxAuditStepCommandRunes); this catches the case where those bounds are later
+	// loosened without anyone thinking about the UPDATE, because a Finish that fails on payload
+	// size loses the OUTCOME, not just the detail.
+	if len(encoded) > maxAuditStepsBytes {
+		return nil, fmt.Errorf("ssh_ops_audit steps payload %d bytes exceeds %d", len(encoded), maxAuditStepsBytes)
+	}
+	return encoded, nil
+}
+
+// maxAuditStepsBytes is generous against the producer's own bounds (120 rows x ~200 runes is well
+// under it) precisely so that reaching it means a bound moved, not that a run was unusually long.
+const maxAuditStepsBytes = 256 * 1024
 
 func truncateAuditTask(s string, n int) string {
 	if len(s) <= n {

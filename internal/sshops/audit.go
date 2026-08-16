@@ -30,11 +30,16 @@ type AuditEvent struct {
 	CommandsRan          int
 	CommandsRefused      int
 	FirstCommandClass    string
-	ExitCode             int
-	TimedOut             bool
-	OutputBytes          int
-	Disposition          string // "started" | "ok" | "error"
-	ErrClass             string // credential-free error class (e.g. "auth_failed"); "" on success
+	// Steps is the redacted, bounded per-command detail behind those counts, so an interrupted
+	// run can be described by name rather than only by number. It is redacted by the producer
+	// (summarizeAuditStepDetail), never by a writer, so no AuditWriter implementation — including
+	// the in-memory one — ever holds a raw command. See PersistedStepSummary for what it is not.
+	Steps       []PersistedStepSummary
+	ExitCode    int
+	TimedOut    bool
+	OutputBytes int
+	Disposition string // "started" | "ok" | "error"
+	ErrClass    string // credential-free error class (e.g. "auth_failed"); "" on success
 }
 
 // AuditWriter records SSH-ops attempts. Begin MUST durably persist the attempt BEFORE the harness

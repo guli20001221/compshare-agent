@@ -1,0 +1,46 @@
+-- 0014_add_ssh_ops_step_detail.sql (PostgreSQL)
+--
+-- Adds the per-command detail behind commands_ran / commands_refused, so an
+-- interrupted diagnosis can be described by NAME rather than only by count.
+--
+-- Why this exists: the lane ships with agent.ssh_ops.allow_writes = true, and on
+-- the current non-durable transport a browser disconnect cancels the context and
+-- kills the harness mid-run. Finish still lands (it runs on context.WithoutCancel),
+-- so the row exists — but until now it could say only "8 ran, 1 refused", which
+-- cannot answer the one question a user staring at a half-repaired box actually
+-- has: did it change anything, and what?
+--
+-- WHAT IS IN HERE, and what deliberately is not:
+--
+--   steps = [ {cmd, tier, disp, reason?, exit?, bytes?}, ... ]
+--
+--   cmd    the REDACTED DISPLAY command, capped at 200 runes with a 「…[截断]」
+--          marker. It goes through guardrails.RedactPII then RedactOutputLeak --
+--          the same two redactors, in the same order, that the user already saw
+--          this command through in the live activity stream. The RAW command is
+--          never written: it can carry paths, tokens or user-supplied arguments,
+--          which is the same reason first_command_class (0013) stores a class
+--          rather than the text.
+--   disp   the three-valued wire disposition ("ran" | "refused" | "failed").
+--   reason the harness's fine-grained disposition ("refused_destructive",
+--          "refused_confirmation_timeout", ...). OPEN SET by design -- read it
+--          with a default branch, never an exhaustive switch, because either
+--          half of the deploy pair may be older than the other.
+--   exit   present only when the command produced an exit status.
+--
+--   Command OUTPUT is NOT here and must not be added. INV-6 keeps output off
+--   every wire but the model's own; a column carrying it would put a second copy
+--   of the box's contents in a table read by tooling that expects metadata.
+--
+-- NOT A RESUME CURSOR. This says what a past run did, so a human can be told. It
+-- is bounded (120 rows) and lossy (truncated commands, no output), so it cannot
+-- support "skip what already ran" -- that needs a complete record attesting each
+-- command's EFFECT, not its exit status, and is a different artifact.
+--
+-- Reading it: NULL means either an old row or a run that recorded no steps.
+-- commands_ran / commands_refused already distinguish those, and as with the
+-- 0013 columns, only a row with finished_at IS NOT NULL states what happened --
+-- Begin writes no steps at all.
+
+ALTER TABLE ssh_ops_audit
+    ADD COLUMN IF NOT EXISTS steps JSONB;
