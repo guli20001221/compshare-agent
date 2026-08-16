@@ -78,9 +78,12 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 			connectedSent = true
 			onProgress(engine.InstanceOpsProgress{Kind: engine.InstanceOpsProgressConnected})
 		}
+		// Tier: the audit row has carried it since 0014, but the live stream was dropping it, which
+		// left the engine unable to tell a read from an approved write it had just watched go by.
 		onProgress(engine.InstanceOpsProgress{
 			Kind:        engine.InstanceOpsProgressCommand,
 			Command:     st.Command,
+			Tier:        st.Tier,
 			Disposition: st.Disposition,
 			Reason:      st.Reason,
 			ExitCode:    st.ExitCode,

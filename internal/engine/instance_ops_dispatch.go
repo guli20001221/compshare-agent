@@ -108,6 +108,11 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// events are capped at maxInstanceOpsStepEvents (defense in depth with the
 	// harness's own cap). Command output NEVER appears here (INV-6) — only metadata.
 	commandsEmitted := 0
+	// Settled commands are accumulated separately from the emitted ones. The live stream is capped
+	// at maxInstanceOpsStepEvents because it is a UI feed, but the interruption notice has to be
+	// able to say "N ran, M of them changed the box" over the WHOLE run — a cap on the feed must not
+	// silently become a cap on what the user is told a killed run did.
+	var settled []instanceOpsSettledStep
 	onProgress := func(p InstanceOpsProgress) {
 		switch p.Kind {
 		case InstanceOpsProgressConnected:
@@ -118,6 +123,12 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 				Message: fmt.Sprintf("已连接到实例 %s，开始%s", instanceID, instanceOpsPhaseNoun()),
 			})
 		case InstanceOpsProgressCommand:
+			settled = append(settled, instanceOpsSettledStep{
+				Command:     p.Command,
+				Tier:        p.Tier,
+				Disposition: p.Disposition,
+				Reason:      p.Reason,
+			})
 			if commandsEmitted >= maxInstanceOpsStepEvents {
 				return // capped; the summary still reports the true totals
 			}
@@ -152,6 +163,15 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		ConfirmWrite: confirmWrite,
 	}, onProgress)
 	if err != nil {
+		// The run ended with no verdict. Whatever settled before it did is the only account the user
+		// will ever get of a box that, under allow_writes, may have been changed — so stash it for
+		// the next turn. Guarded on settled being non-empty, which is what keeps every preflight
+		// branch below (no SSH target, not found, not running, address unavailable) silent: those
+		// entered no box and have nothing to report.
+		//
+		// Stashed BEFORE the branches rather than inside each, so a future branch cannot be added
+		// that returns without considering it.
+		e.recordInstanceOpsInterruption(instanceID, settled)
 		// No SSH entrypoint (empty SshLoginCommand — e.g. a Windows instance): the box
 		// can never be entered, so this is honest and NON-retryable. Never the generic
 		// "请稍后重试" text, which wrongly implies a transient failure the user should

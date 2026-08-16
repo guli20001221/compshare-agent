@@ -153,9 +153,9 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 	diag := &fakeDiagnoser{
 		output: "结论",
 		steps: []sshops.Step{
-			{Command: "nvidia-smi", Disposition: "ran", ExitCode: intp(0), Bytes: 42},
-			{Command: "modprobe nvidia", Disposition: "refused"},
-			{Command: "df -h", Disposition: "ran", ExitCode: intp(0), Bytes: 10},
+			{Command: "nvidia-smi", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 42},
+			{Command: "modprobe nvidia", Tier: "mutating", Disposition: "refused"},
+			{Command: "df -h", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 10},
 		},
 	}
 	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
@@ -173,6 +173,12 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 	require.Equal(t, 42, got[1].Bytes)
 	require.Equal(t, "refused", got[2].Disposition)
 	require.Nil(t, got[2].ExitCode, "a refused command has no exit code")
+	// The TIER has to cross this boundary too. The audit row has carried it since 0014, but the
+	// live stream was dropping it — and it is the only thing that separates "this diagnosis looked
+	// at the box" from "this diagnosis changed it", which is the question the interruption notice
+	// (internal/engine/instance_ops_interruption.go) exists to answer.
+	require.Equal(t, "read_only", got[1].Tier)
+	require.Equal(t, "mutating", got[2].Tier)
 	// tally feeds the terminal summary: 2 ran, 1 refused
 	require.Equal(t, 2, verdict.Ran)
 	require.Equal(t, 1, verdict.Refused)
