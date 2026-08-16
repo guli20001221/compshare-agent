@@ -19,15 +19,32 @@ value-shape + vendor prefixes), classification anchors flags to the right binary
 transport's hard per-command timeout backstops any streaming command that still slips through.
 
 The read tier is NOT deny-by-default, and this file used to claim it was. A command that
-matches no rule at all falls through to read_only: `evil`, `evil -q`, `frobnicate --all` and
-`/tmp/x` all auto-run. `./evil`, `/root/payload.sh` and `bash /tmp/x.sh` do not — script and
-relative-path shapes are caught — and that asymmetry is the whole of the current defence. It
-was accepted deliberately on 2026-07-23 (see POLICY_RELAXED_TO_READ in test_guardrails.py, and
+matches no rule at all falls through to read_only: `evil`, `evil -q` and `frobnicate --all`
+auto-run. What is left of that gap is now exactly ONE shape — an unknown BARE NAME, resolved
+through the remote PATH — and it is a known, tracked debt, not an oversight. It was accepted
+deliberately on 2026-07-23 (see POLICY_RELAXED_TO_READ in test_guardrails.py, and
 `frobnicate --all` in CLASSIFY_CASES, which is pinned mutating there and re-baselined to
 read_only by the policy), on the reasoning that a name we do not know is not a name we know to
-be dangerous. Whether that trade is still right is an open decision; what is not open is
-describing it as deny-by-default, because a reader who believes that will not look for the
-fallthrough — which is exactly how a `--help` suffix came to skip the consent card.
+be dangerous. Closing it needs an IDENTITY judgement — measured at 95 of 221 corpus cases and
+16 of 20 realistic commands changing tier — so it is a separate decision with its own blast
+radius, and it is still open.
+
+Running a FILE is no longer part of that gap, and the rule for it is deliberately small: a
+program named by absolute path auto-runs as a read only from /bin, /sbin, /usr/bin and
+/usr/sbin. Everything else — /tmp/x, /root/payload, /opt/app/bin/run, /root/<venv>/bin/python —
+gets a confirmation card. Not a refusal: the agent can still run them and still complete a
+repair, it just asks first. Script extensions and relative paths (`./x`, `../x`) were always
+refused; `/tmp/x` was not, which was a distinction about spelling rather than effect.
+
+This rule deliberately does NOT try to establish that a path is trustworthy. /root/x/bin/payload
+and /root/x/payload carry the same real risk; separating them needs a growing list of exceptions
+for bin-shaped directories, temp dirs, symlinks, venvs and toolchain paths, and none of it ever
+proves a remote file is safe to execute unattended. System programs auto-read, user and
+application paths confirm first.
+
+What is not open is describing any of this as deny-by-default, because a reader who believes
+that will not look for the fallthrough — which is exactly how a `--help` suffix came to skip
+the consent card.
 """
 import ast
 import posixpath
@@ -1046,6 +1063,41 @@ _VERSION_ONLY = re.compile(r"^(--version|-V|--help|version|help)$")
 # execution regardless of what it is named — this is what keeps an unknown binary from
 # becoming an arbitrary write primitive now that the read allowlist is gone.
 _SCRIPT_SHAPE = re.compile(r"\.(sh|bash|py|pl|rb|js|php|lua|ksh|zsh|run|bin|out)$", re.I)
+# ...and the other half of that: a file named by ABSOLUTE path. `/tmp/x`, `/root/payload`,
+# `/opt/whatever` and `/data/run` matched no rule at all and auto-ran with no consent card,
+# because the read tier falls through (module docstring). `./x` was refused and `/tmp/x` was
+# not, which is a distinction about how the path was SPELLED, not about what it does.
+#
+# The line drawn here is deliberately small and dumb: a program named by absolute path is
+# auto-run as a READ only from the four system program directories. Everything else gets a
+# confirmation card. Not a refusal — a card. The agent can still run /root/venv/bin/python,
+# /opt/app/bin/run and /usr/local/bin/whatever and still complete a repair; it just asks first.
+#
+# SYSTEM PROGRAMS AUTO-READ, USER/APPLICATION PATHS CONFIRM FIRST. That is the whole rule.
+#
+# The version this replaced tried to establish that a path was TRUSTWORTHY — bin/sbin directory
+# shape, minus shared temp, with carve-outs coming for symlinks, venvs and toolchain dirs. That
+# cannot be made correct: /root/x/bin/payload and /root/x/payload carry the same real risk, and
+# the difference between them is a naming convention. Each carve-out would have added rules and
+# tests without ever establishing that a remote file is safe to execute unattended. A short,
+# honest boundary that sometimes asks is worth more than a long one that infers.
+#
+# It makes NO judgement about the program's NAME. An unknown BARE name (`evil`, resolved through
+# the remote PATH, which is why a name is not an identity here) still auto-runs. That is a known,
+# tracked debt: closing it needs identity, adds real diagnostic friction, and should be decided
+# from an actual incident rather than from a list of hypothetical spellings.
+_SYSTEM_PROGRAM_DIRS = ("/bin", "/sbin", "/usr/bin", "/usr/sbin")
+
+
+def _is_system_program_path(raw0: str) -> bool:
+    """True only for an absolute path whose directory IS one of the four system program dirs."""
+    path = _unquote(raw0)
+    if not path.startswith("/"):
+        return False
+    # normpath so the check judges the real target rather than its spelling: `/usr/bin/../../tmp/x`
+    # is /tmp/x. (`..` is separately refused by the shape gate; not relying on that keeps the two
+    # gates independently reorderable.)
+    return posixpath.dirname(posixpath.normpath(path)) in _SYSTEM_PROGRAM_DIRS
 # Reads that never terminate or that stream a whole block device.
 _BLOCKING_PATHS = re.compile(r"^/proc/kmsg$|^/dev/(sd|nvme|vd|hd|xvd|loop|zero|random|urandom|full|port|mem|kmem)")
 # Readers that emit raw byte CONTENT — only these turn a device path into an endless stream.
@@ -1419,6 +1471,10 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
         return True
     # running a file on the box: a script by name, or anything by relative path
     if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
+        return True
+    # ...or by absolute path, unless it is one of the four system program directories. Anything
+    # else asks first; see _is_system_program_path. This judges the PATH, never the program's name.
+    if "/" in raw0 and not _is_system_program_path(raw0):
         return True
     if binary in _WRAPPER_BINARIES:                       # the effect is the INNER command's
         return _wrapper_is_mutating(binary, tokens, _depth)
