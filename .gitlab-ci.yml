@@ -752,11 +752,9 @@ import-knowledge-release:
 # runs on the serving pod itself, i.e. on the SHA-pinned binary that will load
 # the release.
 #
-# Rolling back is not automated: a retired release keeps its chunks and vectors
-# (nothing deletes them) but no code path re-activates it.  Today that needs
-#   UPDATE knowledge.kb_releases SET status='validated' WHERE id='<old-id>';
-# followed by this job's worker command with that id -- two transactions, not
-# one, so treat it as emergency recovery rather than a supported rollback.
+# Publishing is followed by a live retrieval smoke, because moving the pointer
+# and the release being usable are different claims.  Rolling back is
+# rollback-knowledge-release, below.
 publish-knowledge-release:
   stage: deploy
   image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
@@ -796,6 +794,128 @@ publish-knowledge-release:
         sleep 5
       done
       echo "compshare-kb is serving $KB_RELEASE_VERSION"
+
+      # The pointer moved. That is not the same as the release being usable:
+      # a corpus can import, validate and publish cleanly and retrieve nothing,
+      # and every gate before this one reads FILES while what decides retrieval
+      # is the index the serving process built. A corpus dated in the future is
+      # the cheapest example -- structurally perfect, invisible to retrieval.
+      #
+      # The queries are five stable platform topics, one per major product_area
+      # in the shipped corpus (resource_purchase 170 chunks, billing_rule 60,
+      # image 59, login 44, driver_cuda 20). They are a LIVENESS check, not a
+      # ranking evaluation: the assertion is that evidence comes back at all.
+      #
+      # Retried because the index reloads on its own interval, so the first
+      # attempt can legitimately still be answering from the previous release --
+      # which the smoke reports as a mismatch rather than as a pass.
+      attempt=0
+      until kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
+        /usr/local/bin/compshare-kb-worker \
+        --action smoke \
+        --smoke-expect-version "$KB_RELEASE_VERSION" \
+        --smoke-query 'GPU 实例怎么创建' \
+        --smoke-query '按量计费怎么算' \
+        --smoke-query '镜像怎么制作' \
+        --smoke-query 'ssh 连不上实例' \
+        --smoke-query 'CUDA 版本'; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 6 ]; then
+          echo >&2
+          echo "$KB_RELEASE_VERSION is the active release but does not answer." >&2
+          echo "Service is DEGRADED. Roll back to the release this corpus was built on:" >&2
+          PARENT=$(sed -n 's/^[[:space:]]*"parent_release_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+            deploy/kb/v2/release_base.json 2>/dev/null || true)
+          echo >&2
+          echo "  kubectl -n $NAMESPACE exec ${KB_STATEFULSET}-0 -- \\" >&2
+          echo "    /usr/local/bin/compshare-kb-worker --action rollback --release-id ${PARENT:-<previous-release-id>}" >&2
+          echo >&2
+          echo "or run the rollback-knowledge-release job with KB_ROLLBACK_RELEASE_ID set." >&2
+          exit 1
+        fi
+        echo "smoke attempt $attempt did not pass; the index may still be reloading"
+        sleep 10
+      done
+      echo "$KB_RELEASE_VERSION answers all five smoke queries"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  environment:
+    name: production
+
+# Break glass. It moves the active pointer back to a release that was published
+# before and has since been retired, WITHOUT the base match -- which is the whole
+# reason it exists as its own action: after a bad publish the pointer has moved,
+# so the old release no longer matches its own recorded parent and re-publishing
+# it returns ErrStaleCandidate. The data was never gone; the write to move the
+# pointer back simply did not exist.
+#
+# Set KB_ROLLBACK_RELEASE_ID when triggering. Left empty it uses the release the
+# CURRENT corpus was built on, which is the right answer for undoing the most
+# recent publish and the wrong one for undoing anything older -- so it prints
+# what it is about to do and what production is serving before it does it.
+#
+# Not wired to the publish job's smoke on purpose. A failing smoke can also mean
+# the index has not finished reloading, and an automatic rollback on that would
+# undo a healthy release. A person is present when publish is clicked; automatic
+# recovery belongs with automatic publication, not before it.
+rollback-knowledge-release:
+  stage: deploy
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+    KB_STATEFULSET: compshare-kb
+    KB_ROLLBACK_RELEASE_ID: ""
+  resource_group: kb-publish
+  script:
+    - |
+      set -eu
+      TARGET="$KB_ROLLBACK_RELEASE_ID"
+      if [ -z "$TARGET" ]; then
+        TARGET=$(sed -n 's/^[[:space:]]*"parent_release_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+          deploy/kb/v2/release_base.json)
+      fi
+      if [ -z "$TARGET" ]; then
+        echo "no rollback target: set KB_ROLLBACK_RELEASE_ID." >&2
+        exit 1
+      fi
+
+      BEFORE=$(kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
+        wget -qO- http://127.0.0.1:8088/healthz)
+      echo "production is currently serving: $BEFORE"
+      echo "rolling back to: $TARGET"
+
+      kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
+        /usr/local/bin/compshare-kb-worker --action rollback --release-id "$TARGET"
+
+      # Same acceptance rule as publish: what the SERVING process reports, not
+      # what the worker returned. Publication only moves a pointer and the query
+      # plane picks it up on its own reload interval.
+      attempt=0
+      until kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
+        wget -qO- http://127.0.0.1:8088/healthz | grep -q "\"release_id\":\"$TARGET\""; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 20 ]; then
+          echo "compshare-kb did not start serving $TARGET within ~100s" >&2
+          kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- wget -qO- http://127.0.0.1:8088/healthz || true
+          exit 1
+        fi
+        sleep 5
+      done
+
+      # A rollback that restores a pointer to a release that also answers
+      # nothing has restored nothing. This is the same check the publish job
+      # runs, and it is the only thing that distinguishes recovery from a
+      # second outage.
+      kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
+        /usr/local/bin/compshare-kb-worker \
+        --action smoke \
+        --smoke-query 'GPU 实例怎么创建' \
+        --smoke-query '按量计费怎么算' \
+        --smoke-query '镜像怎么制作'
+      echo "rolled back to $TARGET, and it answers"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual

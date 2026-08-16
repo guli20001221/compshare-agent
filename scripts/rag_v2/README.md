@@ -161,8 +161,15 @@ a person reads the diff in between:
    be imported at all — that is deliberate, since such a candidate declares no
    parent and offers nothing to review. It also means the first import after this
    lands must come from an orchestrated release, not from an edited corpus.
-2. `publish-knowledge-release` — runs `--action publish` on the serving pod and
-   waits for `/healthz` to report the new `kb_version`.
+2. `publish-knowledge-release` — runs `--action publish` on the serving pod,
+   waits for `/healthz` to report the new `kb_version`, and then runs a live
+   retrieval smoke, because moving the pointer and the release being usable are
+   different claims. It retries — the index reloads on its own interval — and on
+   persistent failure it prints the exact rollback command with the parent
+   release id filled in. It does **not** roll back by itself: a failing smoke can
+   also mean the index has not finished reloading, a person is present when
+   publish is clicked, and automatic recovery belongs with automatic publication
+   rather than before it.
 
 `release_diff.md` is written into `deploy/kb/v2` and is meant to be committed
 with the corpus, because the reviewer needs it before the candidate exists. It
@@ -178,11 +185,19 @@ always receives a complete immutable candidate and an atomic pointer swap. Do
 not make the ingest incremental — the atomic swap is what makes a release
 reviewable and reversible.
 
-Rolling back is **not** automated. A retired release keeps its chunks and
-vectors, but no code path re-activates one. Emergency recovery today is
-`UPDATE knowledge.kb_releases SET status='validated' WHERE id='<old-id>'`
-followed by `--action publish --release-id <old-id>` — two transactions, not
-one, so treat it as recovery rather than a supported rollback.
+Rolling back is `rollback-knowledge-release` (or
+`compshare-kb-worker --action rollback --release-id <old-id>`). The data was
+never the problem — retired releases keep their chunks and vectors — the missing
+piece was the write that moves the pointer back. Note that the recovery this
+file used to document, flipping the old row to `validated` and re-publishing,
+was **incomplete**: every CI import persists `require_base_match`, so publish
+also compares the active pointer against that row's recorded parent, and after a
+bad publish the pointer has moved, so the old release no longer matches its own
+parent and re-publishing returns `ErrStaleCandidate`.
+
+Both the rollback action and the smoke live in `compshare-kb`, so the kb merge
+request has to be merged and deployed before either job can work — the same
+ordering `--parent-release-id` already requires.
 
 ## Unattended releases
 
