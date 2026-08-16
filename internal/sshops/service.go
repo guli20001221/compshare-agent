@@ -190,6 +190,12 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	}
 	done.ExitCode, done.TimedOut, done.OutputBytes = res.ExitCode, res.TimedOut, len(res.Output)
 	done.CommandsRan, done.CommandsRefused, done.FirstCommandClass = summarizeAuditSteps(res.Steps)
+	// The counts alone cannot answer the question a user asks after a disconnect — "did it change
+	// anything, and what?" — because a killed run leaves them with no way to tell an approved write
+	// that landed from a read that did. res.Steps is populated on the cancel path too (the
+	// supervisor accumulates as it parses), so this is the same best-effort Finish carrying more of
+	// what it already had.
+	done.Steps = summarizeAuditStepDetail(res.Steps)
 	done.Disposition = "ok"
 	done.ErrClass = res.ErrClass
 	switch {

@@ -1,0 +1,62 @@
+-- 0014_add_ssh_ops_step_detail.sql (PostgreSQL)
+--
+-- Adds the per-command detail behind commands_ran / commands_refused, so an
+-- interrupted diagnosis can be described by NAME rather than only by count.
+--
+-- Why this exists: the lane ships with agent.ssh_ops.allow_writes = true, and on
+-- the current non-durable transport a browser disconnect cancels the context and
+-- kills the harness mid-run. Finish still lands (it runs on context.WithoutCancel),
+-- so the row exists — but until now it could say only "8 ran, 1 refused", which
+-- cannot answer the one question a user staring at a half-repaired box actually
+-- has: did it change anything, and what?
+--
+-- WHAT IS IN HERE, and what deliberately is not:
+--
+--   steps = [ {cmd, tier, disp, reason?, exit?, bytes?}, ... ]
+--
+--   cmd    the REDACTED DISPLAY command, capped at 200 runes INCLUDING its
+--          「…[截断]」 marker, so a stored command never exceeds the stated bound
+--          and the number can be quoted without a footnote. It goes through
+--          guardrails.RedactPII then RedactOutputLeak --
+--          the same two redactors, in the same order, that the user already saw
+--          this command through in the live activity stream. The RAW command is
+--          never written: it can carry paths, tokens or user-supplied arguments,
+--          which is the same reason first_command_class (0013) stores a class
+--          rather than the text.
+--   disp   the three-valued wire disposition ("ran" | "refused" | "failed").
+--   reason the harness's fine-grained disposition ("refused_destructive",
+--          "refused_confirmation_timeout", ...). OPEN SET by design -- read it
+--          with a default branch, never an exhaustive switch, because either
+--          half of the deploy pair may be older than the other.
+--   exit   present only when the command produced an exit status.
+--
+--   Command OUTPUT is NOT here and must not be added. INV-6 keeps output off
+--   every wire but the model's own; a column carrying it would put a second copy
+--   of the box's contents in a table read by tooling that expects metadata.
+--
+-- NOT A RESUME CURSOR. This says what a past run did, so a human can be told. It
+-- is bounded (120 rows) and lossy (truncated commands, no output), so it cannot
+-- support "skip what already ran" -- that needs a complete record attesting each
+-- command's EFFECT, not its exit status, and is a different artifact.
+--
+-- ORDERING IS CHECKED, NOT ONLY DOCUMENTED. Apply this before the binary: Finish
+-- is a single UPDATE, so a missing column fails the whole statement and orphans
+-- the row at 'started'. When the lane is enabled the server probes every writer
+-- column at boot (store.VerifySSHOpsAuditSchema) and DISABLES THE LANE rather
+-- than discover this on the first diagnosis -- by which time, under allow_writes,
+-- the instance has already been changed.
+--
+-- Disabled, not fatal: the boundary is "audit unavailable -> do not enter a
+-- user's instance", which a nil runner delivers completely, and the deployment
+-- is replicas: 1 / strategy: Recreate, so failing the boot over an optional
+-- lane's optional column would be a full outage with no version left serving.
+-- Chat keeps working; only in-instance diagnosis is off, and it returns after
+-- the migration plus a restart (the probe is boot-only, nothing polls).
+--
+-- Reading it: NULL means either an old row or a run that recorded no steps.
+-- commands_ran / commands_refused already distinguish those, and as with the
+-- 0013 columns, only a row with finished_at IS NOT NULL states what happened --
+-- Begin writes no steps at all.
+
+ALTER TABLE ssh_ops_audit
+    ADD COLUMN IF NOT EXISTS steps JSONB;

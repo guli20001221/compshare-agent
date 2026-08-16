@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"testing"
@@ -24,6 +25,15 @@ import (
 type noopDescriber struct{}
 
 func (noopDescriber) Execute(context.Context, string, map[string]any) (map[string]any, error) {
+	return nil, nil
+}
+
+// recordingDescriber counts consultations. The describer is the credential path's entry point, so
+// "was it called at all" is how a test says no instance was reached for.
+type recordingDescriber struct{ calls int }
+
+func (d *recordingDescriber) Execute(context.Context, string, map[string]any) (map[string]any, error) {
+	d.calls++
 	return nil, nil
 }
 
@@ -348,6 +358,62 @@ func TestServerInstanceOpsRunner_ConstructsWithDurableOn(t *testing.T) {
 	require.NotNil(t, r)
 }
 
+// A lane enabled against a database missing the audit migration must be OFF, and the server must
+// still start.
+//
+// Both halves matter. Without the probe the failure is silent, late, and on the wrong side of the
+// safety boundary: Begin names only the 0011 columns, so it SUCCEEDS, the harness enters the box —
+// under allow_writes it can change the instance — and the failure surfaces only when Finish's single
+// UPDATE hits the missing column, losing the disposition, err_class and counts together and leaving
+// the row at 'started'. But the answer to that is not a boot error: deploy/k8s/deployment.yaml is
+// replicas: 1 with strategy: Recreate, so the old Pod is already gone when the new one starts, and
+// refusing to boot over an optional lane's optional column would take chat and the create flow down
+// with no version left serving. The audit's promise is "do not enter a user's instance when the
+// access cannot be recorded", not "no one may chat".
+func TestServerInstanceOpsRunner_MissingAuditMigrationDisablesTheLaneAndStillBoots(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	db := sql.OpenDB(fakeConnector{queryErr: fmt.Errorf(`pq: column "steps" does not exist`)})
+	defer db.Close()
+	// The describer is the credential path's entry point. Nothing consults it at boot TODAY, so this
+	// is a forward guard against a boot path that starts eagerly touching the instance API — not the
+	// load-bearing assertion. What actually delivers "no credential, no SSH, no command" is the nil
+	// runner below, and its consequences are pinned in the engine, not here:
+	// TestInstanceOps_ToolWindowGatedByLaneAndRoute (tool absent from the window),
+	// TestWriteGateDoesNotExposeTheToolWhenTheLaneIsOff, the dispatch_window goldens (captured with
+	// instanceOps=false), and INV-10's inert refusal in instance_ops_dispatch.go for a replayed or
+	// hallucinated call.
+	describer := &recordingDescriber{}
+
+	r, err := serverInstanceOpsRunner(gateCfg(), gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"}), describer, db)
+
+	require.NoError(t, err, "an optional lane's missing column must not take the whole server down")
+	require.Nil(t, r, "the lane must be OFF: a nil runner is what keeps the tool out of the model's window (INV-10)")
+	require.Zero(t, describer.calls, "no credential fetch, no SSH, no instance command may be attempted")
+	// The operator reads this line — through the GitLab diagnose-production job, which greps for
+	// exactly these words — and has to be able to tell it from "the lane was never enabled".
+	logged := buf.String()
+	require.Contains(t, logged, "ssh-ops disabled")
+	require.Contains(t, logged, "audit schema unavailable")
+	require.Contains(t, logged, "ssh_ops_audit")
+	require.Contains(t, logged, "0014", "the line has to name the migration that fixes it")
+	require.Contains(t, logged, "restart", "the probe is boot-only: running the migration is not enough on its own")
+}
+
+// The other half of the same gate: a complete schema wires the lane normally. Without this, deleting
+// the construction entirely would satisfy the test above.
+func TestServerInstanceOpsRunner_CompleteAuditSchemaWiresTheLane(t *testing.T) {
+	db := sql.OpenDB(fakeConnector{})
+	defer db.Close()
+
+	r, err := serverInstanceOpsRunner(gateCfg(), gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"}), noopDescriber{}, db)
+
+	require.NoError(t, err)
+	require.NotNil(t, r)
+}
+
 // A fully-enabled lane with missing harness settings fails LOUDLY at boot, not silently.
 func TestServerInstanceOpsRunner_MisconfigIsBootError(t *testing.T) {
 	cfg := gateCfg()
@@ -382,9 +448,34 @@ func TestBuildSSHOpsService_ValidatesAndDefaults(t *testing.T) {
 	require.NotNil(t, svc)
 }
 
-// fakeConnector yields a non-nil *sql.DB that never actually connects (the gate only wraps it in the
-// audit store; no query runs in these tests).
-type fakeConnector struct{}
+// fakeConnector yields a non-nil *sql.DB whose every query returns zero rows — enough for the boot
+// path's column-level audit-schema probe, which asserts that the columns RESOLVE, not that any row
+// exists. queryErr makes that probe fail, which is what a database missing the migration does.
+type fakeConnector struct{ queryErr error }
 
-func (fakeConnector) Connect(context.Context) (driver.Conn, error) { return nil, fmt.Errorf("unused") }
-func (fakeConnector) Driver() driver.Driver                        { return nil }
+func (c fakeConnector) Connect(context.Context) (driver.Conn, error) { return fakeConn(c), nil }
+func (fakeConnector) Driver() driver.Driver                          { return nil }
+
+type fakeConn fakeConnector
+
+func (c fakeConn) Prepare(string) (driver.Stmt, error) { return fakeStmt(c), nil }
+func (fakeConn) Close() error                          { return nil }
+func (fakeConn) Begin() (driver.Tx, error)             { return nil, fmt.Errorf("unused") }
+
+type fakeStmt fakeConnector
+
+func (fakeStmt) Close() error                               { return nil }
+func (fakeStmt) NumInput() int                              { return -1 }
+func (fakeStmt) Exec([]driver.Value) (driver.Result, error) { return nil, fmt.Errorf("unused") }
+func (s fakeStmt) Query([]driver.Value) (driver.Rows, error) {
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
+	return noRows{}, nil
+}
+
+type noRows struct{}
+
+func (noRows) Columns() []string         { return nil }
+func (noRows) Close() error              { return nil }
+func (noRows) Next([]driver.Value) error { return io.EOF }
