@@ -191,6 +191,10 @@ func stepTypeString(t engine.StepType) string {
 		return "blocked"
 	case engine.StepError:
 		return "error"
+	case engine.StepUserNotice:
+		// Its own wire word, not "blocked": the console styles this as a notice, and a client
+		// that counts errors must not count it.
+		return "user_notice"
 	default:
 		return "unknown"
 	}

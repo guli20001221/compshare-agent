@@ -4515,6 +4515,13 @@ const (
 	StepConfirmNeeded                 // L1 operation needs confirmation
 	StepBlocked                       // L2 operation blocked
 	StepError                         // Error occurred
+	// StepUserNotice is a message for the USER that is not a tool event at all: nothing was
+	// called, nothing failed, and nothing was blocked. It exists because the alternative was
+	// dressing such a message up as StepBlocked, which made the trace record a phantom blocked
+	// tool error on a turn where no tool ran — polluting exactly the counters an incident is
+	// read from. Appended last on purpose: StepType is an iota and renumbering the existing
+	// values would silently relabel every step a client or trace already knows.
+	StepUserNotice
 )
 
 // StepEvent is an intermediate event during the ReAct loop.

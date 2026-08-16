@@ -124,3 +124,44 @@ func TestChatTraceRecorderPersistsConfirmationWithoutCardPayload(t *testing.T) {
 	require.Len(t, w.records[0].Confirmations, 1)
 	assert.Equal(t, observability.ConfirmationReasonTimeout, w.records[0].Confirmations[0].TerminalReason)
 }
+
+// TestChatTraceRecorder_UserNoticeIsNotAToolEvent pins the boundary that keeps the interruption
+// notice (internal/engine/instance_ops_interruption.go) out of the tool counters.
+//
+// The notice reports what a PREVIOUS turn's diagnosis did. On the turn that shows it, no tool was
+// called, none failed and none was blocked. Sent as StepBlocked — which is what it was, before this
+// — the recorder synthesized a ToolCallTrace for a tool that never ran and stamped it
+// error/blocked, so every turn after an interruption read as a turn where a tool had been refused.
+// Tool error counts are what an incident is triaged from, so that is a false signal, not a cosmetic
+// one.
+func TestChatTraceRecorder_UserNoticeIsNotAToolEvent(t *testing.T) {
+	w := &captureTraceWriter{}
+	base := BaseRequest{RequestUUID: "req-notice", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}
+	rec := newChatTraceRecorder(w, base, "sess-1", 1, "msg", time.Now())
+	require.NotNil(t, rec)
+
+	rec.OnStep(engine.StepEvent{
+		Type:    engine.StepUserNotice,
+		Action:  "InstanceOpsInterrupted",
+		Source:  observability.ToolSourceDiagnosisInternal,
+		Message: "上一轮对实例 uhost-1 的实例内排查没有正常结束。",
+	})
+
+	assert.Empty(t, rec.record.ToolCalls, "a user notice must not create a tool call trace")
+
+	// ...and a genuinely blocked tool on the same recorder still records, so this is a carve-out
+	// for one step TYPE rather than for the diagnosis source or a name.
+	rec.OnStep(engine.StepEvent{
+		Type:   engine.StepBlocked,
+		Action: "DiagnoseInstanceInternals",
+		Source: observability.ToolSourceDiagnosisInternal,
+	})
+	require.Len(t, rec.record.ToolCalls, 1)
+	assert.Equal(t, "blocked", rec.record.ToolCalls[0].ErrorClass)
+}
+
+// The wire word is its own, not "blocked": a client counting errors must not count it.
+func TestStepTypeStringNamesTheUserNotice(t *testing.T) {
+	assert.Equal(t, "user_notice", stepTypeString(engine.StepUserNotice))
+	assert.Equal(t, "blocked", stepTypeString(engine.StepBlocked))
+}

@@ -149,6 +149,10 @@ func TestInterruptionNoticeIsDeliveredOnceAndOnlyOnce(t *testing.T) {
 	e.emitPendingInstanceOpsInterruption(collect)
 	require.Len(t, emitted, 1)
 	require.Equal(t, instanceOpsInterruptionAction, emitted[0].Action)
+	// StepUserNotice, not StepBlocked. Nothing was called, failed or blocked on this turn —
+	// the run it describes ended on a previous one — and the trace recorder keys off exactly
+	// this type to stay out of the tool counters (TestChatTraceRecorder_UserNoticeIsNotAToolEvent).
+	require.Equal(t, StepUserNotice, emitted[0].Type)
 	require.Contains(t, emitted[0].Message, "rm -rf /root/.cache/pip")
 
 	e.emitPendingInstanceOpsInterruption(collect)
@@ -285,6 +289,8 @@ func TestTheNextRealTurnDeliversTheNotice(t *testing.T) {
 		}
 	}
 	require.Len(t, notices, 1, "the next turn must deliver the notice on the activity stream")
+	require.Equal(t, StepUserNotice, notices[0].Type,
+		"a turn that merely REPORTS a previous interruption must not trace as a blocked tool")
 	require.Contains(t, notices[0].Message, "rm -rf /root/.cache/pip")
 	require.Nil(t, eng.pendingInstanceOpsInterruption)
 

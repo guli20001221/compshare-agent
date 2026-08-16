@@ -78,7 +78,11 @@ func (e *Engine) emitPendingInstanceOpsInterruption(onStep func(StepEvent)) {
 	}
 	if msg := renderInstanceOpsInterruptionNotice(*pending); msg != "" {
 		onStep(StepEvent{
-			Type:    StepBlocked,
+			// StepUserNotice, NOT StepBlocked. Nothing was called, failed or blocked on this
+			// turn — the run it describes ended on a previous one. Sending it as StepBlocked
+			// made the trace record a phantom blocked tool error, so the next turn after an
+			// interruption looked like a turn where a tool had been refused.
+			Type:    StepUserNotice,
 			Action:  instanceOpsInterruptionAction,
 			Source:  observability.ToolSourceDiagnosisInternal,
 			Message: msg,

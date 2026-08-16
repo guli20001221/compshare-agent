@@ -326,6 +326,16 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.record.ToolCalls[idx].ErrorClass = "blocked"
 		r.applyLatency(idx, startedAt)
 		r.applyCapFields(idx, ev)
+	case engine.StepUserNotice:
+		// Deliberately recorded as nothing. A user notice is not a tool event: no call was made,
+		// none failed, and none was blocked, so matchPending would synthesize a ToolCallTrace for
+		// a tool that never ran and stamp it error/blocked. That is not a cosmetic difference —
+		// tool error counts are what an incident is triaged from, and a turn that merely REPORTS a
+		// previous turn's interruption would show up as a turn where a tool was refused.
+		//
+		// This case is explicit rather than left to the switch having no branch, so that adding a
+		// `default:` here later cannot quietly start recording notices.
+		return
 	}
 }
 
