@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"testing"
@@ -348,6 +349,27 @@ func TestServerInstanceOpsRunner_ConstructsWithDurableOn(t *testing.T) {
 	require.NotNil(t, r)
 }
 
+// A lane enabled against a database missing the audit migration must not boot.
+//
+// Without this probe the failure is silent, late, and on the wrong side of the safety boundary:
+// Begin names only the 0011 columns, so it SUCCEEDS, the harness enters the box — under allow_writes
+// it can change the instance — and the failure surfaces only when Finish's single UPDATE hits the
+// missing column, losing the disposition, err_class and counts together and leaving the row at
+// 'started'. That is precisely the orphaned-record state the detached-context Finish exists to
+// prevent, reached by a different route, and no amount of "apply the migration first" in a deploy
+// doc is a check that the migration was applied.
+func TestServerInstanceOpsRunner_MissingAuditMigrationIsBootError(t *testing.T) {
+	db := sql.OpenDB(fakeConnector{queryErr: fmt.Errorf(`pq: column "steps" does not exist`)})
+	defer db.Close()
+
+	_, err := serverInstanceOpsRunner(gateCfg(), gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"}), noopDescriber{}, db)
+
+	require.Error(t, err, "an un-migrated audit table must fail boot, not run the lane and break the record")
+	require.Contains(t, err.Error(), "ssh_ops_audit")
+	// The operator reads this line and has to know what to do; a bare driver error does not say.
+	require.Contains(t, err.Error(), "0014")
+}
+
 // A fully-enabled lane with missing harness settings fails LOUDLY at boot, not silently.
 func TestServerInstanceOpsRunner_MisconfigIsBootError(t *testing.T) {
 	cfg := gateCfg()
@@ -382,9 +404,34 @@ func TestBuildSSHOpsService_ValidatesAndDefaults(t *testing.T) {
 	require.NotNil(t, svc)
 }
 
-// fakeConnector yields a non-nil *sql.DB that never actually connects (the gate only wraps it in the
-// audit store; no query runs in these tests).
-type fakeConnector struct{}
+// fakeConnector yields a non-nil *sql.DB whose every query returns zero rows — enough for the boot
+// path's column-level audit-schema probe, which asserts that the columns RESOLVE, not that any row
+// exists. queryErr makes that probe fail, which is what a database missing the migration does.
+type fakeConnector struct{ queryErr error }
 
-func (fakeConnector) Connect(context.Context) (driver.Conn, error) { return nil, fmt.Errorf("unused") }
-func (fakeConnector) Driver() driver.Driver                        { return nil }
+func (c fakeConnector) Connect(context.Context) (driver.Conn, error) { return fakeConn(c), nil }
+func (fakeConnector) Driver() driver.Driver                          { return nil }
+
+type fakeConn fakeConnector
+
+func (c fakeConn) Prepare(string) (driver.Stmt, error) { return fakeStmt(c), nil }
+func (fakeConn) Close() error                          { return nil }
+func (fakeConn) Begin() (driver.Tx, error)             { return nil, fmt.Errorf("unused") }
+
+type fakeStmt fakeConnector
+
+func (fakeStmt) Close() error                               { return nil }
+func (fakeStmt) NumInput() int                              { return -1 }
+func (fakeStmt) Exec([]driver.Value) (driver.Result, error) { return nil, fmt.Errorf("unused") }
+func (s fakeStmt) Query([]driver.Value) (driver.Rows, error) {
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
+	return noRows{}, nil
+}
+
+type noRows struct{}
+
+func (noRows) Columns() []string         { return nil }
+func (noRows) Close() error              { return nil }
+func (noRows) Next([]driver.Value) error { return io.EOF }

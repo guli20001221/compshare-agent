@@ -14,8 +14,10 @@
 --
 --   steps = [ {cmd, tier, disp, reason?, exit?, bytes?}, ... ]
 --
---   cmd    the REDACTED DISPLAY command, capped at 200 runes with a 「…[截断]」
---          marker. It goes through guardrails.RedactPII then RedactOutputLeak --
+--   cmd    the REDACTED DISPLAY command, capped at 200 runes INCLUDING its
+--          「…[截断]」 marker, so a stored command never exceeds the stated bound
+--          and the number can be quoted without a footnote. It goes through
+--          guardrails.RedactPII then RedactOutputLeak --
 --          the same two redactors, in the same order, that the user already saw
 --          this command through in the live activity stream. The RAW command is
 --          never written: it can carry paths, tokens or user-supplied arguments,
@@ -36,6 +38,13 @@
 -- is bounded (120 rows) and lossy (truncated commands, no output), so it cannot
 -- support "skip what already ran" -- that needs a complete record attesting each
 -- command's EFFECT, not its exit status, and is a different artifact.
+--
+-- ORDERING IS CHECKED, NOT ONLY DOCUMENTED. Apply this before the binary: Finish
+-- is a single UPDATE, so a missing column fails the whole statement and orphans
+-- the row at 'started'. When the lane is enabled the server now probes every
+-- writer column at boot (store.VerifySSHOpsAuditSchema) and refuses to start
+-- rather than discover this on the first diagnosis -- by which time, under
+-- allow_writes, the instance has already been changed.
 --
 -- Reading it: NULL means either an old row or a run that recorded no steps.
 -- commands_ran / commands_refused already distinguish those, and as with the

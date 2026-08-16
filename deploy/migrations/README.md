@@ -44,9 +44,11 @@ psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0008_add_turn_retry_policy.s
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0009_add_interaction_supersession.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0010_add_action_abandonment.sql
 
-# 0011 belongs to the OPTIONAL SSH-ops lane, not to the cutover above. Its audit
-# table is fail-closed, so a missing 0011 disables the lane silently — the server
-# starts and logs the reason; it does not error.
+# 0011/0013/0014 belong to the OPTIONAL SSH-ops lane, not to the cutover above.
+# They are required as a SET whenever the lane is enabled: since 2026-08-16 the
+# server probes ssh_ops_audit for every column its writer names and REFUSES TO
+# BOOT if any is missing (see "boot probe" below). With the lane off they are not
+# probed and not needed.
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0011_create_ssh_ops_audit.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0012_create_feishu_oauth_tokens.sql
 psql "$DSN" -v ON_ERROR_STOP=1 -f deploy/migrations/0013_add_ssh_ops_context_observability.sql
@@ -64,8 +66,9 @@ the injected user reports, platform fact values, credentials, or raw commands.
 `0014` adds `ssh_ops_audit.steps` (JSONB): the per-command detail behind
 `commands_ran` / `commands_refused`, so a run interrupted by a disconnect can be
 described by name rather than only by count. It holds the REDACTED display
-command (200-rune cap), tier, disposition, the fine-grained refusal reason, exit
-code and byte count — never command output, and never the raw command.
+command (200-rune cap, marker included), tier, disposition, the fine-grained
+refusal reason, exit code and byte count — never command output, and never the
+raw command.
 
 It has the **same ordering requirement as `0013`: apply it BEFORE deploying a
 binary that writes it.** `Finish` is a single `UPDATE` and `steps` is one more
@@ -74,6 +77,30 @@ binary that writes it.** `Finish` is a single `UPDATE` and `steps` is one more
 then never written and the row orphans at `started`, which is precisely the state
 the detached-context handling exists to prevent. The reverse direction is safe:
 an older binary against a migrated database simply leaves the column NULL.
+
+### Boot probe (SSH-ops lane)
+
+That ordering is now **checked, not just documented**. When the lane is enabled,
+`serverInstanceOpsRunner` runs `store.VerifySSHOpsAuditSchema` — one
+`SELECT <every writer column> FROM ssh_ops_audit LIMIT 0` — and any failure is a
+boot error naming the migrations, like every other SSH-ops misconfiguration.
+
+It exists because the un-probed failure is silent, late, and on the wrong side of
+the safety boundary. `Begin` names only `0011`'s columns, so on a partially
+migrated table it SUCCEEDS: the record is written, the harness enters the
+instance — with `allow_writes: true` it can change it — and the error appears
+only at `Finish`, which loses the outcome and the counts together and leaves the
+row at `started`. `TestSSHOpsAuditSchemaProbeStopsTheLaneBeforeAnUnrecordableRun`
+reproduces exactly that against a real PostgreSQL before asserting the probe
+refuses first.
+
+**This changed one previously-documented behavior**: a missing `0011` used to
+disable the lane silently (the server started and logged the reason, because the
+fail-closed `Begin` refused every diagnosis). It is now a boot error too. That
+case was genuinely safe — no instance was ever entered — but "enabled and
+refusing 100% of requests" is not a working deployment either, and one rule for
+the whole table is easier to operate than "table absent is fine, column absent is
+fatal".
 
 In the current production GitLab pipeline, clicking `deploy` does **not** run
 SQL migrations. Before deploying a binary that writes `0013`'s columns, run the

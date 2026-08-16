@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
@@ -270,6 +271,17 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 	if db == nil {
 		log.Printf("ssh-ops disabled: no database for the fail-closed audit store")
 		return nil, nil
+	}
+	// Check the audit columns once, here, where the lane is being turned on. Without this a missing
+	// migration does not degrade the lane — it lets Begin succeed (its columns are all from 0011),
+	// the harness enter the box, and only Finish fail, which under allow_writes means an instance was
+	// changed and the row that says what happened is stuck at 'started'. A boot error, like every
+	// other SSH-ops misconfiguration, because a lane whose record cannot be completed is broken
+	// rather than degraded.
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelProbe()
+	if err := store.VerifySSHOpsAuditSchema(probeCtx, db); err != nil {
+		return nil, fmt.Errorf("ssh-ops: %w", err)
 	}
 	hostResolver, err := instanceOpsHostResolver(cfg, describer)
 	if err != nil {

@@ -52,11 +52,19 @@ func TestAuditStepDetailTruncatesOnRuneBoundariesAndSaysSo(t *testing.T) {
 	if !utf8.ValidString(cmd) {
 		t.Fatalf("truncation split a multi-byte rune: %q", cmd)
 	}
-	if !strings.HasSuffix(cmd, "…[截断]") {
+	if !strings.HasSuffix(cmd, auditTruncationMarker) {
 		t.Errorf("truncated command does not say it was truncated: %q", cmd)
 	}
-	if body := strings.TrimSuffix(cmd, "…[截断]"); utf8.RuneCountInString(body) != maxAuditStepCommandRunes {
-		t.Errorf("want %d runes before the marker, got %d", maxAuditStepCommandRunes, utf8.RuneCountInString(body))
+	// The marker is charged AGAINST the bound, not appended past it. A stored value that can exceed
+	// the documented cap makes the cap unquotable — every doc would have to say "200, or 205 when it
+	// was truncated" — and it is the truncated rows, the long ones, that would carry the overshoot.
+	if total := utf8.RuneCountInString(cmd); total != maxAuditStepCommandRunes {
+		t.Errorf("a truncated command must be exactly the bound, marker included: want %d runes, got %d",
+			maxAuditStepCommandRunes, total)
+	}
+	if body := strings.TrimSuffix(cmd, auditTruncationMarker); utf8.RuneCountInString(body) != maxAuditStepCommandRunes-utf8.RuneCountInString(auditTruncationMarker) {
+		t.Errorf("want %d runes of command before the marker, got %d",
+			maxAuditStepCommandRunes-utf8.RuneCountInString(auditTruncationMarker), utf8.RuneCountInString(body))
 	}
 	// A command that fits is left exactly alone — no marker on an untruncated command.
 	short := summarizeAuditStepDetail([]Step{{Command: "df -h /", Disposition: "ran"}})

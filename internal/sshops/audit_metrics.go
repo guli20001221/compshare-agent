@@ -8,12 +8,18 @@ import (
 
 const auditFirstCommandNone = "none"
 
-// maxAuditStepCommandRunes bounds one persisted display command. The confirm card already refuses
-// anything over 300 chars (_MAX_CONFIRMABLE_COMMAND in guardrails.py), so a real repair command is
-// well under this; the bound exists so a pathological read command cannot make the Finish UPDATE
-// large, and it is counted in RUNES rather than bytes because a CJK path would otherwise be cut
-// mid-character.
+// maxAuditStepCommandRunes bounds one persisted display command, MARKER INCLUDED — a stored command
+// is never longer than this, so the number can be stated without a footnote. The confirm card already
+// refuses anything over 300 chars (_MAX_CONFIRMABLE_COMMAND in guardrails.py), so a real repair
+// command is well under it; the bound exists so a pathological read command cannot make the Finish
+// UPDATE large, and it is counted in RUNES rather than bytes because a CJK path would otherwise be
+// cut mid-character.
 const maxAuditStepCommandRunes = 200
+
+// auditTruncationMarker is charged against that bound rather than appended past it. A cap that a
+// stored value can exceed is a cap nobody can quote: every document describing this column would
+// have to say "200, or 205 if it was truncated".
+const auditTruncationMarker = "…[截断]"
 
 // maxAuditStepRows bounds how many steps reach the row. The supervisor already caps Steps at
 // maxHarnessSteps, but that is a different file with a different reason to change, and a
@@ -73,15 +79,20 @@ func summarizeAuditStepDetail(steps []Step) []PersistedStepSummary {
 	return out
 }
 
-// truncateRunes cuts to n runes and says so, because a silently shortened command reads as a
-// different command — `rm -rf /root/.cache/pip` and `rm -rf /root` are the same string for the
-// first 12 characters.
+// truncateRunes returns at most n runes IN TOTAL and says when it cut, because a silently shortened
+// command reads as a different command — `rm -rf /root/.cache/pip` and `rm -rf /root` are the same
+// string for the first 12 characters.
 func truncateRunes(s string, n int) string {
 	runes := []rune(s)
 	if len(runes) <= n {
 		return s
 	}
-	return string(runes[:n]) + "…[截断]"
+	marker := []rune(auditTruncationMarker)
+	if n <= len(marker) {
+		// Unreachable at the real bound (200 vs 5); a bare cut beats a panic if someone lowers it.
+		return string(runes[:n])
+	}
+	return string(runes[:n-len(marker)]) + auditTruncationMarker
 }
 
 // summarizeAuditSteps creates only aggregate/enum audit data. Command text is
