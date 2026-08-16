@@ -52,60 +52,6 @@ diagnose-production:
       when: manual
   allow_failure: true
 
-# Measure, per availability zone, whether THIS deployment can reach an instance's
-# SSH port. Read-only: TCP connect plus a banner read, no authentication, no byte
-# written to any instance, nothing created or changed anywhere.
-#
-# It has to run here because the answer is a property of where the process sits,
-# not of the instance. `agent.ssh_ops.internal_ipv6` reaches cn-wlcb-01 and does
-# not reach cn-sh2-02 (deploy/conf/config.prod.yaml) precisely because this runs
-# in c5 and cn-sh2 sits behind c3 — so a dial from a laptop measures the laptop.
-# Two things a laptop cannot do at all: the UVPC mapping call is source-IP
-# allowlisted (RetCode 294 "Access ip denied" from outside), and a developer
-# machine has no IPv6 stack, so every v6 candidate fails as "unreachable" before
-# a packet is sent.
-#
-# It execs into the running agent container rather than starting its own Pod, so
-# the measurement uses the exact network namespace the lane dials from.
-#
-# ZONE_REACH_CONFIG is the target list, supplied when the job is triggered rather
-# than committed: it names instances and addresses, and this repository is public.
-# Build it with `go test ./cmd -run TestZoneReachProbe -zone-reach-step describe`.
-# Absent it, this job does not appear in a pipeline at all.
-measure-zone-ssh-reachability:
-  stage: diagnose
-  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
-  tags:
-    - uaek-c5
-  variables:
-    NAMESPACE: prj-ucompshare-prod
-    APP: compshare-agent
-  script:
-    - |
-      POD=$(kubectl -n "$NAMESPACE" get pods -l app="$APP" \
-        -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')
-      test -n "$POD" || { echo "no Running pod for app=$APP"; exit 1; }
-      echo "probing from pod $POD (container $APP)"
-      # The interpreter the SSH-ops harness already uses; falls back to the image
-      # python so a changed base image degrades to a clear error, not a silent skip.
-      PY=/opt/miniforge3/envs/py313/bin/python
-      kubectl -n "$NAMESPACE" exec "$POD" -c "$APP" -- test -x "$PY" || PY=python3
-      echo "interpreter: $PY"
-      kubectl -n "$NAMESPACE" exec -i "$POD" -c "$APP" -- \
-        env ZONE_REACH_CONFIG="$ZONE_REACH_CONFIG" "$PY" - \
-        < deploy/diagnostics/zone_reach_probe.py \
-        | tee zone_reach_incluster.jsonl
-  artifacts:
-    when: always
-    expire_in: 1 week
-    paths:
-      - zone_reach_incluster.jsonl
-  rules:
-    - if: '$ZONE_REACH_CONFIG && $CI_COMMIT_BRANCH == "main"'
-      when: manual
-  # A measurement must never be able to fail a release pipeline.
-  allow_failure: true
-
 # Destructive production cleanup is deliberately an explicit manual action.
 # It removes only this workload's controllers and their Pods; the Service and
 # database are retained so an approved deploy can recreate the workload.
