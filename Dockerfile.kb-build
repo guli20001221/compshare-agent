@@ -54,36 +54,11 @@ RUN python -m pip install --no-cache-dir --only-binary=:all: \
       --requirement /tmp/rag-requirements.txt
 
 # Fail the IMAGE build, not the release, when the interpreter contract is
-# broken. Each of these has already been a real failure mode somewhere in this
-# pipeline's history:
-#   - a 3.13 base silently source-building Pillow
-#   - Pillow resolving to a version the caption contract does not attest to
-#   - pypdf/pymupdf missing, which extract_pdf_text turns into a hard raise
-#     halfway through a build that has already spent its VL budget
-RUN python - <<'PY'
-import sys
-import PIL, pypdf, fitz
-
-assert sys.version_info[:2] == (3, 12), f"interpreter is {sys.version.split()[0]}, want 3.12.x"
-
-pinned = {}
-for line in open("/tmp/rag-requirements.txt", encoding="utf-8"):
-    line = line.split("#", 1)[0].strip()
-    if "==" in line:
-        name, _, version = line.partition("==")
-        pinned[name.strip().lower()] = version.strip()
-
-installed = {
-    "pillow": PIL.__version__,
-    "pypdf": pypdf.__version__,
-    # fitz.VersionBind is the PyMuPDF package version (1.24.11); fitz.version[1]
-    # is the bundled MuPDF (1.24.10) and is deliberately NOT what is pinned.
-    "pymupdf": fitz.VersionBind,
-}
-for name, want in pinned.items():
-    got = installed[name]
-    assert got == want, f"{name} resolved to {got}, requirements.txt pins {want}"
-print("interpreter and pinned render dependencies match requirements.txt:", installed)
-PY
+# broken. A separate script rather than an inline `RUN <<'PY'` heredoc: heredocs
+# in a Dockerfile are BuildKit syntax, these images are built by Kaniko, and the
+# sibling Dockerfile carries the same warning about BuildKit-only RUN features.
+# The script states which failure each assertion is for.
+COPY scripts/rag_v2/check_build_image.py /tmp/check_build_image.py
+RUN python /tmp/check_build_image.py /tmp/rag-requirements.txt
 
 WORKDIR /src

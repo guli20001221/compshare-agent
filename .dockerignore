@@ -3,9 +3,16 @@
 **
 
 !Dockerfile
+!Dockerfile.kb-build
 !.dockerignore
 !go.mod
 !go.sum
+
+# Dockerfile.kb-build installs these and runs the interpreter-contract check.
+!scripts/
+!scripts/rag_v2/
+!scripts/rag_v2/requirements.txt
+!scripts/rag_v2/check_build_image.py
 
 !cmd/
 !cmd/**
@@ -14,7 +21,14 @@
 
 !deploy/
 !deploy/conf/
-!deploy/conf/config.yaml
+# config.yaml has not existed since the local/prod split; Dockerfile COPYs
+# config.local.yaml and config.prod.yaml, and the build job sed-edits the first
+# of them before Kaniko runs. Under this file's own allowlist premise both were
+# excluded from the context, so either that COPY has been failing or Kaniko is
+# not honouring this file at all -- worth one check either way. Naming what the
+# Dockerfile actually reads is correct under both readings.
+!deploy/conf/config.local.yaml
+!deploy/conf/config.prod.yaml
 !deploy/migrations/
 !deploy/migrations/**
 !deploy/ssh_ops_harness/
