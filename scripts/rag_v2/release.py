@@ -149,13 +149,30 @@ def main(argv: list[str] | None = None) -> int:
         # Written before the build, from the artifacts the build is about to
         # overwrite: this file is the candidate's claim about what it was based
         # on, and the import job passes it through as --parent-release-id.
-        base_record = {
-            "parent_release_id": args.parent_release_id,
-            "baseline_digests": {
-                label: normalized_file_digest(path)
-                for label, path in sorted(baseline.items()) if label != "lock"
-            },
-        }
+        #
+        # It carries the id and NOTHING ELSE. An earlier draft also recorded a
+        # `baseline_digests` map so the parent could be verified by content and
+        # not merely by name, which is the check this file actually wants. It is
+        # removed rather than shipped unread, because three separate things have
+        # to be true before it can mean anything, and none of them is true today:
+        #
+        #   - kb stores the digest (`kb_releases.corpus_digest`) but never reads
+        #     it back -- not in ActiveRelease, not in releaseForUpdate (the query
+        #     the publish CAS uses), not in /healthz. There is nothing to compare
+        #     against from outside the database.
+        #   - the shapes disagree: this was two per-file digests, while the column
+        #     holds one composite over four inputs including both sidecars.
+        #   - and three producers write that one column with three incomparable
+        #     functions (the worker digests the FILES, the MCP updater hashes
+        #     json.Marshal of the chunks, the legacy bootstrap hashes
+        #     chunk_id\0content). A digest comparison built on that would pass for
+        #     worker-created parents and hard-fail for MCP-created ones, which is
+        #     precisely the boundary the check exists to guard.
+        #
+        # Wiring it up means first defining ONE canonical corpus digest in kb and
+        # having all three producers call it. Until then a digest here would be
+        # metadata that looks like a guarantee, which is worse than no metadata.
+        base_record = {"parent_release_id": args.parent_release_id}
         (release_dir).mkdir(parents=True, exist_ok=True)
         (release_dir / "release_base.json").write_text(
             json.dumps(base_record, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

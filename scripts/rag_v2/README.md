@@ -116,6 +116,13 @@ a person reads the diff in between:
    Pod, imports and validates a **candidate**, and leaves the active pointer
    alone. Nothing a user sees changes. It attaches `release_diff.md` and
    `asset_report.json` as job artifacts.
+
+   It refuses to start unless **both** `release_base.json` and `release_diff.md`
+   are committed under `deploy/kb/v2`, before it touches the cluster. Neither is
+   produced by anything but `release.py`, so a corpus committed without it cannot
+   be imported at all — that is deliberate, since such a candidate declares no
+   parent and offers nothing to review. It also means the first import after this
+   lands must come from an orchestrated release, not from an edited corpus.
 2. `publish-knowledge-release` — runs `--action publish` on the serving pod and
    waits for `/healthz` to report the new `kb_version`.
 
