@@ -1338,7 +1338,8 @@ class ReleaseDiffTests(unittest.TestCase):
         self.assertEqual([], result["documents_added"])
         self.assertEqual([], result["documents_removed"])
         self.assertEqual([{"from": "src:pages/x.md", "to": "src:content/x.md",
-                           "content_changed": False}], result["documents_moved"])
+                           "content_changed": False, "metadata_fields": []}],
+                         result["documents_moved"])
 
     def test_a_document_that_moved_and_changed_is_paired_by_path(self):
         """.md -> .mdx rewrote the body too, so content fingerprints miss it."""
@@ -2282,12 +2283,19 @@ class ReleaseGateTests(unittest.TestCase):
         return {f"zip{i}": pipeline.sha256_bytes(f"z{i}".encode()) for i in range(6)}
 
     def _full_re_embed_manifest(self):
+        # Both corpora must be present and their counts must match the actual
+        # candidate files, or G8 now reports evidence_missing before it ever
+        # looks at the ratio. The fixture corpus is 3 internal rows and 1
+        # external row.
         return self._manifest(
             self.NEW_REV, self._zips(), self.new_manifest["report"]["build_argv"],
             embeddings={
-                "stage2b": {"corpus": "stage2b", "chunks": 526, "reused": 0,
-                            "embedded": 526, "reuse_ratio": 0.0,
+                "stage2b": {"corpus": "stage2b", "chunks": 3, "reused": 0,
+                            "embedded": 3, "reuse_ratio": 0.0,
                             "embed_model": "qwen3-embedding-8b"},
+                "external": {"corpus": "external", "chunks": 1, "reused": 1,
+                             "embedded": 0, "reuse_ratio": 1.0,
+                             "embed_model": "qwen3-embedding-8b"},
             })
 
     def test_G8_records_reuse_without_blocking_until_a_threshold_is_set(self):
@@ -2310,7 +2318,7 @@ class ReleaseGateTests(unittest.TestCase):
         self.new_manifest = self._full_re_embed_manifest()
         self._write()
         finding = self._check(self._run(), "G8")
-        self.assertIn("reused 0/526", finding["detail"])
+        self.assertIn("stage2b reused 0/3", finding["detail"])
         self.assertIn("NOTHING was reused", finding["detail"])
         # Still non-blocking without a threshold: it reports, it does not judge.
         self.assertTrue(finding["ok"])
@@ -2341,6 +2349,70 @@ class ReleaseGateTests(unittest.TestCase):
         finding = self._check(self._run(), "G8")
         self.assertFalse(finding["ok"])
         self.assertTrue(finding["evidence_missing"])
+
+    def test_G8_refuses_a_record_that_covers_only_one_corpus(self):
+        """A half-recorded build hides a full re-embed of the other half.
+
+        This passed before: `reports` was truthy, so the loop ran over
+        whichever corpus was present and reported healthy reuse while the
+        internal corpus had been re-embedded end to end.
+        """
+        self.new_manifest = self._manifest(
+            self.NEW_REV, self._zips(), self.new_manifest["report"]["build_argv"],
+            embeddings={"external": {"corpus": "external", "chunks": 1, "reused": 1,
+                                     "embedded": 0, "reuse_ratio": 1.0}})
+        self._write()
+        finding = self._check(self._run(), "G8")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["evidence_missing"])
+        self.assertIn("stage2b", finding["detail"])
+
+    def test_G8_refuses_numbers_that_cannot_all_be_true(self):
+        self.new_manifest = self._manifest(
+            self.NEW_REV, self._zips(), self.new_manifest["report"]["build_argv"],
+            embeddings={
+                "stage2b": {"corpus": "stage2b", "chunks": 3, "reused": 3, "embedded": 3},
+                "external": {"corpus": "external", "chunks": 1, "reused": 1, "embedded": 0},
+            })
+        self._write()
+        finding = self._check(self._run(), "G8")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["evidence_missing"])
+        self.assertIn("reused+embedded", finding["detail"])
+
+    def test_G8_refuses_a_record_left_over_from_another_release(self):
+        """Internally consistent numbers that describe a different corpus.
+
+        The most dangerous of the three, because nothing about the record
+        itself looks wrong -- it takes the candidate artifact to notice. A
+        stale record reporting 100% reuse over 3 chunks would have covered a
+        full re-embed of the 526 the release actually contains.
+        """
+        self.new_manifest = self._manifest(
+            self.NEW_REV, self._zips(), self.new_manifest["report"]["build_argv"],
+            embeddings={
+                "stage2b": {"corpus": "stage2b", "chunks": 99, "reused": 99, "embedded": 0},
+                "external": {"corpus": "external", "chunks": 1, "reused": 1, "embedded": 0},
+            })
+        self._write()
+        finding = self._check(self._run(), "G8")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["evidence_missing"])
+        self.assertIn("holds 3", finding["detail"])
+
+    def test_G8_refuses_a_record_bound_to_a_different_corpus_digest(self):
+        self.new_manifest = self._manifest(
+            self.NEW_REV, self._zips(), self.new_manifest["report"]["build_argv"],
+            embeddings={
+                "stage2b": {"corpus": "stage2b", "chunks": 3, "reused": 3, "embedded": 0,
+                            "corpus_digest": "f" * 64},
+                "external": {"corpus": "external", "chunks": 1, "reused": 1, "embedded": 0},
+            })
+        self._write()
+        finding = self._check(self._run(), "G8")
+        self.assertFalse(finding["ok"])
+        self.assertTrue(finding["evidence_missing"])
+        self.assertIn("bound to corpus", finding["detail"])
 
     # ---- the mode contract ------------------------------------------------
     def test_shadow_records_a_rejection_without_failing_the_pipeline(self):

@@ -151,6 +151,16 @@ def main(argv: list[str] | None = None) -> int:
                              "attribution check as evidence_missing rather than passing it")
     parser.add_argument("--gate-mode", choices=("shadow", "enforce"), default="shadow",
                         help="shadow records a verdict and never fails; enforce blocks")
+    # Threshold pass-through. The gate has grown two numeric thresholds that only
+    # mean anything in enforce mode, and until now the standard entry point could
+    # not set either: someone switching to --gate-mode enforce would have got a
+    # gate whose two tunable checks were both permanently unset, which reads as
+    # "they passed". Both stay unset by default, because shadow mode exists to
+    # measure the base rate they should be set from.
+    parser.add_argument("--max-shrink", type=float,
+                        help="passed to the gate: maximum corpus shrink, e.g. 0.05")
+    parser.add_argument("--min-reuse", type=float,
+                        help="passed to the gate: minimum vector reuse, e.g. 0.5")
     args, unknown = parser.parse_known_args(argv)
     if unknown:
         # parse_known_args used to swallow these silently. That is tolerable
@@ -291,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
              "--released-external", str(baseline.get("external", deploy_dir / "external_w0.jsonl")),
              "--released-manifest", str(baseline.get("manifest", release_dir / "release_manifest.json")),
              *(["--docs-diff", str(args.docs_diff)] if args.docs_diff else []),
+             *(["--max-shrink", str(args.max_shrink)] if args.max_shrink is not None else []),
+             *(["--min-reuse", str(args.min_reuse)] if args.min_reuse is not None else []),
              "--mode", args.gate_mode,
              "--out-md", str(release_dir / "release_gate.md"),
              "--out-json", str(release_dir / "release_gate.json")], cwd=repo)

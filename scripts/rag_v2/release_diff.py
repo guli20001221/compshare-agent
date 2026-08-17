@@ -151,6 +151,43 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
     def fingerprint(doc: str, rows: list[dict[str, Any]]) -> tuple[str, ...]:
         return tuple(sorted(content_digest(row) for row in rows if document_key(row) == doc))
 
+    def metadata_by_slot(doc: str, rows: list[dict[str, Any]]) -> dict[tuple[str, int], dict[str, Any]]:
+        """One document's chunks keyed by their position WITHIN it.
+
+        Keyed on heading path and occurrence rather than chunk_id, because a
+        moved document has none of its old ids: chunk_id hashes source_path, so
+        every id changes the moment the file does. This is the same key
+        slot_keys uses, minus the document component that just changed.
+        """
+        seen: Counter = Counter()
+        out: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in rows:
+            if document_key(row) != doc:
+                continue
+            heading = " / ".join(str(part) for part in (row.get("heading_path") or []))
+            occurrence = seen[heading]
+            seen[heading] += 1
+            out[(heading, occurrence)] = row
+        return out
+
+    def moved_metadata_fields(source: str, target: str) -> list[str]:
+        """Served metadata that changed across a move, which the move pairing itself cannot see.
+
+        Move pairing is done on CONTENT digests, so a document that moved and had
+        its title, question patterns or ACL rewritten under unchanged text pairs
+        as a clean move and lands in the report as 仅移动 -- telling the reviewer
+        there is nothing here to read, in the one release shape where a whole
+        directory of documents changes path at once.
+        """
+        before = metadata_by_slot(source, old_rows)
+        after = metadata_by_slot(target, new_rows)
+        fields: set[str] = set()
+        for key in before.keys() & after.keys():
+            for name in SERVED_METADATA_FIELDS:
+                if before[key].get(name) != after[key].get(name):
+                    fields.add(name)
+        return sorted(fields)
+
     gone, fresh = old_docs - new_docs, new_docs - old_docs
     old_prints: dict[tuple[str, tuple[str, ...]], list[str]] = {}
     for doc in sorted(gone):
@@ -159,7 +196,10 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
     for doc in sorted(fresh):
         candidates = old_prints.get((source_of(doc), fingerprint(doc, new_rows)))
         if candidates:
-            moved.append({"from": candidates.pop(0), "to": doc, "content_changed": False})
+            source = candidates.pop(0)
+            fields = moved_metadata_fields(source, doc)
+            moved.append({"from": source, "to": doc, "content_changed": False,
+                          "metadata_fields": fields})
     moved_from = {item["from"] for item in moved}
     moved_to = {item["to"] for item in moved}
 
@@ -181,7 +221,8 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
     old_stems = unique_stems(gone - moved_from)
     new_stems = unique_stems(fresh - moved_to)
     for stem in sorted(old_stems.keys() & new_stems.keys()):
-        moved.append({"from": old_stems[stem], "to": new_stems[stem], "content_changed": True})
+        moved.append({"from": old_stems[stem], "to": new_stems[stem], "content_changed": True,
+                      "metadata_fields": moved_metadata_fields(old_stems[stem], new_stems[stem])})
     moved_from = {item["from"] for item in moved}
     moved_to = {item["to"] for item in moved}
 
@@ -263,15 +304,36 @@ def render_markdown(report: dict[str, Any], *, limit: int = 25) -> str:
         )
         lines.append("")
         if corpus.get("documents_moved"):
-            verbatim = [item for item in corpus["documents_moved"] if not item.get("content_changed")]
-            edited = [item for item in corpus["documents_moved"] if item.get("content_changed")]
+            # "不必看" is a strong claim to make about a document, and it has to
+            # survive BOTH tests. Move pairing is done on content digests, so a
+            # document that moved and had its title, question patterns or ACL
+            # rewritten under unchanged text used to pair as a clean move and be
+            # labelled 仅移动 -- actively telling the reviewer to skip it, in the
+            # release shape (a whole directory changing path) where that label is
+            # applied to hundreds of documents at once.
+            def _move_label(item):
+                fields = item.get("metadata_fields") or []
+                if item.get("content_changed") and fields:
+                    return "改了内容和检索字段：" + ", ".join(f"`{name}`" for name in fields)
+                if item.get("content_changed"):
+                    return "改了内容"
+                if fields:
+                    return "正文未变，改了检索字段：" + ", ".join(f"`{name}`" for name in fields)
+                return "仅移动"
+
+            def _is_quiet(item):
+                return not item.get("content_changed") and not (item.get("metadata_fields") or [])
+
+            verbatim = [item for item in corpus["documents_moved"] if _is_quiet(item)]
+            edited = [item for item in corpus["documents_moved"] if not _is_quiet(item)]
             lines += [
                 f"**移动的文档 ({len(corpus['documents_moved'])})** —— "
-                f"其中 {len(verbatim)} 个内容逐字未变（不必看），{len(edited)} 个同时改了内容：",
+                f"其中 {len(verbatim)} 个内容和检索字段都逐字未变（不必看），"
+                f"{len(edited)} 个还改了别的：",
                 "",
             ]
             lines += _table(
-                [[f"`{item['from']}`", f"`{item['to']}`", "改了内容" if item.get("content_changed") else "仅移动"]
+                [[f"`{item['from']}`", f"`{item['to']}`", _move_label(item)]
                  for item in (edited + verbatim)[:limit]],
                 ["原路径", "新路径", ""],
             )

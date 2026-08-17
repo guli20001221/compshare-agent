@@ -580,15 +580,60 @@ def check_embedding_reuse(inputs: Inputs, *, min_reuse: float | None) -> Finding
         # must not read as "reused everything".
         return _missing("G8", title, "report.embeddings in release_manifest.json")
 
+    # Everything below exists because a PARTIAL or STALE record is more dangerous
+    # than an absent one: it reads as a measurement. Three shapes were reachable
+    # before these checks and all three reported healthy reuse --
+    #   only `external` recorded, hiding a full re-embed of the internal corpus;
+    #   reused=526 embedded=526 chunks=526, which cannot all be true;
+    #   chunks=3 carried over from a previous release, against a 526-row corpus.
+    # Each is now evidence_missing, because the check could not actually run.
+    corpora = {
+        "stage2b": inputs.candidate_internal,
+        "external": inputs.candidate_external,
+    }
+    absent = sorted(name for name in corpora if name not in reports)
+    if absent:
+        return _missing("G8", title,
+                        f"an embedding record for {absent} (only {sorted(reports)} recorded)")
+
     parts = []
+    problems = []
     worst = 1.0
-    for corpus, item in sorted(reports.items()):
+    for corpus, path in sorted(corpora.items()):
+        item = reports[corpus]
         chunks = int(item.get("chunks") or 0)
         reused = int(item.get("reused") or 0)
         embedded = int(item.get("embedded") or 0)
-        ratio = (reused / chunks) if chunks else 0.0
+
+        if chunks <= 0:
+            problems.append(f"{corpus} records {chunks} chunks")
+            continue
+        if reused + embedded != chunks:
+            problems.append(
+                f"{corpus} reused+embedded={reused + embedded} but chunks={chunks}")
+        actual = _read_rows(path)
+        if actual is None:
+            problems.append(f"{corpus} corpus file {path.name} is unreadable")
+        elif len(actual) != chunks:
+            # The stale-report case, and the only one that needs an artifact to
+            # detect: the numbers are internally consistent, they just describe a
+            # different release.
+            problems.append(
+                f"{corpus} records {chunks} chunks but {path.name} holds {len(actual)}")
+        recorded_digest = str(item.get("corpus_digest") or "")
+        if recorded_digest and path.exists():
+            actual_digest = normalized_file_digest(path)
+            if recorded_digest != actual_digest:
+                problems.append(
+                    f"{corpus} record is bound to corpus {recorded_digest[:12]}, "
+                    f"candidate is {actual_digest[:12]}")
+
+        ratio = reused / chunks
         worst = min(worst, ratio)
         parts.append(f"{corpus} reused {reused}/{chunks} ({ratio:.1%}), embedded {embedded}")
+
+    if problems:
+        return _missing("G8", title, "a coherent embedding record: " + "; ".join(problems))
     detail = "; ".join(parts)
 
     if min_reuse is None:
