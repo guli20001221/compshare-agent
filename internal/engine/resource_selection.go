@@ -21,19 +21,11 @@ type pendingResourceSelection struct {
 	candidates []entity.InstanceSnapshot
 }
 
-// findExplicitInstanceRef scans a raw user message for an explicit instance ID
-// and resolves it against the snapshot. It is a deterministic backstop for a
-// literal ID that the model did not surface.
-func findExplicitInstanceRef(msg string, snapshot entity.RegistrySnapshot) (*entity.InstanceSnapshot, string) {
-	hits, unresolved := snapshot.ResolveInstanceRefsInText(msg)
-	if len(hits) > 0 {
-		return hits[0], ""
-	}
-	if len(unresolved) > 0 {
-		return nil, unresolved[0]
-	}
-	return nil, ""
-}
+// findExplicitInstanceRef was deleted with its last caller (selection_binder's
+// live-registry branch). It collapsed ResolveInstanceRefsInText's result to
+// hits[0] and unresolved[0], which is precisely the pick-one the binder's
+// contract forbids; callers that need "which instances did the user name" must
+// read the whole slice. Do not reintroduce a first-hit helper.
 
 type resourceSelectionMatch struct {
 	instance  entity.InstanceSnapshot

@@ -1518,6 +1518,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.selectedInstanceSourceAtTurnStart = e.sessionState.SelectedInstanceSource
 	e.selectedInstanceFreshnessAtTurnStart = normalizedSelectedInstanceFreshness(e.sessionState)
 	e.instanceResolutionSourceThisTurn = ""
+	// Record the user's own designation of a target NOW, from this turn's words —
+	// after the turn-start snapshot above is frozen, so the trace still reports
+	// what was CARRIED IN rather than what this turn just established.
+	e.recordUserDesignatedInstance()
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -3423,6 +3427,55 @@ func (e *Engine) recordObservedInstanceFromMonitor(raw map[string]any) {
 			e.recordObservedInstanceID(subjectID, "")
 		}
 	}
+}
+
+// recordUserDesignatedInstance persists the instance the user designated in THIS
+// turn's own words, whenever the server can resolve it deterministically to
+// exactly one id.
+//
+// It exists because SelectedInstanceSourceUser is documented as "an explicit id
+// they typed, or a pick from a shown selection card" (session_state.go) while
+// every writer of it ran only AFTER a confirmed action — which quietly redefined
+// the field as "an instance the user approved an operation on". Those are two
+// different events. Conflating them meant an entry card that timed out, was
+// declined, or lost its connection threw away an id the user had typed in plain
+// text: the next turn carried only an `observed` row, the target gate correctly
+// refused it (observed is not chosen), and nothing the user could say next —
+// "确认", "继续排查", picking the row in the console — could satisfy the gate,
+// so the exchange looped with no exit. Observed live, 2026-08-17.
+//
+// The accepted proof is deliberately Tier A only (binding.explicit && bound()):
+// an id typed in this message, a unique exact instance name, or an ordinal
+// against a candidate list the server itself displayed. That is the server
+// matching the USER's literal text — not the model electing a row from a list it
+// just read, which is the line #546 draws and which stays drawn. Excluded by
+// construction: a model-authored id and an observed read (never explicit), a
+// carried prior selection (Tier B — re-recording it would refresh a TTL the user
+// never touched), a mistyped id or out-of-range ordinal (explicit but unbound),
+// and two references that disagree (conflict is never bound).
+//
+// This grants NO execution authority and skips no gate. The value is the same one
+// bindInstanceTarget already derives from this turn's text; persisting it only
+// lets a LATER turn reach a confirmation card naming that same instance. Entry
+// still requires that card, and a write still requires resolver + confirmation.
+//
+// STATED LIMIT: bound() needs a registry that can resolve the id, so on a COLD
+// rehydrated session a typed id is explicit-but-unbound and is not recorded here.
+// The SSH gate still admits it for that turn (its own TextExplicitlyMentionsName
+// fallback), so the user is not blocked — but if that turn's card is not approved,
+// the loop this function exists to close can still occur until some read warms the
+// registry. Closing it would mean persisting a string the server cannot verify
+// exists, which would then carry into write-target binding; that is a different
+// decision with a different risk, not an oversight here.
+func (e *Engine) recordUserDesignatedInstance() {
+	if e == nil || !e.sessionStateHydrated || !e.turnContextViewReady {
+		return
+	}
+	binding := e.bindInstanceTarget(e.turnContextViewThisTurn)
+	if !binding.explicit || !binding.bound() {
+		return
+	}
+	e.recordSelectedInstanceIDWithSource(binding.id, "", SelectedInstanceSourceUser)
 }
 
 // recordObservedInstanceID records one instance as read-only conversational

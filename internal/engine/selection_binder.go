@@ -100,11 +100,21 @@ func (e *Engine) bindInstanceTarget(view AgentContext) selectionBinding {
 	}
 
 	if snap.FreshAndCompleteAt(now) {
-		// A literal id typed in the message, resolved against a trustworthy registry.
-		if hit, unresolved := findExplicitInstanceRef(text, snap); hit != nil {
+		// EVERY literal id typed in the message, resolved against a trustworthy
+		// registry — all of them, not the first. This used to call
+		// findExplicitInstanceRef, which returns hits[0] and drops the rest, so
+		// "停止 uhost-a 和 uhost-b" bound silently to uhost-a: a pick-one where the
+		// contract above says conflict. The pending-candidate branch already
+		// collects them all for exactly this reason, and its comment says so; the
+		// live registry needed the same treatment. It matters more now that a
+		// resolved Tier A reference is PERSISTED as the user's designation — an
+		// ambiguity that used to last one turn would otherwise stick to the session.
+		hits, unresolved := snap.ResolveInstanceRefsInText(text)
+		for _, h := range hits {
 			explicit = true
-			refs = appendDistinctID(refs, hit.UHostId)
-		} else if unresolved != "" {
+			refs = appendDistinctID(refs, h.UHostId)
+		}
+		if len(unresolved) > 0 {
 			explicit = true // a typed id we can't resolve is still an explicit reference
 		}
 		// A unique exact instance name mentioned in the message.
