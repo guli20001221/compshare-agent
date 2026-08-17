@@ -79,9 +79,10 @@ func WithHostResolver(hr HostResolver) ServiceOption {
 // still never dialled. Empty (the default) disables the whole candidate path — no extra probe,
 // no extra log line, and the dial is byte-identical to WithHostResolver alone.
 //
-// It is a setting rather than a constant because the prefix is an unverified claim about the
-// deployment's network: if it turns out to be the wrong one, ops changes YAML instead of us
-// shipping code to change a string.
+// It is a setting rather than a constant because the prefix is a production network fact, not a
+// product decision — the same reason mysql.host_override lives in YAML. It is measured working
+// (in-cluster 2026-08-16, see deploy/conf/config.prod.yaml), but if the fabric ever renumbers,
+// ops edits YAML instead of us shipping code to change a string.
 func WithPublicIPv6Prefix(prefix string) ServiceOption {
 	return func(s *Service) { s.publicIPv6Prefix = strings.TrimSpace(prefix) }
 }
