@@ -297,9 +297,10 @@ func TestChoosingAnAddressStillProbesTheRest(t *testing.T) {
 }
 
 // "This deployment has no route to customer EIPs" is the premise the whole design rests on, and
-// it was last measured on 2026-08-06 against instances that no longer exist. Probing it as a
-// control on every run makes a network change that opened that route visible immediately, rather
-// than leaving us routing around a problem that had already been fixed.
+// any single measurement of it goes stale within the day — the fleet it was measured against is
+// replaced that fast (re-measured in-cluster 2026-08-16: timeout on every target in both regions).
+// Probing it as a control on every run makes a network change that opened that route visible
+// immediately, rather than leaving us routing around a problem that had already been fixed.
 //
 // The pairing that matters: it appears in the DIAGNOSTIC list and is absent from the DIAL list,
 // for the same inputs. Asserting only one half would let a refactor move it across.

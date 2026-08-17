@@ -52,39 +52,57 @@ agent:
     # them. A translation prefix, if this network runs one, reaches the box without needing a
     # per-cluster route, so it would close cn-sh2-02 and every future self-owned zone at once.
     #
-    # This prefix is UNVERIFIED and is here to be tested, not because it is known to work:
-    #   - it was reported from a document that can no longer be located
-    #   - 2002:a40:2e05:: decodes as the 6to4 block (RFC 3056) of 10.64.46.5, a PRIVATE address
-    #     in the same 10.64/16 as the internal gateway
-    #   - RIPEstat: that /48 has origins=[] and is seen by 0 of 320 RIS peers, i.e. no AS on
-    #     the public internet announces it
-    #   - neither this repo nor uhost-compshare-api mentions 6to4 / NAT64 / SIIT anywhere
-    # What is on its side: the fabric demonstrably already translates IPv6 to a guest's IPv4
-    # (instances carry no global IPv6 at all, yet answer on the mapped address), so a
-    # translator for public IPv4 is a coherent thing for this network to have.
+    # MEASURED from inside the cluster on 2026-08-16 — two full runs, zero disagreements:
+    #   cn-wlcb-01    internal-ipv6      connects in ~1ms, sshd banner
+    #   cn-sh2-02     internal-ipv6      times out at the full 4s, every time
+    #   cn-sh2-02     public-v6-simple   connects in ~30ms, sshd banner
+    #   all targets   public-v6-rfc6052  no route to host in under 1ms — never once answered
+    #   all targets   advertised EIP     times out (CONTROL — the no-route premise still holds)
+    # The control that makes this a ZONE result rather than one lucky machine: on cn-sh2-02 an
+    # instance still Initializing REFUSED the prefix address in ~34ms while a healthy one in the
+    # same zone accepted with a banner. A refusal is a packet that arrived and came back.
     #
-    # Two encodings are tried because "prefix + IPv4" names two addresses (shown here with a
-    # documentation address, RFC 5737 — never a real instance EIP, this repo is public):
-    #   simple   2002:a40:2e05::203.0.113.9           (IPv4 in the low 32 bits)
-    #   rfc6052  2002:a40:2e05:cb00:7100:900::        (RFC 6052 §2.2 for a /48 prefix)
-    # The one real mapping in this tree (mysql.host_override above) embeds its IPv4 at bits
-    # 64-95, which is neither, so guessing a single encoding would make a failed test ambiguous.
+    # The prefix needs no provenance argument, because the platform publishes it itself: every
+    # *.podtcp.compshare.cn name resolves to <this prefix>::<the zone pod ingress's public IPv4
+    # in the low 32 bits> — same prefix, same encoding public-v6-simple builds. (Kept only so
+    # nobody re-derives it as a fresh doubt: this /48 decodes as the 6to4 block (RFC 3056) of a
+    # private 10.64/16 address, RIPEstat reports origins=[] and 0 of 320 RIS peers, and neither
+    # this repo nor uhost-compshare-api mentions 6to4 / NAT64 / SIIT. All true, and all beside
+    # the point — this is a fabric-internal translator, not a public route. Instances carry no
+    # global IPv6 at all: measured in-guest, /proc/net/if_inet6 holds only ::1 and a link-local
+    # fe80::, yet they answer on the mapped address.)
+    #
+    # Both encodings are still built, because "prefix + IPv4" names two different addresses
+    # (shown with a documentation address, RFC 5737 — never a real instance EIP, this repo is
+    # public):
+    #   simple   2002:a40:2e05::203.0.113.9      IPv4 in the low 32 bits  <- the one that works
+    #   rfc6052  2002:a40:2e05:cb00:7100:900::   RFC 6052 §2.2 for a /48  <- never answered
+    # rfc6052 is KEPT despite never winning, on its measured cost: it fails ENETUNREACH in well
+    # under a millisecond rather than timing out, and it is only ever reached after simple has
+    # already failed. Deleting it would save nothing and would remove the fallback if a zone ever
+    # uses the other layout. Do not "clean it up" for tidiness.
     #
     # Ordering is the safety property: internal first, so every zone that works today keeps
     # dialling the same address; the public EIP is never a candidate in any position. If none
     # of the candidates accepts a TCP connection the run REFUSES and the log names each address
     # tried with its failure class — clearing this key restores the previous behaviour exactly.
+    # Its KNOWN cost is a fixed 4s (perCandidateDialTimeout) burnt on every cn-sh2-02 run, and
+    # that is accepted rather than overlooked: a per-zone candidate table is the rules layer this
+    # design exists to avoid, caching the winning candidate would make a network change sticky
+    # (exactly what the EIP control below is here to catch), and a shorter timeout would start
+    # cutting off slow-but-working dials. If the 4s ever has to go, the honest fix is racing the
+    # candidates concurrently and taking the first to answer — never reordering them per zone.
     #
     # Candidates after the winner are still probed, detached and after the address is chosen, and
-    # only logged (「candidates NOT dialled」). Otherwise the prefix would never be exercised on
-    # cn-wlcb-01, where the internal route answers first — and that is the zone that can actually
-    # judge it: the box is known reachable from here, so a prefix failure there is the prefix's,
-    # whereas a failure on cn-sh2-02 cannot separate "no translator" from "translator that also
-    # cannot reach c3". Costs the run nothing; the credential is already resolved when they fire.
+    # only logged (「candidates NOT dialled」). That is how rfc6052 and the EIP keep being measured
+    # on a zone that can judge them: a failure on a box known reachable from here is the
+    # candidate's, whereas a failure on a zone with no route at all cannot separate "no
+    # translator" from "translator that also cannot reach c3". Costs the run nothing; the
+    # credential is already resolved when they fire.
     #
-    # That same diagnostic list carries the advertised EIP as a CONTROL — probed, never dialled.
-    # "This deployment has no route to customer EIPs" is the premise everything here rests on, and
-    # it was last measured 2026-08-06 against instances that no longer exist. Re-measuring it on
-    # every run costs nothing, and means a network change that opened that route shows up as a log
-    # line rather than leaving us routing around a problem that had already been fixed.
+    # The advertised EIP rides that same list as a CONTROL — probed, never dialled. "This
+    # deployment has no route to customer EIPs" is the premise everything here rests on;
+    # re-measured 2026-08-16 (timeout on every target, both regions) and re-measured free on
+    # every run, so a network change that opened that route shows up as a log line rather than
+    # leaving us routing around a problem that had already been fixed.
     public_ipv6_prefix: "2002:a40:2e05::"

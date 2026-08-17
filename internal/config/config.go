@@ -163,15 +163,21 @@ type SSHOpsConfig struct {
 	//
 	// It exists for one measured gap. cn-wlcb-01 is reached over its internal IPv6 and
 	// cn-sh2-02 is not — the deployment runs in the c5 cluster and cn-sh2 sits behind c3,
-	// so the mapping resolves and the dial goes nowhere. A translation prefix, if this
-	// network really runs one, would reach the box without a per-cluster fabric route.
+	// so the mapping resolves and the dial goes nowhere. A translation prefix reaches the
+	// box without a per-cluster fabric route.
 	//
-	// The prefix itself is an UNVERIFIED claim about the network: it was reported from a
-	// document nobody can now locate, `2002:a40:2e05::` decodes as the 6to4 block of the
-	// private address 10.64.46.5, and that /48 is announced by no AS on the public
-	// internet. So this is deliberately a setting and deliberately empty by default —
-	// wrong prefix means an ops edit, not a code change, and a deployment that never sets
-	// it dials exactly what it dialled before.
+	// Measured in-cluster 2026-08-16 (two runs, no disagreement): the prefix closes exactly
+	// that gap — cn-sh2-02 answers on the simple low-32-bit form in ~30ms with an sshd
+	// banner, while its internal address burns the full dial timeout. It is not a guess
+	// about the network either; the platform publishes the same prefix and the same
+	// encoding itself, since every *.podtcp.compshare.cn name resolves to that prefix with
+	// the zone pod ingress's public IPv4 in the low 32 bits.
+	//
+	// Still a setting, and still empty by default: it is a production network fact like
+	// mysql.host_override, a wrong prefix must be an ops edit rather than a code change,
+	// and a deployment that never sets it dials exactly what it dialled before. The
+	// per-encoding measurements and the reason the RFC 6052 form is kept despite never
+	// answering live beside the value in deploy/conf/config.prod.yaml.
 	//
 	// Ordering is the safety property, not this field: the internal address stays the
 	// first candidate and the public IPv4 is never dialled in any position.

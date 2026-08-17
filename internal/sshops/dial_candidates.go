@@ -198,11 +198,14 @@ func dialCandidatesFor(advertised, prefix, internal string, internalErr error) (
 // Two things go in, for two different reasons:
 //
 //   - the candidates the winner cut short. On a zone the internal route reaches, this is the only
-//     way the prefix is ever exercised — and that is the zone that can judge it.
+//     way the prefix is ever exercised — and that is the zone that can judge it. This is what
+//     established (in-cluster, 2026-08-16) that public-v6-rfc6052 answers nowhere while
+//     public-v6-simple answers on a box the internal route already reached.
 //   - the advertised public EIP. It is never a dial candidate and must never become one, but
 //     "this deployment has no route to customer EIPs" is the single most load-bearing premise in
-//     the whole design, and it was last measured on 2026-08-06 against instances that no longer
-//     exist. Re-measuring it on every run costs nothing and means a network change that opened
+//     the whole design, and an instance fleet turns over fast enough that any single measurement
+//     of it is stale within the day (re-measured 2026-08-16: timeout on every target in both
+//     regions). Re-measuring it on every run costs nothing and means a network change that opened
 //     that route would show up as a line in the log, instead of us going on routing around a
 //     problem that had already been fixed.
 //
