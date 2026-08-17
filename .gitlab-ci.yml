@@ -251,6 +251,13 @@ knowledge-tick:
       HEALTHZ=$(kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
         wget -qO- http://127.0.0.1:8088/healthz)
       ACTIVE=$(printf '%s' "$HEALTHZ" | sed -n 's/.*"release_id":"\([^"]*\)".*/\1/p')
+      # Stated boundary rather than a gap to trip over: this requires an active
+      # release, so the AUTOMATED path does not cover bootstrapping an empty
+      # knowledge base.  The manual path does -- import-knowledge-release sends
+      # --allow-empty-parent when neither a recorded parent nor an active
+      # release exists -- and every knowledge base this pipeline builds for has
+      # been published into at least once.  A first publication is a human
+      # running release.py and clicking import; it is not a schedule's job.
       test -n "$ACTIVE"
       echo "production is serving $ACTIVE"
 
@@ -352,22 +359,31 @@ build-knowledge-candidate:
       # unattended releases says nothing about the others. This job's
       # contribution is --docs-diff, which is the evidence the attribution check
       # needs and the one thing a manual release cannot supply.
+      #
+      # --build-arg=VALUE, with the `=`, on every one of them. A pass-through
+      # argument is usually itself a flag, and argparse reads any token starting
+      # with `-` as the next OPTION -- so the separated form dies at "argument
+      # --build-arg: expected one argument", after the docs clone and before any
+      # work. The `=` form is the only spelling that carries a leading dash, and
+      # it is used for the values too so there is one rule rather than two.
+      # test_the_candidate_build_job_argv_is_accepted_by_release_and_by_build
+      # runs this exact line through both parsers.
       python -m scripts.rag_v2.release \
         --env "$WORK/build.env" \
         --parent-release-id "$KB_PARENT_RELEASE_ID" \
         --docs-diff "$WORK/docs_diff.txt" \
         --gate-mode "${KB_GATE_MODE:-shadow}" \
-        --build-arg --internal-docs --build-arg "$WORK/compshare-docs" \
-        --build-arg --internal-revision --build-arg "$KB_DOCS_HEAD" \
-        --build-arg --faq-zip --build-arg 'deploy/kb/v2/sources/优云智算模型套餐FAQ.zip' \
-        --build-arg --faq-zip --build-arg 'deploy/kb/v2/sources/ComfyUI基础镜像常见问题解答（持续更新中）.zip' \
-        --build-arg --faq-zip --build-arg 'deploy/kb/v2/sources/优云智算使用问题FAQ.zip' \
-        --build-arg --external-zip --build-arg 'deploy/kb/v2/sources/comfyui-mirror-docs.zip' \
-        --build-arg --external-zip --build-arg 'deploy/kb/v2/sources/digital-human-docs.zip' \
-        --build-arg --external-zip --build-arg 'deploy/kb/v2/sources/voice-audio-docs.zip' \
-        --build-arg --legacy-external --build-arg deploy/kb/v2/legacy_external_lock.jsonl \
-        --build-arg --valid-from --build-arg "$VALID_FROM" \
-        --build-arg --external-valid-from --build-arg "$EXTERNAL_VALID_FROM"
+        --build-arg=--internal-docs --build-arg="$WORK/compshare-docs" \
+        --build-arg=--internal-revision --build-arg="$KB_DOCS_HEAD" \
+        --build-arg=--faq-zip --build-arg='deploy/kb/v2/sources/优云智算模型套餐FAQ.zip' \
+        --build-arg=--faq-zip --build-arg='deploy/kb/v2/sources/ComfyUI基础镜像常见问题解答（持续更新中）.zip' \
+        --build-arg=--faq-zip --build-arg='deploy/kb/v2/sources/优云智算使用问题FAQ.zip' \
+        --build-arg=--external-zip --build-arg='deploy/kb/v2/sources/comfyui-mirror-docs.zip' \
+        --build-arg=--external-zip --build-arg='deploy/kb/v2/sources/digital-human-docs.zip' \
+        --build-arg=--external-zip --build-arg='deploy/kb/v2/sources/voice-audio-docs.zip' \
+        --build-arg=--legacy-external --build-arg=deploy/kb/v2/legacy_external_lock.jsonl \
+        --build-arg=--valid-from --build-arg="$VALID_FROM" \
+        --build-arg=--external-valid-from --build-arg="$EXTERNAL_VALID_FROM"
 
       rm -rf "$WORK/compshare-docs" "$WORK/build.env"
 
@@ -698,14 +714,24 @@ import-knowledge-release:
       # above, each as one whole argument.  No --publish: --validate already
       # defaults to true, so this leaves a VALIDATED CANDIDATE and does not touch
       # the active pointer.  Nothing a user sees changes until
-      # publish-knowledge-release is run, and --require-base-match (default true)
-      # makes that later publish a compare-and-swap against the parent recorded
-      # above.
+      # publish-knowledge-release is run.
+      #
+      # --require-base-match is passed HERE and nowhere else because this is
+      # where it is STORED: store.Publish reads require_base_match off the
+      # candidate row this command writes, not off the publish command, which
+      # takes only a release id.  So this argv decides whether the later manual
+      # publish is a compare-and-swap at all -- and the window it covers is the
+      # human review between the two jobs, which the check above cannot see
+      # because it ran before the review started.  Passing it explicitly rather
+      # than inheriting the worker's default: the flag is this job asking for a
+      # compare-and-swap, and a default in another repository is somebody else's
+      # decision, changeable without anything on this side noticing.
       kubectl -n "$NAMESPACE" exec "$POD" -- /usr/local/bin/compshare-kb-worker \
         --action import \
         --knowledge-base "$KNOWLEDGE_BASE" \
         --release-id "$KB_RELEASE_ID" \
         --version "$KB_RELEASE_VERSION" \
+        --require-base-match \
         "$@"
 
       echo

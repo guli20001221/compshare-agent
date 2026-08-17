@@ -35,7 +35,13 @@ FAQ_IDS = ("faq-model-package", "faq-comfyui-base", "faq-usage")
 EXTERNAL_PACKAGES = ("comfyui", "digital-human", "voice-audio")
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Handed out so the argv the CI job forwards here can be checked in tests.
+
+    release.py passes --build-arg tokens straight through to this module, and
+    nothing between the two validates them: a token missing here surfaces only
+    when a real candidate build reaches this parser, hours into the job.
+    """
     # allow_abbrev=False because build_argv is EVIDENCE. The gate's G1.argv asks
     # whether `--skip-vl` is in the recorded argument list, by exact membership.
     # With argparse's default abbreviation matching, `--skip-v` is an unambiguous
@@ -107,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
     # failing a build, but for a platform image it means shipping a caption
     # nothing verified this run. That is a person's call, not a default.
     parser.add_argument("--allow-stale-remote", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     # What this build was actually told to do, recorded by the process that did
     # it. The release gate reads it to see whether a safety flag was in play.

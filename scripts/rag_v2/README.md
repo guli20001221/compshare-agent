@@ -131,11 +131,17 @@ kubectl -n prj-ucompshare-prod exec compshare-kb-0 -- wget -qO- http://127.0.0.1
 ```powershell
 python -m scripts.rag_v2.release --env .env.local `
   --parent-release-id kb-release-<that release_id> `
-  --build-arg --internal-docs --build-arg <docs-checkout> `
-  --build-arg --internal-revision --build-arg <sha> `
-  --build-arg --valid-from --build-arg 2026-08-16 `
-  ... (one --build-arg per token; see scripts/rag_v2/build.py for the full list)
+  --build-arg=--internal-docs --build-arg=<docs-checkout> `
+  --build-arg=--internal-revision --build-arg=<sha> `
+  --build-arg=--valid-from --build-arg=2026-08-16 `
+  ... (one --build-arg=VALUE per token; see scripts/rag_v2/build.py for the full list)
 ```
+
+Note the `=`. A pass-through token is usually itself a flag, and argparse reads
+anything starting with `-` as the next option, so the separated
+`--build-arg --internal-docs` is not a style choice — it exits 2 with `argument
+--build-arg: expected one argument` before the build begins. Use `=` for the
+values too, so there is one rule instead of two.
 
 That id is recorded in `deploy/kb/v2/release_base.json` and committed with the
 corpus. The import job refuses a candidate whose recorded parent is not what

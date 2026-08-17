@@ -3,6 +3,8 @@ from datetime import date
 import io
 import json
 from pathlib import Path
+import re
+import shlex
 import tempfile
 import unittest
 import unittest.mock
@@ -1772,6 +1774,107 @@ class ReleaseOrchestrationTests(unittest.TestCase):
                                     "--valid-from", "2026-08-16", flag])
                 self.assertIn("unrecognized arguments", err.getvalue())
                 self.assertIn(flag, err.getvalue())
+
+
+class CIInvocationTests(unittest.TestCase):
+    """The argv .gitlab-ci.yml actually sends, run through the parsers it meets.
+
+    These scripts have exactly one production caller and it is a shell line in a
+    YAML file. Nothing executed that line until a release was being built for
+    real, which is how `--build-arg --internal-docs` shipped green: argparse
+    reads a value starting with `-` as the next OPTION, so every candidate build
+    would have died at "argument --build-arg: expected one argument" -- after the
+    docs clone, before any work. Unit tests over the modules cannot see it,
+    because the defect is in the caller.
+
+    The argv is SLICED OUT OF the shipped file rather than restated here. A
+    copy would pass while the file it copied was broken.
+    """
+
+    CI = REPO_ROOT / ".gitlab-ci.yml"
+
+    def _command(self, prefix):
+        """The one line starting with `prefix`, plus its `\\` continuations."""
+        lines = self.CI.read_text(encoding="utf-8").splitlines()
+        starts = [i for i, line in enumerate(lines) if line.strip().startswith(prefix)]
+        self.assertEqual(1, len(starts), f"expected exactly one `{prefix}` in .gitlab-ci.yml")
+        collected = []
+        index = starts[0]
+        while True:
+            text = lines[index].strip()
+            if text.endswith("\\"):
+                collected.append(text[:-1])
+                index += 1
+                continue
+            collected.append(text)
+            break
+        return " ".join(collected)
+
+    def _argv(self, command):
+        """Shell-split it the way the runner would, with variables stood in for.
+
+        Only the two expansions the job uses are handled, and a construct that is
+        NOT handled fails the test instead of being silently mangled -- a
+        harness that quietly rewrites its input is measuring the harness.
+        """
+        self.assertNotIn("$(", command, "command substitution: this harness cannot stand in for it")
+        command = re.sub(r"\$\{(\w+):-([^}]*)\}", r"\2", command)     # ${X:-default} -> default
+        command = re.sub(r"\$\{?(\w+)\}?", r"\1_VALUE", command)      # $X -> X_VALUE
+        return shlex.split(command)
+
+    def test_the_candidate_build_job_argv_is_accepted_by_release_and_by_build(self):
+        argv = self._argv(self._command("python -m scripts.rag_v2.release"))
+        self.assertEqual(["python", "-m", "scripts.rag_v2.release"], argv[:3])
+
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            args, unknown = release.build_parser().parse_known_args(argv[3:])
+        self.assertEqual([], unknown, f"unrecognized: {unknown}; stderr={err.getvalue()}")
+
+        # The pass-through half, checked against the parser it is passed to.
+        # release.py appends --out-dir and --env itself, so the job supplies
+        # everything else build.py marks required; a token dropped from the CI
+        # line shows up here as build.py's own "required" error.
+        build.build_parser().parse_args([*args.build_arg, "--out-dir", "o", "--env", "e"])
+
+    def test_every_pass_through_flag_survives_as_a_flag(self):
+        """The failure this test exists for is silent at the shell layer.
+
+        `--build-arg --internal-docs` is a well-formed shell line; it is argparse
+        that rejects it. And the near-miss is worse than the error: were the
+        parser ever made lenient, the SAME line would parse with --internal-docs
+        consumed as an option of release.py and never forwarded, so the build
+        would run against a docs checkout nobody passed.
+        """
+        argv = self._argv(self._command("python -m scripts.rag_v2.release"))
+        args, _ = release.build_parser().parse_known_args(argv[3:])
+        forwarded = args.build_arg
+        for flag in ("--internal-docs", "--internal-revision", "--faq-zip",
+                     "--external-zip", "--legacy-external", "--valid-from",
+                     "--external-valid-from"):
+            self.assertIn(flag, forwarded, f"{flag} never reached scripts.rag_v2.build")
+        # Three FAQ zips and three external zips, each with its own value.
+        self.assertEqual(3, forwarded.count("--faq-zip"))
+        self.assertEqual(3, forwarded.count("--external-zip"))
+        for index, token in enumerate(forwarded):
+            if token.startswith("--"):
+                self.assertFalse(
+                    forwarded[index + 1].startswith("--"),
+                    f"{token} was forwarded with no value of its own")
+
+    def test_the_import_job_asks_for_the_compare_and_swap_itself(self):
+        """--require-base-match is what the CANDIDATE ROW records.
+
+        store.Publish reads require_base_match off the row written at import,
+        not off the publish command -- so this job's argv decides whether the
+        later manual publish is a compare-and-swap at all. Leaving it to the
+        worker's default means the gate covering the human review window is
+        requested by omission, from a default in another repository that can
+        change without anything here noticing.
+        """
+        command = self._command("kubectl -n \"$NAMESPACE\" exec \"$POD\" -- /usr/local/bin/compshare-kb-worker")
+        self.assertIn("--require-base-match", command)
+        self.assertNotIn("--publish", command,
+                         "the import job must leave a validated candidate, not publish it")
 
 
 class EmbeddingRefreshReportTests(unittest.TestCase):

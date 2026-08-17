@@ -115,7 +115,15 @@ def snapshot_released(repo: Path, destination: Path) -> dict[str, Path]:
     return kept
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The parser, separately, so a test can run the CI job's own argv through it.
+
+    Every caller of this script is a shell line in .gitlab-ci.yml or README.md
+    that nothing executes until a release is being built for real. Handing the
+    parser out means the argv those files contain can be checked in the unit
+    suite against the parser it will actually meet, instead of at the point
+    where it costs a candidate build.
+    """
     # allow_abbrev=False for the same reason the unknown-flag check below exists,
     # which that check could not deliver on its own: argparse abbreviates by
     # default, so `--gate-mod enforce` was silently resolved to `--gate-mode` and
@@ -143,8 +151,17 @@ def main(argv: list[str] | None = None) -> int:
     #     wget -qO- http://127.0.0.1:8088/healthz
     parser.add_argument("--parent-release-id",
                         help="active release id this corpus is built on (see /healthz)")
+    # Spell it --build-arg=VALUE, always. A pass-through argument is usually
+    # itself a flag, and `--build-arg --internal-docs` is not that: argparse
+    # reads any token starting with `-` as the next OPTION, so it reports
+    # "expected one argument" and exits 2 before the build starts. The `=` form
+    # is the only one that carries a leading dash, and using it for the values
+    # too keeps the rule single -- there is no second spelling to get right.
     parser.add_argument("--build-arg", action="append", default=[],
-                        help="passed through to scripts.rag_v2.build; repeat per argument")
+                        metavar="=VALUE",
+                        help="passed through to scripts.rag_v2.build; one --build-arg=VALUE "
+                             "per token, `=` included (a bare `--build-arg --flag` is a "
+                             "parse error)")
     parser.add_argument("--docs-diff", type=Path,
                         help="file of paths from `git diff --no-renames --name-only "
                              "<pinned>..<head>`; without it the gate reports the "
@@ -161,6 +178,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="passed to the gate: maximum corpus shrink, e.g. 0.05")
     parser.add_argument("--min-reuse", type=float,
                         help="passed to the gate: minimum vector reuse, e.g. 0.5")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args, unknown = parser.parse_known_args(argv)
     if unknown:
         # parse_known_args used to swallow these silently. That is tolerable
