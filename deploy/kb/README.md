@@ -15,22 +15,26 @@ composition, indexing and release publication now belong to `compshare-kb`.
 | `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes (current default) | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
 | `external_w0.jsonl` | External corpus (1200 chunks: 255 locked legacy + 945 source-backed V2 chunks; image recovery refreshed 2026-07-23) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
 | `embeddings_<external-corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for the external corpus | `internal/knowledge/corpus_digest.go:ExternalEmbeddingDigestExpectedQwen3` |
-| `base_release.txt` | The compshare-kb release this corpus supersedes | `.gitlab-ci.yml:import-knowledge-release` |
+| `v2/release_base.json` | The compshare-kb release this corpus was BUILT ON | `.gitlab-ci.yml:import-knowledge-release` |
 
-## `base_release.txt` — the release this corpus supersedes
+## `v2/release_base.json` — the release this corpus was built on
 
-`import-knowledge-release` publishes with `--require-base-match`, which makes
-publication a compare-and-swap: the release named here must still be the active
-one at the moment the job publishes, or nothing is published and production
-keeps serving what it was already serving.
+Publication is a compare-and-swap: the release named here must still be the
+active one when `publish-knowledge-release` runs, or nothing is published and
+production keeps serving what it was already serving.
 
-**Regenerating the corpus means updating this file in the same commit.** Read
-the current release from `knowledge-release-ledger` in `compshare-kb` (it prints
-`/healthz` and the full ledger), and write that id here.
+**Nobody writes this file by hand.** `scripts/rag_v2/release.py` writes it from
+its `--parent-release-id`, before the build, from the artifacts the build is
+about to overwrite — so it states what the corpus was actually built on rather
+than what somebody remembered. The unattended path gets that id from
+`knowledge-tick`, which reads it off the serving process's `/healthz`; a person
+cutting a release by hand reads the same `/healthz` and passes it themselves.
 
-Forgetting is safe and loud rather than silent: the stale id is no longer
-active, the compare-and-swap refuses, and the log says which id the candidate
-was based on and which one is live.
+It replaced a committed `base_release.txt` that held the same id as plain text.
+The file is gone rather than kept as a convenience: it was correct only while a
+human remembered to update it in the same commit as the corpus, which made the
+one source a person edits also the one that goes stale, and `release.py` now
+derives the value instead of asking for it to be restated.
 
 ### When a publish is refused
 
@@ -42,33 +46,33 @@ commit collides with that release id's primary key.
 
 So recovery is one of two things:
 
-- update `base_release.txt` in a **new commit** — a new short SHA means a new
-  release id — and click again. The stale candidate stays behind as a
-  `validated` row, which is the honest record of a build that was never
-  published; or
+- rebuild on the current release, in a **new commit** — a new short SHA means a
+  new release id. The stale candidate stays behind as a `validated` row, which
+  is the honest record of a build that was never published; or
 - if the pointer moved by mistake, roll the active release back to the original
-  parent in `compshare-kb` (`--action rollback`), after which the original
-  candidate publishes with its base match satisfied.
+  parent (`rollback-knowledge-release`, or `--action rollback` directly), after
+  which the original candidate publishes with its base match satisfied.
 
-The id is committed rather than read off the cluster at import time on purpose.
-The worker deliberately refuses to read the active release itself — an
-import-time read files the candidate as a child of whatever happens to be live,
-which is exactly the release the corpus may not have been built on — so what
-this file holds is what a human looked at, in review, in git.
+The parent is recorded at BUILD time rather than read off the cluster at import
+time on purpose, and the worker deliberately refuses to read the active release
+itself: an import-time read files the candidate as a child of whatever happens
+to be live, which is exactly the release the corpus may not have been built on.
+Build on R0, let R1 publish while the candidate is in review, and an import-time
+read would file the candidate as R1's child — so publishing it overwrites
+content it never saw, while the base match reports success.
 
-`none` asserts the knowledge base has no active release at all (first
-publication). Against a live release that assertion fails loudly, which is
-correct. `KB_PARENT_RELEASE_ID` overrides the file for the one case it cannot
-serve: two imports in a row, where the second one's base only exists once the
-first has run. Its value must be a bare release id — letters, digits, `.`, `-`,
-`_` — and anything else is refused before it is used as an argument, so an
-override cannot smuggle a second flag in alongside the id and switch the
-compare-and-swap off.
+An absent `parent_release_id` asserts the knowledge base has no active release
+at all (first publication), and the import job sends `--allow-empty-parent` only
+when `/healthz` agrees. Against a live release that assertion fails loudly,
+which is correct. Note the automated path does not cover this case at all:
+`knowledge-tick` requires an active release, so a first publication is a person
+running `release.py`, not a schedule's job.
 
-The job passes `--require-base-match` explicitly rather than relying on the
-worker's default: the flag is this job asking for a compare-and-swap, and a
-default in another repository is somebody else's decision that can change
-without either side noticing.
+`import-knowledge-release` passes `--require-base-match` explicitly rather than
+relying on the worker's default, and it passes it there rather than at publish
+because that is where it is **stored**: `store.Publish` reads
+`require_base_match` off the candidate row the import writes, not off the
+publish command, which takes only a release id.
 
 `text-embedding-3-large` sidecar is **no longer maintained** as of W1-R2
 (2026-05-23): `qwen3_rrf` is the runtime default and increments only rebuild

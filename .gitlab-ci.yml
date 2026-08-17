@@ -615,8 +615,18 @@ import-knowledge-release:
       }
       POSTGRES_HOST=$(serving_env COMPSHARE_KB_POSTGRES_HOST)
       KNOWLEDGE_BASE=$(serving_env COMPSHARE_KB_KNOWLEDGE_BASE)
-      test -n "$POSTGRES_HOST"
-      test -n "$KNOWLEDGE_BASE"
+      # Named, not `test -n`.  Under `set -eu` a bare test that fails ends the
+      # job with exit 1 and NO output at all, so the log's last line is whatever
+      # succeeded before it and the reader has to count statements to work out
+      # which check fired.
+      if [ -z "$POSTGRES_HOST" ]; then
+        echo "${KB_STATEFULSET}-0 reports no COMPSHARE_KB_POSTGRES_HOST; refusing to guess." >&2
+        exit 1
+      fi
+      if [ -z "$KNOWLEDGE_BASE" ]; then
+        echo "${KB_STATEFULSET}-0 reports no COMPSHARE_KB_KNOWLEDGE_BASE; refusing to guess." >&2
+        exit 1
+      fi
 
       # The import binary validates the bundle the serving binary will load, and
       # the rune cap it validates against is a compile-time constant with no
@@ -625,8 +635,16 @@ import-knowledge-release:
       # they are the same build.  A floating :latest gave no such proof; this
       # takes the image the StatefulSet is actually running, the same jsonpath
       # the compshare-kb repo's own deploy job checks.
+      #
+      # Off the POD rather than the StatefulSet on purpose: between `kubectl
+      # apply` and the rollout completing, the StatefulSet already declares the
+      # new image while the Pod answering queries is still on the old one, and
+      # the process this corpus has to match is the running one.
       KB_IMAGE=$(kubectl -n "$NAMESPACE" get pod "${KB_STATEFULSET}-0" -o jsonpath='{.spec.containers[0].image}')
-      test -n "$KB_IMAGE"
+      if [ -z "$KB_IMAGE" ]; then
+        echo "could not read the running image off ${KB_STATEFULSET}-0; refusing to guess." >&2
+        exit 1
+      fi
       echo "importing $KB_RELEASE_VERSION into knowledge base '$KNOWLEDGE_BASE' using $KB_IMAGE"
 
       # The candidate has to declare the release its corpus was BUILT on, and
@@ -694,6 +712,21 @@ import-knowledge-release:
         fi
         sleep 5
       done
+
+      # This PRINTS and does not gate, deliberately.  `safe_to_batch_import` is
+      # a field in a JSON document that also carries operator-authored `summary`
+      # text, and a shell substring test cannot tell the top-level field from the
+      # same characters inside a string -- so a gate here would be a guard that
+      # can be made to pass by its own input.  The sound version is an exit code
+      # from the worker, which is a compshare-kb change and a deploy; until then
+      # this leaves the count in the log for whoever clicked the button, and for
+      # whoever reads release_diff.md before publishing: a release whose origin
+      # is `mcp_update` holds hand-authored content that this corpus replaces,
+      # and release_diff.md compares FILES, so it cannot show that.  Today it
+      # reads 0, and the MCP write tools that could raise it are disabled.
+      echo "== release ledger before import =="
+      kubectl -n "$NAMESPACE" exec "$POD" -- \
+        /usr/local/bin/compshare-kb-worker --action releases --knowledge-base "$KNOWLEDGE_BASE"
 
       # Redirected, not piped: a `cmd | while` body runs in a subshell, where
       # `exit 1` on a short copy would end the subshell and let the import go
@@ -785,6 +818,24 @@ publish-knowledge-release:
 
       # Fails loudly if the candidate was never imported or never validated:
       # store.Publish requires status='validated' and refuses anything else.
+      #
+      # This is also the only place a stale base can still surface.  The import
+      # job compared the recorded parent against the active release, but that was
+      # before the human review, and the review is the window the compare-and-swap
+      # exists for -- so a refusal here reads `candidate ... was based on ...,
+      # active release is ...` and means the pointer moved while somebody was
+      # reading release_diff.md.  Nothing was published; the pointer did not move.
+      #
+      # The candidate row survives as `validated` and CANNOT be rescued: its
+      # parent and its release id are both immutable, so re-running this job
+      # compares against the same base and refuses identically, and re-running the
+      # import on the same commit collides with that release id's primary key.
+      # Recovery is one of two things, both deliberate:
+      #   * rebuild on the current release -- a new commit means a new short SHA
+      #     and a new release id.  The stale candidate stays behind as a
+      #     `validated` row, the honest record of a build never published; or
+      #   * if the pointer moved by mistake, run rollback-knowledge-release to put
+      #     the original parent back, after which this candidate's base matches.
       kubectl -n "$NAMESPACE" exec "${KB_STATEFULSET}-0" -- \
         /usr/local/bin/compshare-kb-worker \
         --action publish \

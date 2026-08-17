@@ -1872,6 +1872,10 @@ class CIInvocationTests(unittest.TestCase):
         change without anything here noticing.
         """
         command = self._command("kubectl -n \"$NAMESPACE\" exec \"$POD\" -- /usr/local/bin/compshare-kb-worker")
+        # The job runs the worker more than once (the ledger print above it).
+        # Pinning the action means a second invocation drifting into this
+        # prefix fails here instead of quietly becoming what is asserted.
+        self.assertIn("--action import", command)
         self.assertIn("--require-base-match", command)
         self.assertNotIn("--publish", command,
                          "the import job must leave a validated candidate, not publish it")
