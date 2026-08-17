@@ -374,6 +374,10 @@ func (r *Recorder) Finish(chatErr, attemptErr error, reply string, snapshot engi
 	r.stateTrace.ResolutionSource = snapshot.ResolutionSource
 	r.stateTrace.SelectedInstanceID = snapshot.SessionState.SelectedInstanceID
 	r.stateTrace.SelectedInstanceIDAtTurnStart = snapshot.SelectedInstanceIDAtStart
+	r.stateTrace.SelectedInstanceSource = snapshot.SessionState.SelectedInstanceSource
+	r.stateTrace.SelectedInstanceFreshness = snapshot.SessionState.SelectedInstanceFreshness
+	r.stateTrace.SelectedInstanceSourceAtTurnStart = snapshot.SelectedInstanceSourceAtStart
+	r.stateTrace.SelectedInstanceFreshnessAtTurnStart = snapshot.SelectedInstanceFreshnessAtStart
 	r.record.State = r.stateTrace
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()

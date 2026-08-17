@@ -470,11 +470,16 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			ActionProposalDisposition: agent.ActionProposalDispositionThisTurn(),
 		})
 		sessState, _, hydrated := agent.SessionStateSnapshot()
+		selectedSourceAtStart, selectedFreshnessAtStart := agent.SelectedInstanceProvenanceAtTurnStart()
 		traceRecorder.SetStateTrace(observability.StateTrace{
-			SessionStateHydrated:          hydrated,
-			ResolutionSource:              agent.InstanceResolutionSource(),
-			SelectedInstanceID:            sessState.SelectedInstanceID,
-			SelectedInstanceIDAtTurnStart: agent.SelectedInstanceIDAtTurnStart(),
+			SessionStateHydrated:                 hydrated,
+			ResolutionSource:                     agent.InstanceResolutionSource(),
+			SelectedInstanceID:                   sessState.SelectedInstanceID,
+			SelectedInstanceIDAtTurnStart:        agent.SelectedInstanceIDAtTurnStart(),
+			SelectedInstanceSource:               sessState.SelectedInstanceSource,
+			SelectedInstanceFreshness:            sessState.SelectedInstanceFreshness,
+			SelectedInstanceSourceAtTurnStart:    selectedSourceAtStart,
+			SelectedInstanceFreshnessAtTurnStart: selectedFreshnessAtStart,
 		})
 		traceRecorder.SetEngineSnapshot(agent.TraceSnapshot(time.Now()))
 		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {

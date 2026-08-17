@@ -69,7 +69,10 @@ func normalizedSelectedInstanceFreshness(state SessionState) string {
 		return ""
 	}
 	if state.SelectedInstanceAtUnix <= 0 {
-		return ContinuityFreshnessStale
+		// A legacy row with no timestamp has no bounded authorization window.
+		// Treat it as expired: it may remain conversational provenance, but it
+		// cannot silently bind an operation before a fresh confirmation.
+		return ContinuityFreshnessExpired
 	}
 	return ContinuityFreshnessFresh
 }

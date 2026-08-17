@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
@@ -85,6 +86,7 @@ func TestInstanceOps_ToolWindowGatedByLaneAndRoute(t *testing.T) {
 func TestInstanceOps_DeclineDoesNotRunAndTurnContinues(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "unused"}}
 	eng := newInstanceOpsEngine(runner, neverConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
 	var steps []StepEvent
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
@@ -93,6 +95,9 @@ func TestInstanceOps_DeclineDoesNotRunAndTurnContinues(t *testing.T) {
 	require.False(t, strings.HasPrefix(out, finalReplyPrefix), "decline is non-terminal — the turn continues")
 	require.Contains(t, out, "已取消")
 	require.NotContains(t, out, "已经执行过", "decline text must differ from the already-ran text (V9)")
+	state, _, hydrated := eng.SessionStateSnapshot()
+	require.True(t, hydrated)
+	require.Empty(t, state.SelectedInstanceID, "a declined entry card is not a user selection")
 }
 
 // 门 4 — with no confirm function installed the lane fails closed: no panic and
@@ -132,6 +137,255 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	require.Equal(t, 1, runner.calls)
 	require.Len(t, model.calls, 1, "finalReplyPrefix terminates the turn — no synthesis round after the verdict")
 	require.NotEmpty(t, runner.lastReq.TurnID, "the turn identity must reach the runner as the audit dedup key")
+}
+
+// A successful entry-card confirmation is the user's selection of this exact
+// instance. Preserve that proof so a later "继续排查" can enter the same box
+// without making the user repeat an id that the server already showed and they
+// already approved. Drive two Chat turns and rehydrate the state between them:
+// setting SelectedEntities by hand would miss the production persistence seam.
+func TestInstanceOps_ConfirmedDiagnosisCarriesTargetIntoNextTurn(t *testing.T) {
+	const instanceID = "uhost-confirmed-1"
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "诊断完成", Ran: 1}}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("diagnose-first", "DiagnoseInstanceInternals", `{"UHostId":"uhost-confirmed-1","Task":"排查 ComfyUI 无法打开"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("diagnose-follow-up", "DiagnoseInstanceInternals", `{"UHostId":"uhost-confirmed-1","Task":"继续排查 ComfyUI 无法打开"}`)}},
+		// This response is reached only by the old broken path, after its second
+		// tool call is rejected for lacking a carried selection proof.
+		{Content: "请先明确要排查的实例。"},
+	}}
+	confirmCalls := 0
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+	eng.SetInstanceOps(runner)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	opts := ChatOptions{ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
+		confirmCalls++
+		return ConfirmationResult{Confirmed: true}
+	}}
+
+	_, err := eng.ChatWithOptions(context.Background(), "请排查 uhost-confirmed-1 上的 ComfyUI", noopStep, opts)
+	require.NoError(t, err)
+	state, version, hydrated := eng.SessionStateSnapshot()
+	require.True(t, hydrated)
+	require.Equal(t, instanceID, state.SelectedInstanceID)
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource,
+		"an approved diagnosis card is a user selection, not a mere observation")
+
+	// HTTP leases rehydrate the JSON envelope for every request. Round-trip it so
+	// this test proves the persisted proof, not an accidental in-memory carry.
+	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
+	require.NoError(t, err)
+	persisted, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	eng.ClearSessionState()
+	eng.SetSessionState(persisted.AgentSessionState, version+1)
+	_, err = eng.ChatWithOptions(context.Background(), "继续排查", noopStep, opts)
+	require.NoError(t, err)
+	require.Equal(t, 2, runner.calls,
+		"the follow-up must reuse the user-confirmed target instead of asking again")
+	require.Equal(t, instanceID, runner.lastReq.InstanceID)
+	require.Equal(t, 2, confirmCalls, "each diagnosis still receives its own entry authorization card")
+	require.Len(t, model.calls, 2, "a valid carried selection must not first be rejected back to the model")
+}
+
+// A user selection that is older than the 30-minute automatic-execution window
+// is still useful identity, but it is no longer authority.  The safe recovery is
+// not to discard the identity and pretend the Agent forgot it: let the same id
+// reach ONE NEW card, which shows the target again and makes this turn's human
+// confirmation the new authorization.
+func TestInstanceOps_ExpiredUserSelectionGetsANewCardForTheSameInstance(t *testing.T) {
+	const instanceID = "cpod-expired-1"
+	beforeExpiry := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix()
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("diagnose-expired", "DiagnoseInstanceInternals", `{"UHostId":"cpod-expired-1","Task":"执行至 CLIPLoader 不动了，请检查"}`)}},
+	}}
+	var cardArgs map[string]any
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+	eng.SetInstanceOps(runner)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     instanceID,
+		SelectedInstanceName:   "clip-trainer",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix: beforeExpiry,
+	}, 1)
+
+	_, err := eng.ChatWithOptions(context.Background(), "执行至 CLIPLoader 不动了，请检查", noopStep, ChatOptions{
+		ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
+			cardArgs = args
+			return ConfirmationResult{Confirmed: true}
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, runner.calls, "the renewed card, not stale authority, permits entry")
+	require.Equal(t, instanceID, runner.lastReq.InstanceID)
+	require.Equal(t, instanceID, cardArgs["UHostId"], "the card must name the exact historical instance")
+	require.Len(t, model.calls, 1, "the server must not bounce a known historical target back as a missing-context error")
+
+	// The model needs to see why it can name this exact id while still knowing the
+	// old selection is not authority by itself.  This also proves expiry happened
+	// before the first LLM request instead of being accidentally bypassed.
+	var firstRequest string
+	for _, msg := range model.calls[0].Messages {
+		firstRequest += msg.Content
+	}
+	require.Contains(t, firstRequest, "来源=user_selected")
+	require.Contains(t, firstRequest, "新鲜度=expired")
+
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+	require.Equal(t, ContinuityFreshnessFresh, state.SelectedInstanceFreshness,
+		"only the new confirmed card refreshes the selection")
+	trace := eng.TraceSnapshot(time.Now())
+	require.Equal(t, SelectedInstanceSourceUser, trace.SelectedInstanceSourceAtStart)
+	require.Equal(t, ContinuityFreshnessExpired, trace.SelectedInstanceFreshnessAtStart,
+		"trace must preserve why the new card was required after it refreshes the final state")
+	require.Equal(t, ContinuityFreshnessFresh, trace.SessionState.SelectedInstanceFreshness)
+}
+
+func TestInstanceOps_ExpiredUserSelectionStillNeedsThatNewCard(t *testing.T) {
+	const instanceID = "cpod-expired-declined"
+	beforeExpiry := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix()
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
+	eng := newInstanceOpsEngine(runner, neverConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        instanceID,
+		SelectedInstanceName:      "clip-trainer",
+		SelectedInstanceSource:    SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix:    beforeExpiry,
+		SelectedInstanceFreshness: ContinuityFreshnessExpired,
+	}, 1)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-expired-decline", time.Now())
+	eng.turnContextViewReady = true
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": instanceID, "Task": "继续排查",
+	}, noopStep)
+
+	require.Zero(t, runner.calls, "declining the replacement card never enters the instance")
+	require.Contains(t, out, "已取消")
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+	require.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness,
+		"a declined card must not silently renew an expired selection")
+	require.Equal(t, beforeExpiry, state.SelectedInstanceAtUnix)
+}
+
+func TestInstanceOps_ExpiredObservedInstanceStillCannotReachACard(t *testing.T) {
+	const instanceID = "cpod-expired-observed"
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
+	confirmCalls := 0
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        instanceID,
+		SelectedInstanceSource:    SelectedInstanceSourceObserved,
+		SelectedInstanceAtUnix:    time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix(),
+		SelectedInstanceFreshness: ContinuityFreshnessExpired,
+	}, 1)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-expired-observed", time.Now())
+	eng.turnContextViewReady = true
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": instanceID, "Task": "继续排查",
+	}, noopStep)
+
+	require.Zero(t, runner.calls)
+	require.Zero(t, confirmCalls, "a list observation is never eligible for a target-specific card")
+	require.Contains(t, out, "请先明确要排查的实例")
+}
+
+func TestInstanceOps_ExpiredHistoricalTargetCannotOverrideANewExplicitTarget(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
+	confirmCalls := 0
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2), "UHostSet": []any{
+			map[string]any{"UHostId": "cpod-expired", "Name": "old", "State": "Running"},
+			map[string]any{"UHostId": "cpod-current", "Name": "new", "State": "Running"},
+		},
+	}, "test"))
+	eng.SetSessionState(SessionState{
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        "cpod-expired",
+		SelectedInstanceSource:    SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix:    time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix(),
+		SelectedInstanceFreshness: ContinuityFreshnessExpired,
+	}, 1)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "请排查 cpod-current", "turn-new-explicit", time.Now())
+	eng.turnContextViewReady = true
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "cpod-expired", "Task": "排查服务",
+	}, noopStep)
+
+	require.Zero(t, runner.calls)
+	require.Zero(t, confirmCalls)
+	require.Contains(t, out, "请先明确要排查的实例")
+}
+
+// The sibling test above names a RESOLVABLE new target, so it exits at the bound
+// branch and never reaches the expired lookup — it cannot tell whether that
+// lookup respects the explicit-reference rule. These two do: the user points at
+// something the server cannot resolve to one id (a typo'd id, an out-of-range
+// ordinal), which the binder reports as explicit-but-unbound. Carried context —
+// including an expired historical pick — must never quietly answer a reference
+// the user made to something else. Without this, moving the expired lookup out
+// of the !explicit branch passes the whole suite.
+func TestInstanceOps_ExpiredHistoricalTargetCannotAnswerAnUnresolvedReference(t *testing.T) {
+	for _, tc := range []struct{ name, question string }{
+		{"typoed id", "排查 cpod-currnt"},
+		{"out of range ordinal", "第 3 台还是连不上"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
+			confirmCalls := 0
+			eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+				confirmCalls++
+				return true
+			})
+			eng.SetInstanceOps(runner)
+			// Two instances, so account-single cannot supply a proof either.
+			require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+				"TotalCount": float64(2), "UHostSet": []any{
+					map[string]any{"UHostId": "cpod-expired", "Name": "old", "State": "Running"},
+					map[string]any{"UHostId": "cpod-current", "Name": "new", "State": "Running"},
+				},
+			}, "test"))
+			eng.SetSessionState(SessionState{
+				SchemaVersion:             SessionStateSchemaCurrent,
+				SelectedInstanceID:        "cpod-expired",
+				SelectedInstanceSource:    SelectedInstanceSourceUser,
+				SelectedInstanceAtUnix:    time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix(),
+				SelectedInstanceFreshness: ContinuityFreshnessExpired,
+			}, 1)
+			view := (ContextCompiler{}).CompileForTurn(eng, tc.question, "turn-unresolved", time.Now())
+			eng.turnContextViewThisTurn = view
+			eng.turnContextViewReady = true
+
+			binding := eng.bindInstanceTarget(view)
+			require.True(t, binding.explicit, "the user pointed at a target")
+			require.False(t, binding.bound(), "which the server cannot resolve to one id")
+
+			out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+				"UHostId": "cpod-expired", "Task": "排查服务",
+			}, noopStep)
+
+			require.Zero(t, runner.calls)
+			require.Zero(t, confirmCalls, "an unresolved reference must not be answered with the old target's card")
+			require.Contains(t, out, "请先明确要排查的实例")
+		})
+	}
 }
 
 // Regression: a cold session compiles its turn context before the model's first
@@ -298,6 +552,36 @@ func TestInstanceOps_AllowsFreshUserSelectionButRejectsDifferentModelTarget(t *t
 	require.True(t, strings.HasPrefix(right, finalReplyPrefix))
 }
 
+// A read that happened to observe an instance helps the Agent understand the
+// conversation, but it is never permission for the model to choose that box.
+// This is the negative control for the confirmed-diagnosis carry above.
+func TestInstanceOps_ObservedInstanceDoesNotAuthorizeDiagnosis(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
+	confirmCalls := 0
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, func(string, map[string]any) bool {
+		confirmCalls++
+		return true
+	})
+	eng.SetInstanceOps(runner)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        "uhost-observed",
+		SelectedInstanceSource:    SelectedInstanceSourceObserved,
+		SelectedInstanceAtUnix:    time.Now().Unix(),
+		SelectedInstanceFreshness: ContinuityFreshnessFresh,
+	}, 1)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-observed", time.Now())
+	eng.turnContextViewReady = true
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-observed", "Task": "继续排查服务",
+	}, noopStep)
+
+	require.Zero(t, runner.calls, "an observed referent is not a user selection")
+	require.Zero(t, confirmCalls, "the user must not receive a card for a model-elected observed target")
+	require.Contains(t, out, "请先明确要排查的实例")
+}
+
 // 门 6 — the activity stream shape: connected + each command + one summary; refused
 // commands ride StepBlocked; no message carries an N/M denominator (no fake progress bar).
 func TestInstanceOps_ActivityStreamShape(t *testing.T) {
@@ -363,6 +647,7 @@ func TestInstanceOps_StepEventsBoundedByCap(t *testing.T) {
 func TestInstanceOps_NoSSHTargetRefusedHonestly(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsNoSSHTarget}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
 	var steps []StepEvent
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
@@ -371,6 +656,11 @@ func TestInstanceOps_NoSSHTargetRefusedHonestly(t *testing.T) {
 	require.True(t, strings.HasPrefix(out, finalReplyPrefix), "an unenterable box is a terminal refusal")
 	require.Contains(t, out, "没有 SSH 登录入口", "the refusal must name the real cause")
 	require.NotContains(t, out, "请稍后重试", "must not imply a transient, retryable failure")
+	state, _, hydrated := eng.SessionStateSnapshot()
+	require.True(t, hydrated)
+	require.Equal(t, "uhost-1", state.SelectedInstanceID,
+		"a failed SSH entry does not undo the instance the user already approved")
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 }
 
 // An id that is not in the account gets the same honest, non-retryable treatment. This is the

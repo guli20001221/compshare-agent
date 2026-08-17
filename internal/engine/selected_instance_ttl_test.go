@@ -9,8 +9,8 @@ import (
 )
 
 // TestExpireStaleSelectedInstanceRetainsIdentityButRevokesTrustAfterTTL
-// verifies that expiry no longer erases conversational identity, while the
-// write-authorizing provenance is still removed.
+// verifies that expiry no longer erases conversational identity or its origin,
+// while freshness still revokes automatic execution authority.
 func TestExpireStaleSelectedInstanceRetainsIdentityButRevokesTrustAfterTTL(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	base := time.Unix(1_800_000_000, 0)
@@ -28,7 +28,8 @@ func TestExpireStaleSelectedInstanceRetainsIdentityButRevokesTrustAfterTTL(t *te
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Equal(t, "uhost-a", state.SelectedInstanceID, "expired identity must remain available for understanding")
 	assert.Equal(t, "alpha", state.SelectedInstanceName)
-	assert.Empty(t, state.SelectedInstanceSource, "stale selection source must be cleared")
+	assert.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource,
+		"origin is historical fact; freshness, not deletion, revokes authority")
 	assert.Equal(t, base.Unix(), state.SelectedInstanceAtUnix, "observation time must remain available")
 	assert.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
 }
@@ -57,7 +58,7 @@ func TestExpireStaleSelectedInstanceKeepsFreshBinding(t *testing.T) {
 
 // TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow verifies rows
 // persisted before the timestamp field existed keep their referent for
-// conversation, but lose write-authorizing provenance because their age is
+// conversation, but are expired for authorization because their age is
 // unknowable.
 func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
@@ -73,15 +74,93 @@ func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Equal(t, "uhost-legacy", state.SelectedInstanceID, "legacy referent remains available for understanding")
-	assert.Empty(t, state.SelectedInstanceSource, "unknown-age provenance must not authorize a write")
-	assert.Equal(t, ContinuityFreshnessStale, state.SelectedInstanceFreshness)
+	assert.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource,
+		"origin remains observable, while expired freshness cannot authorize a write")
+	assert.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
+}
+
+// An old user selection without its timestamp still carries genuine provenance,
+// but its age is unknowable. It must not bind an operation automatically; the
+// only safe continuity is one new card for that same exact id.
+func TestUnstampedUserSelectionCannotBindButMayReachANewCard(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-legacy-user",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
+		// SelectedInstanceAtUnix intentionally zero (legacy row).
+	}, 1)
+	preExpiryView := (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-legacy-user-pre", time.Now())
+	require.Len(t, preExpiryView.SelectedEntities, 1)
+	require.Equal(t, ContinuityFreshnessExpired, preExpiryView.SelectedEntities[0].Freshness,
+		"a context compiled before turn entry must not present an unstampable selection as fresh or stale authority")
+	eng.expireStaleSelectedInstance(time.Now())
+	view := (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-legacy-user", time.Now())
+	eng.turnContextViewThisTurn = view
+	eng.turnContextViewReady = true
+
+	binding := eng.bindInstanceTarget(view)
+	require.False(t, binding.bound(), "an unstampable legacy pick is never automatic authority")
+	require.True(t, expiredUserSelectionMatches(view, "uhost-legacy-user"))
+	require.True(t, eng.instanceOpsTargetMayReachConfirmation("uhost-legacy-user"),
+		"the card can ask the user to reselect the exact historical target")
+}
+
+// A passive read of an already-expired user pick can update conversational facts,
+// but cannot turn that old selection back into authorization. The user must see a
+// new card for the target instead.
+func TestObservedReadCannotReviveExpiredUserSelection(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	then := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix()
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-a",
+		SelectedInstanceName:   "alpha",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix: then,
+	}, 1)
+	eng.expireStaleSelectedInstance(time.Now())
+
+	eng.recordObservedInstanceID("uhost-a", "alpha")
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+	assert.Equal(t, then, state.SelectedInstanceAtUnix, "a read must not reset the TTL clock")
+	assert.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
+}
+
+// The callers that re-record an ALREADY known instance as a user selection — the
+// approved SSH entry card, a confirmed write target — have only the id in hand.
+// A rehydrated or post-mutation registry resolves nothing, so without a fallback
+// the re-record blanks a name the session already knew and the context card can
+// then name the box only by id, which reads as the agent having forgotten it.
+func TestRecordingTheSameInstanceWithNoNameKeepsTheKnownName(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "cpod-x",
+		SelectedInstanceName:   "clip-trainer",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix: time.Now().Unix(),
+	}, 1)
+	// The registry is deliberately left cold: nothing can resolve cpod-x to a name.
+	eng.recordSelectedInstanceIDWithSource("cpod-x", "", SelectedInstanceSourceUser)
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Equal(t, "clip-trainer", state.SelectedInstanceName,
+		"a nameless re-record of the same id must not blank the known name")
+	assert.Equal(t, ContinuityFreshnessFresh, state.SelectedInstanceFreshness)
+
+	// A DIFFERENT instance carries no such history, so its name stays empty rather
+	// than inheriting the previous box's.
+	eng.recordSelectedInstanceIDWithSource("cpod-y", "", SelectedInstanceSourceUser)
+	state, _, _ = eng.SessionStateSnapshot()
+	assert.Equal(t, "cpod-y", state.SelectedInstanceID)
+	assert.Empty(t, state.SelectedInstanceName, "a new target must never inherit the previous instance's name")
 }
 
 // TestRecordObservedInstanceIDStampsTimestamp verifies recording a selection
-// stamps SelectedInstanceAtUnix so the TTL clock starts. recordObservedInstanceID
-// is the only writer left: the two User-sourced writers it replaces
-// (recordSelectedInstanceID / recordSelectedInstanceFromEnvelope) were fed by the
-// direct-dispatch lane P6 deleted, so nothing produced a "user" source any more.
+// stamps SelectedInstanceAtUnix so the TTL clock starts.
 func TestRecordObservedInstanceIDStampsTimestamp(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)

@@ -116,8 +116,9 @@ const (
 	SelectedInstanceSourceObserved = "observed"
 	// SelectedInstanceSourceUser marks a binding the user genuinely established
 	// this session — an explicit id they typed, or a pick from a shown selection
-	// card. Only this (and a shown-card pick / the account's sole instance) is a
-	// SelectionProof; a later turn's "关掉它" may re-verify its existence and act.
+	// card. While fresh, only this (and a shown-card pick / the account's sole
+	// instance) is a SelectionProof; after expiry it remains provenance for a new
+	// target-specific card but never authorizes entry or a write on its own.
 	SelectedInstanceSourceUser = "user_selected"
 )
 

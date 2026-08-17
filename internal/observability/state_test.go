@@ -42,8 +42,12 @@ func TestTraceRecord_StateMarshaling(t *testing.T) {
 	// hydrated=false but resolution_source set → block present, hydrated:false shown.
 	rec := TraceRecord{SchemaVersion: SchemaVersion}
 	rec.State = StateTrace{
-		SessionStateHydrated: false,
-		ResolutionSource:     ResolutionSourceUnresolved,
+		SessionStateHydrated:                 false,
+		ResolutionSource:                     ResolutionSourceUnresolved,
+		SelectedInstanceSource:               "user_selected",
+		SelectedInstanceFreshness:            "fresh",
+		SelectedInstanceSourceAtTurnStart:    "user_selected",
+		SelectedInstanceFreshnessAtTurnStart: "expired",
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
@@ -55,6 +59,12 @@ func TestTraceRecord_StateMarshaling(t *testing.T) {
 	}
 	if !strings.Contains(s, `"session_state_hydrated":false`) {
 		t.Fatalf("session_state_hydrated:false must serialize (the denominator): %s", s)
+	}
+	if !strings.Contains(s, `"selected_instance_source":"user_selected"`) ||
+		!strings.Contains(s, `"selected_instance_freshness":"fresh"`) ||
+		!strings.Contains(s, `"selected_instance_source_at_turn_start":"user_selected"`) ||
+		!strings.Contains(s, `"selected_instance_freshness_at_turn_start":"expired"`) {
+		t.Fatalf("selection provenance must survive in: %s", s)
 	}
 	// Empty optional fields stay omitted.
 	if strings.Contains(s, "selected_instance_id") {

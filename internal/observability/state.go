@@ -32,11 +32,17 @@ type StateTrace struct {
 	// single_host / unresolved. explicit_id / planner are RESERVED
 	// (a mid-turn binding-source stamp is a follow-up — see the const block).
 	ResolutionSource string `json:"resolution_source,omitempty"`
-	// SelectedInstanceID is the bound instance at turn END (final), and
-	// SelectedInstanceIDAtTurnStart is the value carried in at turn entry. A
-	// divergence between the two means the turn re-bound the instance mid-flow.
-	SelectedInstanceID            string `json:"selected_instance_id,omitempty"`
-	SelectedInstanceIDAtTurnStart string `json:"selected_instance_id_at_turn_start,omitempty"`
+	// SelectedInstanceID is the bound instance at turn END (final), and the
+	// *AtTurnStart fields capture the carried identity and provenance after
+	// turn-entry expiry but before any mid-turn re-bind. An id alone cannot tell a
+	// real missing-context failure from the intended "observed is not selected" or
+	// "selection expired" safety gates.
+	SelectedInstanceID                   string `json:"selected_instance_id,omitempty"`
+	SelectedInstanceIDAtTurnStart        string `json:"selected_instance_id_at_turn_start,omitempty"`
+	SelectedInstanceSource               string `json:"selected_instance_source,omitempty"`
+	SelectedInstanceFreshness            string `json:"selected_instance_freshness,omitempty"`
+	SelectedInstanceSourceAtTurnStart    string `json:"selected_instance_source_at_turn_start,omitempty"`
+	SelectedInstanceFreshnessAtTurnStart string `json:"selected_instance_freshness_at_turn_start,omitempty"`
 }
 
 // ResolutionSource* are the StateTrace.ResolutionSource values — how the turn's
@@ -63,5 +69,9 @@ func traceStateObserved(t StateTrace) bool {
 	return t.ResolutionSource != "" ||
 		t.SelectedInstanceID != "" ||
 		t.SelectedInstanceIDAtTurnStart != "" ||
+		t.SelectedInstanceSource != "" ||
+		t.SelectedInstanceFreshness != "" ||
+		t.SelectedInstanceSourceAtTurnStart != "" ||
+		t.SelectedInstanceFreshnessAtTurnStart != "" ||
 		t.SessionStateHydrated
 }

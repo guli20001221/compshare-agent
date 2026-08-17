@@ -64,6 +64,35 @@ func TestRecorderHooksCoverCompleteEngineSurface(t *testing.T) {
 	require.Len(t, got.Confirmations, 1)
 }
 
+// Turn-start provenance must survive separately from the final session state:
+// a new SSH entry card can legitimately re-bind an expired user selection to a
+// fresh one later in the same turn. Without both boundaries, a trace makes the
+// intentional expired-selection gate look like lost conversation context.
+func TestRecorderCarriesInstanceSelectionProvenanceAtBothTurnBoundaries(t *testing.T) {
+	writer := &captureWriter{}
+	recorder := New(Config{Writer: writer, TraceID: "turn:selection", TurnID: "turn", TurnIndex: 1, Start: time.Now()})
+	snapshot := engine.TraceSnapshot{
+		SessionStateHydrated: true,
+		SessionState: engine.SessionState{
+			SelectedInstanceID:        "uhost-target",
+			SelectedInstanceSource:    engine.SelectedInstanceSourceUser,
+			SelectedInstanceFreshness: engine.ContinuityFreshnessFresh,
+		},
+		SelectedInstanceIDAtStart:        "uhost-target",
+		SelectedInstanceSourceAtStart:    engine.SelectedInstanceSourceUser,
+		SelectedInstanceFreshnessAtStart: engine.ContinuityFreshnessExpired,
+	}
+	require.NoError(t, recorder.Finish(nil, nil, "answer", snapshot, time.Now()))
+	require.Len(t, writer.records, 1)
+	state := writer.records[0].State
+	assert.Equal(t, "uhost-target", state.SelectedInstanceID)
+	assert.Equal(t, engine.SelectedInstanceSourceUser, state.SelectedInstanceSource)
+	assert.Equal(t, engine.ContinuityFreshnessFresh, state.SelectedInstanceFreshness)
+	assert.Equal(t, "uhost-target", state.SelectedInstanceIDAtTurnStart)
+	assert.Equal(t, engine.SelectedInstanceSourceUser, state.SelectedInstanceSourceAtTurnStart)
+	assert.Equal(t, engine.ContinuityFreshnessExpired, state.SelectedInstanceFreshnessAtTurnStart)
+}
+
 func TestRecorderDoesNotPersistFreeTextErrorsOrContinuityReasons(t *testing.T) {
 	writer := &captureWriter{}
 	secret := "password=hunter2 sql=SELECT-secret"
