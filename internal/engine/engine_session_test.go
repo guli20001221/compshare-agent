@@ -279,7 +279,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 6 shared + 98 per-session = 104 fields. Any drift
+// Whitelist totals: 6 shared + 101 per-session = 107 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -384,14 +384,16 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-turn instance-binding observables (#3 StateTrace). Per-session/
 		// per-turn by design — sharing would attribute one tenant's bound
 		// instance to another's turn. Reset every turn.
-		"selectedInstanceIDAtTurnStart":    true,
-		"instanceResolutionSourceThisTurn": true,
-		"rendererTraceObserver":            true,
-		"retrievalTraceObserver":           true,
-		"freshnessTraceObserver":           true,
-		"diagnosisTraceObserver":           true,
-		"outcomeTraceObserver":             true,
-		"authorizationTraceObserver":       true,
+		"selectedInstanceIDAtTurnStart":        true,
+		"selectedInstanceSourceAtTurnStart":    true,
+		"selectedInstanceFreshnessAtTurnStart": true,
+		"instanceResolutionSourceThisTurn":     true,
+		"rendererTraceObserver":                true,
+		"retrievalTraceObserver":               true,
+		"freshnessTraceObserver":               true,
+		"diagnosisTraceObserver":               true,
+		"outcomeTraceObserver":                 true,
+		"authorizationTraceObserver":           true,
 		// Confirmation outcomes are turn-scoped transport facts. Sharing this
 		// observer would append one tenant's card result to another's trace.
 		"confirmationTraceObserver": true,
@@ -502,12 +504,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 99, len(perSessionFields); want != got {
+	if want, got := 101, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 105, typ.NumField(); want != got {
+	if want, got := 107, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

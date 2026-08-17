@@ -522,13 +522,15 @@ type Engine struct {
 	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
 	// by design (reset every turn) — a shared value would attribute one tenant's
 	// binding to another's turn.
-	//   - selectedInstanceIDAtTurnStart: the carried SelectedInstanceID at turn
-	//     entry, before any mid-turn re-binding.
+	//   - selectedInstance*AtTurnStart: the carried identity, provenance and
+	//     freshness at turn entry, before any mid-turn re-binding.
 	//   - instanceResolutionSourceThisTurn: how the turn-start binding was
 	//     determined (observability.ResolutionSource* — session_state /
 	//     single_host / unresolved).
-	selectedInstanceIDAtTurnStart    string
-	instanceResolutionSourceThisTurn string
+	selectedInstanceIDAtTurnStart        string
+	selectedInstanceSourceAtTurnStart    string
+	selectedInstanceFreshnessAtTurnStart string
+	instanceResolutionSourceThisTurn     string
 	// instanceOps runs the read-only in-instance SSH diagnosis lane. nil = lane
 	// off, and the tool is then absent from the model window
 	// (centralAgentToolWindow). Copied from SharedDeps.InstanceOps in NewSession
@@ -851,6 +853,14 @@ func (e *Engine) recordAgentRuntimeEvent(event agentruntime.Event) {
 // at the start of the most recent turn, before any mid-turn re-bind. Read
 // post-turn by the trace recorder for the #3 StateTrace.
 func (e *Engine) SelectedInstanceIDAtTurnStart() string { return e.selectedInstanceIDAtTurnStart }
+
+// SelectedInstanceProvenanceAtTurnStart returns the carried instance source and
+// freshness captured with SelectedInstanceIDAtTurnStart. The trace needs the
+// pair at turn entry: the same id can be an intentionally blocked observed or
+// expired selection before a later card re-binds it to a fresh user selection.
+func (e *Engine) SelectedInstanceProvenanceAtTurnStart() (source, freshness string) {
+	return e.selectedInstanceSourceAtTurnStart, e.selectedInstanceFreshnessAtTurnStart
+}
 
 // InstanceResolutionSource returns how the most recent turn's current-instance
 // binding was determined at turn start (an observability.ResolutionSource*
@@ -1505,6 +1515,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
 	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
+	e.selectedInstanceSourceAtTurnStart = e.sessionState.SelectedInstanceSource
+	e.selectedInstanceFreshnessAtTurnStart = normalizedSelectedInstanceFreshness(e.sessionState)
 	e.instanceResolutionSourceThisTurn = ""
 	e.refreshSystemPrompt()
 
@@ -3414,14 +3426,11 @@ func (e *Engine) recordObservedInstanceFromMonitor(raw map[string]any) {
 }
 
 // recordObservedInstanceID records one instance as read-only conversational
-// context from a tool result. It is the ONLY writer of SelectedInstance* left:
-// the User-sourced writers (recordSelectedInstanceID /
-// recordSelectedInstanceFromEnvelope) were fed by the direct-dispatch lane P6
-// deleted, so nothing in this binary ever produced a "user" source. The field is
-// understanding-only — it helps resolve who "它" is, and is the default subject of
-// a read-only query. It grants NO execution authority: a write is authorized by
-// Request* -> Resolver -> the confirmation gate, and the sealed contract
-// guarantees what executes is what was confirmed.
+// context from a tool result. It is intentionally weaker than the user_selected
+// record made after an approved confirmation card: an observation may help the
+// Agent understand who "它" is, but it grants NO execution authority. A write is
+// authorized by Request* -> Resolver -> the confirmation gate, and the sealed
+// contract guarantees what executes is what was confirmed.
 func (e *Engine) recordObservedInstanceID(id, name string) {
 	e.recordSelectedInstanceIDWithSource(id, name, SelectedInstanceSourceObserved)
 }
@@ -3433,17 +3442,30 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	// Observing the instance the user already chose does not un-choose it: an
 	// observed record of the SAME id must not downgrade a genuine user selection
 	// (the workflow's own Describe step would otherwise erase it mid-turn). Keep
-	// the stronger provenance, just refresh its freshness.
+	// the stronger provenance, just refresh its freshness — but never revive an
+	// already-expired selection from a passive read. After expiry the user must
+	// see and approve a new card for that exact instance.
 	if source == SelectedInstanceSourceObserved &&
 		e.sessionState.SelectedInstanceID == id &&
 		e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
-		e.sessionState.SelectedInstanceAtUnix = time.Now().Unix()
-		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessFresh
+		if e.sessionState.SelectedInstanceAtUnix > 0 &&
+			continuityFreshness(e.sessionState.SelectedInstanceAtUnix, selectedInstanceTTLSeconds, time.Now()) != ContinuityFreshnessExpired {
+			e.sessionState.SelectedInstanceAtUnix = time.Now().Unix()
+			e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessFresh
+		}
 		return
 	}
 	if name == "" {
 		if inst, res := e.RegistrySnapshot().ResolveByID(id); res.Status == entity.ResolveHit && inst != nil {
 			name = inst.Name
+		}
+		// Re-recording the SAME instance with no name in hand — an approved SSH
+		// entry card, a confirmed write target — must not blank a name the session
+		// already knew. A rehydrated or post-mutation registry is cold and resolves
+		// nothing, and the context card would then be able to name the box only by
+		// id, which reads to the user as the agent having forgotten it.
+		if name == "" && e.sessionState.SelectedInstanceID == id {
+			name = e.sessionState.SelectedInstanceName
 		}
 	}
 	e.sessionState.SelectedInstanceID = id
@@ -3457,31 +3479,32 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 // selectedInstanceTTLSeconds bounds how long a carried "current instance"
 // binding stays trusted without any fresh user (re)selection. After this idle
 // window a pronoun like "它" no longer resolves to a stale selection and the
-// trust guard's turn-start branch no longer trusts it — the binding must be
-// re-established from the current turn. 30 min matches the agentpool idle-evict
-// window and sits between AWS Bedrock (1h) and Gemini (30m) session norms.
+// trust guard's turn-start branch no longer trusts it — the user must see a new
+// card for the same historical instance before an SSH run can enter it. 30 min
+// matches the agentpool idle-evict window and sits between AWS Bedrock (1h) and
+// Gemini (30m) session norms.
 const selectedInstanceTTLSeconds = 1800
 
 // expireStaleSelectedInstance clears the carried instance binding when it has
 // gone untouched longer than selectedInstanceTTLSeconds. Runs at turn entry,
 // before the turn-start snapshot is frozen, so a stale binding is never carried
-// into the write-target dual-proof verifier as a selection. A zero
-// SelectedInstanceAtUnix is a legacy row whose age cannot be proven. Keep its
-// id/name for conversational continuity, but remove the user-trusted provenance
-// so it cannot authorize a write.
+// into the write-target dual-proof verifier as a selection. Provenance remains
+// as historical fact: an expired user_selected item may name the SAME instance
+// on a new confirmation card, but freshness keeps it from authorizing anything
+// directly. A zero SelectedInstanceAtUnix is a legacy row whose age cannot be
+// proven; it is therefore expired for authorization while retaining its source
+// as historical provenance for a new target-specific card.
 func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
 		return
 	}
 	at := e.sessionState.SelectedInstanceAtUnix
 	if at <= 0 {
-		e.sessionState.SelectedInstanceSource = ""
-		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessStale
+		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessExpired
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	if now.Unix()-at > selectedInstanceTTLSeconds {
-		e.sessionState.SelectedInstanceSource = ""
 		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessExpired
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return

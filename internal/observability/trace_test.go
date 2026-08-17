@@ -133,11 +133,12 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV010(t *testing.T) {
+func TestSchemaVersionIsV011(t *testing.T) {
 	// v0.10 distinguishes unobserved tool latency from a measured 0ms duration
-	// and preserves an absent native provider finish reason as "unspecified".
-	if SchemaVersion != "trace.v0.10" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.10", SchemaVersion)
+	// and preserves an absent native provider finish reason as "unspecified";
+	// v0.11 adds bounded instance-selection provenance at turn start and end.
+	if SchemaVersion != "trace.v0.11" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.11", SchemaVersion)
 	}
 }
 

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -307,6 +308,13 @@ func firstMetaEvent(t *testing.T, sink *recordingSink) metaEvent {
 func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	eng.RehydrateHistory(nil)
+	stateRaw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
+		SchemaVersion:          engine.SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-trace",
+		SelectedInstanceSource: engine.SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix: time.Now().Add(-time.Hour).Unix(),
+	}})
+	require.NoError(t, err)
 
 	traceWriter := &captureTraceWriter{}
 	messages := &recordingMessages{}
@@ -322,6 +330,7 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 				ID:                "sess-trace",
 				TopOrganizationID: 7,
 				OrganizationID:    8,
+				Context:           stateRaw,
 				CreatedAt:         time.Now(),
 				UpdatedAt:         time.Now(),
 			},
@@ -352,6 +361,10 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	assert.Greater(t, trace.Outcome.PromptMessagesRawPeak, 0)
 	assert.Greater(t, trace.Outcome.PromptMessagesAssembledPeak, 0)
 	assert.GreaterOrEqual(t, trace.Outcome.TotalLatencyMS, int64(0))
+	assert.Equal(t, engine.SelectedInstanceSourceUser, trace.State.SelectedInstanceSource)
+	assert.Equal(t, "expired", trace.State.SelectedInstanceFreshness)
+	assert.Equal(t, engine.SelectedInstanceSourceUser, trace.State.SelectedInstanceSourceAtTurnStart)
+	assert.Equal(t, "expired", trace.State.SelectedInstanceFreshnessAtTurnStart)
 	assert.Equal(t, int64(7), tenant.TopOrgID)
 	assert.Equal(t, int64(8), tenant.OrgID)
 	assert.Equal(t, "sess-trace", tenant.ConnectionID)

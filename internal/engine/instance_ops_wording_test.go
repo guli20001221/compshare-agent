@@ -44,6 +44,9 @@ func TestInstanceOpsDescriptionFollowsTheWriteGate(t *testing.T) {
 	if !strings.Contains(*ro, "绝不能从列表自行挑选") {
 		t.Fatalf("read-only description omits the target-selection boundary: %q", *ro)
 	}
+	if !strings.Contains(*ro, "不能把它视为已授权") {
+		t.Fatalf("read-only description omits the expired-selection reauthorization boundary: %q", *ro)
+	}
 
 	tools.SetInstanceOpsWritesEnabled(true)
 	rw := findInstanceOpsTool(centralAgentToolWindow(false, true))
@@ -55,6 +58,9 @@ func TestInstanceOpsDescriptionFollowsTheWriteGate(t *testing.T) {
 	}
 	if !strings.Contains(*rw, "绝不能从列表自行挑选") {
 		t.Fatalf("write description omits the target-selection boundary: %q", *rw)
+	}
+	if !strings.Contains(*rw, "不能把它视为已授权") {
+		t.Fatalf("write description omits the expired-selection reauthorization boundary: %q", *rw)
 	}
 	// Still has to name the hard limits, or the model plans around commands it can never run.
 	if !strings.Contains(*rw, "始终会被拒绝") {

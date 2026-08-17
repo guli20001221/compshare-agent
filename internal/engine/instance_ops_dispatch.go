@@ -66,8 +66,10 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// model-authored id is therefore not enough: a preceding account-wide list is
 	// observation, not a user selection. Reuse the exact selection proof used by
 	// workflow writes, so "刚才那台" keeps working after a genuine pick while a
-	// vague symptom cannot silently target the first running list row.
-	if !e.instanceOpsTargetIsSelected(instanceID) {
+	// vague symptom cannot silently target the first running list row. An EXPIRED
+	// genuine pick is the one narrow extra case: it may reach a NEW card for the
+	// same id, but it is never authority before that card is approved.
+	if !e.instanceOpsTargetMayReachConfirmation(instanceID) {
 		msg := "请先明确要排查的实例。多个实例时请让用户提供实例 ID/名称或从候选列表选择；不能自行从实例列表挑选。"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
@@ -102,6 +104,12 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
+	// The approved entry card names this exact instance, so it is a genuine user
+	// selection for a later continuation. Record it only AFTER the confirmation:
+	// an observed list row, a model-elected id, or a declined card must never gain
+	// selection authority. Do it before Run because a failed SSH attempt does not
+	// undo what the user explicitly chose to diagnose.
+	e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 
 	// Live activity stream. connected + each command become one StepEvent; the
 	// terminal summary is emitted below from the verdict tallies. Per-command
@@ -286,12 +294,15 @@ func instanceOpsUnauthorizedMessage(instanceID, terminalReason string) string {
 // cannot change when the card actually expires.
 const InstanceOpsConfirmWindow = 120 * time.Second
 
-// instanceOpsTargetIsSelected returns true only when the instance passed to the
-// SSH-ops lane has a selection proof from this turn. It deliberately shares the
-// workflow binder rather than treating a freshly observed account-list row as a
-// referent. A literal id the user typed is allowed on a cold session too: the
-// runner will still re-check that it belongs to the current account before entry.
-func (e *Engine) instanceOpsTargetIsSelected(instanceID string) bool {
+// instanceOpsTargetMayReachConfirmation decides whether an instance id may be
+// shown on the SSH entry card. A current deterministic binding reaches that card
+// normally. An expired, genuinely user-selected historical id may also reach a
+// NEW card for that same id; the card is the fresh selection proof, not the old
+// selection. An observed list row can never take either path.
+//
+// The runner still point-checks that the id belongs to this account after the
+// card; neither branch here grants instance entry by itself.
+func (e *Engine) instanceOpsTargetMayReachConfirmation(instanceID string) bool {
 	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
 		return false
 	}
@@ -311,11 +322,32 @@ func (e *Engine) instanceOpsTargetIsSelected(instanceID string) bool {
 		if id, _ := e.singleRegistryInstance(); id != "" {
 			return strings.EqualFold(strings.TrimSpace(id), strings.TrimSpace(instanceID))
 		}
+		if expiredUserSelectionMatches(view, instanceID) {
+			return true
+		}
 	}
 	// A cold rehydrated session may not have a complete registry yet. An exact ID
 	// visibly authored by the user is still a choice, unlike an ID invented from a
 	// prior list; account membership is verified by the runner's point describe.
 	return entity.TextExplicitlyMentionsName(view.CurrentQuestion, instanceID)
+}
+
+// expiredUserSelectionMatches is deliberately narrower than a carried selection:
+// freshness=expired excludes it from bindInstanceTarget, so it cannot silently
+// execute. This helper only lets the old, exact user choice be placed on a new
+// card. Keeping the source test here prevents an account-list observation from
+// acquiring the same privilege after its TTL elapses.
+func expiredUserSelectionMatches(view AgentContext, instanceID string) bool {
+	for _, ent := range view.SelectedEntities {
+		if ent.Kind != "instance" || ent.Source != SelectedInstanceSourceUser ||
+			ent.Freshness != ContinuityFreshnessExpired {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(ent.ID), strings.TrimSpace(instanceID)) {
+			return true
+		}
+	}
+	return false
 }
 
 // instanceOpsCommandStep maps one command-progress event to its StepEvent. The

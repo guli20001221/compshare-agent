@@ -39,12 +39,15 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 			RecentConversation: []ConversationPair{{User: "secret user", Assistant: "secret answer"}},
 			ContinuityNotices:  []string{"secret notice"},
 		},
-		promptSectionIDsThisTurn:            []string{"identity", "knowledge_turn_policy", "user_state"},
-		memoryUpdateSourceThisTurn:          memoryUpdateStructured,
-		groundingOutcomeThisTurn:            groundingSupported,
-		promptMessagesRawPeakThisTurn:       12,
-		promptMessagesAssembledPeakThisTurn: 9,
-		promptMessagesCapAppliedThisTurn:    true,
+		promptSectionIDsThisTurn:             []string{"identity", "knowledge_turn_policy", "user_state"},
+		memoryUpdateSourceThisTurn:           memoryUpdateStructured,
+		groundingOutcomeThisTurn:             groundingSupported,
+		promptMessagesRawPeakThisTurn:        12,
+		promptMessagesAssembledPeakThisTurn:  9,
+		promptMessagesCapAppliedThisTurn:     true,
+		selectedInstanceIDAtTurnStart:        "uhost-start",
+		selectedInstanceSourceAtTurnStart:    SelectedInstanceSourceUser,
+		selectedInstanceFreshnessAtTurnStart: ContinuityFreshnessExpired,
 	}
 	snapshot := eng.TraceSnapshot(time.Now())
 	require.Equal(t, []string{"recent_pairs", "notices"}, snapshot.ContextSources)
@@ -55,6 +58,9 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 	require.True(t, snapshot.PromptMessagesCapApplied)
 	require.Equal(t, memoryUpdateStructured, snapshot.MemoryUpdateSource)
 	require.Equal(t, groundingSupported, snapshot.GroundingOutcome)
+	require.Equal(t, "uhost-start", snapshot.SelectedInstanceIDAtStart)
+	require.Equal(t, SelectedInstanceSourceUser, snapshot.SelectedInstanceSourceAtStart)
+	require.Equal(t, ContinuityFreshnessExpired, snapshot.SelectedInstanceFreshnessAtStart)
 	for _, value := range append(append([]string{}, snapshot.ContextSources...), snapshot.PromptSectionIDs...) {
 		require.NotContains(t, value, "secret")
 	}
