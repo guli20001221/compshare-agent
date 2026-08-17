@@ -32,6 +32,24 @@ Forgetting is safe and loud rather than silent: the stale id is no longer
 active, the compare-and-swap refuses, and the log says which id the candidate
 was based on and which one is live.
 
+### When a publish is refused
+
+Nothing was published and the pointer did not move. The candidate row survives
+as `validated`, but **it cannot be rescued**: its parent and its release id are
+both immutable, so `--action publish --release-id <id>` compares against the
+same base and refuses identically, and re-running the pipeline on the same
+commit collides with that release id's primary key.
+
+So recovery is one of two things:
+
+- update `base_release.txt` in a **new commit** — a new short SHA means a new
+  release id — and click again. The stale candidate stays behind as a
+  `validated` row, which is the honest record of a build that was never
+  published; or
+- if the pointer moved by mistake, roll the active release back to the original
+  parent in `compshare-kb` (`--action rollback`), after which the original
+  candidate publishes with its base match satisfied.
+
 The id is committed rather than read off the cluster at import time on purpose.
 The worker deliberately refuses to read the active release itself — an
 import-time read files the candidate as a child of whatever happens to be live,
@@ -42,7 +60,15 @@ this file holds is what a human looked at, in review, in git.
 publication). Against a live release that assertion fails loudly, which is
 correct. `KB_PARENT_RELEASE_ID` overrides the file for the one case it cannot
 serve: two imports in a row, where the second one's base only exists once the
-first has run.
+first has run. Its value must be a bare release id — letters, digits, `.`, `-`,
+`_` — and anything else is refused before it is used as an argument, so an
+override cannot smuggle a second flag in alongside the id and switch the
+compare-and-swap off.
+
+The job passes `--require-base-match` explicitly rather than relying on the
+worker's default: the flag is this job asking for a compare-and-swap, and a
+default in another repository is somebody else's decision that can change
+without either side noticing.
 
 `text-embedding-3-large` sidecar is **no longer maintained** as of W1-R2
 (2026-05-23): `qwen3_rrf` is the runtime default and increments only rebuild
