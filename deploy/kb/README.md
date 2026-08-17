@@ -15,6 +15,34 @@ composition, indexing and release publication now belong to `compshare-kb`.
 | `embeddings_<corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for `qwen3_full` / `qwen3_rrf` modes (current default) | `internal/knowledge/corpus_digest.go:EmbeddingDigestExpectedQwen3` |
 | `external_w0.jsonl` | External corpus (1200 chunks: 255 locked legacy + 945 source-backed V2 chunks; image recovery refreshed 2026-07-23) | `internal/knowledge/corpus_digest.go:ExternalCorpusDigestExpected` |
 | `embeddings_<external-corpus-digest>_qwen3-embedding-8b.jsonl` | `qwen3-embedding-8b` (4096-dim) sidecar for the external corpus | `internal/knowledge/corpus_digest.go:ExternalEmbeddingDigestExpectedQwen3` |
+| `base_release.txt` | The compshare-kb release this corpus supersedes | `.gitlab-ci.yml:import-knowledge-release` |
+
+## `base_release.txt` — the release this corpus supersedes
+
+`import-knowledge-release` publishes with `--require-base-match`, which makes
+publication a compare-and-swap: the release named here must still be the active
+one at the moment the job publishes, or nothing is published and production
+keeps serving what it was already serving.
+
+**Regenerating the corpus means updating this file in the same commit.** Read
+the current release from `knowledge-release-ledger` in `compshare-kb` (it prints
+`/healthz` and the full ledger), and write that id here.
+
+Forgetting is safe and loud rather than silent: the stale id is no longer
+active, the compare-and-swap refuses, and the log says which id the candidate
+was based on and which one is live.
+
+The id is committed rather than read off the cluster at import time on purpose.
+The worker deliberately refuses to read the active release itself — an
+import-time read files the candidate as a child of whatever happens to be live,
+which is exactly the release the corpus may not have been built on — so what
+this file holds is what a human looked at, in review, in git.
+
+`none` asserts the knowledge base has no active release at all (first
+publication). Against a live release that assertion fails loudly, which is
+correct. `KB_PARENT_RELEASE_ID` overrides the file for the one case it cannot
+serve: two imports in a row, where the second one's base only exists once the
+first has run.
 
 `text-embedding-3-large` sidecar is **no longer maintained** as of W1-R2
 (2026-05-23): `qwen3_rrf` is the runtime default and increments only rebuild

@@ -220,11 +220,19 @@ migrate-feishu-oauth:
 # swaps the image and leaves the corpus alone; this swaps the corpus and leaves
 # the image alone.
 #
+# Publication is a compare-and-swap against deploy/kb/base_release.txt, the
+# release this corpus supersedes.  Regenerating the corpus means updating that
+# file in the same commit; see the comment on BASE_FILE below for why it is
+# committed rather than read off the cluster.
+#
 # If the worker creates the release but publication fails, re-running is
 # rejected by the release id's primary key rather than silently importing
 # twice.  Recover by publishing the existing candidate instead:
 #   kubectl -n prj-ucompshare-prod exec compshare-kb-0 -- \
 #     /usr/local/bin/compshare-kb-worker --action publish --release-id <id>
+# That path is not an escape from the base match: the candidate row carries the
+# base it was created with, so publishing it later compares against the same id
+# and refuses the same way if the pointer has moved since.
 import-knowledge-release:
   stage: deploy
   image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
@@ -244,6 +252,46 @@ import-knowledge-release:
         kubectl -n "$NAMESPACE" delete pod "$POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true
       }
       trap cleanup EXIT
+
+      # The release this corpus supersedes.  --require-base-match defaults on in
+      # the worker, so publication is a compare-and-swap against this id: if the
+      # active pointer moved between the moment somebody wrote it down and the
+      # moment this job publishes, the import is refused and production keeps
+      # serving what it was already serving.
+      #
+      # It is committed rather than read off the cluster here, deliberately.  The
+      # worker refuses to read the active release itself -- an import-time read
+      # files the candidate as a child of whatever happens to be live, which is
+      # exactly the release the corpus may not have been built on -- and reading
+      # it in this script one line before passing it is the same read wearing a
+      # different hat.  What the file holds is what a human looked at, in review,
+      # in git.
+      #
+      # So regenerating the corpus means updating this file in the same commit.
+      # Forgetting is safe and loud: the stale id is no longer active, the
+      # compare-and-swap refuses, and nothing is published.
+      #
+      # KB_PARENT_RELEASE_ID overrides it for the case the file cannot serve --
+      # two imports in a row, where the second one's base only comes into
+      # existence once the first has run.
+      BASE_FILE="deploy/kb/base_release.txt"
+      PARENT="${KB_PARENT_RELEASE_ID:-}"
+      if [ -z "$PARENT" ] && [ -f "$BASE_FILE" ]; then
+        PARENT=$(tr -d '\r' < "$BASE_FILE" | head -n 1 | tr -d '[:space:]')
+      fi
+      if [ -z "$PARENT" ]; then
+        echo "no base release: $BASE_FILE is missing or empty, and KB_PARENT_RELEASE_ID is unset." >&2
+        echo "Run knowledge-release-ledger in compshare-kb, then write the release this" >&2
+        echo "corpus supersedes into $BASE_FILE." >&2
+        exit 1
+      fi
+      if [ "$PARENT" = "none" ]; then
+        BASE_ARGS="--allow-empty-parent"
+        echo "base: none -- asserting this knowledge base has no active release"
+      else
+        BASE_ARGS="--parent-release-id $PARENT"
+        echo "base: $PARENT -- publication is refused if the pointer has moved"
+      fi
 
       # Pair each corpus with its sidecar through the digest the sidecar
       # filename carries.  No digest is restated here: a regenerated or
@@ -300,6 +348,25 @@ import-knowledge-release:
         sleep 5
       done
 
+      # What this database already holds, printed before anything is copied.
+      # `mcp_authored` is the number that matters: worker.Import builds its
+      # candidate purely from JSONL and never reads the active release, so
+      # publishing a batch over an `mcp-` release discards that edit and reports
+      # success.  The base match cannot catch it -- it compares release ids, and
+      # a base naming the mcp release matches it exactly.
+      #
+      # This PRINTS and does not gate, deliberately.  `safe_to_batch_import` is
+      # a field in a JSON document that also carries operator-authored `summary`
+      # text, and a shell substring test cannot tell the top-level field from the
+      # same characters inside a string -- so a gate here would be a guard that
+      # can be made to pass by its own input.  The sound version is an exit code
+      # from the worker, which is a compshare-kb change and a deploy; until then
+      # this leaves the count in the log for whoever clicked the button.  Today
+      # it reads 0, and the MCP write tools that could raise it are disabled.
+      echo "== release ledger before import =="
+      kubectl -n "$NAMESPACE" exec "$POD" -- \
+        /usr/local/bin/compshare-kb-worker --action releases --knowledge-base "$KNOWLEDGE_BASE"
+
       for file in $CP_FILES; do
         base=$(basename "$file")
         echo "copying $base"
@@ -312,15 +379,22 @@ import-knowledge-release:
         fi
       done
 
-      # WORKER_ARGS is deliberately unquoted: it is a built argument list.
-      # --publish implies --validate, and both run in one transaction, so a
-      # corpus that fails validation never becomes active.
+      # WORKER_ARGS and BASE_ARGS are deliberately unquoted: they are built
+      # argument lists.  --publish implies --validate, and both run in one
+      # transaction, so a corpus that fails validation never becomes active.
+      #
+      # A refusal here reads `candidate ... was based on ..., active release is
+      # ...`: the pointer moved.  Nothing was published, the pointer did not
+      # move, and the candidate is left `validated` -- so the recovery is to
+      # re-read the ledger, decide whether the newer content still belongs, and
+      # then either update the base and re-run or discard this build.
       kubectl -n "$NAMESPACE" exec "$POD" -- /usr/local/bin/compshare-kb-worker \
         --action import \
         --knowledge-base "$KNOWLEDGE_BASE" \
         --release-id "$KB_RELEASE_ID" \
         --version "$KB_RELEASE_VERSION" \
         --publish \
+        $BASE_ARGS \
         $WORKER_ARGS
 
       # Acceptance is what the SERVING process reports, not what the worker
