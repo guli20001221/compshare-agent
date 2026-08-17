@@ -170,23 +170,36 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
             out[(heading, occurrence)] = row
         return out
 
-    def moved_metadata_fields(source: str, target: str) -> list[str]:
-        """Served metadata that changed across a move, which the move pairing itself cannot see.
+    def moved_metadata(source: str, target: str) -> tuple[list[str], bool]:
+        """Served metadata that changed across a move, plus whether it could be compared.
 
         Move pairing is done on CONTENT digests, so a document that moved and had
         its title, question patterns or ACL rewritten under unchanged text pairs
         as a clean move and lands in the report as 仅移动 -- telling the reviewer
         there is nothing here to read, in the one release shape where a whole
         directory of documents changes path at once.
+
+        The comparison is by heading slot, so it only works while the headings
+        still line up. Rewrite the heading hierarchy in the same commit that moves
+        the file and the two slot sets share no key at all: every field comparison
+        runs over an EMPTY intersection and reports no change, which is the same
+        answer as a genuinely untouched document. Content digests are computed
+        from the body alone, so that document still pairs as a clean tier-one
+        move -- nothing else in the report contradicts the 仅移动 label either.
+
+        Returning the alignment separately is what keeps "compared and found
+        nothing" apart from "could not compare". The caller must never claim
+        仅移动 on the second.
         """
         before = metadata_by_slot(source, old_rows)
         after = metadata_by_slot(target, new_rows)
+        aligned = before.keys() == after.keys()
         fields: set[str] = set()
         for key in before.keys() & after.keys():
             for name in SERVED_METADATA_FIELDS:
                 if before[key].get(name) != after[key].get(name):
                     fields.add(name)
-        return sorted(fields)
+        return sorted(fields), aligned
 
     gone, fresh = old_docs - new_docs, new_docs - old_docs
     old_prints: dict[tuple[str, tuple[str, ...]], list[str]] = {}
@@ -197,9 +210,9 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
         candidates = old_prints.get((source_of(doc), fingerprint(doc, new_rows)))
         if candidates:
             source = candidates.pop(0)
-            fields = moved_metadata_fields(source, doc)
+            fields, aligned = moved_metadata(source, doc)
             moved.append({"from": source, "to": doc, "content_changed": False,
-                          "metadata_fields": fields})
+                          "metadata_fields": fields, "slots_aligned": aligned})
     moved_from = {item["from"] for item in moved}
     moved_to = {item["to"] for item in moved}
 
@@ -221,8 +234,9 @@ def diff_corpus(old_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) 
     old_stems = unique_stems(gone - moved_from)
     new_stems = unique_stems(fresh - moved_to)
     for stem in sorted(old_stems.keys() & new_stems.keys()):
+        fields, aligned = moved_metadata(old_stems[stem], new_stems[stem])
         moved.append({"from": old_stems[stem], "to": new_stems[stem], "content_changed": True,
-                      "metadata_fields": moved_metadata_fields(old_stems[stem], new_stems[stem])})
+                      "metadata_fields": fields, "slots_aligned": aligned})
     moved_from = {item["from"] for item in moved}
     moved_to = {item["to"] for item in moved}
 
@@ -311,8 +325,19 @@ def render_markdown(report: dict[str, Any], *, limit: int = 25) -> str:
             # labelled 仅移动 -- actively telling the reviewer to skip it, in the
             # release shape (a whole directory changing path) where that label is
             # applied to hundreds of documents at once.
+            # The comparison behind those fields is by heading slot, so a commit
+            # that moves a file AND rewrites its heading hierarchy leaves the two
+            # slot sets with no key in common: the field scan runs over an empty
+            # intersection, finds nothing, and is indistinguishable from a
+            # document nobody touched. Fail closed on that -- an unaligned pair
+            # is 需审阅, never 不必看. `is True` rather than a truthy default so a
+            # producer that forgets the key gets the loud answer.
             def _move_label(item):
                 fields = item.get("metadata_fields") or []
+                if item.get("slots_aligned") is not True:
+                    if item.get("content_changed"):
+                        return "改了内容，且章节层级已变——检索字段无法逐段对齐，需人工审阅"
+                    return "正文逐字未变，但章节层级已变——检索字段无法逐段对齐，需人工审阅"
                 if item.get("content_changed") and fields:
                     return "改了内容和检索字段：" + ", ".join(f"`{name}`" for name in fields)
                 if item.get("content_changed"):
@@ -322,7 +347,9 @@ def render_markdown(report: dict[str, Any], *, limit: int = 25) -> str:
                 return "仅移动"
 
             def _is_quiet(item):
-                return not item.get("content_changed") and not (item.get("metadata_fields") or [])
+                return (item.get("slots_aligned") is True
+                        and not item.get("content_changed")
+                        and not (item.get("metadata_fields") or []))
 
             verbatim = [item for item in corpus["documents_moved"] if _is_quiet(item)]
             edited = [item for item in corpus["documents_moved"] if not _is_quiet(item)]

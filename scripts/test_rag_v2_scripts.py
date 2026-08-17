@@ -1338,8 +1338,72 @@ class ReleaseDiffTests(unittest.TestCase):
         self.assertEqual([], result["documents_added"])
         self.assertEqual([], result["documents_removed"])
         self.assertEqual([{"from": "src:pages/x.md", "to": "src:content/x.md",
-                           "content_changed": False, "metadata_fields": []}],
+                           "content_changed": False, "metadata_fields": [],
+                           "slots_aligned": True}],
                          result["documents_moved"])
+
+    def _moved_markdown(self, result):
+        return release_diff.render_markdown(
+            {"headline": {}, "captions": {}, "corpora": {"internal": result}})
+
+    def test_a_move_that_also_rewrites_the_headings_is_never_called_quiet(self):
+        """仅移动 means "nothing to read here", and it was reachable while a served
+        field had been rewritten.
+
+        The metadata comparison is keyed on heading slot. Rewrite the heading
+        hierarchy in the same commit that moves the file and the two slot sets
+        share no key at all, so every field comparison runs over an EMPTY
+        intersection and reports no change -- the identical answer to a document
+        nobody touched. Content digests read the body alone, so the pair still
+        matches as a clean tier-one move, and nothing else in the report
+        contradicts the label either.
+        """
+        old = [self._chunk("src:pages/x.md", "使用指南 / 快速开始", "一模一样的内容")]
+        old[0]["title"] = "快速开始"
+        new = [self._chunk("src:content/x.mdx", "入门 / 第一步", "一模一样的内容")]
+        new[0]["title"] = "新手上路"
+
+        result = release_diff.diff_corpus(old, new)
+        self.assertEqual([], result["sections_changed"])
+        self.assertEqual([], result["sections_metadata_changed"])
+        self.assertEqual(1, len(result["documents_moved"]))
+        item = result["documents_moved"][0]
+        self.assertFalse(item["content_changed"])
+        self.assertFalse(item["slots_aligned"])
+
+        markdown = self._moved_markdown(result)
+        self.assertIn("需人工审阅", markdown)
+        self.assertNotIn("仅移动", markdown)
+        self.assertIn("其中 0 个", markdown)
+
+    def test_a_move_that_keeps_its_headings_still_names_the_rewritten_field(self):
+        """The fail-closed branch must not swallow the case it was built for."""
+        old = [self._chunk("src:pages/x.md", "标题", "一模一样的内容")]
+        old[0]["title"] = "旧标题"
+        new = [self._chunk("src:content/x.md", "标题", "一模一样的内容")]
+        new[0]["title"] = "新标题"
+
+        result = release_diff.diff_corpus(old, new)
+        item = result["documents_moved"][0]
+        self.assertTrue(item["slots_aligned"])
+        self.assertEqual(["title"], item["metadata_fields"])
+
+        markdown = self._moved_markdown(result)
+        self.assertIn("`title`", markdown)
+        self.assertNotIn("仅移动", markdown)
+        self.assertNotIn("需人工审阅", markdown)
+
+    def test_a_move_entry_missing_the_alignment_flag_is_read_as_unaligned(self):
+        """`is True` rather than a truthy default. A producer that forgets the key
+        must get the loud answer, not the one that tells a reviewer to skip."""
+        old = [self._chunk("src:pages/x.md", "标题", "一模一样的内容")]
+        new = [self._chunk("src:content/x.md", "标题", "一模一样的内容")]
+        result = release_diff.diff_corpus(old, new)
+        del result["documents_moved"][0]["slots_aligned"]
+
+        markdown = self._moved_markdown(result)
+        self.assertIn("需人工审阅", markdown)
+        self.assertNotIn("仅移动", markdown)
 
     def test_a_document_that_moved_and_changed_is_paired_by_path(self):
         """.md -> .mdx rewrote the body too, so content fingerprints miss it."""
