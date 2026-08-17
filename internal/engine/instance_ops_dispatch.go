@@ -24,6 +24,31 @@ const maxInstanceOpsStepEvents = 50
 // specific change, and a user who sees the same label twice cannot tell which they answered.
 const instanceOpsWriteAction = "InstanceOpsWriteCommand"
 
+// The target refusal is TWO strings for two audiences, because one string cannot serve both.
+// It used to be one — "请先明确要排查的实例。多个实例时请让用户提供实例 ID/名称或从候选列表选择；
+// 不能自行从实例列表挑选。" — which went to the tool result AND to the StepEvent. The console shows
+// a DiagnoseInstanceInternals step's Message verbatim (correctly: this lane's detail and its
+// terminal refusals live only in Message), so the customer read an instruction addressed to the
+// model, in the model's grammar: 「让用户提供」, 「不能自行从列表挑选」. The model then quoted it
+// back into its own prose, so the same internal sentence reached the user twice.
+//
+// The split is not just wording. The old text told the model what it must NOT do and never what
+// WOULD work, so the agent invented recoveries that cannot satisfy this gate — asking the user to
+// reply 「确认」 (which carries no identifier) or to select the row in the console (which writes no
+// session state). Both leave the exchange looping. The model-facing half now names the only exits.
+const (
+	// instanceOpsTargetRefusalForUser is what the person reads. Actionable, no internal policy.
+	instanceOpsTargetRefusalForUser = "尚未开始实例内排查。请直接回复要排查的实例 ID 或实例名称；" +
+		"如果上面列出了候选实例，回复对应的序号也可以。"
+	// instanceOpsTargetRefusalForModel rides the tool result, which the user never sees. It states
+	// the constraint AND the exits, including the one the agent kept getting wrong: a bare 「确认」
+	// is not an identifier and re-asking for it loops.
+	instanceOpsTargetRefusalForModel = "请先明确要排查的实例。只有用户在消息中直接给出的实例 ID、" +
+		"唯一实例名，或对已展示候选列表的序号，才能作为本次排查目标；不能自行从实例列表挑选，" +
+		"也不能把仅仅读到过的实例当作目标。请让用户在下一条消息里直接给出实例 ID 或名称——" +
+		"用户回复「确认」「是的」这类不含标识的内容不会解除该限制，在控制台里选中实例也不会。"
+)
+
 // executeInstanceOps handles a DiagnoseInstanceInternals tool call: the read-only
 // in-instance diagnosis lane. It is dispatched from executeToolOnce BEFORE the
 // diagnosis-chain and mutating-tool branches, so it never inherits the
@@ -70,9 +95,8 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// genuine pick is the one narrow extra case: it may reach a NEW card for the
 	// same id, but it is never authority before that card is approved.
 	if !e.instanceOpsTargetMayReachConfirmation(instanceID) {
-		msg := "请先明确要排查的实例。多个实例时请让用户提供实例 ID/名称或从候选列表选择；不能自行从实例列表挑选。"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-		return friendlyToolResultJSON(msg)
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsTargetRefusalForUser})
+		return friendlyToolResultJSON(instanceOpsTargetRefusalForModel)
 	}
 
 	// INV-11: one in-instance run per turn. Check-then-set BEFORE confirm — a user
