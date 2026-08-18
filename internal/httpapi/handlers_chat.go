@@ -141,20 +141,35 @@ type confirmationErrorEvent struct {
 // we have (the console's switch has a default that ignores unknown frames; wsprobe
 // prints them) — so an old client now survives the late click instead of being
 // killed by it, and a new client can put the message on the card it names.
+//
+// COORDINATION: console/frame@feature/confirm-lifecycle already routes an "error"
+// frame that carries a ConfirmationId to its card (service.js::routeStreamError),
+// which is the design #548 was written for. That branch must accept this name too
+// — otherwise it falls into the same default that saves the OLD console, and the
+// card-marking work on it silently stops happening. Deploying this server ahead of
+// that branch is safe; landing that branch without the extra name is not.
 const confirmationErrorEventName = "confirmation_error"
 
 // confirmationFailureMessage is what a PERSON reads when their click on an
 // authorization card did not take effect. The sentinels' own Error() strings are
 // developer English and were being forwarded to the console verbatim.
 //
-// Every branch states the same two facts, because they are what the reader needs:
-// the click did not take effect, and nothing was executed because of it.
+// What every branch may say is that THIS click changed nothing. What only some
+// branches may say is that nothing ran at all — see ErrConfirmationNotFound.
 func confirmationFailureMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrConfirmationOwner):
+		// The card is untouched: the claim was rejected before anything moved.
 		return "这张授权卡片不属于当前会话，本次点击没有生效。"
 	case errors.Is(err, ErrConfirmationNotFound):
-		return "这张授权卡片已经失效（等待确认超时，或已经处理过一次），本次点击没有生效，也没有执行任何操作。需要的话请重新发送一次指令。"
+		// NOT "nothing ran". This sentinel is returned whenever the id is no longer
+		// pending, and ClaimResolution removes it on the FIRST successful claim
+		// (confirm_broker.go) — so "the card timed out and nothing happened" and
+		// "an earlier click was accepted and may already be running inside the box"
+		// come back identically. There is no third state to read: telling the user
+		// nothing ran would be a guess, and a guess in the direction that invites
+		// them to submit the same thing again.
+		return "这次点击没有生效。该授权卡已失效或已被处理，本轮结果请以后续输出为准，请勿重复提交。"
 	default:
 		// Override validation: the card is still pending and still answerable, so
 		// the sentence must say that rather than read as a dead end.

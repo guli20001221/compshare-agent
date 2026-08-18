@@ -383,4 +383,15 @@ func TestWS_Confirm_ExpiredCardRejectionIsScopedToTheCardAndReadable(t *testing.
 	assert.NotContains(t, msg, ErrConfirmationNotFound.Error(),
 		"the sentinel's English text is for logs, not for the person who clicked")
 	assert.Contains(t, msg, "没有生效", "the reader has to be told their click did nothing")
+	// And must NOT be told more than the server knows. ClaimResolution removes the
+	// entry on the first successful claim, so this same sentinel covers "the card
+	// timed out and nothing happened" AND "an earlier click was accepted and may
+	// already be running inside the box". Announcing that nothing ran is a guess,
+	// and the guess that invites the user to submit the same thing twice.
+	for _, overclaim := range []string{"没有执行任何操作", "没有执行任何命令", "未执行"} {
+		assert.NotContains(t, msg, overclaim,
+			"NotFound is not proof that nothing ran")
+	}
+	assert.Contains(t, msg, "请勿重复提交",
+		"if we cannot say whether it ran, we have to say not to click it again")
 }
