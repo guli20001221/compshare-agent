@@ -358,8 +358,14 @@ func (s *Service) handleJob(ctx context.Context, item job) {
 			}
 		}
 		if err == nil {
+			answer, needsCustomerSupport := consumeCustomerSupportMarker(answer)
 			answer, needsConsoleHandoff := consumeConsoleHandoffMarker(answer)
-			if needsConsoleHandoff {
+			if needsCustomerSupport {
+				log.Printf("Feishu customer-support handoff requested by knowledge-only Agent message=%s", item.messageID)
+				// Support wins if a malformed completion contains both markers: these
+				// categories must not be misrepresented as instance diagnosis.
+				answer = customerSupportReply()
+			} else if needsConsoleHandoff {
 				log.Printf("Feishu console handoff requested by knowledge-only Agent message=%s", item.messageID)
 				if consoleHandoffEnabled(s.cfg) {
 					answer = appendConsoleHandoff(answer, s.cfg.ConsoleAssistantURL, s.cfg.ClientDownloadURL)

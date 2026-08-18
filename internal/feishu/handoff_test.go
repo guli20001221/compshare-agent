@@ -39,6 +39,33 @@ func TestConsoleHandoffMarkerIsNeverRenderedAndIncludesClientWhenConfigured(t *t
 	require.Contains(t, reply, "CLI 和 SSH")
 }
 
+func TestCustomerSupportMarkerRendersConciseSupportReply(t *testing.T) {
+	answer, requested := consumeCustomerSupportMarker("认证页面一直加载。\n" + agentprotocol.FeishuCustomerSupportMarker)
+	require.True(t, requested)
+	require.Equal(t, "认证页面一直加载。", answer)
+
+	reply := customerSupportReply()
+	require.NotContains(t, reply, agentprotocol.FeishuCustomerSupportMarker)
+	require.NotContains(t, reply, agentprotocol.FeishuConsoleHandoffMarker)
+	require.Contains(t, reply, "建议直接联系优云智算客服处理")
+	require.NotContains(t, reply, "控制台智能助手")
+	require.NotContains(t, reply, "桌面客户端")
+}
+
+func TestCustomerSupportMarkerWinsOverConsoleHandoff(t *testing.T) {
+	answer := "认证卡住了。\n" + agentprotocol.FeishuConsoleHandoffMarker + "\n" + agentprotocol.FeishuCustomerSupportMarker
+	answer, supportRequested := consumeCustomerSupportMarker(answer)
+	answer, consoleRequested := consumeConsoleHandoffMarker(answer)
+	require.True(t, supportRequested)
+	require.True(t, consoleRequested)
+	if supportRequested {
+		answer = customerSupportReply()
+	} else if consoleRequested {
+		answer = appendConsoleHandoff(answer, "https://console.example.test/#/assistant", "")
+	}
+	require.Equal(t, customerSupportReply(), answer)
+}
+
 func TestConsoleHandoffKeepsWebOnlyBackwardCompatibility(t *testing.T) {
 	reply := appendConsoleHandoff("", "https://console.example.test/#/assistant", "")
 	require.Contains(t, reply, "优云智算控制台智能助手")

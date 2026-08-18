@@ -52,6 +52,18 @@ func consumeConsoleHandoffMarker(answer string) (string, bool) {
 	return strings.TrimSpace(withoutMarker), withoutMarker != answer
 }
 
+// consumeCustomerSupportMarker removes the protocol-only support marker
+// before reply rendering. It remains defensive even when the feature is
+// disabled: an accidental marker must never be shown to a user.
+func consumeCustomerSupportMarker(answer string) (string, bool) {
+	withoutMarker := strings.ReplaceAll(answer, agentprotocol.FeishuCustomerSupportMarker, "")
+	return strings.TrimSpace(withoutMarker), withoutMarker != answer
+}
+
+func customerSupportReply() string {
+	return "这属于账号、认证、页面加载或平台服务问题，建议直接联系优云智算客服处理。请附上截图和发生时间；请勿在群内发送验证码、密码或证件信息。"
+}
+
 func consoleHandoffReply(consoleURL, clientURL string) string {
 	reply := "## 需要在已登录环境中继续排查\n\n" +
 		"这个问题需要结合您账号下实例的实时状态、日志或进程信息判断；飞书群里的知识问答无法读取或操作这些信息。\n\n" +
