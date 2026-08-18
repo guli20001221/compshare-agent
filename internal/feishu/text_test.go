@@ -82,7 +82,7 @@ func TestNewTopicRootIsDistinctFromTopicReply(t *testing.T) {
 	rootID := "om_root"
 	root := &larkim.EventMessage{MessageId: &rootID, ChatType: &chatType, ThreadId: &threadID}
 	require.True(t, isNewTopicRoot(root))
-	require.True(t, shouldRespond(root, false, true, false))
+	require.True(t, shouldRespond(root, false, false, true, false))
 	replyID := "om_reply"
 	// Topic replies use the same thread_id and point both IDs to the root.
 	reply := &larkim.EventMessage{
@@ -90,9 +90,11 @@ func TestNewTopicRootIsDistinctFromTopicReply(t *testing.T) {
 		RootId: &rootID, ParentId: &rootID,
 	}
 	require.False(t, isNewTopicRoot(reply))
-	require.False(t, shouldRespond(reply, false, true, false))
-	require.True(t, shouldRespond(reply, true, true, false))
-	require.True(t, shouldRespond(reply, false, true, true))
+	require.False(t, shouldRespond(reply, false, false, true, false))
+	require.True(t, shouldRespond(reply, true, false, true, false))
+	require.True(t, shouldRespond(reply, false, false, true, true))
+	require.False(t, shouldRespond(root, false, true, true, true), "a non-bot mention suppresses automatic triggers")
+	require.True(t, shouldRespond(root, true, true, true, true), "an explicit bot mention remains a manual invocation")
 
 	incomplete := &larkim.EventMessage{ChatType: &chatType}
 	require.False(t, isNewTopicRoot(incomplete), "missing thread_id must fail closed")
@@ -172,6 +174,10 @@ func TestValidateConfigIsFailClosedForChatAllowlist(t *testing.T) {
 
 func TestMentionedBotMatchesOpenID(t *testing.T) {
 	openID := "ou_bot"
+	userOpenID := "ou_user"
 	require.True(t, mentionedBot([]*larkim.MentionEvent{{Id: &larkim.UserId{OpenId: &openID}}}, openID, ""))
 	require.False(t, mentionedBot(nil, openID, ""))
+	require.False(t, mentionedNonBot([]*larkim.MentionEvent{{Id: &larkim.UserId{OpenId: &openID}}}, openID, ""))
+	require.True(t, mentionedNonBot([]*larkim.MentionEvent{{Id: &larkim.UserId{OpenId: &userOpenID}}}, openID, ""))
+	require.True(t, mentionedNonBot([]*larkim.MentionEvent{{}}, openID, ""), "an unrecognized mention must not cause an automatic answer")
 }

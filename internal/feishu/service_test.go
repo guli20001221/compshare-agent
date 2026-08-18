@@ -200,3 +200,33 @@ func TestAllMessagesStillIgnoresBotSender(t *testing.T) {
 	require.NoError(t, service.onMessage(context.Background(), event))
 	require.Empty(t, service.queue)
 }
+
+func TestUserMentionSuppressesAutomaticTopicRootReply(t *testing.T) {
+	service := &Service{
+		cfg:     config.FeishuConfig{AutoReplyNewTopics: true},
+		allowed: map[string]struct{}{"oc_topic": {}},
+		queue:   make(chan job, 1),
+		seen:    make(map[string]time.Time),
+	}
+	chatType := "group"
+	chatID := "oc_topic"
+	senderType := "user"
+	messageType := "text"
+	messageID := "om_root"
+	threadID := "omt_topic"
+	content := `{"text":"@_user_1 68962389"}`
+	mentionKey := "@_user_1"
+	mentionedOpenID := "ou_other_member"
+	event := &larkim.P2MessageReceiveV1{
+		Event: &larkim.P2MessageReceiveV1Data{
+			Sender: &larkim.EventSender{SenderType: &senderType},
+			Message: &larkim.EventMessage{
+				MessageId: &messageID, ChatId: &chatID, ChatType: &chatType, ThreadId: &threadID,
+				MessageType: &messageType, Content: &content,
+				Mentions: []*larkim.MentionEvent{{Key: &mentionKey, Id: &larkim.UserId{OpenId: &mentionedOpenID}}},
+			},
+		},
+	}
+	require.NoError(t, service.onMessage(context.Background(), event))
+	require.Empty(t, service.queue, "@ another user must not automatically invoke the bot")
+}

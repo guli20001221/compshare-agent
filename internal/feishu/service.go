@@ -235,9 +235,10 @@ func (s *Service) onMessage(_ context.Context, event *larkim.P2MessageReceiveV1)
 	if isNewTopicRoot(message) {
 		s.rememberTopicOwner(topicKey, participantFromSender(sender), messageID)
 	}
-	mentioned := mentionedBot(message.Mentions, s.botOpenID, s.botUserID)
-	ownerDirectFollowup := s.cfg.AutoReplyNewTopics && s.isTopicOwnerDirectFollowup(topicKey, message, participantFromSender(sender))
-	if !shouldRespond(message, mentioned, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages) && !ownerDirectFollowup {
+	botMentioned := mentionedBot(message.Mentions, s.botOpenID, s.botUserID)
+	nonBotMentioned := mentionedNonBot(message.Mentions, s.botOpenID, s.botUserID)
+	ownerDirectFollowup := !nonBotMentioned && s.cfg.AutoReplyNewTopics && s.isTopicOwnerDirectFollowup(topicKey, message, participantFromSender(sender))
+	if !shouldRespond(message, botMentioned, nonBotMentioned, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages) && !ownerDirectFollowup {
 		return nil
 	}
 	input, ok := inputFromMessage(message)
@@ -259,8 +260,17 @@ func (s *Service) onMessage(_ context.Context, event *larkim.P2MessageReceiveV1)
 	return nil
 }
 
-func shouldRespond(message *larkim.EventMessage, mentioned, autoReplyNewTopics, autoReplyAllMessages bool) bool {
-	return autoReplyAllMessages || mentioned || (autoReplyNewTopics && isNewTopicRoot(message))
+func shouldRespond(message *larkim.EventMessage, botMentioned, nonBotMentioned, autoReplyNewTopics, autoReplyAllMessages bool) bool {
+	// An explicit bot mention is an intentional manual invocation. Any other
+	// mention suppresses only automatic triggers, so ordinary @user exchanges
+	// in a topic do not cause an unsolicited bot answer.
+	if botMentioned {
+		return true
+	}
+	if nonBotMentioned {
+		return false
+	}
+	return autoReplyAllMessages || (autoReplyNewTopics && isNewTopicRoot(message))
 }
 
 // rememberTopicOwner records the author and message ID of a newly-created
@@ -537,16 +547,30 @@ func (s *Service) seenBefore(messageID string) bool {
 
 func mentionedBot(mentions []*larkim.MentionEvent, botOpenID, botUserID string) bool {
 	for _, mention := range mentions {
-		if mention == nil || mention.Id == nil {
-			continue
-		}
-		if stringValue(mention.Id.OpenId) == botOpenID ||
-			stringValue(mention.Id.UserId) == botOpenID ||
-			(botUserID != "" && stringValue(mention.Id.UserId) == botUserID) {
+		if isBotMention(mention, botOpenID, botUserID) {
 			return true
 		}
 	}
 	return false
+}
+
+func mentionedNonBot(mentions []*larkim.MentionEvent, botOpenID, botUserID string) bool {
+	for _, mention := range mentions {
+		if mention != nil && !isBotMention(mention, botOpenID, botUserID) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBotMention(mention *larkim.MentionEvent, botOpenID, botUserID string) bool {
+	if mention == nil || mention.Id == nil {
+		return false
+	}
+	if botOpenID != "" && (stringValue(mention.Id.OpenId) == botOpenID || stringValue(mention.Id.UserId) == botOpenID) {
+		return true
+	}
+	return botUserID != "" && stringValue(mention.Id.UserId) == botUserID
 }
 
 func isSessionLimit(err error) bool {
