@@ -97,7 +97,17 @@ func TestInstanceOps_DeclineDoesNotRunAndTurnContinues(t *testing.T) {
 	require.NotContains(t, out, "已经执行过", "decline text must differ from the already-ran text (V9)")
 	state, _, hydrated := eng.SessionStateSnapshot()
 	require.True(t, hydrated)
-	require.Empty(t, state.SelectedInstanceID, "a declined entry card is not a user selection")
+	// This assertion used to read "a declined entry card is not a user selection",
+	// and it only still held because this test dispatches the tool directly and so
+	// skips turn entry: in a real turn #566 already recorded the id at turn entry
+	// from the user's own words, and TestTypedInstanceIDSurvivesACardThatWasNeverApproved
+	// asserts the opposite of what this line said. The two rules it conflated are
+	// now separated — the user WRITING "uhost-1" is the designation and survives the
+	// decline, while EXECUTION authority is what the decline withholds, asserted by
+	// runner.calls above. A designation says which box the next 「继续排查」 means; it
+	// never says the harness may enter it.
+	require.Equal(t, "uhost-1", state.SelectedInstanceID)
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 }
 
 // 门 4 — with no confirm function installed the lane fails closed: no panic and

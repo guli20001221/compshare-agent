@@ -291,8 +291,11 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 				// construction, and without the id a client can only fail the whole
 				// turn — which would let a single malformed form field end a
 				// diagnosis, the same shape as the expired-card bug below.
-				_ = writer.WriteEvent("error", confirmationErrorEvent{
-					Code: "InvalidParam", Message: ovErr.Error(), ConfirmationID: confirmationID,
+				// The parse detail ("Overrides.X must be a string") names a wire field
+				// no customer authored; it goes to the log, not to their screen.
+				log.Printf("confirm %s: malformed Overrides rejected (%v)", confirmationID, ovErr)
+				_ = writer.WriteEvent(confirmationErrorEventName, confirmationErrorEvent{
+					Code: "InvalidParam", Message: confirmationFailureMessage(ovErr), ConfirmationID: confirmationID,
 				})
 				continue
 			}
@@ -373,9 +376,13 @@ func (h *Handlers) resolveConfirmFrame(w streamWriter, cancelTurn context.Cancel
 		// Name the card. The error frame used to carry only a code and a sentence,
 		// so a client could not tell which of several cards it rejected — and an
 		// expired card therefore stayed rendered as accepted while the turn went
-		// red somewhere else.
-		_ = w.WriteEvent("error", confirmationErrorEvent{
-			Code: code, Message: err.Error(), ConfirmationID: confirmationID,
+		// red somewhere else. Naming it was necessary and not sufficient: see
+		// confirmationErrorEventName for why this is no longer an "error" frame,
+		// and confirmationFailureMessage for why the sentinel's own English text
+		// no longer reaches the customer.
+		log.Printf("confirm %s: resolve rejected (%v)", confirmationID, err)
+		_ = w.WriteEvent(confirmationErrorEventName, confirmationErrorEvent{
+			Code: code, Message: confirmationFailureMessage(err), ConfirmationID: confirmationID,
 		})
 		return
 	}

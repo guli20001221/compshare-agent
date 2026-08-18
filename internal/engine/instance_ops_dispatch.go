@@ -98,6 +98,27 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsTargetRefusalForUser})
 		return friendlyToolResultJSON(instanceOpsTargetRefusalForModel)
 	}
+	// The turn-entry designation (recordUserDesignatedInstance) can only see ids the
+	// REGISTRY can tokenize: InstanceIDTokensInText derives its id prefixes from the
+	// instances the snapshot already holds and returns nil on an empty one
+	// (entity/resolve.go:189-197). Production sessions skip engine.Init(), so a
+	// session that never lists instances carries an empty registry for its whole
+	// life — and the shape this lane exists for (「ComfyUI 打不开」, then a bare
+	// 「cpod-…」) lists nothing. The card was still shown, because the gate above has
+	// its own last-resort check on the user's literal words; but NOTHING was
+	// recorded, so a card that was not approved left the session with no target at
+	// all, and the next 「继续排查」 was refused with nothing the user could say to
+	// clear it. That is #566's loop again, one registry state to the left — measured
+	// on the 2026-08-17 production transcript, after #566 shipped.
+	//
+	// Record it here, where the same fact is finally provable, and BEFORE the card:
+	// the designation is the user typing the id, never their approval (#566), so a
+	// declined or timed-out card must not erase it. The other two ways this gate can
+	// pass — the account's sole instance, and an expired prior pick — deliberately do
+	// NOT record: neither is a designation made in THIS message.
+	if e.userNamedInstanceThisTurn(instanceID) {
+		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
+	}
 
 	// INV-11: one in-instance run per turn. Check-then-set BEFORE confirm — a user
 	// who declines the card still spends the turn's single slot, so the agent cannot
@@ -353,7 +374,23 @@ func (e *Engine) instanceOpsTargetMayReachConfirmation(instanceID string) bool {
 	// A cold rehydrated session may not have a complete registry yet. An exact ID
 	// visibly authored by the user is still a choice, unlike an ID invented from a
 	// prior list; account membership is verified by the runner's point describe.
-	return entity.TextExplicitlyMentionsName(view.CurrentQuestion, instanceID)
+	return e.userNamedInstanceThisTurn(instanceID)
+}
+
+// userNamedInstanceThisTurn reports whether the user's OWN words this turn contain
+// this exact instance id. The model supplies the needle and the server checks the
+// haystack, so an id the model invented from a list it just read cannot pass (#546)
+// — the list is not in the user's message.
+//
+// It exists as a named function because two callers now depend on the same fact:
+// the target gate above admits the card on it, and executeInstanceOps records the
+// designation on it. Inlining it twice would let the id that reaches a card and the
+// id the session remembers drift apart, which is the exact class of bug #566 fixed.
+func (e *Engine) userNamedInstanceThisTurn(instanceID string) bool {
+	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
+		return false
+	}
+	return entity.TextExplicitlyMentionsName(e.turnContextViewThisTurn.CurrentQuestion, instanceID)
 }
 
 // expiredUserSelectionMatches is deliberately narrower than a carried selection:

@@ -220,7 +220,7 @@ func TestWS_Confirm_InvalidOverride_ErrorFrameAndPendingKept(t *testing.T) {
 	require.NoError(t, err)
 	var f map[string]any
 	require.NoError(t, json.Unmarshal(data, &f))
-	assert.Equal(t, "error", f["event"])
+	assert.Equal(t, confirmationErrorEventName, f["event"])
 	assert.Equal(t, "InvalidParam", f["Code"])
 
 	// The client fixes the value and resends — the SAME pending resolves.
@@ -258,7 +258,7 @@ func TestWS_Confirm_MalformedOverrideValueRejectionNamesTheCard(t *testing.T) {
 			`","Confirmed":true,"Overrides":{"GpuType":123}}`)))
 
 	f := readOneFrame(t, ctx, conn)
-	assert.Equal(t, "error", f["event"])
+	assert.Equal(t, confirmationErrorEventName, f["event"])
 	assert.Equal(t, "InvalidParam", f["Code"])
 	assert.Equal(t, confirmID, f["ConfirmationId"],
 		"a parse rejection is scoped to one card and must say which")
