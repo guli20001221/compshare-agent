@@ -114,14 +114,52 @@ type confirmationAckEvent struct {
 	Accepted       bool   `json:"Accepted"`
 }
 
-// confirmationErrorEvent is streamErrorEvent plus the card the failure belongs
-// to. Same "error" event name and same two fields, so a client reading only
-// Code/Message sees exactly what it saw before; ConfirmationId lets a newer one
-// put the message on the card that was rejected rather than failing the turn.
+// confirmationErrorEvent is streamErrorEvent plus the card the failure belongs to.
 type confirmationErrorEvent struct {
 	Code           string `json:"Code"`
 	Message        string `json:"Message"`
 	ConfirmationID string `json:"ConfirmationId"`
+}
+
+// confirmationErrorEventName is deliberately NOT "error". A card-scoped failure is
+// not a failure of the turn — whatever the card was gating is still running behind
+// it — and the durable path has always said so with a name of its own
+// ("interaction_error", ws_durable.go::writeDurableInteractionError, whose comment
+// reads "without ending the observed turn"). The legacy path, the one production
+// runs, kept "error".
+//
+// That cost a customer a 30-minute diagnosis on 2026-08-17. They clicked 确认 on an
+// SSH authorization card that had already timed out; the server answered "error" /
+// NotFound; the console does settled = true plus ws.close() on ANY "error" frame,
+// which cancelled the still-running in-instance run; and the raw English sentence
+// "confirmation not found or already resolved" was left standing as the answer.
+//
+// #548 added ConfirmationId to the frame so a client COULD scope it, and kept the
+// event name for compatibility. The compatibility was the bug: a client that does
+// not know about the id cannot ignore the frame, it can only fail the turn. A
+// distinct name inverts the default — an unknown event is dropped by every client
+// we have (the console's switch has a default that ignores unknown frames; wsprobe
+// prints them) — so an old client now survives the late click instead of being
+// killed by it, and a new client can put the message on the card it names.
+const confirmationErrorEventName = "confirmation_error"
+
+// confirmationFailureMessage is what a PERSON reads when their click on an
+// authorization card did not take effect. The sentinels' own Error() strings are
+// developer English and were being forwarded to the console verbatim.
+//
+// Every branch states the same two facts, because they are what the reader needs:
+// the click did not take effect, and nothing was executed because of it.
+func confirmationFailureMessage(err error) string {
+	switch {
+	case errors.Is(err, ErrConfirmationOwner):
+		return "这张授权卡片不属于当前会话，本次点击没有生效。"
+	case errors.Is(err, ErrConfirmationNotFound):
+		return "这张授权卡片已经失效（等待确认超时，或已经处理过一次），本次点击没有生效，也没有执行任何操作。需要的话请重新发送一次指令。"
+	default:
+		// Override validation: the card is still pending and still answerable, so
+		// the sentence must say that rather than read as a dead end.
+		return "卡片上的选项没有通过校验，本次没有提交；请调整后再点确认。"
+	}
 }
 
 // confirmWaitTimeout is how long the server waits for a person to answer ONE

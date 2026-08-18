@@ -170,7 +170,10 @@ func TestConfirmFrameRefusalWakesNothing(t *testing.T) {
 		func() { cancelled = true }, "some-other-id", "sess-1", owner,
 		ConfirmDecision{Confirmed: true})
 
-	require.Equal(t, []string{"frame:error"}, events)
+	require.Equal(t, []string{"frame:" + confirmationErrorEventName}, events)
+	require.NotContains(t, events, "frame:error",
+		"an \"error\" frame is what every client treats as terminal; a card-scoped "+
+			"refusal must not be able to reach one")
 	require.False(t, cancelled,
 		"a card-scoped refusal must leave the connection open — the turn is still running")
 	select {

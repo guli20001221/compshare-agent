@@ -351,10 +351,17 @@ func TestWS_Confirm_DeclineIsAlsoAcknowledged(t *testing.T) {
 	assert.Equal(t, false, frame["Accepted"])
 }
 
-// An expired card's rejection must name the card too. Without the id the client
-// can only fail the whole turn — which is exactly what the console did, showing
-// a red [NotFound] beside a card still rendered as handled.
-func TestWS_Confirm_ExpiredCardRejectionNamesTheCard(t *testing.T) {
+// An expired card's rejection must name the card, must not arrive as an "error"
+// frame, and must not put developer English on a customer's screen.
+//
+// All three come from one production turn (2026-08-17): the user clicked 确认 on an
+// SSH card that had already timed out, the server answered "error"/NotFound with
+// the sentinel's own text, and the console — which treats ANY "error" frame as the
+// end of the turn — closed the socket and killed a 30-minute in-instance diagnosis,
+// leaving "[NotFound] confirmation not found or already resolved" as the answer.
+// Naming the card (#548) was necessary and not sufficient: a client that does not
+// know about the id cannot ignore an "error" frame, it can only fail the turn.
+func TestWS_Confirm_ExpiredCardRejectionIsScopedToTheCardAndReadable(t *testing.T) {
 	srv, _, _ := wsTestHandlers(t, chatLLM{}, denyConfirm)
 	conn := dialWS(t, srv, gatewayHeaders())
 	defer conn.Close(websocket.StatusNormalClosure, "")
@@ -365,9 +372,15 @@ func TestWS_Confirm_ExpiredCardRejectionNamesTheCard(t *testing.T) {
 		[]byte(`{"Action":"ConfirmCSAgentAction","SessionId":"sess-1","ConfirmationId":"already-gone","Confirmed":true}`)))
 
 	frame := readOneFrame(t, ctx, conn)
-	assert.Equal(t, "error", frame["event"])
+	assert.Equal(t, confirmationErrorEventName, frame["event"])
+	assert.NotEqual(t, "error", frame["event"],
+		"a card-scoped rejection must never arrive on the frame clients end the turn on")
 	assert.Equal(t, "NotFound", frame["Code"])
 	assert.Equal(t, "already-gone", frame["ConfirmationId"])
-	// The two fields a legacy client reads must be unchanged in name and meaning.
-	assert.NotEmpty(t, frame["Message"])
+
+	msg, _ := frame["Message"].(string)
+	assert.NotEmpty(t, msg)
+	assert.NotContains(t, msg, ErrConfirmationNotFound.Error(),
+		"the sentinel's English text is for logs, not for the person who clicked")
+	assert.Contains(t, msg, "没有生效", "the reader has to be told their click did nothing")
 }
