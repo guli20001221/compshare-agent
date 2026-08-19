@@ -416,6 +416,8 @@ func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
 				"Region":                 "cn-bj2",
 				"GpuType":                "4090",
 				"GPU":                    float64(1),
+				"CPU":                    float64(16),
+				"Memory":                 float64(65536),
 				"ChargeType":             "Dynamic",
 				"SupportWithoutGpuStart": true,
 				"WithoutGpuSpec": map[string]any{
@@ -440,10 +442,59 @@ func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
 		"WithoutGpuSpec": "B",
 	})
 
-	assert.Contains(t, capturedArgs, "mode", "Confirm summary must show mode when WithoutGpuSpec is set")
-	assert.Equal(t, "B", capturedArgs["without_gpu_spec"])
-	assert.Equal(t, float64(8), capturedArgs["without_gpu_cpu"])
-	assert.Equal(t, float64(16384), capturedArgs["without_gpu_memory"])
+	// The card must state the change as a change. The previous shape put the
+	// replacement in four unlabelled without_gpu_* keys while leaving the
+	// instance's CURRENT GpuType/GPU rows on the card, so the console's most
+	// prominent line read "GPU 4090 × 1" on the card that removed the 4090.
+	change, ok := capturedArgs["规格变更"].(string)
+	require.True(t, ok, "confirm summary must carry the spec change: %v", capturedArgs)
+	assert.Contains(t, change, "4090 × 1")
+	assert.Contains(t, change, "16核")
+	assert.Contains(t, change, "64GB")
+	assert.Contains(t, change, "0 GPU")
+	assert.Contains(t, change, "8核")
+	assert.Contains(t, change, "16GB")
+	assert.Contains(t, capturedArgs, "注意")
+	assert.NotContains(t, capturedArgs, "GpuType",
+		"the current GPU must not stay on a card that takes it away")
+	assert.NotContains(t, capturedArgs, "GPU")
+}
+
+// A plain start is untouched by the no-GPU card work: it still shows the
+// instance's own GPU rows and carries neither of the no-GPU strings.
+func TestStartInstance_NormalStartConfirmIsUnchanged(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{
+		"UHostSet": []any{
+			map[string]any{
+				"UHostId":    "uhost-yyy",
+				"Name":       "start-me",
+				"State":      "Stopped",
+				"Zone":       "cn-bj2-04",
+				"Region":     "cn-bj2",
+				"GpuType":    "3090",
+				"GPU":        float64(1),
+				"CPU":        float64(16),
+				"Memory":     float64(65536),
+				"ChargeType": "Dynamic",
+			},
+		},
+	}
+	var capturedArgs map[string]any
+	confirmFn := func(_ string, args map[string]any) bool {
+		capturedArgs = args
+		return false
+	}
+	onStep, _ := collectEvents()
+
+	_, _ = NewEngine(executor, confirmFn, onStep).Run(context.Background(), StartInstanceDef(), map[string]any{
+		"UHostId": "uhost-yyy",
+	})
+
+	assert.Equal(t, "3090", capturedArgs["GpuType"])
+	assert.Equal(t, float64(1), capturedArgs["GPU"])
+	assert.NotContains(t, capturedArgs, "规格变更")
+	assert.NotContains(t, capturedArgs, "注意")
 }
 
 func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T) {

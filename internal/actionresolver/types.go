@@ -74,6 +74,12 @@ type FieldSpec struct {
 	Enum       []string
 	Target     bool
 	TargetKind string
+	// RequiresUserRequest marks a field the Agent may not fill on its own
+	// initiative: its value changes what the operation IS, so only the user's own
+	// current words may put it there. Declared per workflow via
+	// workflow.Definition.UserRequestedOnlyFields — never derived from the schema,
+	// which cannot tell "optional" from "safe to infer".
+	RequiresUserRequest bool
 }
 
 // IntakeMode declares how an operation handles a proposal that is well-formed but
@@ -158,6 +164,13 @@ const (
 	// RejectOperationContract: the whole resolved argument set failed the
 	// operation's ValidateResolved contract.
 	RejectOperationContract
+	// RejectRequiresUserRequest: a UserRequestedOnlyFields field carried a value
+	// the user did not ask for this turn. Never correctable by a form — the fix is
+	// for the Agent to drop the field and run the operation the user named, or to
+	// ask. Kept distinct from RejectUnverifiedSource because the two say opposite
+	// things about the Agent: unverified means it claimed the user said something
+	// and the span did not check out; this one means it never claimed that at all.
+	RejectRequiresUserRequest
 )
 
 // String renders the typed rejection kind as a stable, value-free code for the
@@ -179,6 +192,8 @@ func (k RejectionKind) String() string {
 		return "target_not_exist"
 	case RejectOperationContract:
 		return "operation_contract"
+	case RejectRequiresUserRequest:
+		return "requires_user_request"
 	default:
 		return "unknown"
 	}

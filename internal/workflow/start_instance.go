@@ -13,6 +13,16 @@ const (
 	// older separate resize-then-start pattern (a raw WithoutGpu boolean sent
 	// to ResizeCompShareInstance) is rejected outright by upstream now
 	// (RejectDeprecatedResizeWithoutGpu) — do not reintroduce it.
+	//
+	// "Resizes internally before starting" is the whole hazard, so spell it out:
+	// upstream commits the resize as its own step (saving the original spec to
+	// the instance's SrcInstanceConfig label) and only then boots. The resize is
+	// NOT rolled back when the boot fails, and it is not a mode the instance
+	// leaves by being stopped — the instance's configured spec is now 0 GPU, and
+	// getting the original back needs the target zone to have that GPU available
+	// again. A parameter that reads like a boot flag is therefore an irreversible
+	// spec change wearing a boot flag's name; see UserRequestedOnlyFields below
+	// for the gate that keeps the Agent from reaching for it uninvited.
 	withoutGPUSpecA = "A"
 	withoutGPUSpecB = "B"
 )
@@ -29,6 +39,10 @@ func StartInstanceDef() *Definition {
 			stepConfirmStart(),
 			stepStartInstance(),
 		},
+		// A no-GPU start is a different operation from a start, not a variant of
+		// one: it resizes the instance to 0 GPU first (see the const block above).
+		// Only the user may ask for it.
+		UserRequestedOnlyFields: []string{"WithoutGpuSpec"},
 	}
 }
 
@@ -73,17 +87,27 @@ func stepConfirmStart() Step {
 		Name: "确认开机",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if _, _, err := extractRequiredInstanceLocation(wfCtx.Result("查询实例"), nil); err != nil {
+			queried := wfCtx.Result("查询实例")
+			if _, _, err := extractRequiredInstanceLocation(queried, nil); err != nil {
 				return nil, err
 			}
-			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
+			summary := extractInstanceSummary(queried)
 			if spec := requestedWithoutGPUSpec(wfCtx); spec != "" {
+				// extractInstanceSummary describes the instance as it is NOW, and the
+				// console gives GpuType/GPU a labelled row of their own. On a no-GPU
+				// start that row describes the spec this card is about to take away,
+				// while the four raw without_gpu_* keys that described the replacement
+				// had no label at all — so the card's loudest statement was
+				// "GPU 3090 × 1" on the very card that removed the 3090.
+				//
+				// Say the change as one before→after sentence the console cannot
+				// mislabel, and drop the current-spec rows it contradicts.
 				cpu, memory, _ := withoutGPUSpecResources(spec)
-				summary["mode"] = "无卡模式（不分配 GPU，仅用于数据访问/维护）"
-				summary["without_gpu_spec"] = spec
-				summary["without_gpu_cpu"] = cpu
-				summary["without_gpu_memory"] = memory
-				summary["without_gpu_gpu"] = float64(0)
+				summary["规格变更"] = fmt.Sprintf("%s → 无卡（0 GPU / %.0f核 / %.0fGB）",
+					currentSpecLabel(queried), cpu, memory/1024)
+				summary["注意"] = "这不是普通开机：实例会先被改配为无卡规格再启动，原规格需要该可用区有可用 GPU 时才能恢复。"
+				delete(summary, "GpuType")
+				delete(summary, "GPU")
 			}
 			return summary, nil
 		},
@@ -112,6 +136,39 @@ func stepStartInstance() Step {
 			return args, nil
 		},
 	}
+}
+
+// currentSpecLabel renders the spec the instance has right now, for the left side
+// of the card's before→after line. It reports only what the Describe response
+// actually carried: a field the response omitted is left out rather than printed
+// as zero, because "0 GPU" on the BEFORE side of a card that removes the GPU would
+// be a lie in the one direction that matters.
+func currentSpecLabel(result map[string]any) string {
+	host := firstUHost(result)
+	if host == nil {
+		return "当前规格"
+	}
+	parts := make([]string, 0, 3)
+	gpuType, _ := host["GpuType"].(string)
+	gpu := firstNumberField(host, "GPU", "Gpu")
+	switch {
+	case gpuType != "" && gpu > 0:
+		parts = append(parts, fmt.Sprintf("%s × %.0f", gpuType, gpu))
+	case gpuType != "":
+		parts = append(parts, gpuType)
+	case gpu > 0:
+		parts = append(parts, fmt.Sprintf("%.0f 卡", gpu))
+	}
+	if cpu := firstNumberField(host, "CPU", "Cpu"); cpu > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f核", cpu))
+	}
+	if memory := firstNumberField(host, "Memory", "Mem"); memory > 0 {
+		parts = append(parts, fmt.Sprintf("%.0fGB", memory/1024))
+	}
+	if len(parts) == 0 {
+		return "当前规格"
+	}
+	return strings.Join(parts, " / ")
 }
 
 func requestedWithoutGPUSpec(wfCtx *Context) string {

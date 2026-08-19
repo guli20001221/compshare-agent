@@ -276,6 +276,29 @@ type Definition struct {
 	// each name is a real field of this workflow and is optional, non-target and
 	// non-secret.
 	DiscardableOnRejectFields []string
+	// UserRequestedOnlyFields are optional fields whose value CHANGES WHAT THE
+	// OPERATION IS, not merely how it is parameterized — so the Agent may not
+	// supply one on its own initiative. The resolver rejects such a field unless
+	// its provenance is the user's own current words.
+	//
+	// It exists because "optional" and "safe to infer" are different properties
+	// and the schema only expresses the first. StartInstanceWorkflow's
+	// WithoutGpuSpec is the case that made this real: it reads as a boot-mode
+	// flag, but upstream applies it as a RESIZE to 0 GPU before starting, and
+	// undoing that resize needs the very GPU stock whose absence tempts the Agent
+	// to reach for it. On 2026-08-18 an Agent that had just told a user their
+	// 3090 could not be scheduled answered their bare 「要」 with
+	// WithoutGpuSpec:"A" — a start the user asked for, an instance spec they did
+	// not.
+	//
+	// EXPLICIT, never derived. "Optional non-target non-secret" describes most of
+	// the schema; what this list names is the much smaller set where the Agent
+	// filling in a sensible-looking value substitutes a different operation for
+	// the one that was requested. BuildCatalog enforces that each name is a real
+	// field of this workflow and is optional, non-target and non-secret — a
+	// required field could never be satisfied and a target has its own, stronger
+	// adjudicator.
+	UserRequestedOnlyFields []string
 }
 
 // FailureReason classifies a failure for callers that must DO something different

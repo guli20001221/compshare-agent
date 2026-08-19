@@ -14,6 +14,7 @@ import (
 const (
 	proposalChargeTypeUserQuoteField  = "charge_type_user_quote"
 	proposalImageSourceUserQuoteField = "image_source_user_quote"
+	proposalWithoutGpuUserQuoteField  = "without_gpu_user_quote"
 )
 
 // centralAgentToolWindow is the grouped P6 capability surface. It intentionally
@@ -132,6 +133,7 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 	hasSensitiveField := false
 	hasChargeTypePhraseField := false
 	hasImageSourcePhraseField := false
+	hasWithoutGpuPhraseField := false
 	for name, field := range spec.Fields {
 		if field.Codec == actionresolver.CodecSensitiveText {
 			delete(properties, name)
@@ -145,6 +147,21 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 				description, _ := property["description"].(string)
 				property["description"] = strings.TrimSpace(description +
 					" 若该标准值是根据用户原话做的语义归一化而非逐字复制，同时在 charge_type_user_quote 中填写用户原话片段；用户明确选择按量/Postpay 时也必须填写，不能因为它是默认值而省略。")
+			}
+		}
+		// The quote field is driven off RequiresUserRequest rather than off the
+		// field name, so a workflow that later declares another such field gets the
+		// evidence channel with it. Without one the field is unfillable: the gate
+		// accepts nothing but a verified current-message span.
+		if field.RequiresUserRequest && field.Codec == actionresolver.CodecEnum &&
+			name == "WithoutGpuSpec" {
+			hasWithoutGpuPhraseField = true
+			property, ok := properties[name].(map[string]any)
+			if ok {
+				description, _ := property["description"].(string)
+				property["description"] = strings.TrimSpace(description +
+					" 只有用户在当前消息里明确要求无卡时才填写本字段，并同时在 without_gpu_user_quote 里逐字填写用户的那句原话；" +
+					"带卡资源不足、开机失败或你判断无卡更容易成功，都不是填写它的理由——那种情况直接如实告诉用户，不要改用无卡。")
 			}
 		}
 		if name == "ImageSource" && field.Codec == actionresolver.CodecEnum {
@@ -169,9 +186,22 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 			"description": "镜像来源原话证据。仅当用户在当前消息中明确肯定选择平台、社区、自制或共享镜像时，填写对应的连续原文片段；否定、比较、询问、历史推荐或仅提到某来源都不是当前选择，此时填写空字符串。",
 		}
 	}
+	if hasWithoutGpuPhraseField {
+		properties[proposalWithoutGpuUserQuoteField] = map[string]any{
+			"type": "string",
+			"description": "无卡开机原话证据。仅当用户在当前消息中明确要求无卡/不带卡开机时，" +
+				"填写对应的连续原文片段；用户只说“开机/启动/开起来”，或你是为了绕开库存不足才想用无卡，一律填写空字符串。",
+		}
+	}
 	// A proposal may be intentionally incomplete: Resolver returns the exact
 	// missing fields and the Agent then asks only for those. Requiring workflow
 	// fields in the model schema makes the model ask in prose before it can call.
+	//
+	// without_gpu_user_quote is deliberately NOT added to required, unlike the two
+	// create quotes: a start normally carries no WithoutGpuSpec at all, so making
+	// every start declare an empty quote would spend a field on every call to
+	// describe the absence of a rare one. The gate does not depend on it being
+	// required — a missing quote is a missing user request, which is a rejection.
 	required := []string{}
 	if hasChargeTypePhraseField {
 		required = append(required, proposalChargeTypeUserQuoteField)
@@ -199,9 +229,11 @@ func proposalArgsForOperation(operation string, direct map[string]any) map[strin
 	}
 	chargeTypeQuote, _ := direct[proposalChargeTypeUserQuoteField].(string)
 	imageSourceQuote, _ := direct[proposalImageSourceUserQuoteField].(string)
+	withoutGpuQuote, _ := direct[proposalWithoutGpuUserQuoteField].(string)
 	names := make([]string, 0, len(direct))
 	for name := range direct {
-		if name == proposalChargeTypeUserQuoteField || name == proposalImageSourceUserQuoteField {
+		if name == proposalChargeTypeUserQuoteField || name == proposalImageSourceUserQuoteField ||
+			name == proposalWithoutGpuUserQuoteField {
 			continue
 		}
 		names = append(names, name)
@@ -217,6 +249,11 @@ func proposalArgsForOperation(operation string, direct map[string]any) map[strin
 		}
 		if name == "ImageSource" {
 			if quote := strings.TrimSpace(imageSourceQuote); quote != "" {
+				slot["evidence"] = map[string]any{"quote": quote}
+			}
+		}
+		if name == "WithoutGpuSpec" {
+			if quote := strings.TrimSpace(withoutGpuQuote); quote != "" {
 				slot["evidence"] = map[string]any{"quote": quote}
 			}
 		}

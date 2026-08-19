@@ -30,6 +30,9 @@ func BuildCatalog() (*Catalog, error) {
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
+		if err := markUserRequestedOnly(fields, definition.UserRequestedOnlyFields); err != nil {
+			return nil, fmt.Errorf("workflow %q: %w", operation, err)
+		}
 		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, definition.DiscardableOnRejectFields, fields)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
@@ -89,6 +92,30 @@ func fieldsFromParameters(raw any, sensitive []string) (map[string]FieldSpec, er
 		fields[name] = field
 	}
 	return fields, nil
+}
+
+// markUserRequestedOnly applies workflow.Definition.UserRequestedOnlyFields to the
+// field specs. The guards mirror intakeSpecForOperation's: a name that is not a
+// real field of the operation is a typo that would silently gate nothing, and the
+// gate is meaningless on a required field (which could then never be satisfied),
+// on a target (whose adjudicator is already stricter) or on a secret (which the
+// proposal schema does not even carry).
+func markUserRequestedOnly(fields map[string]FieldSpec, names []string) error {
+	for _, name := range names {
+		field, ok := fields[name]
+		if !ok {
+			return fmt.Errorf("UserRequestedOnlyFields names unknown field %q", name)
+		}
+		if field.Required {
+			return fmt.Errorf("UserRequestedOnlyFields names required field %q (it could never be satisfied)", name)
+		}
+		if field.Target || field.Codec == CodecSensitiveText {
+			return fmt.Errorf("UserRequestedOnlyFields names a field %q that is already adjudicated elsewhere (target or secret)", name)
+		}
+		field.RequiresUserRequest = true
+		fields[name] = field
+	}
+	return nil
 }
 
 func codecFromSchema(name string, schema map[string]any, sensitive bool) SlotCodecKind {

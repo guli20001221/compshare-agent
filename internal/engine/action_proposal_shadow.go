@@ -169,6 +169,13 @@ func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolve
 	return evidenceSpanForCodec(question, evidence.Start, evidence.End, codec)
 }
 
+// requiresPositiveQuote names the enum fields whose provenance may come ONLY from
+// the Agent pointing at a positive current-message quote — never from the canonical
+// wire value happening to appear in the sentence.
+func requiresPositiveQuote(name string) bool {
+	return name == "ImageSource" || name == "WithoutGpuSpec"
+}
+
 func normalizedEnumValueFromPhrase(name, phrase string) (string, bool) {
 	switch name {
 	case "ChargeType":
@@ -184,12 +191,33 @@ func normalizedEnumValueFromPhrase(name, phrase string) (string, bool) {
 		case "sharing", "shared", "共享", "共享镜像":
 			return "sharing", true
 		}
+	case "WithoutGpuSpec":
+		// The consent this gate is about is 无卡 vs 带卡, not which of the two
+		// no-GPU tiers. A user asks for "无卡开机"; they never type "A" or "B",
+		// and which tier is legal is a platform constraint (pods take A only,
+		// validateWithoutGPUStart enforces it) rather than something they chose.
+		// So every 无卡 phrasing AND both wire values normalize to one token: a
+		// verified 无卡 quote authorizes a no-GPU start, and nothing else does.
+		switch strings.TrimSpace(phrase) {
+		// The wire values, so the two sides of the comparison meet — plus the
+		// canonical token itself, because normalizedEnumValuesEqual canonicalizes
+		// BOTH sides and therefore feeds this function its own output. Unlike
+		// ImageSource, whose canonical values ("community") are also phrases a user
+		// writes, this field's canonical token is one this function invented.
+		case "A", "B", "without_gpu":
+			return "without_gpu", true
+		}
+		switch strings.ToLower(strings.TrimSpace(phrase)) {
+		case "无卡", "无卡模式", "无卡开机", "无卡启动", "无卡运行",
+			"不带卡", "不挂卡", "不挂载gpu", "不要gpu", "不用gpu":
+			return "without_gpu", true
+		}
 	}
 	return "", false
 }
 
 func normalizedEnumValuesEqual(name, left, right string) bool {
-	if name == "ImageSource" {
+	if name == "ImageSource" || name == "WithoutGpuSpec" {
 		leftCanonical, leftOK := normalizedEnumValueFromPhrase(name, left)
 		rightCanonical, rightOK := normalizedEnumValueFromPhrase(name, right)
 		return leftOK && rightOK && leftCanonical == rightCanonical
@@ -574,7 +602,12 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 		// canonical wire value itself appears in the sentence. Otherwise a negated
 		// or comparative mention such as "不要 community" would bypass the model's
 		// required positive-selection quote and be promoted automatically.
-		if candidate.Name != "ImageSource" && isString && strings.TrimSpace(value) != "" {
+		//
+		// WithoutGpuSpec is excluded for a sharper version of the same reason: its
+		// wire values are the bare letters "A" and "B", which occur in ordinary
+		// sentences ("A 那台开机", "选 B 方案") having nothing to do with no-GPU mode.
+		// A literal match on a single letter is not evidence of anything.
+		if !requiresPositiveQuote(candidate.Name) && isString && strings.TrimSpace(value) != "" {
 			if start, end, ok := uniqueQuoteForCodec([]rune(view.CurrentQuestion), []rune(value), field.Codec); ok {
 				candidate.Source = actionresolver.SourceUserExplicit
 				candidate.Evidence = &actionresolver.SourceEvidence{
