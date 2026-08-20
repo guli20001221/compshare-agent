@@ -14,13 +14,16 @@ const (
 	// resulting marker and adds the configured console link.
 	FeatureFeishuConsoleHandoff = "feishu_console_handoff_v1"
 
-	// FeishuConsoleHandoffMarker is an adapter-private completion marker. It is
-	// stripped before a reply reaches Feishu, so users never see protocol text.
-	FeishuConsoleHandoffMarker = "[[COMPSHARE_CONSOLE_DIAGNOSIS_REQUIRED]]"
+	// FeishuConsoleHandoffMarker is an adapter-private completion marker. The
+	// angle-bracket envelope is deliberately disjoint from the Agent's
+	// [[chunk_id]] citation syntax: handoff control must survive knowledge-answer
+	// citation cleanup before the Feishu adapter consumes it.
+	FeishuConsoleHandoffMarker = "<<COMPSHARE_CONSOLE_DIAGNOSIS_REQUIRED>>"
 
 	// FeishuCustomerSupportMarker is an adapter-private completion marker for
 	// account, verification, page-loading, and platform-service issues. It is
 	// rendered as a concise customer-support recommendation by the Feishu
-	// adapter, never shown verbatim to a user.
-	FeishuCustomerSupportMarker = "[[COMPSHARE_CUSTOMER_SUPPORT_REQUIRED]]"
+	// adapter, never shown verbatim to a user. It uses the same reserved control
+	// envelope as the console marker, outside the citation namespace.
+	FeishuCustomerSupportMarker = "<<COMPSHARE_CUSTOMER_SUPPORT_REQUIRED>>"
 )

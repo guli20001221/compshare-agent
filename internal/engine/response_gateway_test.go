@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
@@ -52,6 +53,25 @@ func TestResourceInfoDoesNotStapleTheWholeListOntoATargetedAnswer(t *testing.T) 
 func TestResponseGatewayDoesNotOverrideConversationOnlyAnswer(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	require.Equal(t, "结合上一轮的回答继续即可。", eng.finalizeResponse(context.Background(), "那继续呢", "结合上一轮的回答继续即可。"))
+}
+
+func TestResponseGatewayDoesNotMistakeFeishuHandoffForKnowledgeCitation(t *testing.T) {
+	for name, marker := range map[string]string{
+		"console diagnosis": agentprotocol.FeishuConsoleHandoffMarker,
+		"customer support":  agentprotocol.FeishuCustomerSupportMarker,
+	} {
+		t.Run(name, func(t *testing.T) {
+			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+			eng.searchKnowledgeRanThisTurn = true
+			eng.knowledgeQAAgentLoopThisTurn = true
+
+			reply := eng.finalizeResponse(context.Background(), "谁能帮忙处理？", marker)
+
+			require.Equal(t, marker, reply,
+				"an adapter control marker is a legal completion, not an unknown [[chunk_id]]")
+			require.NotEqual(t, emptyReplyFallbackMessage, reply)
+		})
+	}
 }
 
 func TestResponseGatewayNeverShipsToolProtocolMarkup(t *testing.T) {
