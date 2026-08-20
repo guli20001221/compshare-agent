@@ -466,7 +466,7 @@ func (c *Context) ImageCatalog() *deployment.ImageCatalogSnapshot {
 func (c *Context) ImageSelection() ImageSelectionState { return c.referenceData.ImageSelection }
 
 // ImageSourceUserPinned reports whether the current user turn explicitly selected
-// the platform/community source rather than receiving an Agent/default value.
+// an image source rather than receiving an Agent/default value.
 func (c *Context) ImageSourceUserPinned() bool { return c.referenceData.ImageSourceUserPinned }
 
 // ImageIntentText returns the exact current-turn text used only for catalog-backed

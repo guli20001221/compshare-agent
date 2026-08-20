@@ -423,7 +423,7 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.True(t, form.Step.Skippable)
 			source := fieldByKey(t, form, "ImageSource")
 			assert.Equal(t, "platform", source.Value)
-			assert.Equal(t, []string{"platform", "community"}, optionValues(source))
+			assert.Equal(t, []string{"platform", "community", "custom"}, optionValues(source))
 			assert.Nil(t, form.Field("ImagePurpose"))
 			assert.Nil(t, form.Field("ImageType"), "source step is source-only; type/tag is the next step")
 			return ConfirmResolution{Confirmed: true}
@@ -1041,7 +1041,7 @@ func TestGuidedImageFormOptionsFiltersToRequestedImageIntent(t *testing.T) {
 
 func TestGuidedImageSourceAndFacetsFormsAppearWhenNoImageIntent(t *testing.T) {
 	// With no explicit image SELECTION the two-stage image flow shows two forms: first a
-	// source-only form (always the two sources create supports), then a facets form with
+	// source-only form (every source create supports), then a facets form with
 	// ImageType / ImageTag built from the REAL types and tags in the chosen source's
 	// candidate catalog — never the deleted ImagePurpose keyword enum, and never the
 	// source (that is the separate prior step).
@@ -1055,7 +1055,7 @@ func TestGuidedImageSourceAndFacetsFormsAppearWhenNoImageIntent(t *testing.T) {
 	require.NoError(t, err)
 	source := fieldByKey(t, sourceForm, "ImageSource")
 	assert.Equal(t, "platform", source.Value)
-	assert.Equal(t, []string{"platform", "community"}, optionValues(source))
+	assert.Equal(t, []string{"platform", "community", "custom"}, optionValues(source))
 	assert.Nil(t, sourceForm.Field("ImageType"), "the source step is source-only")
 
 	facetsForm, err := buildGuidedImageFacetsForm(wfCtx)
@@ -1298,8 +1298,11 @@ func TestSourceReQueryFiresOnBothDirectionSwitches(t *testing.T) {
 	}{
 		{"platform→community re-queries", "platform", "community", false},
 		{"community→platform re-queries", "community", "platform", false},
+		{"platform→custom re-queries", "platform", "custom", false},
+		{"custom→platform re-queries", "custom", "platform", false},
 		{"platform unchanged skips", "platform", "platform", true},
 		{"community unchanged skips", "community", "community", true},
+		{"custom unchanged skips", "custom", "custom", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

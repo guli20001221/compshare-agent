@@ -343,7 +343,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareCustomImages",
-			Description: "查询用户自制镜像列表（仅查询，不进入创建主链路）。返回用户自己制作的镜像，包含 CompShareImageId、Name、Status 等字段。",
+			Description: "查询当前账户的自制镜像列表。返回用户自己制作的镜像，包含 CompShareImageId、Name、Status、Container、SupportedGpuTypes 等字段；创建实例时应由 CreateInstanceWorkflow 按 custom 来源实时核验并确认。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -512,7 +512,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建算力实例的候选请求。用于用户明确要求实际创建实例；支持平台镜像和社区镜像，配置不完整时可进入引导卡继续选择。价格、库存或创建方法查询不使用。",
+			Description: "创建算力实例的候选请求。用于用户明确要求实际创建实例；支持平台镜像、社区镜像和当前账户的自制镜像，配置不完整时可进入引导卡继续选择。价格、库存或创建方法查询不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -547,8 +547,8 @@ var Registry = []openai.Tool{
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",
-						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）。填写 CompShareImageId 时同时填写该 ID 实际所属的来源；若 ID 来自近期已提供的对话历史中的镜像推荐，原样沿用当时展示的来源。",
-						"enum":        []string{"platform", "community"},
+						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）/ custom（当前账户的自制镜像）。填写 CompShareImageId 时同时填写该 ID 实际所属的来源；若 ID 来自近期已提供的对话历史中的镜像推荐，原样沿用当时展示的来源。",
+						"enum":        []string{"platform", "community", "custom"},
 					},
 					"ImageName": map[string]any{
 						"type":        "string",

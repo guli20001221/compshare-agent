@@ -380,9 +380,9 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	}, targetEvidence: targetEvidence}, nil
 }
 
-// imageSourceUserPinned reports whether platform/community came from the user's
-// own words. A model/default source is only a search starting point: a named image
-// can exist in both live catalogs and must not become source consent by key
+// imageSourceUserPinned reports whether the image source came from the user's own
+// words. A model/default source is only a search starting point: a named image can
+// exist in more than one live catalog and must not become source consent by key
 // presence alone.
 func imageSourceUserPinned(provenance map[string]actionresolver.ResolvedSlot) bool {
 	slot, ok := provenance["ImageSource"]

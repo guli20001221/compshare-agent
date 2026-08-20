@@ -35,6 +35,34 @@ func TestFetchAllUsesOffsetAndMergesEveryPage(t *testing.T) {
 	assert.Equal(t, []int{0, 100, 200}, offsets)
 }
 
+func TestFetchAllDoesNotTrustAPageLocalTotalCountAtAFullPageBoundary(t *testing.T) {
+	var offsets []int
+	query := func(_ context.Context, _ string, args map[string]any) (map[string]any, error) {
+		offset := args["Offset"].(int)
+		offsets = append(offsets, offset)
+		remaining := 101 - offset
+		if remaining < 0 {
+			remaining = 0
+		}
+		n := DefaultPageSize
+		if remaining < n {
+			n = remaining
+		}
+		rows := make([]any, n)
+		for i := range rows {
+			rows[i] = map[string]any{"CompShareImageId": fmt.Sprintf("img-%d", offset+i)}
+		}
+		// DescribeCompShareCustomImages currently reports the size of the page
+		// after its resource filter, not the total matching collection.
+		return map[string]any{"TotalCount": float64(n), "ImageSet": rows}, nil
+	}
+
+	got, err := FetchAll(context.Background(), query, "DescribeCompShareCustomImages", "ImageSet", nil)
+	require.NoError(t, err)
+	require.Len(t, got["ImageSet"], 101)
+	assert.Equal(t, []int{0, 100}, offsets)
+}
+
 func TestFetchAllFailsWhenUpstreamIgnoresOffset(t *testing.T) {
 	page := make([]any, DefaultPageSize)
 	for i := range page {
