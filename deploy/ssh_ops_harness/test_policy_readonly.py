@@ -47,12 +47,15 @@ STILL_REFUSED = [
     ("rm -rf /", "destructive"),
     ("reboot", "destructive"),
     ("mkfs.ext4 /dev/sda", "destructive"),
-    ("chmod 777 /etc", "destructive"),
+    ("chmod 777 /etc", "mutating"),                 # reversible, but still requires an exact card
     ("find / -name x -exec rm {} +", "destructive"),
     ("ls /a; rm -rf /b", "destructive"),              # destructive wins anywhere in a chain
     ("pip install torch", "mutating"),
     ("apt-get install -y vim", "mutating"),
     ("systemctl restart vllm", "mutating"),
+    ("systemctl disable vllm", "mutating"),
+    ("chattr +i /workspace/model.bin", "mutating"),
+    ("install -m 440 /tmp/x /etc/sudoers.d/90-x", "mutating"),
     ("supervisorctl stop comfyui", "mutating"),
     ("kill -9 1234", "mutating"),
     ("echo hi > /tmp/x", "mutating"),
@@ -95,10 +98,10 @@ STILL_REFUSED = [
     # --- holes found by running the old locked corpus against the new policy ---
     ("nvidia-smi | sh", "mutating"),                 # untrusted box output piped into a shell
     ("cat /etc/passwd | bash", "mutating"),
-    # Re-baselined 2026-08-16 (F15): a venv python is not in one of the four system program
-    # directories, so it asks first. A CARD, not a refusal — the probe still runs once the
-    # user clicks, and a RELATIVE path (`./deploy.sh`, asserted below) stays refused outright.
-    ("/root/badenv/bin/python -c 'import torch'", "mutating"),
+    # Re-baselined 2026-08-20: a path-qualified Python probe uses the same structural read proof
+    # as bare Python. Relative executables and unsafe payloads remain mutating.
+    ("/root/badenv/bin/python -c 'import torch'", "read_only"),
+    ("/tmp/python -c 'import torch; print(torch.cuda.is_available())'", "read_only"),
     ("python3 -c 'print(1)'", "read_only"),
     ("python3 -c 'open(chr(47),chr(119))'", "mutating"),          # write mode, computed: unprovable
     ("python", "mutating"),                          # bare REPL never returns

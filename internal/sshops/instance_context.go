@@ -2,9 +2,12 @@ package sshops
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/opscontext"
@@ -38,6 +41,7 @@ const (
 	maxInstanceContextMonitorFact  = 16
 	maxInstanceContextSoftware     = 12
 	maxInstanceContextCatalogPorts = 16
+	maxInstanceEndpointTargets     = 16
 )
 
 // enrichInstanceOpsContext adds a deliberately small allowlist projection of
@@ -50,6 +54,10 @@ const (
 // explicit unknown fact and cannot prevent a consented SSH diagnosis from
 // starting.
 func enrichInstanceOpsContext(ctx context.Context, d Describer, base opscontext.Context, inst map[string]any, instanceID string) opscontext.Context {
+	// Endpoint targets are a private capability payload rather than model context, so they remain
+	// useful on the legacy task-only path too. An older harness ignores the additive handshake key;
+	// a newer harness never renders the URL/host into the prompt.
+	base.EndpointTargets = instanceEndpointTargets(inst)
 	if !base.Enabled() {
 		return base
 	}
@@ -61,6 +69,68 @@ func enrichInstanceOpsContext(ctx context.Context, d Describer, base opscontext.
 	result.PlatformFacts = append(result.PlatformFacts, catalogFacts(ctx, d, software, observedAt)...)
 	result.Coverage = instanceContextCoverage(result.PlatformFacts)
 	return result
+}
+
+// instanceEndpointTargets derives the only destinations the endpoint probe is permitted to touch.
+// The model can never provide a URL or host, which keeps the tool from becoming an SSRF primitive.
+// HTTP targets come from the platform's per-instance Softwares[].URL; TCP targets come from the
+// instance's reported forward list and use the same advertised host as SshLoginCommand. Neither
+// source is copied into the model-visible Context JSON.
+func instanceEndpointTargets(inst map[string]any) []opscontext.EndpointTarget {
+	targets := make([]opscontext.EndpointTarget, 0, maxInstanceEndpointTargets)
+	for _, item := range instanceContextMapSlice(inst["Softwares"]) {
+		if len(targets) >= maxInstanceEndpointTargets {
+			break
+		}
+		rawURL, _ := item["URL"].(string)
+		rawURL = strings.TrimSpace(rawURL)
+		parsed, err := url.ParseRequestURI(rawURL)
+		if err != nil || parsed == nil || parsed.User != nil || parsed.Host == "" ||
+			(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+			continue
+		}
+		name := cleanEndpointLabel(allowlistedString(item, "Name"))
+		if name == "" {
+			name = "platform HTTP entry"
+		} else {
+			name += " platform entry"
+		}
+		targets = append(targets, opscontext.EndpointTarget{
+			ID: fmt.Sprintf("platform-http-%d", len(targets)+1), Kind: "http", Label: name,
+			Source: "DescribeCompShareInstance.Softwares.URL", URL: rawURL,
+		})
+	}
+
+	login, _ := inst["SshLoginCommand"].(string)
+	host, _, _, err := parseSSHLoginCommand(login)
+	if err != nil || host == "" {
+		return targets
+	}
+	for _, forward := range instanceContextMapSlice(inst["TcpForwards"]) {
+		if len(targets) >= maxInstanceEndpointTargets {
+			break
+		}
+		internal, internalOK := allowlistedInt(forward, "InternalPort")
+		external, externalOK := allowlistedInt(forward, "ExternalPort")
+		if !internalOK || !externalOK || !validInstanceContextPort(internal) || !validInstanceContextPort(external) {
+			continue
+		}
+		targets = append(targets, opscontext.EndpointTarget{
+			ID: fmt.Sprintf("platform-tcp-%d", len(targets)+1), Kind: "tcp",
+			Label:  fmt.Sprintf("reported TCP forward %d -> %d", internal, external),
+			Source: "DescribeCompShareInstance.TcpForwards", Host: host, Port: external,
+		})
+	}
+	return targets
+}
+
+func cleanEndpointLabel(value string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, truncateInstanceContextValue(value, 96)))
 }
 
 func instanceFacts(inst map[string]any, instanceID, observedAt string) []opscontext.Fact {

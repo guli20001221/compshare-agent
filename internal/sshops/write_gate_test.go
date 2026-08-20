@@ -28,10 +28,14 @@ import json, sys
 conn = json.loads(sys.stdin.readline())
 context = conn.get("context") or {}
 facts = context.get("platform_facts") or []
+targets = conn.get("endpoint_targets") or []
 print("@@OUTCOME " + json.dumps({"outcome": "", "err_class": "", "context_applied": True}))
 print("<<<VERDICT>>>")
 print("CONTEXT_SCHEMA=%r" % context.get("schema_version"))
 print("CONTEXT_FACTS=%r" % len(facts))
+print("CONTEXT_HAS_PRIVATE_TARGETS=%r" % ("endpoint_targets" in context,))
+print("ENDPOINT_TARGETS=%r" % len(targets))
+print("ENDPOINT_FIRST=%r" % ((targets[0].get("id") if targets else None),))
 print("<<<END>>>")
 `
 
@@ -50,6 +54,10 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 			Key: "platform.instance_port_hints", Value: map[string]any{"http": []int{8188}},
 			Source: "DescribeCompShareInstance", ObservedAt: "2026-08-13T00:00:00Z", Status: opscontext.StatusKnown,
 		}},
+		EndpointTargets: []opscontext.EndpointTarget{{
+			ID: "platform-http-1", Kind: "http", Label: "ComfyUI platform entry",
+			Source: "DescribeCompShareInstance.Softwares.URL", URL: "https://example.invalid/?token=private",
+		}},
 	}
 	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "task", modelContext, nil, nil)
 	require.NoError(t, err)
@@ -57,6 +65,10 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 	// what the producer set, and a hardcoded 1 here would have gone on passing after the v2 bump.
 	require.Contains(t, res.Output, fmt.Sprintf("CONTEXT_SCHEMA=%d", opscontext.SchemaVersion))
 	require.Contains(t, res.Output, "CONTEXT_FACTS=1")
+	require.Contains(t, res.Output, "CONTEXT_HAS_PRIVATE_TARGETS=False")
+	require.Contains(t, res.Output, "ENDPOINT_TARGETS=1")
+	require.Contains(t, res.Output, "ENDPOINT_FIRST='platform-http-1'")
+	require.NotContains(t, res.Output, "private")
 	require.True(t, res.ContextApplied)
 }
 

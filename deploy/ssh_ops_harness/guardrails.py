@@ -11,6 +11,11 @@ Three tiers (mirror internal/tools/safe_executor.go semantics):
   - mutating   : requires explicit human confirm
   - destructive: hard-refused, even with confirm  (checked FIRST, unconditional)
 
+This is an operations gate for the tenant's own guest, not a general-purpose hostile-code sandbox.
+Prefer observable pre-state, exact approval and a recoverable change. Reserve the hard-refused tier
+for effects that lose data/recovery access, make the guest unbootable, or cross into another control
+plane; a high-impact but reversible guest change belongs behind a confirmation card.
+
 Two adversarial red-team rounds shaped this. Round 1 closed exfil/streaming/destructive holes.
 Round 2's lesson: the hardening must NOT destroy the lane's OWN diagnostics — SSH auth logs,
 checksums (sha256sum), git/docker IDs, and `KeyError:` tracebacks were being over-redacted, and
@@ -31,10 +36,12 @@ radius, and it is still open.
 
 Running a FILE is no longer part of that gap, and the rule for it is deliberately small: a
 program named by absolute path auto-runs as a read only from /bin, /sbin, /usr/bin and
-/usr/sbin. Everything else — /tmp/x, /root/payload, /opt/app/bin/run, /root/<venv>/bin/python —
-gets a confirmation card. Not a refusal: the agent can still run them and still complete a
-repair, it just asks first. Script extensions and relative paths (`./x`, `../x`) were always
-refused; `/tmp/x` was not, which was a distinction about spelling rather than effect.
+/usr/sbin. Everything else — /tmp/x, /root/payload, /opt/app/bin/run — gets a confirmation
+card. The one narrow exception is a path-qualified Python/Conda interpreter whose `-c` or
+`-m` payload passes the same structural read-only proof as bare `python`: the path spelling
+must not turn an already-proven CUDA/package inspection into a write. This proves the payload's
+expressed effect, not the executable's identity; `/tmp/python` and a Conda interpreter are treated
+the same. An unsafe payload, relative executable, script, or unknown absolute binary still asks first.
 
 This rule deliberately does NOT try to establish that a path is trustworthy. /root/x/bin/payload
 and /root/x/payload carry the same real risk; separating them needs a growing list of exceptions
@@ -51,6 +58,7 @@ import posixpath
 import re
 import shlex
 from typing import Iterable
+from urllib.parse import urlsplit
 
 # There is deliberately NO help/version fast-path. Do not add one back.
 #
@@ -93,9 +101,10 @@ _WRITE_LAST_ARG = r"(?:cp|install|ln)"
 # need in order to recover it. These are the deliberate CARVE-OUTS from the 2026-07-30 narrowing
 # further down: /etc as a whole moved to `mutating` because that is where a broken service's config
 # lives and refusing it refused the repair — but these specific paths are not service config. A bad
-# fstab line makes the box unbootable; passwd/shadow/group/sudoers/ssh each end the login path;
+# fstab line makes the box unbootable; passwd/shadow/group/the main sudoers file/ssh each end the
+# login path. A sudoers.d drop-in remains an exact, removable guest change behind confirmation;
 # /var/lib holds live database and container state, so a write there is data loss, not a config fix.
-_LOCKOUT_BODY = (r"/(?:etc/(?:fstab|crypttab|passwd|shadow|gshadow|group|sudoers(?:\.d)?|ssh"
+_LOCKOUT_BODY = (r"/(?:etc/(?:fstab|crypttab|passwd|shadow|gshadow|group|sudoers|ssh"
                  r"|default/grub)|var/lib)")
 _LOCKOUT_PATHS = _LOCKOUT_BODY + r"(?:/|\s|$)"
 # The same paths, but only where they are the LAST argument — i.e. the destination.
@@ -199,12 +208,11 @@ _DESTRUCTIVE_SRC = [
     # config, so nothing in the measured runs needed them and a bad write there is either
     # unbootable or unrecoverable. The first cut of this narrowing dropped /var/lib along with the
     # rest, which was loosening with no evidence behind it.
-    # perms / immutability / lockout
-    r"\bchmod\b.*\s-R\b", r"\bchown\b.*\s-R\b", r"\bchmod\b.*\b777\b",
-    r"\bchattr\b[^\n]*\s\+[iae]\b",
+    # Recursive ownership/mode rewrites discard old metadata for an unknown tree. A single chmod
+    # (including 777) or chattr change is reversible and therefore stays `mutating`.
+    r"\bchmod\b.*\s-R\b", r"\bchown\b.*\s-R\b",
     # firewall / services / management-channel lockout
     r"\biptables\b\s+-F", r"\bufw\b\s+disable",
-    r"\bsystemctl\b\s+(disable|mask)\b",
     # `restart`/`reload` on ssh join stop/kill as of 2026-07-30, and the reason is a measurement:
     # on a live box, SIGHUP to sshd with ONE bad directive in its config did not fail safe the way
     # nginx does — OpenSSH re-execs itself on HUP, the re-exec failed, and the daemon DIED (port
@@ -213,7 +221,7 @@ _DESTRUCTIVE_SRC = [
     # reload is fatal, so it must not be one consent-card click away.
     # `start` is deliberately NOT here: it is the recovery direction, it cannot lose a daemon that
     # is already down, and it stays approvable.
-    r"\bsystemctl\b\s+(stop|kill|restart|reload|try-restart|force-reload)\s+\S*(ssh|network)",
+    r"\bsystemctl\b[^\n]*\b(stop|kill|restart|reload|try-restart|force-reload|disable|mask)\b[^\n]*\b\S*(ssh|network)\S*\b",
     r"\bservice\b\s+\S*(ssh|network)\S*\s+(stop|restart|reload|force-reload)\b",
     # process kill of init / critical daemons
     r"\bkill\b\s+(-\w+\s+)*-?1(\s|$)",
@@ -222,8 +230,6 @@ _DESTRUCTIVE_SRC = [
     r"\bkubectl\b[^\n]*\bdelete\b",
     r"\bdocker\b[^\n]*\b(system\s+prune|volume\s+rm|rmi|image\s+prune|container\s+prune)\b",
     r"\bhelm\b[^\n]*\b(uninstall|delete)\b",
-    # availability
-    r"\bswapoff\b",
     # fork bomb / cron
     r":\s*\(\s*\)\s*\{", r"\bcrontab\b\s+-r",
     # credential-bearing commands: never run a command that inlines a secret
@@ -739,7 +745,7 @@ def _interval_ok(tokens) -> bool:
 _LOOPBACK_URL = re.compile(
     r"^https?://(?:127(?:\.\d{1,3}){3}|localhost|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:/[^\s]*)?$", re.I)
 _PROBE_VALUE_FLAGS = {"-m", "--max-time", "--connect-timeout", "--max-redirs", "-o", "--output",
-                      "--timeout", "--tries", "-t", "-w", "--write-out"}
+                      "-D", "--dump-header", "--timeout", "--tries", "-t", "-w", "--write-out"}
 _PROBE_BOOL_FLAGS = {"-s", "--silent", "-S", "--show-error", "-I", "--head", "-i", "--include",
                      "-L", "--location", "-f", "--fail", "-k", "--insecure", "-4", "-6",
                      "-q", "--quiet", "--spider", "-nv", "--no-verbose", "-O-", "--server-response"}
@@ -752,7 +758,7 @@ _PROBE_BOOL_SHORT = set("sSIiLfk46q")
 _PROBE_BANNED = re.compile(
     r"(?:^|\s)(?:-d|--data\S*|-F|--form\S*|-T|--upload-file|-X|--request|-u|--user|-H|--header|"
     r"-b|--cookie|-c|--cookie-jar|-K|--config|-e|--referer|-A|--user-agent|-O|--remote-name|"
-    r"-D|--dump-header|--output-document\S*|-P|--directory-prefix)(?:[=\s]|$)")
+    r"--output-document\S*|-P|--directory-prefix)(?:[=\s]|$)")
 
 
 def _http_probe_ok(tokens) -> bool:
@@ -774,6 +780,8 @@ def _http_probe_ok(tokens) -> bool:
             val = inline if inline else (tokens[i + 1] if i + 1 < len(tokens) else "")
             if base in ("-o", "--output") and val != "/dev/null":
                 return False                             # never write a real file
+            if base in ("-D", "--dump-header") and val != "-":
+                return False                             # response headers may go only to stdout
             if base in ("-w", "--write-out") and "%output{" in val.lower():
                 return False                             # curl >=7.87: %output{f} WRITES a file
             i += 1 if inline else 2
@@ -1058,6 +1066,7 @@ _EXEC_BINARIES = {
 # Interpreters are execution UNLESS the invocation only asks for a version/help banner
 # (`python --version` is a genuine, and heavily used, environment probe).
 _INTERPRETERS = {"python", "python2", "python3", "perl", "ruby", "node", "php", "lua", "Rscript"}
+_PYTHON_BINARY = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
 _VERSION_ONLY = re.compile(r"^(--version|-V|--help|version|help)$")
 # Executing a file on the box (a script, or anything invoked by relative path) is
 # execution regardless of what it is named — this is what keeps an unknown binary from
@@ -1073,7 +1082,10 @@ _SCRIPT_SHAPE = re.compile(r"\.(sh|bash|py|pl|rb|js|php|lua|ksh|zsh|run|bin|out)
 # confirmation card. Not a refusal — a card. The agent can still run /root/venv/bin/python,
 # /opt/app/bin/run and /usr/local/bin/whatever and still complete a repair; it just asks first.
 #
-# SYSTEM PROGRAMS AUTO-READ, USER/APPLICATION PATHS CONFIRM FIRST. That is the whole rule.
+# SYSTEM PROGRAMS AUTO-READ, USER/APPLICATION PATHS CONFIRM FIRST. The only exception is not
+# trust-by-directory: a path-qualified Python invocation may auto-run when its payload passes
+# `_is_readonly_py_invocation`, the same AST/module proof used for bare `python`. This closes a
+# measured diagnostic hole without turning `/tmp/x` or `/opt/app/bin/run` into silent execution.
 #
 # The version this replaced tried to establish that a path was TRUSTWORTHY — bin/sbin directory
 # shape, minus shared temp, with carve-outs coming for symlinks, venvs and toolchain dirs. That
@@ -1208,6 +1220,7 @@ _PY_SAFE_METHODS = {
     "lower", "upper", "title", "startswith", "endswith", "count", "find", "index",
     "replace", "zfill", "ljust", "rjust", "join", "format",
     "get", "keys", "values", "items", "isdigit", "isalpha", "group", "groups",
+    "getheader", "getheaders", "geturl", "getcode", "info",
 }
 # Attribute reads that look like dunders but are plain metadata. Anything else starting
 # with "__" is refused: __class__/__bases__/__subclasses__/__globals__/__builtins__ are
@@ -1290,6 +1303,37 @@ def _py_open_is_read(call) -> bool:
     return not any(ch in mode.value for ch in "wax+")
 
 
+def _py_urlopen_is_local_get(call) -> bool:
+    """Allow only urllib's loopback GET equivalent of the existing curl read probe.
+
+    The image may not ship curl (a live platform image did not), while Python is the
+    application's only dependable HTTP client. This remains a structural proof rather
+    than trusting Python generally: the URL must be a literal loopback HTTP(S) URL,
+    there is exactly one positional argument, and the only optional keyword is a
+    timeout. A Request object, data/body, external or computed URL, redirect policy,
+    TLS context, or any other shape stays behind the write confirmation gate.
+    """
+    if len(call.args) != 1:
+        return False
+    if any(kw.arg != "timeout" for kw in call.keywords):
+        return False
+    value = call.args[0]
+    if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+        return False
+    try:
+        parsed = urlsplit(value.value)
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme.lower() not in ("http", "https"):
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    if (parsed.hostname or "").lower() not in ("localhost", "127.0.0.1", "::1"):
+        return False
+    return port is None or 1 <= port <= 65535
+
+
 def _py_payload_is_readonly(payload: str) -> bool:
     """True when every construct in a `python -c` payload is provably read-only."""
     try:
@@ -1307,6 +1351,10 @@ def _py_payload_is_readonly(payload: str) -> bool:
             dotted = _py_dotted(node.func, aliases)
             if dotted == "open" and not _py_open_is_read(node):
                 return False
+            if dotted == "urllib.request.urlopen":
+                if not _py_urlopen_is_local_get(node):
+                    return False
+                continue
             # Reading a stream that never ends holds the channel until the hard
             # timeout. Checked before the by-name method fallback, which would
             # otherwise accept `sys.stdin.read()` on the strength of `read` alone.
@@ -1336,7 +1384,7 @@ def _is_readonly_py_invocation(binary: str, seg: str) -> bool:
     """True for `pythonX -c <provably read-only payload>` and `pythonX -m <read-only
     module>`. Any other interpreter, extra flags, or an unprovable payload returns False
     (so the caller refuses it). Fail closed on any parse error."""
-    if binary not in ("python", "python2", "python3"):
+    if not _PYTHON_BINARY.fullmatch(binary):
         return False
     try:
         argv = shlex.split(seg)
@@ -1472,8 +1520,20 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # running a file on the box: a script by name, or anything by relative path
     if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
         return True
-    # ...or by absolute path, unless it is one of the four system program directories. Anything
-    # else asks first; see _is_system_program_path. This judges the PATH, never the program's name.
+    # A path-qualified Python/Conda probe is judged by the SAME structural proof as bare Python.
+    # The platform images put their real application interpreter under /opt or /usr/local; making
+    # the spelling alone win before this proof forced a confirmation for torch.cuda.is_available()
+    # and made read-only runs infer CUDA health from files instead of measuring it. This exception
+    # is deliberately Python-only and payload-proven: /tmp/x and /opt/app/bin/run still card below,
+    # while os.system/open(..., 'w')/subprocess remain mutating through the AST gate. It does NOT
+    # attest the interpreter binary itself; accepting `/tmp/python` and `/opt/venv/bin/python`
+    # equally is the explicit capability tradeoff for diagnosis inside the customer's own guest.
+    if ("/" in raw0 and _PYTHON_BINARY.fullmatch(binary)
+            and _is_readonly_py_invocation(binary, seg)):
+        return False
+    # Any other non-system absolute program still asks first. Outside the Python exception above,
+    # this judges the PATH rather than a claimed basename: naming an arbitrary payload
+    # `/tmp/nvidia-smi` does not make it an unattended diagnostic.
     if "/" in raw0 and not _is_system_program_path(raw0):
         return True
     if binary in _WRAPPER_BINARIES:                       # the effect is the INNER command's
@@ -1489,7 +1549,11 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     kfb = _KILL_FLAG_BINARIES.get(binary)                 # reader whose KILL hides in a flag
     if kfb and kfb.search(seg):
         return True
-    if binary in _INTERPRETERS:
+    # Versioned Python names (`python3.12`) must enter the same structural gate. Keeping only the
+    # historical python/python2/python3 literals here would make a system-path python3.12 `-m`
+    # invocation skip both the non-system-path card above and the module proof below, then fall
+    # through as read_only.
+    if binary in _INTERPRETERS or _PYTHON_BINARY.fullmatch(binary):
         if len(tokens) == 1:
             return True                                   # bare `python` is a REPL — blocks forever
         if all(_VERSION_ONLY.match(t) for t in tokens[1:]):
@@ -1631,8 +1695,16 @@ def _effective_launch_tokens(seg: str):
     return []
 
 
+# Executables with a production-proven mismatch between "standalone process is up" and "the
+# platform-managed entry works". This registry is intentionally evidence-driven rather than built
+# from every Softwares[].Name: existing APIs do not describe each image's launcher/auth/root contract,
+# and guessing that contract would turn a protection into a repair blocker. Add an executable only
+# with an observed substitute-service failure and keep the runtime refusal generic.
+_UNMANAGED_PLATFORM_ENTRY_EXECUTABLES = {"filebrowser"}
+
+
 def is_unmanaged_platform_service_launch(command: str, _depth: int = 0) -> bool:
-    """Whether a command directly launches the unverified FileBrowser binary.
+    """Whether a command launches a standalone substitute for a managed platform entry.
 
     The console File Browser is a platform entrypoint. Its external route, port mapping,
     authentication and root are not established by finding an arbitrary guest binary or seeing a
@@ -1655,7 +1727,7 @@ def is_unmanaged_platform_service_launch(command: str, _depth: int = 0) -> bool:
                     if token == "-c" and is_unmanaged_platform_service_launch(tokens[i + 1], _depth + 1):
                         return True
             continue
-        if binary != "filebrowser":
+        if binary not in _UNMANAGED_PLATFORM_ENTRY_EXECUTABLES:
             continue
         # Introspection is harmless. Any other direct invocation can create a listener whose
         # console route, root and auth policy have not been proven.

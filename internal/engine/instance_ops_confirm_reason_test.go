@@ -220,3 +220,32 @@ func TestHarnessAndEngineAgreeOnEveryConfirmationDisposition(t *testing.T) {
 			"the transport can end a card with %q and harness.py has no entry for it", reason)
 	}
 }
+
+// The confirmation table is only one producer of refused reasons. Structured tools also emit
+// refused_precondition when a hash is stale, a match is ambiguous or a job id cannot be resolved.
+// Parse the complete wire map so adding any future refusal in Python without user-facing wording in
+// Go fails here instead of degrading to the generic "high risk or bad command form" sentence.
+func TestHarnessAndEngineAgreeOnEveryRefusalDisposition(t *testing.T) {
+	src, err := os.ReadFile("../../deploy/ssh_ops_harness/harness.py")
+	require.NoError(t, err, "the harness is part of the same deploy; a moved file must fail here")
+
+	block := regexp.MustCompile(`(?s)_DISPOSITION_MAP\s*=\s*\{(.*?)\}`).FindSubmatch(src)
+	require.Len(t, block, 2,
+		"could not find _DISPOSITION_MAP in harness.py — this test must fail loudly rather than verify an empty set")
+
+	pairs := regexp.MustCompile(`"([a-z_]+)"\s*:\s*"([a-z_]+)"`).FindAllStringSubmatch(string(block[1]), -1)
+	require.NotEmpty(t, pairs, "the disposition map parsed to zero entries")
+	fallback := instanceOpsRefusalReason("refused_something_added_later")
+	seenRefusal := false
+	for _, pair := range pairs {
+		if pair[2] != "refused" {
+			continue
+		}
+		seenRefusal = true
+		require.True(t, strings.HasPrefix(pair[1], "refused_"),
+			"a wire refusal should carry a refusal-shaped reason, got %q", pair[1])
+		require.NotEqual(t, fallback, instanceOpsRefusalReason(pair[1]),
+			"%q is emitted as refused but has no actionable engine wording", pair[1])
+	}
+	require.True(t, seenRefusal, "the wire map contains no refused dispositions")
+}

@@ -41,7 +41,7 @@ jobs:
         run: go test ./... -count=1
 
       # The SSH-ops guardrails decide which commands may execute inside a customer instance,
-      # and until now NO job ran their tests — 353 classification cases and the whole scrub
+      # and until now NO job ran their tests — the classification corpus and the whole scrub
       # suite were manual-only, so a regression in the tier that separates "print the swap
       # table" from "enable swap" could reach production with CI green. Both files are
       # stdlib-only, self-contained, and exit non-zero on the first failure, so this costs
@@ -63,7 +63,7 @@ jobs:
       - name: Install the pinned Agent SDK (for the INV-9 real-options check)
         run: pip install claude-agent-sdk==0.2.106
 
-      # All six suites, not two: the skill-deletion assertions (`skill-tool-no-longer-exists`,
+      # All nine suites, not two: the skill-deletion assertions (`skill-tool-no-longer-exists`,
       # `skills-directory-is-gone`) live in test_write_mode.py, and a gate that runs only some of
       # the files invites the next invariant to be written into an ungated one.
       - name: ssh-ops harness suites (guardrails, INV-9, redaction, write mode)
@@ -75,3 +75,6 @@ jobs:
           python3 test_policy_readonly.py
           python3 test_clip.py
           python3 test_confirm_loop.py
+          python3 test_endpoint_probe.py
+          python3 test_atomic_file.py
+          python3 test_remote_job.py

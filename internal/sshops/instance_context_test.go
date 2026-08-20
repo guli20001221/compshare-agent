@@ -102,6 +102,12 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	require.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor", "DescribeCompShareSoftwarePort"}, describer.calls)
 	require.Equal(t, opscontext.SchemaVersion, runner.lastContext.SchemaVersion)
 	require.NotEmpty(t, runner.lastContext.PlatformFacts)
+	require.Len(t, runner.lastContext.EndpointTargets, 3)
+	require.Equal(t, "platform-http-1", runner.lastContext.EndpointTargets[0].ID)
+	require.Equal(t, "http", runner.lastContext.EndpointTargets[0].Kind)
+	require.Contains(t, runner.lastContext.EndpointTargets[0].URL, "comfy-token-value")
+	require.Equal(t, "tcp", runner.lastContext.EndpointTargets[2].Kind)
+	require.Equal(t, 30188, runner.lastContext.EndpointTargets[2].Port)
 	for _, fact := range runner.lastContext.PlatformFacts {
 		require.NotEmpty(t, fact.Source)
 		require.NotEmpty(t, fact.ObservedAt)
