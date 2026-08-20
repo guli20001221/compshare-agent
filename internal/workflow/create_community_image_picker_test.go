@@ -75,7 +75,9 @@ func TestGuidedGPU_ConcreteImageConstrainsGPUList(t *testing.T) {
 	pinned := map[string]any{"ImageSource": "community", "CompShareImageId": "compshareImage-v260201"}
 	supported := currentImageSupportedGPUs(pinned, images)
 	require.NotEmpty(t, supported, "a concrete image id must yield its supported GPU list")
-	_, opts := guidedGPUFormOptions(NewContext(pinned), catalog, supported, "", false, pinned, nil)
+	pinnedCtx := NewContext(pinned)
+	pinnedCtx.referenceData.ZoneCatalog = noDescribeZoneCatalog("cn-wlcb-01")
+	_, opts := guidedGPUFormOptions(pinnedCtx, catalog, supported, "", false, pinned, nil)
 	byName := map[string]ConfirmFormOption{}
 	for _, o := range opts {
 		byName[o.Value] = o
@@ -98,7 +100,9 @@ func TestGuidedGPU_ConcreteImageConstrainsGPUList(t *testing.T) {
 	browsing := map[string]any{"ImageSource": "community"}
 	require.Empty(t, currentImageSupportedGPUs(browsing, images),
 		"community browsing pins no image, so no GPU constraint is known")
-	_, wideOpts := guidedGPUFormOptions(NewContext(browsing), catalog, nil, "", false, browsing, nil)
+	browsingCtx := NewContext(browsing)
+	browsingCtx.referenceData.ZoneCatalog = noDescribeZoneCatalog("cn-wlcb-01")
+	_, wideOpts := guidedGPUFormOptions(browsingCtx, catalog, nil, "", false, browsing, nil)
 	require.NotEmpty(t, wideOpts)
 	for _, o := range wideOpts {
 		assert.False(t, o.Disabled,

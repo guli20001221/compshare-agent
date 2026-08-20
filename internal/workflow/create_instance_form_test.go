@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1474,6 +1475,41 @@ func TestCreateInstanceGuided_ZoneCardUsesDisplayNamesAndRawValues(t *testing.T)
 	assert.Equal(t, "上海二B", optionByValue(t, zone, "cn-sh2-02").Label)
 	assert.Equal(t, "华北二A", optionByValue(t, zone, "cn-wlcb-01").Label)
 	assert.Equal(t, "上海二B", optionByValue(t, zone, "cn-sh2-02").Meta["ZoneLabel"])
+}
+
+func TestCreateInstanceGuided_ZoneCardOnlyOffersAuthoritativeZones(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
+	wfCtx.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", Region: "cn-sh2", ZoneID: 8200}, DisplayName: "上海二B"},
+	})
+	// The instance-type catalog is broader than this tenant's support-zone
+	// directory. us-den-01 must never surface as a choice merely because the
+	// type catalog happened to return it.
+	wfCtx.StepResults["查询可用配比"] = map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "4090", "Zone": "us-den-01", "Status": "Normal"},
+		map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
+	}}
+
+	form, err := buildGuidedZoneForm(wfCtx)
+	require.NoError(t, err)
+	zone := fieldByKey(t, form, "Zone")
+	assert.Equal(t, []string{"cn-sh2-02"}, optionValues(zone))
+	assert.Equal(t, "cn-sh2-02", zone.Value)
+}
+
+func TestCreateInstanceGuided_GPUCardOnlyOffersModelsWithAuthoritativeZone(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{})
+	wfCtx.referenceData.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", Region: "cn-sh2", ZoneID: 8200}, DisplayName: "上海二B"},
+	})
+	catalog := map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "4090", "Zone": "us-den-01", "Status": "Normal"},
+		map[string]any{"Name": "A800", "Zone": "cn-sh2-02", "Status": "Normal"},
+	}}
+
+	selected, opts := guidedGPUFormOptions(wfCtx, catalog, nil, "", false, wfCtx.Params, nil)
+	assert.Equal(t, "A800", selected)
+	assert.Equal(t, []string{"A800"}, optionValues(&ConfirmFormField{Options: opts}))
 }
 
 func TestCreateInstanceGuided_ExplicitGPUVariantStaysExact(t *testing.T) {

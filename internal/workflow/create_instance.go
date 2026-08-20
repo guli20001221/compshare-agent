@@ -1231,7 +1231,7 @@ func zoneCapacityProbeCalls(wfCtx *Context) []BatchCall {
 	}
 	var calls []BatchCall
 	for _, gpuType := range models {
-		for _, zone := range guidedCandidateZones(catalog, gpuType) {
+		for _, zone := range guidedExecutableCandidateZones(wfCtx, catalog, gpuType) {
 			args, ok := guidedCapacityArgsFor(wfCtx, gpuType, zone)
 			if !ok {
 				continue
@@ -1255,9 +1255,10 @@ func filterModelsByImageSupport(models, supported []string) []string {
 	return out
 }
 
-// guidedCandidateGPUModels lists the models the catalog offers, in catalog
-// order, deduplicated — the same enumeration the GPU card renders, kept as one
-// function so the probe cannot ask about a different set than the card shows.
+// guidedCandidateGPUModels lists the models the instance-type catalog offers, in
+// catalog order and deduplicated. The GPU card further removes rows whose zone
+// is absent from the turn's authoritative support-zone catalog; the capacity
+// probe applies that same zone gate before it makes a request.
 func guidedCandidateGPUModels(catalog map[string]any) []string {
 	rows, _ := catalog["AvailableInstanceTypes"].([]any)
 	var out []string
@@ -1274,11 +1275,10 @@ func guidedCandidateGPUModels(catalog map[string]any) []string {
 	return out
 }
 
-// guidedCandidateZones lists the zones the catalog offers this GPU in, in
-// catalog order and deduplicated. It is the same enumeration guidedZoneFormOptions
-// renders, kept as one function so the probe cannot ask about a different set of
-// zones than the card shows — a zone present on the card but absent from the
-// probe would render as unknown forever.
+// guidedCandidateZones lists the raw zones the instance-type catalog offers for
+// this GPU, in catalog order and deduplicated. A type catalog can contain a
+// region that the tenant's support-zone catalog does not permit, so callers that
+// produce executable choices must use guidedExecutableCandidateZones below.
 func guidedCandidateZones(catalog map[string]any, gpuType string) []string {
 	if catalog == nil || gpuType == "" {
 		return nil
@@ -1302,6 +1302,40 @@ func guidedCandidateZones(catalog map[string]any, gpuType string) []string {
 			continue
 		}
 		seen[zone] = true
+		out = append(out, zone)
+	}
+	return out
+}
+
+// guidedExecutableZone resolves one instance-type-catalog zone through the
+// turn's support-zone snapshot. That snapshot is the single authority for both
+// the placement IDs sent to upstream and the zones a form may offer. Returning
+// the snapshot's canonical value also prevents casing in the two upstream lists
+// from becoming a distinct form value.
+func guidedExecutableZone(wfCtx *Context, zone string) (string, bool) {
+	if wfCtx == nil {
+		return "", false
+	}
+	entry, ok := wfCtx.ZoneCatalog().Entry(zone)
+	if !ok || strings.TrimSpace(entry.Placement.Zone) == "" {
+		return "", false
+	}
+	return entry.Placement.Zone, true
+}
+
+// guidedExecutableCandidateZones is the zone enumeration shared by the guided
+// card and its capacity probe. It intersects the instance-type catalog with the
+// authoritative support-zone catalog, so a card never offers a zone that the
+// final create gate will reject before it reaches upstream.
+func guidedExecutableCandidateZones(wfCtx *Context, catalog map[string]any, gpuType string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range guidedCandidateZones(catalog, gpuType) {
+		zone, ok := guidedExecutableZone(wfCtx, raw)
+		if !ok || seen[strings.ToLower(zone)] {
+			continue
+		}
+		seen[strings.ToLower(zone)] = true
 		out = append(out, zone)
 	}
 	return out
@@ -5353,6 +5387,11 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 		if name == "" {
 			continue
 		}
+		zone, _ := mt["Zone"].(string)
+		zone, zoneSupported := guidedExecutableZone(wfCtx, zone)
+		if !zoneSupported {
+			continue
+		}
 		if locked && current != "" && !guidedGPUIntentMatches(current, name) &&
 			(len(supported) == 0 || !containsFold(supported, name)) {
 			continue
@@ -5373,8 +5412,8 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 		if status == "" || strings.EqualFold(status, "Normal") {
 			ch.normal = true
 		}
-		if z, _ := mt["Zone"].(string); z != "" && !containsFold(ch.zones, z) {
-			ch.zones = append(ch.zones, z)
+		if !containsFold(ch.zones, zone) {
+			ch.zones = append(ch.zones, zone)
 		}
 		if gm, _ := mt["GraphicsMemory"].(map[string]any); gm != nil {
 			if v, _ := gm["Value"].(float64); v > 0 && ch.vramGB == 0 {
@@ -5595,11 +5634,12 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 	// the raw GPU inventory count is NOT a substitute (it reports 0 for zones
 	// that are in fact selling, which is why it may inform the note but never
 	// disable an option).
+	candidateZones := guidedExecutableCandidateZones(wfCtx, catalog, gpuType)
 	creatable := zoneCreatabilityFor(
-		comboCreatability(wfCtx.Result(zoneCapacityStepName)), gpuType, guidedCandidateZones(catalog, gpuType))
+		comboCreatability(wfCtx.Result(zoneCapacityStepName)), gpuType, candidateZones)
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
-	for _, zone := range guidedCandidateZones(catalog, gpuType) {
+	for _, zone := range candidateZones {
 		if seen[zone] {
 			continue
 		}
