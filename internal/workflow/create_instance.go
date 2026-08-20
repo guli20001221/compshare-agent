@@ -62,6 +62,12 @@ const (
 	alternateImageCatalogStepName = "核验另一镜像目录"
 )
 
+const (
+	imageSourcePlatform  = "platform"
+	imageSourceCommunity = "community"
+	imageSourceCustom    = "custom"
+)
+
 // resolveTargetSpec selects the target (gpu, cpu, memoryMB, zone) for instance
 // creation. It collects all valid candidates from the "查询可用配比" step in the
 // resolved availability zone, then narrows them using user-supplied Cpu/Memory.
@@ -447,13 +453,11 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 		Name: "查询镜像",
 		Type: StepToolCall,
 		ToolFunc: func(wfCtx *Context) string {
-			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
-				return "DescribeCommunityImages"
-			}
-			return "DescribeCompShareImages"
+			return imageCatalogToolForSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform))
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
+			switch normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform)) {
+			case imageSourceCommunity:
 				if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
 					// A user-pinned id and every plain-flow id need one exact row. An
 					// Agent-suggested community id is different: the picker remains a
@@ -475,6 +479,13 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 					return communityImageBrowseArgs(""), nil
 				}
 				return map[string]any{"FuzzySearch": name}, nil
+			case imageSourceCustom:
+				// Keep custom-image reads tenant-scoped. The proposal-time snapshot
+				// verifies a threaded exact ID by paging this same list, then
+				// createImageResult merges that verified row when it is outside this
+				// browse page. Passing the ID directly can change the upstream tenant
+				// scope, so the workflow never uses a point-read here.
+				return customImageBrowseArgs(), nil
 			}
 			args := map[string]any{
 				"Limit": maxPlatformImageQueryLimit,
@@ -512,6 +523,20 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 	}
 }
 
+// imageCatalogToolForSource is the create flow's source-to-catalog contract.
+// The result shape is handled centrally by formImageCatalog; this function owns
+// only which live catalog the workflow reads.
+func imageCatalogToolForSource(source string) string {
+	switch normalizedImageSource(source) {
+	case imageSourceCommunity:
+		return "DescribeCommunityImages"
+	case imageSourceCustom:
+		return "DescribeCompShareCustomImages"
+	default:
+		return "DescribeCompShareImages"
+	}
+}
+
 func communityImageExactArgs(id string) map[string]any {
 	return map[string]any{
 		"CompShareImageId": strings.TrimSpace(id),
@@ -533,6 +558,13 @@ func communityImageBrowseArgs(name string) map[string]any {
 		args["FuzzySearch"] = name
 	}
 	return args
+}
+
+// customImageBrowseArgs reads the current account's self-made images. The
+// upstream list API caps a page at 100; exact IDs are intentionally verified by
+// the engine's tenant-scoped paginated snapshot instead of being sent here.
+func customImageBrowseArgs() map[string]any {
+	return map[string]any{"Limit": maxCustomImageQueryLimit}
 }
 
 // suggestedCommunityImageQueryArgs collects only the family corpus that can
@@ -587,11 +619,13 @@ func stepResolveImageCatalogIntent() Step {
 	}
 }
 
-// stepQueryAlternateImageCatalog asks only the opposite live catalog whether the
+// stepQueryAlternateImageCatalog asks the public counterpart catalog whether the
 // same image phrase exists there. It runs solely while source is unresolved and
-// only when the initial catalog produced a bounded query. A failure is optional
-// enrichment, but absence of its StepResult means UNKNOWN and therefore keeps the
-// source card — a failed check can never be interpreted as "no match".
+// only when the initial catalog produced a bounded query. Custom is intentionally
+// not a semantic fallback: it is the caller's tenant-scoped artifact inventory,
+// not a public alternative catalog to infer from a free-text phrase. A failure is
+// optional enrichment, but absence of its StepResult means UNKNOWN and therefore
+// keeps the source card — a failed check can never be interpreted as "no match".
 func stepQueryAlternateImageCatalog() Step {
 	return Step{
 		Name:     alternateImageCatalogStepName,
@@ -603,22 +637,28 @@ func stepQueryAlternateImageCatalog() Step {
 				guidedStepWasReached(wfCtx, guidedStepImageSource) {
 				return true, nil
 			}
-			_, ok := storedImageCatalogIntentSeed(wfCtx)
-			return !ok, nil
+			seed, ok := storedImageCatalogIntentSeed(wfCtx)
+			if !ok {
+				return true, nil
+			}
+			_, hasAlternate := alternateImageSource(seed.InitialSource)
+			return !hasAlternate, nil
 		},
 		ToolFunc: func(wfCtx *Context) string {
 			seed, _ := storedImageCatalogIntentSeed(wfCtx)
-			if oppositeImageSource(seed.InitialSource) == "community" {
-				return "DescribeCommunityImages"
-			}
-			return "DescribeCompShareImages"
+			source, _ := alternateImageSource(seed.InitialSource)
+			return imageCatalogToolForSource(source)
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			seed, ok := storedImageCatalogIntentSeed(wfCtx)
 			if !ok {
 				return nil, fmt.Errorf("缺少可核验的镜像意图")
 			}
-			if oppositeImageSource(seed.InitialSource) == "community" {
+			source, hasAlternate := alternateImageSource(seed.InitialSource)
+			if !hasAlternate {
+				return nil, fmt.Errorf("自制镜像不参与跨目录语义探测")
+			}
+			if source == imageSourceCommunity {
 				return communityImageBrowseArgs(seed.Query), nil
 			}
 			// Platform Name filtering is case-sensitive and can turn a valid user
@@ -721,11 +761,19 @@ func currentImageCatalogIntentSeed(wfCtx *Context) (imageCatalogIntentSeed, bool
 	return deriveImageCatalogIntentSeed(wfCtx)
 }
 
-func oppositeImageSource(source string) string {
-	if normalizedImageSource(source) == "community" {
-		return "platform"
+// alternateImageSource returns the only public catalog that can be compared by a
+// user phrase. Custom images are private account artifacts and deliberately have
+// no inferred alternate; users select that source explicitly or carry a verified
+// exact custom image ID.
+func alternateImageSource(source string) (string, bool) {
+	switch normalizedImageSource(source) {
+	case imageSourceCommunity:
+		return imageSourcePlatform, true
+	case imageSourcePlatform:
+		return imageSourceCommunity, true
+	default:
+		return "", false
 	}
-	return "community"
 }
 
 // alternateImageCatalogMatchCount returns checked=false when the optional probe
@@ -741,7 +789,10 @@ func alternateImageCatalogMatchCount(wfCtx *Context, seed imageCatalogIntentSeed
 	if !checked {
 		return 0, false
 	}
-	source := oppositeImageSource(seed.InitialSource)
+	source, hasAlternate := alternateImageSource(seed.InitialSource)
+	if !hasAlternate {
+		return 0, false
+	}
 	snap := formImageCatalog(result, source)
 	request := deployment.ImageRequest{Name: seed.Query, Source: source}
 	if matches := len(deployment.RankImages(snap, request)); matches > 0 {
@@ -794,24 +845,24 @@ func imageCatalogIntentQuery(wfCtx *Context) string {
 
 // stepReQuerySelectedSourceImages re-fetches the image catalog for the source the user
 // chose in the guided source step, into the SAME "查询镜像" result the whole image
-// selection reads — so a source switch in EITHER direction (platform↔community) replaces
-// the initial catalog with the chosen source's, and the facets/picker/resolve/boot-disk
-// steps never read a stale foreign-source catalog. Skipped when the source is unchanged
-// from the initial (the first 查询镜像 already fetched it) or an explicit image is pinned.
+// selection reads. Any source switch replaces the initial catalog with the chosen
+// source's, so the facets/picker/resolve/boot-disk steps never read a stale foreign-
+// source catalog. Skipped when the source is unchanged from the initial (the first
+// 查询镜像 already fetched it) or an explicit image is pinned.
 func stepReQuerySelectedSourceImages() Step {
 	return Step{
 		Name:   "查询镜像",
 		Type:   StepToolCall,
 		SkipIf: shouldSkipSourceReQuery,
 		ToolFunc: func(wfCtx *Context) string {
-			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
-				return "DescribeCommunityImages"
-			}
-			return "DescribeCompShareImages"
+			return imageCatalogToolForSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform))
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
+			switch normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform)) {
+			case imageSourceCommunity:
 				return communityImageBrowseArgs(imageCatalogIntentQuery(wfCtx)), nil
+			case imageSourceCustom:
+				return customImageBrowseArgs(), nil
 			}
 			args := map[string]any{"Limit": maxPlatformImageQueryLimit}
 			if name := paramStr(wfCtx.Params, "ImageName", ""); name != "" {
@@ -1180,7 +1231,7 @@ func zoneCapacityProbeCalls(wfCtx *Context) []BatchCall {
 	}
 	var calls []BatchCall
 	for _, gpuType := range models {
-		for _, zone := range guidedCandidateZones(catalog, gpuType) {
+		for _, zone := range guidedExecutableCandidateZones(wfCtx, catalog, gpuType) {
 			args, ok := guidedCapacityArgsFor(wfCtx, gpuType, zone)
 			if !ok {
 				continue
@@ -1204,9 +1255,10 @@ func filterModelsByImageSupport(models, supported []string) []string {
 	return out
 }
 
-// guidedCandidateGPUModels lists the models the catalog offers, in catalog
-// order, deduplicated — the same enumeration the GPU card renders, kept as one
-// function so the probe cannot ask about a different set than the card shows.
+// guidedCandidateGPUModels lists the models the instance-type catalog offers, in
+// catalog order and deduplicated. The GPU card further removes rows whose zone
+// is absent from the turn's authoritative support-zone catalog; the capacity
+// probe applies that same zone gate before it makes a request.
 func guidedCandidateGPUModels(catalog map[string]any) []string {
 	rows, _ := catalog["AvailableInstanceTypes"].([]any)
 	var out []string
@@ -1223,11 +1275,10 @@ func guidedCandidateGPUModels(catalog map[string]any) []string {
 	return out
 }
 
-// guidedCandidateZones lists the zones the catalog offers this GPU in, in
-// catalog order and deduplicated. It is the same enumeration guidedZoneFormOptions
-// renders, kept as one function so the probe cannot ask about a different set of
-// zones than the card shows — a zone present on the card but absent from the
-// probe would render as unknown forever.
+// guidedCandidateZones lists the raw zones the instance-type catalog offers for
+// this GPU, in catalog order and deduplicated. A type catalog can contain a
+// region that the tenant's support-zone catalog does not permit, so callers that
+// produce executable choices must use guidedExecutableCandidateZones below.
 func guidedCandidateZones(catalog map[string]any, gpuType string) []string {
 	if catalog == nil || gpuType == "" {
 		return nil
@@ -1251,6 +1302,40 @@ func guidedCandidateZones(catalog map[string]any, gpuType string) []string {
 			continue
 		}
 		seen[zone] = true
+		out = append(out, zone)
+	}
+	return out
+}
+
+// guidedExecutableZone resolves one instance-type-catalog zone through the
+// turn's support-zone snapshot. That snapshot is the single authority for both
+// the placement IDs sent to upstream and the zones a form may offer. Returning
+// the snapshot's canonical value also prevents casing in the two upstream lists
+// from becoming a distinct form value.
+func guidedExecutableZone(wfCtx *Context, zone string) (string, bool) {
+	if wfCtx == nil {
+		return "", false
+	}
+	entry, ok := wfCtx.ZoneCatalog().Entry(zone)
+	if !ok || strings.TrimSpace(entry.Placement.Zone) == "" {
+		return "", false
+	}
+	return entry.Placement.Zone, true
+}
+
+// guidedExecutableCandidateZones is the zone enumeration shared by the guided
+// card and its capacity probe. It intersects the instance-type catalog with the
+// authoritative support-zone catalog, so a card never offers a zone that the
+// final create gate will reject before it reaches upstream.
+func guidedExecutableCandidateZones(wfCtx *Context, catalog map[string]any, gpuType string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range guidedCandidateZones(catalog, gpuType) {
+		zone, ok := guidedExecutableZone(wfCtx, raw)
+		if !ok || seen[strings.ToLower(zone)] {
+			continue
+		}
+		seen[strings.ToLower(zone)] = true
 		out = append(out, zone)
 	}
 	return out
@@ -1487,9 +1572,11 @@ func stepGuidedChooseImageSource() Step {
 
 const imageTaxonomyStepName = "查询镜像分类"
 
-// stepQueryImageTagCatalog fetches the platform's own image classification so the
+// stepQueryImageTagCatalog fetches the public catalog's own classification so the
 // filter card can offer 用途 categories instead of the raw tag strings that happen
-// to appear on this page of the catalog.
+// to appear on this page of the catalog. A custom source is a private account
+// inventory, not a public semantic catalog, so it goes straight to its real image
+// list without this taxonomy overlay.
 //
 // Optional and parameterless. A missing classification must leave the card exactly
 // as it was — degrade to the flat tag facet — never gray out or hide an image,
@@ -1503,7 +1590,7 @@ func stepQueryImageTagCatalog() Step {
 		Tool:     "DescribeCompShareImageTags",
 		Optional: true,
 		SkipIf: func(wfCtx *Context) (bool, error) {
-			return imageUserSettled(wfCtx), nil
+			return imageUserSettled(wfCtx) || customImageInventorySelected(wfCtx), nil
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{}
@@ -2749,7 +2836,7 @@ func selectCreateImage(wfCtx *Context) SelectedImage {
 // case-sensitively — see stepQueryImages. Claiming prefiltered over an
 // un-narrowed catalog would keep every unrelated row as a candidate.
 func resolveSelectedImage(params map[string]any, snap *deployment.ImageCatalogSnapshot) SelectedImage {
-	source := paramStr(params, "ImageSource", "platform")
+	source := normalizedImageSource(paramStr(params, "ImageSource", imageSourcePlatform))
 	if id := paramStr(params, "CompShareImageId", ""); id != "" {
 		if res := deployment.ResolveImage(snap, deployment.ImageRequest{ID: id}); res.Status == deployment.ResolutionResolved {
 			return selectedImageFrom(res.Selection, source)
@@ -2764,8 +2851,10 @@ func resolveSelectedImage(params map[string]any, snap *deployment.ImageCatalogSn
 			IsPod: paramBool(params, "ZoneIsPod", false) || paramBool(params, "IsPodZone", false),
 		},
 		Source: source,
-		// Community FuzzySearch narrows upstream; the platform query no longer does.
-		Prefiltered: source == "community" && strings.TrimSpace(paramStr(params, "ImageName", "")) != "",
+		// Community FuzzySearch narrows upstream; platform and custom list their
+		// public/tenant catalogs and are ranked locally. Claiming prefiltered over
+		// either un-narrowed catalog would keep unrelated rows as candidates.
+		Prefiltered: source == imageSourceCommunity && strings.TrimSpace(paramStr(params, "ImageName", "")) != "",
 	})
 	if res.Status == deployment.ResolutionResolved {
 		return selectedImageFrom(res.Selection, source)
@@ -2786,9 +2875,9 @@ func formImageCatalog(images map[string]any, source string) *deployment.ImageCat
 	if _, ok := images["CompshareImageGroup"]; ok {
 		return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(images))
 	}
-	tag := source
-	if tag == "" || tag == "community" {
-		tag = "platform"
+	tag := normalizedImageSource(source)
+	if tag == imageSourceCommunity {
+		tag = imageSourcePlatform
 	}
 	return deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(images, tag))
 }
@@ -2816,10 +2905,7 @@ func formImageCatalog(images map[string]any, source string) *deployment.ImageCat
 // the compatibility / boot-disk checks read, never a second catalog.
 func createImageCatalog(wfCtx *Context) *deployment.ImageCatalogSnapshot {
 	if result := createImageResult(wfCtx); result != nil {
-		if paramStr(wfCtx.Params, "ImageSource", "platform") == "community" {
-			return deployment.NewImageCatalogSnapshot(true, deployment.ParseCommunityImageEntries(result))
-		}
-		return deployment.NewImageCatalogSnapshot(true, deployment.ParsePlatformImageEntries(result, "platform"))
+		return formImageCatalog(result, normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform)))
 	}
 	if snap := wfCtx.ImageCatalog(); snap.Available() {
 		return snap
@@ -2987,6 +3073,11 @@ const (
 	// ever exceed 100, TotalCount in the response is the signal that the list is
 	// truncated; today 72 < 100 so it is complete.
 	maxPlatformImageQueryLimit = 100
+	// maxCustomImageQueryLimit is the documented ceiling of the tenant-scoped
+	// DescribeCompShareCustomImages list. An exact candidate is additionally
+	// verified against the engine's paginated tenant snapshot, so a row beyond this
+	// browse page is never silently replaced by another image.
+	maxCustomImageQueryLimit = 100
 )
 
 // createFormChargeTypes are the selectable billing modes. Postpay is the
@@ -3200,7 +3291,7 @@ func hasExplicitImageIntent(params map[string]any) bool {
 	if strings.TrimSpace(paramStr(params, "ImageName", "")) != "" {
 		return true
 	}
-	if strings.EqualFold(strings.TrimSpace(paramStr(params, "ImageSource", "")), "community") {
+	if source := normalizedImageSource(paramStr(params, "ImageSource", imageSourcePlatform)); source == imageSourceCommunity || source == imageSourceCustom {
 		return true
 	}
 	return false
@@ -3526,6 +3617,9 @@ func imageSuggestionSettlesAxis(wfCtx *Context) bool {
 }
 
 func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
+	if customImageInventorySelected(wfCtx) {
+		return true, nil
+	}
 	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
 		imageSuggestionSettlesAxis(wfCtx) || catalogIntent {
 		return true, nil
@@ -3549,6 +3643,9 @@ func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
 // means exactly "no tag would have led anywhere". A one-option card (only 不限标签)
 // is not a choice, so it is skipped too.
 func shouldSkipGuidedImageTagStep(wfCtx *Context) (bool, error) {
+	if customImageInventorySelected(wfCtx) {
+		return true, nil
+	}
 	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
 		imageSuggestionSettlesAxis(wfCtx) || catalogIntent {
 		return true, nil
@@ -3618,6 +3715,16 @@ func imageUserSettled(wfCtx *Context) bool {
 		return true
 	}
 	return wfCtx.ImageSelection() == ImageSelectionUserPinned
+}
+
+// customImageInventorySelected keeps a user-selected self-made image source in
+// its proper domain: the current account's private artifact inventory. Unlike the
+// platform and community catalogs, it has no public category taxonomy to browse;
+// after the source card, the next image card lists exactly those tenant-visible
+// images. An exact custom ID is already covered by imageUserSettled, but this also
+// makes a deliberate "自制镜像" browse coherent when no ID was supplied.
+func customImageInventorySelected(wfCtx *Context) bool {
+	return wfCtx != nil && normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform)) == imageSourceCustom
 }
 
 // shouldSkipSourceReQuery skips the post-source re-query when an explicit image is
@@ -3993,20 +4100,16 @@ func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
 	}, nil
 }
 
-// imageSourceFacetOptions lists the image sources the create flow really supports.
-// custom/shared are deliberately absent — create forbids them (the tool schema enum
-// is platform/community), so the facet never offers a source that would be rejected.
-// imageSourceFacetOptions asks what the user wants to DO, and answers with which
-// catalog to read.
+// imageSourceFacetOptions lists the image sources the create flow supports. Each
+// value selects a concrete upstream catalog; sharing remains absent because this
+// flow is scoped to the user's own self-made images, not images owned by others.
 //
-// The two values stay platform/community because that is what they select: the
-// catalogs live behind different endpoints with different response shapes
-// (ImageSet[] vs CompshareImageGroup[].Data[]), so this is genuinely a choice of
-// where to look, not a field that could be enumerated from one catalog. What
-// changed is the QUESTION. "平台镜像 / 社区镜像" asks the user to know how this
-// platform files its images before they can say what they want to run.
+// These values are a real choice of where to look, not a local category: platform
+// and custom use flat ImageSet[] results, while community publishes grouped
+// CompshareImageGroup[].Data[] versions. The form keeps that source boundary
+// explicit before later cards rank only the chosen live catalog.
 //
-// The framing is not decoration — it is what the two catalogs actually are.
+// The framing is not decoration — it is what the catalogs actually are.
 // Measured live 2026-07-22: community is 821 groups, 219/219 of the fetched rows
 // tagged, and those tags ARE the platform's 用途 classification — a catalog of
 // ready-to-run applications. Platform is 72 rows: 9 bare System images and 52 App
@@ -4019,12 +4122,16 @@ func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
 func imageSourceFacetOptions() []ConfirmFormOption {
 	return []ConfirmFormOption{
 		{
-			Value: "platform", Label: "平台镜像",
+			Value: imageSourcePlatform, Label: "平台镜像",
 			Note: "平台官方镜像：干净的系统镜像，或预装 PyTorch / TensorFlow 等框架的基础镜像",
 		},
 		{
-			Value: "community", Label: "社区镜像",
+			Value: imageSourceCommunity, Label: "社区镜像",
 			Note: "社区镜像：开箱即用的应用与模型，可按数字人、图像视频生成、语音、LLM 等用途挑选",
+		},
+		{
+			Value: imageSourceCustom, Label: "自制镜像",
+			Note: "自制镜像：仅查看当前账户制作的镜像，可直接用于创建实例",
 		},
 	}
 }
@@ -4446,10 +4553,7 @@ func buildGuidedImageTagForm(wfCtx *Context) (*ConfirmForm, error) {
 // the category facet omits itself the same way. The two filters select themselves.
 func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
 	index, total := guidedStepPosition(wfCtx, guidedStepImageSource)
-	source := paramStr(wfCtx.Params, "ImageSource", "platform")
-	if source != "community" {
-		source = "platform"
-	}
+	source := normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform))
 	// When the Agent/default started in a catalog with no related row and the
 	// successfully checked opposite catalog has matches, recommend that real
 	// source on the card. This remains only the form value: Params changes after
@@ -4457,7 +4561,9 @@ func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
 	if !wfCtx.ImageSourceUserPinned() {
 		if seed, ok := currentImageCatalogIntentSeed(wfCtx); ok && seed.InitialMatches == 0 {
 			if matches, checked := alternateImageCatalogMatchCount(wfCtx, seed); checked && matches > 0 {
-				source = oppositeImageSource(seed.InitialSource)
+				if alternate, ok := alternateImageSource(seed.InitialSource); ok {
+					source = alternate
+				}
 			}
 		}
 	}
@@ -4878,19 +4984,25 @@ func applyGuidedImageSourceOverrides(wfCtx *Context, overrides map[string]string
 	return nil
 }
 
-// normalizedImageSource collapses any input to the two sources create supports;
-// anything that is not community is platform.
+// normalizedImageSource collapses an input to a create-supported source. Sharing
+// remains intentionally out of this workflow: a self-made image is custom, while
+// a shared image needs its own ownership and visibility contract.
 func normalizedImageSource(v string) string {
-	if strings.EqualFold(strings.TrimSpace(v), "community") {
-		return "community"
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case imageSourceCommunity:
+		return imageSourceCommunity
+	case imageSourceCustom:
+		return imageSourceCustom
+	default:
+		return imageSourcePlatform
 	}
-	return "platform"
 }
 
 // hasExplicitImageSelection reports a concrete image already pinned by id or name —
-// distinct from hasExplicitImageIntent, which ALSO treats ImageSource=community as
-// "intent". The two-stage source/facets steps must show for community BROWSING (source
-// chosen, no concrete image yet), so they gate on this narrower predicate.
+// distinct from hasExplicitImageIntent, which ALSO treats a non-platform source as
+// "intent". The two-stage source/facets steps must show for community or custom
+// browsing (source chosen, no concrete image yet), so they gate on this narrower
+// predicate.
 func hasExplicitImageSelection(params map[string]any) bool {
 	return strings.TrimSpace(paramStr(params, "CompShareImageId", "")) != "" ||
 		strings.TrimSpace(paramStr(params, "ImageName", "")) != ""
@@ -5293,6 +5405,11 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 		if name == "" {
 			continue
 		}
+		zone, _ := mt["Zone"].(string)
+		zone, zoneSupported := guidedExecutableZone(wfCtx, zone)
+		if !zoneSupported {
+			continue
+		}
 		if locked && current != "" && !guidedGPUIntentMatches(current, name) &&
 			(len(supported) == 0 || !containsFold(supported, name)) {
 			continue
@@ -5313,8 +5430,8 @@ func guidedGPUFormOptions(wfCtx *Context, catalog map[string]any, supported []st
 		if status == "" || strings.EqualFold(status, "Normal") {
 			ch.normal = true
 		}
-		if z, _ := mt["Zone"].(string); z != "" && !containsFold(ch.zones, z) {
-			ch.zones = append(ch.zones, z)
+		if !containsFold(ch.zones, zone) {
+			ch.zones = append(ch.zones, zone)
 		}
 		if gm, _ := mt["GraphicsMemory"].(map[string]any); gm != nil {
 			if v, _ := gm["Value"].(float64); v > 0 && ch.vramGB == 0 {
@@ -5535,11 +5652,12 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 	// the raw GPU inventory count is NOT a substitute (it reports 0 for zones
 	// that are in fact selling, which is why it may inform the note but never
 	// disable an option).
+	candidateZones := guidedExecutableCandidateZones(wfCtx, catalog, gpuType)
 	creatable := zoneCreatabilityFor(
-		comboCreatability(wfCtx.Result(zoneCapacityStepName)), gpuType, guidedCandidateZones(catalog, gpuType))
+		comboCreatability(wfCtx.Result(zoneCapacityStepName)), gpuType, candidateZones)
 	seen := map[string]bool{}
 	var opts []ConfirmFormOption
-	for _, zone := range guidedCandidateZones(catalog, gpuType) {
+	for _, zone := range candidateZones {
 		if seen[zone] {
 			continue
 		}
@@ -6297,7 +6415,7 @@ func currentImageSupportedGPUs(params map[string]any, images map[string]any) []s
 	if images == nil {
 		return nil
 	}
-	if strings.EqualFold(strings.TrimSpace(paramStr(params, "ImageSource", "")), "community") &&
+	if normalizedImageSource(paramStr(params, "ImageSource", imageSourcePlatform)) != imageSourcePlatform &&
 		strings.TrimSpace(paramStr(params, "CompShareImageId", "")) == "" &&
 		strings.TrimSpace(paramStr(params, "ImageName", "")) == "" {
 		return nil

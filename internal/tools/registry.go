@@ -343,7 +343,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareCustomImages",
-			Description: "查询用户自制镜像列表（仅查询，不进入创建主链路）。返回用户自己制作的镜像，包含 CompShareImageId、Name、Status 等字段。",
+			Description: "查询当前账户的自制镜像列表。返回用户自己制作的镜像，包含 CompShareImageId、Name、Status、Container、SupportedGpuTypes 等字段；创建实例时应由 CreateInstanceWorkflow 按 custom 来源实时核验并确认。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -512,7 +512,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建算力实例的候选请求。用于用户明确要求实际创建实例；支持平台镜像和社区镜像，配置不完整时可进入引导卡继续选择。价格、库存或创建方法查询不使用。",
+			Description: "创建算力实例的候选请求。用于用户明确要求实际创建实例；支持平台镜像、社区镜像和当前账户的自制镜像，配置不完整时可进入引导卡继续选择。价格、库存或创建方法查询不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -547,8 +547,8 @@ var Registry = []openai.Tool{
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",
-						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）。填写 CompShareImageId 时同时填写该 ID 实际所属的来源；若 ID 来自近期已提供的对话历史中的镜像推荐，原样沿用当时展示的来源。",
-						"enum":        []string{"platform", "community"},
+						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）/ custom（当前账户的自制镜像）。仅在用户明确说出来源，或 ID 来自近期已展示的镜像推荐且来源已知时填写。用户直接给出精确 CompShareImageId 但未说来源时，填写 ID 并省略本字段；服务端会通过实时目录确定其实际来源。",
+						"enum":        []string{"platform", "community", "custom"},
 					},
 					"ImageName": map[string]any{
 						"type":        "string",
@@ -568,7 +568,7 @@ var Registry = []openai.Tool{
 					// rejected, never replaced by a name-matched image.
 					"CompShareImageId": map[string]any{
 						"type":        "string",
-						"description": "镜像 ID，如 compshareImage-xxxx。本轮镜像查询或近期已提供的对话历史看到精确 ID 时，原样填写并同时填写 ImageSource。历史 ID 只作待实时核验和用户确认的候选；不得填写对话中从未逐字出现的 ID 或凭空编造。用户只是复述或简称该推荐时保留该 ID；若明确改选不同镜像，则不要沿用无关历史 ID，并填写新的 ImageName。",
+						"description": "镜像 ID，如 compshareImage-xxxx。用户本轮直接输入、本轮镜像查询或近期已提供的对话历史看到精确 ID 时，原样填写。来源未知时不要猜测 ImageSource；服务端会实时核验并确定来源。历史推荐 ID 只作待实时核验和用户确认的候选；不得填写对话中从未逐字出现的 ID 或凭空编造。用户只是复述或简称该推荐时保留该 ID；若明确改选不同镜像，则不要沿用无关历史 ID，并填写新的 ImageName。",
 					},
 				},
 				"required": []string{"GpuType"},

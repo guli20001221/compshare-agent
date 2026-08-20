@@ -123,6 +123,39 @@ func TestTheTaxonomySupersedesTheTagCard(t *testing.T) {
 	assert.True(t, skip, "用途 already asked this question at a stabler resolution")
 }
 
+// A custom source is the caller's private artifact inventory, not a public
+// catalog. Even if its rows carry tags that happen to overlap the platform's
+// taxonomy, selecting 自制镜像 should lead to the actual tenant-visible image
+// list instead of a public-category browsing detour.
+func TestCustomImageInventoryBypassesPublicTaxonomy(t *testing.T) {
+	wfCtx := &Context{
+		Params: map[string]any{"ImageSource": "custom"},
+		StepResults: map[string]map[string]any{
+			"查询镜像": {"ImageSet": []any{map[string]any{
+				"CompShareImageId": "img-custom", "Name": "我的数字人镜像", "Status": "Available",
+				"Tags": []any{"数字人", "视频生成"},
+			}}},
+			"查询镜像分类": categoryTestTaxonomy(),
+		},
+	}
+
+	skipTaxonomy, err := stepQueryImageTagCatalog().SkipIf(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skipTaxonomy)
+
+	skipFacets, err := shouldSkipGuidedImageFacetsStep(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skipFacets)
+
+	skipTag, err := shouldSkipGuidedImageTagStep(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skipTag)
+
+	skipPicker, err := shouldSkipGuidedImageStep(wfCtx)
+	require.NoError(t, err)
+	assert.False(t, skipPicker, "the next card must be the real custom-image picker")
+}
+
 // TestPickingACategoryNarrowsTheImageList proves the facet actually filters rather
 // than only rendering. An unclassified image is excluded by an active category, and
 // no category at all excludes nothing.

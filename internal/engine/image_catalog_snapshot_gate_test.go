@@ -224,6 +224,8 @@ func TestMissingImageAcrossAllCandidateSourcesIsNotAnOutage(t *testing.T) {
 			return map[string]any{"TotalCount": float64(0), "ImageSet": []any{}}, nil
 		case "DescribeCommunityImages":
 			return nil, tools.NewUpstreamAPIError(8039, "Resource not exist [compshareImage-stale]")
+		case "DescribeCompShareCustomImages":
+			return map[string]any{"TotalCount": float64(0), "ImageSet": []any{}}, nil
 		default:
 			t.Fatalf("unexpected action %s", action)
 			return nil, nil
@@ -243,7 +245,7 @@ func TestMissingImageAcrossAllCandidateSourcesIsNotAnOutage(t *testing.T) {
 		"所有候选来源都明确回答无此 ID 时，应当拒绝 ID，而不是谎称目录不可用")
 	assert.Zero(t, snap.Len())
 	assert.Empty(t, source)
-	assert.Equal(t, []string{"DescribeCompShareImages", "DescribeCommunityImages"}, executor.calls)
+	assert.Equal(t, []string{"DescribeCompShareImages", "DescribeCommunityImages", "DescribeCompShareCustomImages"}, executor.calls)
 }
 
 func TestImageCatalogDependencyFailureStaysUnavailable(t *testing.T) {

@@ -17,9 +17,11 @@ const (
 type QueryFunc func(context.Context, string, map[string]any) (map[string]any, error)
 
 // FetchAll retrieves every page for listKey using Limit/Offset, bounded by
-// MaxPages. A full final page with no TotalCount is followed by one empty-page
-// probe. If the upstream ignores Offset or the bound is reached before the
-// advertised total, it fails instead of presenting a partial catalog as whole.
+// MaxPages. Every full page is followed by another probe, even when TotalCount
+// equals the number collected so far: some tenant-scoped upstream lists report a
+// page-local TotalCount rather than the full result count. If the upstream ignores
+// Offset or the bound is reached, it fails instead of presenting a partial catalog
+// as whole.
 func FetchAll(ctx context.Context, query QueryFunc, action, listKey string, baseArgs map[string]any) (map[string]any, error) {
 	var merged map[string]any
 	var previous []any
@@ -43,9 +45,7 @@ func FetchAll(ctx context.Context, query QueryFunc, action, listKey string, base
 			merged[listKey] = []any{}
 		}
 		merged[listKey] = append(merged[listKey].([]any), rows...)
-		count := len(merged[listKey].([]any))
-		total, hasTotal := totalCount(result["TotalCount"])
-		if len(rows) < DefaultPageSize || (hasTotal && count >= total) {
+		if len(rows) < DefaultPageSize {
 			return merged, nil
 		}
 		previous = rows
@@ -67,17 +67,4 @@ func cloneMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
-}
-
-func totalCount(value any) (int, bool) {
-	switch n := value.(type) {
-	case float64:
-		return int(n), true
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	default:
-		return 0, false
-	}
 }

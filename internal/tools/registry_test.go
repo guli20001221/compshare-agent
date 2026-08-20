@@ -106,6 +106,23 @@ func TestCreateImageIDContractAllowsRecentExactConversationCandidate(t *testing.
 	}
 }
 
+func TestCreateInstanceImageSourceIncludesCustom(t *testing.T) {
+	for _, tool := range Registry {
+		if tool.Function == nil || tool.Function.Name != "CreateInstanceWorkflow" {
+			continue
+		}
+		params, _ := tool.Function.Parameters.(map[string]any)
+		properties, _ := params["properties"].(map[string]any)
+		source, _ := properties["ImageSource"].(map[string]any)
+		enum, _ := source["enum"].([]string)
+		if !containsString(enum, "custom") {
+			t.Fatalf("CreateInstanceWorkflow.ImageSource must include custom, got %v", enum)
+		}
+		return
+	}
+	t.Fatal("CreateInstanceWorkflow.ImageSource schema not found")
+}
+
 func TestCreatePathToolsAllowBackendZoneID(t *testing.T) {
 	policies := DefaultToolExecutionPolicies()
 	for _, action := range []string{

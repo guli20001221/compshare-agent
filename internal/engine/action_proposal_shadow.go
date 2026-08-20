@@ -210,6 +210,9 @@ func normalizedEnumQuoteSpan(text []rune, start, end int) bool {
 }
 
 func evidenceSpanForCodec(text []rune, start, end int, codec actionresolver.SlotCodecKind) bool {
+	if codec == actionresolver.CodecImage {
+		return opaqueIdentifierSpan(text, start, end)
+	}
 	if codec != actionresolver.CodecCapacity {
 		return standaloneSpan(text, start, end)
 	}
@@ -332,6 +335,12 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	// gate and the target adjudicator so all three agree on which id the user chose.
 	binding := e.bindInstanceTarget(view)
 	proposal = e.deriveProposalProvenance(proposal, view, spec, binding)
+	// A current-turn opaque image id is a literal user choice, not an Agent
+	// recommendation. The model should carry it in its proposal, but dropping a
+	// syntactically complete id must not turn an exact create request into image
+	// browsing. Complete only the unambiguous, schema-declared image field here;
+	// source ownership is still discovered from the live catalogs below.
+	proposal = completeCurrentTurnImageID(proposal, view, spec)
 	proposal = completeCurrentTurnEvidence(proposal, view, spec)
 	proposal = e.constrainCarriedImageCandidate(proposal, view)
 	proposal = addSealedSecretCandidates(proposal, spec, e.secretInputsThisTurn)
@@ -380,9 +389,9 @@ func (e *Engine) resolveActionProposalShadow(ctx context.Context, args map[strin
 	}, targetEvidence: targetEvidence}, nil
 }
 
-// imageSourceUserPinned reports whether platform/community came from the user's
-// own words. A model/default source is only a search starting point: a named image
-// can exist in both live catalogs and must not become source consent by key
+// imageSourceUserPinned reports whether the image source came from the user's own
+// words. A model/default source is only a search starting point: a named image can
+// exist in more than one live catalog and must not become source consent by key
 // presence alone.
 func imageSourceUserPinned(provenance map[string]actionresolver.ResolvedSlot) bool {
 	slot, ok := provenance["ImageSource"]
@@ -667,6 +676,122 @@ func (e *Engine) machineTypeCatalogSnapshot(ctx context.Context, spec actionreso
 	return actionresolver.MachineTypeCatalog{Names: names, Available: true}
 }
 
+// completeCurrentTurnImageID preserves an unambiguous opaque image id that the
+// current user literally supplied. It is deliberately schema-driven: only an
+// operation with exactly one CodecImage field may receive the value, and this
+// helper never guesses the image source from the id. The resolver below verifies
+// it against the live platform/community/custom catalogs before it can enter a
+// create contract.
+//
+// The Agent remains the conversation interpreter. When the turn contains two
+// different ids (for example a comparison or a replacement request), this
+// helper leaves the choice to the Agent and the normal confirmation flow.
+func completeCurrentTurnImageID(proposal actionresolver.ActionProposal, view AgentContext, spec actionresolver.OperationSpec) actionresolver.ActionProposal {
+	if strings.TrimSpace(view.TurnID) == "" {
+		return proposal
+	}
+	fieldName, ok := onlyImageIDField(spec)
+	if !ok {
+		return proposal
+	}
+	id, start, end, ok := uniqueCurrentTurnImageID(view.CurrentQuestion)
+	if !ok {
+		return proposal
+	}
+
+	canonical := actionresolver.SlotCandidate{
+		Name:   fieldName,
+		Value:  id,
+		Source: actionresolver.SourceUserExplicit,
+		Evidence: &actionresolver.SourceEvidence{
+			MessageID: view.TurnID,
+			Start:     start,
+			End:       end,
+			Quote:     id,
+		},
+	}
+	out := proposal
+	out.Slots = make([]actionresolver.SlotCandidate, 0, len(proposal.Slots)+1)
+	replaced := false
+	for _, candidate := range proposal.Slots {
+		if candidate.Name != fieldName {
+			out.Slots = append(out.Slots, candidate)
+			continue
+		}
+		if !replaced {
+			out.Slots = append(out.Slots, canonical)
+			replaced = true
+		}
+	}
+	if !replaced {
+		out.Slots = append(out.Slots, canonical)
+	}
+	return out
+}
+
+func onlyImageIDField(spec actionresolver.OperationSpec) (string, bool) {
+	fieldName := ""
+	for name, field := range spec.Fields {
+		if field.Codec != actionresolver.CodecImage {
+			continue
+		}
+		if fieldName != "" {
+			return "", false
+		}
+		fieldName = name
+	}
+	return fieldName, fieldName != ""
+}
+
+const compshareImageIDPrefix = "compshareimage-"
+
+// uniqueCurrentTurnImageID recognizes the opaque CompShare image-id grammar
+// without assigning it a source. It accepts natural Chinese adjacency on either
+// side of the ASCII id while retaining ASCII token boundaries, so an id cannot
+// be read as a substring of a longer identifier.
+func uniqueCurrentTurnImageID(question string) (id string, start, end int, ok bool) {
+	text := []rune(question)
+	seen := map[string]struct{}{}
+	var firstID string
+	firstStart, firstEnd := 0, 0
+	for offset := 0; offset+len(compshareImageIDPrefix) < len(text); offset++ {
+		prefixEnd := offset + len(compshareImageIDPrefix)
+		if !strings.EqualFold(string(text[offset:prefixEnd]), compshareImageIDPrefix) ||
+			(offset > 0 && opaqueIdentifierPart(text[offset-1])) ||
+			prefixEnd >= len(text) || !asciiAlphaNumeric(text[prefixEnd]) {
+			continue
+		}
+		candidateEnd := prefixEnd
+		for candidateEnd < len(text) && opaqueIdentifierPart(text[candidateEnd]) {
+			candidateEnd++
+		}
+		candidate := string(text[offset:candidateEnd])
+		key := strings.ToLower(candidate)
+		if _, exists := seen[key]; exists {
+			offset = candidateEnd - 1
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(seen) > 1 {
+			return "", 0, 0, false
+		}
+		firstID, firstStart, firstEnd = candidate, offset, candidateEnd
+		offset = candidateEnd - 1
+	}
+	if len(seen) != 1 {
+		return "", 0, 0, false
+	}
+	return firstID, firstStart, firstEnd, true
+}
+
+func opaqueIdentifierPart(r rune) bool {
+	return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-')
+}
+
+func asciiAlphaNumeric(r rune) bool {
+	return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r))
+}
+
 // completeCurrentTurnEvidence fills protocol metadata that the runtime already
 // owns. The model identifies the quoted value; it does not need to copy an
 // opaque turn id or count Unicode offsets. Ambiguous or non-standalone quotes
@@ -707,6 +832,9 @@ func completeCurrentTurnEvidence(proposal actionresolver.ActionProposal, view Ag
 }
 
 func uniqueQuoteForCodec(text, quote []rune, codec actionresolver.SlotCodecKind) (int, int, bool) {
+	if codec == actionresolver.CodecImage {
+		return uniqueOpaqueIdentifierQuote(text, quote)
+	}
 	if codec != actionresolver.CodecCapacity {
 		return uniqueStandaloneQuote(text, quote)
 	}
@@ -736,6 +864,41 @@ func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {
 	start := -1
 	for offset := 0; offset+len(quote) <= len(text); offset++ {
 		if string(text[offset:offset+len(quote)]) != string(quote) || !standaloneSpan(text, offset, offset+len(quote)) {
+			continue
+		}
+		if start >= 0 {
+			return 0, 0, false
+		}
+		start = offset
+	}
+	if start < 0 {
+		return 0, 0, false
+	}
+	return start, start + len(quote), true
+}
+
+// opaqueIdentifierSpan gives opaque ASCII resource ids their natural boundary:
+// neighbouring Chinese prose is grammatical context ("用compshareImage-...创建"),
+// not part of the identifier. ASCII letters, digits, '_' and '-' remain token
+// characters so a shorter id can never borrow evidence from a longer id.
+func opaqueIdentifierSpan(text []rune, start, end int) bool {
+	isPart := func(r rune) bool {
+		return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-')
+	}
+	if start > 0 && isPart(text[start-1]) {
+		return false
+	}
+	return end >= len(text) || !isPart(text[end])
+}
+
+func uniqueOpaqueIdentifierQuote(text, quote []rune) (int, int, bool) {
+	if len(quote) == 0 || len(quote) > len(text) {
+		return 0, 0, false
+	}
+	start := -1
+	for offset := 0; offset+len(quote) <= len(text); offset++ {
+		end := offset + len(quote)
+		if string(text[offset:end]) != string(quote) || !opaqueIdentifierSpan(text, offset, end) {
 			continue
 		}
 		if start >= 0 {

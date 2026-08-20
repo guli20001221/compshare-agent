@@ -30,9 +30,8 @@ func platformCatalogRows() map[string]any {
 // used to ask "平台镜像 / 社区镜像", which requires knowing how this platform files
 // its images before you can say what you want to run.
 //
-// The stored value is unchanged (platform/community) — they really are different
-// endpoints with different response shapes — so this pins the QUESTION, not the
-// plumbing.
+// The stored value is a real source choice — platform, community, or the current
+// account's custom catalog — so this pins the QUESTION, not the plumbing.
 func TestTheFirstCardAsksWhatTheUserWantsToDo(t *testing.T) {
 	wfCtx := &Context{Params: map[string]any{}}
 	form, err := buildGuidedImageSourceForm(wfCtx)
@@ -45,11 +44,12 @@ func TestTheFirstCardAsksWhatTheUserWantsToDo(t *testing.T) {
 	for _, o := range field.Options {
 		byValue[o.Value] = o
 	}
-	require.Len(t, byValue, 2)
+	require.Len(t, byValue, 3)
 
 	assert.Equal(t, "平台镜像", byValue["platform"].Label)
 	assert.Equal(t, "社区镜像", byValue["community"].Label)
-	for _, v := range []string{"platform", "community"} {
+	assert.Equal(t, "自制镜像", byValue["custom"].Label)
+	for _, v := range []string{"platform", "community", "custom"} {
 		assert.NotEmpty(t, byValue[v].Note,
 			"%s must still say which catalog it reads, so the reframe informs rather than hides", v)
 	}
@@ -75,6 +75,10 @@ func TestTheFirstCardDoesNotMoveAnyoneToADifferentCatalog(t *testing.T) {
 	form, err = buildGuidedImageSourceForm(&Context{Params: map[string]any{"ImageSource": "community"}})
 	require.NoError(t, err)
 	assert.Equal(t, "community", form.Field("ImageSource").Value)
+
+	form, err = buildGuidedImageSourceForm(&Context{Params: map[string]any{"ImageSource": "custom"}})
+	require.NoError(t, err)
+	assert.Equal(t, "custom", form.Field("ImageSource").Value)
 }
 
 // TestEachBranchGetsTheFilterThatFitsItsData is the structural claim behind the
