@@ -14,14 +14,18 @@ func TestUserRequestedOnlyFieldAcceptsOnlyTheUser(t *testing.T) {
 		source   CandidateSource
 		accepted bool
 	}{
+		// Exactly one source passes: the user said it, this turn, in their own text.
 		{source: SourceUserExplicit, accepted: true},
-		{source: SourceUserConfirmation, accepted: true},
 		{source: SourceAgentInference, accepted: false},
 		{source: SourceToolObservation, accepted: false},
 		// A server-derived binding is a strong source for a TARGET (it proves which
 		// object the user meant). It proves nothing about whether the user wanted a
 		// different operation performed on it.
 		{source: SourceVerifiedContext, accepted: false},
+		// Sounds like consent, is not reachable: its only producer is the sealed-
+		// secret path, and a secret can never be a gated field. Refused rather than
+		// left as an untakeable accept inside a consent gate.
+		{source: SourceUserConfirmation, accepted: false},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.source), func(t *testing.T) {

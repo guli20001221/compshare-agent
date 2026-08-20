@@ -105,7 +105,14 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		// because it reaches the model verbatim and the corrective action is not
 		// "ask the user for this value" — it is "drop the field and run what they
 		// actually asked for".
-		if field.RequiresUserRequest && candidate.Source != SourceUserExplicit && candidate.Source != SourceUserConfirmation {
+		// SourceUserConfirmation is deliberately NOT a second way in. It reads like
+		// one — "the user confirmed it" — but the only producer is
+		// addSealedSecretCandidates, for CodecSensitiveText fields, and
+		// markUserRequestedOnly refuses to gate a secret. So accepting it here
+		// would be a branch that cannot be taken, sitting in a consent gate and
+		// suggesting a route that does not exist. One source, and it is the one
+		// that means the user said it this turn.
+		if field.RequiresUserRequest && candidate.Source != SourceUserExplicit {
 			reject(name, RejectRequiresUserRequest, fmt.Sprintf(
 				"%s: 用户本轮没有要求该选项，它会改变这次操作的性质，不能由你替用户填写。"+
 					"去掉该参数、按用户原话执行；确实需要它时先向用户说明影响并征得同意。", name))
