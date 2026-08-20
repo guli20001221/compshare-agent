@@ -595,8 +595,11 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
-			Name:        "StartInstanceWorkflow",
-			Description: "启动已有实例的候选请求。用于普通开机或无卡开机；无卡开机只接受档位 A（2C/4GB）或 B（8C/16GB）。开机方法或费用咨询不使用。",
+			Name: "StartInstanceWorkflow",
+			// The old wording was "用于普通开机或无卡开机", which presents a spec change
+			// as a second flavour of the same act. What the operation is gets said
+			// here; what the no-GPU parameter does is said on the parameter.
+			Description: "启动已有实例的候选请求。用于用户要求实际开机；开机方法或费用咨询不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -605,9 +608,19 @@ var Registry = []openai.Tool{
 						"description": "要开机的实例 ID",
 					},
 					"WithoutGpuSpec": map[string]any{
-						"type":        "string",
-						"enum":        []string{"A", "B"},
-						"description": "可选。无卡开机档位：A=2C/4GB，B=8C/16GB；容器实例仅支持 A。普通带卡开机时省略。",
+						"type": "string",
+						"enum": []string{"A", "B"},
+						// The old text described only the tiers, which reads as a boot
+						// option. What the parameter DOES is resize the instance: the
+						// GPU is given up, the original spec is archived, and getting
+						// it back depends on that GPU being available again. Those are
+						// facts about the operation and belong here. What must NOT
+						// accumulate here is guidance about particular situations —
+						// the resolver gate, not a sentence, is what stops an
+						// unrequested value, and a description that argues a case goes
+						// stale while the gate does not.
+						"description": "可选，仅在用户明确要求无卡时填写。它不是开机选项：平台会先把实例改配为无卡规格" +
+							"（A=2C/4GB，B=8C/16GB，GPU 归零，容器实例仅支持 A），再开机；原规格被存档，恢复它需要该可用区当时有对应 GPU 可用。",
 					},
 				},
 				"required": []string{"UHostId"},

@@ -52,8 +52,16 @@ func TestCentralAgentPromptContainsOneContractAndNoLegacyWorkflowCatalog(t *test
 		"one capability's parameter name belongs in its schema, not the shared Agent prompt")
 	require.Equal(t, 1, strings.Count(text, "真实使用量或热度作为取舍依据"),
 		"equally suitable catalog candidates need one evidence-based tie breaker")
-	require.Equal(t, 1, strings.Count(text, "可选筛选条件只填写用户已经明确表达的条件"),
-		"optional facets must not silently become user choices")
+	// Widened from 「可选筛选条件」 to 「可选参数」 after 2026-08-18: the narrow wording
+	// read as a rule about QUERY filters, and the parameter that changed an
+	// instance's spec on a plain start was optional but was not a filter.
+	require.Equal(t, 1, strings.Count(text, "可选参数只填写用户已经明确表达的内容"),
+		"optional parameters must not silently become user choices")
+	// The other half of the same failure: the model may not keep the user's verb
+	// and change the object to make it succeed. Stated once, for every write.
+	require.Equal(t, 1, strings.Count(text, "不要为了让它成功而改变用户没有提出的东西"),
+		"a failed operation must be reported, not substituted")
+	require.Contains(t, text, "“换一个能成的”不是完成用户的请求，而是替他做了另一个决定")
 	require.Equal(t, 1, strings.Count(text, "非写目标的目录对象例外"),
 		"historical catalog ids may be carried only through the narrow non-target exception")
 	require.Contains(t, text, "近期已提供的对话历史逐字展示精确 ID 和来源、当前请求承接它时")
