@@ -112,3 +112,84 @@ func TestCurrentTurnImageIDDoesNotChooseBetweenDifferentIDs(t *testing.T) {
 	got := completeCurrentTurnImageID(proposal, view, spec)
 	assert.Empty(t, got.Slots, "two different current-turn ids require Agent/user disambiguation")
 }
+
+// TestCurrentTurnExactCustomImageIDSkipsImageBrowseCardsEndToEnd connects the
+// two layers that produced the reported regression: proposal recovery must make
+// the exact CJK-adjacent id UserPinned, and the actual guided workflow must then
+// begin at configuration rather than reopening image-source/category/version
+// cards.  Cancelling the first configuration card is intentional: it proves the
+// visible entry point without ever reaching a cloud write.
+func TestCurrentTurnExactCustomImageIDSkipsImageBrowseCardsEndToEnd(t *testing.T) {
+	const imageID = "compshareImage-custom-current-turn"
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{
+				map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "Describe": "华北一C"},
+			}}, nil
+		case "DescribeAvailableCompShareInstanceTypes":
+			return map[string]any{"AvailableInstanceTypes": []any{
+				map[string]any{
+					"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal",
+					"MachineSizes": []any{map[string]any{
+						"Gpu": float64(1), "Collection": []any{map[string]any{
+							"Cpu": float64(16), "Memory": []any{float64(64)},
+						}},
+					}},
+				},
+			}}, nil
+		case "DescribeCompShareImages":
+			return map[string]any{"ImageSet": []any{}}, nil
+		case "DescribeCommunityImages":
+			return map[string]any{"CompshareImageGroup": []any{}}, nil
+		case "DescribeCompShareCustomImages":
+			return map[string]any{"TotalCount": float64(1), "ImageSet": []any{
+				map[string]any{
+					"CompShareImageId": imageID, "Name": "我的自制训练环境",
+					"ImageType": "Custom", "Status": "Available", "Container": "False",
+					"SupportedGpuTypes": []any{"4090"},
+				},
+			}}, nil
+		default:
+			// The first remaining card is the purchase-mode card, before any
+			// capacity/price/create call. Empty successful inventory snapshots are
+			// enough for this no-write entry-point test.
+			return map[string]any{"RetCode": float64(0)}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.guidedCreate = true
+	eng.lastUserMsg = "用" + imageID + "为我创建一台4090"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-guided-direct-custom", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+		"turn_id":   "turn-guided-direct-custom",
+		"operation": "CreateInstanceWorkflow",
+		// Model omission is the production failure mode.  The engine must carry
+		// the literal id before this workflow starts.
+		"slots": []any{map[string]any{"name": "GpuType", "value": "4090"}},
+	})
+	require.NoError(t, err)
+	confirmable, ok := newConfirmableAction(resolved)
+	require.True(t, ok)
+
+	var firstForm *workflow.ConfirmForm
+	eng.confirmEditsFn = func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
+		firstForm = form
+		return workflow.ConfirmResolution{Confirmed: false}
+	}
+	_ = eng.executeResolvedWorkflow(context.Background(), confirmable, noopStep)
+
+	require.NotNil(t, firstForm, "the direct-id flow must reach a configuration card")
+	assert.NotNil(t, firstForm.Field("ChargeType"), "the first visible choice is configuration, not image browsing")
+	for _, field := range []string{"ImageSource", "ImageCategory", "ImageTag", "ImageFamily", "ImageId"} {
+		assert.Nil(t, firstForm.Field(field), "direct exact id must not reopen %s", field)
+	}
+	assert.NotContains(t, executor.calls, "DescribeCompShareImageTags",
+		"a custom image inventory never queries the public taxonomy")
+	assert.NotContains(t, executor.calls, "CreateCompShareInstance",
+		"the regression test cancels before any create call")
+}

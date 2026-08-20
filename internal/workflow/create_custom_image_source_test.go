@@ -120,6 +120,9 @@ func TestGuidedCreateCustomSourceShowsOnlyTheCustomCatalog(t *testing.T) {
 			assert.Contains(t, optionValues(source), imageSourceCustom)
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": imageSourceCustom}}
 		}
+		if form.Field("ImageCategory") != nil || form.Field("ImageTag") != nil {
+			t.Fatalf("custom inventory must not show the public image taxonomy: %#v", form.Fields)
+		}
 		if image := form.Field("ImageId"); image != nil {
 			options = optionValues(image)
 			return ConfirmResolution{Confirmed: false}
@@ -133,6 +136,8 @@ func TestGuidedCreateCustomSourceShowsOnlyTheCustomCatalog(t *testing.T) {
 	assert.Equal(t, []string{"custom-001", "custom-002"}, options)
 	assert.NotContains(t, options, "img-001")
 	assert.NotContains(t, options, "cimg-sd-001")
+	assert.NotContains(t, executor.calls, "DescribeCompShareImageTags",
+		"the public taxonomy is not part of a current-account custom-image browse")
 
 	customCall, ok := findExecutorCall(executor.calls, "DescribeCompShareCustomImages")
 	require.True(t, ok)
