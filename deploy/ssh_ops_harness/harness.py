@@ -121,18 +121,19 @@ _SYSTEM_PROMPT_WRITE_MODE = """## Authorization: diagnose, repair, verify
 The user has authorized the repair workflow. Read-only operations run immediately; each state-changing
 command or structured operation still requires approval of that exact effect. Diagnose first, then send the smallest
 evidence-backed repair through the tool instead of stopping at a recommendation. Approval covers that
-command only, not a broader redesign. Repair the reported fault and nothing else: replacing or
-re-downloading an application, moving its directory aside, or disabling an unrelated service requires
-a separate user decision unless the assigned task explicitly requests it.
+command only. Repair the reported fault and nothing else: replacing or re-downloading an application,
+moving its directory aside, or disabling an unrelated service requires a separate user decision unless
+the assigned task explicitly requests it.
 
-Destructive operations, reboot or power-off, account/password changes, and disabling SSH or networking
-are unavailable; the executor refuses them unconditionally. Do not plan around or bypass those limits.
+Observe enough pre-state to verify or undo a change; prefer atomic or backup-preserving operations.
+Reversible guest-local changes go to exact approval. Hard refusal is only for irreversible data, boot or
+recovery loss and tenant/control-plane boundary crossings, including reboot/power-off, account/password
+changes and disabling SSH/networking. Do not bypass those limits.
 If a repair truly needs a restart, report `需要重启实例才能继续` under 未处理 and ask whether the user
 wants the instance restarted.
 If an approval is pending or denied, do not turn the command into a manual instruction; report it as
 `等待你确认` or not executed.
-A denied command's intended effect is also denied for this turn; do not seek a broader fallback to
-achieve the same effect.
+Do not seek an equivalent fallback for a denied effect.
 
 Before changing an image- or platform-managed service, identify its existing supervisor, service unit,
 entrypoint, or launcher and preserve that ownership contract. Use that launcher rather than an inner
@@ -165,13 +166,14 @@ surviving listener or transitional controller state alone is not a healthy servi
 
 TOOL_DESC_WRITE = """Execute one command on the target instance over SSH. Read-only calls run
 immediately. For an evidence-backed state-changing repair, send the smallest concrete command; it
-runs only after the user approves that exact command. Keep changes within the diagnosed fault; replacing
+runs only after the user approves that exact command. Stay within the diagnosed fault; replacing
 or re-downloading an application, moving its directory aside, or disabling an unrelated service needs
-a separate user decision unless the assigned task explicitly requests it. Destructive operations,
-reboot or power-off, account/password changes, disabling SSH/networking, command substitution, and
-multi-line input are refused. The classifier accepts supported pipes, chains, globs, redirection, and
-read-only probes through the application's actual interpreter. A command-form rejection may be rewritten into a
-supported plain form; a policy or approval refusal may not.
+a separate user decision unless the task requests it. Observe enough pre-state to
+verify or undo the change and prefer a backup. Reversible guest changes go to exact approval; irreversible
+data/boot/recovery loss, control-plane crossings, reboot/power-off, account/password changes, disabling
+SSH/networking, command substitution, and multi-line input are refused. The classifier accepts supported
+pipes, chains, globs, redirection, and read-only probes through the application's actual interpreter.
+Rewrite only command-form rejections; do not route around policy or approval.
 
 Each shell call is a fresh, non-interactive SSH session and is stopped after 25 seconds. Use the
 structured background-job tools for package installation, downloads, compilation, or anything else

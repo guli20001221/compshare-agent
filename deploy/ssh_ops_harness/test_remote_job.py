@@ -28,8 +28,9 @@ check("start-returns-opaque-job-id", started["ok"] is True and re.fullmatch(r"jo
 check("trusted-wrapper-detaches-all-streams",
       all(piece in captured[0] for piece in
           ("nohup env", "bash -c", "</dev/null", "stdout.log", "stderr.log", "pid")))
-check("trusted-wrapper-records-exit-and-caps-logs",
-      "ulimit -f" in captured[0] and "status.tmp" in captured[0] and "pip install vllm" in captured[0])
+check("trusted-wrapper-records-exit-without-limiting-payload-files",
+      "ulimit -f" not in captured[0] and "status.tmp" in captured[0] and
+      "pip install vllm" in captured[0] and "log_limit_bytes_each" not in started)
 check("trusted-wrapper-marks-process-identity",
       "COMPSHARE_OPS_JOB_ID=" + started["job_id"] in captured[0])
 check("result-never-returns-generated-shell", "pip install" not in json.dumps(started))
@@ -97,8 +98,13 @@ base = "/tmp/compshare-ops-jobs/" + started["job_id"]
 files = {base + "/status": b"0\n", base + "/pid": b"123\n",
          base + "/stdout.log": b"installed\n", base + "/stderr.log": b""}
 done = remote_job.poll({}, started["job_id"], opener=lambda _c: (_Client(_SFTP(files)), None))
-check("poll-reports-completed-exit", done["ok"] and done["state"] == "completed" and done["exit_code"] == 0)
+check("poll-reports-successful-exit", done["ok"] and done["state"] == "succeeded" and done["exit_code"] == 0)
 check("poll-returns-bounded-logs", done["stdout"] == "installed\n")
+failed_files = dict(files)
+failed_files[base + "/status"] = b"153\n"
+failed = remote_job.poll({}, started["job_id"], opener=lambda _c: (_Client(_SFTP(failed_files)), None))
+check("poll-distinguishes-nonzero-exit-from-success",
+      failed["ok"] and failed["state"] == "failed" and failed["exit_code"] == 153)
 long_files = dict(files)
 long_files[base + "/stdout.log"] = b"old-line\n" + b"x" * remote_job._RETURN_LOG_BYTES + b"new-line\n"
 tailed = remote_job.poll({}, started["job_id"], opener=lambda _c: (_Client(_SFTP(long_files)), None))

@@ -47,8 +47,9 @@ def input_schema():
 TOOL_DESCRIPTION = (
     "Atomically replace one exact UTF-8 text fragment in one existing regular file on the target "
     "instance. Use after ssh_exec has read the relevant file and computed its SHA-256. The tool "
-    "requires that hash, refuses stale content/symlinks/critical boot, identity, SSH and network "
-    "files, requires the old text to occur exactly once, preserves mode/owner, writes a recoverable "
+    "requires that hash, refuses stale content/symlinks and selected boot, login, SSH and network "
+    "files whose failure can remove the recovery channel, requires the old text to occur exactly "
+    "once, preserves mode/owner, writes a recoverable "
     "same-directory backup, atomically renames, and verifies the final hash. The approval card shows "
     "path, purpose, occurrence count and before/after hashes but never file contents. Do not use it "
     "to replace whole applications or bypass an existing service manager contract.")

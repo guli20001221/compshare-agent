@@ -249,9 +249,9 @@ CLASSIFY_CASES = [
     ("mount -l", "read_only"),
     ("free -h; swapon --show; cat /proc/meminfo", "read_only"),   # the real OOM triage chain
 
-    # === F12 bypass attempts that MUST stay refused ===
-    # Every one of these ENABLES swap or mounts something. The carve-out is anchored to listing
-    # flags and cannot fullmatch any of them; if it ever does, a write auto-runs with no card.
+    # === F12 state-changing forms that MUST keep requiring approval ===
+    # These enable/disable swap or change mounts. The carve-out is anchored to listing flags and
+    # cannot fullmatch any of them; if it ever does, a write auto-runs with no card.
     ("swapon /swapfile", "mutating"),
     ("swapon -a", "mutating"),
     ("swapon --all", "mutating"),
@@ -262,7 +262,7 @@ CLASSIFY_CASES = [
     ("mount -o remount,rw /", "mutating"),
     ("mount --bind /var /mnt", "mutating"),
     ("umount /mnt", "mutating"),
-    ("swapoff -a", "destructive"),
+    ("swapoff -a", "mutating"),                    # reversible availability change: exact card
     ("mkswap /swapfile", "mutating"),
 
     # === F8 bypass attempts that MUST stay refused ===
@@ -347,6 +347,7 @@ CLASSIFY_CASES = [
     ('/usr/bin/python3.12 -c "import torch; print(torch.cuda.is_available())"', "read_only"),
     ('/opt/conda/envs/comfyui/bin/python -c "import os; os.system(chr(114))"', "mutating"),  # path does not bypass AST
     ('/opt/conda/envs/comfyui/bin/python3.12 -c "import os; os.system(chr(114))"', "mutating"),
+    ('/tmp/python -c "import torch; print(torch.cuda.is_available())"', "read_only"),       # payload proof, not path trust
     ('/tmp/python -c "open(chr(47)+chr(120),chr(119))"', "mutating"),               # unproven write still cards
     ('python3 -c "open(chr(47)+chr(120),chr(119))"', "mutating"),                    # computed mode is unprovable
     ("python -c 'from os import system as s; s(1)'", "mutating"),                    # alias resolves to os.system
@@ -532,9 +533,17 @@ CLASSIFY_CASES = [
     ("docker system prune -af --volumes", "destructive"),
     ("install -m 000 /dev/null /etc/resolv.conf", "destructive"),
     ("echo x > /var/lib/mysql/ibdata1", "destructive"),
-    ("chattr +i /var/lib/docker", "destructive"),
     ("systemctl stop ssh", "destructive"),
-    ("swapoff -a", "destructive"),
+    ("systemctl disable --now sshd", "destructive"),
+    ("systemctl --now mask NetworkManager", "destructive"),
+    # High-impact but reversible guest-local changes belong behind an exact approval card rather
+    # than in the hard-refusal tier.
+    ("chmod 777 /workspace/app", "mutating"),
+    ("chattr +i /var/lib/docker", "mutating"),
+    ("systemctl disable vllm", "mutating"),
+    ("systemctl mask jupyterlab", "mutating"),
+    ("swapoff -a", "mutating"),
+    ("install -m 440 /tmp/x /etc/sudoers.d/90-x", "mutating"),
 
     # === 2026-07-30: the destructive tier is scanned PER COMMAND, not over the whole string ===
     # Most destructive rules have the shape "write-verb ... sensitive-path". Scanned over the

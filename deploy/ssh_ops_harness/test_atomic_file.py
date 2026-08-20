@@ -121,6 +121,12 @@ try:
     denied = atomic_file.prepare_replace({}, dict(args, path="/etc/ssh/sshd_config"), opener=_open)
     check("critical-ssh-file-is-refused-before-connect",
           denied["ok"] is False and denied["error_class"] == "path_not_allowed")
+    check("main-sudoers-file-remains-a-recovery-boundary",
+          atomic_file._valid_path("/etc/sudoers") is False)
+    check("removable-sudoers-drop-in-remains-confirmable",
+          atomic_file._valid_path("/etc/sudoers.d/90-compshare") is True)
+    check("hash-bound-state-file-edit-remains-recoverable",
+          atomic_file._valid_path("/var/lib/example/app.conf") is True)
 
     symlink_path = "/workspace/link.conf"
     symlink_local = _SFTP._local(symlink_path)

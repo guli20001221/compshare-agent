@@ -69,14 +69,20 @@ check("gate-latches-from-handshake", harness._ALLOW_WRITES is True)
 
 # --- (1) read-only mode is unchanged -------------------------------------------------------------
 for cmd in ["systemctl restart ollama", "pip install torch", "kill -9 4321",
-            "echo x > /tmp/f", "mkdir /tmp/d", "chmod 644 /tmp/f"]:
+            "echo x > /tmp/f", "mkdir /tmp/d", "chmod 644 /tmp/f",
+            "chmod 777 /workspace/app", "chattr +i /workspace/model.bin",
+            "systemctl disable vllm", "swapoff -a",
+            "install -m 440 /tmp/x /etc/sudoers.d/90-x"]:
     res, entry = dispatch(cmd, allow_writes=False)
     check(f"readonly-refuses::{cmd}", res["executed"] is False and entry["disposition"] ==
           "refused_mutating_phase1")
 
 # --- (2) write mode executes the mutating tier ---------------------------------------------------
 for cmd in ["systemctl restart ollama", "pip install torch", "kill -9 4321",
-            "echo x > /tmp/f", "mkdir /tmp/d", "chmod 644 /tmp/f"]:
+            "echo x > /tmp/f", "mkdir /tmp/d", "chmod 644 /tmp/f",
+            "chmod 777 /workspace/app", "chattr +i /workspace/model.bin",
+            "systemctl disable vllm", "swapoff -a",
+            "install -m 440 /tmp/x /etc/sudoers.d/90-x"]:
     res, entry = dispatch(cmd, allow_writes=True)
     check(f"write-executes::{cmd}", res["executed"] is True and entry["disposition"] == "ran_mutating")
     # The wire disposition is what the user's activity stream and the audit row show. A write that
@@ -89,8 +95,9 @@ for cmd in ["systemctl restart ollama", "pip install torch", "kill -9 4321",
 # turning writes on, because no consent card in this design distinguishes them from a restart.
 for cmd in ["rm -rf /workspace", "mkfs.ext4 /dev/vdb", "dd if=/dev/zero of=/dev/vda bs=1M",
             "reboot", "shutdown -h now", "passwd root", "userdel ubuntu",
-            "systemctl disable sshd", "iptables -F", "chmod -R 777 /",
-            "docker system prune", "crontab -r", "swapoff -a"]:
+            "systemctl disable sshd", "systemctl --now mask NetworkManager",
+            "iptables -F", "chmod -R 777 /",
+            "docker system prune", "crontab -r"]:
     res, entry = dispatch(cmd, allow_writes=True)
     check(f"write-still-refuses-destructive::{cmd}",
           res["executed"] is False and entry["disposition"] == "refused_destructive")
@@ -158,7 +165,9 @@ check("readonly-prompt-says-readonly",
 check("write-prompt-authorizes-repair",
       "authorized the repair workflow" in harness.system_prompt(True) and
       "requires approval of that exact effect" in harness.system_prompt(True))
-check("write-prompt-names-hard-limits", "refuses them unconditionally" in harness.system_prompt(True))
+check("write-prompt-names-hard-limits",
+      "Hard refusal is only" in harness.system_prompt(True) and
+      "tenant/control-plane boundary" in harness.system_prompt(True))
 
 # The prompt is one stable diagnostic protocol plus a mode policy, not two independently patched
 # playbooks. Both modes must preserve the same evidence model and diagnostic loop, then select one
@@ -223,7 +232,8 @@ check("write-tool-desc-says-send-not-describe",
       "send the smallest concrete command" in harness.tool_description(True))
 # Hard limits stay stated so the agent does not plan around commands the executor will reject.
 check("write-tool-desc-keeps-hard-limits",
-      "Destructive operations" in harness.tool_description(True) and
+      "irreversible" in harness.tool_description(True) and
+      "control-plane crossings" in harness.tool_description(True) and
       "are refused" in harness.tool_description(True))
 check("write-tool-desc-forbids-invented-platform-entrypoints",
       "platform-facing port" in harness.tool_description(True) and
@@ -328,7 +338,7 @@ for _name, _needle in [
     ("states the scope", "within the diagnosed fault"),
     ("names redeploying an app", "re-downloading an application"),
     ("names taking a service down", "disabling an unrelated service"),
-    ("routes it to the user rather than forbidding it", "unless the assigned task explicitly requests it"),
+    ("routes it to the user rather than forbidding it", "unless the task requests it"),
 ]:
     check(f"write-tool-desc-bounds-scope::{_name}", _needle in harness.tool_description(True))
 # Read-only mode cannot overreach — it executes nothing — so its description stays unchanged.
@@ -341,14 +351,13 @@ check("readonly-tool-desc-unchanged-by-scope-rule",
 _WRITE_DESC = harness.tool_description(True)
 _WRITE_PROMPT = harness.system_prompt(True)
 check("write-tool-desc::reformats-form-refusals",
-      "command-form rejection may be rewritten into a supported plain form" in flat(_WRITE_DESC))
+      "Rewrite only command-form rejections" in _WRITE_DESC)
 check("write-system-prompt::reformats-form-refusals",
       "rejects only the command form" in _WRITE_PROMPT and "rewrite it into a supported plain command" in _WRITE_PROMPT)
 check("write-system-prompt::does-not-manualize-unapproved-writes",
       "do not turn the command into a manual instruction" in _WRITE_PROMPT)
 check("write-system-prompt::does-not-bypass-denied-effect",
-      "denied command's intended effect is also denied" in _WRITE_PROMPT and
-      "broader fallback" in _WRITE_PROMPT)
+      "Do not seek an equivalent fallback for a denied effect" in _WRITE_PROMPT)
 check("write-system-prompt::labels-waiting-for-confirmation",
       "等待你确认" in _WRITE_PROMPT and "approval is pending or denied" in _WRITE_PROMPT)
 check("write-prompts::name-the-user-not-an-operator",
@@ -378,7 +387,7 @@ check("write-tool-desc-platform-boundary::names-and-hands-off-restart",
 check("write-system-prompt-platform-boundary::names-and-hands-off-restart",
       "需要重启实例才能继续" in _WRITE_PROMPT and
       "ask whether the user wants the instance restarted" in flat(_WRITE_PROMPT) and
-      "Do not plan around or bypass" in _WRITE_PROMPT)
+      "Do not bypass those limits" in _WRITE_PROMPT)
 # The verdict is Chinese, so the sentence the user actually reads is pinned too.
 check("write-system-prompt::states-the-boundary-in-the-verdict-language",
       "需要重启实例才能继续" in _WRITE_PROMPT)
@@ -476,6 +485,7 @@ for _name, _cmd in [
     ("edit-a-broken-service-config", "sed -i 's/^c.ServerApp.certfile/#&/' /etc/jupyter/config.py"),
     ("back-up-a-system-file-before-editing", "cp /etc/hosts /etc/hosts.bak"),
     ("remove-an-empty-directory", "rmdir /root/emptydir"),
+    ("install-a-removable-sudoers-drop-in", "install -m 440 /tmp/x /etc/sudoers.d/90-x"),
 ]:
     check(f"approvable-tier::{_name}", guardrails.classify(_cmd) == "mutating")
 
@@ -602,7 +612,6 @@ for _name, _cmd in [
     ("fstab-moved-away-is-also-fatal", "mv /etc/fstab /tmp/fstab.bak"),
     ("shadow-overwrite", "cp /tmp/shadow /etc/shadow"),
     ("sshd-config-overwrite", "echo x > /etc/ssh/sshd_config"),
-    ("sudoers-drop-in", "install -m 440 /tmp/x /etc/sudoers.d/90-x"),
     ("live-database-state", "echo x > /var/lib/mysql/ibdata1"),
     ("blank-a-system-file-via-dev-null", "install -m 000 /dev/null /etc/resolv.conf"),
 ]:

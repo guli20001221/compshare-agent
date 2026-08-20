@@ -41,7 +41,7 @@ jobs:
         run: go test ./... -count=1
 
       # The SSH-ops guardrails decide which commands may execute inside a customer instance,
-      # and until now NO job ran their tests — 353 classification cases and the whole scrub
+      # and until now NO job ran their tests — the classification corpus and the whole scrub
       # suite were manual-only, so a regression in the tier that separates "print the swap
       # table" from "enable swap" could reach production with CI green. Both files are
       # stdlib-only, self-contained, and exit non-zero on the first failure, so this costs

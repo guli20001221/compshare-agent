@@ -91,9 +91,19 @@ Unknown programs outside `/bin`, `/sbin`, `/usr/bin` and `/usr/sbin` require a c
 their path alone is not evidence of a read-only effect. An application interpreter is classified by
 the effect of its invocation instead: a Python/Conda `-c` or `-m` probe may run immediately when
 `_is_readonly_py_invocation` structurally proves it read-only, regardless of the environment path.
-Unproved interpreter payloads and other unknown executables still require confirmation. This lets
-diagnosis measure the application's actual runtime without turning arbitrary executable paths into
-silent execution; production write mode does not confirm commands classified `read_only`.
+That proof covers the expressed Python payload, not the executable's identity: `/tmp/python` and a
+Conda interpreter are intentionally treated alike inside the tenant's own guest. Unproved interpreter
+payloads and other unknown executables still require confirmation; production write mode does not
+confirm commands classified `read_only`.
+
+The write gate follows an operations boundary rather than treating every high-impact action as
+unavailable: observe the pre-state, show the exact change, preserve a rollback where practical, and
+verify afterwards. Reversible guest-local changes such as disabling a non-management service,
+`swapoff`, a single `chmod`/`chattr`, or a removable `sudoers.d` drop-in are `mutating` and therefore
+require confirmation. Hard refusal is reserved for data/metadata destruction with no reliable undo,
+boot/login/SSH/network recovery loss, raw-device operations, power actions, credential-bearing command
+text, and actions that leave the guest for another control plane. The main `/etc/sudoers` remains a
+recovery boundary; `/etc/sudoers.d/<file>` does not inherit that blanket rule.
 
 ### Canonical transcript and context
 

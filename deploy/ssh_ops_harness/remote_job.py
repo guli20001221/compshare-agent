@@ -8,8 +8,6 @@ import ssh_transport
 
 _JOB_ROOT = "/tmp/compshare-ops-jobs"
 _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
-_LOG_LIMIT_BLOCKS = 131072  # POSIX ulimit -f uses 512-byte blocks: 64 MiB per output file.
-_LOG_LIMIT_BYTES = _LOG_LIMIT_BLOCKS * 512
 _RETURN_LOG_BYTES = 16000
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 
@@ -17,7 +15,9 @@ START_DESCRIPTION = (
     "Start one previously diagnosed, user-approved remote command as a durable background job when "
     "it cannot finish inside the 25-second SSH command bound (for example package installation, a "
     "model download, or compilation). The tool creates a private job directory, detaches stdin and "
-    "both output streams, caps each log at 64 MiB, records the exit code, and returns a job_id. The "
+    "both output streams, records the exit code, and returns a job_id. Check available disk space "
+    "before starting large work; poll returns bounded log tails even though the on-instance logs "
+    "remain complete. The "
     "exact original command is shown on the approval card. Use poll_background_job on later calls; "
     "do not resend the foreground command or hand-roll nohup/redirection. This does not authorize a "
     "broader repair, destructive operation, reboot, or substitute platform service.")
@@ -25,8 +25,9 @@ START_DESCRIPTION = (
 POLL_DESCRIPTION = (
     "Read the state and bounded stdout/stderr tail of a background job previously returned by "
     "start_background_job. This is read-only. It accepts only the opaque job-NNN ID and cannot read "
-    "an arbitrary path. `running` means the recorded PID still exists; `completed` includes its exit "
-    "code; `interrupted` means no completion record and no process (for example after a restart).")
+    "an arbitrary path. `running` means the recorded PID still exists; `succeeded` means exit code "
+    "zero; `failed` includes the non-zero exit code; `interrupted` means no completion record and no "
+    "process (for example after a restart).")
 
 
 def start_schema():
@@ -92,10 +93,14 @@ def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh):
     status_tmp, status = directory + "/status.tmp", directory + "/status"
     # The original command runs in a subshell so an `exit` inside it cannot skip the completion
     # record. The trusted wrapper is generated locally after policy/confirmation; it is never model
-    # input and is not what the audit displays. stdout/stderr are detached and bounded on the box.
-    body = ("ulimit -f %d; ( %s ); rc=$?; printf '%%s\\n' \"$rc\" > %s; mv %s %s" %
-            (_LOG_LIMIT_BLOCKS, command, shlex.quote(status_tmp),
-             shlex.quote(status_tmp), shlex.quote(status)))
+    # input and is not what the audit displays. stdout/stderr are detached from the SSH session.
+    #
+    # Do NOT impose RLIMIT_FSIZE here. A limit inherited by the payload applies to every file it
+    # writes, not merely stdout/stderr: large wheels, model shards and compiler outputs are cut off
+    # with SIGXFSZ and left partial. poll() bounds what crosses the model boundary without changing
+    # the approved job's filesystem semantics.
+    body = ("( %s ); rc=$?; printf '%%s\\n' \"$rc\" > %s; mv %s %s" %
+            (command, shlex.quote(status_tmp), shlex.quote(status_tmp), shlex.quote(status)))
     launcher = (
         "umask 077; mkdir -p %s || exit $?; "
         "nohup env COMPSHARE_OPS_JOB_ID=%s bash -c %s </dev/null >%s 2>%s & job_pid=$!; "
@@ -120,7 +125,7 @@ def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh):
                 "exit_code": result.get("exit_code"), "box_may_be_changed": True,
                 "poll_with": "poll_background_job"}
     return {"ok": True, "job_id": job_id, "state": "started", "purpose": purpose,
-            "log_limit_bytes_each": _LOG_LIMIT_BYTES, "poll_with": "poll_background_job"}
+            "poll_with": "poll_background_job"}
 
 
 def _read(sftp, path, limit, tail=False):
@@ -175,7 +180,8 @@ def poll(conn, job_id, secrets=(), opener=ssh_transport.open_client):
         pid_text = pid_b.decode("ascii", "ignore").strip()
         exit_code = None
         if re.fullmatch(r"-?\d+", status_text):
-            state, exit_code = "completed", int(status_text)
+            exit_code = int(status_text)
+            state = "succeeded" if exit_code == 0 else "failed"
         elif re.fullmatch(r"\d+", pid_text):
             try:
                 sftp.lstat("/proc/%s/stat" % pid_text)

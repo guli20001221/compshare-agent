@@ -11,6 +11,11 @@ Three tiers (mirror internal/tools/safe_executor.go semantics):
   - mutating   : requires explicit human confirm
   - destructive: hard-refused, even with confirm  (checked FIRST, unconditional)
 
+This is an operations gate for the tenant's own guest, not a general-purpose hostile-code sandbox.
+Prefer observable pre-state, exact approval and a recoverable change. Reserve the hard-refused tier
+for effects that lose data/recovery access, make the guest unbootable, or cross into another control
+plane; a high-impact but reversible guest change belongs behind a confirmation card.
+
 Two adversarial red-team rounds shaped this. Round 1 closed exfil/streaming/destructive holes.
 Round 2's lesson: the hardening must NOT destroy the lane's OWN diagnostics — SSH auth logs,
 checksums (sha256sum), git/docker IDs, and `KeyError:` tracebacks were being over-redacted, and
@@ -34,8 +39,9 @@ program named by absolute path auto-runs as a read only from /bin, /sbin, /usr/b
 /usr/sbin. Everything else — /tmp/x, /root/payload, /opt/app/bin/run — gets a confirmation
 card. The one narrow exception is a path-qualified Python/Conda interpreter whose `-c` or
 `-m` payload passes the same structural read-only proof as bare `python`: the path spelling
-must not turn an already-proven CUDA/package inspection into a write. An unsafe payload,
-relative executable, script, or unknown absolute binary still asks first.
+must not turn an already-proven CUDA/package inspection into a write. This proves the payload's
+expressed effect, not the executable's identity; `/tmp/python` and a Conda interpreter are treated
+the same. An unsafe payload, relative executable, script, or unknown absolute binary still asks first.
 
 This rule deliberately does NOT try to establish that a path is trustworthy. /root/x/bin/payload
 and /root/x/payload carry the same real risk; separating them needs a growing list of exceptions
@@ -95,9 +101,10 @@ _WRITE_LAST_ARG = r"(?:cp|install|ln)"
 # need in order to recover it. These are the deliberate CARVE-OUTS from the 2026-07-30 narrowing
 # further down: /etc as a whole moved to `mutating` because that is where a broken service's config
 # lives and refusing it refused the repair — but these specific paths are not service config. A bad
-# fstab line makes the box unbootable; passwd/shadow/group/sudoers/ssh each end the login path;
+# fstab line makes the box unbootable; passwd/shadow/group/the main sudoers file/ssh each end the
+# login path. A sudoers.d drop-in remains an exact, removable guest change behind confirmation;
 # /var/lib holds live database and container state, so a write there is data loss, not a config fix.
-_LOCKOUT_BODY = (r"/(?:etc/(?:fstab|crypttab|passwd|shadow|gshadow|group|sudoers(?:\.d)?|ssh"
+_LOCKOUT_BODY = (r"/(?:etc/(?:fstab|crypttab|passwd|shadow|gshadow|group|sudoers|ssh"
                  r"|default/grub)|var/lib)")
 _LOCKOUT_PATHS = _LOCKOUT_BODY + r"(?:/|\s|$)"
 # The same paths, but only where they are the LAST argument — i.e. the destination.
@@ -201,12 +208,11 @@ _DESTRUCTIVE_SRC = [
     # config, so nothing in the measured runs needed them and a bad write there is either
     # unbootable or unrecoverable. The first cut of this narrowing dropped /var/lib along with the
     # rest, which was loosening with no evidence behind it.
-    # perms / immutability / lockout
-    r"\bchmod\b.*\s-R\b", r"\bchown\b.*\s-R\b", r"\bchmod\b.*\b777\b",
-    r"\bchattr\b[^\n]*\s\+[iae]\b",
+    # Recursive ownership/mode rewrites discard old metadata for an unknown tree. A single chmod
+    # (including 777) or chattr change is reversible and therefore stays `mutating`.
+    r"\bchmod\b.*\s-R\b", r"\bchown\b.*\s-R\b",
     # firewall / services / management-channel lockout
     r"\biptables\b\s+-F", r"\bufw\b\s+disable",
-    r"\bsystemctl\b\s+(disable|mask)\b",
     # `restart`/`reload` on ssh join stop/kill as of 2026-07-30, and the reason is a measurement:
     # on a live box, SIGHUP to sshd with ONE bad directive in its config did not fail safe the way
     # nginx does — OpenSSH re-execs itself on HUP, the re-exec failed, and the daemon DIED (port
@@ -215,7 +221,7 @@ _DESTRUCTIVE_SRC = [
     # reload is fatal, so it must not be one consent-card click away.
     # `start` is deliberately NOT here: it is the recovery direction, it cannot lose a daemon that
     # is already down, and it stays approvable.
-    r"\bsystemctl\b\s+(stop|kill|restart|reload|try-restart|force-reload)\s+\S*(ssh|network)",
+    r"\bsystemctl\b[^\n]*\b(stop|kill|restart|reload|try-restart|force-reload|disable|mask)\b[^\n]*\b\S*(ssh|network)\S*\b",
     r"\bservice\b\s+\S*(ssh|network)\S*\s+(stop|restart|reload|force-reload)\b",
     # process kill of init / critical daemons
     r"\bkill\b\s+(-\w+\s+)*-?1(\s|$)",
@@ -224,8 +230,6 @@ _DESTRUCTIVE_SRC = [
     r"\bkubectl\b[^\n]*\bdelete\b",
     r"\bdocker\b[^\n]*\b(system\s+prune|volume\s+rm|rmi|image\s+prune|container\s+prune)\b",
     r"\bhelm\b[^\n]*\b(uninstall|delete)\b",
-    # availability
-    r"\bswapoff\b",
     # fork bomb / cron
     r":\s*\(\s*\)\s*\{", r"\bcrontab\b\s+-r",
     # credential-bearing commands: never run a command that inlines a secret
@@ -1521,12 +1525,15 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # the spelling alone win before this proof forced a confirmation for torch.cuda.is_available()
     # and made read-only runs infer CUDA health from files instead of measuring it. This exception
     # is deliberately Python-only and payload-proven: /tmp/x and /opt/app/bin/run still card below,
-    # while os.system/open(..., 'w')/subprocess remain mutating through the AST gate.
+    # while os.system/open(..., 'w')/subprocess remain mutating through the AST gate. It does NOT
+    # attest the interpreter binary itself; accepting `/tmp/python` and `/opt/venv/bin/python`
+    # equally is the explicit capability tradeoff for diagnosis inside the customer's own guest.
     if ("/" in raw0 and _PYTHON_BINARY.fullmatch(binary)
             and _is_readonly_py_invocation(binary, seg)):
         return False
-    # Any other non-system absolute program still asks first. This judges the PATH, never a claimed
-    # basename: naming an arbitrary payload `/tmp/nvidia-smi` does not make it a trusted diagnostic.
+    # Any other non-system absolute program still asks first. Outside the Python exception above,
+    # this judges the PATH rather than a claimed basename: naming an arbitrary payload
+    # `/tmp/nvidia-smi` does not make it an unattended diagnostic.
     if "/" in raw0 and not _is_system_program_path(raw0):
         return True
     if binary in _WRAPPER_BINARIES:                       # the effect is the INNER command's

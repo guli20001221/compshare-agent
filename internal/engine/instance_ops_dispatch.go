@@ -477,8 +477,9 @@ func instanceOpsPhaseNoun() string {
 
 // A refusal in write mode is NOT "只读模式" — that wording sent the user looking for a switch that
 // was already on. Write mode still refuses for several distinct reasons — the destructive tier, the
-// shape gate, a command too long to fit on a card, an unverified platform service, and each of the
-// ways a per-command card can end without an approval — so the reason has to name which one.
+// shape gate, a command too long to fit on a card, an unverified platform service, a failed
+// structured-tool precondition, and each way a per-command card can end without approval — so the
+// reason has to name which one.
 //
 // That plurality is the whole problem the `reason` argument fixes. The harness distinguishes more
 // dispositions than the three-valued wire `disposition` can carry, so this function had nothing to
@@ -514,6 +515,8 @@ func instanceOpsRefusalReason(reason string) string {
 		return "命令过长，无法完整展示在确认卡上"
 	case "refused_unmanaged_platform_service":
 		return "未核实平台入口契约，不能直接启动 FileBrowser；需先确认镜像服务管理方式和平台映射"
+	case "refused_precondition":
+		return "前置条件未满足，操作未执行；请按工具返回的具体原因检查参数或重新读取目标状态后重试"
 	case "refused_mutating_phase1":
 		return "会修改实例环境（只读模式）"
 	}

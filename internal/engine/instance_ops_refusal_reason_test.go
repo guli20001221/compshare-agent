@@ -24,6 +24,7 @@ func TestEachRefusalReasonIsDistinguishable(t *testing.T) {
 		"refused_not_approved",
 		"refused_unconfirmable",
 		"refused_unmanaged_platform_service",
+		"refused_precondition",
 		"refused_mutating_phase1",
 	}
 	seen := map[string]string{}
@@ -61,6 +62,11 @@ func TestShapeRefusalIsNotWordedAsAPolicyRefusal(t *testing.T) {
 	platform := instanceOpsRefusalReason("refused_unmanaged_platform_service")
 	if !strings.Contains(platform, "平台入口") || !strings.Contains(platform, "FileBrowser") {
 		t.Fatalf("an unverified platform-service refusal must explain the actual boundary, got %q", platform)
+	}
+	precondition := instanceOpsRefusalReason("refused_precondition")
+	if !strings.Contains(precondition, "前置条件") || !strings.Contains(precondition, "重新读取") ||
+		strings.Contains(precondition, "高危") || strings.Contains(precondition, "只读模式") {
+		t.Fatalf("a stale or invalid precondition must tell the operator how to retry, got %q", precondition)
 	}
 }
 
