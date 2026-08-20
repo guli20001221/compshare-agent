@@ -140,6 +140,10 @@ const (
 	// happened. Verified as +118 runes / +348 bytes in ALL THREE shapes — the same
 	// delta everywhere is what shows it landed once in a shared segment rather
 	// than in a mode-specific one.
+	//
+	// It is a general rule, not the incident's fix: a replay probe against the
+	// real model produced the substitution 8/8 without it and 8/10 with it. The
+	// confirmation card is what changed, and it is what to change if this recurs.
 	mutatingReActPromptSHA256 = "78106c71420f5a521bba11c987ea2b0bb6b370cbfa05f84f38034a7186f9d841"
 	readOnlyReActPromptSHA256 = "bc41be1dc16c163a51b84736585ad589cba86e50818bd97dc88dda230ea7ac78"
 

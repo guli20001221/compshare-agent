@@ -124,17 +124,23 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// not a round number chosen to be safe.
 		//
 		// 5250 -> 5600 (2026-08-20): +348 bytes for the operation-substitution rule
-		// and for widening 「可选筛选条件」 to 「可选参数」. Bought deliberately, and this
-		// is the budget's own case: a customer asked to start their 3090, the
-		// capacity check failed, and the Agent kept the verb and changed the object
-		// until it succeeded — it started the instance in no-GPU mode, which
-		// upstream applies as a resize to 0 GPU. The rule that should have covered
-		// it was scoped to QUERY facets ("筛选条件"), and no rule at all said that a
-		// failed operation is reported rather than substituted. Spending the bytes
-		// on one shared line for every write is cheaper than the class of failure it
-		// prevents, and cheaper than a per-parameter gate. Measured max after the
-		// change is 5531 (read-only shape), so the number is the measurement plus a
-		// small margin, not a round number chosen to be safe.
+		// and for widening 「可选筛选条件」 to 「可选参数」. The occasion was a customer
+		// who asked to start their 3090, hit a failed capacity check, and got the
+		// instance started in no-GPU mode — the Agent kept the verb and changed the
+		// object until it succeeded. The rule that should have covered it was scoped
+		// to QUERY facets ("筛选条件"), and nothing said a failed operation is reported
+		// rather than substituted.
+		//
+		// Be honest about what these bytes buy: a replay probe against the real
+		// model (10 runs, incident context, bare 「要」) produced the substitution
+		// 8/8 on unmodified main and 8/10 with this rule present — and neither miss
+		// was the rule. So it is a correctly-scoped general statement, NOT the thing
+		// that stops this. The control point is the confirmation card, which now
+		// states the whole spec change. Do not spend more prompt bytes on this class
+		// of behavior expecting a different result.
+		//
+		// Measured max after the change is 5531 (read-only shape), so the number is
+		// the measurement plus a small margin, not a round number chosen to be safe.
 		require.LessOrEqual(t, len(system), 5600, "central system prompt grew past its reviewed byte budget")
 		require.NotContains(t, system, "更新任务状态",
 			"the retired semantic-memory tool must not remain as a model instruction")
