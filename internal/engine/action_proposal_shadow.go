@@ -169,13 +169,6 @@ func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolve
 	return evidenceSpanForCodec(question, evidence.Start, evidence.End, codec)
 }
 
-// requiresPositiveQuote names the enum fields whose provenance may come ONLY from
-// the Agent pointing at a positive current-message quote — never from the canonical
-// wire value happening to appear in the sentence.
-func requiresPositiveQuote(name string) bool {
-	return name == "ImageSource" || name == "WithoutGpuSpec"
-}
-
 func normalizedEnumValueFromPhrase(name, phrase string) (string, bool) {
 	switch name {
 	case "ChargeType":
@@ -191,62 +184,12 @@ func normalizedEnumValueFromPhrase(name, phrase string) (string, bool) {
 		case "sharing", "shared", "共享", "共享镜像":
 			return "sharing", true
 		}
-	case "WithoutGpuSpec":
-		// The consent this gate is about is 无卡 vs 带卡, not which of the two
-		// no-GPU tiers: a user asks for 无卡开机, never for "A" or "B", and which
-		// tier is legal is a platform constraint (pods take A only,
-		// validateWithoutGPUStart enforces it) rather than something they chose.
-		// So both wire values and every 无卡 phrasing normalize to one token.
-		switch strings.TrimSpace(phrase) {
-		// The wire values, so the two sides of the comparison meet — plus the
-		// canonical token itself, because normalizedEnumValuesEqual canonicalizes
-		// BOTH sides and therefore feeds this function its own output. Unlike
-		// ImageSource, whose canonical values ("community") are also phrases a user
-		// writes, this field's canonical token is one this function invented.
-		case "A", "B", withoutGPUConsentToken:
-			return withoutGPUConsentToken, true
-		}
-		// ONE product term, not a synonym list, and checked with the repo's single
-		// reviewed provenance primitive rather than a new string-heuristic site
-		// (architectureguard exempts platform.ContainsLiteralSpan by name; it also
-		// applies the shared whitespace/case folding). Same shape and same reason
-		// as deployment.ExplicitChargeTypeFromPhrase: a bounded product vocabulary
-		// checked as a literal span of the quote, because where the quote ends is
-		// the Agent's choice.
-		//
-		// 无卡 is what the platform itself calls this mode — the console control,
-		// the docs, and upstream's own refusal text ("该实例不支持无卡开机"). Measured
-		// over 5262 distinct real user messages in the eval/reports prod exports:
-		// 无卡 appears 52 times; 不带卡 / 不挂卡 / 不带显卡 zero times; 不带/不要/不用 GPU
-		// four times, every one of them a question ABOUT the product ("不用GPU的话，
-		// 还收费吗？", "有没有不带gpu的实例") rather than a request to switch an instance.
-		// A synonym list here would be several entries of guesswork around one
-		// measured word; its absence costs one clarifying turn for a phrasing that
-		// has not occurred.
-		//
-		// It shares ImageSource's documented hole — a negation ("不要无卡") contains
-		// the term — which is why the Agent must POSITIVELY point at the span, and
-		// why the confirmation card states the whole spec change before anything
-		// runs.
-		if platform.ContainsLiteralSpan(phrase, withoutGPUProductTerm) {
-			return withoutGPUConsentToken, true
-		}
 	}
 	return "", false
 }
 
-const (
-	// withoutGPUProductTerm is the platform's own name for the mode, and the only
-	// term that identifies it.
-	withoutGPUProductTerm = "无卡"
-	// withoutGPUConsentToken is the canonical form both sides of a WithoutGpuSpec
-	// comparison reduce to. It is not a wire value and never leaves this
-	// comparison — the tier the user gets is still "A" or "B".
-	withoutGPUConsentToken = "without_gpu"
-)
-
 func normalizedEnumValuesEqual(name, left, right string) bool {
-	if name == "ImageSource" || name == "WithoutGpuSpec" {
+	if name == "ImageSource" {
 		leftCanonical, leftOK := normalizedEnumValueFromPhrase(name, left)
 		rightCanonical, rightOK := normalizedEnumValueFromPhrase(name, right)
 		return leftOK && rightOK && leftCanonical == rightCanonical
@@ -631,12 +574,7 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 		// canonical wire value itself appears in the sentence. Otherwise a negated
 		// or comparative mention such as "不要 community" would bypass the model's
 		// required positive-selection quote and be promoted automatically.
-		//
-		// WithoutGpuSpec is excluded for a sharper version of the same reason: its
-		// wire values are the bare letters "A" and "B", which occur in ordinary
-		// sentences ("A 那台开机", "选 B 方案") having nothing to do with no-GPU mode.
-		// A literal match on a single letter is not evidence of anything.
-		if !requiresPositiveQuote(candidate.Name) && isString && strings.TrimSpace(value) != "" {
+		if candidate.Name != "ImageSource" && isString && strings.TrimSpace(value) != "" {
 			if start, end, ok := uniqueQuoteForCodec([]rune(view.CurrentQuestion), []rune(value), field.Codec); ok {
 				candidate.Source = actionresolver.SourceUserExplicit
 				candidate.Evidence = &actionresolver.SourceEvidence{

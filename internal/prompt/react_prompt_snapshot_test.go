@@ -127,8 +127,21 @@ const (
 	// overdue-limited, grace period, reclaiming) so the rule cannot swallow the
 	// states that ARE recoverable. Verified byte-for-byte as exactly one added
 	// line in all three shapes; +294 bytes each.
-	mutatingReActPromptSHA256 = "13299dbaeba6fe8ca4f1c44cb79ceda9cf92a742da37276652c974640eb7f333"
-	readOnlyReActPromptSHA256 = "d89a59945d64e5a9ebcbcf368efd07b6115269ec79ec85cf66d340b58c529080"
+	// 2026-08-20: one line widened and one added, both in the shared behavior
+	// segment, after a production incident. The widened line said 「工具参数中的可选
+	// 筛选条件只填写用户已经明确表达的条件」 — 筛选条件 scopes it to QUERY facets, and the
+	// parameter that changed a customer's instance from 3090×1/16C/64GB to
+	// 0 GPU/2C/4GB was optional but was not a filter, so the rule that should have
+	// covered it read as being about something else. It now says 可选参数.
+	// The added line names the other half of the same failure: the user asked for
+	// a start, the start had no capacity, and the Agent kept the verb and changed
+	// the object until it succeeded. Stated once, for every write, and enumerating
+	// the axes (规格/机型/卡数/可用区/镜像/计费方式/运行模式) rather than the one that
+	// happened. Verified as +118 runes / +348 bytes in ALL THREE shapes — the same
+	// delta everywhere is what shows it landed once in a shared segment rather
+	// than in a mode-specific one.
+	mutatingReActPromptSHA256 = "78106c71420f5a521bba11c987ea2b0bb6b370cbfa05f84f38034a7186f9d841"
+	readOnlyReActPromptSHA256 = "bc41be1dc16c163a51b84736585ad589cba86e50818bd97dc88dda230ea7ac78"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
 	// That leaves the rollout shape unpinned: deploy/conf/config.prod.yaml already sets
@@ -137,7 +150,7 @@ const (
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
 	// third SHA pins that combination. It includes the same shared 2026-07-31
 	// catalog-candidate contract as the two snapshots above.
-	mutatingWithRepairLaneReActPromptSHA256 = "a4d6e30358e6c0f34ff84c2848ed2c7d266f0cd8ce1f0d49fef5dee519f145a9"
+	mutatingWithRepairLaneReActPromptSHA256 = "1f09da3d031dbb4459422d79c5495fdf6adb6d38644c83311e870fe2df221705"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

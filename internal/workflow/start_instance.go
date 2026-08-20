@@ -21,8 +21,9 @@ const (
 	// leaves by being stopped — the instance's configured spec is now 0 GPU, and
 	// getting the original back needs the target zone to have that GPU available
 	// again. A parameter that reads like a boot flag is therefore an irreversible
-	// spec change wearing a boot flag's name; see UserRequestedOnlyFields below
-	// for the gate that keeps the Agent from reaching for it uninvited.
+	// spec change wearing a boot flag's name — which is why its schema description
+	// says so in those terms, and why the confirmation card below states the whole
+	// before→after instead of describing the instance as it currently is.
 	withoutGPUSpecA = "A"
 	withoutGPUSpecB = "B"
 )
@@ -39,10 +40,6 @@ func StartInstanceDef() *Definition {
 			stepConfirmStart(),
 			stepStartInstance(),
 		},
-		// A no-GPU start is a different operation from a start, not a variant of
-		// one: it resizes the instance to 0 GPU first (see the const block above).
-		// Only the user may ask for it.
-		UserRequestedOnlyFields: []string{"WithoutGpuSpec"},
 	}
 }
 
