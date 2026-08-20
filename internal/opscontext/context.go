@@ -76,6 +76,12 @@ type Context struct {
 	PriorUserReports  []UserReport `json:"prior_user_reports,omitempty"`
 	PlatformFacts     []Fact       `json:"platform_facts,omitempty"`
 	Coverage          uint32       `json:"-"`
+	// EndpointTargets are private, server-selected capabilities for the endpoint probe tool. They
+	// are deliberately excluded from Context's JSON representation: URL query strings can contain
+	// live console tokens and hosts are outside the model-visible allowlist. Supervisor serializes
+	// this slice under its own stdin-only handshake key, while the model receives only each target's
+	// opaque ID and non-secret label through the MCP tool schema.
+	EndpointTargets []EndpointTarget `json:"-"`
 }
 
 // Enabled reports whether this payload uses the currently supported schema.
@@ -100,4 +106,18 @@ type Fact struct {
 	Source     string `json:"source"`
 	ObservedAt string `json:"observed_at"`
 	Status     string `json:"status"`
+}
+
+// EndpointTarget is one control-plane-selected endpoint the harness may probe from its own network
+// vantage. It is never accepted from model input: the model supplies only ID and the harness resolves
+// it against this list. URL and Host therefore remain private transport data, not prompt context or
+// audit data. Kind is "http" or "tcp".
+type EndpointTarget struct {
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Label  string `json:"label"`
+	Source string `json:"source"`
+	URL    string `json:"url,omitempty"`
+	Host   string `json:"host,omitempty"`
+	Port   int    `json:"port,omitempty"`
 }

@@ -5,7 +5,7 @@ Run:  python test_write_mode.py   ->  exits non-zero on ANY failure.
 The point of this file is the boundary BETWEEN the two modes. Three properties have to hold, and
 the third is the one that is easy to lose:
 
-  1. allow_writes off  -> byte-for-byte the lane that was measured read-only. Nothing executes.
+  1. allow_writes off  -> only commands proven read-only execute; the instance is not changed.
   2. allow_writes on   -> the mutating tier executes, so the agent can actually repair.
   3. allow_writes on   -> the DESTRUCTIVE tier and the SHAPE gate are unchanged.
 
@@ -31,6 +31,11 @@ def check(name, cond):
     if not cond:
         FAILS.append(name)
         print(f"XX  {name}")
+
+
+def flat(text):
+    """Compare prose semantics without coupling tests to source line wrapping."""
+    return " ".join(text.split())
 
 
 _REAL_RUN_SSH = ssh_transport.run_ssh
@@ -120,7 +125,7 @@ res, entry = dispatch(unsafe_filebrowser, allow_writes=True)
 check("filebrowser-direct-launch-is-refused",
       res["executed"] is False and entry["disposition"] == "refused_unmanaged_platform_service")
 check("filebrowser-refusal-explains-platform-contract",
-      "console File Browser" in res["text"] and "local HTTP" in res["text"])
+      "platform-managed entry" in res["text"] and "external route" in res["text"])
 check("filebrowser-refusal-keeps-wire-shape",
       harness._wire_disposition(entry["disposition"]) == "refused")
 check("filebrowser-guard-recognizes-nohup-wrapper",
@@ -146,10 +151,49 @@ for allow in (False, True):
     res, entry = dispatch("nvidia-smi", allow_writes=allow)
     check(f"read-runs::allow={allow}", res["executed"] is True and entry["disposition"] == "ran_read_only")
 
-# --- the two system prompts are distinct and each states its own contract ------------------------
-check("readonly-prompt-says-readonly", "Stay read-only" in harness.system_prompt(False))
-check("write-prompt-authorizes-repair", "authorized repair" in harness.system_prompt(True))
-check("write-prompt-names-hard-limits", "hard-refused" in harness.system_prompt(True))
+# --- the two system prompts share one diagnostic protocol and state distinct authorization -------
+check("readonly-prompt-says-readonly",
+      "Authorization: diagnosis only" in harness.system_prompt(False) and
+      "Do not change the instance" in harness.system_prompt(False))
+check("write-prompt-authorizes-repair",
+      "authorized the repair workflow" in harness.system_prompt(True) and
+      "requires approval of that exact effect" in harness.system_prompt(True))
+check("write-prompt-names-hard-limits", "refuses them unconditionally" in harness.system_prompt(True))
+
+# The prompt is one stable diagnostic protocol plus a mode policy, not two independently patched
+# playbooks. Both modes must preserve the same evidence model and diagnostic loop, then select one
+# and only one authorization contract.
+_READ_PROMPT = harness.system_prompt(False)
+_WRITE_PROMPT = harness.system_prompt(True)
+for _mode, _prompt in (("read", _READ_PROMPT), ("write", _WRITE_PROMPT)):
+    check(f"prompt-contract::{_mode}::shared-core", _prompt.startswith(harness._SYSTEM_PROMPT_CORE))
+    check(f"prompt-contract::{_mode}::structured",
+          all(section in _prompt for section in ("## Evidence model", "## Diagnostic loop",
+                                                  "## Authorization:", "## Final response")))
+    check(f"prompt-contract::{_mode}::layered-evidence",
+          all(layer in _prompt for layer in ("Control-plane metadata", "guest state",
+                                              "application state", "external reachability")))
+    check(f"prompt-contract::{_mode}::outcome-driven",
+          "observable success criterion" in _prompt and "original success criterion" in _prompt)
+    check(f"prompt-contract::{_mode}::actual-runtime",
+          "application's real" in _prompt and "virtualenv or Conda" in _prompt)
+    check(f"prompt-contract::{_mode}::managed-ownership-invariant",
+          "controller's ownership state" in _prompt and
+          "drift rather than proof" in _prompt)
+check("prompt-contract::write-reconciles-owner-before-start-and-polls-terminal-state",
+      "Reconcile an existing ownership conflict" in _WRITE_PROMPT and
+      "bounded-poll transitional manager states" in _WRITE_PROMPT and
+      "terminal result" in _WRITE_PROMPT)
+check("prompt-contract::mode-policy-is-exclusive",
+      "Authorization: diagnosis only" in _READ_PROMPT and
+      "Authorization: diagnose, repair, verify" not in _READ_PROMPT and
+      "Authorization: diagnose, repair, verify" in _WRITE_PROMPT and
+      "Authorization: diagnosis only" not in _WRITE_PROMPT)
+check("prompt-contract::no-incident-specific-patches",
+      all(token not in (_READ_PROMPT + _WRITE_PROMPT).lower()
+          for token in ("filebrowser", "main.py", "/start.d/", "8188", "comfyui")))
+check("prompt-contract::within-argv-safe-band",
+      len(_READ_PROMPT) < 5000 and len(_WRITE_PROMPT) < 5000)
 # 2026-07-31: the write prompt used to spend 458 of its 1852 characters arbitrating between the two
 # skills — which one describes itself as read-only, which one replaces the other's section 4, which
 # one wins. A tool-call census killed that text: 11 instrumented runs across BOTH modes logged 89
@@ -172,23 +216,41 @@ check("write-prompt-names-no-skill", "skill" not in harness.system_prompt(True).
 check("write-tool-desc-does-not-forbid-writes",
       "Read-only commands only" not in harness.tool_description(True))
 check("write-tool-desc-says-changes-run",
-      "CHANGES the box" in harness.tool_description(True))
-# The specific failure was describe-instead-of-do, so the description says so in those words.
+      "state-changing repair" in harness.tool_description(True) and
+      "approves that exact command" in harness.tool_description(True))
+# The contract tells the model to submit an evidence-backed action rather than stopping at prose.
 check("write-tool-desc-says-send-not-describe",
-      "do not describe it and stop" in harness.tool_description(True))
+      "send the smallest concrete command" in harness.tool_description(True))
 # Hard limits stay stated so the agent does not plan around commands the executor will reject.
 check("write-tool-desc-keeps-hard-limits",
-      "refused outright" in harness.tool_description(True))
+      "Destructive operations" in harness.tool_description(True) and
+      "are refused" in harness.tool_description(True))
 check("write-tool-desc-forbids-invented-platform-entrypoints",
-      "never directly launch a standalone `filebrowser` binary" in harness.tool_description(True))
-# Read-only mode must be BYTE-IDENTICAL to what was measured — this is the description that was in
-# the decorator literal before it became mode-dependent.
-check("readonly-tool-desc-byte-identical",
-      harness.tool_description(False) == (
-          "Run ONE read-only diagnostic shell command on the remote GPU instance over SSH and return "
-          "its output. Read-only commands only; one command per call; no chaining/pipes/redirection."))
+      "platform-facing port" in harness.tool_description(True) and
+      "substitute service" in harness.tool_description(True))
+# Tool descriptions are behavioral contracts, not a growing list of executable-path exceptions.
+check("readonly-tool-desc-states-execution-semantics",
+      all(needle in harness.tool_description(False) for needle in
+          ("fresh, non-interactive SSH session", "25 seconds", "prove read-only", "exit status")))
+check("both-tool-descriptions-prefer-the-actual-runtime",
+      all("application's actual interpreter" in harness.tool_description(mode)
+          for mode in (False, True)))
+check("both-tool-descriptions-require-managed-ownership",
+      all("surviving" in harness.tool_description(mode) and
+          ("controller ownership" in harness.tool_description(mode) or
+           "outside that ownership" in harness.tool_description(mode))
+          for mode in (False, True)))
+check("write-tool-description-reconciles-owner-and-polls-transition",
+      "reconcile any surviving child outside that ownership" in harness.tool_description(True) and
+      "transitional manager states" in harness.tool_description(True) and
+      "terminal result" in harness.tool_description(True))
 check("tool-desc-differs-by-mode",
       harness.tool_description(True) != harness.tool_description(False))
+check("tool-desc-contracts-stay-general",
+      all(token not in (harness.TOOL_DESC + harness.TOOL_DESC_WRITE).lower()
+          for token in ("filebrowser", "main.py", "/start.d/", "8188", "python -c")))
+check("tool-desc-contracts-stay-focused",
+      len(harness.TOOL_DESC) < 1000 and len(harness.TOOL_DESC_WRITE) < 2000)
 
 # --- the description must not forbid what the executor allows ------------------------------------
 # The clause "no chaining/pipes/redirection" predates the 2026-07-23 deny-by-EFFECT gate and is now
@@ -203,12 +265,15 @@ check("gate-actually-allows-redirect",
 check("gate-actually-allows-pipe", guardrails.classify("ps aux | grep -i comfy") == "read_only")
 check("write-tool-desc-drops-false-shape-clause",
       "no chaining/pipes/redirection" not in harness.tool_description(True))
-# The BrokenPipe death: a live repair started the service, the exec returned, the pipe closed and the
-# process died seconds later. `nohup` alone does not fix it (nohup only diverts to nohup.out when
-# stdout is a TTY; over an ssh exec it is a pipe — verified on a real box: no nohup.out is created).
-# So the description must name the REDIRECT, not just backgrounding.
-check("write-tool-desc-teaches-detach", "> /path/to/log 2>&1 &" in harness.tool_description(True))
-check("write-tool-desc-says-nohup-insufficient", "`nohup` alone does not" in harness.tool_description(True))
+# The BrokenPipe/exit-124 lesson is now executable structure rather than a shell recipe the model has
+# to reproduce. The SSH description must route long work to the two reviewed tools and must not keep
+# teaching a parallel hand-rolled protocol that can drift from them.
+check("write-tool-desc-routes-long-work-to-structured-job",
+      "structured background-job tools" in harness.tool_description(True) and
+      "do not hand-roll detachment" in harness.tool_description(True))
+check("write-surface-has-start-and-poll-job-tools",
+      all(name in harness.allowed_tools(True) for name in
+          ("mcp__ssh_ops__start_background_job", "mcp__ssh_ops__poll_background_job")))
 
 # --- BOTH skills are GONE: instance-repair 2026-08-08, instance-triage 2026-08-14 ----------------
 # instance-repair existed to arbitrate one contradiction: instance-triage was read-only THROUGHOUT
@@ -241,6 +306,15 @@ check("readonly-prompt-does-not-claim-skill-load",
 # how the playbook reaches the model"; with no playbook that justification is empty, and INV-9 is
 # back to its original posture — no built-in exists on the control-plane host.
 check("skill-tool-no-longer-exists", harness.TOOLS_BASE == [])
+check("atomic-file-tool-exists-only-in-write-mode",
+      "mcp__ssh_ops__atomic_text_replace" not in harness.allowed_tools(False) and
+      "mcp__ssh_ops__atomic_text_replace" in harness.allowed_tools(True))
+check("endpoint-probe-exists-in-both-modes",
+      "mcp__ssh_ops__endpoint_probe" in harness.allowed_tools(False) and
+      "mcp__ssh_ops__endpoint_probe" in harness.allowed_tools(True))
+check("atomic-file-tool-is-hash-bound-and-backed-up",
+      all(term in harness.atomic_file.TOOL_DESCRIPTION
+          for term in ("SHA-256", "same-directory backup", "atomically renames")))
 
 # --- the lane repairs what it was asked about, and recommends the rest (2026-07-31) --------------
 # Two live frontend runs went past the request. On one the lane moved /workspace/ComfyUI aside and
@@ -251,10 +325,10 @@ check("skill-tool-no-longer-exists", harness.TOOLS_BASE == [])
 # is the channel with evidence of landing (a detach protocol added there was adopted verbatim 2/2,
 # while system-prompt rules went 0/3).
 for _name, _needle in [
-    ("states the scope", "Repair the fault you diagnosed and nothing else"),
+    ("states the scope", "within the diagnosed fault"),
     ("names redeploying an app", "re-downloading an application"),
-    ("names taking a service down", "taking down a service the user did not ask about"),
-    ("routes it to the user rather than forbidding it", "let the user decide"),
+    ("names taking a service down", "disabling an unrelated service"),
+    ("routes it to the user rather than forbidding it", "unless the assigned task explicitly requests it"),
 ]:
     check(f"write-tool-desc-bounds-scope::{_name}", _needle in harness.tool_description(True))
 # Read-only mode cannot overreach — it executes nothing — so its description stays unchanged.
@@ -267,13 +341,16 @@ check("readonly-tool-desc-unchanged-by-scope-rule",
 _WRITE_DESC = harness.tool_description(True)
 _WRITE_PROMPT = harness.system_prompt(True)
 check("write-tool-desc::reformats-form-refusals",
-      "command FORM rejected" in _WRITE_DESC and "rewrite it as a supported single plain command" in _WRITE_DESC)
+      "command-form rejection may be rewritten into a supported plain form" in flat(_WRITE_DESC))
 check("write-system-prompt::reformats-form-refusals",
-      "command FORM rejected" in _WRITE_PROMPT and "reformulate it as a supported single plain command" in _WRITE_PROMPT)
+      "rejects only the command form" in _WRITE_PROMPT and "rewrite it into a supported plain command" in _WRITE_PROMPT)
 check("write-system-prompt::does-not-manualize-unapproved-writes",
-      "do not tell the user to run them manually" in _WRITE_PROMPT)
+      "do not turn the command into a manual instruction" in _WRITE_PROMPT)
+check("write-system-prompt::does-not-bypass-denied-effect",
+      "denied command's intended effect is also denied" in _WRITE_PROMPT and
+      "broader fallback" in _WRITE_PROMPT)
 check("write-system-prompt::labels-waiting-for-confirmation",
-      "等待你确认" in _WRITE_PROMPT and "unapproved command into a manual user task" in _WRITE_PROMPT)
+      "等待你确认" in _WRITE_PROMPT and "approval is pending or denied" in _WRITE_PROMPT)
 check("write-prompts::name-the-user-not-an-operator",
       "operator" not in _WRITE_DESC and "operator" not in _WRITE_PROMPT)
 
@@ -290,14 +367,18 @@ check("write-prompts::name-the-user-not-an-operator",
 # model ASK, which is a question the user can answer on the following turn and the outer agent can
 # act on with RebootInstanceWorkflow. Both surfaces carry all four clauses; they are asserted
 # together because a rule present in only one of them is a rule the model may not see.
-for _name, _needle in [
-    ("forbids inventing an app entry", "invent an application-specific platform entry"),
-    ("names the boundary", "the instance has to be restarted before this can continue"),
-    ("asks instead of dead-ending", "ask whether the user wants it restarted"),
-    ("still blocks the guest-shell workaround", "work around it from the guest shell"),
-]:
-    check(f"write-tool-desc-platform-boundary::{_name}", _needle in _WRITE_DESC)
-    check(f"write-system-prompt-platform-boundary::{_name}", _needle in _WRITE_PROMPT)
+check("write-tool-desc-platform-boundary::forbids-invention",
+      "platform-facing port" in _WRITE_DESC and "substitute service" in _WRITE_DESC)
+check("write-system-prompt-platform-boundary::forbids-invention",
+      "invent a platform-facing" in _WRITE_PROMPT and "substitute service" in _WRITE_PROMPT)
+check("write-tool-desc-platform-boundary::names-and-hands-off-restart",
+      "Restarting the instance is unavailable" in _WRITE_DESC and
+      "ask whether the user wants the instance restarted" in _WRITE_DESC and
+      "guest-shell" in _WRITE_DESC)
+check("write-system-prompt-platform-boundary::names-and-hands-off-restart",
+      "需要重启实例才能继续" in _WRITE_PROMPT and
+      "ask whether the user wants the instance restarted" in flat(_WRITE_PROMPT) and
+      "Do not plan around or bypass" in _WRITE_PROMPT)
 # The verdict is Chinese, so the sentence the user actually reads is pinned too.
 check("write-system-prompt::states-the-boundary-in-the-verdict-language",
       "需要重启实例才能继续" in _WRITE_PROMPT)
@@ -324,18 +405,22 @@ _td = harness.tool_description(True)
 # never opened /start.d — its log mtime never moved). It lives in the TOOL DESCRIPTION now: that is
 # the only channel with evidence of landing (detach protocol adopted verbatim 2/2, system prompt
 # rules 0/3). Asserted in BOTH directions so it cannot quietly drift back to the dead channel.
-check("tooldesc-rule-prefer-image-launcher", "start it the way the image starts it" in _td)
-check("tooldesc-rule-names-the-bypass-it-makes", "main.py" in _td)  # the exact entrypoint it reaches for
-check("prompt-no-longer-carries-launcher-rule", "prefer the image's OWN launcher" not in _wp)
+check("tooldesc-rule-prefer-image-launcher",
+      "use its existing supervisor" in _td and "rather than starting an inner binary" in _td)
+check("prompt-and-tool-align-on-managed-service-ownership",
+      "identify its existing supervisor" in _wp and "use its existing supervisor" in _td)
+check("prompts-drop-product-specific-launcher-patches",
+      all(token not in (_wp + _td).lower() for token in ("filebrowser", "main.py", "/start.d/")))
 # Replaces the before/after diff, which could not fire: in the fault under test BOTH ports start
 # down, so "was up before" is empty. This asks about the ports the LAUNCHER defines instead, which is
 # exactly the 7860 case — a port the repair never restored rather than one it broke.
 check("tooldesc-rule-verify-every-launcher-port",
-      "confirm EVERY port it starts is listening" in _td)
+      "Verify the full service contract owned by the launcher" in _td)
 check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
 check("prompt-rule-verdict-sections-inline", "已执行的修复 / 验证 / 未处理" in _wp)
 check("prompt-rule-own-failed-commands",
-      "INCLUDING any that failed" in _wp and "never fold a command of yours" in _wp)
+      "attempts that ran but failed" in _wp and "label it as your action" in _wp and
+      "pending or denied operation as executed" in _wp)
 # The verdict shape must NOT be delegated to a skill the model never opens.
 check("prompt-does-not-delegate-verdict-to-skill",
       "in the form `instance-repair` specifies" not in _wp)
@@ -348,10 +433,10 @@ check("readonly-prompt-untouched-by-repair-rules", "start it the way the image s
 # reads them, or deleting it lost something. Each is asserted against the live prompt/description
 # rather than against a file, which is the whole point of the move.
 check("repair-rule-executed-section-survives", "已执行的修复" in _wp)
-check("repair-rule-redirect-survives", "> /path/to/log 2>&1 &" in _td)
-check("repair-rule-nohup-insufficient-survives", "`nohup` alone does not" in _td)
+check("repair-rule-long-job-lifecycle-survives",
+      "structured background-job tools" in _td and "timed-out foreground command" in _td)
 check("repair-rule-own-failed-attempts-survives",
-      "INCLUDING any that failed" in _wp and "labelled as your own attempt" in _wp)
+      "attempts that ran but failed" in _wp and "label it as your action" in _wp)
 
 # The working root is the real boundary, and it outlived the skills. The CLI discovers content by
 # walking UP from cwd, so anything left on disk near it is reachable by a read-only run — that is how

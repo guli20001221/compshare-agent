@@ -17,10 +17,10 @@
 //	SSHH_CONTEXT_CURRENT_REPORT optionally supplies the raw user wording for the enabled arm.
 //
 // What these tests do NOT cover, so nobody reads a green live run as broader than it is:
-//   - No write is ever executed. TestLiveFullFlow skips itself under SSHH_ALLOW_WRITES=1 and
-//     TestLiveKeystone passes a nil ConfirmFunc, so the mutating tier is refused in both. The
-//     write lane's live validation (2026-08-13, fault injected and repaired on a real pod) was
-//     manual and is not reproduced here.
+//   - The ordinary TestLiveFullFlow and TestLiveKeystone never execute writes. A separate,
+//     exact-name TestLiveOpsWriteCanary exists for a dedicated disposable instance; it requires
+//     SSHH_WRITE_CANARY=1 + SSHH_ALLOW_WRITES=1 + one SSHH_APPROVE_EXACT value and denies every
+//     other proposal. It is not selected accidentally by the ordinary live command.
 //   - No database. They use MemAuditWriter, so migration 0013's columns, the fail-closed INSERT
 //     and the INV-9 UNIQUE(turn_id, task_hash) replay refusal are covered only by unit tests.
 //   - No production dial path. There is no internal-IPv6 resolver here, so the address these
@@ -291,6 +291,38 @@ func TestLiveFullFlow(t *testing.T) {
 	t.Logf("[context] requested_schema=%d delivered_schema=%d coverage=%d commands=%d refused=%d first=%s",
 		audit.Events[0].ContextSchemaVersion, audit.Events[1].ContextSchemaVersion, audit.Events[1].ContextFactCoverage,
 		audit.Events[1].CommandsRan, audit.Events[1].CommandsRefused, audit.Events[1].FirstCommandClass)
+}
+
+// TestLiveEndpointTargetInventory is a no-model, no-SSH sanity probe for the private endpoint-target
+// projection. It lists only IDs and non-secret labels/counts; raw Software URLs, hosts, tokens and
+// credentials are deliberately never logged. Enable explicitly with SSHH_ENDPOINT_INVENTORY=1.
+func TestLiveEndpointTargetInventory(t *testing.T) {
+	if os.Getenv("SSHH_ENDPOINT_INVENTORY") != "1" {
+		t.Skip("set SSHH_ENDPOINT_INVENTORY=1")
+	}
+	d, ctx := liveRealDescriber(t)
+	raw, err := d.Execute(ctx, "DescribeCompShareInstance", map[string]any{})
+	if err != nil {
+		t.Fatalf("DescribeCompShareInstance: %v", err)
+	}
+	count := 0
+	for _, key := range []string{"UHostSet", "UHostInstanceSet", "Instances", "DataSet"} {
+		for _, item := range instanceContextMapSlice(raw[key]) {
+			count++
+			software, _ := instanceContextDeclaredSoftware(item)
+			targets := instanceEndpointTargets(item)
+			summaries := make([]string, 0, len(targets))
+			for _, target := range targets {
+				summaries = append(summaries, target.ID+":"+target.Kind+":"+target.Label)
+			}
+			t.Logf("instance=%s state=%s gpu=%s declared_software=%v endpoint_targets=%v",
+				instanceIDOf(item), allowlistedString(item, "State"), allowlistedString(item, "GpuType"),
+				software, summaries)
+		}
+	}
+	if count == 0 {
+		t.Fatal("DescribeCompShareInstance returned no instance rows")
+	}
 }
 
 func containsSecret(s, secret string) bool {

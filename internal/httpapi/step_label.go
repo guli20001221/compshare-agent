@@ -84,7 +84,9 @@ var stepActionLabels = map[string]string{
 	// The lane's own card says 实例内排查与修复 (it authorizes entering the box). This one authorizes
 	// ONE change and is shown with the literal command, so it must not reuse that label — a user who
 	// sees the same words twice cannot tell which question they just answered.
-	"InstanceOpsWriteCommand": "执行实例内修复命令",
+	// The same gate now covers literal shell commands and hash-bound structured file/job operations.
+	// "操作" is the honest common label; the card summary still shows the exact effect being approved.
+	"InstanceOpsWriteCommand": "执行实例内修复操作",
 
 	// --- internal/engine: not a tool at all -------------------------------
 	// The deterministic notice a turn emits when the PREVIOUS diagnosis ended without a verdict.

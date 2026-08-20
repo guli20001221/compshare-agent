@@ -1,8 +1,24 @@
 # 实例内排查与修复（SSH-ops）部署
 
-平台 API 看不到实例内部。用户在授权卡上点同意后，助手 SSH 进他自己的实例执行命令定位问题，
-再动手修复并验证，每条改动命令单独弹一次授权卡。删除数据、格式化、重启关机、改账号密码、
+平台 API 看不到实例内部。用户在授权卡上点同意后，助手通过受控工具观察平台入口和实例内部，
+再动手修复并验证，每项改动操作单独弹一次授权卡。删除数据、格式化、重启关机、改账号密码、
 关 SSH/网络这类高危操作一律拒绝。审计 fail-closed：写不进审计表就不进用户机器。
+
+当前工具面没有开放 Claude Code 的本地 Bash/Read/Write/Web：
+
+- `ssh_exec`：在目标实例执行一条有界命令；读操作直接运行，写操作逐项确认。
+- `endpoint_probe`：只接受服务端从 `Softwares[].URL` / `TcpForwards` 派生的 opaque ID。
+  HTTP 只发一次有界 GET、TCP 只 connect 不发数据；模型不能传 URL、主机、端口、header 或 body，
+  返回值也不带真实地址或 URL 中的 token。结果只证明 ssh-ops runner 这一网络视角。
+- `start_background_job` / `poll_background_job`：写模式下将已经诊断清楚、已经逐项确认的长命令
+  放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，日志有上限，PID 带 job marker，完成码
+  原子落盘。轮询只接受 `job-...` ID，不能借它读取任意路径。
+- `atomic_text_replace`：写模式下对一个既有 UTF-8 普通文件做一次 SHA-256 绑定的精确替换；批准后
+  再检查 hash/metadata，保留同目录备份并使用 OpenSSH `posix-rename` 原子替换。确认卡和审计只显示
+  路径、用途和前后 hash，不显示文件内容。
+
+平台入口 URL 及 SSH 地址只在 Go→harness 的 stdin 私有握手里存在；它们不进入 task、prompt、
+模型输出或审计。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。
 
 ## 生产配置
 
@@ -38,6 +54,10 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < deploy/migrations/0013_add_ssh_ops_con
 harness 显式设置 `cli_path` 使用 PATH 中的受控版本。它通过 `ANTHROPIC_BASE_URL=https://api.modelverse.cn` 和
 `ANTHROPIC_AUTH_TOKEN` 直连 ModelVerse；不需要 claude-code-router。Token 只进入该次
 Python/Claude CLI 子进程的最小环境，不会复用完整的服务进程环境。
+
+Windows 的 npm 安装会把 PATH 指向 `claude.CMD`。多行系统提示经 cmd.exe 转发会破坏 argv，表现为
+SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 包中优先调用
+`node_modules/@anthropic-ai/claude-code/bin/claude.exe`。Linux 路径不变。
 
 > ⚠️ Python 依赖、`claude` CLI 或到 ModelVerse 的网络缺失不会在启动时报错，要到第一次真实诊断
 > 才暴露，用户侧表现为这次排查失败。

@@ -201,6 +201,15 @@ check("context-over-size-is-not-acknowledged",
 _real_which = harness.shutil.which
 harness.shutil.which = lambda name: "/usr/local/bin/claude" if name == "claude" else None
 check("cli-selects-operator-pinned-binary", harness.resolve_claude_cli() == "/usr/local/bin/claude")
+_real_isfile = harness.os.path.isfile
+harness.os.path.isfile = lambda path: path.replace("\\", "/").endswith(
+    "node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+check("windows-cli-bypasses-cmd-shim-for-multiline-system-prompt",
+      harness._native_windows_cli("C:/npm/claude.CMD", "nt").replace("\\", "/") ==
+      "C:/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+check("non-windows-cli-path-is-unchanged",
+      harness._native_windows_cli("/usr/local/bin/claude", "posix") == "/usr/local/bin/claude")
+harness.os.path.isfile = _real_isfile
 harness.shutil.which = lambda _name: None
 try:
     harness.resolve_claude_cli()
@@ -510,7 +519,7 @@ check("blocking-command-partial-is-scrubbed", _PW not in _hung.get("partial", ""
 check("transport-keeps-benign", "role pw" in _res["stdout"])
 
 
-# --- INV-9: ssh_exec and NOTHING else — no built-in tool exists and no filesystem setting source is
+# --- INV-9: reviewed SDK MCP tools and NOTHING else — no built-in or filesystem setting source is
 # loaded. Fail CLOSED otherwise. `Skill` was the one permitted built-in until the last playbook was
 # deleted (2026-08-14); with nothing to load it is refused like every other built-in, and
 # `setting_sources` (which existed only for skill discovery) is now empty. ---
@@ -525,10 +534,17 @@ def opts(allowed, disallowed, sources, tools="DEFAULT", skills="DEFAULT"):
 
 good = opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [])
 try:
-    harness.assert_single_tool(good)
+    harness.assert_tool_surface(good)
     check("inv9-accepts-good", True)
 except SystemExit:
     check("inv9-accepts-good", False)
+
+good_write = opts(harness.ALLOWED_TOOLS_WRITE, harness.DISALLOWED_TOOLS, [])
+try:
+    harness.assert_tool_surface(good_write, allow_writes=True)
+    check("inv9-accepts-write-surface", True)
+except SystemExit:
+    check("inv9-accepts-write-surface", False)
 
 for name, bad in [
     ("inv9-rejects-extra-allowed", opts(harness.ALLOWED_TOOLS + ["Bash"], harness.DISALLOWED_TOOLS, [])),
@@ -564,7 +580,17 @@ for name, bad in [
         disallowed_tools=harness.DISALLOWED_TOOLS, setting_sources=[])),
 ]:
     try:
-        harness.assert_single_tool(bad)
+        harness.assert_tool_surface(bad)
+        check(name, False)
+    except SystemExit:
+        check(name, True)
+
+for name, candidate, mode in [
+    ("inv9-read-mode-rejects-file-writer", good_write, False),
+    ("inv9-write-mode-requires-file-writer", good, True),
+]:
+    try:
+        harness.assert_tool_surface(candidate, allow_writes=mode)
         check(name, False)
     except SystemExit:
         check(name, True)
@@ -575,7 +601,7 @@ for name, bad in [
 # personal one — into an agent whose verdict is shown to the customer. Nothing is staged into it any
 # more, and "nothing" is asserted: a stray .claude tree here would be discoverable content nobody
 # reviewed. This is the second defence; setting_sources=[] is the first.
-# Everything above asserts assert_single_tool against SYNTHESIZED namespaces, which cannot catch the
+# Everything above asserts assert_tool_surface against SYNTHESIZED namespaces, which cannot catch the
 # drift that matters most: build_options quietly constructing options that do not satisfy it. It is
 # fail-closed in production (the assert runs at the end of build_options, before any turn), but a
 # hand-built namespace passing proves nothing about the object the harness actually ships. So build
@@ -588,6 +614,9 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         harness.resolve_claude_cli = lambda: "stub-claude"
         _real_opts = harness.build_options(object(), "test-model", 5, False)  # SystemExit on INV-9 drift
         check("inv9-real-build-options-passes", True)
+        _real_write_opts = harness.build_options(object(), "test-model", 5, True)
+        check("inv9-real-write-build-options-passes",
+              list(_real_write_opts.allowed_tools) == harness.ALLOWED_TOOLS_WRITE)
     except SystemExit as exc:
         print(f"XX  inv9-real-build-options-passes: {exc}")
         FAILS.append("inv9-real-build-options-passes")
@@ -640,9 +669,9 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         # is how the repo's CLAUDE.md and the operator's ~/.claude reached a customer-facing agent.
         check("argv-setting-sources-flag-is-present-and-empty",
               any(a == "--setting-sources=" for a in _argv))
-        # Exactly the one MCP tool is auto-approved, and no Skill/Skill(name) rode along.
-        check("argv-allowed-tools-is-only-the-ssh-mcp-tool",
-              _flag_value("--allowedTools") == "mcp__ssh_ops__ssh_exec")
+        # Exactly the reviewed SDK MCP surface is auto-approved, and no Skill/Skill(name) rode along.
+        check("argv-allowed-tools-is-exact-reviewed-mcp-surface",
+              (_flag_value("--allowedTools") or "").split(",") == harness.ALLOWED_TOOLS)
         # The denylist is the third bar and must actually reach the process, Skill included.
         _denied = (_flag_value("--disallowedTools") or "").split(",")
         check("argv-disallowed-tools-carries-skill", "Skill" in _denied)
@@ -831,6 +860,7 @@ def _capture(fn):
 # every unit test green while the new audit receipt reports a fiction. The SDK is a tiny in-process
 # fake; no network, SSH, skill staging or local Claude CLI runs here.
 _captured_sdk_prompts = []
+_captured_sdk_servers = []
 
 
 async def _fake_query(prompt, options):
@@ -847,10 +877,28 @@ async def _fake_query(prompt, options):
 
 _fake_sdk = types.ModuleType("claude_agent_sdk")
 _fake_sdk.query = _fake_query
-_fake_sdk.tool = lambda *_args, **_kwargs: (lambda fn: fn)
-_fake_sdk.create_sdk_mcp_server = lambda **_kwargs: object()
+
+
+def _fake_tool(name, description, schema, **kwargs):
+    def decorate(fn):
+        fn._test_tool_name = name
+        fn._test_tool_description = description
+        fn._test_tool_schema = schema
+        fn._test_tool_annotations = kwargs.get("annotations")
+        return fn
+    return decorate
+
+
+def _fake_server(**kwargs):
+    _captured_sdk_servers.append(kwargs)
+    return object()
+
+
+_fake_sdk.tool = _fake_tool
+_fake_sdk.create_sdk_mcp_server = _fake_server
 _saved_sdk = sys.modules.get("claude_agent_sdk")
-_saved_stdin, _saved_conn, _saved_allow, _saved_preflight = sys.stdin, harness._CONN, harness._ALLOW_WRITES, harness.preflight_probe
+_saved_stdin, _saved_conn, _saved_allow = sys.stdin, harness._CONN, harness._ALLOW_WRITES
+_saved_targets, _saved_preflight = harness._ENDPOINT_TARGETS, harness.preflight_probe
 _saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
 try:
     sys.modules["claude_agent_sdk"] = _fake_sdk
@@ -860,11 +908,20 @@ try:
     sys.stdin = _io.StringIO(_json.dumps({
         "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
         "task": "诊断 8188 无法访问", "context": _reference_context,
+        "endpoint_targets": [{"id": "platform-http-1", "kind": "http",
+                              "label": "ComfyUI platform entry", "source": "Describe test",
+                              "url": "https://private.example.invalid/?token=never-render"}],
     }) + "\n")
     _main_output = _capture(lambda: _asyncio.run(harness.main()))
+    sys.stdin = _io.StringIO(_json.dumps({
+        "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
+        "task": "修复配置", "context": _reference_context, "allow_writes": True,
+    }) + "\n")
+    _main_write_output = _capture(lambda: _asyncio.run(harness.main()))
 finally:
     sys.stdin = _saved_stdin
     harness._CONN, harness._ALLOW_WRITES = _saved_conn, _saved_allow
+    harness._ENDPOINT_TARGETS = _saved_targets
     harness.preflight_probe, harness.stage_clean_workdir, harness.build_options = _saved_preflight, _saved_stage, _saved_options
     if _saved_sdk is None:
         sys.modules.pop("claude_agent_sdk", None)
@@ -872,11 +929,26 @@ finally:
         sys.modules["claude_agent_sdk"] = _saved_sdk
 
 check("context-main-passes-labelled-prompt-to-sdk",
-      len(_captured_sdk_prompts) == 1 and "<planner_task>" in _captured_sdk_prompts[0] and
+      len(_captured_sdk_prompts) == 2 and "<planner_task>" in _captured_sdk_prompts[0] and
       "<current_user_report>" in _captured_sdk_prompts[0] and "8188" in _captured_sdk_prompts[0])
 check("context-main-receipt-matches-sdk-prompt",
       '"context_applied": true' in _main_output.replace('"context_applied":true', '"context_applied": true'))
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
+_read_tools = _captured_sdk_servers[0]["tools"]
+_write_tools = _captured_sdk_servers[1]["tools"]
+check("main-registers-exact-read-tool-surface",
+      [tool._test_tool_name for tool in _read_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
+check("main-registers-exact-write-tool-surface",
+      [tool._test_tool_name for tool in _write_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS_WRITE])
+_endpoint_tool = next(tool for tool in _read_tools if tool._test_tool_name == "endpoint_probe")
+_endpoint_contract = _json.dumps({"description": _endpoint_tool._test_tool_description,
+                                  "schema": _endpoint_tool._test_tool_schema})
+check("endpoint-tool-exposes-only-opaque-target-id",
+      _endpoint_tool._test_tool_schema["properties"]["target_id"]["enum"] == ["platform-http-1"] and
+      all(field not in _endpoint_tool._test_tool_schema["properties"] for field in ("url", "host", "port")))
+check("endpoint-private-url-never-enters-prompt-or-tool-contract",
+      all(secret not in (_captured_sdk_prompts[0] + _endpoint_contract)
+          for secret in ("private.example.invalid", "never-render", "token=")))
 
 
 # The receipt is an ATTESTATION the audit stores, so it must not fire on a run the model never saw.

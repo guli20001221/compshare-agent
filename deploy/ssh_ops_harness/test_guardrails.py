@@ -293,9 +293,9 @@ CLASSIFY_CASES = [
     # was already read_only. What made this refused was the payload, and `import torch` is
     # now provably read-only (2026-07-26 AST rule below). Executing a RELATIVE path
     # (`./python …`) is still refused, which is the rule that guards unknown binaries.
-    # Re-baselined 2026-08-16 (F15): a venv python is not in a system program directory, so it
-    # asks first. It is a CARD, not a refusal — the probe still runs once the user clicks.
-    ("/root/badenv/bin/python -c 'import torch'", "mutating"),
+    # Re-baselined 2026-08-20: the interpreter path no longer defeats the existing AST proof.
+    # This import is proven read-only; unsafe payloads below still card regardless of the path.
+    ("/root/badenv/bin/python -c 'import torch'", "read_only"),
 
     # === 2026-07-26: `python -c` is classified STRUCTURALLY (AST), not by literal match ===
     # The previous rule allowed exactly seven torch payloads. It was sound but unusable:
@@ -310,11 +310,17 @@ CLASSIFY_CASES = [
     ('python3 -c "import torch;print(torch.cuda.is_available())"', "read_only"),     # spacing irrelevant
     ("python3 -c 'import torch; print(torch.cuda.device_count())'", "read_only"),
     ("python -c 'import torch; print(torch.__version__)'", "read_only"),             # `python`, not `python3`
-    ("/opt/conda/envs/comfyui/bin/python -c 'import torch; print(torch.cuda.is_available())'", "mutating"),  # abs-path env python: cards (F15)
+    ("/opt/conda/envs/comfyui/bin/python -c 'import torch; print(torch.cuda.is_available())'", "read_only"),
+    ("/usr/local/miniconda3/envs/py312/bin/python -c 'import torch; print(torch.cuda.device_count()); print(torch.cuda.is_available())'", "read_only"),
+    ("/usr/local/miniconda3/envs/py312/bin/python3.12 -c 'import torch; print(torch.cuda.is_available())'", "read_only"),
     # WIDENED — each of these was refused by the literal allowlist; all are reads.
     ("python -c 'import torch'", "read_only"),                                       # an import alone changes nothing
     ("python3 -c 'print(1)'", "read_only"),
     ('python3 -c "import torch; print(torch.cuda.is_available()); import os"', "read_only"),  # importing os != calling it
+    ('python3 -c "import urllib.request; r=urllib.request.urlopen(\'http://127.0.0.1:8889/\', timeout=5); print(r.status, r.getheader(\'content-type\'), len(r.read(256)))"', "read_only"),
+    ('/opt/app/venv/bin/python -c "from urllib.request import urlopen as get; r=get(\'http://[::1]:8080/health\', timeout=3); print(r.getcode())"', "read_only"),
+    ("curl -sS -D - -o /dev/null --max-time 5 http://127.0.0.1:8889/", "read_only"),
+    ("curl -sS --dump-header=- --output=/dev/null http://localhost:8889/", "read_only"),
     ('python3 -c "import torch; print(torch.save)"', "read_only"),                   # printing a function object is a read
     ("./python -c 'import torch'", "mutating"),                                       # relative path: unknown binary
     ("""python3 -c 'import yaml; print(yaml.safe_load(open("/root/cfg.yaml"))["port"])'""", "read_only"),
@@ -327,6 +333,21 @@ CLASSIFY_CASES = [
     ("python3 -m torch.utils.collect_env", "read_only"),
     # STILL REFUSED — widening the shape must not widen the effect.
     ('python3 -c "import os; os.system(chr(114))"', "mutating"),                     # call, not import
+    ('python3 -c "import urllib.request; print(urllib.request.urlopen(\'https://example.com/\').status)"', "mutating"),
+    ('python3 -c "import urllib.request; print(urllib.request.urlopen(\'http://127.0.0.1:8889/\', data=b\'x\').status)"', "mutating"),
+    ('python3 -c "import urllib.request; u=\'http://127.0.0.1:8889/\'; print(urllib.request.urlopen(u).status)"', "mutating"),
+    ("curl -sS -D /tmp/headers -o /dev/null http://127.0.0.1:8889/", "mutating"),
+    ("curl -sS -D - -o /tmp/body http://127.0.0.1:8889/", "mutating"),
+    ('python3.12 -c "import os; os.system(chr(114))"', "mutating"),                 # versioned name uses same AST gate
+    ('/usr/bin/python3.12 -c "import os; os.system(chr(114))"', "mutating"),        # system path cannot bypass it
+    ("python3.12 -c 'unknown_call()'", "mutating"),                                # unproved calls stay behind the card
+    ("/usr/bin/python3.12 -c 'unknown_call()'", "mutating"),                       # same outcome through a system path
+    ("python3.12 -m http.server", "mutating"),                                     # unapproved module does not fall through
+    ("/usr/bin/python3.12 -m http.server", "mutating"),                            # system path uses the same module gate
+    ('/usr/bin/python3.12 -c "import torch; print(torch.cuda.is_available())"', "read_only"),
+    ('/opt/conda/envs/comfyui/bin/python -c "import os; os.system(chr(114))"', "mutating"),  # path does not bypass AST
+    ('/opt/conda/envs/comfyui/bin/python3.12 -c "import os; os.system(chr(114))"', "mutating"),
+    ('/tmp/python -c "open(chr(47)+chr(120),chr(119))"', "mutating"),               # unproven write still cards
     ('python3 -c "open(chr(47)+chr(120),chr(119))"', "mutating"),                    # computed mode is unprovable
     ("python -c 'from os import system as s; s(1)'", "mutating"),                    # alias resolves to os.system
     ("python -c 'import os; os.popen(1)'", "mutating"),
@@ -628,9 +649,9 @@ CLASSIFY_CASES = [
     ("rm -rf /root/notcache", "destructive"),
 
     # --- F15: executing a file by ABSOLUTE path (2026-08-16) ---
-    # ONE rule: a program named by absolute path auto-runs as a read only from the four system
-    # program directories. Everything else asks first. `./x` was refused while `/tmp/x` was not,
-    # which was a distinction about how the path was SPELLED rather than about what it does.
+    # ONE general rule: a program named by absolute path auto-runs as a read only from the four
+    # system program directories. Everything else asks first, except path-qualified Python whose
+    # payload independently passes the AST/module read-only proof pinned above.
     #
     # A card is NOT a refusal. Every "mutating" below still runs once the user clicks it, so the
     # agent can use a venv python, a toolchain binary or an application launcher and still finish

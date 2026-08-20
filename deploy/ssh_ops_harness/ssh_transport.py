@@ -115,9 +115,13 @@ def _pump(chan, deadline_s: float = None):
             time.sleep(0.05)
 
 
-def run_ssh(conn: dict, command: str, secrets=()) -> dict:
-    """Run ONE command on `conn`. Returns a dict with redacted stdout/stderr, or {"error": class}.
-    The credential is used only for the paramiko auth and is never logged or returned."""
+def open_client(conn: dict):
+    """Open one credential-bounded SSH client, returning ``(client, error_dict)``.
+
+    Structured SFTP operations share this exact authentication boundary with shell execution.  The
+    error contains only a stable class; destination and credential are never returned or logged.
+    The caller owns and must close a successful client.
+    """
     warnings.filterwarnings("ignore")
     import paramiko                                       # lazy: keeps this module importable offline
 
@@ -133,12 +137,23 @@ def run_ssh(conn: dict, command: str, secrets=()) -> dict:
     else:
         kwargs["password"] = conn.get("password")
     try:
-        try:
-            client.connect(**kwargs)
-        except paramiko.AuthenticationException:
-            return {"error": "auth_failed"}              # stale credential — NEVER echo it
-        except Exception as e:                            # noqa: BLE001 — class name only, no detail/cred
-            return {"error": "connect_failed", "detail": type(e).__name__}
+        client.connect(**kwargs)
+        return client, None
+    except paramiko.AuthenticationException:
+        client.close()
+        return None, {"error": "auth_failed"}             # stale credential — NEVER echo it
+    except Exception as e:                                # noqa: BLE001 — class name only, no detail/cred
+        client.close()
+        return None, {"error": "connect_failed", "detail": type(e).__name__}
+
+
+def run_ssh(conn: dict, command: str, secrets=()) -> dict:
+    """Run ONE command on `conn`. Returns a dict with redacted stdout/stderr, or {"error": class}.
+    The credential is used only for the paramiko auth and is never logged or returned."""
+    client, connect_error = open_client(conn)
+    if connect_error:
+        return connect_error
+    try:
         _, so, se = client.exec_command(_bounded(command), timeout=_EXEC_TIMEOUT)
         out_b, err_b, timed_out = _pump(so.channel)
         if timed_out:

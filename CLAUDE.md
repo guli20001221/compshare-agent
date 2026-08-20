@@ -82,6 +82,19 @@ git config core.hooksPath .githooks
 | `USE_REACT_RESULT_PROJECTION` | `1` | Compresses large read tool results (list endpoints) before re-feeding ReAct. **Go code default off; deploy template ships it on.** |
 | `MYSQL_DSN` | DSN string | PostgreSQL libpq URL (env var name kept for compat). Required by `compshare-agent server`, the only entrypoint. |
 
+#### SSH-ops executable classification
+
+The interpreter rule in this subsection supersedes the older venv/Conda examples in the long
+`COMPSHARE_SSH_OPS` history row above.
+
+Unknown programs outside `/bin`, `/sbin`, `/usr/bin` and `/usr/sbin` require a confirmation card;
+their path alone is not evidence of a read-only effect. An application interpreter is classified by
+the effect of its invocation instead: a Python/Conda `-c` or `-m` probe may run immediately when
+`_is_readonly_py_invocation` structurally proves it read-only, regardless of the environment path.
+Unproved interpreter payloads and other unknown executables still require confirmation. This lets
+diagnosis measure the application's actual runtime without turning arbitrary executable paths into
+silent execution; production write mode does not confirm commands classified `read_only`.
+
 ### Canonical transcript and context
 
 `canonical_transcript` owns one complete pipeline: capture, persistence in the

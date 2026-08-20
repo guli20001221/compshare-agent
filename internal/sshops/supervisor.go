@@ -196,15 +196,19 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 	cmd.WaitDelay = 5 * time.Second                         // bound the post-kill wait if a pipe lingers
 
 	handshake, err := json.Marshal(map[string]any{
-		"host":         cred.Host,
-		"user":         cred.User,
-		"port":         cred.Port,
-		"password":     cred.password, // plaintext -> stdin only, never logged/returned
-		"instance_id":  cred.InstanceID,
-		"model":        s.Model,
-		"task":         task, // NL request -> stdin, off the host process table
-		"context":      modelContext,
-		"allow_writes": s.AllowWrites,
+		"host":        cred.Host,
+		"user":        cred.User,
+		"port":        cred.Port,
+		"password":    cred.password, // plaintext -> stdin only, never logged/returned
+		"instance_id": cred.InstanceID,
+		"model":       s.Model,
+		"task":        task, // NL request -> stdin, off the host process table
+		"context":     modelContext,
+		// Private destinations for the structured endpoint probe. Context itself omits these fields,
+		// so URLs carrying console tokens and raw hosts never enter the model prompt or audit record.
+		// The harness exposes only opaque IDs and resolves them against this stdin-only list.
+		"endpoint_targets": modelContext.EndpointTargets,
+		"allow_writes":     s.AllowWrites,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: marshal handshake: %w", err)
