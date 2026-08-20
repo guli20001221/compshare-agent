@@ -160,8 +160,7 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 			if ok {
 				description, _ := property["description"].(string)
 				property["description"] = strings.TrimSpace(description +
-					" 只有用户在当前消息里明确要求无卡时才填写本字段，并同时在 without_gpu_user_quote 里逐字填写用户的那句原话；" +
-					"带卡资源不足、开机失败或你判断无卡更容易成功，都不是填写它的理由——那种情况直接如实告诉用户，不要改用无卡。")
+					" 填写它时，必须同时在 without_gpu_user_quote 中逐字填写用户当前消息里提出该要求的原话片段。")
 			}
 		}
 		if name == "ImageSource" && field.Codec == actionresolver.CodecEnum {
@@ -189,8 +188,8 @@ func proposalToolForOperation(base openai.Tool, spec actionresolver.OperationSpe
 	if hasWithoutGpuPhraseField {
 		properties[proposalWithoutGpuUserQuoteField] = map[string]any{
 			"type": "string",
-			"description": "无卡开机原话证据。仅当用户在当前消息中明确要求无卡/不带卡开机时，" +
-				"填写对应的连续原文片段；用户只说“开机/启动/开起来”，或你是为了绕开库存不足才想用无卡，一律填写空字符串。",
+			"description": "无卡开机原话证据。仅当用户在当前消息中明确要求无卡开机时，填写对应的连续原文片段；" +
+				"否定、询问、历史提及，或该判断出自你自己，都不是用户的要求，此时填写空字符串。",
 		}
 	}
 	// A proposal may be intentionally incomplete: Resolver returns the exact

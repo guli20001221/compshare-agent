@@ -596,12 +596,10 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name: "StartInstanceWorkflow",
-			// 无卡开机 is described here as what it is — a spec change — because the
-			// old wording ("用于普通开机或无卡开机") presented it as a second flavour of the
-			// same act. When a 带卡 start had no stock, that reading made the no-GPU
-			// parameter look like the way to make the user's request succeed.
-			Description: "启动已有实例的候选请求。仅按用户要求的规格开机。目标规格没有库存时如实告知用户并让其等待或改期，" +
-				"不要改用无卡开机等其他规格替代——无卡开机会改变实例配置，是另一件事，只有用户明确要求时才做。开机方法或费用咨询不使用。",
+			// The old wording was "用于普通开机或无卡开机", which presents a spec change
+			// as a second flavour of the same act. What the operation is gets said
+			// here; what the no-GPU parameter does is said on the parameter.
+			Description: "启动已有实例的候选请求。用于用户要求实际开机；开机方法或费用咨询不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -613,14 +611,16 @@ var Registry = []openai.Tool{
 						"type": "string",
 						"enum": []string{"A", "B"},
 						// The old text described only the tiers, which reads as a boot
-						// option. What the parameter does is resize the instance — the
-						// GPU is given up, the original spec is archived, and getting it
-						// back needs that GPU to be available again. Say that, because
-						// the situation in which the Agent is most tempted to add this
-						// parameter is exactly the one in which it cannot be undone.
-						"description": "可选，且只在用户明确要求无卡时填写。它不是开机选项：平台会先把实例改配为无卡规格" +
-							"（A=2C/4GB，B=8C/16GB，GPU 归零，容器实例仅支持 A），再开机；原规格被存档，恢复需要该可用区当时有对应 GPU 库存，" +
-							"因此“带卡开不起来所以先无卡开”会让实例更难恢复。用户只说开机/启动时一律省略本字段。",
+						// option. What the parameter DOES is resize the instance: the
+						// GPU is given up, the original spec is archived, and getting
+						// it back depends on that GPU being available again. Those are
+						// facts about the operation and belong here. What must NOT
+						// accumulate here is guidance about particular situations —
+						// the resolver gate, not a sentence, is what stops an
+						// unrequested value, and a description that argues a case goes
+						// stale while the gate does not.
+						"description": "可选，仅在用户明确要求无卡时填写。它不是开机选项：平台会先把实例改配为无卡规格" +
+							"（A=2C/4GB，B=8C/16GB，GPU 归零，容器实例仅支持 A），再开机；原规格被存档，恢复它需要该可用区当时有对应 GPU 可用。",
 					},
 				},
 				"required": []string{"UHostId"},

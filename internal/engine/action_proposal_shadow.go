@@ -193,28 +193,57 @@ func normalizedEnumValueFromPhrase(name, phrase string) (string, bool) {
 		}
 	case "WithoutGpuSpec":
 		// The consent this gate is about is 无卡 vs 带卡, not which of the two
-		// no-GPU tiers. A user asks for "无卡开机"; they never type "A" or "B",
-		// and which tier is legal is a platform constraint (pods take A only,
+		// no-GPU tiers: a user asks for 无卡开机, never for "A" or "B", and which
+		// tier is legal is a platform constraint (pods take A only,
 		// validateWithoutGPUStart enforces it) rather than something they chose.
-		// So every 无卡 phrasing AND both wire values normalize to one token: a
-		// verified 无卡 quote authorizes a no-GPU start, and nothing else does.
+		// So both wire values and every 无卡 phrasing normalize to one token.
 		switch strings.TrimSpace(phrase) {
 		// The wire values, so the two sides of the comparison meet — plus the
 		// canonical token itself, because normalizedEnumValuesEqual canonicalizes
 		// BOTH sides and therefore feeds this function its own output. Unlike
 		// ImageSource, whose canonical values ("community") are also phrases a user
 		// writes, this field's canonical token is one this function invented.
-		case "A", "B", "without_gpu":
-			return "without_gpu", true
+		case "A", "B", withoutGPUConsentToken:
+			return withoutGPUConsentToken, true
 		}
-		switch strings.ToLower(strings.TrimSpace(phrase)) {
-		case "无卡", "无卡模式", "无卡开机", "无卡启动", "无卡运行",
-			"不带卡", "不挂卡", "不挂载gpu", "不要gpu", "不用gpu":
-			return "without_gpu", true
+		// ONE product term, not a synonym list, and checked with the repo's single
+		// reviewed provenance primitive rather than a new string-heuristic site
+		// (architectureguard exempts platform.ContainsLiteralSpan by name; it also
+		// applies the shared whitespace/case folding). Same shape and same reason
+		// as deployment.ExplicitChargeTypeFromPhrase: a bounded product vocabulary
+		// checked as a literal span of the quote, because where the quote ends is
+		// the Agent's choice.
+		//
+		// 无卡 is what the platform itself calls this mode — the console control,
+		// the docs, and upstream's own refusal text ("该实例不支持无卡开机"). Measured
+		// over 5262 distinct real user messages in the eval/reports prod exports:
+		// 无卡 appears 52 times; 不带卡 / 不挂卡 / 不带显卡 zero times; 不带/不要/不用 GPU
+		// four times, every one of them a question ABOUT the product ("不用GPU的话，
+		// 还收费吗？", "有没有不带gpu的实例") rather than a request to switch an instance.
+		// A synonym list here would be several entries of guesswork around one
+		// measured word; its absence costs one clarifying turn for a phrasing that
+		// has not occurred.
+		//
+		// It shares ImageSource's documented hole — a negation ("不要无卡") contains
+		// the term — which is why the Agent must POSITIVELY point at the span, and
+		// why the confirmation card states the whole spec change before anything
+		// runs.
+		if platform.ContainsLiteralSpan(phrase, withoutGPUProductTerm) {
+			return withoutGPUConsentToken, true
 		}
 	}
 	return "", false
 }
+
+const (
+	// withoutGPUProductTerm is the platform's own name for the mode, and the only
+	// term that identifies it.
+	withoutGPUProductTerm = "无卡"
+	// withoutGPUConsentToken is the canonical form both sides of a WithoutGpuSpec
+	// comparison reduce to. It is not a wire value and never leaves this
+	// comparison — the tier the user gets is still "A" or "B".
+	withoutGPUConsentToken = "without_gpu"
+)
 
 func normalizedEnumValuesEqual(name, left, right string) bool {
 	if name == "ImageSource" || name == "WithoutGpuSpec" {

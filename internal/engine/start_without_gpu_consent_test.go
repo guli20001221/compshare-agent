@@ -94,13 +94,26 @@ func TestTheStartTheUserAskedForStillReachesTheCard(t *testing.T) {
 }
 
 // A user who genuinely wants no-GPU mode still gets it, in one turn, by saying so.
+// The recognizer anchors on ONE word — 无卡, the platform's own name for the mode —
+// so the quote may be any natural span containing it rather than a member of a
+// synonym list. Measured over 5262 distinct real user messages in the eval/reports
+// prod exports: 无卡 appears 52 times, every paraphrase 0–4, and none of the four
+// 不带/不要/不用 GPU hits is an operative request (all are product questions).
 func TestAUserWhoAsksForNoGpuModeGetsIt(t *testing.T) {
-	for _, phrase := range []string{"无卡", "无卡模式", "无卡开机", "无卡启动", "不带卡"} {
-		t.Run(phrase, func(t *testing.T) {
-			action := resolveStart(t, "帮我把 uhost-1 用"+phrase+"起来", "turn-"+phrase, map[string]any{
+	tests := []struct{ question, quote string }{
+		{question: "把 uhost-1 无卡开机", quote: "无卡开机"},
+		{question: "uhost-1 用无卡模式启动一下", quote: "无卡模式"},
+		{question: "uhost-1 我要无卡", quote: "无卡"},
+		// A span the recognizer never saw as a list member, because it is a phrase
+		// rather than a term. This is the case an exact-match table gets wrong.
+		{question: "uhost-1 先用无卡的方式开起来", quote: "用无卡的方式"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.quote, func(t *testing.T) {
+			action := resolveStart(t, tt.question, "turn-"+tt.quote, map[string]any{
 				"UHostId":                        "uhost-1",
 				"WithoutGpuSpec":                 "A",
-				proposalWithoutGpuUserQuoteField: phrase,
+				proposalWithoutGpuUserQuoteField: tt.quote,
 			})
 
 			require.True(t, action.ReadyForConfirmation, action.Rejected)
@@ -108,6 +121,24 @@ func TestAUserWhoAsksForNoGpuModeGetsIt(t *testing.T) {
 			require.Equal(t, actionresolver.SourceUserExplicit, action.Provenance["WithoutGpuSpec"].Source)
 		})
 	}
+}
+
+// The stated cost of anchoring on the platform's own word: a phrasing that never
+// names the mode does not authorize it, and the user is asked instead. This is a
+// measured trade, not an oversight — 不带卡 / 不挂卡 / 不带显卡 occur zero times in
+// 5262 real user messages. It is pinned so that "add another synonym" is a
+// decision someone makes against the measurement rather than a silent widening.
+func TestAParaphraseThatNeverNamesTheModeDoesNotAuthorizeIt(t *testing.T) {
+	action := resolveStart(t, "uhost-1 不带卡开机", "turn-paraphrase", map[string]any{
+		"UHostId":                        "uhost-1",
+		"WithoutGpuSpec":                 "A",
+		proposalWithoutGpuUserQuoteField: "不带卡",
+	})
+
+	require.False(t, action.ReadyForConfirmation)
+	kind, ok := rejectionKindFor(action, "WithoutGpuSpec")
+	require.True(t, ok, "%v", action.RejectedProblems)
+	require.Equal(t, actionresolver.RejectRequiresUserRequest, kind)
 }
 
 // Either tier is authorized by the same 无卡 quote: the consent this gate is about
@@ -261,12 +292,14 @@ func TestTheStartToolOffersTheEvidenceField(t *testing.T) {
 	required, _ := root["required"].([]string)
 	require.NotContains(t, required, proposalWithoutGpuUserQuoteField)
 
-	// The description is the channel that measurably lands, so it must say what the
-	// parameter does (a resize) and rule out the reason the Agent reached for it.
+	// The description carries FACTS about the operation — that it resizes, and that
+	// undoing it depends on availability — plus the evidence field it pairs with.
+	// It deliberately carries no situational advice: the gate is what refuses an
+	// unrequested value, and a description that argues one case goes stale while
+	// the gate does not.
 	spec, _ := properties["WithoutGpuSpec"].(map[string]any)
 	description, _ := spec["description"].(string)
 	require.Contains(t, description, "改配")
-	require.Contains(t, description, "库存")
 	require.Contains(t, description, proposalWithoutGpuUserQuoteField)
 }
 
