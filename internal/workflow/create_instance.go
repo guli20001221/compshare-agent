@@ -1572,9 +1572,11 @@ func stepGuidedChooseImageSource() Step {
 
 const imageTaxonomyStepName = "查询镜像分类"
 
-// stepQueryImageTagCatalog fetches the platform's own image classification so the
+// stepQueryImageTagCatalog fetches the public catalog's own classification so the
 // filter card can offer 用途 categories instead of the raw tag strings that happen
-// to appear on this page of the catalog.
+// to appear on this page of the catalog. A custom source is a private account
+// inventory, not a public semantic catalog, so it goes straight to its real image
+// list without this taxonomy overlay.
 //
 // Optional and parameterless. A missing classification must leave the card exactly
 // as it was — degrade to the flat tag facet — never gray out or hide an image,
@@ -1588,7 +1590,7 @@ func stepQueryImageTagCatalog() Step {
 		Tool:     "DescribeCompShareImageTags",
 		Optional: true,
 		SkipIf: func(wfCtx *Context) (bool, error) {
-			return imageUserSettled(wfCtx), nil
+			return imageUserSettled(wfCtx) || customImageInventorySelected(wfCtx), nil
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{}
@@ -3615,6 +3617,9 @@ func imageSuggestionSettlesAxis(wfCtx *Context) bool {
 }
 
 func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
+	if customImageInventorySelected(wfCtx) {
+		return true, nil
+	}
 	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
 		imageSuggestionSettlesAxis(wfCtx) || catalogIntent {
 		return true, nil
@@ -3638,6 +3643,9 @@ func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
 // means exactly "no tag would have led anywhere". A one-option card (only 不限标签)
 // is not a choice, so it is skipped too.
 func shouldSkipGuidedImageTagStep(wfCtx *Context) (bool, error) {
+	if customImageInventorySelected(wfCtx) {
+		return true, nil
+	}
 	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
 		imageSuggestionSettlesAxis(wfCtx) || catalogIntent {
 		return true, nil
@@ -3707,6 +3715,16 @@ func imageUserSettled(wfCtx *Context) bool {
 		return true
 	}
 	return wfCtx.ImageSelection() == ImageSelectionUserPinned
+}
+
+// customImageInventorySelected keeps a user-selected self-made image source in
+// its proper domain: the current account's private artifact inventory. Unlike the
+// platform and community catalogs, it has no public category taxonomy to browse;
+// after the source card, the next image card lists exactly those tenant-visible
+// images. An exact custom ID is already covered by imageUserSettled, but this also
+// makes a deliberate "自制镜像" browse coherent when no ID was supplied.
+func customImageInventorySelected(wfCtx *Context) bool {
+	return wfCtx != nil && normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform)) == imageSourceCustom
 }
 
 // shouldSkipSourceReQuery skips the post-source re-query when an explicit image is
