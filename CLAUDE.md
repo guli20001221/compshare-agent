@@ -102,7 +102,8 @@ The server advertises `confirm_form_v1` and `guided_create_v1`; a client must op
 in on the turn before it receives those shapes. They are not server rollout
 flags.
 
-Malformed model-owned read-tool arguments use
+Model-owned read-tool arguments rejected by schema, grounding, or live-catalog
+validation use
 `status=needs_input,next_step=correct_tool_call` only with
 `INVALID_TOOL_ARGUMENTS`. They must not be converted into a question to the
 user. Incomplete provider output (`finish_reason` truncation or partial tool

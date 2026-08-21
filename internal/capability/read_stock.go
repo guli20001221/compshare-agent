@@ -78,10 +78,21 @@ type capacitySpec struct {
 	Label    string
 }
 
+// stockCapabilityDescription states this capability's own boundary. "接口不提供补货或
+// 到货时间" belongs in it: the upstream inventory APIs return a current count and
+// nothing about future supply, so 「什么时候补货」 has no source to answer from and
+// has to come back as a limit rather than an estimate.
+const stockCapabilityDescription = "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考，接口不提供补货或到货时间；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。"
+
+// The first call preserves the user's wording. If it does not match the live
+// catalog, the result gives the Agent that catalog and asks it to correct its own
+// call; a later call may therefore carry an exact catalog value instead.
+const stockZoneMentionsDescription = "首次调用填写用户本轮明确提到的可用区原文；工具返回实时目录后，语义唯一时可改用目录中的完整名称或 ZoneID 重试，存在多个合理候选时再请用户选择。不得默认区域或使用目录外的值。"
+
 func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse] {
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
 		Label:       stockCapabilityLabel,
-		Description: "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。",
+		Description: stockCapabilityDescription,
 		Params: objectParam(map[string]schemaNode{
 			// Deliberately undescribed. A description telling the model to carry the
 			// card forward when the user elides it would be the natural companion to
@@ -89,7 +100,7 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 			// Canonical transcript replay gives the model the earlier stock call;
 			// keep the schema concise and let it carry the referenced GPU explicitly.
 			"gpu_type":       stringParam(),
-			"zone_mentions":  arrayParam(stringParam()).described("用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。"),
+			"zone_mentions":  arrayParam(stringParam()).described(stockZoneMentionsDescription),
 			"inventory_pool": enumParam(stockInventoryPoolUnspecified, deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时填 Unspecified。"),
 		}),
 		Handle: stockHandle,
@@ -331,7 +342,7 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 	}
 	filter, unresolved := stockZoneFilterFromMentions(req.ZoneMentions, supportZones)
 	if len(unresolved) > 0 {
-		return "", false, ReadConflict(fmt.Sprintf("无法从平台实时可用区目录中精确确认这些区域：%s。请使用目录中的完整可用区名称或 ID。", strings.Join(unresolved, "、")))
+		return "", false, unmatchedZoneMentionResult(unresolved, supportZones)
 	}
 	allEntries := append([]stockInstanceTypeEntry(nil), entries...)
 	_, modelOrder := groupStockEntriesByModel(allEntries)
@@ -602,6 +613,41 @@ func stockSupportZones(ctx context.Context, rt ReadRuntime) ([]zones.ZoneInfo, e
 		return nil, fmt.Errorf("平台可用区目录为空")
 	}
 	return list, nil
+}
+
+// unmatchedZoneMentionResult answers a zone mention that names nothing in the
+// live catalog by handing over the catalog itself.
+//
+// It is deliberately NOT ReadConflict. Conflict means "this resolved to several
+// candidates, pick one", and the engine turns it into choose_alternative /
+// AMBIGUOUS_SELECTION / next_step=ask_user_to_choose — a shape whose only
+// recovery, per the tool-result contract the model is given, is to correct its
+// own call from the live catalog. Reporting "no match" as "several matches" made
+// that impossible and sent the question back to the user.
+//
+// What the capability CAN state is a fact it just fetched. This layer normalizes
+// format, never meaning — no alias table, no 2↔二 mapping, no city keywords —
+// so whether "华北2a" denotes 华北二A is a semantic judgment, and the Agent is
+// the component that can make it. It only needs to see the alternatives, and
+// they were already in this function's locals. The catalog is rendered by the
+// same producer the zone-catalog capability uses, so the two cannot drift into
+// describing the same zones differently.
+func unmatchedZoneMentionResult(unresolved []string, supportZones []zones.ZoneInfo) ReadResult {
+	result := zoneCatalogRender(ZoneCatalogResponse{
+		Records: zoneCatalogRecords(stockZoneCatalogSnapshot(supportZones)),
+	})
+	quoted := make([]string, 0, len(unresolved))
+	for _, mention := range unresolved {
+		quoted = append(quoted, "「"+mention+"」")
+	}
+	// Facts only. The engine supplies the corrective instruction on the outer
+	// AgentTool result; this text only explains what the live lookup established.
+	result.Reply = fmt.Sprintf(
+		"%s不是当前实时可用区目录中的可用区名称或 ZoneID，本次未按可用区查询库存。\n当前实时可用区目录：\n%s",
+		strings.Join(quoted, "、"), result.Reply)
+	result.Status = platform.ReadStatusNeedsInput
+	result.FallbackReason = platform.ReadFallbackValidation
+	return result
 }
 
 func stockZoneFilterFromMentions(mentions []string, supportZones []zones.ZoneInfo) (map[string]struct{}, []string) {

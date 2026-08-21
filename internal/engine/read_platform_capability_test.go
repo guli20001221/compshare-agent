@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
@@ -186,6 +187,13 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			arguments:    `{"time_window":{"type":"absolute","start":"2026-07-18 00:00","end":"2026-07-19 00:00","source_span":"昨天"}}`,
 			sourceStatus: "read_argument_grounding",
 		},
+		{
+			name:         "catalog zone without same-turn catalog evidence",
+			lastUser:     "华北2a 的 H20 现在有库存吗",
+			action:       capability.ReadToolName(intent.IntentStockAvailability),
+			arguments:    `{"gpu_type":"H20","zone_mentions":["cn-wlcb-01"],"inventory_pool":"Unspecified"}`,
+			sourceStatus: "read_argument_grounding",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			executor := &mockExecutor{}
@@ -204,6 +212,58 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			require.Empty(t, executor.calls, "a rejected call must not reach an upstream read")
 		})
 	}
+}
+
+func TestUnmatchedStockZoneIsCorrectedFromSameTurnLiveCatalog(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{
+				"Name": "H20", "Zone": "cn-wlcb-01", "Status": "Normal",
+				"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+			}},
+		},
+		"DescribeCompShareSupportZone": {"ZoneInfo": []any{
+			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(1), "Describe": "华北二A"},
+			map[string]any{"Zone": "cn-sh2-02", "Region": "cn-sh2", "ZoneId": float64(2), "Describe": "上海二B"},
+			map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
+			map[string]any{"Zone": "cn-wlcb-03", "Region": "cn-wlcb", "ZoneId": float64(10033), "Describe": "华北二C", "IsPod": true},
+		}},
+		"DescribeCompShareImages": {"ImageSet": []any{map[string]any{
+			"CompShareImageId": "img-system", "Status": "Available", "ImageType": "System",
+		}}},
+		"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{
+			"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true,
+		}}},
+		"DescribeCompShareGpuInventory": {"GpuInventory": map[string]any{
+			"Exclusive": map[string]any{"1": map[string]any{"H20": float64(1)}},
+		}},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "华北2a 的 H20 现在有库存吗"
+	action := capability.ReadToolName(intent.IntentStockAvailability)
+
+	first := eng.executeTool(context.Background(), toolCall("stock-raw", action,
+		`{"gpu_type":"H20","zone_mentions":["华北2a"],"inventory_pool":"Unspecified"}`), noopStep)
+	correction, ok := tools.ParseAgentToolResult(first)
+	require.True(t, ok, first)
+	require.Equal(t, tools.AgentToolNextCorrectToolCall, correction.NextStep)
+	require.Equal(t, tools.AgentToolCodeInvalidArguments, correction.Error.Code)
+	data, ok := correction.Data.(map[string]any)
+	require.True(t, ok)
+	evidence, ok := data["evidence"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(envelope.KindZoneCatalog), evidence["kind"])
+	require.Len(t, evidence["subjects"], 4, "the correction must carry the complete live catalog")
+	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
+
+	second := eng.executeTool(context.Background(), toolCall("stock-canonical", action,
+		`{"gpu_type":"H20","zone_mentions":["cn-wlcb-01"],"inventory_pool":"Unspecified"}`), noopStep)
+	var observation ReadCapabilityObservation
+	require.NoError(t, json.Unmarshal([]byte(second), &observation), second)
+	require.Equal(t, platform.ReadStatusHandled, observation.Status)
+	require.NotNil(t, observation.Envelope)
+	require.Contains(t, executor.calls, "CheckCompShareResourceCapacity",
+		"the corrected call must execute the requested stock query rather than stop at the catalog")
 }
 
 // TestAccountFinanceUnavailableReturnsStructuredUnavailable: the model-visible
