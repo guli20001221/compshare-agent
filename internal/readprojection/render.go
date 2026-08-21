@@ -62,10 +62,8 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnv
 			parts = append(parts, "镜像 "+cleanResourceText(inst.ImageType))
 		}
 		if inst.IsSpot {
-			// A spot instance's ChargeType is "Postpay", so rendering ChargeType alone
-			// printed 按量付费 for it — the same collapse the is_spot fact fixes upstream
-			// of here. 抢占式 already implies hourly postpay, so it replaces rather than
-			// joins the ChargeType word.
+			// Spot implies hourly postpay, so show the product mode rather than the
+			// ambiguous ChargeType word.
 			parts = append(parts, resourceChargeTypeLabel(deployment.ChargeTypeSpot))
 		} else if inst.ChargeType != "" {
 			parts = append(parts, resourceChargeTypeLabel(inst.ChargeType))
@@ -158,9 +156,8 @@ func resourceStateLabel(state string) string {
 // no other part of the product uses.
 func ChargeTypeLabel(chargeType string) string { return resourceChargeTypeLabel(chargeType) }
 
-// spotFactValue spells the is_spot envelope fact. 是/否 rather than true/false
-// because the fact exists to be read in a Chinese answer, and "否" must be as
-// quotable as "是" — the Agent needs a grounded way to say "不是抢占式" too.
+// spotFactValue keeps the model-visible fact aligned with the Chinese labels
+// used by the resource renderer.
 func spotFactValue(isSpot bool) string {
 	if isSpot {
 		return "是"
