@@ -70,6 +70,12 @@ func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta Res
 		addStringFact(addInstanceFact, "zone", "Zone", inst.Zone)
 		addStringFact(addInstanceFact, "region", "Region", inst.Region)
 		addStringFact(addInstanceFact, "charge_type", "ChargeType", inst.ChargeType)
+		// Emitted for BOTH values, not only when true. ChargeType alone cannot answer
+		// "is this 抢占式" — upstream reports a spot instance as Postpay + IsSpot=true —
+		// so a missing fact would leave the Agent inferring spot-ness from the one field
+		// that never carries it, which is exactly how a spot instance got told it was
+		// 按量. "否" is a grounded answer; absence is not.
+		addInstanceFact("is_spot", "是否抢占式", spotFactValue(inst.IsSpot))
 		addPositiveTimeFact(addInstanceFact, "expire_time", resourceLabelExpireTime, inst.ExpireTime)
 		addStringFact(addInstanceFact, "auto_renew", "AutoRenew", inst.AutoRenew)
 	}
