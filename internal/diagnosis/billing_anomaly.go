@@ -319,11 +319,8 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 	gpu, _ := host["GPU"].(float64)
 	chargeType, _ := host["ChargeType"].(string)
 	// Spot instances describe as ChargeType "Postpay" (or, if billed under the
-	// CHARGE_BY_SPOT enum, an empty string that maps to nothing) PLUS a separate
-	// IsSpot=true flag — upstream never emits ChargeType "Spot". Key off IsSpot so
-	// spot is counted/priced as hourly regardless of the ChargeType string. The
-	// read is shared with the instance projection (entity.InstanceIsSpot) so the
-	// billing card and the instance list cannot disagree about the same row.
+	// CHARGE_BY_SPOT enum, an empty string) plus IsSpot=true. Share the flag reader
+	// with the resource projection so both paths classify the same row alike.
 	isSpot := entity.InstanceIsSpot(host)
 	instancePrice, hasInstancePrice := billingPriceField(host, "InstancePrice")
 	diskPrice, hasDiskPrice := billingPriceField(host, "DiskPrice")

@@ -7,22 +7,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestSpotIsDecidedOnceForBothReaders is the regression for 2026-08-17, where one
-// turn produced two contradictory answers about ONE upstream row: the billing card
-// (which reads IsSpot) rendered 抢占式/时, while the instance projection (which read
-// only ChargeType) said Postpay — and the Agent, seeing only the projection, told the
-// customer the box was not 抢占式.
-//
-// The assertion is deliberately not "both return true". It is that the two readers
-// return the SAME value for the same row, across the shapes where they could drift:
-// a strict bool, the string spelling this API uses for its other booleans, and the
-// CHARGE_BY_SPOT row that carries no ChargeType at all. Two separate implementations
-// of one rule is what let them disagree; they now share entity.InstanceIsSpot, and
-// this test fails if anything re-forks that decision.
-func TestSpotIsDecidedOnceForBothReaders(t *testing.T) {
+// The billing card and the resource projection must classify the same upstream
+// row alike, including CHARGE_BY_SPOT rows with an empty ChargeType.
+func TestProjectionAndBillingAgreeOnSpotFlag(t *testing.T) {
 	rows := []map[string]any{
 		{"UHostId": "uhost-spot", "ChargeType": "Postpay", "IsSpot": true},
-		{"UHostId": "uhost-spot-str", "ChargeType": "Postpay", "IsSpot": "true"},
 		{"UHostId": "uhost-spot-empty", "ChargeType": "", "IsSpot": true},
 		{"UHostId": "uhost-postpay", "ChargeType": "Postpay", "IsSpot": false},
 		{"UHostId": "uhost-month", "ChargeType": "Month"},

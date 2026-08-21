@@ -16,10 +16,8 @@ func spotInstance(id string, isSpot bool) entity.InstanceSnapshot {
 	}
 }
 
-// TestSpotInstanceIsVisibleInTheEnvelope pins the fix for the 2026-08-17 turn where
-// the Agent read charge_type=Postpay off a 抢占式 instance and answered 「所以它不是抢占式
-// 实例」. Both rows describe as Postpay; only is_spot separates them, so the fact has to
-// be there — and has to be there when false too, or "不是抢占式" is still a guess.
+// Both rows describe as Postpay; is_spot must preserve the independent resource
+// mode for positive and negative answers.
 func TestSpotInstanceIsVisibleInTheEnvelope(t *testing.T) {
 	env := BuildResourceEnvelope([]entity.InstanceSnapshot{
 		spotInstance("uhost-spot", true),
@@ -32,8 +30,7 @@ func TestSpotInstanceIsVisibleInTheEnvelope(t *testing.T) {
 	assertEnvelopeFact(t, env, "uhost-postpay", "is_spot", "否")
 }
 
-// TestSpotInstanceRendersAsSpotNotAsPostpay: the rendered line is the other place a
-// customer reads the billing mode. ChargeType alone printed 按量付费 for a spot box.
+// A spot resource line must name its product mode instead of ordinary postpay.
 func TestSpotInstanceRendersAsSpotNotAsPostpay(t *testing.T) {
 	spotLine := RenderResourceSummary([]entity.InstanceSnapshot{spotInstance("uhost-spot", true)},
 		ResourceEnvelopeMeta{TotalCount: 1})
