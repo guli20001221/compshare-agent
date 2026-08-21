@@ -349,7 +349,7 @@ func TestServerInstanceOpsRunner_RefusesStaticProvider(t *testing.T) {
 //
 // Both halves matter. Without the probe the failure is silent, late, and on the wrong side of the
 // safety boundary: Begin names only the 0011 columns, so it SUCCEEDS, the harness enters the box —
-// under allow_writes it can change the instance — and the failure surfaces only when Finish's single
+// it can change the instance — and the failure surfaces only when Finish's single
 // UPDATE hits the missing column, losing the disposition, err_class and counts together and leaving
 // the row at 'started'. But the answer to that is not a boot error: deploy/k8s/deployment.yaml is
 // replicas: 1 with strategy: Recreate, so the old Pod is already gone when the new one starts, and

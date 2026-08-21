@@ -1,13 +1,12 @@
-"""Offline gate for the write-enabled mode (no network / no SSH / no SDK).
+"""Offline gate for the single confirmation-gated repair mode (no network / no SSH / no SDK).
 
 Run:  python test_write_mode.py   ->  exits non-zero on ANY failure.
 
-The point of this file is the boundary BETWEEN the two modes. Three properties have to hold, and
-the third is the one that is easy to lose:
+The product-level read-only/write split is deliberately gone. Three properties have to hold:
 
-  1. allow_writes off  -> only commands proven read-only execute; the instance is not changed.
-  2. allow_writes on   -> the mutating tier executes, so the agent can actually repair.
-  3. allow_writes on   -> the DESTRUCTIVE tier and the SHAPE gate are unchanged.
+  1. commands positively proven read-only execute immediately;
+  2. every other reversible guest-local effect reaches an exact confirmation card;
+  3. destructive/boundary effects and unsupported command shapes remain refused.
 
 (3) matters because it is tempting to read the gate as "writes are allowed now, so stop refusing".
 The shape gate is not part of the read-only policy: classify() only ever sees the literal command
@@ -43,47 +42,26 @@ ssh_transport.run_ssh = lambda conn, cmd, secrets=None: {
     "exit_code": 0, "stdout": "fake", "stderr": "", "truncated": False}
 
 
-def dispatch(command, allow_writes):
-    """Run one command through the real classify-dispatch with the gate set as given.
+def dispatch(command):
+    """Run one command through the real classifier with an approving exact confirmer.
 
-    Writes now also need a per-command approval, so this stands in for the operator saying yes to
-    everything. That is the RIGHT default here: this file tests the config gate (may the mutating
-    tier execute at all), and test_confirm_loop.py tests the human gate. Keeping them separate is
-    what makes a failure point at one mechanism instead of two.
+    test_confirm_loop.py covers denial, timeout, stale replies and missing confirmation channels;
+    this file checks which operations may reach that card and which are hard-refused.
     """
-    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
-                      "allow_writes": allow_writes})
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw"})
     del harness.AUDIT[:]
     with confirm_stub.approving():
         res = harness.run_command(command)
     return res, harness.AUDIT[-1]
 
 
-# --- the gate arrives on the handshake and nowhere else -----------------------------------------
-# If the Go side ever stops sending the field, .get() yields None and this must read as OFF, not as
-# "unset means allow". A missing gate defaulting open is the failure mode that has no symptom.
-harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw"})
-check("absent-gate-means-read-only", harness._ALLOW_WRITES is False)
-harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw", "allow_writes": True})
-check("gate-latches-from-handshake", harness._ALLOW_WRITES is True)
-
-# --- (1) read-only mode is unchanged -------------------------------------------------------------
+# --- reversible guest-local effects execute only after the exact approval ------------------------
 for cmd in ["systemctl restart ollama", "pip install torch", "kill -9 4321",
             "echo x > /tmp/f", "mkdir /tmp/d", "chmod 644 /tmp/f",
             "chmod 777 /workspace/app", "chattr +i /workspace/model.bin",
             "systemctl disable vllm", "swapoff -a",
             "install -m 440 /tmp/x /etc/sudoers.d/90-x"]:
-    res, entry = dispatch(cmd, allow_writes=False)
-    check(f"readonly-refuses::{cmd}", res["executed"] is False and entry["disposition"] ==
-          "refused_mutating_phase1")
-
-# --- (2) write mode executes the mutating tier ---------------------------------------------------
-for cmd in ["systemctl restart ollama", "pip install torch", "kill -9 4321",
-            "echo x > /tmp/f", "mkdir /tmp/d", "chmod 644 /tmp/f",
-            "chmod 777 /workspace/app", "chattr +i /workspace/model.bin",
-            "systemctl disable vllm", "swapoff -a",
-            "install -m 440 /tmp/x /etc/sudoers.d/90-x"]:
-    res, entry = dispatch(cmd, allow_writes=True)
+    res, entry = dispatch(cmd)
     check(f"write-executes::{cmd}", res["executed"] is True and entry["disposition"] == "ran_mutating")
     # The wire disposition is what the user's activity stream and the audit row show. A write that
     # settles as anything other than "ran" is a change to someone's machine with no visible record.
@@ -98,7 +76,7 @@ for cmd in ["rm -rf /workspace", "mkfs.ext4 /dev/vdb", "dd if=/dev/zero of=/dev/
             "systemctl disable sshd", "systemctl --now mask NetworkManager",
             "iptables -F", "chmod -R 777 /",
             "docker system prune", "crontab -r"]:
-    res, entry = dispatch(cmd, allow_writes=True)
+    res, entry = dispatch(cmd)
     check(f"write-still-refuses-destructive::{cmd}",
           res["executed"] is False and entry["disposition"] == "refused_destructive")
     check(f"destructive-tier-intact::{cmd}", guardrails.classify(cmd) == "destructive")
@@ -109,13 +87,13 @@ for cmd in ["rm -rf /workspace", "mkfs.ext4 /dev/vdb", "dd if=/dev/zero of=/dev/
 # classify() only ever reasons about a single line.
 for cmd in ["cat $(which python3)", "echo `whoami`", "systemctl restart $(cat /tmp/svc)",
             "echo one\nrm -rf /"]:
-    res, entry = dispatch(cmd, allow_writes=True)
+    res, entry = dispatch(cmd)
     check(f"write-still-refuses-shape::{cmd[:28]!r}",
           res["executed"] is False and entry["disposition"] in ("refused_form", "refused_destructive"))
 
 # A refusal the model cannot act on wastes the turn. In write mode the read-only wording ("this
 # changes the box") is actively wrong: it sends the agent looking for a permission it already has.
-res, _ = dispatch("cat $(which python3)", allow_writes=True)
+res, _ = dispatch("cat $(which python3)")
 check("write-shape-refusal-explains-form", "FORM rejected" in res["text"])
 check("write-shape-refusal-not-readonly-wording", "read-only" not in res["text"])
 
@@ -128,7 +106,7 @@ unsafe_filebrowser = (
     "nohup /model/other/filebrowser/filebrowser --address 0.0.0.0 --port 8080 "
     "--root /workspace --noauth --database /tmp/filebrowser.db > /tmp/filebrowser.log 2>&1 &"
 )
-res, entry = dispatch(unsafe_filebrowser, allow_writes=True)
+res, entry = dispatch(unsafe_filebrowser)
 check("filebrowser-direct-launch-is-refused",
       res["executed"] is False and entry["disposition"] == "refused_unmanaged_platform_service")
 check("filebrowser-refusal-explains-platform-contract",
@@ -149,104 +127,77 @@ check("filebrowser-command-v-remains-diagnostic",
       guardrails.is_unmanaged_platform_service_launch("command -v filebrowser") is False)
 check("filebrowser-image-supervisor-through-shell-remains-repairable",
       guardrails.is_unmanaged_platform_service_launch("bash -c 'supervisorctl start filebrowser'") is False)
-res, entry = dispatch("supervisorctl start filebrowser", allow_writes=True)
+res, entry = dispatch("supervisorctl start filebrowser")
 check("filebrowser-image-supervisor-remains-repairable",
       res["executed"] is True and entry["disposition"] == "ran_mutating")
 
-# --- reads are untouched in both modes -----------------------------------------------------------
-for allow in (False, True):
-    res, entry = dispatch("nvidia-smi", allow_writes=allow)
-    check(f"read-runs::allow={allow}", res["executed"] is True and entry["disposition"] == "ran_read_only")
+# --- proven reads still run immediately -----------------------------------------------------------
+res, entry = dispatch("nvidia-smi")
+check("proven-read-runs-without-a-write-tier", res["executed"] is True and
+      entry["disposition"] == "ran_read_only")
 
-# --- the two system prompts share one diagnostic protocol and state distinct authorization -------
-check("readonly-prompt-says-readonly",
-      "Authorization: diagnosis only" in harness.system_prompt(False) and
-      "Do not change the instance" in harness.system_prompt(False))
-check("write-prompt-authorizes-repair",
-      "authorized the repair workflow" in harness.system_prompt(True) and
-      "requires approval of that exact effect" in harness.system_prompt(True))
-check("write-prompt-names-hard-limits",
-      "Hard refusal is only" in harness.system_prompt(True) and
-      "tenant/control-plane boundary" in harness.system_prompt(True))
-
-# The prompt is one stable diagnostic protocol plus a mode policy, not two independently patched
-# playbooks. Both modes must preserve the same evidence model and diagnostic loop, then select one
-# and only one authorization contract.
-_READ_PROMPT = harness.system_prompt(False)
-_WRITE_PROMPT = harness.system_prompt(True)
-for _mode, _prompt in (("read", _READ_PROMPT), ("write", _WRITE_PROMPT)):
-    check(f"prompt-contract::{_mode}::shared-core", _prompt.startswith(harness._SYSTEM_PROMPT_CORE))
-    check(f"prompt-contract::{_mode}::structured",
-          all(section in _prompt for section in ("## Evidence model", "## Diagnostic loop",
-                                                  "## Authorization:", "## Final response")))
-    check(f"prompt-contract::{_mode}::layered-evidence",
-          all(layer in _prompt for layer in ("Control-plane metadata", "guest state",
-                                              "application state", "external reachability")))
-    check(f"prompt-contract::{_mode}::outcome-driven",
-          "observable success criterion" in _prompt and "original success criterion" in _prompt)
-    check(f"prompt-contract::{_mode}::actual-runtime",
-          "application's real" in _prompt and "virtualenv or Conda" in _prompt)
-    check(f"prompt-contract::{_mode}::managed-ownership-invariant",
-          "controller's ownership state" in _prompt and
-          "drift rather than proof" in _prompt)
-check("prompt-contract::write-reconciles-owner-before-start-and-polls-terminal-state",
+# --- one prompt and one tool contract: diagnose, confirm exact repairs, then verify --------------
+_WRITE_PROMPT = harness.SYSTEM_PROMPT
+_WRITE_DESC = flat(harness.TOOL_DESC)
+check("prompt-authorizes-confirmation-gated-repair",
+      "authorized the repair workflow" in _WRITE_PROMPT and
+      "requires approval of that exact effect" in _WRITE_PROMPT)
+check("prompt-names-hard-limits",
+      "Hard refusal is only" in _WRITE_PROMPT and
+      "tenant/control-plane boundary" in _WRITE_PROMPT)
+check("prompt-contract::shared-core", _WRITE_PROMPT.startswith(harness._SYSTEM_PROMPT_CORE))
+check("prompt-contract::structured",
+      all(section in _WRITE_PROMPT for section in ("## Evidence model", "## Diagnostic loop",
+                                                    "## Authorization:", "## Final response")))
+check("prompt-contract::layered-evidence",
+      all(layer in _WRITE_PROMPT for layer in ("Control-plane metadata", "guest state",
+                                                "application state", "external reachability")))
+check("prompt-contract::outcome-driven",
+      "observable success criterion" in _WRITE_PROMPT and "original success criterion" in _WRITE_PROMPT)
+check("prompt-contract::actual-runtime",
+      "application's real" in _WRITE_PROMPT and "virtualenv or Conda" in _WRITE_PROMPT)
+check("prompt-contract::managed-ownership-invariant",
+      "controller's ownership state" in _WRITE_PROMPT and "drift rather than proof" in _WRITE_PROMPT)
+check("prompt-contract::reconciles-owner-before-start-and-polls-terminal-state",
       "Reconcile an existing ownership conflict" in _WRITE_PROMPT and
-      "bounded-poll transitional manager states" in _WRITE_PROMPT and
-      "terminal result" in _WRITE_PROMPT)
-check("prompt-contract::mode-policy-is-exclusive",
-      "Authorization: diagnosis only" in _READ_PROMPT and
-      "Authorization: diagnose, repair, verify" not in _READ_PROMPT and
+      "bounded-poll transitional manager states" in _WRITE_PROMPT and "terminal result" in _WRITE_PROMPT)
+check("prompt-contract::single-mode-only",
       "Authorization: diagnose, repair, verify" in _WRITE_PROMPT and
       "Authorization: diagnosis only" not in _WRITE_PROMPT)
 check("prompt-contract::no-incident-specific-patches",
-      all(token not in (_READ_PROMPT + _WRITE_PROMPT).lower()
+      all(token not in _WRITE_PROMPT.lower()
           for token in ("filebrowser", "main.py", "/start.d/", "8188", "comfyui")))
-check("prompt-contract::within-argv-safe-band",
-      len(_READ_PROMPT) < 5000 and len(_WRITE_PROMPT) < 5000)
-# The prompt states authorization directly and does not arbitrate deleted playbooks.
-check("write-prompt-does-not-arbitrate-skills", "OVERRIDE" not in harness.system_prompt(True))
-check("write-prompt-names-no-skill", "skill" not in harness.system_prompt(True).lower())
+check("prompt-contract::within-argv-safe-band", len(_WRITE_PROMPT) < 5000)
+check("prompt-does-not-arbitrate-skills", "OVERRIDE" not in _WRITE_PROMPT)
+check("prompt-names-no-skill", "skill" not in _WRITE_PROMPT.lower())
 
-# --- The tool description and system prompt must agree that confirmed repairs are available. ------
-check("write-tool-desc-does-not-forbid-writes",
-      "Read-only commands only" not in harness.tool_description(True))
-check("write-tool-desc-says-changes-run",
-      "state-changing repair" in harness.tool_description(True) and
-      "approves that exact command" in harness.tool_description(True))
+check("tool-desc-does-not-forbid-writes", "Read-only commands only" not in _WRITE_DESC)
+check("tool-desc-says-changes-run",
+      "state-changing repair" in _WRITE_DESC and "approves that exact command" in _WRITE_DESC)
 # The contract tells the model to submit an evidence-backed action rather than stopping at prose.
-check("write-tool-desc-says-send-not-describe",
-      "send the smallest concrete command" in harness.tool_description(True))
+check("tool-desc-says-send-not-describe", "send the smallest concrete command" in _WRITE_DESC)
 # Hard limits stay stated so the agent does not plan around commands the executor will reject.
-check("write-tool-desc-keeps-hard-limits",
-      "irreversible" in harness.tool_description(True) and
-      "control-plane crossings" in harness.tool_description(True) and
-      "are refused" in harness.tool_description(True))
-check("write-tool-desc-forbids-invented-platform-entrypoints",
-      "platform-facing port" in harness.tool_description(True) and
-      "substitute service" in harness.tool_description(True))
+check("tool-desc-keeps-hard-limits",
+      "irreversible" in _WRITE_DESC and "control-plane crossings" in _WRITE_DESC and
+      "are refused" in _WRITE_DESC)
+check("tool-desc-forbids-invented-platform-entrypoints",
+      "platform-facing port" in _WRITE_DESC and "substitute service" in _WRITE_DESC)
 # Tool descriptions are behavioral contracts, not a growing list of executable-path exceptions.
-check("readonly-tool-desc-states-execution-semantics",
-      all(needle in harness.tool_description(False) for needle in
-          ("fresh, non-interactive SSH session", "25 seconds", "prove read-only", "exit status")))
-check("both-tool-descriptions-prefer-the-actual-runtime",
-      all("application's actual interpreter" in harness.tool_description(mode)
-          for mode in (False, True)))
-check("both-tool-descriptions-require-managed-ownership",
-      all("surviving" in harness.tool_description(mode) and
-          ("controller ownership" in harness.tool_description(mode) or
-           "outside that ownership" in harness.tool_description(mode))
-          for mode in (False, True)))
-check("write-tool-description-reconciles-owner-and-polls-transition",
-      "reconcile any surviving child outside that ownership" in harness.tool_description(True) and
-      "transitional manager states" in harness.tool_description(True) and
-      "terminal result" in harness.tool_description(True))
-check("tool-desc-differs-by-mode",
-      harness.tool_description(True) != harness.tool_description(False))
-check("tool-desc-contracts-stay-general",
-      all(token not in (harness.TOOL_DESC + harness.TOOL_DESC_WRITE).lower()
+check("tool-desc-states-execution-semantics",
+      all(needle in _WRITE_DESC for needle in
+          ("fresh, non-interactive SSH session", "25 seconds", "positively proven",
+           "exit status")))
+check("tool-description-prefers-the-actual-runtime",
+      "application's actual interpreter" in _WRITE_DESC)
+check("tool-description-requires-managed-ownership",
+      "surviving" in _WRITE_DESC and "outside that ownership" in _WRITE_DESC)
+check("tool-description-reconciles-owner-and-polls-transition",
+      "reconcile any surviving child outside that ownership" in _WRITE_DESC and
+      "transitional manager states" in _WRITE_DESC and "terminal result" in _WRITE_DESC)
+check("tool-desc-contract-stays-general",
+      all(token not in _WRITE_DESC.lower()
           for token in ("filebrowser", "main.py", "/start.d/", "8188", "python -c")))
-check("tool-desc-contracts-stay-focused",
-      len(harness.TOOL_DESC) < 1000 and len(harness.TOOL_DESC_WRITE) < 2000)
+check("tool-desc-contract-stays-focused", len(_WRITE_DESC) < 2000)
 
 # --- the description must not forbid what the executor allows ------------------------------------
 # The description must match executable policy: supported chaining, pipes and redirection cannot be
@@ -256,37 +207,34 @@ check("gate-actually-allows-redirect",
       and guardrails.is_form_violation("nohup python3 /root/app/start.py > /root/app.log 2>&1 &")
       is False)
 check("gate-actually-allows-pipe", guardrails.classify("ps aux | grep -i comfy") == "read_only")
-check("write-tool-desc-drops-false-shape-clause",
-      "no chaining/pipes/redirection" not in harness.tool_description(True))
+check("tool-desc-drops-false-shape-clause",
+      "no chaining/pipes/redirection" not in _WRITE_DESC)
 # The BrokenPipe/exit-124 lesson is now executable structure rather than a shell recipe the model has
 # to reproduce. The SSH description must route long work to the two reviewed tools and must not keep
 # teaching a parallel hand-rolled protocol that can drift from them.
-check("write-tool-desc-routes-long-work-to-structured-job",
-      "structured background-job tools" in harness.tool_description(True) and
-      "do not hand-roll detachment" in harness.tool_description(True))
-check("write-surface-has-start-and-poll-job-tools",
-      all(name in harness.allowed_tools(True) for name in
+check("tool-desc-routes-long-work-to-structured-job",
+      "structured background-job tools" in _WRITE_DESC and
+      "do not hand-roll detachment" in _WRITE_DESC)
+check("surface-has-start-and-poll-job-tools",
+      all(name in harness.ALLOWED_TOOLS for name in
           ("mcp__ssh_ops__start_background_job", "mcp__ssh_ops__poll_background_job")))
 
 # The lane has no skills or built-in Skill tool; policy lives in the prompt and executable tools.
 check("skills-are-gone-from-the-module", not hasattr(harness, "skills_for") and not hasattr(harness, "SKILLS"))
 check("skills-directory-is-gone",
       not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(harness.__file__)), "skills")))
-check("readonly-prompt-has-no-repair-skill", "instance-repair" not in harness.system_prompt(False))
+check("prompt-has-no-repair-skill", "instance-repair" not in _WRITE_PROMPT)
 # Neither prompt may tell the model to load a playbook that no longer exists — an instruction to open
 # a missing document is worse than the one it replaced, since it invites answering as though one had.
-check("readonly-prompt-does-not-claim-skill-load",
-      "skill" not in harness.system_prompt(False).lower())
+check("prompt-does-not-claim-skill-load", "skill" not in _WRITE_PROMPT.lower())
 # The Skill TOOL goes with them. It was the single permitted built-in, justified only by "skills are
 # how the playbook reaches the model"; with no playbook that justification is empty, and INV-9 is
 # back to its original posture — no built-in exists on the control-plane host.
 check("skill-tool-no-longer-exists", harness.TOOLS_BASE == [])
-check("atomic-file-tool-exists-only-in-write-mode",
-      "mcp__ssh_ops__atomic_text_replace" not in harness.allowed_tools(False) and
-      "mcp__ssh_ops__atomic_text_replace" in harness.allowed_tools(True))
-check("endpoint-probe-exists-in-both-modes",
-      "mcp__ssh_ops__endpoint_probe" in harness.allowed_tools(False) and
-      "mcp__ssh_ops__endpoint_probe" in harness.allowed_tools(True))
+check("atomic-file-tool-exists-in-single-repair-surface",
+      "mcp__ssh_ops__atomic_text_replace" in harness.ALLOWED_TOOLS)
+check("endpoint-probe-exists-in-single-repair-surface",
+      "mcp__ssh_ops__endpoint_probe" in harness.ALLOWED_TOOLS)
 check("atomic-file-tool-is-hash-bound-and-backed-up",
       all(term in harness.atomic_file.TOOL_DESCRIPTION
           for term in ("SHA-256", "same-directory backup", "atomically renames")))
@@ -299,16 +247,11 @@ for _name, _needle in [
     ("names taking a service down", "disabling an unrelated service"),
     ("routes it to the user rather than forbidding it", "unless the task requests it"),
 ]:
-    check(f"write-tool-desc-bounds-scope::{_name}", _needle in harness.tool_description(True))
-# Read-only mode cannot overreach — it executes nothing — so its description stays unchanged.
-check("readonly-tool-desc-unchanged-by-scope-rule",
-      "Repair the fault" not in harness.tool_description(False))
+    check(f"tool-desc-bounds-scope::{_name}", _needle in _WRITE_DESC)
 
 # A form refusal is recoverable by changing syntax, unlike a denied/expired
 # confirmation. The model must receive that distinction directly from its two
 # authoritative prompt surfaces, and neither should call the user an "operator".
-_WRITE_DESC = harness.tool_description(True)
-_WRITE_PROMPT = harness.system_prompt(True)
 check("write-tool-desc::reformats-form-refusals",
       "Rewrite only command-form rejections" in _WRITE_DESC)
 check("write-system-prompt::reformats-form-refusals",
@@ -364,8 +307,8 @@ for _surface, _text in [("desc", _WRITE_DESC), ("prompt", _WRITE_PROMPT)]:
           "platform facts establish" not in _text)
 
 # Load-bearing rules live in the prompt or tool description, not in a deleted skill.
-_wp = harness.system_prompt(True)
-_td = harness.tool_description(True)
+_wp = _WRITE_PROMPT
+_td = _WRITE_DESC
 # The launcher rule was stated in the system prompt and IGNORED (the run went straight to main.py and
 # never opened /start.d — its log mtime never moved). It lives in the TOOL DESCRIPTION now: that is
 # the only channel with evidence of landing (detach protocol adopted verbatim 2/2, system prompt
@@ -396,8 +339,6 @@ check("prompt-does-not-delegate-verdict-to-skill",
 # argv ceiling: a prior length probe (N=3/size) initialized cleanly through 6000 chars and died with
 # an instant exit-1 near 12000. Stay inside the VERIFIED band, not merely under the cliff.
 check("prompt-within-verified-length-band", len(_wp) < 6000)
-check("readonly-prompt-untouched-by-repair-rules", "start it the way the image starts it" not in harness.tool_description(False))
-
 # The four rules the deleted instance-repair skill carried now have to live where the model actually
 # reads them, or deleting it lost something. Each is asserted against the live prompt/description
 # rather than against a file, which is the whole point of the move.
@@ -408,15 +349,13 @@ check("repair-rule-own-failed-attempts-survives",
       "attempts that ran but failed" in _wp and "label it as your action" in _wp)
 
 # The working root is the real boundary, and it outlived the skills. The CLI discovers content by
-# walking UP from cwd, so anything left on disk near it is reachable by a read-only run — that is how
-# a repair playbook could once end up under a card that says 只读排查. Nothing is staged now, and BOTH
-# modes must leave the root empty: a mode-dependent file here would be exactly that bug again.
+# walking UP from cwd, so anything left on disk near it is reachable by the operations agent. Nothing
+# is staged now, and the single mode must leave the root empty.
 _cwd = os.getcwd()
 try:
-    for allow in (False, True):
-        root = harness.stage_clean_workdir(allow)
-        check(f"working-root-empty-in-both-modes::allow={allow}", os.listdir(root) == [])
-        shutil.rmtree(root, ignore_errors=True)
+    root = harness.stage_clean_workdir()
+    check("working-root-empty-in-single-mode", os.listdir(root) == [])
+    shutil.rmtree(root, ignore_errors=True)
 finally:
     os.chdir(_cwd)
 
@@ -527,8 +466,8 @@ for _name, _cmd in [
 for _name, _cmd in [
     ("ps-o-is-a-format", "ps -o pid,comm,etime"),
     ("lsblk-o-is-a-format", "lsblk -o NAME,SIZE,MOUNTPOINT"),
-    ("sort-without-output-flag", "sort /root/raw"),
-    ("base64-to-stdout", "base64 /root/f"),
+    ("sort-without-output-flag", "sort /etc/os-release"),
+    ("base64-to-stdout", "base64 /etc/os-release"),
 ]:
     check(f"format-flag-is-not-a-write::{_name}", guardrails.classify(_cmd) == "read_only")
 
@@ -668,11 +607,11 @@ check("remote-bound::preserves-quotes-in-the-payload",
 # `exec` is not token 0 of its segment. Asserting the real invariant instead — what the audit
 # records and what the consent card shows is the MODEL's string, never our wrapper. That is the
 # property that matters: the operator approves what they were shown, and that is what runs.
-_res, _entry = dispatch("echo x > /tmp/f", allow_writes=True)
+_res, _entry = dispatch("echo x > /tmp/f")
 check("remote-bound::audit-records-the-models-text", _entry["command"] == "echo x > /tmp/f")
 check("remote-bound::audit-has-no-wrapper", "timeout -k" not in _entry["command"])
 with confirm_stub.approving() as _io:
-    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw", "allow_writes": True})
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw"})
     harness.run_command("echo x > /tmp/f")
 check("remote-bound::card-shows-the-models-text",
       len(_io.requests) == 1 and _io.requests[0]["command"] == "echo x > /tmp/f")
@@ -693,10 +632,10 @@ for _name, _cmd in [
 ]:
     check(f"keyword-cannot-skip-the-card::{_name}", guardrails.classify(_cmd) == "mutating")
 
-# Keywords that end a construct change nothing, so they must stay reads rather than fail closed —
-# otherwise every `fi`/`done` segment in an accepted chain would demand an approval.
+# Standalone syntax fragments are not positively proven reads. They therefore reach confirmation
+# instead of inheriting the old unsafe "unknown means read-only" default.
 for _name, _cmd in [("fi", "fi"), ("done", "done"), ("esac", "esac"), ("while-true", "while true")]:
-    check(f"bare-keyword-is-not-a-write::{_name}", guardrails.classify(_cmd) == "read_only")
+    check(f"bare-keyword-is-not-auto-run::{_name}", guardrails.classify(_cmd) == "mutating")
 
 # And the destructive tier is unaffected — the construct's own segment carries the dangerous verb,
 # so per-command scanning (see _scan_destructive) still catches both of these.
@@ -725,7 +664,7 @@ for _name, _cmd in [
 # The ^ anchor exists so a PATH containing the verb cannot trip these rules. Re-spelling token 0
 # must not cost that: these are reads and have to stay reads, or core diagnostics start carding.
 for _name, _cmd in [
-    ("cat-installer-log", "cat /var/log/cuda-installer.log"),
+    ("cat-cuda-version", "cat /usr/local/cuda/version.txt"),
     ("cat-pip-install-log", "cat /opt/pip-install.log"),
     ("grep-install-in-log", "grep -n install /opt/pip-install.log"),
     ("ls-the-binary", "ls -l /usr/bin/pip3"),
@@ -750,14 +689,9 @@ for _name, _cmd in [
     ("tidy-then-look-at-etc", "rm /tmp/probe.txt; ls /etc"),
     ("back-up-then-read-proc", "cp /etc/nginx/nginx.conf /tmp/bak; cat /proc/cpuinfo"),
 ]:
-    _res, _entry = dispatch(_cmd, allow_writes=True)
+    _res, _entry = dispatch(_cmd)
     check(f"chain-reaches-the-card::{_name}",
           _res["executed"] is True and _entry["disposition"] == "ran_mutating")
-    # Refused with writes OFF, and refused as MUTATING — the fix must not have made a chain
-    # containing a write auto-run, which would be the same bug pointing the other way.
-    _res, _entry = dispatch(_cmd, allow_writes=False)
-    check(f"chain-still-needs-the-gate::{_name}",
-          _res["executed"] is False and _entry["disposition"] == "refused_mutating_phase1")
 
 # Per-command scanning re-anchors `^` and `$` to the command, which CLOSES two card-buying bypasses
 # a whole-string scan had: both of these were `mutating` before, i.e. one approval away from a write
@@ -766,7 +700,7 @@ for _name, _cmd in [
     ("borrowed-the-zero-size-exemption", "truncate -s 10G /workspace/big; echo -s 0"),
     ("evaded-the-destination-anchor", "cp /tmp/x /var/lib/mysql/ibdata1; ls /tmp"),
 ]:
-    _res, _entry = dispatch(_cmd, allow_writes=True)
+    _res, _entry = dispatch(_cmd)
     check(f"chain-cannot-buy-a-card::{_name}",
           _res["executed"] is False and _entry["disposition"] == "refused_destructive")
 

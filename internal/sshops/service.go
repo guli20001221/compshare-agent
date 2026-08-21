@@ -22,15 +22,15 @@ type Owner struct {
 	TurnID string
 }
 
-// DefaultDiagnosisTask is the read-only "掉卡" root-cause probe used when the caller passes no task.
+// DefaultDiagnosisTask is the "掉卡" root-cause probe used when the caller passes no task.
 // It is a natural-language instruction for the harness agent — never a command list — so the
 // reasoning-blind guardrails still decide every command the agent proposes.
 const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-smi 不可用 / 检测不到 GPU）。" +
-	"请用只读命令排查根因：先运行 nvidia-smi 看具体报错，再 cat /proc/driver/nvidia/version 和 " +
+	"请先用只读命令排查根因：运行 nvidia-smi 看具体报错，再 cat /proc/driver/nvidia/version 和 " +
 	"cat /etc/os-release 核对，判断是宿主机驱动问题，还是容器内用户态 NVIDIA 驱动 / 库（如 libnvidia-ml）" +
-	"缺失或版本不匹配。最后给出根因结论和修复建议（修复命令只作为可选步骤写出，不要执行）。"
+	"缺失或版本不匹配。若根因可在实例内安全修复，发送精确修复命令等待用户逐条确认，执行后验证结果。"
 
-// Service is the transport-agnostic core of the consent-gated, read-only SSH-ops lane. The HTTP
+// Service is the transport-agnostic core of the consent-gated SSH-ops repair lane. The HTTP
 // Action (and any future entry) calls it AFTER verifying consent. It owns: out-of-band
 // credential fetch, the fail-closed audit, and the per-task harness spawn. It never holds, logs,
 // or returns the credential — that lives only inside FetchCredential's Credential value and the
@@ -48,22 +48,12 @@ type harnessRunner interface {
 type Service struct {
 	sup              harnessRunner
 	audit            AuditWriter
-	allowWrites      bool
 	hostResolver     HostResolver
 	publicIPv6Prefix string
 }
 
-// ServiceOption configures a Service at construction. Options exist so the write gate cannot be
-// flipped after the fact: nothing on Service mutates it, so every task a given Service runs is
-// recorded under the same phase it actually ran in.
+// ServiceOption configures addressing for a Service at construction.
 type ServiceOption func(*Service)
-
-// WithWrites records that this lane's harness may execute the mutating tier. It does NOT itself
-// authorize anything — Supervisor.AllowWrites is what the harness reads — but the two are set from
-// the same config field, and this one makes the audit row say which product ran.
-func WithWrites(allow bool) ServiceOption {
-	return func(s *Service) { s.allowWrites = allow }
-}
 
 // WithHostResolver makes the lane dial the address hr chooses instead of the one
 // SshLoginCommand advertises. Nil (the default) keeps the advertised address, so a
@@ -95,17 +85,7 @@ func NewService(sup harnessRunner, audit AuditWriter, opts ...ServiceOption) *Se
 	return s
 }
 
-// phaseFor names the authority the box was entered under. These two strings are the audit's only
-// vocabulary for it, and the read_write row is the record that a human consented to a repair — so
-// the mapping lives in one place rather than being spelled at the call site.
-func phaseFor(allowWrites bool) string {
-	if allowWrites {
-		return "read_write"
-	}
-	return "read_only"
-}
-
-// Diagnose runs ONE consented, read-only in-instance diagnosis. Consent MUST already be verified
+// Diagnose runs ONE consented in-instance diagnosis and confirmation-gated repair. Consent MUST already be verified
 // by the caller (the dedicated Action requires Consent==true). Audit is fail-closed: if the start
 // record cannot be written, the harness does not run. onStep streams each command's metadata as it
 // settles (nil to opt out). The returned Result.Output is the harness's already-scrubbed verdict;
@@ -125,15 +105,9 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	if s.audit == nil {
 		return Result{}, fmt.Errorf("sshops: no audit writer configured, refusing to run (fail-closed)")
 	}
-	// A write lane with no confirmer is a lane no human is watching. It is a wiring error, not a mode,
-	// so it is refused here — before the credential is fetched and before the audit row is begun.
-	// Running with every write auto-denied would burn the budget proposing repairs that can never be
-	// approved, and the user would read that as the model failing. Beginning the row first would leave
-	// ssh_ops_audit holding a 'started' row — carrying a context schema/coverage — for an access that
-	// provably never happened, and a 'started' row is exactly what a genuinely interrupted run leaves.
-	if s.allowWrites && onConfirm == nil {
-		return Result{}, fmt.Errorf("sshops: writes are enabled but no per-command confirmer was wired, refusing to run (fail-closed)")
-	}
+	// A missing confirmer is not a second product mode. The same repair prompt and tool surface run,
+	// while Supervisor answers every confirmation request with Approved=false. That preserves useful
+	// diagnosis in direct/live callers without letting a missing UI channel become implicit consent.
 	if strings.TrimSpace(task) == "" {
 		task = DefaultDiagnosisTask
 	}
@@ -163,7 +137,7 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		// The phase is what the box was ENTERED under, so it is taken from the lane's gate rather
 		// than from what the harness happened to run: a write-authorized session that ended up
 		// issuing only reads still entered under write authority, and the audit has to say so.
-		Phase:                phaseFor(s.allowWrites),
+		Phase:                "read_write",
 		ContextSchemaVersion: modelContext.SchemaVersion,
 		ContextFactCoverage:  modelContext.Coverage,
 	}

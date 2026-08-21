@@ -60,7 +60,7 @@ func exhaustTheRoundCeiling(t *testing.T, userMsg string) (*Engine, string) {
 	responses := make([]llm.ChatResponse, maxReActRounds+1)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{
-			ToolCalls: []openai.ToolCall{toolCall("tc", "DescribeCompShareInstance", `{}`)},
+			ToolCalls: []openai.ToolCall{toolCall("tc", "ReadCapability_resource_info", `{}`)},
 		}
 	}
 	eng := NewWithDeps(&mockLLM{responses: responses}, &mockExecutor{}, nil)

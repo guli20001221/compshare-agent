@@ -32,11 +32,6 @@ type Supervisor struct {
 	APIKey      string        // ModelVerse token passed only to the Claude CLI child
 	Model       string        // ModelVerse model id (e.g. gpt-5.6-terra)
 	Timeout     time.Duration // hard wall-clock per task; default 5m
-	// AllowWrites rides the same one-shot handshake as the credential, for the same reason: it is
-	// per-task state the harness must not be able to acquire any other way (no env var, no argv, no
-	// later message). The harness latches it together with the connection, so a command can never be
-	// classified under one gate and executed under another. Default false = the read-only lane.
-	AllowWrites bool
 }
 
 // Keep the core service contract compiler-enforced. Run remains a public compatibility wrapper,
@@ -205,7 +200,6 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		// so URLs carrying console tokens and raw hosts never enter the model prompt or audit record.
 		// The harness exposes only opaque IDs and resolves them against this stdin-only list.
 		"endpoint_targets": modelContext.EndpointTargets,
-		"allow_writes":     s.AllowWrites,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: marshal handshake: %w", err)

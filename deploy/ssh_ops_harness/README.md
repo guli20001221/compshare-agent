@@ -111,6 +111,6 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
 | 启动失败，提示缺 `harness_path` / `base_url` / API key | 补齐路径、直连地址或 ModelVerse Key |
 | 启动正常但日志说通道关闭 | 用的是静态 AK/SK（没配 `agent.sts.service_ak/service_sk`），或没有数据库 |
 | 授权卡点了之后诊断失败 | Python 环境 / `claude` CLI / ModelVerse 网络或鉴权不可用 |
-| `phase` 还是 `read_only` | `allow_writes` 没生效，改完要重启 |
+| 修复命令没有执行 | 查看对应命令的精确确认卡是否被拒绝、超时，或命令是否命中不可恢复动作硬拒绝 |
 
 把 `enabled` 改回 `false` 重启即可关闭，其余字段留着不影响，历史审计保留。

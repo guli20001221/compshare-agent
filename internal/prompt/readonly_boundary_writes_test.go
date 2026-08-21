@@ -8,7 +8,7 @@ import (
 // An authorized in-instance repair lane is the narrow exception to platform read-only mode.
 func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
 	plain := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: false})
-	withLane := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: false, InstanceOpsWritesEnabled: true})
+	withLane := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: false, InstanceOpsEnabled: true})
 
 	if !strings.Contains(plain, "不执行资源变更") {
 		t.Fatal("plain read-only boundary lost its blanket claim")
@@ -32,7 +32,7 @@ func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
 	}
 
 	// With platform writes on there is no read-only boundary at all; the lane flag must not add one.
-	both := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true, InstanceOpsWritesEnabled: true})
+	both := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true, InstanceOpsEnabled: true})
 	if strings.Contains(both, "当前只读边界") {
 		t.Fatal("mutating tools enabled but a read-only boundary was still injected")
 	}
@@ -41,7 +41,7 @@ func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
 // Mutating mode omits the read-only section, but must still describe the independently authorized
 // repair lane without falsely claiming that platform writes are unavailable.
 func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
-	both := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true, InstanceOpsWritesEnabled: true})
+	both := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true, InstanceOpsEnabled: true})
 
 	if !strings.Contains(both, "DiagnoseInstanceInternals") {
 		t.Fatal("lane authorized with mutating tools on, but no prompt section names it")

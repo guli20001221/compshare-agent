@@ -96,7 +96,7 @@ func (m *committedThenFailingLLM) Chat(_ context.Context, _ llm.ChatRequest) (*l
 	if m.calls == 1 {
 		m.eng.committedWriteRepliesThisTurn = append(m.eng.committedWriteRepliesThisTurn, "✅ 已创建实例 uhost-good1。")
 		return &llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}}, nil
 	}
 	return nil, m.err
@@ -140,7 +140,7 @@ func (m *committedThenTruncatedLLM) Chat(_ context.Context, _ llm.ChatRequest) (
 	if m.calls == 1 {
 		m.eng.committedWriteRepliesThisTurn = append(m.eng.committedWriteRepliesThisTurn, "✅ 已创建实例 uhost-good1。")
 		return &llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}}, nil
 	}
 	if m.calls == 2 {

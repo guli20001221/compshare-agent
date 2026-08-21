@@ -573,11 +573,9 @@ func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	return prompt.BuildOptions{
 		MutatingToolsEnabled: e.mutatingToolsEnabled,
-		// Two conditions, both required: the lane has to be wired at all (same nil check the tool
-		// window uses, so the prompt can never advertise a tool the model cannot see) AND writes
-		// have to be authorized. Either alone would put a promise in the prompt that the runtime
-		// does not keep.
-		InstanceOpsWritesEnabled:     e.instanceOps != nil && tools.InstanceOpsWritesEnabled(),
+		// The same nil check gates the tool window, so the prompt never advertises
+		// an in-instance repair lane the runtime did not wire.
+		InstanceOpsEnabled:           e.instanceOps != nil,
 		FeishuConsoleHandoff:         e.feishuConsoleHandoffThisTurn,
 		FeishuPublicPlatformReadOnly: e.publicPlatformReadOnlyThisTurn,
 	}
@@ -1540,7 +1538,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 
 		// Has tool calls → execute each and feed results back.
-		return e.runToolCallsRound(ctx, resp, runtimeRound, onStep, opts.OnTextDelta)
+		return e.runToolCallsRound(ctx, resp, toolWindow, runtimeRound, onStep, opts.OnTextDelta)
 	})
 	// Runtime owns the loop's terminal reason; retain it verbatim for the final
 	// trace instead of forcing a separate hand-maintained completion taxonomy to
@@ -1598,7 +1596,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 // emitDelta streams user-visible text (nil when the caller does not stream). A
 // verbatim block is emitted through it at the point the tool returns, so the
 // streamed order matches the composed reply: block first, Agent's answer after.
-func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, runtimeRound *agentruntime.Round, onStep func(StepEvent), emitDelta func(string)) (agentruntime.Result, error) {
+func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, toolWindow []openai.Tool, runtimeRound *agentruntime.Round, onStep func(StepEvent), emitDelta func(string)) (agentruntime.Result, error) {
 	assistantMsg := openai.ChatCompletionMessage{
 		Role:      openai.ChatMessageRoleAssistant,
 		Content:   resp.Content,
@@ -1607,7 +1605,7 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 	e.messages = append(e.messages, assistantMsg)
 
 	for idx, tc := range resp.ToolCalls {
-		toolResult := e.executeTool(ctx, tc, onStep)
+		toolResult := e.executeModelTool(ctx, tc, toolWindow, onStep)
 		runtimeRound.Observation(tc.Function.Name)
 
 		// Verbatim user block — deliver as-is, keep the turn alive. The model's

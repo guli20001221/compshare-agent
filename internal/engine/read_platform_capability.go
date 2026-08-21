@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
@@ -223,6 +224,13 @@ func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
 			for _, id := range eff.IDs {
 				if id != "" {
 					e.verifiedInstanceEvidenceThisTurn[id] = struct{}{}
+				}
+			}
+		case capability.RememberDisplayedInstances:
+			if len(eff.Instances) > 1 {
+				candidates := append([]entity.InstanceSnapshot(nil), eff.Instances...)
+				e.displayedResourceSelectionThisTurn = &pendingResourceSelection{
+					snapshot: snapshotFromPendingSelectionCandidates(candidates), candidates: candidates,
 				}
 			}
 		}

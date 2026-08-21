@@ -12,7 +12,7 @@ import (
 )
 
 // The counts alone cannot answer the question a user asks after a disconnect: the lane ships with
-// allow_writes on, so "8 ran, 1 refused" leaves them unable to tell an approved write that landed
+// the repair lane, so "8 ran, 1 refused" leaves them unable to tell an approved write that landed
 // from a read that did. These pin the detail that answers it — and, just as importantly, pin what
 // the detail must NOT grow into.
 

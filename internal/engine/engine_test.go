@@ -256,7 +256,7 @@ func TestChat_ExternalTool_L0(t *testing.T) {
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}},
 		{Content: "您没有实例"},
 	}}
@@ -295,11 +295,11 @@ func TestChat_ReActDisplayedInstanceListRecordsPendingSelection(t *testing.T) {
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}},
 		{Content: "1. visible-one\n2. visible-two"},
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc2", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-visible-1"]}`),
+			toolCall("tc2", "ReadCapability_monitor_query", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-visible-1","source":"user_text"}]}`),
 		}},
 		{Content: "第 1 台 GPU 当前空闲。"},
 	}}
@@ -342,7 +342,7 @@ func TestChat_ReActHiddenInstanceLookupDoesNotRecordPendingSelection(t *testing.
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}},
 		{Content: "hidden-one 和 hidden-two 都已检查，未发现异常。"},
 	}}
@@ -366,7 +366,7 @@ func TestChat_ExternalToolEventsCarryTraceMetadata(t *testing.T) {
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":1}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}},
 		{Content: "ok"},
 	}}
@@ -381,7 +381,7 @@ func TestChat_ExternalToolEventsCarryTraceMetadata(t *testing.T) {
 	var callEvent, resultEvent *StepEvent
 	for i := range *events {
 		ev := &(*events)[i]
-		if ev.Action != "DescribeCompShareInstance" {
+		if ev.Action != "ReadCapability_resource_info" {
 			continue
 		}
 		switch ev.Type {
@@ -393,13 +393,14 @@ func TestChat_ExternalToolEventsCarryTraceMetadata(t *testing.T) {
 	}
 	if assert.NotNil(t, callEvent) {
 		assert.Equal(t, observability.ToolSourceMainReAct, callEvent.Source)
-		assert.Equal(t, map[string]any{"Limit": float64(1)}, callEvent.Args)
+		assert.Equal(t, map[string]any{}, callEvent.Args)
 	}
 	if assert.NotNil(t, resultEvent) {
 		assert.Equal(t, observability.ToolSourceMainReAct, resultEvent.Source)
-		assert.Equal(t, 1, resultEvent.Attempts)
+		assert.Equal(t, 0, resultEvent.Attempts, "aggregate capability event is distinct from its internal API attempt")
 		assert.NotNil(t, resultEvent.TraceResult)
-		assert.Contains(t, resultEvent.TraceResult, "UHostSet")
+		assert.Equal(t, "resource_info", resultEvent.TraceResult["capability"])
+		assert.Contains(t, resultEvent.TraceResult, "evidence")
 	}
 }
 
@@ -419,7 +420,7 @@ func TestChat_ExternalToolReadRetriesTransientError(t *testing.T) {
 	}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}},
 		{Content: "retry succeeded"},
 	}}
@@ -435,25 +436,28 @@ func TestChat_ExternalToolReadRetriesTransientError(t *testing.T) {
 
 	toolMsg := mock.calls[1].Messages[len(mock.calls[1].Messages)-1]
 	assert.Equal(t, openai.ChatMessageRoleTool, toolMsg.Role)
-	assert.Contains(t, toolMsg.Content, "UHostSet")
+	assert.Contains(t, toolMsg.Content, "resource_info")
 	assert.NotContains(t, toolMsg.Content, "API")
 }
 
 func TestChat_HistoricalMonitorToolCallExecutesWithTemporalGuard(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{
 		ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-1"],"StartTime":1777442400,"EndTime":1777444200}`),
+			toolCall("tc1", "ReadCapability_monitor_history", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-1","source":"user_text"}],"time_window":{"type":"preset","preset":"yesterday","source_span":"昨天"}}`),
 		},
-	}}}
-	executor := &mockExecutor{}
+	}, {Content: "没有返回有效监控数据"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":   {"RetCode": 0, "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "State": "Running"}}},
+		"GetCompShareInstanceMonitor": {"RetCode": 0},
+	}}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.InitWithContext("test user")
 
-	reply, err := eng.Chat(context.Background(), "show monitor data", noopStep)
+	reply, err := eng.Chat(context.Background(), "看昨天 uhost-1 的监控", noopStep)
 
 	require.NoError(t, err)
 	assert.Contains(t, reply, "没有返回有效监控数据")
-	assert.Equal(t, []string{"GetCompShareInstanceMonitor"}, executor.calls)
+	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, executor.calls)
 }
 
 // The historical-monitor guard no longer rewrites the model's prose: the correct
@@ -476,37 +480,25 @@ func TestGuardMonitorNoDataFinalReplyPassthroughWhenDataPresent(t *testing.T) {
 }
 
 func TestChat_ClearHistoricalMonitorQuestionMayUseReActHistoryTool(t *testing.T) {
-	cases := []string{
-		"\u770b\u6628\u5929 8\u70b9\u523010\u70b9 CPU \u76d1\u63a7",
-		"\u8fc7\u53bb\u4e00\u5c0f\u65f6 CPU \u76d1\u63a7",
-		"\u8fd1 24 \u5c0f\u65f6\u663e\u5b58",
-		"\u4e0a\u5468 GPU \u5229\u7528\u7387",
-		"2026-05-08 \u7684\u76d1\u63a7",
-		"show yesterday cpu monitor",
-		"last night GPU monitor",
-		"last 24 hours CPU",
-		"\u6628\u665a\u8fd9\u53f0\u673a\u5668\u5fd9\u4e0d\u5fd9",
-		"was it idle last night",
-	}
-	for _, msg := range cases {
-		t.Run(msg, func(t *testing.T) {
-			mock := &mockLLM{responses: []llm.ChatResponse{{
-				ToolCalls: []openai.ToolCall{
-					toolCall("tc1", "GetCompShareInstanceMonitor", `{"UHostIds":["uhost-1"],"StartTime":1777442400,"EndTime":1777444200}`),
-				},
-			}}}
-			executor := &mockExecutor{}
-			eng := NewWithDeps(mock, executor, nil)
-			eng.InitWithContext("test user")
+	msg := "过去一小时 uhost-1 的 CPU 监控"
+	mock := &mockLLM{responses: []llm.ChatResponse{{
+		ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "ReadCapability_monitor_history", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-1","source":"user_text"}],"metrics":["cpu"],"time_window":{"type":"relative","amount":1,"unit":"hour","source_span":"过去一小时"}}`),
+		},
+	}, {Content: "没有返回有效监控数据"}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":   {"RetCode": 0, "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "State": "Running"}}},
+		"GetCompShareInstanceMonitor": {"RetCode": 0},
+	}}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.InitWithContext("test user")
 
-			reply, err := eng.Chat(context.Background(), msg, noopStep)
+	reply, err := eng.Chat(context.Background(), msg, noopStep)
 
-			require.NoError(t, err)
-			assert.Contains(t, reply, "没有返回有效监控数据")
-			assert.NotEmpty(t, mock.calls)
-			assert.Contains(t, executor.calls, "GetCompShareInstanceMonitor")
-		})
-	}
+	require.NoError(t, err)
+	assert.Contains(t, reply, "没有返回有效监控数据")
+	assert.NotEmpty(t, mock.calls)
+	assert.Contains(t, executor.calls, "GetCompShareInstanceMonitor")
 }
 
 func TestChat_CurrentMonitorQuestionNotBlockedByHistoricalGuard(t *testing.T) {
@@ -542,17 +534,21 @@ func TestChat_ExternalTool_L2Blocked(t *testing.T) {
 	for _, ev := range *events {
 		if ev.Type == StepBlocked {
 			hasBlocked = true
-			assert.Contains(t, ev.Message, "L2")
+			assert.Contains(t, ev.Message, "未开放")
 		}
 	}
 	assert.True(t, hasBlocked, "L2 operation should be blocked")
 }
 
-func TestChat_ExternalTool_L1Confirmed(t *testing.T) {
+func TestChat_HiddenDirectWriteCannotBypassActionFirst(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"StopCompShareInstance": {"RetCode": 0},
 	}}
-	confirmFn := func(action string, args map[string]any) bool { return true }
+	confirmCalls := 0
+	confirmFn := func(action string, args map[string]any) bool {
+		confirmCalls++
+		return true
+	}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
 			toolCall("tc1", "StopCompShareInstance", `{"UHostId":"uhost-xxx"}`),
@@ -567,10 +563,11 @@ func TestChat_ExternalTool_L1Confirmed(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "关机", noopStep)
 	assert.NoError(t, err)
 	assert.Equal(t, "已关机", reply)
-	assert.Contains(t, executor.calls, "StopCompShareInstance")
+	assert.Empty(t, executor.calls)
+	assert.Zero(t, confirmCalls, "a name absent from the tool window must not reach confirmation")
 }
 
-func TestChat_ExternalTool_L1Denied(t *testing.T) {
+func TestChat_HiddenDirectWriteEmitsAnHonestBlockedStep(t *testing.T) {
 	confirmFn := func(action string, args map[string]any) bool { return false }
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
@@ -589,10 +586,7 @@ func TestChat_ExternalTool_L1Denied(t *testing.T) {
 
 	hasBlocked := false
 	for _, ev := range *events {
-		// A denied confirm emits a blocked step narrated honestly as not-executed
-		// ("未执行"), never as a false "已取消" — the direct-tool sibling of the
-		// console false-cancel P0 (see TestFalseCancel_DirectTool…).
-		if ev.Type == StepBlocked && strings.Contains(ev.Message, "未执行") {
+		if ev.Type == StepBlocked && strings.Contains(ev.Message, "未开放") {
 			hasBlocked = true
 		}
 		assert.NotContains(t, ev.Message, "已取消",
@@ -601,7 +595,7 @@ func TestChat_ExternalTool_L1Denied(t *testing.T) {
 	assert.True(t, hasBlocked)
 }
 
-func TestChat_ConfirmationResultTracePreservesTimeout(t *testing.T) {
+func TestChat_HiddenDirectWriteDoesNotFabricateAConfirmationTrace(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
 			toolCall("tc1", "StopCompShareInstance", `{"UHostId":"uhost-xxx"}`),
@@ -621,16 +615,13 @@ func TestChat_ConfirmationResultTracePreservesTimeout(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, confirmations, 1)
-	assert.Equal(t, observability.ConfirmationStateNotConfirmed, confirmations[0].State)
-	assert.Equal(t, observability.ConfirmationReasonTimeout, confirmations[0].TerminalReason)
-	assert.GreaterOrEqual(t, confirmations[0].ElapsedMS, int64(0))
+	assert.Empty(t, confirmations, "a hidden tool name is rejected before any consent card is created")
 }
 
 func TestChat_InvalidToolArgs(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `not json`),
+			toolCall("tc1", "ReadCapability_resource_info", `not json`),
 		}},
 		{Content: "抱歉出错了"},
 	}}
@@ -658,7 +649,7 @@ func TestChat_MaxRoundsExceeded(t *testing.T) {
 	for i := range responses {
 		responses[i] = llm.ChatResponse{
 			ToolCalls: []openai.ToolCall{
-				toolCall("tc", "DescribeCompShareInstance", `{}`),
+				toolCall("tc", "ReadCapability_resource_info", `{}`),
 			},
 		}
 	}
@@ -705,9 +696,9 @@ func TestMultipleToolCalls(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
 			{ID: "tc1", Type: openai.ToolTypeFunction, Index: &idx0,
-				Function: openai.FunctionCall{Name: "DescribeCompShareInstance", Arguments: `{}`}},
+				Function: openai.FunctionCall{Name: "ReadCapability_resource_info", Arguments: `{}`}},
 			{ID: "tc2", Type: openai.ToolTypeFunction, Index: &idx1,
-				Function: openai.FunctionCall{Name: "DescribeAvailableCompShareInstanceTypes", Arguments: `{}`}},
+				Function: openai.FunctionCall{Name: "ReadCapability_gpu_specs_query", Arguments: `{"gpu_type":"4090"}`}},
 		}},
 		{Content: "对比结果"},
 	}}
@@ -720,14 +711,14 @@ func TestMultipleToolCalls(t *testing.T) {
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
 	}
 
-	reply, err := eng.Chat(context.Background(), "对比", onStep)
+	reply, err := eng.Chat(context.Background(), "对比账号实例和 4090 规格", onStep)
 	assert.NoError(t, err)
 	assert.Equal(t, "对比结果", reply)
 
 	// Should have 4 events: 2x (tool_call + tool_result)
 	toolCalls := 0
 	for _, ev := range *events {
-		if ev.Type == StepToolCall {
+		if ev.Type == StepToolCall && ev.Source == observability.ToolSourceMainReAct {
 			toolCalls++
 		}
 	}
@@ -785,14 +776,14 @@ func TestUnknownAction_Rejected(t *testing.T) {
 	_, err := eng.Chat(context.Background(), "hack", onStep)
 	assert.NoError(t, err)
 
-	// Unknown action should be rejected by security check
-	hasError := false
+	// A name absent from the exact request window is rejected at the model boundary.
+	hasBlocked := false
 	for _, ev := range *events {
-		if ev.Type == StepError {
-			hasError = true
+		if ev.Type == StepBlocked && strings.Contains(ev.Message, "未开放") {
+			hasBlocked = true
 		}
 	}
-	assert.True(t, hasError, "unknown action should produce error")
+	assert.True(t, hasBlocked, "unknown action should produce a blocked event")
 }
 
 func TestTrimHistory(t *testing.T) {
@@ -1050,82 +1041,13 @@ func TestChat_LLMRateLimitDecisionObserverReceivesHashedSubject(t *testing.T) {
 	assert.NotContains(t, fmt.Sprintf("%+v", observed[0]), rawTenantIdentity)
 }
 
-func TestChat_MutatingRateLimitDenialSkipsConfirmAndExecutor(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "StopCompShareInstance", `{"UHostId":"uhost-xxx"}`),
-		}},
-		{Content: "should not be used"},
-	}}
-	executor := &mockExecutor{}
-	confirmCalls := 0
-	eng := NewWithDeps(mock, executor, func(action string, args map[string]any) bool {
-		confirmCalls++
-		return true
-	})
-	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{
-		{Allowed: true, SubjectHash: "sha256:subject"},
-		{Allowed: false, Reason: governance.ReasonQPSExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
-	}}
-	eng.rateLimitSubject = "sha256:subject"
-	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
-	onStep, events := collectSteps()
-
-	reply, err := eng.Chat(context.Background(), "stop it", onStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, rateLimitQPSMessage, reply)
-	assert.Equal(t, 0, confirmCalls, "quota denial must happen before L1 confirmation")
-	assert.Empty(t, executor.calls, "quota denial must happen before API execution")
-	assert.Len(t, mock.calls, 1, "quota denial should stop the turn without another LLM round")
-	require.Len(t, eng.rateLimiter.(*scriptedRateLimiter).requests, 2)
-	assert.Equal(t, governance.ClassLLM, eng.rateLimiter.(*scriptedRateLimiter).requests[0].Class)
-	assert.Equal(t, governance.ClassMutatingTool, eng.rateLimiter.(*scriptedRateLimiter).requests[1].Class)
-	assert.Equal(t, "StopCompShareInstance", eng.rateLimiter.(*scriptedRateLimiter).requests[1].Action)
-	assertStepWithType(t, *events, StepBlocked, "StopCompShareInstance", rateLimitQPSMessage)
-	for _, ev := range *events {
-		assert.NotEqual(t, StepConfirmNeeded, ev.Type, "quota denial must not ask for confirmation")
-		if ev.Type == StepBlocked && ev.Action == "StopCompShareInstance" {
-			assert.Equal(t, observability.ToolCappedRateLimit, ev.Capped)
-			assert.Equal(t, rateLimitQPSMessage, ev.CapReason)
-		}
-	}
-}
-
-func TestChat_MutatingRateLimitDailyDenialUsesDailyMessage(t *testing.T) {
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "StartCompShareInstance", `{"UHostId":"uhost-xxx"}`),
-		}},
-	}}
-	executor := &mockExecutor{}
-	confirmCalls := 0
-	eng := NewWithDeps(mock, executor, func(action string, args map[string]any) bool {
-		confirmCalls++
-		return true
-	})
-	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{
-		{Allowed: true, SubjectHash: "sha256:subject"},
-		{Allowed: false, Reason: governance.ReasonDailyExceeded, SubjectHash: "sha256:subject", Err: governance.ErrRateLimited},
-	}}
-	eng.rateLimitSubject = "sha256:subject"
-	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
-
-	reply, err := eng.Chat(context.Background(), "start it", noopStep)
-
-	require.NoError(t, err)
-	assert.Equal(t, rateLimitDailyMessage, reply)
-	assert.Equal(t, 0, confirmCalls)
-	assert.Empty(t, executor.calls)
-}
-
 func TestChat_ReadExpensiveRateLimitDenialBecomesToolResult(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{}},
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":10}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}},
 		{Content: "please narrow"},
 	}}
@@ -1152,7 +1074,7 @@ func TestChat_ReadExpensiveRateLimitDenialBecomesToolResult(t *testing.T) {
 	assert.Equal(t, governance.ClassLLM, limiter.requests[2].Class)
 	assert.Len(t, mock.calls, 2, "quota denial should be returned as a tool result for LLM narration")
 	assertStepWithType(t, *events, StepBlocked, "DescribeCompShareInstance", rateLimitQPSMessage)
-	assertNoStepTypeForAction(t, *events, StepError, "DescribeCompShareInstance")
+	assertNoStepTypeForAction(t, *events, StepError, "ReadCapability_resource_info")
 }
 
 func TestChat_ReadExpensiveTargetCapBecomesToolResult(t *testing.T) {
@@ -1160,12 +1082,22 @@ func TestChat_ReadExpensiveTargetCapBecomesToolResult(t *testing.T) {
 	for i := range ids {
 		ids[i] = fmt.Sprintf("uhost-%02d", i)
 	}
-	rawArgs, err := json.Marshal(map[string]any{"UHostIds": ids})
+	targets := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		targets = append(targets, map[string]any{"type": "uhost_id_user_input", "value": id, "source": "user_text"})
+	}
+	rawArgs, err := json.Marshal(map[string]any{"targets": targets})
 	require.NoError(t, err)
-	executor := &mockExecutor{}
+	hosts := make([]any, 0, len(ids))
+	for _, id := range ids {
+		hosts = append(hosts, map[string]any{"UHostId": id, "State": "Running"})
+	}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"RetCode": 0, "UHostSet": hosts},
+	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "GetCompShareInstanceMonitor", string(rawArgs)),
+			toolCall("tc1", "ReadCapability_monitor_query", string(rawArgs)),
 		}},
 		{Content: "scope narrowed"},
 	}}
@@ -1177,10 +1109,10 @@ func TestChat_ReadExpensiveTargetCapBecomesToolResult(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "scope narrowed", reply)
-	assert.Empty(t, executor.calls)
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
 	assert.Len(t, mock.calls, 2)
 	assertStepWithType(t, *events, StepBlocked, "GetCompShareInstanceMonitor", toolCapExceededMessage)
-	assertNoStepTypeForAction(t, *events, StepError, "GetCompShareInstanceMonitor")
+	assertNoStepTypeForAction(t, *events, StepError, "ReadCapability_monitor_query")
 }
 
 func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *testing.T) {
@@ -1468,7 +1400,7 @@ func TestChat_ReadOnlyToolDoesNotConsumeMutatingQuota(t *testing.T) {
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "DescribeCompShareInstance", `{"Limit":10}`),
+			toolCall("tc1", "ReadCapability_resource_info", `{}`),
 		}},
 		{Content: "listed"},
 	}}
@@ -1504,8 +1436,9 @@ func TestChat_L2BlockedToolDoesNotConsumeMutatingQuota(t *testing.T) {
 	_, err := eng.Chat(context.Background(), "terminate", noopStep)
 
 	require.NoError(t, err)
-	require.Len(t, limiter.requests, 1)
+	require.Len(t, limiter.requests, 2)
 	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)
+	assert.Equal(t, governance.ClassLLM, limiter.requests[1].Class)
 }
 
 func TestChatReadOnlyHidesWorkflowToolsFromLLM(t *testing.T) {
@@ -1547,7 +1480,7 @@ func TestChatReadOnlyBlocksWorkflowToolCall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "blocked", reply)
 	assert.Empty(t, executor.calls)
-	assertStepWithType(t, *events, StepBlocked, "StopInstanceWorkflow", "verified ActionProposal")
+	assertStepWithType(t, *events, StepBlocked, "StopInstanceWorkflow", "未开放")
 }
 
 func TestExecuteSafeToolReadOnlyBlocksDirectMutatingAction(t *testing.T) {
@@ -1565,7 +1498,7 @@ func TestExecuteSafeToolReadOnlyBlocksDirectMutatingAction(t *testing.T) {
 	assert.Empty(t, executor.calls)
 }
 
-func TestChatStepToolCallRedactsArgsBeforeTrace(t *testing.T) {
+func TestChatHiddenPasswordActionNeverReachesTheTraceOrExecutor(t *testing.T) {
 	llmMock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
 			toolCall("call-1", "ResetCompShareInstancePassword", `{"UHostId":"uhost-1","Password":"Secret123!"}`),
@@ -1577,18 +1510,19 @@ func TestChatStepToolCallRedactsArgsBeforeTrace(t *testing.T) {
 	}}
 	eng := NewWithDeps(llmMock, exec, func(string, map[string]any) bool { return true })
 
-	var callEvent *StepEvent
+	var blockedEvent *StepEvent
 	reply, err := eng.Chat(context.Background(), "reset password", func(ev StepEvent) {
-		if ev.Type == StepToolCall && ev.Action == "ResetCompShareInstancePassword" {
+		if ev.Type == StepBlocked && ev.Action == "ResetCompShareInstancePassword" {
 			copy := ev
-			callEvent = &copy
+			blockedEvent = &copy
 		}
 	})
 
 	require.NoError(t, err)
 	require.Equal(t, "done", reply)
-	require.NotNil(t, callEvent)
-	assert.Equal(t, "[REDACTED]", callEvent.Args["Password"])
+	require.NotNil(t, blockedEvent)
+	assert.Empty(t, exec.calls)
+	assert.NotContains(t, fmt.Sprintf("%+v", blockedEvent), "Secret123!")
 }
 
 // TestKnowledgeTool_ArgsFiltered pins the knowledge route's arg allowlist.
@@ -1889,7 +1823,7 @@ func TestFreshness_DoesNotInjectEphemeralSystemMessage(t *testing.T) {
 		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0},
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DescribeCompShareInstance", `{}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("tc1", "ReadCapability_resource_info", `{}`)}},
 		{Content: "没有实例"},
 		{Content: "好的"},
 	}}
@@ -1917,15 +1851,25 @@ func TestFreshness_DoesNotInjectEphemeralSystemMessage(t *testing.T) {
 func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"RetCode": 0, "TotalCount": float64(1),
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-a", "Name": "a", "State": "Stopped",
+				"Region": "cn-bj2", "Zone": "cn-bj2-04",
+			}},
+		},
 		"StartCompShareInstance": {"RetCode": 0},
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "StartCompShareInstance", `{"UHostId":"uhost-a"}`),
+			toolCall("read", "ReadCapability_resource_info", `{"resource_ids":["uhost-a"]}`),
 		}},
-		{Content: "started"},
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "RequestStartInstance", `{"UHostId":"uhost-a"}`),
+		}},
 	}}
 	eng := NewWithDeps(mock, executor, func(string, map[string]any) bool { return true })
+	eng.SetMutatingToolsEnabled(true)
 	eng.registry = entity.NewRegistry(entity.WithClock(func() time.Time { return now }))
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
 		"RetCode":    0,
@@ -1940,8 +1884,9 @@ func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "start uhost-a", noopStep)
 
 	assert.NoError(t, err)
-	assert.Equal(t, "started", reply)
-	assert.True(t, eng.registry.NeedsRefresh(now.Add(time.Second)))
+	assert.Contains(t, reply, "已为实例 uhost-a 执行开机")
+	assert.True(t, eng.registry.NeedsRefresh(now.Add(time.Second)),
+		"executor calls=%v proposal disposition=%q", executor.calls, eng.ActionProposalDispositionThisTurn())
 }
 
 func TestRegistryTraceStateAccessorReturnsImmutableTraceState(t *testing.T) {
@@ -2032,7 +1977,7 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 		// 50k cap). Second response would be returned if round 1 ran.
 		{
 			ToolCalls: []openai.ToolCall{
-				toolCall("tc1", "DescribeCompShareInstance", `{}`),
+				toolCall("tc1", "ReadCapability_resource_info", `{}`),
 			},
 			Usage: llm.TokenUsage{TotalTokens: 60000},
 		},
@@ -2066,10 +2011,10 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 	// the pair stays atomic across the budget break.
 	var sawToolCall, sawToolResult bool
 	for _, ev := range *events {
-		if ev.Type == StepToolCall && ev.Action == "DescribeCompShareInstance" {
+		if ev.Type == StepToolCall && ev.Action == "ReadCapability_resource_info" {
 			sawToolCall = true
 		}
-		if ev.Type == StepToolResult && ev.Action == "DescribeCompShareInstance" {
+		if ev.Type == StepToolResult && ev.Action == "ReadCapability_resource_info" {
 			sawToolResult = true
 		}
 	}

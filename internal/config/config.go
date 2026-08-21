@@ -116,9 +116,6 @@ type SSHOpsConfig struct {
 	Python      string        `yaml:"python"`       // interpreter; empty = "python3"
 	Model       string        `yaml:"model"`        // third-party model id; empty = agent.llm.model
 	Timeout     time.Duration `yaml:"timeout"`      // hard per-task wall clock; empty = 12m
-	// AllowWrites enables the confirmation-gated mutating tier. Destructive and
-	// opaque command shapes remain refused.
-	AllowWrites bool `yaml:"allow_writes"`
 	// InternalIPv6 uses the UCloud internal gateway to replace a UHost's public
 	// address. It requires agent.sts.iam_url and is production-network-specific.
 	InternalIPv6 bool `yaml:"internal_ipv6"`

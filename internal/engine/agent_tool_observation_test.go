@@ -99,7 +99,7 @@ func TestAgentToolObservationKeepsLegacySourceStatusOnlyInMeta(t *testing.T) {
 
 func TestAgentOnlyReceivesP2ContractForNormalToolRound(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("read-instance", "DescribeCompShareInstance", `{}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("read-instance", "ReadCapability_resource_info", `{}`)}},
 		{Content: "已读取实例信息。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{
@@ -121,5 +121,5 @@ func TestAgentOnlyReceivesP2ContractForNormalToolRound(t *testing.T) {
 	result, ok := tools.ParseAgentToolResult(observation)
 	require.True(t, ok, observation)
 	require.Equal(t, tools.AgentToolStatusSuccess, result.Status)
-	require.Equal(t, "DescribeCompShareInstance", result.Meta.Action)
+	require.Equal(t, "ReadCapability_resource_info", result.Meta.Action)
 }

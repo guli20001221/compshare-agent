@@ -9,7 +9,6 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 )
 
 // maxInstanceOpsStepEvents caps the per-command activity events the engine emits
@@ -41,8 +40,8 @@ const (
 		"用户回复「确认」「是的」这类不含标识的内容不会解除该限制，在控制台里选中实例也不会。"
 )
 
-// executeInstanceOps handles a DiagnoseInstanceInternals tool call: the read-only
-// in-instance diagnosis lane. It is dispatched from executeToolOnce BEFORE the
+// executeInstanceOps handles a DiagnoseInstanceInternals tool call: the
+// confirmation-gated in-instance diagnosis and repair lane. It is dispatched from executeToolOnce BEFORE the
 // diagnosis-chain and mutating-tool branches, so it never inherits the
 // SafeToolExecutor per-attempt wall-clock ceiling. The whole lane is inert unless
 // a runner was wired (server SharedDeps.InstanceOps; tests may use SetInstanceOps) — when
@@ -162,17 +161,14 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 
 	// Read commands run without a card. Every write command pauses on a card that
 	// shows the literal command being authorized.
-	var confirmWrite func(string) ConfirmationResult
-	if tools.InstanceOpsWritesEnabled() {
-		confirmWrite = func(command string) ConfirmationResult {
-			confirmed := e.confirmFn(instanceOpsWriteAction, map[string]any{
-				"UHostId": instanceID,
-				"Command": command,
-			})
-			return ConfirmationResult{
-				Confirmed:      confirmed,
-				TerminalReason: e.lastConfirmationTerminalReason,
-			}
+	confirmWrite := func(command string) ConfirmationResult {
+		confirmed := e.confirmFn(instanceOpsWriteAction, map[string]any{
+			"UHostId": instanceID,
+			"Command": command,
+		})
+		return ConfirmationResult{
+			Confirmed:      confirmed,
+			TerminalReason: e.lastConfirmationTerminalReason,
 		}
 	}
 
@@ -185,7 +181,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	}, onProgress)
 	if err != nil {
 		// The run ended with no verdict. Whatever settled before it did is the only account the user
-		// will ever get of a box that, under allow_writes, may have been changed — so stash it for
+		// will ever get of a box that may already have been changed — so stash it for
 		// the next turn. Guarded on settled being non-empty, which is what keeps every preflight
 		// branch below (no SSH target, not found, not running, address unavailable) silent: those
 		// entered no box and have nothing to report.
@@ -397,10 +393,7 @@ func instanceOpsStateFromError(err error) string {
 // which product is running. Both read the same boot flag the tool description does, so the card the
 // user approved, the tool the model was offered, and the line it watches scroll all say one thing.
 func instanceOpsPhaseNoun() string {
-	if tools.InstanceOpsWritesEnabled() {
-		return "排查"
-	}
-	return "只读排查"
+	return "排查"
 }
 
 // instanceOpsRefusalReason maps the harness's closed reasons to actionable user
@@ -432,10 +425,7 @@ func instanceOpsRefusalReason(reason string) string {
 	case "refused_precondition":
 		return "前置条件未满足，操作未执行；请按工具返回的具体原因检查参数或重新读取目标状态后重试"
 	case "refused_mutating_phase1":
-		return "会修改实例环境（只读模式）"
+		return "旧版只读执行器未运行这条修改命令，请重新发起实例内排查"
 	}
-	if tools.InstanceOpsWritesEnabled() {
-		return "属于高危操作或命令形式不被接受"
-	}
-	return "会修改实例环境（只读模式）"
+	return "属于高危操作或命令形式不被接受"
 }

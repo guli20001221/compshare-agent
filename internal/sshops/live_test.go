@@ -17,9 +17,9 @@
 //	SSHH_CONTEXT_CURRENT_REPORT optionally supplies the raw user wording for the enabled arm.
 //
 // What these tests do NOT cover, so nobody reads a green live run as broader than it is:
-//   - The ordinary TestLiveFullFlow and TestLiveKeystone never execute writes. A separate,
+//   - The ordinary TestLiveFullFlow and TestLiveKeystone deny every proposed write. A separate,
 //     exact-name TestLiveOpsWriteCanary exists for a dedicated disposable instance; it requires
-//     SSHH_WRITE_CANARY=1 + SSHH_ALLOW_WRITES=1 + one SSHH_APPROVE_EXACT value and denies every
+//     SSHH_WRITE_CANARY=1 + one SSHH_APPROVE_EXACT value and denies every
 //     other proposal. It is not selected accidentally by the ordinary live command.
 //   - No database. They use MemAuditWriter, so migration 0013's columns, the fail-closed INSERT
 //     and the INV-9 UNIQUE(turn_id, task_hash) replay refusal are covered only by unit tests.
@@ -62,8 +62,8 @@ func envOr(k, d string) string {
 }
 
 // liveContextEnabled deliberately has an explicit off switch so one known fault can be run in
-// baseline and contextual arms without editing source. TestLiveFullFlow is always read-only: it
-// intentionally has no per-command confirmer and rejects SSHH_ALLOW_WRITES=1 below.
+// baseline and contextual arms without editing source. TestLiveFullFlow supplies a deny-all exact
+// command confirmer, so it exercises the single repair prompt without changing the test box.
 func liveContextEnabled() bool { return os.Getenv("SSHH_CONTEXT") != "0" }
 
 // liveDescriber returns a stub DescribeCompShareInstance response carrying the REAL test
@@ -148,11 +148,6 @@ func liveSupervisor() Supervisor {
 		APIKey:      os.Getenv("SSHH_API_KEY"),
 		Model:       envOr("SSHH_MODEL", "gpt-5.6-terra"),
 		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
-		// The write path had no live coverage: every live run selected the read-only prompt because
-		// nothing could turn AllowWrites on. Selects the WRITE prompt + write tool
-		// description. The ConfirmFunc stays nil, so the mutating tier is still
-		// refused: this changes which TEXT the model gets, not what may execute.
-		AllowWrites: os.Getenv("SSHH_ALLOW_WRITES") == "1",
 	}
 }
 
@@ -180,8 +175,8 @@ func TestLiveKeystone(t *testing.T) {
 			"先运行 nvidia-smi 看具体报错，再 cat /proc/driver/nvidia/version 与 cat /etc/os-release 核对，"+
 			"判断是宿主机驱动问题还是容器内用户态 NVIDIA 驱动/库缺失，给出根因和修复建议。")
 
-	// nil ConfirmFunc on purpose: this test drives the READ-ONLY lane, and a lane with no confirmer
-	// is a lane with no human on it, so every mutating command is refused rather than waved through.
+	// nil ConfirmFunc on purpose: this direct harness keystone has no human confirmation channel, so
+	// every mutating command is refused rather than waved through.
 	res, err := liveSupervisor().Run(context.Background(), cred, task, func(st Step) {
 		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
 	}, nil)
@@ -232,23 +227,18 @@ func TestLiveFullFlow(t *testing.T) {
 	}
 	audit := &MemAuditWriter{}
 	sup := liveSupervisor()
-	// Log the arm. Which system prompt, tool description and contextual prompt shape the harness selects is decided here, and
-	// a run whose arm is invisible cannot be compared with another: an A/B was already spent
-	// measuring two arms that turned out to be the same one, because SSHH_ALLOW_WRITES was silently
-	// not wired at the time and nothing in the output said so.
+	// Log the remaining A/B arm. The removed product-level read-only/write split no longer changes
+	// the prompt or tool surface; only reference-context delivery is varied here.
 	contextEnabled := liveContextEnabled()
-	t.Logf("[arm] allow_writes=%v context=%v model=%s", sup.AllowWrites, contextEnabled, sup.Model)
-	if sup.AllowWrites {
-		t.Skip("TestLiveFullFlow is a read-only A/B; leave SSHH_ALLOW_WRITES unset (no write confirmer is wired)")
-	}
+	t.Logf("[arm] context=%v model=%s", contextEnabled, sup.Model)
 	svc := NewService(sup, audit)
 
 	// The model already selected DiagnoseInstanceInternals{UHostId, Task} and the user authorized it
 	// on the engine's card. Enter the instance and diagnose (real harness, real SSH, default 掉卡 probe).
 	// SSHH_TASK carries the REAL user phrasing for the scenario under test (the Task the model would
-	// have passed). Empty => the harness falls back to its generic read-only health sweep.
+	// have passed). Empty => the harness falls back to its generic diagnose-and-repair task.
 	task := os.Getenv("SSHH_TASK")
-	t.Logf("[授权后] 进入实例 %s 只读排查 · task=%q", instanceID, task)
+	t.Logf("[授权后] 进入实例 %s 排查（写操作逐条拒绝）· task=%q", instanceID, task)
 	owner := Owner{TopOrganizationID: 1, OrganizationID: 2, RequestUUID: "live-req-1", TurnID: "live-turn-1"}
 	modelContext := opscontext.Context{}
 	if contextEnabled {
@@ -263,7 +253,10 @@ func TestLiveFullFlow(t *testing.T) {
 	}
 	res, err := svc.DiagnoseWithContext(ctx, d, owner, instanceID, task, modelContext, func(st Step) {
 		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
-	}, nil)
+	}, func(request ConfirmRequest) ConfirmDecision {
+		t.Logf("[拒绝测试中的写操作] %s", request.Command)
+		return ConfirmDecision{Approved: false, TerminalReason: "user_declined"}
+	})
 	t.Logf("\n========== [beat 4] 进入实例排查 · 诊断结论 ==========\n%s\n====================================================", res.Output)
 	if err != nil {
 		t.Fatalf("Diagnose: %v (timedOut=%v)", err, res.TimedOut)

@@ -3,7 +3,6 @@ package httpapi
 import (
 	"strings"
 
-	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 )
 
@@ -100,7 +99,7 @@ func stepActionLabel(action string) string {
 	// version of this comment claimed it was the card, and that mistake is why the
 	// card kept saying 只读 in write mode for a while: fixing this one read as
 	// having fixed both. The card is serverOwnedConfirmLabel below.
-	if action == "DiagnoseInstanceInternals" && tools.InstanceOpsWritesEnabled() {
+	if action == "DiagnoseInstanceInternals" {
 		return "实例内排查与修复"
 	}
 	if label := workflow.StepLabel(action); label != "" {
@@ -127,10 +126,7 @@ func stepActionLabel(action string) string {
 func serverOwnedConfirmLabel(action string) string {
 	switch action {
 	case "DiagnoseInstanceInternals":
-		if tools.InstanceOpsWritesEnabled() {
-			return "进入实例排查与修复"
-		}
-		return "进入实例只读排查"
+		return "进入实例排查与修复"
 	case "InstanceOpsWriteCommand":
 		// Same string the step stream uses, from the same map, so the card the user
 		// approves and the line they then watch scroll cannot drift apart.

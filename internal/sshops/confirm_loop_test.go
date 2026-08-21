@@ -2,7 +2,6 @@ package sshops
 
 import (
 	"context"
-	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +37,6 @@ func newConfirmSup(t *testing.T) Supervisor {
 		APIKey:      testAnthropicAPIKey,
 		Model:       "gpt-5.6-terra",
 		Timeout:     60 * time.Second,
-		AllowWrites: true,
 	}
 }
 
@@ -68,39 +66,16 @@ func TestSupervisorAnswersConfirmRequestsOnStdin(t *testing.T) {
 	}
 }
 
-// A write-enabled lane with no confirmer is a lane no human is watching. Refusing up front beats
-// running with every write auto-denied: that run would spend its whole budget proposing repairs
-// that can never be approved, and the user would read it as the model failing to fix anything.
-func TestWriteLaneWithoutConfirmerRefusesBeforeTouchingTheBox(t *testing.T) {
-	audit := &MemAuditWriter{}
-	entered := false
-	svc := NewService(runnerFunc(func(context.Context, Credential, string, func(Step)) (Result, error) {
-		entered = true
-		return Result{Output: "should never run"}, nil
-	}), audit, WithWrites(true))
-
-	d := stubDescriber{resp: describeResp("ssh root@1.2.3.4", base64.StdEncoding.EncodeToString([]byte("S3cr3tPw")))}
-	_, err := svc.Diagnose(context.Background(), d, Owner{RequestUUID: "r", TurnID: "t"}, "uhost-abc", "task", nil, nil)
-	if err == nil {
-		t.Fatal("write lane ran with no confirmer wired")
+// A missing confirmer is not a product read-only mode. The same diagnosis starts, but Supervisor
+// answers every exact-command request with approved=false, so a missing UI channel can never become
+// implicit consent.
+func TestMissingConfirmerDeniesEveryWriteRequest(t *testing.T) {
+	sup := newConfirmSup(t)
+	res, err := sup.Run(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "t", nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v (output=%q)", err, res.Output)
 	}
-	if entered {
-		t.Fatal("refusal happened after the harness had already been spawned")
-	}
-	// ...and it must also happen before the audit row is begun. A 'started' row is what a genuinely
-	// interrupted run leaves behind, and it now carries the REQUESTED context schema/coverage — so a
-	// row written for a lane that refused to run at all would read, in the same table and with the
-	// same columns, as an in-instance access that entered the box with context and then vanished.
-	if len(audit.Events) != 0 {
-		t.Fatalf("wiring refusal wrote %d audit event(s); a run that never happened must leave no row",
-			len(audit.Events))
-	}
-	// The read-only lane has no such requirement — it never asks anything, so a nil confirmer is fine.
-	roSvc := NewService(runnerFunc(func(context.Context, Credential, string, func(Step)) (Result, error) {
-		return Result{Output: "ok"}, nil
-	}), &MemAuditWriter{})
-	if _, err := roSvc.Diagnose(context.Background(), d, Owner{RequestUUID: "r2", TurnID: "t2"},
-		"uhost-abc", "task", nil, nil); err != nil {
-		t.Fatalf("read-only lane must not require a confirmer: %v", err)
+	if !strings.Contains(res.Output, "REPLIES c1:False:None|c2:False:None") {
+		t.Fatalf("missing confirmer did not fail closed per command: %q", res.Output)
 	}
 }
